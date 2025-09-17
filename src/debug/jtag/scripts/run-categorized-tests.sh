@@ -234,6 +234,8 @@ run_profile_tests() {
             run_test "Grid Advanced Performance Analysis" "JTAG_WORKING_DIR='examples/test-bench' npx tsx tests/integration/grid-advanced-performance-analysis.test.ts" "Grid Performance"
             
             # Database & persistence tests
+            run_test "ORM Basic Functionality" "npx tsx tests/integration/database/orm-basic-functionality.test.ts" "Database Tests"
+            run_test "ORM User Hierarchy Integration" "npx tsx tests/integration/database/orm-user-hierarchy.test.ts" "Database Tests"
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
             run_test "Database Chat Integration" "npx tsx tests/integration/database-chat-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
@@ -327,6 +329,8 @@ run_profile_tests() {
             ;;
             
         "database")
+            run_test "ORM Basic Functionality" "npx tsx tests/integration/database/orm-basic-functionality.test.ts" "Database Tests"
+            run_test "ORM User Hierarchy Integration" "npx tsx tests/integration/database/orm-user-hierarchy.test.ts" "Database Tests"
             run_test "Database Persistence Validation" "npx tsx tests/integration/database/database-persistence-validation.test.ts" "Database Tests"
             run_test "Database Chat Integration" "npx tsx tests/integration/database-chat-integration.test.ts" "Database Tests"
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"

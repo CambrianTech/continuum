@@ -6,6 +6,8 @@
  */
 
 import { AIUser, type AIUserData, type AIModelConfig } from './AIUser';
+import type { BaseUserData } from './BaseUser';
+import { randomUUID } from 'crypto';
 
 /**
  * Agent-specific tool and API access configuration
@@ -63,8 +65,8 @@ export class AgentUser extends AIUser {
     return 'agent-specialized';
   }
 
-  getInteractionModel(): 'agent-specialized' {
-    return 'agent-specialized';
+  getInteractionModel(): 'ai-automated' {
+    return 'ai-automated';
   }
 
   getCapabilitySet(): readonly string[] {
@@ -204,7 +206,7 @@ export class AgentUser extends AIUser {
     modelConfig: AIModelConfig
   ): AgentUser {
     const data: AgentUserData = {
-      userId: crypto.randomUUID(),
+      userId: randomUUID(),
       sessionId,
       displayName,
       citizenType: 'ai',
@@ -226,7 +228,7 @@ export class AgentUser extends AIUser {
   /**
    * Immutable update implementation
    */
-  protected createInstance(data: any): AgentUser {
-    return new AgentUser(data as AgentUserData);
+  protected createInstance(data: BaseUserData): this {
+    return new AgentUser(data as AgentUserData) as this;
   }
 }
