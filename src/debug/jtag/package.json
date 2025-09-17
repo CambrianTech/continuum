@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1538",
+  "version": "1.0.1540",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -277,8 +277,8 @@
     "dev:iterate": "npx tsx scripts/autonomous-dev-toolkit.ts iterate",
     "dev:stress": "npx tsx scripts/autonomous-dev-toolkit.ts stress",
     "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
-    "data:clear": "npx tsx api/data-seed/clear-data.ts",
-    "data:seed": "npx tsx api/data-seed/seed-data.ts",
+    "data:clear": "echo '🧹 Clearing UserRepository ORM data...' && rm -rf .continuum/database/continuum-dev/users/* 2>/dev/null || true && echo '✅ UserRepository data cleared'",
+    "data:seed": "npx tsx api/data-seed/seed-users-orm.ts",
     "data:reseed": "npm run data:clear && npm run data:seed",
     "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'"
   },
