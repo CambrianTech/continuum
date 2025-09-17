@@ -1,11 +1,16 @@
 /**
  * User Data Seeding API - Centralized User Creation
- * 
- * Creates initial users for development and testing using JTAG data commands.
+ *
+ * Creates initial users for development and testing using new UserRepository domain objects.
  * No manual filesystem calls - uses proper daemon architecture.
  */
 
-import { createHumanUser, PersonaUser, AgentUser, BaseUser } from '../types/User';
+import { HumanUser, type HumanUserData } from '../../domain/user/HumanUser';
+import { AgentUser, type AgentUserData } from '../../domain/user/AgentUser';
+import { PersonaUser, type PersonaUserData } from '../../domain/user/PersonaUser';
+import { BaseUser } from '../../domain/user/BaseUser';
+import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
+import type { BaseUserDataWithRelationships } from '../../domain/user/UserRelationships';
 import { USER_IDS, USER_CONFIG, COLLECTIONS } from './SeedConstants';
 
 // Rust-like branded type for strict typing
@@ -28,172 +33,183 @@ export class UserDataSeed {
   private static readonly COLLECTION = COLLECTIONS.USERS;
   
   /**
-   * Generate all seed users - strict typing, no fallbacks
+   * Generate all seed users using new UserRepository domain objects
    */
   public static generateSeedUsers(): UserSeedData {
-    // Create human user with proper ID from the start
-    const humanUser: BaseUser = {
-      id: createUserId(USER_IDS.HUMAN),
-      name: USER_CONFIG.HUMAN.NAME,
-      userType: 'human' as const,
+    // Create human user with proper domain object
+    const humanUserData: HumanUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: USER_CONFIG.HUMAN.DISPLAY_NAME || USER_CONFIG.HUMAN.NAME,
+      citizenType: 'human',
+      capabilities: ['chat', 'human_interaction', 'authentication'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {
+        theme: 'dark',
+        notifications: true,
+        autoComplete: true
+      },
+      isOnline: true,
       email: USER_CONFIG.HUMAN.EMAIL,
-      isAuthenticated: true,
-      permissions: [
-        { action: 'chat', resource: '*', granted: true },
-        { action: 'read_messages', resource: '*', granted: true },
-        { action: 'send_messages', resource: '*', granted: true }
-      ],
-      capabilities: [
-        { name: 'human_interaction', enabled: true },
-        { name: 'authentication', enabled: true }
-      ],
       profile: {
         avatar: USER_CONFIG.HUMAN.AVATAR,
-        displayName: USER_CONFIG.HUMAN.DISPLAY_NAME,
-        preferences: {
-          theme: 'dark',
-          notifications: true,
-          autoComplete: true
+        bio: 'Human user - repository owner and primary contributor',
+        location: 'Development Environment',
+        socialLinks: {},
+        privacySettings: {
+          profileVisibility: 'public',
+          activityTracking: true,
+          dataSharing: false
         }
-      },
-      createdAt: new Date().toISOString(),
-      lastActiveAt: new Date().toISOString()
-    } as BaseUser & { email: string; profile: { avatar?: string; displayName?: string; preferences: Record<string, unknown> } };
+      }
+    };
+    const humanUser = new HumanUser(humanUserData);
 
     // Claude Code - AI Assistant Agent
-    const claudeUser = new AgentUser({
-      name: USER_CONFIG.CLAUDE.NAME,
-      model: USER_CONFIG.CLAUDE.MODEL,
-      provider: USER_CONFIG.CLAUDE.PROVIDER,
-      agent: {
-        type: 'code',
-        specialization: ['typescript', 'react', 'architecture', 'debugging'],
-        tools: ['filesystem', 'compiler', 'git', 'npm', 'browser'],
-        systemRole: 'Senior AI Software Engineer - Specialized in full-stack development, system architecture, and debugging. Expert in TypeScript, React, and modern web technologies.'
+    const claudeAgentData: AgentUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: USER_CONFIG.CLAUDE.NAME,
+      citizenType: 'ai',
+      aiType: 'agent',
+      capabilities: ['code-generation', 'debugging', 'architecture', 'testing'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: USER_CONFIG.CLAUDE.MODEL || 'claude-sonnet-4',
+        provider: USER_CONFIG.CLAUDE.PROVIDER || 'anthropic',
+        maxTokens: 8000,
+        temperature: 0.1,
+        systemPrompt: 'Senior AI Software Engineer specialized in full-stack development, system architecture, and debugging.',
+        capabilities: ['code-generation', 'debugging', 'architecture', 'testing']
       },
-      integration: {
-        jtagEnabled: true,
-        allowSystemCommands: true,
-        maxExecutionTime: 300000 // 5 minutes - explicit timeout
-      },
-      metadata: {
-        version: 'sonnet-4',
-        capabilities: ['code-generation', 'debugging', 'architecture', 'testing'],
-        lastUpdate: new Date().toISOString()
-      }
-    });
+      specialization: 'software-development',
+      toolAccess: ['filesystem', 'compiler', 'git', 'npm', 'browser'],
+      automationLevel: 'assisted',
+      maxConcurrentTasks: 5
+    };
+    const claudeUser = new AgentUser(claudeAgentData);
 
-    // Override ID with proper typing
-    Object.defineProperty(claudeUser, 'id', {
-      value: createUserId(USER_IDS.CLAUDE_CODE),
-      writable: false,
-      enumerable: true,
-      configurable: false
-    });
-
-    // GeneralAI - General Assistant Persona  
-    const generalAI = new PersonaUser({
-      name: 'GeneralAI',
-      model: 'claude-haiku',
-      provider: 'anthropic',
-      persona: {
-        personality: 'Helpful, knowledgeable, and adaptable general assistant',
-        traits: ['helpful', 'knowledgeable', 'patient', 'adaptable'],
-        systemPrompt: 'You are GeneralAI, a helpful and knowledgeable assistant ready to help with a wide variety of tasks. You are patient, adaptable, and always strive to provide accurate and useful information.',
+    // GeneralAI - General Assistant Persona
+    const generalPersonaData: PersonaUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'GeneralAI',
+      citizenType: 'ai',
+      aiType: 'persona',
+      capabilities: ['general-assistance', 'knowledge-synthesis', 'conversation'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'claude-haiku',
+        provider: 'anthropic',
+        maxTokens: 2000,
         temperature: 0.7,
-        maxTokens: 2000
+        systemPrompt: 'You are GeneralAI, a helpful and knowledgeable assistant ready to help with a wide variety of tasks.',
+        capabilities: ['general-assistance', 'knowledge-synthesis', 'conversation']
       },
-      metadata: {
-        role: 'general-assistance',
-        expertise: ['general-knowledge', 'research', 'writing', 'analysis']
-      }
-    });
-
-    Object.defineProperty(generalAI, 'id', {
-      value: createUserId('general-ai-persona'),
-      writable: false,
-      enumerable: true,
-      configurable: false
-    });
-
-    // CodeAI - Code Analysis Specialist
-    const codeAI = new AgentUser({
-      name: 'CodeAI', 
-      model: 'deepseek-coder',
-      provider: 'deepseek',
-      agent: {
-        type: 'code',
-        specialization: ['code-analysis', 'refactoring', 'optimization', 'security'],
-        tools: ['static-analysis', 'linting', 'testing', 'profiling'],
-        systemRole: 'Code analysis and debugging specialist. Expert at identifying bugs, performance issues, security vulnerabilities, and suggesting improvements.'
+      personaStyle: 'friendly-helper',
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: 'helpful', formality: 'casual' },
+        domainKnowledge: ['general-knowledge', 'research', 'writing', 'analysis']
       },
-      integration: {
-        jtagEnabled: true,
-        allowSystemCommands: false, // Read-only code analysis
-        maxExecutionTime: 120000 // 2 minutes
-      }
-    });
+      adaptivePersonality: true,
+      emotionalIntelligence: 85,
+      conversationalDepth: 'moderate'
+    };
+    const generalAI = new PersonaUser(generalPersonaData);
 
-    Object.defineProperty(codeAI, 'id', {
-      value: createUserId('code-ai-agent'),
-      writable: false,
-      enumerable: true,
-      configurable: false
-    });
-
-    // PlannerAI - Strategic Planning Assistant
-    const plannerAI = new AgentUser({
-      name: 'PlannerAI',
-      model: 'gpt-4',
-      provider: 'openai', 
-      agent: {
-        type: 'planning',
-        specialization: ['project-planning', 'architecture-design', 'workflow-optimization'],
-        tools: ['analysis', 'modeling', 'documentation'],
-        systemRole: 'Strategic planning and architecture specialist. Expert at breaking down complex projects, designing system architecture, and optimizing workflows.'
+    // CodeAI - Code Analysis Specialist Agent
+    const codeAgentData: AgentUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'CodeAI',
+      citizenType: 'ai',
+      aiType: 'agent',
+      capabilities: ['code-analysis', 'refactoring', 'optimization', 'security-analysis'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'deepseek-coder',
+        provider: 'deepseek',
+        maxTokens: 4000,
+        temperature: 0.1,
+        systemPrompt: 'Code analysis and debugging specialist. Expert at identifying bugs, performance issues, and security vulnerabilities.',
+        capabilities: ['code-analysis', 'refactoring', 'optimization', 'security-analysis']
       },
-      integration: {
-        jtagEnabled: false, // Planning-only, no system access
-        allowSystemCommands: false,
-        maxExecutionTime: 180000 // 3 minutes
-      }
-    });
+      specialization: 'code-analysis',
+      toolAccess: ['static-analysis', 'linting', 'testing', 'profiling'],
+      automationLevel: 'supervised',
+      maxConcurrentTasks: 3
+    };
+    const codeAI = new AgentUser(codeAgentData);
 
-    Object.defineProperty(plannerAI, 'id', {
-      value: createUserId('planner-ai-agent'),
-      writable: false,
-      enumerable: true,
-      configurable: false
-    });
-
-    // Auto Route - Smart Agent Selection
-    const autoRoute = new AgentUser({
-      name: 'Auto Route',
-      model: 'claude-haiku',
-      provider: 'anthropic',
-      agent: {
-        type: 'general',
-        specialization: ['task-routing', 'agent-selection', 'workflow-management'],
-        tools: ['agent-registry', 'task-analysis', 'routing'],
-        systemRole: 'Smart agent selection system. Analyzes tasks and routes them to the most appropriate specialist agent based on task type, complexity, and requirements.'
+    // PlannerAI - Strategic Planning Assistant Agent
+    const plannerAgentData: AgentUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'PlannerAI',
+      citizenType: 'ai',
+      aiType: 'agent',
+      capabilities: ['strategic-planning', 'task-decomposition', 'workflow-optimization'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'gpt-4',
+        provider: 'openai',
+        maxTokens: 3000,
+        temperature: 0.3,
+        systemPrompt: 'Strategic planning and architecture specialist. Expert at breaking down complex projects and designing system architecture.',
+        capabilities: ['strategic-planning', 'task-decomposition', 'workflow-optimization']
       },
-      integration: {
-        jtagEnabled: true,
-        allowSystemCommands: false,
-        maxExecutionTime: 30000 // 30 seconds for quick routing decisions
-      }
-    });
+      specialization: 'project-management',
+      toolAccess: ['analysis', 'modeling', 'documentation'],
+      automationLevel: 'advisory',
+      maxConcurrentTasks: 2
+    };
+    const plannerAI = new AgentUser(plannerAgentData);
 
-    Object.defineProperty(autoRoute, 'id', {
-      value: createUserId('auto-route-agent'),
-      writable: false,
-      enumerable: true,
-      configurable: false
-    });
+    // Auto Route - Smart Agent Selection Agent
+    const autoRouteAgentData: AgentUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'Auto Route',
+      citizenType: 'ai',
+      aiType: 'agent',
+      capabilities: ['task-routing', 'agent-selection', 'workflow-management'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'claude-haiku',
+        provider: 'anthropic',
+        maxTokens: 1000,
+        temperature: 0.2,
+        systemPrompt: 'Smart agent selection system. Analyzes tasks and routes them to the most appropriate specialist agent.',
+        capabilities: ['task-routing', 'agent-selection', 'workflow-management']
+      },
+      specialization: 'task-coordination',
+      toolAccess: ['agent-registry', 'task-analysis', 'routing'],
+      automationLevel: 'autonomous',
+      maxConcurrentTasks: 10
+    };
+    const autoRoute = new AgentUser(autoRouteAgentData);
 
     const users = [
       humanUser,
-      claudeUser, 
+      claudeUser,
       generalAI,
       codeAI,
       plannerAI,
@@ -211,27 +227,40 @@ export class UserDataSeed {
    * Validate user data - crash and burn on invalid data, no fallbacks
    */
   private static validateUser(user: BaseUser): void {
-    if (!user.id) {
-      throw new Error(`User missing required id: ${JSON.stringify(user)}`);
+    if (!user.userId) {
+      throw new Error(`User missing required userId: ${JSON.stringify(user)}`);
     }
-    if (!user.name || user.name.trim().length === 0) {
-      throw new Error(`User ${user.id} missing required name`);
+    if (!user.displayName || user.displayName.trim().length === 0) {
+      throw new Error(`User ${user.userId} missing required displayName`);
     }
-    if (!user.userType || !['human', 'persona', 'agent'].includes(user.userType)) {
-      throw new Error(`User ${user.id} has invalid userType: ${user.userType}`);
+    if (!user.citizenType || !['human', 'ai'].includes(user.citizenType)) {
+      throw new Error(`User ${user.userId} has invalid citizenType: ${user.citizenType}`);
     }
   }
 
   /**
    * Get database record format for user
    */
-  public static formatUserForDatabase(user: BaseUser): DatabaseRecord<BaseUser> {
+  public static formatUserForDatabase(user: BaseUser): DatabaseRecord<BaseUserDataWithRelationships> {
     this.validateUser(user); // Crash and burn on invalid data
-    
+
+    // Convert domain object to serializable data - use the raw data from constructor
+    const userData: BaseUserDataWithRelationships = {
+      userId: user.userId,
+      sessionId: user.sessionId,
+      displayName: user.displayName,
+      citizenType: user.citizenType,
+      capabilities: [...user.capabilities],
+      createdAt: user.createdAt,
+      lastActiveAt: user.lastActiveAt,
+      preferences: { ...user.preferences },
+      isOnline: user.isOnline
+    };
+
     return {
-      id: user.id,
+      id: user.userId,
       collection: this.COLLECTION,
-      data: user,
+      data: userData,
       metadata: {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -243,9 +272,9 @@ export class UserDataSeed {
   /**
    * Create JTAG data/create command parameters
    */
-  public static createDataCommand(user: BaseUser): DataCreateCommand {
+  public static createDataCommand(user: BaseUser): DataCreateCommand<BaseUserDataWithRelationships> {
     const record = this.formatUserForDatabase(user);
-    
+
     return {
       collection: this.COLLECTION,
       data: record.data,
@@ -267,9 +296,9 @@ export interface DatabaseRecord<T> {
 }
 
 // Type-safe data create command
-export interface DataCreateCommand {
+export interface DataCreateCommand<T> {
   readonly collection: string;
-  readonly data: unknown;
+  readonly data: T;
   readonly id?: string;
 }
 
