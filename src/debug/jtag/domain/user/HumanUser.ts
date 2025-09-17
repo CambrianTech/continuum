@@ -63,7 +63,7 @@ export class HumanUser extends BaseUser {
   /**
    * Immutable update implementation
    */
-  protected createInstance(data: BaseUserData): HumanUser {
-    return new HumanUser(data as HumanUserData);
+  protected createInstance(data: BaseUserData): this {
+    return new HumanUser(data as HumanUserData) as this;
   }
 }

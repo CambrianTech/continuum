@@ -6,6 +6,8 @@
  */
 
 import { AIUser, type AIUserData, type AIModelConfig } from './AIUser';
+import type { BaseUserData } from './BaseUser';
+import { randomUUID } from 'crypto';
 
 /**
  * Persona interaction styles and behaviors
@@ -60,8 +62,8 @@ export class PersonaUser extends AIUser {
     return 'persona-contextual';
   }
 
-  getInteractionModel(): 'persona-contextual' {
-    return 'persona-contextual';
+  getInteractionModel(): 'ai-automated' {
+    return 'ai-automated';
   }
 
   getCapabilitySet(): readonly string[] {
@@ -239,7 +241,7 @@ export class PersonaUser extends AIUser {
     modelConfig: AIModelConfig
   ): PersonaUser {
     const data: PersonaUserData = {
-      userId: crypto.randomUUID(),
+      userId: randomUUID(),
       sessionId,
       displayName,
       citizenType: 'ai',
@@ -267,7 +269,7 @@ export class PersonaUser extends AIUser {
   /**
    * Immutable update implementation
    */
-  protected createInstance(data: any): PersonaUser {
-    return new PersonaUser(data as PersonaUserData);
+  protected createInstance(data: BaseUserData): this {
+    return new PersonaUser(data as PersonaUserData) as this;
   }
 }

@@ -6,6 +6,10 @@
  */
 
 import { BaseUser, type BaseUserData } from './BaseUser';
+import type { AIModelConfig } from './UserRelationships';
+
+// Re-export for convenience
+export type { AIModelConfig };
 
 /**
  * AI-specific data extending base user
@@ -13,6 +17,9 @@ import { BaseUser, type BaseUserData } from './BaseUser';
 export interface AIUserData extends BaseUserData {
   readonly citizenType: 'ai';
   readonly aiType: 'agent' | 'persona';
+  readonly modelConfig: AIModelConfig;
+  readonly specialization?: string;
+  readonly contextMemory?: readonly string[];
 }
 
 /**
@@ -44,7 +51,7 @@ export abstract class AIUser extends BaseUser {
   }
 
   get contextMemory(): readonly string[] {
-    return this.data.contextMemory || [];
+    return this.data.contextMemory ?? [];
   }
 
   /**
@@ -80,7 +87,7 @@ export abstract class AIUser extends BaseUser {
   addToContextMemory(context: string): this {
     const newData = {
       ...this.data,
-      contextMemory: [...(this.data.contextMemory || []), context].slice(-50) // Keep last 50 contexts
+      contextMemory: [...(this.data.contextMemory ?? []), context].slice(-50) // Keep last 50 contexts
     };
     return this.createInstance(newData);
   }
@@ -115,41 +122,21 @@ export abstract class AIUser extends BaseUser {
   /**
    * Type guards for AI subtypes
    */
-  isAgent(): this is AgentUser {
+  isAgent(): boolean {
     return this.aiType === 'agent';
   }
 
-  isPersona(): this is PersonaUser {
+  isPersona(): boolean {
     return this.aiType === 'persona';
   }
 
   /**
-   * Factory method
+   * Factory method - Note: Concrete implementations are loaded dynamically
+   * to avoid circular imports. Use AgentUser.fromData() or PersonaUser.fromData() directly.
    */
   static fromData(data: AIUserData): AIUser {
-    // Factory delegates to concrete types based on aiType
-    switch (data.aiType) {
-      case 'agent':
-        return AgentUser.fromData(data);
-      case 'persona':
-        return PersonaUser.fromData(data);
-      default:
-        throw new Error(`Unknown AI type: ${data.aiType}`);
-    }
+    throw new Error(`AIUser is abstract. Use specific subclass factories (AgentUser.fromData or PersonaUser.fromData)`);
   }
 }
 
-/**
- * Forward declarations - Implemented in separate files
- */
-export interface AgentUser extends AIUser {
-  readonly aiType: 'agent';
-}
-
-export interface PersonaUser extends AIUser {
-  readonly aiType: 'persona';
-}
-
-// These will be imported when the concrete classes are implemented
-declare class AgentUser extends AIUser {}
-declare class PersonaUser extends AIUser {}
+// AgentUser and PersonaUser are implemented in separate files

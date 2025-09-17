@@ -684,11 +684,11 @@ export class SystemOrchestrator extends EventEmitter {
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
     
     try {
-      spawn('open', [browserUrl], { 
-        detached: true, 
-        stdio: 'ignore' 
+      spawn('open', [browserUrl], {
+        detached: true,
+        stdio: 'ignore'
       }).unref();
-      console.debug(`✅ Browser launched: ${browserUrl}`);
+      console.log(`✅ Browser launched: ${browserUrl}`);
     } catch (error) {
       console.warn(`⚠️ Failed to auto-open browser: ${error}`);
       console.debug(`👉 Manually open: ${browserUrl}`);
