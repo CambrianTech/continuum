@@ -8,7 +8,8 @@
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
-import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
 
@@ -67,7 +68,7 @@ export class RoomListWidget extends ChatWidgetBase {
     // For each room, get actual unread message count from database
     const client = await JTAGClient.sharedInstance;
     for (const room of this.rooms) {
-      const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
+      const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         context: client.context,
         sessionId: client.sessionId,
         collection: COLLECTIONS.MESSAGES,
@@ -81,7 +82,7 @@ export class RoomListWidget extends ChatWidgetBase {
   private async loadRooms(): Promise<void> {
     // Load rooms from database using proper executeCommand with strict typing
     const client = await JTAGClient.sharedInstance;
-    const result = await this.executeCommand<DataListParams, DataListResult<DataRecord<RoomData>>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<ChatRoomData>>('data/list', {
       context: client.context,
       sessionId: client.sessionId,
       collection: COLLECTIONS.ROOMS,
@@ -89,12 +90,12 @@ export class RoomListWidget extends ChatWidgetBase {
     });
 
     if (result?.success && result.items?.length > 0) {
-      // Extract room data from DataRecord<RoomData> with proper typing
+      // Use ChatRoomData directly - adapter returns proper domain objects
       this.rooms = result.items
-        .filter((record: DataRecord<RoomData>) => record?.data && (record.data.id || record.data.roomId))
-        .map((record: DataRecord<RoomData>) => ({
-          id: record.data.id || record.data.roomId || '', // Handle both id and roomId fields, fallback to empty string
-          name: record.data.name,
+        .filter((room: ChatRoomData) => room?.roomId || room?.id)
+        .map((room: ChatRoomData) => ({
+          id: room.roomId || room.id || '', // Handle both roomId and id fields
+          name: room.name || room.displayName || '',
           unreadCount: 0 // Will be calculated from messages
         }))
         .filter(room => room.id !== ''); // Remove any rooms with empty ids

@@ -65,6 +65,42 @@ export class SQLiteAdapter implements DataAdapter {
     this.dbPath = dbPath;
   }
 
+  /**
+   * Convert storage format to domain format using type introspection
+   * Handles BaseEntity field conversion generically without hardcoding specific entities
+   */
+  private convertFromStorageFormat(rawData: any, collection: string): any {
+    if (!rawData || typeof rawData !== 'object') {
+      return rawData;
+    }
+
+    const converted = { ...rawData };
+
+    // Generic BaseEntity field mapping
+    // If domain expects 'timestamp' but storage has 'createdAt', map it
+    if (rawData.createdAt && !rawData.timestamp) {
+      converted.timestamp = rawData.createdAt;
+    }
+
+    // Convert ISO string dates to proper format if needed
+    // This handles any field that looks like a date string
+    for (const [key, value] of Object.entries(converted)) {
+      if (typeof value === 'string' && this.isISODateString(value)) {
+        // Keep as ISO string for ISOString branded types, but ensure it's properly formatted
+        converted[key] = value;
+      }
+    }
+
+    return converted;
+  }
+
+  /**
+   * Check if a string looks like an ISO date
+   */
+  private isISODateString(str: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/.test(str);
+  }
+
   async initialize(): Promise<DataResult<void>> {
     if (this.isInitialized && this.db) {
       return Ok(undefined);
@@ -199,7 +235,8 @@ export class SQLiteAdapter implements DataAdapter {
         return Ok(null);
       }
 
-      const entity = JSON.parse(row.data) as T;
+      const rawData = JSON.parse(row.data);
+      const entity = this.convertFromStorageFormat(rawData, collection) as T;
       return Ok(entity);
 
     } catch (error: any) {
@@ -324,7 +361,8 @@ export class SQLiteAdapter implements DataAdapter {
 
       const entities: T[] = rows.map(row => {
         try {
-          return JSON.parse(row.data) as T;
+          const rawData = JSON.parse(row.data);
+          return this.convertFromStorageFormat(rawData, collection) as T;
         } catch (parseError: any) {
           console.error(`Failed to parse entity data: ${parseError.message}`);
           return null;

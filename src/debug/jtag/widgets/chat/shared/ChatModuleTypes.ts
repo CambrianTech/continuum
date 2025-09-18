@@ -8,7 +8,7 @@
  * - Tab System Integration
  */
 
-import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 
 export interface ChatUser {
   id: string;
@@ -51,10 +51,10 @@ export interface ChatRoom {
 
 
 /**
- * Convenience methods for ChatMessage (Rust-like approach with explicit typing)
+ * Convenience methods for ChatMessageData (Rust-like approach with explicit typing)
  * These methods provide semantic operations while maintaining type safety
  */
-export interface ChatMessageMethods {
+export interface ChatMessageDataMethods {
   /** Determine if this message was sent by the current user (for positioning) */
   isFromCurrentUser(currentUserId: string): boolean;
 
@@ -95,9 +95,9 @@ export interface ChatModuleEvents {
   'user:status-changed': { userId: string; user: ChatUser; oldStatus: string; newStatus: string };
   
   // Message events
-  'message:received': { message: ChatMessage; roomId: string };
-  'message:sent': { message: ChatMessage; roomId: string };
-  'message:updated': { messageId: string; message: ChatMessage };
+  'message:received': { message: ChatMessageData; roomId: string };
+  'message:sent': { message: ChatMessageData; roomId: string };
+  'message:updated': { messageId: string; message: ChatMessageData };
   'message:deleted': { messageId: string; roomId: string };
   
   // Tab events
@@ -240,47 +240,47 @@ export function getUserStatusColor(status: ChatUser['status']): string {
 }
 
 /**
- * ChatMessage convenience methods implementation
+ * ChatMessageData convenience methods implementation
  * Rust-like approach: explicit, predictable, type-safe
  */
-export const ChatMessageHelpers = {
+export const ChatMessageDataHelpers = {
   /** Determine if this message was sent by the current user (for positioning) */
-  isFromCurrentUser(message: ChatMessage, currentUserId: string): boolean {
+  isFromCurrentUser(message: ChatMessageData, currentUserId: string): boolean {
     return message.senderId === currentUserId;
   },
 
   /** Get semantic CSS class for user positioning (current-user vs other-user) */
-  getUserPositionClass(message: ChatMessage, currentUserId: string): 'current-user' | 'other-user' {
-    return ChatMessageHelpers.isFromCurrentUser(message, currentUserId) ? 'current-user' : 'other-user';
+  getUserPositionClass(message: ChatMessageData, currentUserId: string): 'current-user' | 'other-user' {
+    return ChatMessageDataHelpers.isFromCurrentUser(message, currentUserId) ? 'current-user' : 'other-user';
   },
 
   /** Get alignment direction for message positioning */
-  getAlignment(message: ChatMessage, currentUserId: string): 'right' | 'left' {
-    return ChatMessageHelpers.isFromCurrentUser(message, currentUserId) ? 'right' : 'left';
+  getAlignment(message: ChatMessageData, currentUserId: string): 'right' | 'left' {
+    return ChatMessageDataHelpers.isFromCurrentUser(message, currentUserId) ? 'right' : 'left';
   },
 
   /** Check if message is from an AI assistant */
-  isFromAssistant(message: ChatMessage): boolean {
+  isFromAssistant(message: ChatMessageData): boolean {
     return message.metadata.source === 'bot';
   },
 
   /** Check if message is a system message */
-  isSystemMessage(message: ChatMessage): boolean {
+  isSystemMessage(message: ChatMessageData): boolean {
     return message.metadata.source === 'system';
   },
 
   /** Get display name with fallback logic */
-  getDisplayName(message: ChatMessage): string {
+  getDisplayName(message: ChatMessageData): string {
     return message.senderName || message.senderId || 'Unknown User';
   },
 
   /** Check if message has error status */
-  hasError(message: ChatMessage): boolean {
+  hasError(message: ChatMessageData): boolean {
     return message.status === 'failed';
   },
 
   /** Check if message is still being sent */
-  isPending(message: ChatMessage): boolean {
+  isPending(message: ChatMessageData): boolean {
     return message.status === 'sending';
   }
 } as const;

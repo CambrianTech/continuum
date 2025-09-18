@@ -10,7 +10,7 @@ import type { EventBridgePayload } from '../../../../daemons/events-daemon/share
 import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../shared/ChatSendMessageTypes';
 import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
-import { ChatMessage } from '../../../../domain/chat/ChatMessage';
+import { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
 import { EVENT_SCOPES } from '../../../../system/events/shared/EventSystemConstants';
 
 export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
@@ -27,15 +27,17 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
    * Execute chat message sending using base class logic
    */
   async execute(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
-    console.log(`🔥 CLAUDE-SERVER-EXECUTE-${Date.now()}: SERVER execute() called for message`);
+    console.log(`🔥 CLAUDE-SERVER-EXECUTE-${Date.now()}: SERVER execute() called for message: "${params.content}"`);
     // Call base class which handles database storage + event emission
-    return await super.execute(params);
+    const result = await super.execute(params);
+    console.log(`🔥 CLAUDE-SERVER-COMPLETE-${Date.now()}: SERVER execute() completed for message: "${params.content}"`);
+    return result;
   }
 
   /**
    * Server-specific event emission using Router's event facilities
    */
-  protected async emitMessageEvent(message: ChatMessage): Promise<void> {
+  protected async emitMessageEvent(message: ChatMessageData): Promise<void> {
     console.log(`🚨 CLAUDE-EMIT-CALLED-${Date.now()}: ChatSendMessageServerCommand.emitMessageEvent() called for ${message.messageId}`);
     console.log(`🔥 CLAUDE-FIX-${Date.now()}: SERVER-EVENT: emitMessageEvent called for message ${message.messageId}`);
 
@@ -56,7 +58,11 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
         },
         eventName: CHAT_EVENTS.MESSAGE_RECEIVED,
         data: {
-          message: message.toData()
+          eventType: 'chat:message-received',
+          roomId: message.roomId,
+          messageId: message.messageId,
+          message: message,  // Send full ChatMessage domain object
+          timestamp: new Date().toISOString()
         },
         originSessionId: message.senderId as string,
         originContextUUID: this.context.uuid,

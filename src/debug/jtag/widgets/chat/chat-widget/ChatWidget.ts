@@ -5,7 +5,7 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import type { ChatMessage, MessageReaction } from '../../../system/data/domains/ChatMessage';
+import { ChatMessageData, type MessageReaction } from '../../../system/data/domains/ChatMessage';
 import { DEFAULT_MESSAGE_METADATA, DEFAULT_MESSAGE_FORMATTING } from '../../../system/data/domains/ChatMessage';
 import { MessageId, RoomId, UserId, ISOString } from '../../../system/data/domains/CoreTypes';
 import type { SessionId } from '../../../system/data/domains/CoreTypes';
@@ -25,7 +25,7 @@ import { userIdManager } from '../../../system/shared/UserIdManager';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 export class ChatWidget extends ChatWidgetBase {
-  private messages: ChatMessage[] = [];
+  private messages: ChatMessageData[] = [];
   private currentRoom: string;
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
@@ -150,36 +150,9 @@ export class ChatWidget extends ChatWidgetBase {
       console.log("🔧 CLAUDE-CHAT-HISTORY-DEBUG:", historyResult);
 
       if (historyResult?.success && historyResult?.messages) {
-        // Convert API ChatMessage format to internal domain ChatMessage format
+        // Use ChatMessageData directly - data layer returns proper domain objects
         this.messages = historyResult.messages
-          .map((apiMessage): ChatMessage => {
-            // Convert API format to domain ChatMessage structure
-            return {
-              messageId: MessageId(apiMessage.id),
-              roomId: RoomId(apiMessage.roomId),
-              senderId: UserId(apiMessage.senderId),
-              senderName: apiMessage.senderName,
-              content: {
-                text: apiMessage.content.text,
-                attachments: apiMessage.content.attachments || [],
-                formatting: apiMessage.content.formatting || DEFAULT_MESSAGE_FORMATTING
-              },
-              status: apiMessage.status,
-              priority: 'normal',
-              timestamp: ISOString(apiMessage.timestamp),
-              reactions: (apiMessage.reactions || []) as unknown as readonly MessageReaction[],
-              metadata: {
-                ...DEFAULT_MESSAGE_METADATA,
-                ...apiMessage.metadata,
-                source: 'user'  // Default to user for now
-              },
-              id: apiMessage.id,
-              createdAt: ISOString(apiMessage.timestamp),
-              updatedAt: ISOString(apiMessage.timestamp),
-              version: 1
-            } as unknown as ChatMessage;
-          })
-          .filter((message): message is ChatMessage => !!message.content.text && message.content.text.trim().length > 0);
+          .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0);
 
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" using chat/get-messages`);
       } else if (historyResult?.success === false) {
@@ -288,47 +261,20 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Handle incoming chat messages for this room - STRICT TYPING
    */
-  private async onMessageReceived(eventData: any): Promise<void> {
+  private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
     console.log(`📨 ChatWidget: Received message for room ${this.currentRoom}:`, eventData);
     console.log(`🔧 CLAUDE-EVENT-DATA-${Date.now()}: Raw event data structure:`, JSON.stringify(eventData, null, 2));
 
-    // Extract message data - handle both direct and nested structures
-    const messageData = eventData.message || eventData;
-    const roomId = messageData.roomId || eventData.roomId;
+    if (eventData.roomId === this.currentRoom) {
+      // Use the ChatMessage domain object directly - no reconstruction needed!
+      const chatMessage = eventData.message;
 
-    console.log(`🔧 CLAUDE-MESSAGE-DATA-${Date.now()}: Extracted message data:`, JSON.stringify(messageData, null, 2));
+      console.log(`✨ ChatWidget: Using ChatMessage domain object directly:`, chatMessage);
 
-    if (roomId === this.currentRoom) {
-      // Convert to proper domain ChatMessage structure
-      const isCurrentUser = this.currentUserId && messageData.senderId === this.currentUserId;
-      const newMessage: ChatMessage = {
-        messageId: MessageId(messageData.messageId),
-        roomId: RoomId(roomId),
-        senderId: UserId(messageData.senderId),
-        senderName: messageData.senderName || messageData.senderId, // Fallback to senderId
-        content: {
-          text: messageData.content,
-          attachments: [],
-          formatting: DEFAULT_MESSAGE_FORMATTING
-        },
-        status: 'sent',
-        priority: 'normal',
-        timestamp: ISOString(messageData.timestamp),
-        reactions: [],
-        metadata: {
-          ...DEFAULT_MESSAGE_METADATA,
-          source: isCurrentUser ? 'user' : 'bot'  // Proper source classification
-        },
-        id: messageData.messageId,  // For BaseEntity compatibility
-        createdAt: ISOString(messageData.timestamp),
-        updatedAt: ISOString(messageData.timestamp),
-        version: 1
-      };
-
-      this.messages.push(newMessage);
+      this.messages.push(chatMessage);
       await this.renderWidget(); // Re-render with new message
 
-      // Real-time message added successfully
+      // Real-time message added successfully using domain object
     }
   }
 
@@ -339,8 +285,8 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoom}`);
     
     if (eventData.roomId === this.currentRoom) {
-      // Add system message for user join using proper domain types
-      const systemMessage: ChatMessage = {
+      // Add system message for user join using ChatMessageData interface
+      const systemMessage: ChatMessageData = {
         messageId: MessageId(`system_${Date.now()}`),
         roomId: RoomId(this.currentRoom),
         senderId: UserId('system'),
@@ -356,9 +302,9 @@ export class ChatWidget extends ChatWidgetBase {
         reactions: [],
         metadata: {
           ...DEFAULT_MESSAGE_METADATA,
-          source: 'system'  // Proper system message classification
+          source: 'system'
         },
-        id: `system_${Date.now()}`,  // For BaseEntity compatibility
+        id: `system_${Date.now()}`,
         createdAt: ISOString(eventData.timestamp),
         updatedAt: ISOString(eventData.timestamp),
         version: 1
@@ -376,8 +322,8 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoom}`);
     
     if (eventData.roomId === this.currentRoom) {
-      // Add system message for user leave using proper domain types
-      const systemMessage: ChatMessage = {
+      // Add system message for user leave using ChatMessageData interface
+      const systemMessage: ChatMessageData = {
         messageId: MessageId(`system_${Date.now()}`),
         roomId: RoomId(this.currentRoom),
         senderId: UserId('system'),
@@ -444,7 +390,7 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Efficiently append a single message row without re-rendering entire widget
    */
-  private appendMessageRow(message: ChatMessage): void {
+  private appendMessageRow(message: ChatMessageData): void {
     const messagesContainer = this.shadowRoot.querySelector('#messages');
     if (!messagesContainer) {
       console.warn('⚠️ ChatWidget: No messages container found for row append');

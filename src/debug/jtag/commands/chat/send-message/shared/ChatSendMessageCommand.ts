@@ -13,9 +13,9 @@ import {
 } from './ChatSendMessageTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 import type { CreateMessageData } from '../../../../system/data/domains/ChatMessage';
-import { ChatMessage } from '../../../../domain/chat/ChatMessage';
+import { ChatMessageData, type MessagePriority, MESSAGE_STATUS } from '../../../../system/data/domains/ChatMessage';
 import { processMessageFormatting } from '../../../../system/data/domains/ChatMessage';
-import { UserId, RoomId, MessageId, type ISOString } from '../../../../system/data/domains/CoreTypes';
+import { UserId, RoomId, MessageId, ISOString } from '../../../../system/data/domains/CoreTypes';
 import { userIdManager } from '../../../../system/shared/UserIdManager';
 
 export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, ChatSendMessageResult> {
@@ -77,11 +77,8 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
         }
       };
 
-      // 2. Store message using DataService - let errors bubble up, no fallbacks
-      const storedMessageData = await this.storeMessage(messageData);
-
-      // 3. Create proper ChatMessage domain object from stored data - adapter handles conversion
-      const storedMessage = ChatMessage.fromData(storedMessageData);
+      // 2. Store message using data/create command - returns ChatMessage directly
+      const storedMessage = await this.storeMessage(messageData);
 
       // 4. Emit event for widgets and other listeners (server-specific)
       await this.emitMessageEvent(storedMessage);
@@ -105,20 +102,77 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   }
 
   /**
-   * Store message using data/create command - proper DataService approach
+   * Store message using data/create command - now returns actual ChatMessage
    */
-  private async storeMessage(messageData: CreateMessageData): Promise<any> {
-    const messageId = generateUUID();
-    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: About to store message ${messageId} to database`);
+  private async storeMessage(messageData: CreateMessageData): Promise<ChatMessageData> {
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: About to store message to database`);
 
-    const createParams: DataCreateParams = {
+    // Use CreateMessageData - let the data layer handle BaseEntity fields
+    const messageId = MessageId(generateUUID());
+
+    const createData: CreateMessageData = {
+      roomId: messageData.roomId,
+      senderId: messageData.senderId,
+      content: {
+        text: messageData.content.text,
+        attachments: messageData.content.attachments || [],
+        formatting: {
+          markdown: messageData.content.formatting?.markdown || false,
+          mentions: messageData.content.formatting?.mentions || [],
+          hashtags: messageData.content.formatting?.hashtags || [],
+          links: messageData.content.formatting?.links || [],
+          codeBlocks: messageData.content.formatting?.codeBlocks || []
+        }
+      },
+      priority: 'normal' as MessagePriority, // Default priority
+      mentions: messageData.content.formatting?.mentions,
+      replyToId: messageData.replyToId as MessageId | undefined,
+      metadata: {
+        source: messageData.metadata?.source || 'user',
+        deviceType: messageData.metadata?.deviceType,
+        clientVersion: messageData.metadata?.clientVersion,
+        editHistory: messageData.metadata?.editHistory,
+        deliveryReceipts: messageData.metadata?.deliveryReceipts
+      }
+    };
+
+    // Clean domain data - adapter handles BaseEntity fields + timestamp conversion
+    const domainData = {
+      messageId,
+      senderName: `User-${messageData.senderId.substring(0, 8)}`,
+      status: MESSAGE_STATUS.SENT,
+      timestamp: new Date().toISOString() as ISOString, // Domain requires ISOString
+      reactions: [],
+      ...createData,
+      priority: createData.priority || 'normal', // Ensure priority is always set
+      content: {
+        ...createData.content,
+        attachments: createData.content.attachments || [], // Ensure attachments is always defined
+        formatting: {
+          markdown: createData.content.formatting?.markdown || false,
+          mentions: createData.content.formatting?.mentions || [],
+          hashtags: createData.content.formatting?.hashtags || [],
+          links: createData.content.formatting?.links || [],
+          codeBlocks: createData.content.formatting?.codeBlocks || []
+        }
+      },
+      metadata: {
+        source: createData.metadata?.source || 'user',
+        deviceType: createData.metadata?.deviceType,
+        clientVersion: createData.metadata?.clientVersion,
+        editHistory: createData.metadata?.editHistory,
+        deliveryReceipts: createData.metadata?.deliveryReceipts
+      }
+    };
+
+    const createParams: DataCreateParams<ChatMessageData> = {
       collection: 'chat_messages',
-      data: messageData,
+      data: domainData, // Properly typed as Omit<ChatMessageData, keyof BaseEntity>
       context: this.context,
       sessionId: messageData.senderId
     };
 
-    const result = await this.remoteExecute<DataCreateParams, DataCreateResult>(
+    const result = await this.remoteExecute<DataCreateParams<ChatMessageData>, DataCreateResult<ChatMessageData>>(
       createParams,
       'data/create'
     );
@@ -131,12 +185,8 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
 
     console.log(`💾 Stored message ${messageId} in global database`);
 
-    // Return the created message with ID
-    return {
-      id: messageId,
-      ...messageData,
-      messageId: messageId
-    };
+    // Return the stored ChatMessageData - adapter filled in BaseEntity fields
+    return result.data!;
   }
 
   /**
@@ -158,7 +208,7 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   /**
    * Emit message event for widgets and listeners (abstract - implemented per environment)
    */
-  protected abstract emitMessageEvent(message: ChatMessage): Promise<void>;
+  protected abstract emitMessageEvent(message: ChatMessageData): Promise<void>;
 
   /**
    * Get environment label for logging

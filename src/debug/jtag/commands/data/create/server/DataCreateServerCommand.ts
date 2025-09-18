@@ -11,6 +11,7 @@ import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import type { DataDaemon, DataOperationContext } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { DATABASE_PATHS } from '../../../../system/data/config/DatabaseConfig';
 
 export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataCreateResult> {
 
@@ -25,9 +26,9 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
       const id = params.id ?? generateUUID();
       const now = new Date().toISOString();
 
-      // Use SQLite database directly for now
+      // Use SQLite database directly for now - with centralized config
       const sqlite3 = require('sqlite3').verbose();
-      const db = new sqlite3.Database('.continuum/database/continuum.db');
+      const db = new sqlite3.Database(DATABASE_PATHS.SQLITE);
 
       await new Promise<void>((resolve, reject) => {
         const sql = `INSERT INTO entities (id, collection, data, created_at, updated_at, version, search_content)

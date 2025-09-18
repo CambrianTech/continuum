@@ -6,6 +6,7 @@ import { GetMessagesCommand } from '../shared/GetMessagesCommand';
 import { type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { GetMessagesParams, MessageData } from '../shared/GetMessagesTypes';
+import type { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
 import type { DataListParams, DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS, DOMAIN_FIELDS } from '../../../../system/data/core/FieldMapping';
 
@@ -51,32 +52,40 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
     limit: number
   ): Promise<MessageData[]> {
     try {
-      // Use data/list as pure generic storage abstraction with proper chat-specific ordering
+      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: GetMessages called with roomId=${params.roomId}, limit=${limit}`);
+
+      // Use data/list with elegant domain conversion
       const dataListParams: DataListParams = {
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId: params.roomId },
         orderBy: [{ field: DOMAIN_FIELDS.TIMESTAMP, direction: 'desc' }], // Get newest first from DB
         limit: limit * 2, // Buffer for filtering
+        convertToDomain: true, // ✨ Elegant domain conversion in data layer
         context: this.context,
         sessionId: params.sessionId
       };
 
-      const result = await this.remoteExecute(dataListParams, 'data/list');
-      const typedResult = result as DataListResult<MessageData>;
+      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: Calling data/list with params:`, JSON.stringify(dataListParams, null, 2));
+      const typedResult = await this.remoteExecute<DataListParams, DataListResult<ChatMessageData>>(
+        dataListParams,
+        'data/list'
+      );
+      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: data/list result:`, JSON.stringify(typedResult, null, 2));
 
       if (!typedResult.success || !typedResult.items) {
         console.warn(`📚 Server: No messages found for room ${params.roomId}`);
+        console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: Result success=${typedResult.success}, items length=${typedResult.items?.length}`);
         return [];
       }
 
-      // Return storage data as-is - adapter handles conversion
-      const messages = typedResult.items
-        .slice(0, limit)
-        .reverse();
+      // Data layer already converted to domain objects - just slice and reverse
+      const domainMessages = typedResult.items.slice(0, limit).reverse();
 
-      console.log(`📚 Server: Retrieved ${messages.length} messages for room ${params.roomId}`);
-      console.log(`🔧 CLAUDE-TIMESTAMP-DEBUG: First message timestamp: ${messages[0]?.timestamp}`);
-      return messages;
+      console.log(`📚 Server: Retrieved ${domainMessages.length} messages for room ${params.roomId}`);
+      console.log(`🔧 CLAUDE-TIMESTAMP-DEBUG: First message timestamp: ${domainMessages[0]?.timestamp}`);
+
+      // Return domain data directly - no .toData() method since ChatMessageData is interface
+      return domainMessages as MessageData[];
 
     } catch (error) {
       console.error(`❌ Server: Failed to retrieve messages:`, error);

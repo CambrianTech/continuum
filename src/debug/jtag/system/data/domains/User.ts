@@ -75,7 +75,7 @@ export interface UserProfile {
 /**
  * User Entity - Core user/citizen data
  */
-export interface User extends BaseEntity {
+export interface UserData extends BaseEntity {
   readonly userId: UserId;
   readonly citizenId?: CitizenId;        // Links to citizen system
   readonly personaId?: PersonaId;        // Links to persona/LoRA system
@@ -238,15 +238,15 @@ export function mergeUserPreferences(base: UserPreferences, override?: Partial<U
   };
 }
 
-export function isUserOnline(user: User): boolean {
+export function isUserOnline(user: UserData): boolean {
   return user.status === 'online' && user.sessionsActive.length > 0;
 }
 
-export function canUserPerformAction(user: User, action: keyof UserCapabilities): boolean {
+export function canUserPerformAction(user: UserData, action: keyof UserCapabilities): boolean {
   return user.capabilities[action];
 }
 
-export function getUserDisplayInfo(user: User): { name: string; type: string; status: string } {
+export function getUserDisplayInfo(user: UserData): { name: string; type: string; status: string } {
   return {
     name: user.profile.displayName,
     type: user.type,

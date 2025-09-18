@@ -83,15 +83,17 @@ const currentSessionId = chatWidget.currentSessionId;
 // Count messages by content to detect duplicates  
 const messageCounts = {};
 messages.forEach(msg => {
-  messageCounts[msg.content] = (messageCounts[msg.content] || 0) + 1;
+  const content = typeof msg.content === 'string' ? msg.content : msg.content?.text || '';
+  messageCounts[content] = (messageCounts[content] || 0) + 1;
 });
 
 // Find our test messages
-const testMessages = messages.filter(msg => 
-  msg.content.includes('FIRST MESSAGE') || 
-  msg.content.includes('SECOND MESSAGE') || 
-  msg.content.includes('THIRD MESSAGE')
-);
+const testMessages = messages.filter(msg => {
+  const content = typeof msg.content === 'string' ? msg.content : msg.content?.text || '';
+  return content.includes('FIRST MESSAGE') ||
+         content.includes('SECOND MESSAGE') ||
+         content.includes('THIRD MESSAGE');
+});
 
 const currentUserMessages = messages.filter(msg => 
   currentSessionId && msg.senderId === currentSessionId
@@ -113,7 +115,10 @@ console.log('🔍 DOUBLING PATTERN:');
 // Check each test message
 const testContents = ['FIRST MESSAGE', 'SECOND MESSAGE', 'THIRD MESSAGE'];
 testContents.forEach((content, i) => {
-  const matchingMsgs = messages.filter(msg => msg.content.includes(content));
+  const matchingMsgs = messages.filter(msg => {
+    const msgContent = typeof msg.content === 'string' ? msg.content : msg.content?.text || '';
+    return msgContent.includes(content);
+  });
   console.log(\`Message \${i+1}: \"\${content}...\" - appears \${matchingMsgs.length} times \${matchingMsgs.length > 1 ? '⚠️ DOUBLED' : '✅'}\`);
   
   if (matchingMsgs.length > 0) {
