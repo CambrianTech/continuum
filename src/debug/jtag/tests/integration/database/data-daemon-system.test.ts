@@ -8,9 +8,9 @@
  * 4. Identify inconsistencies and issues
  */
 
-import { DataDaemon } from './daemons/data-daemon/shared/DataDaemon';
-import type { DataOperationContext } from './daemons/data-daemon/shared/DataDaemon';
-import { generateUUID } from './system/core/types/CrossPlatformUUID';
+import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import type { DataOperationContext } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 

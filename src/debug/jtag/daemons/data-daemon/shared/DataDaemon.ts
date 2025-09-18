@@ -66,13 +66,13 @@ export class DataDaemon {
     this.config = config;
     this.factory = factory || new DefaultStorageAdapterFactory();
     
-    // Create adapter via factory
+    // Create adapter via factory - use backend type, not strategy
     const adapterConfig: StorageAdapterConfig = {
-      type: this.config.strategy as any,
+      type: this.config.backend as any,
       namespace: this.config.namespace,
       options: this.config.options
     };
-    
+
     this.adapter = this.factory.createAdapter(adapterConfig);
   }
   

@@ -10,12 +10,12 @@
  * - Backwards compatibility with existing JSON files
  */
 
-import { DataServiceFactory, DataServiceMode } from './system/data/services/DataServiceFactory';
-import type { User, CreateUserData } from './system/data/domains/User';
-import type { ChatMessage, CreateMessageData } from './system/data/domains/ChatMessage';
-import { UserId, SessionId, RoomId, MessageId } from './system/data/domains/CoreTypes';
-import { validateUserData } from './system/data/domains/User';
-import { validateMessageData, processMessageFormatting } from './system/data/domains/ChatMessage';
+import { DataServiceFactory, DataServiceMode } from '../../../system/data/services/DataServiceFactory';
+import type { User, CreateUserData } from '../../../system/data/domains/User';
+import type { ChatMessage, CreateMessageData } from '../../../system/data/domains/ChatMessage';
+import { UserId, SessionId, RoomId, MessageId } from '../../../system/data/domains/CoreTypes';
+import { validateUserData } from '../../../system/data/domains/User';
+import { validateMessageData, processMessageFormatting } from '../../../system/data/domains/ChatMessage';
 
 interface TestResults {
   passed: number;

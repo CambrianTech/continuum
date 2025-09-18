@@ -7,6 +7,7 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import type { BaseUser } from '../../../api/types/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
 import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
 
 export class UserListWidget extends ChatWidgetBase {
@@ -37,21 +38,23 @@ export class UserListWidget extends ChatWidgetBase {
 
   private async loadUsersFromDatabase(): Promise<void> {
     const client = await JTAGClient.sharedInstance;
-    const result = await this.executeCommand<DataListParams, DataListResult<BaseUser>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<DataRecord<BaseUser>>>('data/list', {
       context: client.context,
       sessionId: client.sessionId,
       collection: COLLECTIONS.USERS,
       orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
       limit: 100
     });
-    
+
     if (!result?.success || !result.items?.length) {
       console.error('❌ UserListWidget: No users found in database');
       throw new Error('No users found in database - seed data first');
     }
-    
-    // Extract user data with strict typing
-    this.users = result.items.filter((user: BaseUser) => user && user.id);
+
+    // Extract user data from DataRecord<BaseUser> with proper typing
+    this.users = result.items
+      .filter((record: DataRecord<BaseUser>) => record?.data?.id)
+      .map((record: DataRecord<BaseUser>) => record.data);
     console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
   }
 

@@ -22,6 +22,13 @@ const DEFAULT_CONFIG = {
   }
 } as const;
 
+// Collection constants
+const COLLECTIONS = {
+  USERS: 'users',
+  ROOMS: 'rooms',
+  MESSAGES: 'messages'
+} as const;
+
 export class DataListServerCommand<T> extends CommandBase<DataListParams, DataListResult<T>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -29,86 +36,82 @@ export class DataListServerCommand<T> extends CommandBase<DataListParams, DataLi
   }
 
   async execute(params: DataListParams): Promise<DataListResult<T>> {
-    console.debug(`🗄️ DATA SERVER: Listing ${params.collection} from global database`);
-    
-    try {
-      // Use global database path following ArtifactsDaemon database storage pattern
-      // Database storage type uses: .continuum/database/{relativePath}
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const collectionDir = path.join(continuumPath, 'database', params.collection);
-      
-      try {
-        const files = await fs.readdir(collectionDir);
-        const items = [];
-        
-        for (const file of files) {
-          if (file.endsWith('.json')) {
-            try {
-              const data = await fs.readFile(path.join(collectionDir, file), 'utf-8');
-              const item = JSON.parse(data);
-              
-              // Apply filter if provided
-              if (params.filter) {
-                const filterMatches = Object.entries(params.filter).every(([key, value]) => {
-                  return item.data && item.data[key] === value;
-                });
-                if (filterMatches) {
-                  items.push(item.data);
-                }
-              } else {
-                items.push(item.data);
-              }
-              
-            } catch (error) {
-              console.warn(`Failed to read ${file}:`, error);
-            }
-          }
-        }
+    console.debug(`🗄️ DATA SERVER: Listing ${params.collection}`);
 
-        if (params.orderBy && items.length > 1) {
-            items.sort((a, b) => {
-              for (const { field, direction } of params.orderBy!) {
-                if (a[field] < b[field]) return direction === 'asc' ? -1 : 1;
-                if (a[field] > b[field]) return direction === 'asc' ? 1 : -1;
-              }
-              return 0;
-            });
-          }
-        
-        // Safe limit calculation with defensive guards
-        const configLimit = (this.context.config as any)?.database?.queryLimit;
-        const requestedLimit = params.limit;
-        
-        // Use Math.max to ensure we never get 0 or negative values
-        const safeLimit = Math.max(
-          DEFAULT_CONFIG.database.minLimit,
-          Math.min(
-            requestedLimit || configLimit || DEFAULT_CONFIG.database.queryLimit,
-            DEFAULT_CONFIG.database.maxBatchSize
-          )
-        );
-        
-        const limitedItems = items.slice(0, safeLimit);
-        
-        console.debug(`✅ DATA SERVER: Listed ${limitedItems.length} items from ${params.collection} (global database: ${collectionDir})`);
-        
-        return createDataListResultFromParams(params, {
-          success: true,
-          items: limitedItems,
-          count: limitedItems.length
-        });
-        
-      } catch (error: any) {
-        console.debug(`ℹ️ DATA SERVER: Collection ${params.collection} not found in global database`);
+    try {
+      // Use global database path following DataCreateServerCommand pattern
+      const continuumPath = WorkingDirConfig.getContinuumPath();
+      const databasePath = path.join(continuumPath, 'database');
+      const collectionPath = path.join(databasePath, params.collection);
+
+      // Check if collection directory exists
+      try {
+        await fs.access(collectionPath);
+      } catch {
+        console.debug(`ℹ️ DATA SERVER: Collection ${params.collection} not found`);
         return createDataListResultFromParams(params, {
           success: true,
           items: [],
           count: 0
         });
       }
-      
+
+      // Read all files from the collection directory
+      const files = await fs.readdir(collectionPath);
+      const jsonFiles = files.filter(file => file.endsWith('.json'));
+
+      const items: T[] = [];
+      const limit = Math.min(params.limit || DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
+
+      // Read and parse JSON files
+      for (const file of jsonFiles.slice(0, limit)) {
+        try {
+          const filePath = path.join(collectionPath, file);
+          const content = await fs.readFile(filePath, 'utf-8');
+          const data = JSON.parse(content);
+          items.push(data);
+        } catch (error) {
+          console.warn(`⚠️ DATA SERVER: Failed to read ${file}:`, error);
+        }
+      }
+
+      // Apply simple filtering if provided
+      let filteredItems = items;
+      if (params.filter && Object.keys(params.filter).length > 0) {
+        filteredItems = items.filter(item => {
+          for (const [key, value] of Object.entries(params.filter!)) {
+            if ((item as any)[key] !== value) {
+              return false;
+            }
+          }
+          return true;
+        });
+      }
+
+      // Apply sorting if provided
+      if (params.orderBy && params.orderBy.length > 0) {
+        filteredItems.sort((a, b) => {
+          for (const sort of params.orderBy!) {
+            const aValue = (a as any)[sort.field];
+            const bValue = (b as any)[sort.field];
+
+            if (aValue < bValue) return sort.direction === 'asc' ? -1 : 1;
+            if (aValue > bValue) return sort.direction === 'asc' ? 1 : -1;
+          }
+          return 0;
+        });
+      }
+
+      console.debug(`✅ DATA SERVER: Listed ${filteredItems.length}/${items.length} items from ${params.collection}`);
+
+      return createDataListResultFromParams(params, {
+        success: true,
+        items: filteredItems,
+        count: filteredItems.length
+      });
+
     } catch (error: any) {
-      console.error(`❌ DATA SERVER: List failed:`, error.message);
+      console.error(`❌ DATA SERVER: List operation failed:`, error.message);
       return createDataListResultFromParams(params, {
         success: false,
         items: [],
