@@ -41,48 +41,77 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       console.log(`🔧 CLAUDE-FIX-${Date.now()}: Retrieved ${typedResult.items.length} total messages, filtering for room ${params.roomId}`);
 
       // CRITICAL FIX: Transform ALL records first, then filter by room, THEN sort chronologically
-      const allTransformedMessages: MessageData[] = typedResult.items.map((item: unknown) => {
-        // Type guard to ensure item is a record-like object
-        if (!item || typeof item !== 'object') {
-          console.warn(`🔧 CLAUDE-FIX-${Date.now()}: Invalid item structure:`, item);
-          return null;
-        }
-
-        const itemRecord = item as Record<string, unknown>;
-        // Extract data from the database record structure - handle JSON string parsing
-        let data: Record<string, unknown>;
-        if (typeof itemRecord.data === 'string') {
-          try {
-            data = JSON.parse(itemRecord.data) as Record<string, unknown>;
-          } catch (error) {
-            console.warn(`🔧 CLAUDE-FIX-${Date.now()}: Failed to parse JSON data for item ${itemRecord.id}:`, error);
-            data = itemRecord; // Fallback to item itself
+      const transformedMessages: ChatMessage[] = typedResult.items
+        .map((item: unknown): ChatMessage | null => {
+          // Type guard to ensure item is a record-like object
+          if (!item || typeof item !== 'object') {
+            console.warn(`🔧 CLAUDE-FIX-${Date.now()}: Invalid item structure:`, item);
+            return null;
           }
-        } else {
-          data = (itemRecord.data as Record<string, unknown>) || itemRecord;
-        }
 
-        return {
-          id: (data.messageId || data.id || itemRecord.id || `msg_${Date.now()}`) as string,
-          roomId: (data.roomId || params.roomId) as string,
-          senderId: (data.senderId || data.userId || 'unknown') as string,
-          senderName: (data.senderName || data.userName || 'Unknown User') as string,
-          content: {
-            text: (data.content || data.message || data.text || '[MISSING CONTENT]') as string,
-            attachments: (data.attachments || []) as unknown[],
-            formatting: (data.formatting || { markdown: false }) as Record<string, unknown>
-          },
-          timestamp: (data.timestamp || new Date().toISOString()) as string,
-          replyToId: data.replyToId as string | undefined,
-          mentions: (data.mentions || []) as unknown[],
-          reactions: (data.reactions || []) as unknown[],
-          status: (data.status || 'sent') as string,
-          metadata: (data.metadata || itemRecord.metadata || {}) as Record<string, unknown>
-        };
-      }).filter((message): message is MessageData => message !== null);
+          const itemRecord = item as Record<string, unknown>;
+          // Extract data from the database record structure - handle JSON string parsing
+          let data: Record<string, unknown>;
+          if (typeof itemRecord.data === 'string') {
+            try {
+              data = JSON.parse(itemRecord.data) as Record<string, unknown>;
+            } catch (error) {
+              console.error(`🔧 REAL-DATA-${Date.now()}: JSON parse failed for item ${itemRecord.id}. Raw itemRecord:`, JSON.stringify(itemRecord, null, 2));
+              data = itemRecord; // Fallback to item itself
+            }
+          } else {
+            data = (itemRecord.data as Record<string, unknown>) || itemRecord;
+          }
+
+          // DEBUG: Log actual data structure to identify source of missing content
+          if (!data.content && !data.message && !data.text) {
+            console.error(`🔧 REAL-DATA-${Date.now()}: No text content found in item ${itemRecord.id}. Full data structure:`, JSON.stringify(data, null, 2));
+            console.error(`🔧 REAL-DATA-${Date.now()}: Original itemRecord:`, JSON.stringify(itemRecord, null, 2));
+          }
+
+          // Parse attachments properly for ChatMessage interface
+          const attachments = data.attachments as any[];
+          const parsedAttachments = Array.isArray(attachments) && attachments.length > 0
+            ? attachments.map(att => ({
+                type: (att.type || 'file') as 'file' | 'image' | 'link',
+                url: att.url as string,
+                name: att.name as string,
+                metadata: att.metadata as Record<string, any> | undefined
+              }))
+            : undefined;
+
+          // Parse reactions properly
+          const reactions = data.reactions as any[];
+          const parsedReactions = Array.isArray(reactions)
+            ? reactions.map(r => ({
+                emoji: r.emoji as string,
+                users: r.users as string[],
+                count: r.count as number
+              }))
+            : [];
+
+          return {
+            id: (data.messageId || data.id || itemRecord.id || `msg_${Date.now()}`) as string,
+            roomId: (data.roomId || params.roomId) as string,
+            senderId: (data.senderId || data.userId || 'unknown') as string,
+            senderName: (data.senderName || data.userName || 'Unknown User') as string,
+            content: {
+              text: (data.content || data.message || data.text) as string,
+              attachments: parsedAttachments,
+              formatting: (data.formatting || { markdown: false }) as any
+            },
+            timestamp: (data.timestamp || new Date().toISOString()) as string,
+            replyToId: data.replyToId as string | undefined,
+            mentions: (data.mentions || []) as string[],
+            reactions: parsedReactions,
+            status: (data.status || 'sent') as 'sending' | 'sent' | 'delivered' | 'failed',
+            metadata: (data.metadata || itemRecord.metadata || {}) as Record<string, any>
+          };
+        })
+        .filter((message): message is ChatMessage => message !== null);
 
       // STEP 1: Filter by room FIRST (before chronological sorting)
-      const roomMessages = allTransformedMessages.filter((message: MessageData) => {
+      const roomMessages = transformedMessages.filter((message: ChatMessage) => {
         const matches = message.roomId === params.roomId;
         if (matches) {
           console.log(`🔧 CLAUDE-FIX-${Date.now()}: Found message ${message.id} for room ${params.roomId}: "${message.content.text}"`);
@@ -91,7 +120,7 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       });
 
       // STEP 2: Sort room messages DESC (newest first) for selection
-      roomMessages.sort((a, b) => {
+      roomMessages.sort((a: ChatMessage, b: ChatMessage) => {
         const aTime = new Date(a.timestamp).getTime();
         const bTime = new Date(b.timestamp).getTime();
         return bTime - aTime; // DESC - newest first
@@ -101,7 +130,7 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       const recentRoomMessages = roomMessages.slice(0, limit);
 
       // STEP 4: Sort those N messages ASC (oldest first) for display
-      recentRoomMessages.sort((a, b) => {
+      recentRoomMessages.sort((a: ChatMessage, b: ChatMessage) => {
         const aTime = new Date(a.timestamp).getTime();
         const bTime = new Date(b.timestamp).getTime();
         return aTime - bTime; // ASC - oldest first, recent at bottom
