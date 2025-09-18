@@ -12,6 +12,7 @@
 
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { StorageQuery } from '../../daemons/data-daemon/shared/DataStorageAdapter';
+import type { UserCitizenType } from './BaseUser';
 
 /**
  * Query conditions that work across all adapter types
@@ -374,7 +375,7 @@ export class AdapterAwareQueryBuilder {
     };
   }
 
-  static queryUsersByType(citizenType: 'human' | 'ai', aiType?: 'agent' | 'persona'): UniversalQueryOptions {
+  static queryUsersByType(citizenType: UserCitizenType, aiType?: 'agent' | 'persona'): UniversalQueryOptions {
     const conditions: UniversalQueryConditions = {
       equals: { citizenType }
     };

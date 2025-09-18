@@ -15,10 +15,11 @@
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { DataDaemon, DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
 import type { StorageResult, StorageQuery } from '../../daemons/data-daemon/shared/DataStorageAdapter';
-import { BaseUser } from './BaseUser';
+import { BaseUser, type UserCitizenType } from './BaseUser';
 import { HumanUser, type HumanUserData } from './HumanUser';
 import { AgentUser, type AgentUserData } from './AgentUser';
 import { PersonaUser, type PersonaUserData } from './PersonaUser';
+import { SystemUser, type SystemUserData } from './SystemUser';
 import type { AIUserData } from './AIUser';
 import { AdapterAwareQueryBuilder, type UniversalQueryOptions, type AdapterType } from './AdapterAwareQueryBuilder';
 import type {
@@ -184,7 +185,7 @@ export class UserRepository {
    * Find users by type - Uses adapter-aware query builder
    */
   async findByType<T extends BaseUser>(
-    citizenType: 'human' | 'ai',
+    citizenType: UserCitizenType,
     context: DataOperationContext,
     aiType?: 'agent' | 'persona'
   ): Promise<StorageResult<T[]>> {
@@ -431,6 +432,15 @@ export class UserRepository {
       } else {
         throw new Error(`Unknown AI type: ${aiUserDataWithRelationships.aiType}`);
       }
+    } else if (userData.citizenType === 'system') {
+      // Add missing properties for SystemUser
+      const systemData: SystemUserData = {
+        ...convertedData,
+        citizenType: 'system' as const,
+        systemRole: 'general',
+        autoMessageTypes: ['welcome', 'instructions']
+      };
+      return new SystemUser(systemData);
     }
 
     throw new Error(`Unknown citizen type: ${userData.citizenType}`);

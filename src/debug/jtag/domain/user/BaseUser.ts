@@ -8,10 +8,10 @@
 import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
 
 /**
- * User Citizen Types - Only actual entities, NOT system concepts
- * System messages/events are handled separately via MessageMetadata.source
+ * User Citizen Types - Actual entities in the system
+ * System users handle automated system messages, instructions, and announcements
  */
-export type UserCitizenType = 'human' | 'ai';
+export type UserCitizenType = 'human' | 'ai' | 'system';
 
 /**
  * Core User Data - Shared across all citizen types
@@ -99,6 +99,10 @@ export abstract class BaseUser implements BaseUserData {
     return this.citizenType === 'ai';
   }
 
+  isSystem(): this is SystemUser {
+    return this.citizenType === 'system';
+  }
+
   /**
    * Data serialization - For storage and transport
    */
@@ -126,4 +130,8 @@ export interface HumanUser extends BaseUser {
 
 export interface AIUser extends BaseUser {
   readonly citizenType: 'ai';
+}
+
+export interface SystemUser extends BaseUser {
+  readonly citizenType: 'system';
 }
