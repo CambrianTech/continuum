@@ -461,15 +461,27 @@ export abstract class BaseWidget extends HTMLElement {
       // Execute command through the global JTAG system - gets wrapped response
       const wrappedResult = await client.commands[command](params) as CommandResponse;
       console.log(`🔧 executeCommand DEBUG: Raw result:`, typeof wrappedResult, wrappedResult);
+      console.log(`🔧 executeCommand DEBUG: wrappedResult keys:`, Object.keys(wrappedResult));
 
       if (!wrappedResult.success) {
         const commandError = wrappedResult as CommandErrorResponse;
         throw new Error(commandError.error ?? `Command ${command} failed without error message`);
       }
 
+      // Type-safe access to commandResult for success responses
+      const successResult = wrappedResult as CommandSuccessResponse;
+      console.log(`🔧 executeCommand DEBUG: successResult.commandResult:`, successResult.commandResult);
+
       // Extract the actual command result from the wrapped response
-      const finalResult = (wrappedResult as CommandSuccessResponse).commandResult as R;
+      const finalResult = successResult.commandResult as R;
       console.log(`🔧 executeCommand DEBUG: Final result:`, typeof finalResult, finalResult);
+
+      // CRITICAL DEBUG: Check if commandResult is missing and use direct result
+      if (!finalResult && wrappedResult.success) {
+        console.log(`🔧 CLAUDE-WIDGET-FIX-${Date.now()}: commandResult missing, using direct result`);
+        return wrappedResult as unknown as R;
+      }
+
       return finalResult;
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: JTAG operation ${command} failed:`, error);

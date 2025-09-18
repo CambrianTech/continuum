@@ -24,7 +24,7 @@ import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataDaemon, DataOperationContext } from '../../data-daemon/shared/DataDaemon';
 import type { StorageResult } from '../../data-daemon/shared/DataStorageAdapter';
 import { UserRepository, HumanUserRepository, AgentUserRepository, PersonaUserRepository } from '../../../domain/user/UserRepository';
-import type { BaseUser } from '../../../domain/user/BaseUser';
+import type { BaseUser, UserCitizenType } from '../../../domain/user/BaseUser';
 import type { HumanUser } from '../../../domain/user/HumanUser';
 import type { AgentUser } from '../../../domain/user/AgentUser';
 import type { PersonaUser } from '../../../domain/user/PersonaUser';
@@ -329,7 +329,7 @@ export class UserDaemon extends DaemonBase {
         return await this.userRepository.findById(userId, context);
     }
 
-    async findUsersByType(citizenType: 'human' | 'ai', context: DataOperationContext, aiType?: 'agent' | 'persona'): Promise<StorageResult<BaseUser[]>> {
+    async findUsersByType(citizenType: UserCitizenType, context: DataOperationContext, aiType?: 'agent' | 'persona'): Promise<StorageResult<BaseUser[]>> {
         return await this.userRepository.findByType(citizenType, context, aiType);
     }
 

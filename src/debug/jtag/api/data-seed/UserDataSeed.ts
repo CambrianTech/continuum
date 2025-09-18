@@ -8,6 +8,7 @@
 import { HumanUser, type HumanUserData } from '../../domain/user/HumanUser';
 import { AgentUser, type AgentUserData } from '../../domain/user/AgentUser';
 import { PersonaUser, type PersonaUserData } from '../../domain/user/PersonaUser';
+import { SystemUser } from '../../domain/user/SystemUser';
 import { BaseUser } from '../../domain/user/BaseUser';
 import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { BaseUserDataWithRelationships } from '../../domain/user/UserRelationships';
@@ -207,13 +208,26 @@ export class UserDataSeed {
     };
     const autoRoute = new AgentUser(autoRouteAgentData);
 
+    // System Users - For automated messages and announcements
+    const welcomeBot = SystemUser.createWelcomeBot({
+      displayName: 'Welcome Bot',
+      sessionId: generateUUID()
+    });
+
+    const helpBot = SystemUser.createInstructionBot({
+      displayName: 'Help Assistant',
+      sessionId: generateUUID()
+    });
+
     const users = [
       humanUser,
       claudeUser,
       generalAI,
       codeAI,
       plannerAI,
-      autoRoute
+      autoRoute,
+      welcomeBot,
+      helpBot
     ] as const;
 
     return {
@@ -233,7 +247,7 @@ export class UserDataSeed {
     if (!user.displayName || user.displayName.trim().length === 0) {
       throw new Error(`User ${user.userId} missing required displayName`);
     }
-    if (!user.citizenType || !['human', 'ai'].includes(user.citizenType)) {
+    if (!user.citizenType || !['human', 'ai', 'system'].includes(user.citizenType)) {
       throw new Error(`User ${user.userId} has invalid citizenType: ${user.citizenType}`);
     }
   }

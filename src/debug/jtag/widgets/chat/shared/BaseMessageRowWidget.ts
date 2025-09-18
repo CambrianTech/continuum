@@ -309,9 +309,10 @@ export class MessageRowWidgetFactory {
     let contentType = 'text'; // Default
     
     // Smart detection based on content analysis
-    if (message.content.text.includes('http') &&
-        (message.content.text.includes('.jpg') || message.content.text.includes('.png') ||
-         message.content.text.includes('.gif') || message.content.text.includes('.webp'))) {
+    const messageText = message.content?.text || '';
+    if (messageText.includes('http') &&
+        (messageText.includes('.jpg') || messageText.includes('.png') ||
+         messageText.includes('.gif') || messageText.includes('.webp'))) {
       contentType = 'image';
     }
     // Future: Add more intelligent detection

@@ -6,7 +6,7 @@
  */
 
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import type { BaseUser } from './BaseUser';
+import type { BaseUser, UserCitizenType } from './BaseUser';
 import type { BaseEntity } from '../../orm/shared/BaseORM';
 
 // ============================================================================
@@ -210,7 +210,7 @@ export interface BaseUserDataWithRelationships {
   readonly userId: UUID;
   readonly sessionId: UUID;
   readonly displayName: string;
-  readonly citizenType: 'human' | 'ai';
+  readonly citizenType: UserCitizenType;
   readonly capabilities: readonly string[];
   readonly createdAt: Date;
   readonly lastActiveAt: string;

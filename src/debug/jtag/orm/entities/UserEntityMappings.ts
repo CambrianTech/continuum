@@ -125,7 +125,7 @@ export const BaseUserEntityMetadata: EntityMetadata = {
         {
             type: 'check',
             columns: ['citizenType'],
-            condition: "citizenType IN ('human', 'ai')"
+            condition: "citizenType IN ('human', 'ai', 'system')"
         },
         {
             type: 'check',

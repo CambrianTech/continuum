@@ -5,13 +5,14 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessage, MessageReaction } from '../../../system/data/domains/ChatMessage';
 import { DEFAULT_MESSAGE_METADATA, DEFAULT_MESSAGE_FORMATTING } from '../../../system/data/domains/ChatMessage';
 import { MessageId, RoomId, UserId, ISOString } from '../../../system/data/domains/CoreTypes';
 import type { SessionId } from '../../../system/data/domains/CoreTypes';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { GetMessagesParams, GetMessagesResult } from '../../../commands/chat/get-messages/shared/GetMessagesTypes';
 import type { SubscribeRoomParams, SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { CHAT_EVENTS, CHAT_EVENT_TYPES } from '../shared/ChatEventConstants';
@@ -65,6 +66,7 @@ export class ChatWidget extends ChatWidgetBase {
     }
 
   protected async onWidgetInitialize(): Promise<void> {
+    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': ChatWidget now uses chat/get-messages instead of data/list');
     console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
 
     // CRITICAL: Initialize persistent User ID using UserIdManager (REQUIRED)
@@ -121,70 +123,73 @@ export class ChatWidget extends ChatWidgetBase {
 
 
   /**
-   * Load room message history using data/list command
+   * Load room message history using proper chat/get-messages command
    */
   private async loadRoomHistory(): Promise<void> {
     try {
-      console.log(`📚 ChatWidget: Loading room history using data/list command`);
+      console.log(`📚 ChatWidget: Loading room history using chat/get-messages command`);
 
-      // Use data/list command to get all chat messages, then filter by room
+      // Use proper chat/get-messages command instead of generic data/list
       const client = await JTAGClient.sharedInstance;
-      const historyResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
+      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: About to call executeCommand with params:`, {
         context: client.context,
         sessionId: client.sessionId,
-        collection: 'chat_messages',
-        limit: 2000, // Recent messages
-        filter: { roomId: this.currentRoom }, // ← Proper filter parameter structure
-        orderBy: [{ field: 'timestamp', direction: 'asc' }] // Order by timestamp ascending
+        roomId: this.currentRoom,
+        limit: 2000
       });
-      
-      console.log("JOEL History result:", historyResult.items);
 
-      if (historyResult?.items) {
-        // Filter messages for current room and convert to internal format
-        this.messages = historyResult.items
-          .map((item): ChatMessage => {
-            // Convert database format to domain ChatMessage format
-            const dbMessage = item as any; // Database message might be in old format
+      const historyResult = await this.executeCommand<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
+        context: client.context,
+        sessionId: client.sessionId,
+        roomId: this.currentRoom,
+        limit: 2000 // Recent messages
+      });
 
-            // Handle both old flat content and new rich content
-            const messageText = typeof dbMessage.content === 'string'
-              ? dbMessage.content
-              : dbMessage.content?.text || '';
+      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: executeCommand returned:`, historyResult);
+      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: typeof historyResult:`, typeof historyResult);
+      console.log("🔧 CLAUDE-CHAT-HISTORY-DEBUG:", historyResult);
 
-            // Convert to proper domain ChatMessage structure
+      if (historyResult?.success && historyResult?.messages) {
+        // Convert API ChatMessage format to internal domain ChatMessage format
+        this.messages = historyResult.messages
+          .map((apiMessage): ChatMessage => {
+            // Convert API format to domain ChatMessage structure
             return {
-              messageId: MessageId(dbMessage.messageId || dbMessage.id || 'unknown'),
-              roomId: RoomId(dbMessage.roomId),
-              senderId: UserId(dbMessage.senderId),
-              senderName: dbMessage.senderName || dbMessage.senderId,
+              messageId: MessageId(apiMessage.id),
+              roomId: RoomId(apiMessage.roomId),
+              senderId: UserId(apiMessage.senderId),
+              senderName: apiMessage.senderName,
               content: {
-                text: messageText,
-                attachments: [],
-                formatting: DEFAULT_MESSAGE_FORMATTING
+                text: apiMessage.content.text,
+                attachments: apiMessage.content.attachments || [],
+                formatting: apiMessage.content.formatting || DEFAULT_MESSAGE_FORMATTING
               },
-              status: 'sent',
+              status: apiMessage.status,
               priority: 'normal',
-              timestamp: ISOString(dbMessage.timestamp),
-              reactions: [],
+              timestamp: ISOString(apiMessage.timestamp),
+              reactions: (apiMessage.reactions || []) as unknown as readonly MessageReaction[],
               metadata: {
                 ...DEFAULT_MESSAGE_METADATA,
+                ...apiMessage.metadata,
                 source: 'user'  // Default to user for now
               },
-              id: dbMessage.id || dbMessage.messageId || 'unknown',
-              createdAt: ISOString(dbMessage.timestamp),
-              updatedAt: ISOString(dbMessage.timestamp),
+              id: apiMessage.id,
+              createdAt: ISOString(apiMessage.timestamp),
+              updatedAt: ISOString(apiMessage.timestamp),
               version: 1
-            } as ChatMessage;
+            } as unknown as ChatMessage;
           })
-          .filter((item): item is ChatMessage => !!item.content.text && item.content.text.trim().length > 0) 
+          .filter((message): message is ChatMessage => !!message.content.text && message.content.text.trim().length > 0);
 
-        console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" from data/list`);
+        console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" using chat/get-messages`);
+      } else if (historyResult?.success === false) {
+        console.error(`❌ ChatWidget: Failed to get messages: ${historyResult.error}`);
+        this.messages = [];
       } else {
         console.log(`ℹ️ ChatWidget: No messages found for room "${this.currentRoom}"`);
         this.messages = [];
       }
-      
+
     } catch (error) {
       console.error(`❌ ChatWidget: Failed to load room history:`, error);
       throw error; // No fallbacks - crash and burn is better
