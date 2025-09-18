@@ -117,15 +117,17 @@ export abstract class BaseMessageRowWidget {
   }
 
   /**
-   * Format timestamp for display
+   * Format timestamp for display - TEMP: showing full date/time for debugging chronological order
    */
   private formatTimestamp(timestamp: string): string {
     try {
       const date = new Date(timestamp);
-      return date.toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      });
+      // TEMP DEBUG: Show full date and time to verify chronological ordering
+      return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })}`;
     } catch {
       return 'Unknown time';
     }
