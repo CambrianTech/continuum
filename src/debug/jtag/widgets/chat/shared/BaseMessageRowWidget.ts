@@ -119,9 +119,9 @@ export abstract class BaseMessageRowWidget {
   /**
    * Format timestamp for display - TEMP: showing full date/time for debugging chronological order
    */
-  private formatTimestamp(timestamp: string): string {
+  private formatTimestamp(timestamp: Date | string): string {
     try {
-      const date = new Date(timestamp);
+      const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
       // TEMP DEBUG: Show full date and time to verify chronological ordering
       return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {
         hour: '2-digit',

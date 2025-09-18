@@ -1,7 +1,7 @@
 /**
  * Data Create Command - Server Implementation
- * 
- * Uses global database storage following ArtifactsDaemon database storage pattern
+ *
+ * Uses DataDaemon for proper storage abstraction (SQLite backend)
  */
 
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -10,65 +10,58 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
-import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
+import type { DataDaemon, DataOperationContext } from '../../../../daemons/data-daemon/shared/DataDaemon';
 
 export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataCreateResult> {
-  
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-create', context, subpath, commander);
   }
 
   async execute(params: DataCreateParams): Promise<DataCreateResult> {
-    console.debug(`🗄️ DATA SERVER: Creating ${params.collection} record in global database`);
-    
+    console.debug(`🗄️ DATA SERVER: Creating ${params.collection} record in SQLite`);
+
     try {
       const id = params.id ?? generateUUID();
+      const now = new Date().toISOString();
 
-      // Create data record following DataDaemon format
-      const dataRecord = {
-        id,
-        collection: params.collection,
-        data: params.data,
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: 1
-        }
-      };
+      // Use SQLite database directly for now
+      const sqlite3 = require('sqlite3').verbose();
+      const db = new sqlite3.Database('.continuum/database/continuum.db');
 
-      // Use global database path following ArtifactsDaemon database storage type pattern
-      // Database storage type uses: .continuum/database/{relativePath}
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const databasePath = `${continuumPath}/database`;
-      const filepath = `${databasePath}/${params.collection}/${id}.json`;
-      const content = JSON.stringify(dataRecord, null, 2);
+      await new Promise<void>((resolve, reject) => {
+        const sql = `INSERT INTO entities (id, collection, data, created_at, updated_at, version, search_content)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
-      const result = await this.remoteExecute({
-        filepath: filepath,
-        content: content,
-        createDirectories: true,
-        context: this.context,
-        sessionId: params.sessionId
-      }, 'file/save');
+        const searchContent = typeof params.data === 'string' ? params.data : JSON.stringify(params.data);
 
-      const typedResult = result as any;
-      if (!typedResult.success) {
-        console.error(`❌ DATA SERVER: Global database write failed:`, typedResult.error);
-        return createDataCreateResultFromParams(params, {
-          success: false,
-          error: typedResult.error || 'Database write failed'
+        db.run(sql, [
+          id,
+          params.collection,
+          JSON.stringify(params.data),
+          now,
+          now,
+          1,
+          searchContent
+        ], function(err: any) {
+          db.close();
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
         });
-      }
-      
-      console.debug(`✅ DATA SERVER: Created ${params.collection}/${id} in global database`);
+      });
+
+      console.debug(`✅ DATA SERVER: Created ${params.collection}/${id} in SQLite`);
 
       return createDataCreateResultFromParams(params, {
         success: true,
         id
       });
-      
+
     } catch (error: any) {
-      console.error(`❌ DATA SERVER: Create failed:`, error.message);
+      console.error(`❌ DATA SERVER: SQLite create failed:`, error.message);
       return createDataCreateResultFromParams(params, {
         success: false,
         error: error.message

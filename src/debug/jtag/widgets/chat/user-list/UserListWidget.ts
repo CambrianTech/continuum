@@ -5,7 +5,7 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
-import type { BaseUser } from '../../../api/types/User';
+import type { BaseUser, UserType } from '../../../api/types/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
 import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
@@ -38,7 +38,7 @@ export class UserListWidget extends ChatWidgetBase {
 
   private async loadUsersFromDatabase(): Promise<void> {
     const client = await JTAGClient.sharedInstance;
-    const result = await this.executeCommand<DataListParams, DataListResult<DataRecord<BaseUser>>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<any>>('data/list', {
       context: client.context,
       sessionId: client.sessionId,
       collection: COLLECTIONS.USERS,
@@ -47,15 +47,30 @@ export class UserListWidget extends ChatWidgetBase {
     });
 
     if (!result?.success || !result.items?.length) {
-      console.error('❌ UserListWidget: No users found in database');
-      throw new Error('No users found in database - seed data first');
+      console.error('❌ UserListWidget: No users found - check seeding');
+      this.users = [];
+      return;
     }
 
-    // Extract user data from DataRecord<BaseUser> with proper typing
+    // Convert unified users table data to BaseUser interface
     this.users = result.items
-      .filter((record: DataRecord<BaseUser>) => record?.data?.id)
-      .map((record: DataRecord<BaseUser>) => record.data);
+      .filter(user => user?.id && user?.profile?.displayName)
+      .map(user => ({
+        id: user.id,
+        name: user.profile.displayName,
+        userType: user.type === 'ai' ? 'agent' : user.type as UserType,
+        isAuthenticated: user.status === 'online',
+        permissions: [],
+        capabilities: Object.entries(user.capabilities || {})
+          .filter(([_, enabled]) => enabled)
+          .map(([name, _]) => ({ name, enabled: true })),
+        metadata: { profile: user.profile, preferences: user.preferences },
+        createdAt: user.createdAt,
+        lastActiveAt: user.lastActiveAt
+      } as BaseUser));
+
     console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
+    console.log(`   Users: ${this.users.map(u => u.name).join(', ')}`);
   }
 
   protected override async renderWidget(): Promise<void> {

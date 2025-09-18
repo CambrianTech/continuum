@@ -6,42 +6,53 @@
  */
 
 import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
-import type { User } from '../user/User';
+import type { BaseUser } from '../user/BaseUser';
 import type { ChatRoom } from './ChatRoom';
 
-export interface ChatMessageData {
+export class ChatMessage {
   readonly messageId: UUID;
   readonly roomId: string;
   readonly content: string;
   readonly senderId: UUID;
-  readonly timestamp: string;
+  readonly createdAt: Date;
   readonly mentions: readonly UUID[];
   readonly category: 'chat' | 'system' | 'bot';
   readonly replyToId?: UUID;
-  readonly editedAt?: string;
-  readonly deletedAt?: string;
-}
+  readonly editedAt?: Date;
+  readonly deletedAt?: Date;
 
-export class ChatMessage implements ChatMessageData {
-  private constructor(private readonly data: ChatMessageData) {}
+  constructor(data: {
+    messageId: UUID;
+    roomId: string;
+    content: string;
+    senderId: UUID;
+    createdAt: Date;
+    mentions: readonly UUID[];
+    category: 'chat' | 'system' | 'bot';
+    replyToId?: UUID;
+    editedAt?: Date;
+    deletedAt?: Date;
+  }) {
+    this.messageId = data.messageId;
+    this.roomId = data.roomId;
+    this.content = data.content;
+    this.senderId = data.senderId;
+    this.createdAt = data.createdAt;
+    this.mentions = data.mentions;
+    this.category = data.category;
+    this.replyToId = data.replyToId;
+    this.editedAt = data.editedAt;
+    this.deletedAt = data.deletedAt;
+  }
 
-  get messageId(): UUID { return this.data.messageId; }
-  get roomId(): string { return this.data.roomId; }
-  get content(): string { return this.data.content; }
-  get senderId(): UUID { return this.data.senderId; }
-  get timestamp(): string { return this.data.timestamp; }
-  get mentions(): readonly UUID[] { return this.data.mentions; }
-  get category(): 'chat' | 'system' | 'bot' { return this.data.category; }
-  get replyToId(): UUID | undefined { return this.data.replyToId; }
-  get editedAt(): string | undefined { return this.data.editedAt; }
-  get deletedAt(): string | undefined { return this.data.deletedAt; }
+  get timestamp(): Date { return this.createdAt; } // Alias for compatibility
 
   /**
    * Create new chat message from user
    */
   static create(params: {
     readonly content: string;
-    readonly user: User;
+    readonly user: BaseUser;
     readonly room: ChatRoom;
     readonly mentions?: readonly UUID[];
     readonly replyToId?: UUID;
@@ -55,7 +66,7 @@ export class ChatMessage implements ChatMessageData {
       roomId: params.room.roomId,
       content: params.content.trim(),
       senderId: params.user.userId,
-      timestamp: new Date().toISOString(),
+      createdAt: new Date(),
       mentions: params.mentions || [],
       category: 'chat',
       replyToId: params.replyToId
@@ -78,24 +89,43 @@ export class ChatMessage implements ChatMessageData {
       roomId: params.room.roomId,
       content: params.content.trim(),
       senderId: generateUUID(), // System messages get unique sender ID
-      timestamp: new Date().toISOString(),
+      createdAt: new Date(),
       mentions: [],
       category: 'system'
     });
   }
 
   /**
-   * Reconstruct from stored data
+   * Reconstruct from stored data (handles string to Date conversion)
    */
-  static fromData(data: ChatMessageData): ChatMessage {
-    return new ChatMessage(data);
+  static fromData(record: { id: string; createdAt: string; content: { text: string }; senderId: string; roomId: string; mentions?: string[]; editedAt?: string; deletedAt?: string }): ChatMessage {
+    return new ChatMessage({
+      messageId: record.id as UUID,
+      roomId: record.roomId,
+      content: record.content.text,
+      senderId: record.senderId as UUID,
+      createdAt: new Date(record.createdAt),
+      mentions: (record.mentions || []) as readonly UUID[],
+      category: 'chat',
+      editedAt: record.editedAt ? new Date(record.editedAt) : undefined,
+      deletedAt: record.deletedAt ? new Date(record.deletedAt) : undefined,
+    });
   }
 
   /**
-   * Get data for storage
+   * Get data for storage (converts Dates to ISO strings)
    */
-  toData(): ChatMessageData {
-    return this.data;
+  toData(): { id: string; createdAt: string; content: { text: string }; senderId: string; roomId: string; mentions: string[]; editedAt?: string; deletedAt?: string } {
+    return {
+      id: this.messageId,
+      createdAt: this.createdAt.toISOString(),
+      content: { text: this.content },
+      senderId: this.senderId,
+      roomId: this.roomId,
+      mentions: [...this.mentions],
+      editedAt: this.editedAt?.toISOString(),
+      deletedAt: this.deletedAt?.toISOString(),
+    };
   }
 
   /**
@@ -107,9 +137,16 @@ export class ChatMessage implements ChatMessageData {
     }
 
     return new ChatMessage({
-      ...this.data,
+      messageId: this.messageId,
+      roomId: this.roomId,
       content: newContent.trim(),
-      editedAt: new Date().toISOString()
+      senderId: this.senderId,
+      createdAt: this.createdAt,
+      mentions: this.mentions,
+      category: this.category,
+      replyToId: this.replyToId,
+      editedAt: new Date(),
+      deletedAt: this.deletedAt
     });
   }
 
@@ -118,23 +155,30 @@ export class ChatMessage implements ChatMessageData {
    */
   delete(): ChatMessage {
     return new ChatMessage({
-      ...this.data,
+      messageId: this.messageId,
+      roomId: this.roomId,
       content: '[deleted]',
-      deletedAt: new Date().toISOString()
+      senderId: this.senderId,
+      createdAt: this.createdAt,
+      mentions: this.mentions,
+      category: this.category,
+      replyToId: this.replyToId,
+      editedAt: this.editedAt,
+      deletedAt: new Date()
     });
   }
 
   /**
    * Check if message is from user
    */
-  isFromUser(user: User): boolean {
+  isFromUser(user: BaseUser): boolean {
     return this.senderId === user.userId;
   }
 
   /**
    * Check if message mentions user
    */
-  mentionsUser(user: User): boolean {
+  mentionsUser(user: BaseUser): boolean {
     return this.mentions.includes(user.userId);
   }
 

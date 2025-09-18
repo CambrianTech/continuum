@@ -330,6 +330,189 @@ export class DataService {
   }
 
   /**
+   * Export collection data to TypeScript module format
+   * Same mechanism used for seeding - create entities, export, import later
+   */
+  async export<T extends BaseEntity>(
+    collection: string,
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ collection: string; entities: T[]; exportedAt: ISOString }>> {
+    try {
+      const result = await this.list<T>(collection, undefined, context);
+      if (!result.success) {
+        return Err(result.error);
+      }
+
+      return Ok({
+        collection,
+        entities: result.data,
+        exportedAt: new Date().toISOString() as ISOString
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown export error';
+      return Err(createDataError('STORAGE_ERROR', `Export failed for ${collection}: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Import collection data from exported format
+   * Bulk create entities using the same ORM methods
+   */
+  async import<T extends BaseEntity>(
+    collection: string,
+    entities: Omit<T, keyof BaseEntity>[],
+    options?: {
+      clearFirst?: boolean;
+      skipValidation?: boolean;
+    },
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ imported: number; errors: string[] }>> {
+    const importErrors: string[] = [];
+    let importedCount = 0;
+
+    try {
+      // Optional: clear collection first
+      if (options?.clearFirst) {
+        // Note: DataService doesn't have bulk delete yet, but could be added
+        console.log(`⚠️ Clear first requested for ${collection} - not implemented yet`);
+      }
+
+      // Import each entity using normal create() method
+      for (const entityData of entities) {
+        const result = await this.create<T>(collection, entityData, context);
+        if (result.success) {
+          importedCount++;
+        } else {
+          importErrors.push(`Entity import failed: ${result.error.message}`);
+        }
+      }
+
+      return Ok({
+        imported: importedCount,
+        errors: importErrors
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown import error';
+      return Err(createDataError('STORAGE_ERROR', `Import failed for ${collection}: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Clear (delete all records from) a collection
+   * Useful for implementing data:clear functionality
+   */
+  async clear(
+    collection: string,
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ deleted: number }>> {
+    try {
+      // For now, we'll implement this as list + delete each item
+      // Future optimization: add bulk delete to adapters
+      const listResult = await this.list(collection, undefined, context);
+      if (!listResult.success) {
+        return Err(listResult.error);
+      }
+
+      let deletedCount = 0;
+      const deleteErrors: string[] = [];
+
+      // Delete each item individually
+      for (const item of listResult.data) {
+        const deleteResult = await this.delete(collection, (item as any).id, context);
+        if (deleteResult.success) {
+          deletedCount++;
+        } else {
+          deleteErrors.push(`Failed to delete ${(item as any).id}: ${deleteResult.error.message}`);
+        }
+      }
+
+      if (deleteErrors.length > 0) {
+        console.warn(`⚠️ Clear ${collection}: ${deleteErrors.length} delete errors occurred`);
+        // Still return success with partial results
+      }
+
+      return Ok({
+        deleted: deletedCount
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown clear error';
+      return Err(createDataError('STORAGE_ERROR', `Clear failed for ${collection}: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Clear multiple collections
+   */
+  async clearAll(
+    collections: string[],
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ results: Record<string, { deleted: number; errors: string[] }> }>> {
+    try {
+      const results: Record<string, { deleted: number; errors: string[] }> = {};
+      const clearErrors: string[] = [];
+
+      for (const collection of collections) {
+        const clearResult = await this.clear(collection, context);
+        if (clearResult.success) {
+          results[collection] = {
+            deleted: clearResult.data.deleted,
+            errors: []
+          };
+        } else {
+          results[collection] = {
+            deleted: 0,
+            errors: [clearResult.error.message]
+          };
+          clearErrors.push(`${collection}: ${clearResult.error.message}`);
+        }
+      }
+
+      if (clearErrors.length > 0) {
+        return Err(createDataError('STORAGE_ERROR', `Clear all errors: ${clearErrors.join(', ')}`));
+      }
+
+      return Ok({ results });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown clear all error';
+      return Err(createDataError('STORAGE_ERROR', `Clear all failed: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Export all collections to a complete dataset
+   */
+  async exportAll(
+    collections: string[],
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ collections: Record<string, any[]>; exportedAt: ISOString }>> {
+    try {
+      const collectionsData: Record<string, any[]> = {};
+      const exportErrors: string[] = [];
+
+      for (const collection of collections) {
+        const result = await this.export(collection, context);
+        if (result.success) {
+          collectionsData[collection] = result.data.entities;
+        } else {
+          exportErrors.push(`Failed to export ${collection}: ${result.error.message}`);
+        }
+      }
+
+      if (exportErrors.length > 0) {
+        return Err(createDataError('STORAGE_ERROR', `Export errors: ${exportErrors.join(', ')}`));
+      }
+
+      return Ok({
+        collections: collectionsData,
+        exportedAt: new Date().toISOString() as ISOString
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown export all error';
+      return Err(createDataError('STORAGE_ERROR', `Export all failed: ${errorMessage}`));
+    }
+  }
+
+  /**
    * Close all connections
    */
   async close(): Promise<DataResult<void>> {

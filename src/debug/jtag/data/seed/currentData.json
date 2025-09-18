@@ -1,0 +1,345 @@
+{
+  "collections": {
+    "users": [
+      {
+        "id": "48712daa-304d-4a8f-a33e-6993ce041833",
+        "createdAt": "2025-09-18T06:42:13.382Z",
+        "updatedAt": "2025-09-18T06:42:13.382Z",
+        "version": 1,
+        "displayName": "Joel",
+        "type": "human",
+        "profile": {
+          "displayName": "Joel",
+          "avatar": "👨‍💻",
+          "bio": "System architect and lead developer of the Continuum project",
+          "location": "San Francisco, CA",
+          "joinedAt": "2025-01-15T10:00:00.000Z"
+        },
+        "capabilities": {
+          "canSendMessages": true,
+          "canReceiveMessages": true,
+          "canCreateRooms": true,
+          "canInviteOthers": true,
+          "canModerate": true,
+          "autoResponds": false,
+          "providesContext": false,
+          "canTrain": false,
+          "canAccessPersonas": true
+        },
+        "preferences": {
+          "theme": "dark",
+          "language": "en",
+          "timezone": "America/Los_Angeles",
+          "notifications": {
+            "mentions": true,
+            "directMessages": true,
+            "roomUpdates": true
+          },
+          "privacy": {
+            "showOnlineStatus": true,
+            "allowDirectMessages": true,
+            "shareActivity": true
+          }
+        },
+        "status": "online",
+        "lastActiveAt": "2025-01-15T10:00:00.000Z",
+        "sessionsActive": []
+      },
+      {
+        "id": "1a6f53dd-26a6-4401-8bc2-205a4e8e7719",
+        "createdAt": "2025-09-18T06:42:13.392Z",
+        "updatedAt": "2025-09-18T06:42:13.392Z",
+        "version": 1,
+        "displayName": "Claude",
+        "type": "ai",
+        "profile": {
+          "displayName": "Claude",
+          "avatar": "🤖",
+          "bio": "AI assistant specialized in coding, architecture, and system design",
+          "location": "Anthropic Cloud",
+          "joinedAt": "2025-01-15T10:01:00.000Z"
+        },
+        "capabilities": {
+          "canSendMessages": true,
+          "canReceiveMessages": true,
+          "canCreateRooms": true,
+          "canInviteOthers": true,
+          "canModerate": true,
+          "autoResponds": true,
+          "providesContext": true,
+          "canTrain": false,
+          "canAccessPersonas": false
+        },
+        "status": "online",
+        "lastActiveAt": "2025-09-18T06:41:30.563Z",
+        "sessionsActive": []
+      },
+      {
+        "id": "ca2e0a8f-6185-46fe-a281-fbe05433bc16",
+        "createdAt": "2025-09-18T06:42:13.407Z",
+        "updatedAt": "2025-09-18T06:42:13.407Z",
+        "version": 1,
+        "displayName": "GPT-4",
+        "type": "ai",
+        "profile": {
+          "displayName": "GPT-4",
+          "avatar": "⚡",
+          "bio": "OpenAI GPT-4 assistant for general tasks and conversations",
+          "location": "OpenAI Infrastructure",
+          "joinedAt": "2025-01-15T10:02:00.000Z"
+        },
+        "capabilities": {
+          "canSendMessages": true,
+          "canReceiveMessages": true,
+          "canCreateRooms": false,
+          "canInviteOthers": false,
+          "canModerate": false,
+          "autoResponds": true,
+          "providesContext": true,
+          "canTrain": false,
+          "canAccessPersonas": false
+        },
+        "status": "online",
+        "lastActiveAt": "2025-09-18T06:41:30.574Z",
+        "sessionsActive": []
+      }
+    ],
+    "rooms": [
+      {
+        "id": "ba44f179-461e-4b17-a9ca-c4588521ddff",
+        "createdAt": "2025-09-18T06:42:13.422Z",
+        "updatedAt": "2025-09-18T06:42:13.422Z",
+        "version": 1,
+        "name": "general",
+        "displayName": "General Discussion",
+        "description": "Main chat room for general conversations and introductions",
+        "topic": "Welcome to the general discussion! Introduce yourself and chat about anything.",
+        "type": "public",
+        "status": "active",
+        "privacy": {
+          "isPublic": true,
+          "requiresInvite": false,
+          "allowGuestAccess": true,
+          "searchable": true
+        },
+        "settings": {
+          "allowReactions": true,
+          "allowThreads": true,
+          "allowFileSharing": true,
+          "messageRetentionDays": 365
+        },
+        "stats": {
+          "memberCount": 3,
+          "messageCount": 0,
+          "createdAt": "2025-01-15T10:00:00.000Z",
+          "lastActivityAt": "2025-01-15T10:00:00.000Z"
+        },
+        "members": [],
+        "tags": [
+          "general",
+          "welcome",
+          "discussion"
+        ]
+      },
+      {
+        "id": "c669f7c5-1002-434e-829b-56aab88dc43c",
+        "createdAt": "2025-09-18T06:42:13.433Z",
+        "updatedAt": "2025-09-18T06:42:13.433Z",
+        "version": 1,
+        "name": "development",
+        "displayName": "Development",
+        "description": "Technical discussions, code reviews, and development updates",
+        "topic": "Share your code, discuss architecture, and collaborate on development",
+        "type": "public",
+        "status": "active",
+        "privacy": {
+          "isPublic": true,
+          "requiresInvite": false,
+          "allowGuestAccess": true,
+          "searchable": true
+        },
+        "settings": {
+          "allowReactions": true,
+          "allowThreads": true,
+          "allowFileSharing": true,
+          "messageRetentionDays": 365
+        },
+        "stats": {
+          "memberCount": 2,
+          "messageCount": 0,
+          "createdAt": "2025-01-15T10:05:00.000Z",
+          "lastActivityAt": "2025-01-15T10:05:00.000Z"
+        },
+        "members": [],
+        "tags": [
+          "development",
+          "technical",
+          "code"
+        ]
+      }
+    ],
+    "chat_messages": [
+      {
+        "id": "b87b7ee9-6ac9-498e-8b50-38172b9f3776",
+        "createdAt": "2025-09-18T06:42:13.448Z",
+        "updatedAt": "2025-09-18T06:42:13.448Z",
+        "version": 1,
+        "roomId": "general",
+        "senderId": "user-joel-12345",
+        "content": {
+          "text": "Test message with fixed MessageContent format! 🔧",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "mentions": [],
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      },
+      {
+        "id": "6bfd01df-ffb9-4df3-8416-a306ac42bad4",
+        "createdAt": "2025-09-18T06:42:13.461Z",
+        "updatedAt": "2025-09-18T06:42:13.461Z",
+        "version": 1,
+        "roomId": "general",
+        "senderId": "ffe02f4f-43f2-4792-8c3a-1b71066cb335",
+        "content": {
+          "text": "Welcome to the Continuum chat system! 🚀 This is our new ORM-based messaging platform.",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      },
+      {
+        "id": "50998a8b-0016-4c03-98b3-4c8ab3b3539b",
+        "createdAt": "2025-09-18T06:42:13.475Z",
+        "updatedAt": "2025-09-18T06:42:13.475Z",
+        "version": 1,
+        "roomId": "general",
+        "senderId": "fa48e3c4-affa-4c77-a860-b1838c578bcf",
+        "content": {
+          "text": "Hello everyone! I'm Claude, excited to help with development and testing of this system. The ORM export/import functionality looks fantastic! 🤖✨",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "metadata": {
+          "source": "bot",
+          "clientVersion": "claude-sonnet-4"
+        }
+      },
+      {
+        "id": "c66a0f94-e79c-4ca3-aacd-7200392deb98",
+        "createdAt": "2025-09-18T06:42:13.489Z",
+        "updatedAt": "2025-09-18T06:42:13.489Z",
+        "version": 1,
+        "roomId": "development",
+        "senderId": "ffe02f4f-43f2-4792-8c3a-1b71066cb335",
+        "content": {
+          "text": "The new **DataService export/import** system is working great! We can now easily migrate data between storage backends. 🏗️",
+          "attachments": [],
+          "formatting": {
+            "markdown": true,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      },
+      {
+        "roomId": "general",
+        "senderId": "user-joel-12345",
+        "content": {
+          "text": "FIRST MESSAGE - should not be doubled",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "mentions": [],
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      },
+      {
+        "roomId": "general",
+        "senderId": "user-joel-12345",
+        "content": {
+          "text": "SECOND MESSAGE - check if doubled",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "mentions": [],
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      },
+      {
+        "roomId": "general",
+        "senderId": "user-joel-12345",
+        "content": {
+          "text": "THIRD MESSAGE - doubling pattern test",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "priority": "normal",
+        "mentions": [],
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      }
+    ]
+  },
+  "exportedAt": "2025-09-18T06:42:52.986Z"
+}

@@ -11,7 +11,7 @@ import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUU
  * User Citizen Types - Actual entities in the system
  * System users handle automated system messages, instructions, and announcements
  */
-export type UserCitizenType = 'human' | 'ai' | 'system';
+export type UserCitizenType = 'human' | 'ai' | 'persona' | 'system';
 
 /**
  * Core User Data - Shared across all citizen types
@@ -108,6 +108,14 @@ export abstract class BaseUser implements BaseUserData {
    */
   toData(): BaseUserData {
     return this.data;
+  }
+
+  /**
+   * Factory method - Create appropriate User instance from stored data
+   * Note: Concrete implementations must be imported and registered
+   */
+  static fromData(data: BaseUserData): BaseUser {
+    throw new Error('BaseUser.fromData() must be called via concrete user factory');
   }
 
   toString(): string {

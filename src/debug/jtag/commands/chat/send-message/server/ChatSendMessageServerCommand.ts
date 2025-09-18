@@ -10,7 +10,7 @@ import type { EventBridgePayload } from '../../../../daemons/events-daemon/share
 import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../shared/ChatSendMessageTypes';
 import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
-import type { ChatMessage } from '../../../../domain/chat/ChatMessage';
+import { ChatMessage } from '../../../../domain/chat/ChatMessage';
 import { EVENT_SCOPES } from '../../../../system/events/shared/EventSystemConstants';
 
 export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
