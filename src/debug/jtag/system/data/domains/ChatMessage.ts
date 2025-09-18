@@ -288,12 +288,15 @@ export function extractCodeBlocks(text: string): MessageFormatting['codeBlocks']
 }
 
 export function processMessageFormatting(text: string): MessageFormatting {
+  // Guard against undefined/null text
+  const safeText = text || '';
+
   return {
-    markdown: text.includes('**') || text.includes('*') || text.includes('`'),
-    mentions: extractMentions(text),
-    hashtags: extractHashtags(text),
-    links: extractLinks(text),
-    codeBlocks: extractCodeBlocks(text)
+    markdown: safeText.includes('**') || safeText.includes('*') || safeText.includes('`'),
+    mentions: extractMentions(safeText),
+    hashtags: extractHashtags(safeText),
+    links: extractLinks(safeText),
+    codeBlocks: extractCodeBlocks(safeText)
   };
 }
 

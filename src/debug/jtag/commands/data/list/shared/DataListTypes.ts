@@ -13,6 +13,11 @@ export interface DataListParams extends JTAGPayload {
   readonly filter?: Record<string, any>;
   readonly orderBy?: { field: string; direction: 'asc' | 'desc' }[];
   readonly convertToDomain?: boolean; // Optional: convert raw data to domain objects
+  readonly cursor?: {
+    readonly field: string;
+    readonly value: any;
+    readonly direction: 'before' | 'after';
+  };
 }
 
 export interface DataListResult<T extends BaseEntity> extends JTAGPayload {

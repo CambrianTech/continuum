@@ -23,12 +23,15 @@ import type {
 } from '../shared/ChatEventTypes';
 import { userIdManager } from '../../../system/shared/UserIdManager';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
+import { InfiniteScrollHelper, type CursorPaginationState } from '../shared/InfiniteScrollHelper';
 
 export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessageData[] = [];
   private currentRoom: string;
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
+  private scrollHelper?: InfiniteScrollHelper;
+  private messagesContainer?: HTMLElement;
 
   // Event handler references for proper cleanup
   private _keydownHandler?: (e: KeyboardEvent) => void;
@@ -92,6 +95,12 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    // Cleanup infinite scroll helper
+    if (this.scrollHelper) {
+      this.scrollHelper.cleanup();
+      this.scrollHelper = undefined;
+    }
+
     // Unsubscribe from room events using JTAG abstraction
     //TODO: completely missing command for unsubscribe. should this just be subscribe-room with a flag?
     // if (this.eventSubscriptionId) {
@@ -104,7 +113,7 @@ export class ChatWidget extends ChatWidgetBase {
     //     console.error(`❌ ChatWidget: Failed to unsubscribe from events:`, error);
     //   }
     // }
-    
+
     // Save room-specific messages using BaseWidget abstraction
     const roomMessageKey = `chat_messages_${this.currentRoom}`;
     await this.storeData(roomMessageKey, this.messages, { persistent: true });
@@ -113,48 +122,59 @@ export class ChatWidget extends ChatWidgetBase {
 
   protected override async renderWidget(): Promise<void> {
     super.renderWidget();
-    
-    // Cache input element
+
+    // Cache input element and messages container
     this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
-        
+    this.messagesContainer = this.shadowRoot.getElementById('messagesContainer') as HTMLElement;
+
+    // Initialize infinite scroll helper
+    if (this.messagesContainer && !this.scrollHelper) {
+      this.scrollHelper = new InfiniteScrollHelper({
+        pageSize: 20, // Load 20 messages at a time
+        threshold: 0.1 // Trigger when 10% from top
+      });
+
+      // Set up intersection observer for loading older messages
+      this.scrollHelper.setupIntersectionObserver(
+        this.messagesContainer,
+        (cursor: string) => this.loadOlderMessages(cursor)
+      );
+    }
+
     // Auto-scroll to bottom to show latest messages
     this.scrollToBottom();
   }
 
 
   /**
-   * Load room message history using proper chat/get-messages command
+   * Load initial room message history with cursor-based pagination
    */
   private async loadRoomHistory(): Promise<void> {
     try {
-      console.log(`📚 ChatWidget: Loading room history using chat/get-messages command`);
+      console.log(`📚 ChatWidget: Loading room history using cursor-based pagination`);
 
-      // Use proper chat/get-messages command instead of generic data/list
       const client = await JTAGClient.sharedInstance;
-      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: About to call executeCommand with params:`, {
-        context: client.context,
-        sessionId: client.sessionId,
-        roomId: this.currentRoom,
-        limit: 2000
-      });
 
+      // Load initial batch of recent messages (no cursor = most recent)
       const historyResult = await this.executeCommand<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
         context: client.context,
         sessionId: client.sessionId,
         roomId: this.currentRoom,
-        limit: 2000 // Recent messages
+        limit: 20 // Initial page size
       });
 
-      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: executeCommand returned:`, historyResult);
-      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: typeof historyResult:`, typeof historyResult);
-      console.log("🔧 CLAUDE-CHAT-HISTORY-DEBUG:", historyResult);
+      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: Initial load result:`, historyResult);
 
       if (historyResult?.success && historyResult?.messages) {
-        // Use ChatMessageData directly - data layer returns proper domain objects
         this.messages = historyResult.messages
           .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0);
 
-        console.log(`✅ ChatWidget: Loaded ${this.messages.length} messages for room "${this.currentRoom}" using chat/get-messages`);
+        // Initialize scroll helper state with loaded messages
+        if (this.scrollHelper) {
+          this.scrollHelper.initializeWithMessages(this.messages);
+        }
+
+        console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.currentRoom}"`);
       } else if (historyResult?.success === false) {
         console.error(`❌ ChatWidget: Failed to get messages: ${historyResult.error}`);
         this.messages = [];
@@ -165,7 +185,52 @@ export class ChatWidget extends ChatWidgetBase {
 
     } catch (error) {
       console.error(`❌ ChatWidget: Failed to load room history:`, error);
-      throw error; // No fallbacks - crash and burn is better
+      throw error;
+    }
+  }
+
+  /**
+   * Load older messages when user scrolls to top
+   */
+  private async loadOlderMessages(cursor: string): Promise<ChatMessageData[]> {
+    try {
+      console.log(`📚 ChatWidget: Loading older messages with cursor: ${cursor}`);
+
+      const client = await JTAGClient.sharedInstance;
+
+      // Use data/list command with cursor for older messages
+      const olderResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
+        context: client.context,
+        sessionId: client.sessionId,
+        collection: 'chat_messages',
+        filter: { roomId: this.currentRoom },
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 20,
+        cursor: {
+          field: 'timestamp',
+          value: cursor,
+          direction: 'before'
+        }
+      });
+
+      if (olderResult?.success && olderResult?.items) {
+        const olderMessages = olderResult.items
+          .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0);
+
+        // Insert older messages at the beginning
+        this.messages = [...olderMessages, ...this.messages];
+
+        // Re-render messages to include older ones
+        this.renderWidget();
+
+        console.log(`✅ ChatWidget: Loaded ${olderMessages.length} older messages`);
+        return olderMessages;
+      }
+
+      return [];
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to load older messages:`, error);
+      return [];
     }
   }
 

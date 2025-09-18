@@ -68,12 +68,17 @@ export interface DataError {
  */
 export interface QueryOptions<T extends BaseEntity> {
   readonly limit?: number;
-  readonly offset?: number;
+  readonly offset?: number; // Use cursor instead for better performance
   readonly orderBy?: Array<{
     readonly field: keyof T;
     readonly direction: 'ASC' | 'DESC';
   }>;
   readonly filters?: Record<keyof T, unknown>;
+  readonly cursor?: {
+    readonly field: keyof T;
+    readonly value: unknown;
+    readonly direction: 'before' | 'after'; // Load messages before/after cursor value
+  };
 }
 
 /**

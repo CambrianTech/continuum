@@ -337,6 +337,13 @@ export class SQLiteAdapter implements DataAdapter {
         }
       }
 
+      // Add cursor-based pagination (more efficient than OFFSET for large datasets)
+      if (options.cursor) {
+        const operator = options.cursor.direction === 'after' ? '>' : '<';
+        sql += ` AND JSON_EXTRACT(data, '$.${options.cursor.field as string}') ${operator} ?`;
+        params.push(options.cursor.value);
+      }
+
       // Add ordering
       if (options.orderBy?.length) {
         const orderClauses = options.orderBy.map(order => 
