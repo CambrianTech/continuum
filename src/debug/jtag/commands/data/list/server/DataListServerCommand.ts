@@ -50,7 +50,12 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         orderBy: params.orderBy?.map(order => ({
           field: order.field as keyof T,
           direction: order.direction.toUpperCase() as 'ASC' | 'DESC'
-        }))
+        })),
+        cursor: params.cursor ? {
+          field: params.cursor.field as keyof T,
+          value: params.cursor.value,
+          direction: params.cursor.direction
+        } : undefined
       };
 
       // Use DataService list method - storage agnostic
