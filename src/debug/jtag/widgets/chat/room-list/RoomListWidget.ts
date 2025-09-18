@@ -10,6 +10,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
+import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
 
 interface RoomData {
   readonly id?: string;        // Some rooms use 'id' field
@@ -69,7 +70,7 @@ export class RoomListWidget extends ChatWidgetBase {
       const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessage>>('data/list', {
         context: client.context,
         sessionId: client.sessionId,
-        collection: 'chat_messages',
+        collection: COLLECTIONS.MESSAGES,
         filter: { roomId: room.id, isRead: false }
       });
       
@@ -83,7 +84,7 @@ export class RoomListWidget extends ChatWidgetBase {
     const result = await this.executeCommand<DataListParams, DataListResult<DataRecord<RoomData>>>('data/list', {
       context: client.context,
       sessionId: client.sessionId,
-      collection: 'rooms',
+      collection: COLLECTIONS.ROOMS,
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
 

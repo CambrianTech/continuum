@@ -5,14 +5,17 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { generateUUID, type UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import { 
-  type ChatSendMessageParams, 
+import {
+  type ChatSendMessageParams,
   type ChatSendMessageResult,
   createChatSendMessageResult,
   createChatSendMessageError
 } from './ChatSendMessageTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import type { CreateMessageData } from '../../../../system/data/domains/ChatMessage';
 import { ChatMessage } from '../../../../domain/chat/ChatMessage';
+import { processMessageFormatting } from '../../../../system/data/domains/ChatMessage';
+import { UserId, RoomId, MessageId, type ISOString } from '../../../../system/data/domains/CoreTypes';
 import { userIdManager } from '../../../../system/shared/UserIdManager';
 
 export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, ChatSendMessageResult> {
@@ -53,30 +56,42 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
       }
       
       console.log(`🔧 CLAUDE-SENDER-DEBUG: senderType="${chatParams.senderType}", sessionId="${chatParams.sessionId}", using senderId="${senderId}"`);
-      
-      const message = ChatMessage.fromData({
-        messageId: generateUUID(),
-        roomId: chatParams.roomId,
-        content: chatParams.content,
-        senderId: senderId,
-        timestamp: new Date().toISOString(),
-        mentions: [], // TODO: Parse mentions from content or params
-        category: 'chat',
-        replyToId: chatParams.replyToId
-      });
 
-      // 2. Store message - let errors bubble up, no fallbacks  
-      await this.storeMessage(message);
-      
-      // 3. Emit event for widgets and other listeners (server-specific)
-      await this.emitMessageEvent(message);
-      
+      // Create proper MessageContent object with formatting
+      const messageFormatting = processMessageFormatting(chatParams.content);
+
+      const messageData: CreateMessageData = {
+        roomId: RoomId(chatParams.roomId),
+        senderId: UserId(senderId),
+        content: {
+          text: chatParams.content,
+          attachments: [],
+          formatting: messageFormatting
+        },
+        priority: 'normal',
+        mentions: messageFormatting.mentions,
+        replyToId: chatParams.replyToId ? chatParams.replyToId as any : undefined,
+        metadata: {
+          source: chatParams.senderType === 'system' ? 'system' : 'user',
+          deviceType: 'web'
+        }
+      };
+
+      // 2. Store message using DataService - let errors bubble up, no fallbacks
+      const storedMessageData = await this.storeMessage(messageData);
+
+      // 3. Create proper ChatMessage domain object from stored data - adapter handles conversion
+      const storedMessage = ChatMessage.fromData(storedMessageData);
+
+      // 4. Emit event for widgets and other listeners (server-specific)
+      await this.emitMessageEvent(storedMessage);
+
       const duration = Date.now() - startTime;
-      console.log(`✅ ${this.getEnvironmentLabel()}: Message ${message.messageId} sent in ${duration}ms`);
+      console.log(`✅ ${this.getEnvironmentLabel()}: Message ${storedMessage.messageId} sent in ${duration}ms`);
 
       return createChatSendMessageResult(chatParams, {
-        messageId: message.messageId,
-        message: message
+        messageId: storedMessage.messageId,
+        message: storedMessage
       });
 
     } catch (error) {
@@ -90,16 +105,17 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   }
 
   /**
-   * Store message using data/create command - domain object approach
+   * Store message using data/create command - proper DataService approach
    */
-  private async storeMessage(message: ChatMessage): Promise<void> {
-    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: About to store message ${message.messageId} to database`);
+  private async storeMessage(messageData: CreateMessageData): Promise<any> {
+    const messageId = generateUUID();
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: About to store message ${messageId} to database`);
 
     const createParams: DataCreateParams = {
       collection: 'chat_messages',
-      data: message.toData(),
+      data: messageData,
       context: this.context,
-      sessionId: message.senderId
+      sessionId: messageData.senderId
     };
 
     const result = await this.remoteExecute<DataCreateParams, DataCreateResult>(
@@ -107,13 +123,20 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
       'data/create'
     );
 
-    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE-RESULT: Store result for ${message.messageId}:`, result);
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE-RESULT: Store result for ${messageId}:`, result);
 
     if (!result.success) {
-      throw new Error(`Failed to store message ${message.messageId}: ${result.error}`);
+      throw new Error(`Failed to store message ${messageId}: ${result.error}`);
     }
 
-    console.log(`💾 Stored message ${message.messageId} in global database`);
+    console.log(`💾 Stored message ${messageId} in global database`);
+
+    // Return the created message with ID
+    return {
+      id: messageId,
+      ...messageData,
+      messageId: messageId
+    };
   }
 
   /**
@@ -135,7 +158,7 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   /**
    * Emit message event for widgets and listeners (abstract - implemented per environment)
    */
-  protected abstract emitMessageEvent(message: any): Promise<void>;
+  protected abstract emitMessageEvent(message: ChatMessage): Promise<void>;
 
   /**
    * Get environment label for logging
