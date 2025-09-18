@@ -7,14 +7,21 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 interface RoomData {
-  readonly roomId: string;
+  readonly id?: string;        // Some rooms use 'id' field
+  readonly roomId?: string;    // Some rooms use 'roomId' field
   readonly name: string;
   readonly type: string;
   readonly description?: string;
+  readonly displayName?: string;
+  readonly memberCount?: number;
+  readonly isArchived?: boolean;
+  readonly createdAt?: string;
+  readonly lastActivity?: string;
 }
 
 export class RoomListWidget extends ChatWidgetBase {
@@ -73,25 +80,29 @@ export class RoomListWidget extends ChatWidgetBase {
   private async loadRooms(): Promise<void> {
     // Load rooms from database using proper executeCommand with strict typing
     const client = await JTAGClient.sharedInstance;
-    const result = await this.executeCommand<DataListParams, DataListResult<RoomData>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<DataRecord<RoomData>>>('data/list', {
       context: client.context,
       sessionId: client.sessionId,
       collection: 'rooms',
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
-    
+
     if (result?.success && result.items?.length > 0) {
-      this.rooms = result.items.map((roomData: RoomData) => ({
-        id: roomData.roomId,
-        name: roomData.name,
-        unreadCount: 0 // Will be calculated from messages
-      }));
+      // Extract room data from DataRecord<RoomData> with proper typing
+      this.rooms = result.items
+        .filter((record: DataRecord<RoomData>) => record?.data && (record.data.id || record.data.roomId))
+        .map((record: DataRecord<RoomData>) => ({
+          id: record.data.id || record.data.roomId || '', // Handle both id and roomId fields, fallback to empty string
+          name: record.data.name,
+          unreadCount: 0 // Will be calculated from messages
+        }))
+        .filter(room => room.id !== ''); // Remove any rooms with empty ids
       console.log(`✅ RoomListWidget: Loaded ${this.rooms.length} rooms from database`);
     } else {
       console.warn('⚠️ RoomListWidget: No rooms found in database');
       this.rooms = [];
     }
-    
+
     // Calculate actual unread counts for each room
     await this.calculateUnreadCounts();
   }

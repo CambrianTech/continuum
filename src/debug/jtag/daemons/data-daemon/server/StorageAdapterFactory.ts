@@ -8,6 +8,7 @@
 import { DataStorageAdapter, StorageAdapterFactory, type StorageAdapterConfig } from '../shared/DataStorageAdapter';
 import { FileStorageAdapter } from './FileStorageAdapter';
 import { MemoryStorageAdapter } from './MemoryStorageAdapter';
+import { SqliteStorageAdapter } from './SqliteStorageAdapter';
 
 /**
  * Concrete Storage Adapter Factory
@@ -26,7 +27,7 @@ export class DefaultStorageAdapterFactory extends StorageAdapterFactory {
         return new MemoryStorageAdapter();
         
       case 'sqlite':
-        throw new Error('SQLite adapter not yet implemented - use file storage for now');
+        return new SqliteStorageAdapter();
         
       case 'postgres':
         throw new Error('PostgreSQL adapter not yet implemented - use file storage for now');

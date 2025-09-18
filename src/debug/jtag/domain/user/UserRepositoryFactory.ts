@@ -21,13 +21,13 @@ export const REPOSITORY_PRESETS: Record<string, RepositoryConfig> = {
   // Development: Fast JSON files, easy to inspect
   development: {
     name: 'Development JSON',
-    description: 'JSON files for easy development and debugging',
+    description: 'JSON files for easy development and debugging - compatible with JTAG commands',
     storageConfig: {
       strategy: 'file',
       backend: 'json',
-      namespace: 'continuum-dev',
+      namespace: '', // No namespace - save directly to JTAG data path for full compatibility
       options: {
-        basePath: '.continuum/database',
+        basePath: '.continuum/jtag/data', // Match JTAG server configuration
         prettyPrint: true,
         backupOnWrite: true
       },

@@ -200,6 +200,8 @@ run_profile_tests() {
             run_test "Multi-user Chat" "npx tsx tests/integration/simple-multiuser-chat.test.ts" "Chat & Messaging"
             run_test "Real Chat Functionality" "npx tsx tests/integration/chat-scenarios/real-chat-functionality.test.ts" "Chat & Messaging"
             run_test "Chat Real-Time Event Routing" "npx tsx tests/integration/chat-real-time-event-routing.test.ts" "Chat & Messaging"
+            # Recently organized chat tests
+            run_test "Chat Integration Test" "npx tsx tests/integration/chat-scenarios/chat-integration.test.ts" "Chat & Messaging"
             
             # AI & persona integration
             run_test "AI Persona Integration" "npx tsx tests/integration/ai-persona-integration.test.ts" "AI & Personas"
@@ -209,6 +211,10 @@ run_profile_tests() {
             run_test "Event Routing Unit" "npx tsx tests/unit/router-broadcast.test.ts" "Unit Tests"
             run_test "Router Broadcast Unit" "npx tsx tests/unit/room-scoped-event-routing.test.ts" "Unit Tests"
             run_test "Events Daemon Unit" "npx tsx tests/unit/events-daemon-unit.test.ts" "Unit Tests"
+            # Recently organized unit tests
+            run_test "QueryBuilder Debug Unit" "npx tsx tests/unit/querybuilder-debug.test.ts" "Unit Tests"
+            run_test "Query Builder Unit" "npx tsx tests/unit/query-builder.test.ts" "Unit Tests"
+            run_test "Validation Debug Unit" "npx tsx tests/unit/validation/validation-debug.test.ts" "Unit Tests"
             
             # Screenshots & visual
             run_test "Screenshot Capture" "npx tsx tests/server-screenshot.test.ts" "Screenshots & Visual"
@@ -243,11 +249,25 @@ run_profile_tests() {
             # TEMPORARY SKIP: Storage Configuration Integration test triggers infinite symlink thrashing (identified via process of elimination)
             # TODO: Fix the deeper issue with ConsoleDaemonServer session switching for this specific test pattern
             # run_test "Storage Configuration Integration" "npx tsx daemons/data-daemon/test/integration/StorageConfigurationIntegration.test.ts" "Database Tests"
+
+            # Recently organized database tests
+            run_test "Data Daemon System Integration" "npx tsx tests/integration/database/data-daemon-system.test.ts" "Database Tests"
+            run_test "SQLite ORM Integration" "npx tsx tests/integration/database/sqlite-orm.test.ts" "Database Tests"
+            run_test "JTAG SQLite Integration" "npx tsx tests/integration/database/jtag-sqlite.test.ts" "Database Tests"
+            run_test "Professional Data Architecture (Reorganized)" "npx tsx tests/integration/database/professional-data-architecture.test.ts" "Database Tests"
             
             # Event system
             run_test "Server-Browser Events" "npx tsx tests/integration/server-browser-event-flow.test.ts" "Event Tests"
-            run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests" 
+            run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests"
             run_test "Cross-Environment Events" "npx tsx tests/integration/cross-environment-events-working.test.ts" "Event Tests"
+            # Recently organized event tests
+            run_test "Events Simple Test" "npx tsx tests/integration/events/events-simple.test.ts" "Event Tests"
+            run_test "Cross-Context Events Test" "npx tsx tests/integration/events/cross-context-events.test.ts" "Event Tests"
+
+            # Integration tests (additional organized)
+            run_test "Session Fix Integration" "npx tsx tests/integration/session/session-fix.test.ts" "Integration Tests"
+            run_test "Multi-Resolution Simple" "npx tsx tests/integration/multi-resolution-simple.test.ts" "Integration Tests"
+            run_test "File Save Artifacts" "npx tsx tests/integration/filesave-artifacts.test.ts" "Integration Tests"
             ;;
             
         "integration")
@@ -310,6 +330,9 @@ run_profile_tests() {
             run_test "Browser-Server Events" "npx tsx tests/integration/browser-server-event-flow.test.ts" "Event Tests"
             run_test "Cross-Environment Events" "npx tsx tests/integration/cross-environment-events-working.test.ts" "Event Tests"
             run_test "Event Indicator Integration" "npx tsx tests/integration/event-indicator-integration.test.ts" "Event Tests"
+            # Recently organized event tests
+            run_test "Events Simple Test" "npx tsx tests/integration/events/events-simple.test.ts" "Event Tests"
+            run_test "Cross-Context Events Test" "npx tsx tests/integration/events/cross-context-events.test.ts" "Event Tests"
             ;;
             
         "blocker")
@@ -336,6 +359,11 @@ run_profile_tests() {
             run_test "Data Daemon Unit Tests" "npx tsx tests/data-daemon/run-data-tests.ts" "Database Tests"
             run_test "Professional Data Architecture" "npx tsx tests/classified/ProfessionalDataArchitectureTest.ts" "Database Tests"
             run_test "Storage Configuration Integration" "npx tsx daemons/data-daemon/test/integration/StorageConfigurationIntegration.test.ts" "Database Tests"
+            # Recently organized database tests
+            run_test "Data Daemon System Integration" "npx tsx tests/integration/database/data-daemon-system.test.ts" "Database Tests"
+            run_test "SQLite ORM Integration" "npx tsx tests/integration/database/sqlite-orm.test.ts" "Database Tests"
+            run_test "JTAG SQLite Integration" "npx tsx tests/integration/database/jtag-sqlite.test.ts" "Database Tests"
+            run_test "Professional Data Architecture (Reorganized)" "npx tsx tests/integration/database/professional-data-architecture.test.ts" "Database Tests"
             ;;
             
         "ai")

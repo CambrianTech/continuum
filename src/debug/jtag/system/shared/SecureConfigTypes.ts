@@ -61,19 +61,20 @@ export interface StorageConfig {
 
 // Default Storage Configuration
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
-  strategy: 'file',
-  backend: 'file',
+  strategy: 'sql',
+  backend: 'sqlite',
   connectionString: undefined,
   paths: {
     data: '.continuum/jtag/data',
     backups: '.continuum/jtag/backups'
   },
   options: {
-    basePath: '.continuum/jtag/data'
+    basePath: '.continuum/jtag/data',
+    dbPath: '.continuum/jtag/data/database.sqlite'
   },
   features: {
-    enableTransactions: false,
-    enableIndexing: false,
+    enableTransactions: true,
+    enableIndexing: true,
     enableReplication: false,
     enableSharding: false,
     enableCaching: true
