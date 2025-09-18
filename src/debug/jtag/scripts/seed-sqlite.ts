@@ -9,13 +9,14 @@
 
 import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
 import { generatedSeedData } from '../data/seed/generatedSeedData';
+import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 
 async function seedDatabase() {
   console.log('🌱 Seeding database using ORM import/export functionality...');
 
   try {
-    // Create DataService with proper initialization
-    const dataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    // Create DataService with proper initialization using centralized config
+    const dataService = await DataServiceFactory.createSQLiteOnly(DATABASE_PATHS.SQLITE);
 
     console.log('🔧 Initializing DataService and creating tables...');
     const initResult = await dataService.initialize();

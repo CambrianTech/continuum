@@ -5,16 +5,17 @@
  * Supports text, attachments, reactions, threads, and formatting
  */
 
-import type { 
-  BaseEntity, 
-  MessageId, 
-  RoomId, 
-  UserId, 
+import type {
+  MessageId,
+  RoomId,
+  UserId,
   ISOString,
   DataResult,
-  DataError
+  DataError,
+  BaseEntity
 } from './CoreTypes';
-import type { User } from './User';
+import { generateUUID, type UUID } from '../../core/types/CrossPlatformUUID';
+import { COLLECTIONS } from '../core/FieldMapping';
 
 /**
  * Message Content Types
@@ -25,6 +26,18 @@ export type MessageContentType = 'text' | 'image' | 'file' | 'code' | 'system' |
  * Message Status
  */
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
+
+/**
+ * Message Status Constants
+ */
+export const MESSAGE_STATUS = {
+  SENDING: 'sending' as MessageStatus,
+  SENT: 'sent' as MessageStatus,
+  DELIVERED: 'delivered' as MessageStatus,
+  READ: 'read' as MessageStatus,
+  FAILED: 'failed' as MessageStatus,
+  DELETED: 'deleted' as MessageStatus
+} as const;
 
 /**
  * Message Priority
@@ -121,9 +134,10 @@ export interface MessageMetadata {
 }
 
 /**
- * Chat Message Entity
+ * Chat Message Data - Pure data interface extending BaseEntity
+ * Used by adapters for storage and retrieval from database
  */
-export interface ChatMessage extends BaseEntity {
+export interface ChatMessageData extends BaseEntity {
   readonly messageId: MessageId;
   readonly roomId: RoomId;
   readonly senderId: UserId;
@@ -138,6 +152,8 @@ export interface ChatMessage extends BaseEntity {
   readonly replyToId?: MessageId;     // Direct reply (not thread)
   readonly metadata: MessageMetadata;
 }
+
+// ChatMessageData is a pure interface - no registry needed
 
 /**
  * Message Creation Data
@@ -281,31 +297,31 @@ export function processMessageFormatting(text: string): MessageFormatting {
   };
 }
 
-export function isMessageEdited(message: ChatMessage): boolean {
+export function isMessageEdited(message: ChatMessageData): boolean {
   return message.editedAt !== undefined;
 }
 
-export function getMessageDisplayTime(message: ChatMessage): ISOString {
+export function getMessageDisplayTime(message: ChatMessageData): ISOString {
   return message.editedAt || message.timestamp;
 }
 
-export function canUserEditMessage(message: ChatMessage, userId: UserId): boolean {
+export function canUserEditMessage(message: ChatMessageData, userId: UserId): boolean {
   // Users can edit their own messages within 24 hours
   const editWindow = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
   const messageAge = Date.now() - new Date(message.timestamp).getTime();
-  
-  return message.senderId === userId && 
-         messageAge < editWindow && 
+
+  return message.senderId === userId &&
+         messageAge < editWindow &&
          message.status !== 'deleted';
 }
 
-export function getMessageSummary(message: ChatMessage): string {
+export function getMessageSummary(message: ChatMessageData): string {
   const content = message.content.text;
   const maxLength = 100;
-  
+
   if (content.length <= maxLength) {
     return content;
   }
-  
+
   return content.substring(0, maxLength - 3) + '...';
 }

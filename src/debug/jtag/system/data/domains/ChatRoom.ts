@@ -1,5 +1,5 @@
 /**
- * ChatRoom Domain - Chat room/channel management
+ * ChatRoomData Domain - Chat room/channel management
  *
  * Professional chat rooms with Discord-like features
  * Supports public/private rooms, permissions, and member management
@@ -74,9 +74,10 @@ export interface RoomSettings {
 }
 
 /**
- * Chat Room Entity
+ * Chat Room Data - Pure data interface extending BaseEntity
+ * Used by adapters for storage and retrieval from database
  */
-export interface ChatRoom extends BaseEntity {
+export interface ChatRoomData extends BaseEntity {
   readonly roomId: RoomId;
   readonly name: string;
   readonly displayName: string;
@@ -229,20 +230,20 @@ export function validateRoomData(data: CreateRoomData): DataResult<void, DataErr
 /**
  * Room Helper Functions
  */
-export function getRoomDisplayName(room: ChatRoom): string {
+export function getRoomDisplayName(room: ChatRoomData): string {
   return room.displayName || room.name;
 }
 
-export function isUserRoomMember(room: ChatRoom, userId: UserId): boolean {
+export function isUserRoomMember(room: ChatRoomData, userId: UserId): boolean {
   return room.members.some(member => member.userId === userId);
 }
 
-export function getUserRoomRole(room: ChatRoom, userId: UserId): MemberRole | null {
+export function getUserRoomRole(room: ChatRoomData, userId: UserId): MemberRole | null {
   const member = room.members.find(member => member.userId === userId);
   return member?.role || null;
 }
 
-export function canUserAccessRoom(room: ChatRoom, userId: UserId): boolean {
+export function canUserAccessRoom(room: ChatRoomData, userId: UserId): boolean {
   // Public rooms are accessible to everyone
   if (room.privacy.isPublic) {
     return true;
@@ -252,12 +253,12 @@ export function canUserAccessRoom(room: ChatRoom, userId: UserId): boolean {
   return isUserRoomMember(room, userId);
 }
 
-export function canUserModerateRoom(room: ChatRoom, userId: UserId): boolean {
+export function canUserModerateRoom(room: ChatRoomData, userId: UserId): boolean {
   const role = getUserRoomRole(room, userId);
   return role === 'owner' || role === 'admin' || role === 'moderator';
 }
 
-export function getRoomSummary(room: ChatRoom): string {
+export function getRoomSummary(room: ChatRoomData): string {
   const memberText = room.stats.memberCount === 1 ? 'member' : 'members';
   return `${room.stats.memberCount} ${memberText}`;
 }

@@ -7,14 +7,14 @@
 
 import { CHAT_EVENTS } from './ChatEventConstants';
 
+import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+
 export interface ChatMessageEventData {
-  readonly messageId: string;
-  readonly content: string;
+  readonly eventType: 'chat:message-received';
   readonly roomId: string;
-  readonly senderId: string;
-  readonly senderName: string;
+  readonly messageId: string;
+  readonly message: ChatMessageData;  // Full domain object, not flat fields
   readonly timestamp: string;
-  readonly messageType: 'user' | 'assistant' | 'system';
 }
 
 export interface ChatParticipantEventData {

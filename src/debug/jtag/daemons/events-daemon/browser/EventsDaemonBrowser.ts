@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { DOMEventBridge } from '../../../system/events/browser/DOMEventBridge';
-import type { ChatMessage } from '../../chat-daemon/shared/ChatTypes';
+import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 
 export class EventsDaemonBrowser extends EventsDaemon {
   protected eventManager = new EventManager();
@@ -49,7 +49,7 @@ export class EventsDaemonBrowser extends EventsDaemon {
   /**
    * Emit a chat message event to trigger DOM events for widgets
    */
-  public emitChatMessageEvent(message: ChatMessage): void {
+  public emitChatMessageEvent(message: ChatMessageData): void {
     this.eventManager.events.emit('chat-message-sent', { message });
     console.log(`💬 EventsDaemonBrowser: Emitted chat-message-sent event for message ${message.messageId}`);
   }

@@ -8,8 +8,8 @@
  * Each ChatContentType gets its own specialized renderer that extends this base.
  */
 
-import type { ChatMessage } from '../../../system/data/domains/ChatMessage';
-import { ChatMessageHelpers } from './ChatModuleTypes';
+import { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import { ChatMessageDataHelpers } from './ChatModuleTypes';
 import type { ChatMessagePayload, ChatContentType } from './ChatMessagePayload';
 
 /**
@@ -56,19 +56,19 @@ export abstract class BaseMessageRowWidget {
    * Each message type implements this differently
    * Future: May return Promise<string> for async widget rendering
    */
-  abstract renderContent(message: ChatMessage): string;
+  abstract renderContent(message: ChatMessageData): string;
   
   /**
    * Abstract method for content type validation
    * Ensures type safety and proper renderer selection
    */
-  abstract canRender(message: ChatMessage): boolean;
+  abstract canRender(message: ChatMessageData): boolean;
   
   /**
    * Hook for future intersection observer integration
    * Called when message becomes visible in viewport
    */
-  protected onMessageVisible(message: ChatMessage): void {
+  protected onMessageVisible(message: ChatMessageData): void {
     this.state = { ...this.state, isVisible: true };
   }
   
@@ -76,7 +76,7 @@ export abstract class BaseMessageRowWidget {
    * Hook for future interaction handling
    * Called when user interacts with rendered message
    */
-  protected onMessageInteraction(message: ChatMessage, interactionType: string): void {
+  protected onMessageInteraction(message: ChatMessageData, interactionType: string): void {
     this.state = { 
       ...this.state, 
       interactionCount: (this.state.interactionCount || 0) + 1 
@@ -90,12 +90,12 @@ export abstract class BaseMessageRowWidget {
    * - Timestamp display
    * - Reaction system
    */
-  public renderMessageContainer(message: ChatMessage, currentUserId: string): string {
+  public renderMessageContainer(message: ChatMessageData, currentUserId: string): string {
     // Use semantic helper methods for clean, explicit logic
-    const isCurrentUser = ChatMessageHelpers.isFromCurrentUser(message, currentUserId);
-    const alignment = ChatMessageHelpers.getAlignment(message, currentUserId);
-    const userClass = ChatMessageHelpers.getUserPositionClass(message, currentUserId);
-    const displayName = ChatMessageHelpers.getDisplayName(message);
+    const isCurrentUser = ChatMessageDataHelpers.isFromCurrentUser(message, currentUserId);
+    const alignment = ChatMessageDataHelpers.getAlignment(message, currentUserId);
+    const userClass = ChatMessageDataHelpers.getUserPositionClass(message, currentUserId);
+    const displayName = ChatMessageDataHelpers.getDisplayName(message);
 
     console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", source="${message.metadata.source}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
 
@@ -136,9 +136,9 @@ export abstract class BaseMessageRowWidget {
   /**
    * Render reaction system (if message has reactions)
    */
-  private renderReactions(message: ChatMessage): string {
-    // For future ChatMessagePayload integration
-    // const payload = message as unknown as ChatMessagePayload;
+  private renderReactions(message: ChatMessageData): string {
+    // For future ChatMessageDataPayload integration
+    // const payload = message as unknown as ChatMessageDataPayload;
     // if (payload.reactions && payload.reactions.length > 0) {
     //   return `<div class="reactions">${payload.reactions.map(r => 
     //     `<span class="reaction">${r.emoji} ${r.count}</span>`
@@ -150,7 +150,7 @@ export abstract class BaseMessageRowWidget {
   /**
    * Render message status (sending, sent, delivered, error)
    */
-  private renderMessageStatus(message: ChatMessage): string {
+  private renderMessageStatus(message: ChatMessageData): string {
     if (message.status && message.status !== 'sent') {
       const statusIcon = {
         'sending': '⏳',
@@ -178,7 +178,7 @@ export type MessageRendererRegistry = Record<ChatContentType, new(options?: Mess
  */
 export type WidgetMessageRendererRegistry = Record<ChatContentType, {
   readonly rendererClass: new(options?: MessageRendererOptions) => BaseMessageRowWidget;
-  readonly widgetClass?: new(message: ChatMessage) => any; // Future BaseWidget extension
+  readonly widgetClass?: new(message: ChatMessageData) => any; // Future BaseWidget extension
   readonly requiresIntersectionObserver?: boolean;
   readonly supportsLazyLoading?: boolean;
 }>;
@@ -198,13 +198,19 @@ export class TextMessageRowWidget extends BaseMessageRowWidget {
     });
   }
   
-  canRender(message: ChatMessage): boolean {
-    return typeof message.content.text === 'string' && message.content.text.trim().length > 0;
+  canRender(message: ChatMessageData): boolean {
+    if (!message.content) {
+      throw new Error('TextMessageRowWidget.canRender: message.content is required');
+    }
+    if (typeof message.content.text !== 'string') {
+      throw new Error(`TextMessageRowWidget.canRender: message.content.text must be string, got ${typeof message.content.text}`);
+    }
+    return message.content.text.trim().length > 0;
   }
 
-  renderContent(message: ChatMessage): string {
+  renderContent(message: ChatMessageData): string {
     if (!this.canRender(message)) {
-      return '<p class="text-content error">Invalid message content</p>';
+      throw new Error('TextMessageRowWidget.renderContent: message failed canRender check');
     }
     
     const customClasses = this.options.customClassNames?.join(' ') || '';
@@ -241,14 +247,14 @@ export class ImageMessageRowWidget extends BaseMessageRowWidget {
     });
   }
   
-  canRender(message: ChatMessage): boolean {
-    // Future: Check for image content type in ChatMessagePayload
+  canRender(message: ChatMessageData): boolean {
+    // Future: Check for image content type in ChatMessageDataPayload
     return message.content.text.includes('http') &&
            (message.content.text.includes('.jpg') || message.content.text.includes('.png') ||
             message.content.text.includes('.gif') || message.content.text.includes('.webp'));
   }
   
-  renderContent(message: ChatMessage): string {
+  renderContent(message: ChatMessageData): string {
     if (!this.canRender(message)) {
       return '<p class="text-content error">Invalid image content</p>';
     }
@@ -289,52 +295,44 @@ export class ImageMessageRowWidget extends BaseMessageRowWidget {
  * Future: Support widget options and intersection observer configuration
  */
 export class MessageRowWidgetFactory {
-  private static renderers: Record<string, new(options?: MessageRendererOptions) => BaseMessageRowWidget> = {
+  private static readonly renderers: Record<string, new(options?: MessageRendererOptions) => BaseMessageRowWidget> = {
     'text': TextMessageRowWidget,
     'image': ImageMessageRowWidget,
-    // Future renderers will be added here:
-    // 'url_card': URLCardMessageRowWidget,
-    // 'video': VideoMessageRowWidget,
-    // 'rich_text': RichTextMessageRowWidget,
-    // etc.
   };
   
   /**
-   * Smart renderer selection with content analysis
-   * Future: Use ChatMessagePayload.contentType for type-safe selection
+   * Type-safe renderer selection with strong typing
    */
   static createRenderer(
-    message: ChatMessage, 
+    message: ChatMessageData,
     options: MessageRendererOptions = {}
   ): BaseMessageRowWidget {
-    // Intelligent content type detection
-    let contentType = 'text'; // Default
-    
-    // Smart detection based on content analysis
-    const messageText = message.content?.text || '';
+    if (!message) {
+      throw new Error('MessageRowWidgetFactory.createRenderer: message is required');
+    }
+    if (!message.content) {
+      throw new Error('MessageRowWidgetFactory.createRenderer: message.content is required');
+    }
+    if (typeof message.content.text !== 'string') {
+      throw new Error(`MessageRowWidgetFactory.createRenderer: message.content.text must be string, got ${typeof message.content.text}`);
+    }
+
+    // Strong type-safe content type detection
+    let contentType: ChatContentType = 'text';
+
+    const messageText = message.content.text;
     if (messageText.includes('http') &&
         (messageText.includes('.jpg') || messageText.includes('.png') ||
          messageText.includes('.gif') || messageText.includes('.webp'))) {
       contentType = 'image';
     }
-    // Future: Add more intelligent detection
-    // else if (message.content.includes('<') && message.content.includes('>')) {
-    //   contentType = 'rich_text';
-    // }
-    // else if (message.content.startsWith('http') && !contentType.includes('image')) {
-    //   contentType = 'url_card';
-    // }
-    
-    const RendererClass = this.renderers[contentType] || TextMessageRowWidget;
-    const renderer = new RendererClass(options);
-    
-    // Validation check before returning
-    if (!renderer.canRender(message)) {
-      console.warn(`Renderer ${contentType} cannot render message, falling back to text`);
-      return new TextMessageRowWidget(options);
+
+    // Type-safe renderer selection
+    const RendererClass = this.renderers[contentType];
+    if (!RendererClass) {
+      throw new Error(`MessageRowWidgetFactory.createRenderer: No renderer found for content type "${contentType}"`);
     }
-    
-    return renderer;
+    return new RendererClass(options);
   }
   
   /**
