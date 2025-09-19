@@ -24,6 +24,8 @@ import type {
 import { userIdManager } from '../../../system/shared/UserIdManager';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { InfiniteScrollHelper, type CursorPaginationState } from '../shared/InfiniteScrollHelper';
+import { ChatMessageRenderer } from '../shared/ChatMessageRenderer';
+import { ChatMessageLoader } from '../shared/ChatMessageLoader';
 
 /**
  * Scroll position state for persistence across reloads
@@ -42,6 +44,8 @@ export class ChatWidget extends ChatWidgetBase {
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
   private scrollHelper?: InfiniteScrollHelper;
+  private messageLoader?: ChatMessageLoader;
+  private messageRenderer?: ChatMessageRenderer;
   private messagesContainer?: HTMLElement;
 
   // Event handler references for proper cleanup
@@ -63,6 +67,10 @@ export class ChatWidget extends ChatWidgetBase {
       enableScreenshots: true
     });
     this.currentRoom = roomId;
+
+    // Initialize loader immediately (doesn't need user ID)
+    this.messageLoader = new ChatMessageLoader(this.executeCommand.bind(this));
+    // messageRenderer will be initialized after currentUserId is set
   }
 
   // Static property required by widget registration system
@@ -87,6 +95,9 @@ export class ChatWidget extends ChatWidgetBase {
     const userIdString = await userIdManager.getCurrentUserId();
     this.currentUserId = userIdString as UserId; // Cast to branded type
     console.log(`🔧 CLAUDE-USER-ID-DEBUG: Initialized persistent User ID: ${this.currentUserId}`);
+
+    // Initialize renderer now that we have currentUserId
+    this.messageRenderer = new ChatMessageRenderer(this.currentUserId);
 
     // Set current session ID from JTAG system context (REQUIRED)
     const client = await JTAGClient.sharedInstance;
@@ -551,60 +562,17 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   /**
-   * Create a single message element using DOM - no HTML strings!
+   * Create a single message element - delegated to renderer
    */
   private createMessageElement(message: ChatMessageData): HTMLElement {
-    const isCurrentUser = message.senderId === this.currentUserId;
-    const alignment = isCurrentUser ? 'right' : 'left';
-    const timestamp = new Date(message.timestamp).toLocaleString();
-    const content = message.content?.text || '';
-
-    // console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${this.currentUserId}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
-
-    // Create elements using DOM methods
-    const messageRow = document.createElement('div');
-    messageRow.className = `message-row ${alignment}`;
-    messageRow.setAttribute('data-message-id', message.id);
-
-    const messageBubble = document.createElement('div');
-    messageBubble.className = 'message-bubble current-user';
-
-    const messageHeader = document.createElement('div');
-    messageHeader.className = 'message-header';
-
-    const timeSpan = document.createElement('span');
-    timeSpan.className = 'message-time';
-    timeSpan.textContent = timestamp;
-    messageHeader.appendChild(timeSpan);
-
-    const messageContentDiv = document.createElement('div');
-    messageContentDiv.className = 'message-content';
-
-    const textContent = document.createElement('p');
-    textContent.className = 'text-content chat-message-renderer';
-    textContent.setAttribute('data-interactive', 'true');
-    textContent.setAttribute('tabindex', '0');
-    textContent.textContent = content; // Safe text content, no HTML injection
-
-    messageContentDiv.appendChild(textContent);
-    messageBubble.appendChild(messageHeader);
-    messageBubble.appendChild(messageContentDiv);
-    messageRow.appendChild(messageBubble);
-
-    return messageRow;
+    return this.messageRenderer!.createMessageElement(message);
   }
 
   /**
-   * Render messages using DOM elements - no HTML strings!
+   * Render messages using DOM elements - delegated to renderer
    */
-
   private renderMessages(): string {
-    // Create a temporary container to get the HTML
-    const tempContainer = document.createElement('div');
-    this.messages.forEach(msg => {
-      tempContainer.appendChild(this.createMessageElement(msg));
-    });
-    return tempContainer.innerHTML;
+    return this.messageRenderer!.renderMessages(this.messages);
   }
   
   /**
@@ -689,6 +657,7 @@ export class ChatWidget extends ChatWidgetBase {
       this.scrollHelper?.forceIntersectionCheck();
     });
   }
+
 
   protected override setupEventListeners(): void {
     super.setupEventListeners();
