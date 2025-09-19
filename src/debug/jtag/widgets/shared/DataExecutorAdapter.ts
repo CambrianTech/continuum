@@ -1,28 +1,38 @@
 /**
- * Data Executor Adapter - Simple Bridge to JTAG Commands
+ * Data Executor Adapter - Elegant Bridge to BaseWidget executeCommand
+ *
+ * Clean adapter that bridges our DataExecutor interface with BaseWidget's
+ * elegant executeCommand pattern, preserving full type safety.
  */
 
 import type { BaseEntity } from '../../system/data/domains/CoreTypes';
-import type { DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataExecutor, DataQueryParams, DataQueryResult } from './DataLoaders';
+import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 
 export function createDataExecutor<T extends BaseEntity>(
-  executeCommand: any
+  executeCommand: <P extends CommandParams, R extends CommandResult>(command: string, params?: P) => Promise<R>
 ): DataExecutor<T> {
   return {
     async execute(params: DataQueryParams): Promise<DataQueryResult<T>> {
-      const result = await executeCommand('data/list', {
+      // Elegant translation - BaseWidget executeCommand will add context/sessionId
+      const dataListParams = {
         collection: params.collection,
-        filter: params.filter || {},
-        orderBy: params.orderBy || [],
-        limit: params.limit || 50,
+        filter: params.filter ?? {},
+        orderBy: params.orderBy ? [...params.orderBy] : [],
+        limit: params.limit ?? 50,
         ...(params.cursor && { cursor: params.cursor })
-      });
+      } satisfies Omit<DataListParams, 'context' | 'sessionId'>;
+
+      const result = await executeCommand<DataListParams, DataListResult<T>>(
+        'data/list',
+        dataListParams as DataListParams
+      );
 
       return {
         success: result.success,
-        items: result.items || [],
-        totalCount: result.count || 0
+        items: result.items ?? [],
+        totalCount: result.count ?? 0
       };
     }
   };
