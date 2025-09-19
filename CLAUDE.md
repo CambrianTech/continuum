@@ -144,12 +144,33 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 # Debug commands (your engineering toolbox)
 ./jtag debug/logs --tailLines=50 --includeErrorsOnly=true
-./jtag debug/widget-events --widgetSelector="chat-widget" 
+./jtag debug/widget-events --widgetSelector="chat-widget"
 ./jtag debug/html-inspector --selector="chat-widget"
+./jtag debug/scroll-test --target=top --captureMetrics=true --waitTime=1000
 
 # Screenshots (visual feedback)
 ./jtag screenshot --querySelector="chat-widget" --filename="debug.png"
 
+```
+
+### 🎯 INTERSECTION OBSERVER & INFINITE SCROLL DEBUGGING
+```bash
+# Test intersection observer behavior with animated scroll
+./jtag debug/scroll-test --target=top --behavior=smooth --captureMetrics=true
+
+# Instant scroll to trigger intersection observer immediately
+./jtag debug/scroll-test --target=top --behavior=instant
+
+# Check if intersection observer triggered after scroll
+./jtag debug/logs --filterPattern="Intersection|loadMore|EntityScroller" --tailLines=20
+
+# Visual verification of scroll position and loaded content
+./jtag screenshot --querySelector="chat-widget" --filename="scroll-debug.png"
+
+# Complete infinite scroll debugging workflow
+./jtag debug/scroll-test --target=top --captureMetrics=true --waitTime=2000
+./jtag debug/logs --filterPattern="EntityScroller" --tailLines=30
+./jtag screenshot --querySelector="chat-widget"
 ```
 
 ### 🎯 SCIENTIFIC DEVELOPMENT METHODOLOGY  
