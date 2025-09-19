@@ -333,7 +333,6 @@ export class JTAGRouterDynamic extends JTAGRouter {
       // Throttle verbose console routing messages to avoid spam
       const isConsoleRoute = message.endpoint?.includes('console');
       if (!isConsoleRoute) {
-        console.debug(`✅ JTAGRouterDynamic: Successfully routed ${message.endpoint} via base router`);
       }
       
       // Extract response from RouterResult union type (same pattern as base router)

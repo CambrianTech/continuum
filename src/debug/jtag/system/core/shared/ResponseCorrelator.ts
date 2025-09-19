@@ -46,7 +46,6 @@ export class ResponseCorrelator {
         timeout
       });
 
-      console.log(`🔗 ResponseCorrelator: Created request ${correlationId}`);
     });
   }
 
@@ -64,7 +63,6 @@ export class ResponseCorrelator {
     this.pendingRequests.delete(correlationId);
     pending.resolve(response);
     
-    console.log(`✅ ResponseCorrelator: Resolved request ${correlationId}`);
     return true;
   }
 

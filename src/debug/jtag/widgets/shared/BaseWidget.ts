@@ -386,7 +386,6 @@ export abstract class BaseWidget extends HTMLElement {
       
       // FileLoadResult IS the command result - no nested structure
       if (result && result.success && result.content) {
-        console.log(`✅ ${this.config.widgetName}: ${resourceType} loaded successfully (${result.bytesRead} bytes)`);
         return result.content;
       } else {
         console.warn(`⚠️ ${this.config.widgetName}: ${resourceType} load failed: ${resourcePath}`);

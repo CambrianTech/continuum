@@ -44,7 +44,7 @@ if (isBrowser) {
       
       // Set up global window.jtag for backwards compatibility with tests
       (window as any).jtag = jtagClient;
-      console.log('🌐 Widget UI: window.jtag global established');
+
       
       console.log('✅ Widget UI: JTAG Client connected successfully');
     } catch (error) {

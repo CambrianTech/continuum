@@ -28,7 +28,6 @@ export abstract class CommandDaemon extends DaemonBase {
    */
   register(name: string, command: CommandBase<CommandParams, CommandResult>): void {
     this.commands.set(name, command);
-    console.log(`🎯 ${this.toString()}: Registered command '${name}'`);
   }
 
   /**
@@ -42,14 +41,12 @@ export abstract class CommandDaemon extends DaemonBase {
         const command = this.createCommand(commandEntry, this.context, commandEntry.name);
         if (command) {
           this.register(commandEntry.name, command);
-          console.log(`📦 Registered browser command: ${commandEntry.name} (${commandEntry.className})`);
         }
       } catch (error: unknown) {
         console.error(`❌ Failed to create browser command ${commandEntry.name}:`, error);
       }
     }
     
-    console.log(`🎯 ${this.toString()}: Auto-initialized ${this.commands.size} browser commands`);
   }
 
   protected abstract get commandEntries(): CommandEntry[];
