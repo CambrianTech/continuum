@@ -25,6 +25,17 @@ import { userIdManager } from '../../../system/shared/UserIdManager';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { InfiniteScrollHelper, type CursorPaginationState } from '../shared/InfiniteScrollHelper';
 
+/**
+ * Scroll position state for persistence across reloads
+ */
+interface ScrollState {
+  readonly scrollTop: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
+  readonly timestamp: number;
+  readonly visibleMessageIds: string[];
+}
+
 export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessageData[] = [];
   private currentRoom: string;
@@ -95,6 +106,21 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    // Save scroll position and context before cleanup
+    if (this.messagesContainer) {
+      const scrollState: ScrollState = {
+        scrollTop: this.messagesContainer.scrollTop,
+        scrollHeight: this.messagesContainer.scrollHeight,
+        clientHeight: this.messagesContainer.clientHeight,
+        timestamp: Date.now(),
+        visibleMessageIds: this.getVisibleMessageIds()
+      };
+
+      const scrollStateKey = `chat_scroll_${this.currentRoom}`;
+      await this.storeData(scrollStateKey, scrollState, { persistent: true });
+      console.log(`💾 ChatWidget: Saved scroll position for room "${this.currentRoom}"`, scrollState);
+    }
+
     // Cleanup infinite scroll helper
     if (this.scrollHelper) {
       this.scrollHelper.cleanup();
@@ -147,8 +173,8 @@ export class ChatWidget extends ChatWidgetBase {
       }
     }
 
-    // Auto-scroll to bottom to show latest messages
-    this.scrollToBottom();
+    // Restore scroll position if available, otherwise scroll to bottom
+    await this.restoreScrollPosition();
   }
 
 
@@ -162,6 +188,7 @@ export class ChatWidget extends ChatWidgetBase {
       const client = await JTAGClient.sharedInstance;
 
       // Load initial batch of recent messages (no cursor = most recent)
+      // chat/get-messages should return messages in chronological order (oldest to newest)
       const historyResult = await this.executeCommand<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
         context: client.context,
         sessionId: client.sessionId,
@@ -207,17 +234,19 @@ export class ChatWidget extends ChatWidgetBase {
       const client = await JTAGClient.sharedInstance;
 
       // Use data/list command with cursor for older messages
+      // NOTE: We want messages BEFORE (older than) the cursor timestamp
+      // But we need them in ascending order to append at the beginning correctly
       const olderResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         context: client.context,
         sessionId: client.sessionId,
         collection: 'chat_messages',
         filter: { roomId: this.currentRoom },
-        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        orderBy: [{ field: 'timestamp', direction: 'asc' }], // Changed to ASC for proper chronological order
         limit: 20,
         cursor: {
           field: 'timestamp',
           value: cursor,
-          direction: 'before'
+          direction: 'before' // Get messages older than cursor
         }
       });
 
@@ -443,6 +472,73 @@ export class ChatWidget extends ChatWidgetBase {
       }
     } catch (error) {
       console.error('❌ ChatWidget: Auto-scroll failed:', error);
+    }
+  }
+
+  /**
+   * Get message IDs currently visible in the viewport
+   */
+  private getVisibleMessageIds(): string[] {
+    if (!this.messagesContainer) return [];
+
+    const containerRect = this.messagesContainer.getBoundingClientRect();
+    const messageElements = this.messagesContainer.querySelectorAll('[data-message-id]');
+    const visibleIds: string[] = [];
+
+    messageElements.forEach(el => {
+      const rect = el.getBoundingClientRect();
+      const isVisible = rect.top < containerRect.bottom && rect.bottom > containerRect.top;
+      if (isVisible) {
+        const messageId = el.getAttribute('data-message-id');
+        if (messageId) visibleIds.push(messageId);
+      }
+    });
+
+    return visibleIds;
+  }
+
+  /**
+   * Restore scroll position from saved state
+   */
+  private async restoreScrollPosition(): Promise<void> {
+    try {
+      const scrollStateKey = `chat_scroll_${this.currentRoom}`;
+      const savedState = await this.getData(scrollStateKey) as ScrollState | null;
+
+      if (savedState && savedState.timestamp && this.messagesContainer) {
+        const timeSinceScroll = Date.now() - savedState.timestamp;
+
+        // Only restore if scroll position was saved recently (within 5 minutes)
+        if (timeSinceScroll < 5 * 60 * 1000) {
+          console.log(`🔄 ChatWidget: Restoring scroll position`, savedState);
+
+          // Try to restore to saved scroll position
+          this.messagesContainer.scrollTop = savedState.scrollTop;
+
+          // Verify we landed on a familiar message, if not scroll to bottom
+          const currentVisibleIds = this.getVisibleMessageIds();
+          const hasMatchingMessage = savedState.visibleMessageIds.some((id: string) =>
+            currentVisibleIds.includes(id)
+          );
+
+          if (!hasMatchingMessage) {
+            console.log(`⚠️ ChatWidget: Couldn't find matching messages, scrolling to bottom`);
+            this.scrollToBottom();
+          } else {
+            console.log(`✅ ChatWidget: Successfully restored scroll position`);
+          }
+        } else {
+          console.log(`⏰ ChatWidget: Scroll state too old (${Math.round(timeSinceScroll/60000)}min), scrolling to bottom`);
+          this.scrollToBottom();
+        }
+      } else {
+        console.log(`📍 ChatWidget: No saved scroll state for key "${scrollStateKey}", scrolling to bottom`);
+        console.log(`📊 ChatWidget: getData returned:`, savedState, typeof savedState);
+        this.scrollToBottom();
+      }
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to restore scroll position:`, error);
+      this.scrollToBottom();
     }
   }
 
