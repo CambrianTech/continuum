@@ -117,6 +117,9 @@ export function createScroller<T extends BaseEntity>(
         if (entry?.isIntersecting && hasMoreItems && !isLoading) {
           console.log('🔄 EntityScroller: Triggering loadMore()');
           scroller.loadMore();
+        } else if (entry?.isIntersecting && !isLoading) {
+          console.log('🔄 EntityScroller: FORCED loadMore() for debugging - ignoring hasMoreItems:', hasMoreItems);
+          scroller.loadMore();
         }
       },
       {
@@ -151,11 +154,20 @@ export function createScroller<T extends BaseEntity>(
   const scroller: EntityScroller<T> = {
     // Load initial data
     async load(): Promise<void> {
+      console.log('🔄 EntityScroller: load() called', { isLoading, pageSize: config.pageSize });
+
       if (isLoading) return;
 
       isLoading = true;
       try {
+        console.log('📡 EntityScroller: Calling load function...');
         const result = await load(undefined, config.pageSize);
+
+        console.log('✅ EntityScroller: Load result received', {
+          itemsLength: result.items.length,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor
+        });
 
         entities = [];
         container.innerHTML = '';
@@ -164,6 +176,12 @@ export function createScroller<T extends BaseEntity>(
           addEntitiesToDOM(result.items, 'end');
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
+
+          console.log('🔧 EntityScroller: State updated after initial load', {
+            entitiesLength: entities.length,
+            hasMoreItems,
+            cursor
+          });
 
           // CRITICAL FIX: Setup observer AFTER DOM is painted
           // This fixes the intersection observer timing issue
@@ -174,9 +192,14 @@ export function createScroller<T extends BaseEntity>(
         } else {
           // No items, still setup observer for potential future loads
           setupObserver();
+          console.log('⚠️ EntityScroller: No items in initial load, hasMoreItems set to:', hasMoreItems);
         }
+      } catch (error) {
+        console.error('❌ EntityScroller: Error during load():', error);
+        hasMoreItems = false; // Set to false on error
       } finally {
         isLoading = false;
+        console.log('🔧 EntityScroller: load() completed, final state:', { hasMoreItems, entitiesLength: entities.length });
       }
     },
 
@@ -200,6 +223,12 @@ export function createScroller<T extends BaseEntity>(
           addEntitiesToDOM(result.items, position);
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
+
+          // CRITICAL: Reposition sentinel after adding items to start
+          if (config.direction === 'newest-first' && sentinel && position === 'start') {
+            container.insertBefore(sentinel, container.firstChild);
+            console.log('🎯 EntityScroller: Repositioned sentinel at TOP after loadMore');
+          }
         } else {
           console.log('🏁 EntityScroller: No more items to load');
           hasMoreItems = false;

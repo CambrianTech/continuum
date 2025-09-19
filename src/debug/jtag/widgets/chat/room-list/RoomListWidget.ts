@@ -11,7 +11,7 @@ import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorage
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
-import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
+import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 
 interface RoomData {
   readonly id?: string;        // Some rooms use 'id' field
@@ -71,7 +71,7 @@ export class RoomListWidget extends ChatWidgetBase {
       const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         context: client.context,
         sessionId: client.sessionId,
-        collection: COLLECTIONS.MESSAGES,
+        collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId: room.id, isRead: false }
       });
       
