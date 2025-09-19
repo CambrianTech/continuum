@@ -30,8 +30,8 @@ export class RoomListWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': RoomListWidget onWidgetInitialize called');
-    console.log('🏠 RoomListWidget: Initializing...');
+    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': RoomListWidget onWidgetInitialize called with FAIL-FAST validation');
+    console.log('🏠 RoomListWidget: Initializing with strict validation...');
 
     // Load rooms from data system or use defaults
     await this.loadRooms();
@@ -79,35 +79,100 @@ export class RoomListWidget extends ChatWidgetBase {
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
 
-    if (result?.success && result.items?.length > 0) {
-      // Use domain objects directly - no manual transformation needed
-      this.rooms = result.items
-        .filter((room: ChatRoomData) => room?.id && room?.name);
-
-      console.log(`✅ RoomListWidget: Loaded ${this.rooms.length} rooms from database`);
-    } else {
-      console.warn('⚠️ RoomListWidget: No rooms found in database');
-      this.rooms = [];
+    // FAIL FAST: Don't allow silent failures with optional chaining
+    if (!result) {
+      throw new Error('RoomListWidget: Database command returned null - system failure');
     }
+
+    if (!result.success) {
+      throw new Error(`RoomListWidget: Database command failed: ${result.error || 'Unknown error'}`);
+    }
+
+    if (!result.items) {
+      throw new Error('RoomListWidget: Database returned no items array - data structure error');
+    }
+
+    if (result.items.length === 0) {
+      throw new Error('RoomListWidget: No rooms found in database - check data seeding');
+    }
+
+    // Validate required fields - no optional chaining
+    const validRooms = result.items.filter((room: ChatRoomData) => {
+      if (!room) {
+        console.error('❌ RoomListWidget: Null room in database results');
+        return false;
+      }
+      if (!room.id) {
+        console.error('❌ RoomListWidget: Room missing required id:', room);
+        return false;
+      }
+      if (!room.name) {
+        console.error('❌ RoomListWidget: Room missing required name:', room);
+        return false;
+      }
+      return true;
+    });
+
+    if (validRooms.length === 0) {
+      throw new Error('RoomListWidget: No valid rooms found - all rooms missing required fields');
+    }
+
+    this.rooms = validRooms;
+    console.log(`✅ RoomListWidget: Loaded ${this.rooms.length} valid rooms from database`);
 
     // Calculate actual unread counts for each room
     await this.calculateUnreadCounts();
   }
 
   private renderRoomList(): string {
-    return this.rooms.map(room => {
-      const isActive = this.currentRoomId === room.id;
-      const unreadCount = this.unreadCounts.get(room.id) || 0;
-      const unreadBadge = unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : '';
-      const displayName = room.displayName || room.name;
-
+    // GRACEFUL EMPTY STATE: Show "no content" template instead of failing
+    if (!this.rooms || this.rooms.length === 0) {
       return `
-        <div class="room-item ${isActive ? 'active' : ''}" data-room-id="${room.id}">
-          <span class="room-name">${displayName}</span>
-          ${unreadBadge}
+        <div class="no-rooms-message">
+          <span class="no-content-icon">🏠</span>
+          <p class="no-content-text">No rooms available</p>
+          <small class="no-content-hint">Check your data seeding or create some rooms</small>
         </div>
       `;
+    }
+
+    // REQUIRED ROW FUNCTION: Map each room using validated row rendering
+    return this.rooms.map((room, index) => {
+      try {
+        return this.renderSingleRoom(room);
+      } catch (error) {
+        throw new Error(`RoomListWidget: Failed to render room at index ${index}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }).join('');
+  }
+
+  /**
+   * REQUIRED ROW FUNCTION: Renders a single room item
+   * This is the "row function" that must work for any valid room data
+   */
+  private renderSingleRoom(room: ChatRoomData): string {
+    // FAIL FAST: Validate required fields for row rendering
+    if (!room) {
+      throw new Error('RoomListWidget: Cannot render null room');
+    }
+    if (!room.id) {
+      throw new Error(`RoomListWidget: Room missing required 'id' field: ${JSON.stringify(room)}`);
+    }
+    if (!room.name) {
+      throw new Error(`RoomListWidget: Room missing required 'name' field: ${JSON.stringify(room)}`);
+    }
+
+    const isActive = this.currentRoomId === room.id;
+    const unreadCount = this.unreadCounts.get(room.id) || 0;
+    const unreadBadge = unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : '';
+    const displayName = room.displayName || room.name;
+
+    return `
+      <div class="room-item ${isActive ? 'active' : ''}" data-room-id="${room.id}">
+        <span class="room-name">${displayName}</span>
+        ${unreadBadge}
+      </div>
+    `;
   }
 
   protected override setupEventListeners(): void {

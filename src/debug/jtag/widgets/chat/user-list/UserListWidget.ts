@@ -45,17 +45,46 @@ export class UserListWidget extends ChatWidgetBase {
       limit: 100
     });
 
-    if (!result?.success || !result.items?.length) {
-      console.error('❌ UserListWidget: No users found - check seeding');
-      this.users = [];
-      return;
+    // FAIL FAST: Don't allow silent failures with optional chaining
+    if (!result) {
+      throw new Error('UserListWidget: Database command returned null - system failure');
     }
 
-    // Use domain objects directly - no manual transformation needed
-    this.users = result.items
-      .filter((user: UserData) => user?.id && user?.profile?.displayName);
+    if (!result.success) {
+      throw new Error(`UserListWidget: Database command failed: ${result.error || 'Unknown error'}`);
+    }
 
-    console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
+    if (!result.items) {
+      throw new Error('UserListWidget: Database returned no items array - data structure error');
+    }
+
+    if (result.items.length === 0) {
+      throw new Error('UserListWidget: No users found in database - check data seeding');
+    }
+
+    // Validate required fields - no optional chaining
+    const validUsers = result.items.filter((user: UserData) => {
+      if (!user) {
+        console.error('❌ UserListWidget: Null user in database results');
+        return false;
+      }
+      if (!user.id) {
+        console.error('❌ UserListWidget: User missing required id:', user);
+        return false;
+      }
+      if (!user.profile?.displayName) {
+        console.error('❌ UserListWidget: User missing required profile.displayName:', user);
+        return false;
+      }
+      return true;
+    });
+
+    if (validUsers.length === 0) {
+      throw new Error('UserListWidget: No valid users found - all users missing required fields');
+    }
+
+    this.users = validUsers;
+    console.log(`✅ UserListWidget: Loaded ${this.users.length} valid users from database`);
     console.log(`   Users: ${this.users.map(u => u.profile.displayName).join(', ')}`);
   }
 
@@ -70,15 +99,49 @@ export class UserListWidget extends ChatWidgetBase {
 
   protected override getReplacements(): Record<string, string> {
     return {
-      '<!-- USER_LIST_CONTENT -->': this.renderUserListHTML()
+      '<!-- USER_LIST_CONTENT -->': this.renderUserListHTML(),
+      '<!-- USER_COUNT -->': this.users.length.toString()
     };
   }
 
   private renderUserListHTML(): string {
-    return this.users.map(user => this.renderUserItem(user)).join('');
+    // GRACEFUL EMPTY STATE: Show "no content" template instead of failing
+    if (!this.users || this.users.length === 0) {
+      return `
+        <div class="no-users-message">
+          <span class="no-content-icon">👤</span>
+          <p class="no-content-text">No users available</p>
+          <small class="no-content-hint">Check your data seeding or invite some users</small>
+        </div>
+      `;
+    }
+
+    // REQUIRED ROW FUNCTION: Map each user using validated row rendering
+    return this.users.map((user, index) => {
+      try {
+        return this.renderUserItem(user);
+      } catch (error) {
+        throw new Error(`UserListWidget: Failed to render user at index ${index}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }).join('');
   }
 
+  /**
+   * REQUIRED ROW FUNCTION: Renders a single user item
+   * This is the "row function" that must work for any valid user data
+   */
   private renderUserItem(user: UserData): string {
+    // FAIL FAST: Validate required fields for row rendering
+    if (!user) {
+      throw new Error('UserListWidget: Cannot render null user');
+    }
+    if (!user.id) {
+      throw new Error(`UserListWidget: User missing required 'id' field: ${JSON.stringify(user)}`);
+    }
+    if (!user.profile?.displayName) {
+      throw new Error(`UserListWidget: User missing required 'profile.displayName' field: ${JSON.stringify(user)}`);
+    }
+
     const statusClass = user.status === 'online' ? 'online' : 'offline';
     const avatar = user.profile.avatar || (user.type === 'human' ? '👤' : '🤖');
     const displayName = user.profile.displayName;
