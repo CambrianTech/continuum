@@ -15,7 +15,7 @@ export class UserListWidget extends ChatWidgetBase {
   constructor() {
     super({
       widgetName: 'UserListWidget',
-      template: 'user-list-widget.html',
+      // No template specified - use renderTemplate() method instead
       styles: 'user-list.css',
       enableAI: false,
       enableDatabase: true,
@@ -97,11 +97,20 @@ export class UserListWidget extends ChatWidgetBase {
     this.users = [];
   }
 
-  protected override getReplacements(): Record<string, string> {
-    return {
-      '<!-- USER_LIST_CONTENT -->': this.renderUserListHTML(),
-      '<!-- USER_COUNT -->': this.users.length.toString()
-    };
+  protected renderTemplate(): string {
+    return `
+      <!-- User List Widget - Sidebar navigation for users and agents -->
+      <div class="user-list-container">
+        <div class="user-list-header">
+          <span class="header-title">Users & Agents</span>
+          <span class="user-count">${this.users.length}</span>
+        </div>
+
+        <div class="user-list">
+          ${this.renderUserListHTML()}
+        </div>
+      </div>
+    `;
   }
 
   private renderUserListHTML(): string {
