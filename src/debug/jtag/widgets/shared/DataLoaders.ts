@@ -109,21 +109,6 @@ export function createDataLoader<T extends BaseEntity>(
   return async (cursor?: string, limit?: number): Promise<LoadResult<T>> => {
     const actualLimit = limit ?? config.defaultLimit;
 
-    console.log('🔧 DataLoader: Loading data', {
-      collection: config.collection,
-      cursor,
-      limit: actualLimit,
-      cursorField: config.cursor.field,
-      direction: config.cursor.direction,
-      displayOrder: config.cursor.displayOrder
-    });
-
-    console.log('🔧 DataLoader: Raw input cursor:', cursor);
-    console.log('🔧 DataLoader: Cursor transformation will be:', cursor ? {
-      field: config.cursor.field,
-      value: cursor,
-      direction: config.cursor.direction === 'desc' ? 'before' : 'after'
-    } : 'NO CURSOR');
 
     // Build clean query parameters - elegant and type-safe
     const queryParams: DataQueryParams = {
@@ -146,17 +131,9 @@ export function createDataLoader<T extends BaseEntity>(
     // Execute with clean protocol - firm typing, no casting needed
     const result = await executor.execute(queryParams);
 
-    console.log('🔧 DataLoader: DB result', {
-      success: result.success,
-      itemsCount: result.items.length,
-      totalCount: result.totalCount,
-      firstItem: result.items[0]?.[config.cursor.field],
-      lastItem: result.items[result.items.length - 1]?.[config.cursor.field]
-    });
 
     // Clean validation with firm typing
     if (!result.success || result.items.length === 0) {
-      console.log('🔧 DataLoader: No items found', { success: result.success, itemsLength: result.items.length });
       return { items: [], hasMore: false };
     }
 
@@ -179,24 +156,6 @@ export function createDataLoader<T extends BaseEntity>(
 
     const nextCursor = boundaryItem?.[config.cursor.field] as string | undefined;
 
-    console.log('🔧 DataLoader: Cursor boundary calculation', {
-      direction: config.cursor.direction,
-      rawItemsLength: rawItems.length,
-      boundaryItemIndex: config.cursor.direction === DB_DIRECTIONS.DESC ? rawItems.length - 1 : 0,
-      boundaryItemTimestamp: boundaryItem?.[config.cursor.field],
-      nextCursor,
-      firstItemTimestamp: rawItems[0]?.[config.cursor.field],
-      lastItemTimestamp: rawItems[rawItems.length - 1]?.[config.cursor.field]
-    });
-
-    console.log('🔧 DataLoader: Processed result', {
-      displayItemsCount: displayItems.length,
-      hasMoreItems,
-      boundaryItem: boundaryItem ? `${boundaryItem.id}:${boundaryItem[config.cursor.field]}` : 'none',
-      nextCursor,
-      firstDisplayItem: displayItems[0]?.[config.cursor.field],
-      lastDisplayItem: displayItems[displayItems.length - 1]?.[config.cursor.field]
-    });
 
     return {
       items: displayItems,

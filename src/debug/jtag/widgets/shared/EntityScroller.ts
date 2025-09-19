@@ -107,18 +107,7 @@ export function createScroller<T extends BaseEntity>(
     observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
-        console.log('🔧 EntityScroller: Intersection observed', {
-          isIntersecting: entry?.isIntersecting,
-          hasMoreItems,
-          isLoading,
-          entryTarget: entry?.target?.className
-        });
-
         if (entry?.isIntersecting && hasMoreItems && !isLoading) {
-          console.log('🔄 EntityScroller: Triggering loadMore()');
-          scroller.loadMore();
-        } else if (entry?.isIntersecting && !isLoading) {
-          console.log('🔄 EntityScroller: FORCED loadMore() for debugging - ignoring hasMoreItems:', hasMoreItems);
           scroller.loadMore();
         }
       },
@@ -135,39 +124,25 @@ export function createScroller<T extends BaseEntity>(
     sentinel.className = 'entity-scroller-sentinel';
     sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none;';
 
-    // CRITICAL FIX: For newest-first (chat), sentinel at TOP triggers when scrolling UP to load older messages
-    // But we need the sentinel to NOT be initially visible!
+    // For newest-first (chat), sentinel at TOP triggers when scrolling UP to load older messages
     if (config.direction === 'newest-first') {
-      // Place sentinel at top, but ONLY after we have some messages to push it out of initial view
       container.insertBefore(sentinel, container.firstChild);
-      console.log('🎯 EntityScroller: Sentinel placed at TOP for newest-first loading (triggers when scrolling up to older messages)');
     } else {
       container.appendChild(sentinel);
-      console.log('🎯 EntityScroller: Sentinel placed at BOTTOM for oldest-first loading');
     }
 
     observer.observe(sentinel);
-    console.log('🔧 EntityScroller: Observer setup complete, watching sentinel');
   };
 
   // The clean API object
   const scroller: EntityScroller<T> = {
     // Load initial data
     async load(): Promise<void> {
-      console.log('🔄 EntityScroller: load() called', { isLoading, pageSize: config.pageSize });
-
       if (isLoading) return;
 
       isLoading = true;
       try {
-        console.log('📡 EntityScroller: Calling load function...');
         const result = await load(undefined, config.pageSize);
-
-        console.log('✅ EntityScroller: Load result received', {
-          itemsLength: result.items.length,
-          hasMore: result.hasMore,
-          nextCursor: result.nextCursor
-        });
 
         entities = [];
         container.innerHTML = '';
@@ -177,60 +152,42 @@ export function createScroller<T extends BaseEntity>(
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
-          console.log('🔧 EntityScroller: State updated after initial load', {
-            entitiesLength: entities.length,
-            hasMoreItems,
-            cursor
-          });
-
-          // CRITICAL FIX: Setup observer AFTER DOM is painted
-          // This fixes the intersection observer timing issue
+          // Setup observer AFTER DOM is painted
           requestAnimationFrame(() => {
             setupObserver();
-            console.log('🔧 EntityScroller: Observer setup after DOM paint - sentinel should be positioned correctly');
           });
         } else {
-          // No items, still setup observer for potential future loads
           setupObserver();
-          console.log('⚠️ EntityScroller: No items in initial load, hasMoreItems set to:', hasMoreItems);
         }
       } catch (error) {
         console.error('❌ EntityScroller: Error during load():', error);
-        hasMoreItems = false; // Set to false on error
+        hasMoreItems = false;
       } finally {
         isLoading = false;
-        console.log('🔧 EntityScroller: load() completed, final state:', { hasMoreItems, entitiesLength: entities.length });
       }
     },
 
     // Load more data
     async loadMore(): Promise<void> {
-      console.log('🔄 EntityScroller: loadMore() called', { isLoading, hasMoreItems, cursor });
-
       if (isLoading || !hasMoreItems) {
-        console.log('🚫 EntityScroller: loadMore() skipped', { isLoading, hasMoreItems });
         return;
       }
 
       isLoading = true;
       try {
-        console.log('📡 EntityScroller: Fetching more items with cursor:', cursor);
         const result = await load(cursor, config.pageSize);
 
         if (result.items.length > 0) {
           const position = config.direction === 'newest-first' ? 'start' : 'end';
-          console.log(`✅ EntityScroller: Loaded ${result.items.length} items, adding to ${position}`);
           addEntitiesToDOM(result.items, position);
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
-          // CRITICAL: Reposition sentinel after adding items to start
+          // Reposition sentinel after adding items to start
           if (config.direction === 'newest-first' && sentinel && position === 'start') {
             container.insertBefore(sentinel, container.firstChild);
-            console.log('🎯 EntityScroller: Repositioned sentinel at TOP after loadMore');
           }
         } else {
-          console.log('🏁 EntityScroller: No more items to load');
           hasMoreItems = false;
         }
       } catch (error) {
