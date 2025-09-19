@@ -5,13 +5,12 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
-import type { BaseUser, UserType } from '../../../api/types/User';
+import type { UserData } from '../../../system/data/domains/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
-import { COLLECTIONS } from '../../../api/data-seed/SeedConstants';
+import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 
 export class UserListWidget extends ChatWidgetBase {
-  private users: BaseUser[] = [];
+  private users: UserData[] = [];
 
   constructor() {
     super({
@@ -38,7 +37,7 @@ export class UserListWidget extends ChatWidgetBase {
 
   private async loadUsersFromDatabase(): Promise<void> {
     const client = await JTAGClient.sharedInstance;
-    const result = await this.executeCommand<DataListParams, DataListResult<any>>('data/list', {
+    const result = await this.executeCommand<DataListParams, DataListResult<UserData>>('data/list', {
       context: client.context,
       sessionId: client.sessionId,
       collection: COLLECTIONS.USERS,
@@ -52,25 +51,12 @@ export class UserListWidget extends ChatWidgetBase {
       return;
     }
 
-    // Convert unified users table data to BaseUser interface
+    // Use domain objects directly - no manual transformation needed
     this.users = result.items
-      .filter(user => user?.id && user?.profile?.displayName)
-      .map(user => ({
-        id: user.id,
-        name: user.profile.displayName,
-        userType: user.type === 'ai' ? 'agent' : user.type as UserType,
-        isAuthenticated: user.status === 'online',
-        permissions: [],
-        capabilities: Object.entries(user.capabilities || {})
-          .filter(([_, enabled]) => enabled)
-          .map(([name, _]) => ({ name, enabled: true })),
-        metadata: { profile: user.profile, preferences: user.preferences },
-        createdAt: user.createdAt,
-        lastActiveAt: user.lastActiveAt
-      } as BaseUser));
+      .filter((user: UserData) => user?.id && user?.profile?.displayName);
 
     console.log(`✅ UserListWidget: Loaded ${this.users.length} users from database`);
-    console.log(`   Users: ${this.users.map(u => u.name).join(', ')}`);
+    console.log(`   Users: ${this.users.map(u => u.profile.displayName).join(', ')}`);
   }
 
   protected override async renderWidget(): Promise<void> {
@@ -92,17 +78,17 @@ export class UserListWidget extends ChatWidgetBase {
     return this.users.map(user => this.renderUserItem(user)).join('');
   }
 
-  private renderUserItem(user: BaseUser): string {
-    const statusClass = user.isAuthenticated ? 'online' : 'offline';
-    const avatar = user.userType === 'human' ? '👤' : '🤖';
-    const displayName = user.userType === 'human' && user.name === 'human' ? 'joel' : user.name;
-    
+  private renderUserItem(user: UserData): string {
+    const statusClass = user.status === 'online' ? 'online' : 'offline';
+    const avatar = user.profile.avatar || (user.type === 'human' ? '👤' : '🤖');
+    const displayName = user.profile.displayName;
+
     return `
       <div class="user-item ${statusClass}" data-user-id="${user.id}">
         <span class="user-avatar">${avatar}</span>
         <div class="user-info">
           <div class="user-name">${displayName}</div>
-          <div class="user-type">${user.userType}</div>
+          <div class="user-type">${user.type}</div>
         </div>
         <div class="user-status">
           <span class="status-indicator"></span>
