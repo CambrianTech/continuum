@@ -23,9 +23,55 @@ import type {
 } from '../shared/ChatEventTypes';
 import { userIdManager } from '../../../system/shared/UserIdManager';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
-import { InfiniteScrollHelper, type CursorPaginationState } from '../shared/InfiniteScrollHelper';
-import { ChatMessageRenderer } from '../shared/ChatMessageRenderer';
-import { ChatMessageLoader } from '../shared/ChatMessageLoader';
+import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
+import { createDataLoader, PAGINATION_PRESETS } from '../../shared/DataLoaders';
+import { createDataExecutor } from '../../shared/DataExecutorAdapter';
+import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
+
+// ChatMessageData already extends Entity via BaseEntity - no need for new interface
+
+/**
+ * Chat Message Renderer - Pure function for generic scroller
+ */
+const renderChatMessage: RenderFn<ChatMessageData> = (message, context) => {
+  const isCurrentUser = context.isCurrentUser || false;
+
+  // Create exact same DOM structure as existing ChatWidget
+  const messageRow = document.createElement('div');
+  messageRow.className = `message-row ${isCurrentUser ? 'right' : 'left'}`;
+  messageRow.setAttribute('data-message-id', message.id);
+
+  const messageBubble = document.createElement('div');
+  messageBubble.className = `message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}`;
+
+  const messageHeader = document.createElement('div');
+  messageHeader.className = 'message-header';
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'message-time';
+  timeSpan.textContent = new Date(message.timestamp).toLocaleString();
+  messageHeader.appendChild(timeSpan);
+
+  const messageContentDiv = document.createElement('div');
+  messageContentDiv.className = 'message-content';
+
+  const textContent = document.createElement('p');
+  textContent.className = 'text-content chat-message-renderer';
+  textContent.setAttribute('data-interactive', 'true');
+  textContent.setAttribute('tabindex', '0');
+  textContent.textContent = message.content?.text || '';
+
+  messageContentDiv.appendChild(textContent);
+  messageBubble.appendChild(messageHeader);
+  messageBubble.appendChild(messageContentDiv);
+  messageRow.appendChild(messageBubble);
+
+  return messageRow;
+};
+
+/**
+ * Chat Data Loader - Pure function for generic scroller
+ */
 
 /**
  * Scroll position state for persistence across reloads
@@ -43,10 +89,8 @@ export class ChatWidget extends ChatWidgetBase {
   private currentRoom: string;
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
-  private scrollHelper?: InfiniteScrollHelper;
-  private messageLoader?: ChatMessageLoader;
-  private messageRenderer?: ChatMessageRenderer;
   private messagesContainer?: HTMLElement;
+  private chatScroller?: EntityScroller<ChatMessageData>;
 
   // Event handler references for proper cleanup
   private _keydownHandler?: (e: KeyboardEvent) => void;
@@ -68,9 +112,7 @@ export class ChatWidget extends ChatWidgetBase {
     });
     this.currentRoom = roomId;
 
-    // Initialize loader immediately (doesn't need user ID)
-    this.messageLoader = new ChatMessageLoader(this.executeCommand.bind(this));
-    // messageRenderer will be initialized after currentUserId is set
+    // ChatBubbleScroller will be initialized after currentUserId is set
   }
 
   // Static property required by widget registration system
@@ -96,8 +138,7 @@ export class ChatWidget extends ChatWidgetBase {
     this.currentUserId = userIdString as UserId; // Cast to branded type
     console.log(`🔧 CLAUDE-USER-ID-DEBUG: Initialized persistent User ID: ${this.currentUserId}`);
 
-    // Initialize renderer now that we have currentUserId
-    this.messageRenderer = new ChatMessageRenderer(this.currentUserId);
+    // EntityScroller will be initialized after DOM is rendered in renderWidget()
 
     // Set current session ID from JTAG system context (REQUIRED)
     const client = await JTAGClient.sharedInstance;
@@ -107,13 +148,15 @@ export class ChatWidget extends ChatWidgetBase {
     this.currentSessionId = client.sessionId as SessionId;
     console.log(`🔧 CLAUDE-SESSION-ID-DEBUG: Current session ID: ${this.currentSessionId}`);
     
-    // Load room message history using command abstraction
-    await this.loadRoomHistory();
-    
+    // EntityScroller will load messages after DOM is ready in renderWidget()
+    // Skip old loading method for now - let EntityScroller handle it
+    console.log('🔧 CLAUDE-DEBUG: Skipping old loadRoomHistory, EntityScroller will handle loading after DOM is ready');
+
     // Subscribe to room-specific events
     await this.subscribeToRoomEvents();
-    
-    console.log(`✅ ChatWidget: Initialized for room "${this.currentRoom}" with ${this.messages.length} messages`);
+
+    const messageCount = this.chatScroller?.entities().length || this.messages.length;
+    console.log(`✅ ChatWidget: Initialized for room "${this.currentRoom}" with ${messageCount} messages`);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -132,10 +175,10 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`💾 ChatWidget: Saved scroll position for room "${this.currentRoom}"`, scrollState);
     }
 
-    // Cleanup infinite scroll helper
-    if (this.scrollHelper) {
-      this.scrollHelper.cleanup();
-      this.scrollHelper = undefined;
+    // Cleanup chat scroller
+    if (this.chatScroller) {
+      this.chatScroller.destroy();
+      this.chatScroller = undefined;
     }
 
     // Unsubscribe from room events using JTAG abstraction
@@ -158,39 +201,87 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   protected override async renderWidget(skipScrollRestoration = false): Promise<void> {
+    console.log('🔧 CLAUDE-INIT-' + Date.now() + ': ChatWidget renderWidget called');
     super.renderWidget();
 
     // Cache input element and messages container
     this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
     this.messagesContainer = this.shadowRoot.getElementById('messages') as HTMLElement;
+    console.log('🔧 CLAUDE-INIT-' + Date.now() + ': messagesContainer found:', !!this.messagesContainer);
 
-    // Initialize infinite scroll helper
-    if (this.messagesContainer && !this.scrollHelper) {
-      this.scrollHelper = new InfiniteScrollHelper({
-        pageSize: 20, // Load 20 messages at a time
-        threshold: 0.1 // Trigger when 10% from top
-      });
+    // Initialize EntityScroller now that DOM is ready
+    if (!this.chatScroller && this.messagesContainer) {
+      console.log('🔧 CLAUDE-DEBUG-EntityScroller: Initializing in renderWidget, DOM is ready');
 
-      // Set up intersection observer for loading older messages
-      this.scrollHelper.setupIntersectionObserver(
-        this.messagesContainer,
-        (cursor: string) => this.loadOlderMessages(cursor)
-      );
+      try {
+        // Create clean data executor - elegant protocol with firm typing
+        const executor = createDataExecutor<ChatMessageData>(this.executeCommand.bind(this));
+        const loader = createDataLoader<ChatMessageData>(executor, {
+          collection: COLLECTIONS.CHAT_MESSAGES,
+          filter: { roomId: this.currentRoom },
+          cursor: PAGINATION_PRESETS.CHAT_MESSAGES,
+          defaultLimit: 20
+        });
+        console.log('🔧 CLAUDE-DEBUG-EntityScroller: Loader created successfully');
 
-      // Re-initialize with messages if they were loaded before render (React-like lifecycle)
-      if (this.messages.length > 0) {
-        console.log('🔄 ChatWidget: Re-initializing scroll helper with existing messages after render');
-        this.scrollHelper.initializeWithMessages(this.messages);
+        const context = {
+          isCurrentUser: false, // Will be set per message by checking senderId
+          customData: { roomId: this.currentRoom, currentUserId: this.currentUserId }
+        };
+
+        // Enhanced render function that checks current user for each message
+        const renderWithUserCheck: RenderFn<ChatMessageData> = (message, ctx) => {
+          const enhancedContext = {
+            ...ctx,
+            isCurrentUser: message.senderId === this.currentUserId
+          };
+          return renderChatMessage(message, enhancedContext);
+        };
+
+        console.log('🔧 CLAUDE-DEBUG-EntityScroller: Creating scroller with SCROLLER_PRESETS.CHAT:', SCROLLER_PRESETS.CHAT);
+
+        this.chatScroller = createScroller(
+          this.messagesContainer,
+          renderWithUserCheck,
+          loader,
+          SCROLLER_PRESETS.CHAT,
+          context
+        );
+
+        console.log('🔧 CLAUDE-DEBUG-EntityScroller: Scroller created successfully:', !!this.chatScroller);
+
+        // Load initial messages using EntityScroller
+        if (this.chatScroller) {
+          console.log('🔧 CLAUDE-DEBUG-EntityScroller: Loading initial messages...');
+          this.chatScroller.load().then(() => {
+            this.messages = this.chatScroller!.entities() as ChatMessageData[];
+            console.log(`✅ EntityScroller: Loaded ${this.messages.length} messages`);
+
+            // CRITICAL FIX: Scroll to bottom AFTER messages are loaded
+            // This fixes the "starts scrolled to top" issue
+            if (!skipScrollRestoration) {
+              this.restoreScrollPosition();
+              console.log('🔧 CLAUDE-SCROLL-FIX: Applied scroll restoration after EntityScroller loaded messages');
+            }
+          }).catch(error => {
+            console.error('❌ EntityScroller: Failed to load messages:', error);
+          });
+        }
+
+      } catch (error) {
+        console.error('❌ CLAUDE-DEBUG-EntityScroller: Error creating scroller:', error);
+        this.chatScroller = undefined;
+      }
+    } else if (this.messagesContainer && this.messages.length > 0) {
+      console.log('🔄 ChatWidget: Messages already loaded via EntityScroller');
+
+      // For already-loaded case, still need to handle scroll restoration
+      if (!skipScrollRestoration) {
+        await this.restoreScrollPosition();
       }
     }
 
-    // Restore scroll position if available, otherwise scroll to bottom
-    // Skip this when loading older messages to maintain scroll position
-    if (!skipScrollRestoration) {
-      await this.restoreScrollPosition();
-    } else {
-      console.log('🔧 ChatWidget: Skipping scroll restoration for infinite scroll load');
-    }
+    // Note: Scroll restoration for new EntityScroller loads is handled in the .then() block above
   }
 
 
@@ -218,12 +309,7 @@ export class ChatWidget extends ChatWidgetBase {
         this.messages = historyResult.messages
           .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0);
 
-        // Initialize scroll helper state with loaded messages
-        if (this.scrollHelper) {
-          console.log('🔄 ChatWidget: Initializing scroll helper with messages:', this.messages.length);
-          console.log('📊 Sample message timestamps:', this.messages.slice(0, 3).map(msg => ({ id: msg.messageId, timestamp: msg.timestamp })));
-          this.scrollHelper.initializeWithMessages(this.messages);
-        }
+        // EntityScroller handles initialization internally
 
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.currentRoom}"`);
       } else if (historyResult?.success === false) {
@@ -274,10 +360,8 @@ export class ChatWidget extends ChatWidgetBase {
         // Insert older messages at the beginning of our data array
         this.messages = [...olderMessages, ...this.messages];
 
-        // Use dynamic row insertion instead of full re-render to preserve DOM state
-        // This keeps the intersection observer sentinel intact
-        await this.prependMessageRows(olderMessages);
-        console.log('🔧 ChatWidget: Used dynamic row insertion to preserve intersection observer');
+        // EntityScroller handles dynamic row insertion automatically
+        console.log('🔧 ChatWidget: EntityScroller handles pagination automatically');
 
         console.log(`✅ ChatWidget: Loaded ${olderMessages.length} older messages`);
         return olderMessages;
@@ -392,8 +476,15 @@ export class ChatWidget extends ChatWidgetBase {
 
       console.log(`✨ ChatWidget: Using ChatMessage domain object directly:`, chatMessage);
 
-      this.messages.push(chatMessage);
-      await this.renderWidget(); // Re-render with new message
+      if (this.chatScroller) {
+        // Use generic scroller for real-time updates
+        this.chatScroller.add(chatMessage, 'start'); // Chat adds newest at top
+        this.messages = this.chatScroller.entities() as ChatMessageData[];
+      } else {
+        // Fallback to old method
+        this.messages.push(chatMessage);
+        await this.renderWidget(); // Re-render with new message
+      }
 
       // Real-time message added successfully using domain object
     }
@@ -430,9 +521,13 @@ export class ChatWidget extends ChatWidgetBase {
         updatedAt: ISOString(eventData.timestamp),
         version: 1
       };
-      
-      this.messages.push(systemMessage);
-      await this.renderWidget();
+      if (this.chatScroller) {
+        this.chatScroller.add(systemMessage, 'start');
+        this.messages = this.chatScroller.entities() as ChatMessageData[];
+      } else {
+        this.messages.push(systemMessage);
+        await this.renderWidget();
+      }
     }
   }
 
@@ -467,9 +562,13 @@ export class ChatWidget extends ChatWidgetBase {
         updatedAt: ISOString(eventData.timestamp),
         version: 1
       };
-      
-      this.messages.push(systemMessage);
-      await this.renderWidget();
+      if (this.chatScroller) {
+        this.chatScroller.add(systemMessage, 'start');
+        this.messages = this.chatScroller.entities() as ChatMessageData[];
+      } else {
+        this.messages.push(systemMessage);
+        await this.renderWidget();
+      }
     }
   }
 
@@ -562,101 +661,16 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   /**
-   * Create a single message element - delegated to renderer
-   */
-  private createMessageElement(message: ChatMessageData): HTMLElement {
-    return this.messageRenderer!.createMessageElement(message);
-  }
-
-  /**
-   * Render messages using DOM elements - delegated to renderer
+   * Render messages - now handled by EntityScroller
    */
   private renderMessages(): string {
-    return this.messageRenderer!.renderMessages(this.messages);
+    // EntityScroller handles DOM rendering directly
+    // Return empty string since template replacement still expects it
+    return '';
   }
   
-  /**
-   * Efficiently append a single message row without re-rendering entire widget
-   */
-  private appendMessageRow(message: ChatMessageData): void {
-    const messagesContainer = this.shadowRoot.querySelector('#messages');
-    if (!messagesContainer) {
-      console.warn('⚠️ ChatWidget: No messages container found for row append');
-      return;
-    }
-
-    // Create message element using DOM - no HTML strings!
-    const messageElement = this.createMessageElement(message);
-    messagesContainer.appendChild(messageElement);
-
-    // Auto-scroll to show new message
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-  }
-
-  /**
-   * Efficiently prepend older message rows for infinite scroll without re-rendering entire widget
-   */
-  private async prependMessageRows(olderMessages: ChatMessageData[]): Promise<void> {
-    const messagesContainer = this.shadowRoot.querySelector('#messages');
-    if (!messagesContainer) {
-      console.warn('⚠️ ChatWidget: No messages container found for row prepend');
-      return;
-    }
-
-    // Save current scroll position to restore after prepending
-    const scrollHeight = messagesContainer.scrollHeight;
-    const scrollTop = messagesContainer.scrollTop;
-
-    // console.log('🔧 ChatWidget: Saving scroll position before prepend:', { scrollHeight, scrollTop });
-
-    // Create document fragment for efficient DOM manipulation
-    const fragment = document.createDocumentFragment();
-
-    // Render all older messages in chronological order (oldest first)
-    // Use DOM element creation - no HTML strings!
-    for (const message of olderMessages) {
-      const messageElement = this.createMessageElement(message);
-      fragment.appendChild(messageElement);
-    }
-
-    // Get references to new elements BEFORE inserting fragment (fragment empties after insertion)
-    const newRowElements = Array.from(fragment.querySelectorAll('[data-content-type]')) as HTMLElement[];
-
-    // Insert fragment at the beginning - find first direct child element only
-    const firstMessage = messagesContainer.firstElementChild;
-
-    if (firstMessage) {
-      messagesContainer.insertBefore(fragment, firstMessage);
-    } else {
-      messagesContainer.appendChild(fragment);
-    }
-
-    // Batch initialize all new message row adapters efficiently
-    if (newRowElements.length > 0) {
-      // TODO: Initialize adapters when adapter system is integrated
-      // await AbstractMessageAdapter.batchInitializeRows(newRowElements, this.messageAdapters);
-      console.log('🔧 ChatWidget: Would batch initialize', newRowElements.length, 'new message adapters');
-    }
-
-    // Adjust scroll position to maintain user's place
-    // Use requestAnimationFrame for proper DOM timing with dynamic content
-    requestAnimationFrame(() => {
-      const newScrollHeight = messagesContainer.scrollHeight;
-      const heightDifference = newScrollHeight - scrollHeight;
-      messagesContainer.scrollTop = scrollTop + heightDifference;
-
-      console.log('🔧 ChatWidget: Adjusted scroll position after dynamic paging:', {
-        newRowsAdded: olderMessages.length,
-        newScrollHeight,
-        heightDifference,
-        newScrollTop: messagesContainer.scrollTop
-      });
-
-      // CRITICAL: Force intersection observer check AFTER scroll adjustment
-      // This ensures the sentinel is properly positioned for continued loading
-      this.scrollHelper?.forceIntersectionCheck();
-    });
-  }
+  // Row manipulation is now handled by EntityScroller
+  // These methods are no longer needed
 
 
   protected override setupEventListeners(): void {

@@ -1,0 +1,289 @@
+/**
+ * Entity Scroller - Clean React-like + Rust-like Interface
+ *
+ * Elegant abstraction combining React's simplicity with Rust's type safety.
+ * Clean interfaces, efficient data handling, no coupling to specific implementations.
+ */
+
+import type { BaseEntity } from '../../system/data/domains/CoreTypes';
+
+// Pure render function - like React components, constrained to our BaseEntity
+export type RenderFn<T extends BaseEntity> = (entity: T, context: RenderContext<T>) => HTMLElement;
+
+// Context passed to render functions
+export interface RenderContext<T extends BaseEntity> {
+  readonly index: number;
+  readonly total: number;
+  readonly isCurrentUser?: boolean;
+  readonly customData?: Record<string, unknown>;
+}
+
+// Data loader - clean async interface
+export type LoadFn<T extends BaseEntity> = (cursor?: string, limit?: number) => Promise<LoadResult<T>>;
+
+// Load result - standard pagination result
+export interface LoadResult<T extends BaseEntity> {
+  readonly items: readonly T[];
+  readonly hasMore: boolean;
+  readonly nextCursor?: string;
+}
+
+// Configuration - minimal but complete
+export interface ScrollerConfig {
+  readonly pageSize: number;
+  readonly direction: 'newest-first' | 'oldest-first';
+  readonly threshold?: number;
+  readonly rootMargin?: string;
+}
+
+// Clean scroller interface - like React hooks
+export interface EntityScroller<T extends BaseEntity> {
+  // Core operations
+  readonly load: () => Promise<void>;
+  readonly loadMore: () => Promise<void>;
+  readonly refresh: () => Promise<void>;
+
+  // Real-time updates
+  readonly add: (entity: T, position?: 'start' | 'end') => void;
+  readonly update: (id: string, entity: T) => boolean;
+  readonly remove: (id: string) => boolean;
+
+  // State queries
+  readonly entities: () => readonly T[];
+  readonly loading: () => boolean;
+  readonly hasMore: () => boolean;
+
+  // Cleanup
+  readonly destroy: () => void;
+}
+
+/**
+ * Create Entity Scroller - One clean function
+ */
+export function createScroller<T extends BaseEntity>(
+  container: HTMLElement,
+  render: RenderFn<T>,
+  load: LoadFn<T>,
+  config: ScrollerConfig,
+  context?: Omit<RenderContext<T>, 'index' | 'total'>
+): EntityScroller<T> {
+
+  // Internal state
+  let entities: T[] = [];
+  let isLoading = false;
+  let hasMoreItems = true;
+  let cursor: string | undefined;
+  let observer: IntersectionObserver | undefined;
+  let sentinel: HTMLElement | undefined;
+
+  // Efficient DOM operations using fragments
+  const addEntitiesToDOM = (newEntities: readonly T[], position: 'start' | 'end'): void => {
+    const fragment = document.createDocumentFragment();
+
+    newEntities.forEach((entity, idx) => {
+      const renderContext: RenderContext<T> = {
+        ...context,
+        index: position === 'start' ? idx : entities.length + idx,
+        total: entities.length + newEntities.length
+      };
+
+      const element = render(entity, renderContext);
+      element.setAttribute('data-entity-id', entity.id);
+      fragment.appendChild(element);
+    });
+
+    // Batch DOM update - efficient
+    if (position === 'start') {
+      container.insertBefore(fragment, container.firstChild);
+      entities = [...newEntities, ...entities];
+    } else {
+      container.appendChild(fragment);
+      entities = [...entities, ...newEntities];
+    }
+  };
+
+  // Intersection observer for infinite scroll
+  const setupObserver = (): void => {
+    observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        console.log('🔧 EntityScroller: Intersection observed', {
+          isIntersecting: entry?.isIntersecting,
+          hasMoreItems,
+          isLoading,
+          entryTarget: entry?.target?.className
+        });
+
+        if (entry?.isIntersecting && hasMoreItems && !isLoading) {
+          console.log('🔄 EntityScroller: Triggering loadMore()');
+          scroller.loadMore();
+        }
+      },
+      {
+        root: container,
+        // Use standard positive rootMargin for all scroll directions
+        rootMargin: config.rootMargin || '50px',
+        threshold: config.threshold || 0.1
+      }
+    );
+
+    // Create sentinel
+    sentinel = document.createElement('div');
+    sentinel.className = 'entity-scroller-sentinel';
+    sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none;';
+
+    // CRITICAL FIX: For newest-first (chat), sentinel at TOP triggers when scrolling UP to load older messages
+    // But we need the sentinel to NOT be initially visible!
+    if (config.direction === 'newest-first') {
+      // Place sentinel at top, but ONLY after we have some messages to push it out of initial view
+      container.insertBefore(sentinel, container.firstChild);
+      console.log('🎯 EntityScroller: Sentinel placed at TOP for newest-first loading (triggers when scrolling up to older messages)');
+    } else {
+      container.appendChild(sentinel);
+      console.log('🎯 EntityScroller: Sentinel placed at BOTTOM for oldest-first loading');
+    }
+
+    observer.observe(sentinel);
+    console.log('🔧 EntityScroller: Observer setup complete, watching sentinel');
+  };
+
+  // The clean API object
+  const scroller: EntityScroller<T> = {
+    // Load initial data
+    async load(): Promise<void> {
+      if (isLoading) return;
+
+      isLoading = true;
+      try {
+        const result = await load(undefined, config.pageSize);
+
+        entities = [];
+        container.innerHTML = '';
+
+        if (result.items.length > 0) {
+          addEntitiesToDOM(result.items, 'end');
+          hasMoreItems = result.hasMore;
+          cursor = result.nextCursor;
+
+          // CRITICAL FIX: Setup observer AFTER DOM is painted
+          // This fixes the intersection observer timing issue
+          requestAnimationFrame(() => {
+            setupObserver();
+            console.log('🔧 EntityScroller: Observer setup after DOM paint - sentinel should be positioned correctly');
+          });
+        } else {
+          // No items, still setup observer for potential future loads
+          setupObserver();
+        }
+      } finally {
+        isLoading = false;
+      }
+    },
+
+    // Load more data
+    async loadMore(): Promise<void> {
+      console.log('🔄 EntityScroller: loadMore() called', { isLoading, hasMoreItems, cursor });
+
+      if (isLoading || !hasMoreItems) {
+        console.log('🚫 EntityScroller: loadMore() skipped', { isLoading, hasMoreItems });
+        return;
+      }
+
+      isLoading = true;
+      try {
+        console.log('📡 EntityScroller: Fetching more items with cursor:', cursor);
+        const result = await load(cursor, config.pageSize);
+
+        if (result.items.length > 0) {
+          const position = config.direction === 'newest-first' ? 'start' : 'end';
+          console.log(`✅ EntityScroller: Loaded ${result.items.length} items, adding to ${position}`);
+          addEntitiesToDOM(result.items, position);
+          hasMoreItems = result.hasMore;
+          cursor = result.nextCursor;
+        } else {
+          console.log('🏁 EntityScroller: No more items to load');
+          hasMoreItems = false;
+        }
+      } catch (error) {
+        console.error('❌ EntityScroller: Error in loadMore():', error);
+      } finally {
+        isLoading = false;
+      }
+    },
+
+    // Refresh all data
+    async refresh(): Promise<void> {
+      cursor = undefined;
+      hasMoreItems = true;
+      await scroller.load();
+    },
+
+    // Real-time updates - efficient DOM operations
+    add(entity: T, position = 'end'): void {
+      addEntitiesToDOM([entity], position);
+    },
+
+    update(id: string, entity: T): boolean {
+      const index = entities.findIndex(e => e.id === id);
+      if (index === -1) return false;
+
+      entities[index] = entity;
+
+      const element = container.querySelector(`[data-entity-id="${id}"]`) as HTMLElement;
+      if (element) {
+        const renderContext: RenderContext<T> = {
+          ...context,
+          index,
+          total: entities.length
+        };
+
+        const newElement = render(entity, renderContext);
+        newElement.setAttribute('data-entity-id', entity.id);
+        element.replaceWith(newElement);
+      }
+
+      return true;
+    },
+
+    remove(id: string): boolean {
+      const index = entities.findIndex(e => e.id === id);
+      if (index === -1) return false;
+
+      entities.splice(index, 1);
+      container.querySelector(`[data-entity-id="${id}"]`)?.remove();
+
+      return true;
+    },
+
+    // State queries - clean getters
+    entities: () => entities,
+    loading: () => isLoading,
+    hasMore: () => hasMoreItems,
+
+    // Cleanup
+    destroy(): void {
+      observer?.disconnect();
+      sentinel?.remove();
+      entities = [];
+    }
+  };
+
+  return scroller;
+}
+
+// Convenient presets
+export const SCROLLER_PRESETS = {
+  CHAT: {
+    pageSize: 20,
+    direction: 'newest-first' as const,
+    threshold: 0.1,
+    rootMargin: '50px'
+  },
+
+  LIST: {
+    pageSize: 50,
+    direction: 'oldest-first' as const,
+    threshold: 0.2,
+    rootMargin: '100px'
+  }
+} as const;
