@@ -7,28 +7,15 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 
-interface RoomData {
-  readonly id?: string;        // Some rooms use 'id' field
-  readonly roomId?: string;    // Some rooms use 'roomId' field
-  readonly name: string;
-  readonly type: string;
-  readonly description?: string;
-  readonly displayName?: string;
-  readonly memberCount?: number;
-  readonly isArchived?: boolean;
-  readonly createdAt?: string;
-  readonly lastActivity?: string;
-}
-
 export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
-  private rooms: Array<{id: string, name: string, unreadCount: number}> = [];
+  private rooms: ChatRoomData[] = [];
+  private unreadCounts: Map<string, number> = new Map();
   
   constructor() {
     super({
@@ -74,8 +61,9 @@ export class RoomListWidget extends ChatWidgetBase {
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId: room.id, isRead: false }
       });
-      
-      room.unreadCount = messageResult?.success ? (messageResult.count || 0) : 0;
+
+      const count = messageResult?.success ? (messageResult.count || 0) : 0;
+      this.unreadCounts.set(room.id, count);
     }
   }
 
@@ -90,15 +78,10 @@ export class RoomListWidget extends ChatWidgetBase {
     });
 
     if (result?.success && result.items?.length > 0) {
-      // Use ChatRoomData directly - adapter returns proper domain objects
+      // Use domain objects directly - no manual transformation needed
       this.rooms = result.items
-        .filter((room: ChatRoomData) => room?.roomId || room?.id)
-        .map((room: ChatRoomData) => ({
-          id: room.roomId || room.id || '', // Handle both roomId and id fields
-          name: room.name || room.displayName || '',
-          unreadCount: 0 // Will be calculated from messages
-        }))
-        .filter(room => room.id !== ''); // Remove any rooms with empty ids
+        .filter((room: ChatRoomData) => room?.id && room?.name);
+
       console.log(`✅ RoomListWidget: Loaded ${this.rooms.length} rooms from database`);
     } else {
       console.warn('⚠️ RoomListWidget: No rooms found in database');
@@ -112,11 +95,13 @@ export class RoomListWidget extends ChatWidgetBase {
   private renderRoomList(): string {
     return this.rooms.map(room => {
       const isActive = this.currentRoomId === room.id;
-      const unreadBadge = room.unreadCount > 0 ? `<span class="unread-badge">${room.unreadCount}</span>` : '';
-      
+      const unreadCount = this.unreadCounts.get(room.id) || 0;
+      const unreadBadge = unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : '';
+      const displayName = room.displayName || room.name;
+
       return `
         <div class="room-item ${isActive ? 'active' : ''}" data-room-id="${room.id}">
-          <span class="room-name">${room.name}</span>
+          <span class="room-name">${displayName}</span>
           ${unreadBadge}
         </div>
       `;
@@ -161,6 +146,8 @@ export class RoomListWidget extends ChatWidgetBase {
   protected async onWidgetCleanup(): Promise<void> {
     // Save current state
     await this.storeData('current_room', this.currentRoomId, { persistent: true });
+    this.rooms = [];
+    this.unreadCounts.clear();
     console.log('🧹 RoomListWidget: Cleanup complete');
   }
 }
