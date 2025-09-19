@@ -420,7 +420,6 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       console.error('❌ JTAGClient: Failed to create session:', error);
     } else if (session) {
       const wasBootstrap = this.sessionId === SYSTEM_SCOPES.UNKNOWN_SESSION;
-      console.log(`🔄 JTAGClient: ${wasBootstrap ? 'Bootstrap complete' : 'Session updated'}: ${this.sessionId} → ${session.sessionId}`);
       this._session = session;
       
       // For browser clients: update sessionStorage (JTAGClientBrowser overrides this)
@@ -505,7 +504,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
           this.discoveredCommands.set(command.name, command);
         }
         
-        console.log(`✅ JTAGClient: Discovered ${listResult.totalCount} commands: ${Array.from(this.discoveredCommands.keys()).join(', ')}`);
+
       } else {
         console.error('❌ JTAGClient: Failed to discover commands:', listResult.error);
         throw new Error(`Command discovery failed: ${listResult.error}`);
@@ -569,7 +568,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    */
   private updateDiscoveredCommands(listResult: ListResult): void {
     if (listResult.success && listResult.commands) {
-      console.log(`🔍 JTAGClient: Discovered ${listResult.commands.length} commands from list response`);
+
       
       for (const command of listResult.commands) {
         this.discoveredCommands.set(command.name, command);

@@ -63,7 +63,7 @@ export class ListBrowserCommand extends CommandBase<ListParams, ListResult> {
         commandSignatures.push(signature);
       }
 
-      console.log(`✅ BROWSER: Found ${commandSignatures.length} available commands`);
+
 
       return createListResultFromParams(listParams, {
         success: true,

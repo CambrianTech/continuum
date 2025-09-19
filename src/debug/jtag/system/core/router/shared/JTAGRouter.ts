@@ -220,7 +220,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     // Only register short endpoint if it doesn't already exist to avoid duplicates
     if (!this.endpointMatcher.hasExact(endpoint)) {
       this.endpointMatcher.register(endpoint, subscriber);
-      console.debug(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} AND ${endpoint}`);
     } else {
       console.warn(`📋 ${this.toString()}: Registered subscriber at ${fullEndpoint} (${endpoint} already exists)`);
     }

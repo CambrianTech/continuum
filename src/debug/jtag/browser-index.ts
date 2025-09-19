@@ -49,14 +49,14 @@ export const jtag = {
 
     // Set up global window.jtag for widgets and tests
     (globalThis as any).jtag = client;
-    console.debug('🌐 Browser: Global jtag client established for widgets');
+
 
     // Enhance client with organized services - no globals needed
     const services = createJTAGClientServices(client);
     Object.assign(client, services);
 
-    console.debug('✅ Browser: JTAGClient connected with organized services');
-    console.debug('ℹ️ Access services via: client.chat, client.users, client.widgets');
+
+
 
     return { ...connectionResult, client };
   },

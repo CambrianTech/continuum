@@ -69,7 +69,6 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
         commandSignatures.push(signature);
       }
 
-      console.log(`✅ ${env.toUpperCase()}: Found ${commandSignatures.length} available commands`);
 
       return createListResultFromParams(listParams, {
         success: true,

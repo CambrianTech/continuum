@@ -15,7 +15,6 @@ export class DataListBrowserCommand<T extends BaseEntity> extends CommandBase<Da
   }
 
   async execute(params: DataListParams): Promise<DataListResult<T>> {
-    console.log(`🗄️ BROWSER: Delegating data list to server`);
     return await this.remoteExecute(params);
   }
 }
