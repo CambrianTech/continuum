@@ -30,12 +30,13 @@ export class RoomListWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
+    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': RoomListWidget onWidgetInitialize called');
     console.log('🏠 RoomListWidget: Initializing...');
-    
+
     // Load rooms from data system or use defaults
     await this.loadRooms();
-    
-    console.log('✅ RoomListWidget: Initialized');
+
+    console.log('✅ RoomListWidget: Initialized with', this.rooms.length, 'rooms');
   }
 
   protected override resolveResourcePath(filename: string): string {
@@ -48,6 +49,7 @@ export class RoomListWidget extends ChatWidgetBase {
   protected override getReplacements(): Record<string, string> {
       return {
           '<!-- ROOM_LIST_CONTENT -->': this.renderRoomList(),
+          '<!-- ROOM_COUNT -->': this.rooms.length.toString(),
       };
   }
 
