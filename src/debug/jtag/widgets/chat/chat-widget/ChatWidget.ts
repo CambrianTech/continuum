@@ -125,7 +125,7 @@ export class ChatWidget extends ChatWidgetBase {
 
     // Cache input element and messages container
     this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
-    this.messagesContainer = this.shadowRoot.getElementById('messagesContainer') as HTMLElement;
+    this.messagesContainer = this.shadowRoot.getElementById('messages') as HTMLElement;
 
     // Initialize infinite scroll helper
     if (this.messagesContainer && !this.scrollHelper) {
@@ -139,6 +139,12 @@ export class ChatWidget extends ChatWidgetBase {
         this.messagesContainer,
         (cursor: string) => this.loadOlderMessages(cursor)
       );
+
+      // Re-initialize with messages if they were loaded before render (React-like lifecycle)
+      if (this.messages.length > 0) {
+        console.log('🔄 ChatWidget: Re-initializing scroll helper with existing messages after render');
+        this.scrollHelper.initializeWithMessages(this.messages);
+      }
     }
 
     // Auto-scroll to bottom to show latest messages
@@ -171,6 +177,8 @@ export class ChatWidget extends ChatWidgetBase {
 
         // Initialize scroll helper state with loaded messages
         if (this.scrollHelper) {
+          console.log('🔄 ChatWidget: Initializing scroll helper with messages:', this.messages.length);
+          console.log('📊 Sample message timestamps:', this.messages.slice(0, 3).map(msg => ({ id: msg.messageId, timestamp: msg.timestamp })));
           this.scrollHelper.initializeWithMessages(this.messages);
         }
 
