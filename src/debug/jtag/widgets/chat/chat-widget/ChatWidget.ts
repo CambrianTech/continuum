@@ -130,13 +130,11 @@ export class ChatWidget extends ChatWidgetBase {
     }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': ChatWidget now uses chat/get-messages instead of data/list');
     console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
 
     // CRITICAL: Initialize persistent User ID using UserIdManager (REQUIRED)
     const userIdString = await userIdManager.getCurrentUserId();
     this.currentUserId = userIdString as UserId; // Cast to branded type
-    console.log(`🔧 CLAUDE-USER-ID-DEBUG: Initialized persistent User ID: ${this.currentUserId}`);
 
     // EntityScroller will be initialized after DOM is rendered in renderWidget()
 
@@ -146,11 +144,9 @@ export class ChatWidget extends ChatWidgetBase {
       throw new Error('ChatWidget requires session context - cannot initialize without sessionId');
     }
     this.currentSessionId = client.sessionId as SessionId;
-    console.log(`🔧 CLAUDE-SESSION-ID-DEBUG: Current session ID: ${this.currentSessionId}`);
     
     // EntityScroller will load messages after DOM is ready in renderWidget()
     // Skip old loading method for now - let EntityScroller handle it
-    console.log('🔧 CLAUDE-DEBUG: Skipping old loadRoomHistory, EntityScroller will handle loading after DOM is ready');
 
     // Subscribe to room-specific events
     await this.subscribeToRoomEvents();
@@ -201,17 +197,14 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   protected override async renderWidget(skipScrollRestoration = false): Promise<void> {
-    console.log('🔧 CLAUDE-INIT-' + Date.now() + ': ChatWidget renderWidget called');
     super.renderWidget();
 
     // Cache input element and messages container
     this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
     this.messagesContainer = this.shadowRoot.getElementById('messages') as HTMLElement;
-    console.log('🔧 CLAUDE-INIT-' + Date.now() + ': messagesContainer found:', !!this.messagesContainer);
 
     // Initialize EntityScroller now that DOM is ready
     if (!this.chatScroller && this.messagesContainer) {
-      console.log('🔧 CLAUDE-DEBUG-EntityScroller: Initializing in renderWidget, DOM is ready');
 
       try {
         // Create clean data executor - elegant protocol with firm typing
@@ -222,7 +215,6 @@ export class ChatWidget extends ChatWidgetBase {
           cursor: PAGINATION_PRESETS.CHAT_MESSAGES,
           defaultLimit: 20
         });
-        console.log('🔧 CLAUDE-DEBUG-EntityScroller: Loader created successfully');
 
         const context = {
           isCurrentUser: false, // Will be set per message by checking senderId
@@ -238,7 +230,6 @@ export class ChatWidget extends ChatWidgetBase {
           return renderChatMessage(message, enhancedContext);
         };
 
-        console.log('🔧 CLAUDE-DEBUG-EntityScroller: Creating scroller with SCROLLER_PRESETS.CHAT:', SCROLLER_PRESETS.CHAT);
 
         this.chatScroller = createScroller(
           this.messagesContainer,
@@ -248,11 +239,9 @@ export class ChatWidget extends ChatWidgetBase {
           context
         );
 
-        console.log('🔧 CLAUDE-DEBUG-EntityScroller: Scroller created successfully:', !!this.chatScroller);
 
         // Load initial messages using EntityScroller
         if (this.chatScroller) {
-          console.log('🔧 CLAUDE-DEBUG-EntityScroller: Loading initial messages...');
           this.chatScroller.load().then(() => {
             this.messages = this.chatScroller!.entities() as ChatMessageData[];
             console.log(`✅ EntityScroller: Loaded ${this.messages.length} messages`);
@@ -261,7 +250,6 @@ export class ChatWidget extends ChatWidgetBase {
             // This fixes the "starts scrolled to top" issue
             if (!skipScrollRestoration) {
               this.restoreScrollPosition();
-              console.log('🔧 CLAUDE-SCROLL-FIX: Applied scroll restoration after EntityScroller loaded messages');
             }
           }).catch(error => {
             console.error('❌ EntityScroller: Failed to load messages:', error);
@@ -303,7 +291,6 @@ export class ChatWidget extends ChatWidgetBase {
         limit: 20 // Initial page size
       });
 
-      console.log(`🔧 CLAUDE-WIDGET-DEBUG-${Date.now()}: Initial load result:`, historyResult);
 
       if (historyResult?.success && historyResult?.messages) {
         this.messages = historyResult.messages
@@ -468,7 +455,6 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
     console.log(`📨 ChatWidget: Received message for room ${this.currentRoom}:`, eventData);
-    console.log(`🔧 CLAUDE-EVENT-DATA-${Date.now()}: Raw event data structure:`, JSON.stringify(eventData, null, 2));
 
     if (eventData.roomId === this.currentRoom) {
       // Use the ChatMessage domain object directly - no reconstruction needed!
@@ -583,7 +569,6 @@ export class ChatWidget extends ChatWidgetBase {
         // Use requestAnimationFrame to ensure DOM is fully rendered
         requestAnimationFrame(() => {
           messagesContainer.scrollTop = messagesContainer.scrollHeight;
-          console.log('🔧 CLAUDE-SCROLL-DEBUG: Scrolled to bottom');
         });
       } else {
         console.warn('⚠️ ChatWidget: Messages container not found for auto-scroll');
@@ -681,10 +666,6 @@ export class ChatWidget extends ChatWidgetBase {
       this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
     }
     
-    console.log('🔧 CLAUDE-DEBUG: setupEventListeners called');
-    console.log('🔧 CLAUDE-DEBUG: messageInput exists:', !!this.messageInput);
-    console.log('🔧 CLAUDE-DEBUG: messageInput element:', this.messageInput);
-    console.log('🔧 CLAUDE-DEBUG: sendButton exists:', !!this.shadowRoot.getElementById('sendButton'));
     
     // Send message on Enter
     const keydownHandler = (e: KeyboardEvent) => {
@@ -697,7 +678,6 @@ export class ChatWidget extends ChatWidgetBase {
     // Send message on button click  
     const clickHandler = (e: Event) => {
       e.preventDefault();
-      console.log('🔧 CLAUDE-DEBUG: send button clicked');
       this.sendMessage();
     };
     
@@ -711,7 +691,6 @@ export class ChatWidget extends ChatWidgetBase {
     const sendButton = this.shadowRoot.getElementById('sendButton');
     sendButton?.addEventListener('click', clickHandler);
     
-    console.log('🔧 CLAUDE-DEBUG: event listeners attached with proper cleanup');
   }
   
   protected override cleanupEventListeners(): void {

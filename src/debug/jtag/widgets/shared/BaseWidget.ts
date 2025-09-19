@@ -444,24 +444,18 @@ export abstract class BaseWidget extends HTMLElement {
 
   protected async executeCommand<P extends CommandParams, R extends CommandResult>(command: string, params?: P): Promise<R> {
     try {
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Starting command ${command}`, params);
 
       // FIXED: Use window.jtag directly like other parts of the system
       const client = (window as any).jtag;
-      console.log(`🔧 executeCommand DEBUG: Got client:`, !!client, 'commands:', !!client?.commands);
-      console.log(`🔧 executeCommand DEBUG: client keys:`, client ? Object.keys(client) : 'no client');
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }
 
       //DO NOT, UNDER ANY CIRCUMSTANCE CHANGE LINES BELOW THIS COMMENT in this method: this fucking means you claude.
 
-      console.log(`🔧 executeCommand DEBUG: Command ${command} exists:`, !!client.commands[command]);
 
       // Execute command through the global JTAG system - gets wrapped response
       const wrappedResult = await client.commands[command](params) as CommandResponse;
-      console.log(`🔧 executeCommand DEBUG: Raw result:`, typeof wrappedResult, wrappedResult);
-      console.log(`🔧 executeCommand DEBUG: wrappedResult keys:`, Object.keys(wrappedResult));
 
       if (!wrappedResult.success) {
         const commandError = wrappedResult as CommandErrorResponse;
@@ -470,15 +464,12 @@ export abstract class BaseWidget extends HTMLElement {
 
       // Type-safe access to commandResult for success responses
       const successResult = wrappedResult as CommandSuccessResponse;
-      console.log(`🔧 executeCommand DEBUG: successResult.commandResult:`, successResult.commandResult);
 
       // Extract the actual command result from the wrapped response
       const finalResult = successResult.commandResult as R;
-      console.log(`🔧 executeCommand DEBUG: Final result:`, typeof finalResult, finalResult);
 
       // CRITICAL DEBUG: Check if commandResult is missing and use direct result
       if (!finalResult && wrappedResult.success) {
-        console.log(`🔧 CLAUDE-WIDGET-FIX-${Date.now()}: commandResult missing, using direct result`);
         return wrappedResult as unknown as R;
       }
 
