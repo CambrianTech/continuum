@@ -118,6 +118,13 @@ export function createDataLoader<T extends BaseEntity>(
       displayOrder: config.cursor.displayOrder
     });
 
+    console.log('🔧 DataLoader: Raw input cursor:', cursor);
+    console.log('🔧 DataLoader: Cursor transformation will be:', cursor ? {
+      field: config.cursor.field,
+      value: cursor,
+      direction: config.cursor.direction === 'desc' ? 'before' : 'after'
+    } : 'NO CURSOR');
+
     // Build clean query parameters - elegant and type-safe
     const queryParams: DataQueryParams = {
       collection: config.collection,
@@ -161,14 +168,9 @@ export function createDataLoader<T extends BaseEntity>(
       ? [...rawItems].reverse()
       : [...rawItems];
 
-    // Calculate hasMore with correct logic based on total count
-    const totalItemsInDB = result.totalCount;
-    const currentItemsLoaded = rawItems.length;
-
-    // We have more items if:
-    // 1. The total count indicates more items exist than we've loaded so far, AND
-    // 2. We got a full page (might be more)
-    const hasMoreItems = (totalItemsInDB > currentItemsLoaded) && (currentItemsLoaded === actualLimit);
+    // Calculate hasMore based on cursor pagination logic
+    // If we got the full limit we requested, there are likely more items
+    const hasMoreItems = rawItems.length === actualLimit;
 
     // Calculate next cursor - always use the boundary item for pagination direction
     const boundaryItem = config.cursor.direction === DB_DIRECTIONS.DESC
@@ -177,10 +179,18 @@ export function createDataLoader<T extends BaseEntity>(
 
     const nextCursor = boundaryItem?.[config.cursor.field] as string | undefined;
 
+    console.log('🔧 DataLoader: Cursor boundary calculation', {
+      direction: config.cursor.direction,
+      rawItemsLength: rawItems.length,
+      boundaryItemIndex: config.cursor.direction === DB_DIRECTIONS.DESC ? rawItems.length - 1 : 0,
+      boundaryItemTimestamp: boundaryItem?.[config.cursor.field],
+      nextCursor,
+      firstItemTimestamp: rawItems[0]?.[config.cursor.field],
+      lastItemTimestamp: rawItems[rawItems.length - 1]?.[config.cursor.field]
+    });
+
     console.log('🔧 DataLoader: Processed result', {
       displayItemsCount: displayItems.length,
-      totalItemsInDB,
-      currentItemsLoaded,
       hasMoreItems,
       boundaryItem: boundaryItem ? `${boundaryItem.id}:${boundaryItem[config.cursor.field]}` : 'none',
       nextCursor,
