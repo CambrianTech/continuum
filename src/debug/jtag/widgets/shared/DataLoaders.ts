@@ -166,9 +166,9 @@ export function createDataLoader<T extends BaseEntity>(
     const currentItemsLoaded = rawItems.length;
 
     // We have more items if:
-    // 1. We got a full page (might be more), OR
-    // 2. The total count indicates more items exist than we've loaded so far
-    const hasMoreItems = (currentItemsLoaded === actualLimit) || (totalItemsInDB > currentItemsLoaded);
+    // 1. The total count indicates more items exist than we've loaded so far, AND
+    // 2. We got a full page (might be more)
+    const hasMoreItems = (totalItemsInDB > currentItemsLoaded) && (currentItemsLoaded === actualLimit);
 
     // Calculate next cursor - always use the boundary item for pagination direction
     const boundaryItem = config.cursor.direction === DB_DIRECTIONS.DESC

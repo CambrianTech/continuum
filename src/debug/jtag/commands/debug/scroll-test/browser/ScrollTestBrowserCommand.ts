@@ -10,6 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { ScrollTestParams, ScrollTestResult } from '../shared/ScrollTestTypes';
 import { createScrollTestResult } from '../shared/ScrollTestTypes';
+import { smartQuerySelector } from '../../../screenshot/shared/browser-utils/BrowserElementUtils';
 
 export class ScrollTestBrowserCommand extends CommandBase<ScrollTestParams, ScrollTestResult> {
 
@@ -19,10 +20,12 @@ export class ScrollTestBrowserCommand extends CommandBase<ScrollTestParams, Scro
 
   async execute(params: ScrollTestParams): Promise<ScrollTestResult> {
     const startTime = Date.now();
+    console.log('🔧 SCROLL-TEST: Execute called with params:', params);
 
     // Handle preset shortcuts
     let effectiveParams = params;
     if (params.preset) {
+      console.log('🔧 SCROLL-TEST: Processing preset:', params.preset);
       switch (params.preset) {
         case 'chat-top':
           effectiveParams = { ...params, target: 'top', behavior: 'smooth', captureMetrics: true, waitTime: 1000 };
@@ -34,12 +37,14 @@ export class ScrollTestBrowserCommand extends CommandBase<ScrollTestParams, Scro
           effectiveParams = { ...params, target: 'top', behavior: 'instant', captureMetrics: true };
           break;
       }
+      console.log('🔧 SCROLL-TEST: Effective params after preset:', effectiveParams);
     }
 
     // Find target element using Shadow DOM traversal
     const targetElement = this.findScrollContainer(effectiveParams.selector);
 
     if (!targetElement) {
+      console.log('🔧 SCROLL-TEST: Target element not found, returning early');
       return createScrollTestResult(this.context, effectiveParams.sessionId || 'unknown', {
         scrollPerformed: false,
         targetElement: effectiveParams.selector ?? 'unknown',
@@ -47,6 +52,8 @@ export class ScrollTestBrowserCommand extends CommandBase<ScrollTestParams, Scro
         finalPosition: 0
       });
     }
+
+    console.log('🔧 SCROLL-TEST: Target element found, proceeding with scroll');
 
     // Capture initial metrics
     const initialPosition = targetElement.scrollTop;
@@ -105,21 +112,35 @@ export class ScrollTestBrowserCommand extends CommandBase<ScrollTestParams, Scro
   }
 
   private findScrollContainer(selector?: string): HTMLElement | null {
-    // Browser environment globals
-    /* global document */
+    console.log('🔧 SCROLL-TEST: Starting DOM traversal with smartQuerySelector');
+
+    let targetElement: Element | null = null;
+
     if (selector) {
-      // Custom selector - try direct query first, then Shadow DOM traversal
-      const direct = document.querySelector(selector) as HTMLElement;
-      if (direct) return direct;
+      // Use smartQuerySelector for custom selectors (handles Shadow DOM automatically)
+      console.log(`🔧 SCROLL-TEST: Looking for custom selector: "${selector}"`);
+      targetElement = smartQuerySelector(selector);
+    } else {
+      // Default: Chat widget messages container using smartQuerySelector
+      console.log('🔧 SCROLL-TEST: Looking for default chat widget (#messages)');
+      targetElement = smartQuerySelector('#messages');
     }
 
-    // Default: Chat widget scroll container with Shadow DOM traversal
-    const continuumWidget = document.querySelector('continuum-widget');
-    const mainWidget = continuumWidget?.shadowRoot?.querySelector('main-widget');
-    const chatWidget = mainWidget?.shadowRoot?.querySelector('chat-widget');
-    const scrollContainer = chatWidget?.shadowRoot?.querySelector('#messages') as HTMLElement;
+    if (targetElement) {
+      const scrollContainer = targetElement as HTMLElement;
+      console.log('🔧 SCROLL-TEST: Target element found!', {
+        tagName: scrollContainer.tagName,
+        id: scrollContainer.id,
+        className: scrollContainer.className,
+        scrollHeight: scrollContainer.scrollHeight,
+        clientHeight: scrollContainer.clientHeight,
+        scrollTop: scrollContainer.scrollTop
+      });
+      return scrollContainer;
+    }
 
-    return scrollContainer;
+    console.log('🔧 SCROLL-TEST: Target element not found');
+    return null;
   }
 
   private captureScrollMetrics(element: HTMLElement): { scrollHeight: number; clientHeight: number; messagesCount: number; sentinelVisible: boolean } {

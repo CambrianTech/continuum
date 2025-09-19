@@ -17,8 +17,29 @@ export class ScrollTestServerCommand extends CommandBase<ScrollTestParams, Scrol
   }
 
   async execute(params: ScrollTestParams): Promise<ScrollTestResult> {
+    console.log('🔧 SCROLL-TEST-SERVER: Processing params:', params);
+
+    // Handle preset shortcuts here as well (before validation)
+    let effectiveParams = params;
+    if (params.preset) {
+      console.log('🔧 SCROLL-TEST-SERVER: Processing preset:', params.preset);
+      switch (params.preset) {
+        case 'chat-top':
+          effectiveParams = { ...params, target: 'top', behavior: 'smooth', captureMetrics: true, waitTime: 1000 };
+          break;
+        case 'chat-bottom':
+          effectiveParams = { ...params, target: 'bottom', behavior: 'smooth', captureMetrics: true, waitTime: 1000 };
+          break;
+        case 'instant-top':
+          effectiveParams = { ...params, target: 'top', behavior: 'instant', captureMetrics: true };
+          break;
+      }
+      console.log('🔧 SCROLL-TEST-SERVER: Effective params after preset:', effectiveParams);
+    }
+
     // Validate parameters
-    if (!['top', 'bottom', 'position'].includes(params.target)) {
+    if (!effectiveParams.target || !['top', 'bottom', 'position'].includes(effectiveParams.target)) {
+      console.log('🔧 SCROLL-TEST-SERVER: Invalid target:', effectiveParams.target);
       return createScrollTestResult(this.context, params.sessionId || 'unknown', {
         scrollPerformed: false,
         targetElement: 'unknown',
@@ -27,7 +48,8 @@ export class ScrollTestServerCommand extends CommandBase<ScrollTestParams, Scrol
       });
     }
 
-    if (params.target === 'position' && typeof params.position !== 'number') {
+    if (effectiveParams.target === 'position' && typeof effectiveParams.position !== 'number') {
+      console.log('🔧 SCROLL-TEST-SERVER: Position target without valid position value');
       return createScrollTestResult(this.context, params.sessionId || 'unknown', {
         scrollPerformed: false,
         targetElement: 'unknown',
@@ -37,6 +59,7 @@ export class ScrollTestServerCommand extends CommandBase<ScrollTestParams, Scrol
     }
 
     // For scroll testing, we need to execute on browser side
-    return await this.remoteExecute(params);
+    console.log('🔧 SCROLL-TEST-SERVER: Calling remoteExecute with:', effectiveParams);
+    return await this.remoteExecute(effectiveParams);
   }
 }
