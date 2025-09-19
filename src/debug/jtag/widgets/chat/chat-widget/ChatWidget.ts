@@ -146,7 +146,7 @@ export class ChatWidget extends ChatWidgetBase {
     console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoom}"`);
   }
 
-  protected override async renderWidget(): Promise<void> {
+  protected override async renderWidget(skipScrollRestoration = false): Promise<void> {
     super.renderWidget();
 
     // Cache input element and messages container
@@ -174,7 +174,12 @@ export class ChatWidget extends ChatWidgetBase {
     }
 
     // Restore scroll position if available, otherwise scroll to bottom
-    await this.restoreScrollPosition();
+    // Skip this when loading older messages to maintain scroll position
+    if (!skipScrollRestoration) {
+      await this.restoreScrollPosition();
+    } else {
+      console.log('🔧 ChatWidget: Skipping scroll restoration for infinite scroll load');
+    }
   }
 
 
@@ -241,7 +246,7 @@ export class ChatWidget extends ChatWidgetBase {
         sessionId: client.sessionId,
         collection: 'chat_messages',
         filter: { roomId: this.currentRoom },
-        orderBy: [{ field: 'timestamp', direction: 'asc' }], // Changed to ASC for proper chronological order
+        orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
         limit: 20,
         cursor: {
           field: 'timestamp',
@@ -252,13 +257,16 @@ export class ChatWidget extends ChatWidgetBase {
 
       if (olderResult?.success && olderResult?.items) {
         const olderMessages = olderResult.items
-          .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0);
+          .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0)
+          .reverse(); // Reverse DESC results to get chronological order (oldest first)
 
-        // Insert older messages at the beginning
+        // Insert older messages at the beginning of our data array
         this.messages = [...olderMessages, ...this.messages];
 
-        // Re-render messages to include older ones
-        this.renderWidget();
+        // Use dynamic row insertion instead of full re-render to preserve DOM state
+        // This keeps the intersection observer sentinel intact
+        await this.prependMessageRows(olderMessages);
+        console.log('🔧 ChatWidget: Used dynamic row insertion to preserve intersection observer');
 
         console.log(`✅ ChatWidget: Loaded ${olderMessages.length} older messages`);
         return olderMessages;
@@ -542,18 +550,61 @@ export class ChatWidget extends ChatWidgetBase {
     }
   }
 
+  /**
+   * Create a single message element using DOM - no HTML strings!
+   */
+  private createMessageElement(message: ChatMessageData): HTMLElement {
+    const isCurrentUser = message.senderId === this.currentUserId;
+    const alignment = isCurrentUser ? 'right' : 'left';
+    const timestamp = new Date(message.timestamp).toLocaleString();
+    const content = message.content?.text || '';
+
+    // console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${this.currentUserId}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
+
+    // Create elements using DOM methods
+    const messageRow = document.createElement('div');
+    messageRow.className = `message-row ${alignment}`;
+    messageRow.setAttribute('data-message-id', message.id);
+
+    const messageBubble = document.createElement('div');
+    messageBubble.className = 'message-bubble current-user';
+
+    const messageHeader = document.createElement('div');
+    messageHeader.className = 'message-header';
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'message-time';
+    timeSpan.textContent = timestamp;
+    messageHeader.appendChild(timeSpan);
+
+    const messageContentDiv = document.createElement('div');
+    messageContentDiv.className = 'message-content';
+
+    const textContent = document.createElement('p');
+    textContent.className = 'text-content chat-message-renderer';
+    textContent.setAttribute('data-interactive', 'true');
+    textContent.setAttribute('tabindex', '0');
+    textContent.textContent = content; // Safe text content, no HTML injection
+
+    messageContentDiv.appendChild(textContent);
+    messageBubble.appendChild(messageHeader);
+    messageBubble.appendChild(messageContentDiv);
+    messageRow.appendChild(messageBubble);
+
+    return messageRow;
+  }
+
+  /**
+   * Render messages using DOM elements - no HTML strings!
+   */
+
   private renderMessages(): string {
-    return this.messages.map(msg => {
-      // Use enhanced modular renderer with options
-      const renderer = MessageRowWidgetFactory.createRenderer(msg, {
-        enableIntersectionObserver: true,
-        lazyLoadImages: true,
-        enableInteractions: true,
-        customClassNames: ['chat-message-renderer']
-      });
-      // FIXED: Pass currentUserId for proper senderId-based positioning
-      return renderer.renderMessageContainer(msg, this.currentUserId);
-    }).join('');
+    // Create a temporary container to get the HTML
+    const tempContainer = document.createElement('div');
+    this.messages.forEach(msg => {
+      tempContainer.appendChild(this.createMessageElement(msg));
+    });
+    return tempContainer.innerHTML;
   }
   
   /**
@@ -565,28 +616,78 @@ export class ChatWidget extends ChatWidgetBase {
       console.warn('⚠️ ChatWidget: No messages container found for row append');
       return;
     }
-    
-    // Render just this one message row
-    const renderer = MessageRowWidgetFactory.createRenderer(message, {
-      enableIntersectionObserver: true,
-      lazyLoadImages: true,
-      enableInteractions: true,
-      customClassNames: ['chat-message-renderer']
-    });
-    
-    const messageRowHTML = renderer.renderMessageContainer(message, this.currentUserId);
-    
-    // Create temporary element and append to container
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = messageRowHTML;
-    
-    // Append all children from temp div to messages container
-    while (tempDiv.firstChild) {
-      messagesContainer.appendChild(tempDiv.firstChild);
-    }
-    
+
+    // Create message element using DOM - no HTML strings!
+    const messageElement = this.createMessageElement(message);
+    messagesContainer.appendChild(messageElement);
+
     // Auto-scroll to show new message
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  /**
+   * Efficiently prepend older message rows for infinite scroll without re-rendering entire widget
+   */
+  private async prependMessageRows(olderMessages: ChatMessageData[]): Promise<void> {
+    const messagesContainer = this.shadowRoot.querySelector('#messages');
+    if (!messagesContainer) {
+      console.warn('⚠️ ChatWidget: No messages container found for row prepend');
+      return;
+    }
+
+    // Save current scroll position to restore after prepending
+    const scrollHeight = messagesContainer.scrollHeight;
+    const scrollTop = messagesContainer.scrollTop;
+
+    // console.log('🔧 ChatWidget: Saving scroll position before prepend:', { scrollHeight, scrollTop });
+
+    // Create document fragment for efficient DOM manipulation
+    const fragment = document.createDocumentFragment();
+
+    // Render all older messages in chronological order (oldest first)
+    // Use DOM element creation - no HTML strings!
+    for (const message of olderMessages) {
+      const messageElement = this.createMessageElement(message);
+      fragment.appendChild(messageElement);
+    }
+
+    // Get references to new elements BEFORE inserting fragment (fragment empties after insertion)
+    const newRowElements = Array.from(fragment.querySelectorAll('[data-content-type]')) as HTMLElement[];
+
+    // Insert fragment at the beginning - find first direct child element only
+    const firstMessage = messagesContainer.firstElementChild;
+
+    if (firstMessage) {
+      messagesContainer.insertBefore(fragment, firstMessage);
+    } else {
+      messagesContainer.appendChild(fragment);
+    }
+
+    // Batch initialize all new message row adapters efficiently
+    if (newRowElements.length > 0) {
+      // TODO: Initialize adapters when adapter system is integrated
+      // await AbstractMessageAdapter.batchInitializeRows(newRowElements, this.messageAdapters);
+      console.log('🔧 ChatWidget: Would batch initialize', newRowElements.length, 'new message adapters');
+    }
+
+    // Adjust scroll position to maintain user's place
+    // Use requestAnimationFrame for proper DOM timing with dynamic content
+    requestAnimationFrame(() => {
+      const newScrollHeight = messagesContainer.scrollHeight;
+      const heightDifference = newScrollHeight - scrollHeight;
+      messagesContainer.scrollTop = scrollTop + heightDifference;
+
+      console.log('🔧 ChatWidget: Adjusted scroll position after dynamic paging:', {
+        newRowsAdded: olderMessages.length,
+        newScrollHeight,
+        heightDifference,
+        newScrollTop: messagesContainer.scrollTop
+      });
+
+      // CRITICAL: Force intersection observer check AFTER scroll adjustment
+      // This ensures the sentinel is properly positioned for continued loading
+      this.scrollHelper?.forceIntersectionCheck();
+    });
   }
 
   protected override setupEventListeners(): void {

@@ -32,6 +32,8 @@ export class InfiniteScrollHelper {
 
   private observer?: IntersectionObserver;
   private loadMoreCallback?: (cursor: string) => Promise<ChatMessageData[]>;
+  private sentinel?: HTMLElement;
+  private scrollContainer?: Element;
 
   constructor(options: Partial<InfiniteScrollOptions> = {}) {
     this.options = {
@@ -39,6 +41,7 @@ export class InfiniteScrollHelper {
       threshold: 0.1,
       ...options
     };
+    console.log('🔧 CLAUDE-DEPLOY-' + Date.now() + ': InfiniteScrollHelper constructor - fewer messages fix deployed');
   }
 
   /**
@@ -49,14 +52,15 @@ export class InfiniteScrollHelper {
     loadMoreCallback: (cursor: string) => Promise<ChatMessageData[]>
   ): void {
     this.loadMoreCallback = loadMoreCallback;
+    this.scrollContainer = scrollContainer;
 
     // Create sentinel element at top of container to detect scroll to top
-    const sentinel = document.createElement('div');
-    sentinel.className = 'infinite-scroll-sentinel';
-    sentinel.style.height = '1px';
-    sentinel.style.visibility = 'hidden';
+    this.sentinel = document.createElement('div');
+    this.sentinel.className = 'infinite-scroll-sentinel';
+    this.sentinel.style.height = '1px';
+    this.sentinel.style.visibility = 'hidden';
 
-    scrollContainer.insertBefore(sentinel, scrollContainer.firstChild);
+    this.scrollContainer.insertBefore(this.sentinel, this.scrollContainer.firstChild);
 
     // Set up intersection observer
     console.log('🔄 InfiniteScrollHelper: Setting up intersection observer');
@@ -80,7 +84,7 @@ export class InfiniteScrollHelper {
       }
     );
 
-    this.observer.observe(sentinel);
+    this.observer.observe(this.sentinel);
   }
 
   /**
@@ -95,8 +99,14 @@ export class InfiniteScrollHelper {
       hasMore: this.state.hasMore
     });
 
-    if (!this.loadMoreCallback || !this.state.oldestTimestamp) {
-      console.log('❌ InfiniteScrollHelper: Missing callback or timestamp, aborting');
+    if (!this.loadMoreCallback) {
+      console.log('❌ InfiniteScrollHelper: Missing callback, aborting');
+      return;
+    }
+
+    if (!this.state.oldestTimestamp) {
+      console.log('❌ InfiniteScrollHelper: Missing oldestTimestamp, aborting');
+      console.log('🔧 This probably means initializeWithMessages was never called or got empty messages');
       return;
     }
 
@@ -107,22 +117,61 @@ export class InfiniteScrollHelper {
       const newMessages = await this.loadMoreCallback(this.state.oldestTimestamp!);
       console.log('✅ InfiniteScrollHelper: Loaded', newMessages.length, 'new messages');
 
-      if (newMessages.length === 0) {
-        console.log('🔚 InfiniteScrollHelper: No more messages, disabling infinite scroll');
-        this.state = { ...this.state, hasMore: false, isLoading: false };
+      // Stop loading if we get 0 messages OR fewer than requested (reached end of data)
+      if (newMessages.length === 0 || newMessages.length < this.options.pageSize) {
+        console.log('🔚 InfiniteScrollHelper: Reached end of data - got', newMessages.length, 'messages, expected', this.options.pageSize);
+        this.state = {
+          ...this.state,
+          hasMore: false,
+          isLoading: false,
+          // Still update cursor if we got some messages
+          oldestTimestamp: newMessages.length > 0 ? newMessages[0].timestamp : this.state.oldestTimestamp
+        };
       } else {
         // Update cursor to oldest message timestamp
-        const oldestMessage = newMessages[newMessages.length - 1];
+        // newMessages is in chronological order (oldest first) after ChatWidget's reverse()
+        const oldestMessage = newMessages[0];
         console.log('📊 InfiniteScrollHelper: Updated cursor to:', oldestMessage.timestamp);
+        console.log('🔧 CLAUDE-STATE-BEFORE:', this.state.oldestTimestamp);
         this.state = {
           ...this.state,
           oldestTimestamp: oldestMessage.timestamp,
           isLoading: false
         };
+        console.log('🔧 CLAUDE-STATE-AFTER:', this.state.oldestTimestamp);
       }
     } catch (error) {
       console.error('❌ InfiniteScrollHelper: Failed to load more messages:', error);
       this.state = { ...this.state, isLoading: false };
+    }
+  }
+
+  /**
+   * Force intersection observer to re-evaluate after DOM changes
+   * Uses DOM events for proper timing with Shadow DOM
+   */
+  forceIntersectionCheck(): void {
+    if (this.sentinel && this.scrollContainer && this.observer) {
+      console.log('🔧 InfiniteScrollHelper: Forcing intersection check after DOM update');
+
+      // Use requestAnimationFrame to ensure DOM updates are complete
+      requestAnimationFrame(() => {
+        if (this.sentinel && this.scrollContainer) {
+          // Remove and re-add sentinel to force intersection observer update
+          this.sentinel.remove();
+          this.scrollContainer.insertBefore(this.sentinel, this.scrollContainer.firstChild);
+          console.log('🔧 InfiniteScrollHelper: Repositioned sentinel after DOM frame');
+
+          // Use another requestAnimationFrame for intersection observer timing
+          requestAnimationFrame(() => {
+            if (this.observer && this.sentinel) {
+              this.observer.unobserve(this.sentinel);
+              this.observer.observe(this.sentinel);
+              console.log('🔧 InfiniteScrollHelper: Re-observed sentinel after repositioning');
+            }
+          });
+        }
+      });
     }
   }
 
@@ -140,13 +189,23 @@ export class InfiniteScrollHelper {
       console.log('📊 Newest timestamp:', sortedMessages[0].timestamp);
       console.log('📊 Oldest timestamp:', sortedMessages[sortedMessages.length - 1].timestamp);
 
-      this.state = {
-        hasMore: messages.length >= this.options.pageSize,
+      // ALWAYS assume there's more data unless server tells us otherwise (by returning 0 messages)
+      const newState = {
+        hasMore: true,
         isLoading: false,
         oldestTimestamp: sortedMessages[sortedMessages.length - 1].timestamp,
         newestTimestamp: sortedMessages[0].timestamp
       };
 
+      console.log('🔧 CLAUDE-DEBUG-' + Date.now() + ': Setting cursor state', {
+        pageSize: this.options.pageSize,
+        messageCount: messages.length,
+        assumingMore: true, // Always assume more until proven otherwise
+        oldestTimestamp: newState.oldestTimestamp,
+        newestTimestamp: newState.newestTimestamp
+      });
+
+      this.state = newState;
       console.log('✅ InfiniteScrollHelper: State initialized:', this.state);
     } else {
       console.log('⚠️ InfiniteScrollHelper: No messages to initialize with');
@@ -157,10 +216,17 @@ export class InfiniteScrollHelper {
    * Build cursor-based query parameters for loading older messages
    */
   getCursorQueryParams(roomId: string): DataListParams {
+    console.log('🔧 CLAUDE-DEBUG-' + Date.now() + ': getCursorQueryParams called', {
+      roomId: roomId,
+      oldestTimestamp: this.state.oldestTimestamp,
+      hasMore: this.state.hasMore,
+      isLoading: this.state.isLoading
+    });
+
     return {
       collection: 'chat_messages',
       filter: { roomId },
-      orderBy: [{ field: 'timestamp', direction: 'desc' }],
+      orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
       limit: this.options.pageSize,
       cursor: this.state.oldestTimestamp ? {
         field: 'timestamp',
