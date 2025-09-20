@@ -1,5 +1,22 @@
 import { BaseWidget } from '../../shared/BaseWidget';
 
+/**
+ * Smart path resolution for chat widgets
+ * More extensible - automatically infers paths from widget names
+ */
+function inferChatWidgetPath(widgetName: string, filename: string): string {
+  // Convert "UserListWidget" -> "user-list"
+  // Convert "ChatWidget" -> "chat-widget"
+  // Convert "RoomListWidget" -> "room-list"
+  const widgetDir = widgetName
+    .replace(/Widget$/, '') // Remove "Widget" suffix first
+    .split(/(?=[A-Z])/) // Split on capital letters: ["User", "List"] or ["Chat"]
+    .map(part => part.toLowerCase()) // lowercase each part
+    .join('-'); // join with hyphens
+
+  return `widgets/chat/${widgetDir}/${filename}`;
+}
+
 export abstract class ChatWidgetBase extends BaseWidget {
   
     protected async renderWidget(): Promise<void> {
@@ -43,5 +60,13 @@ export abstract class ChatWidgetBase extends BaseWidget {
 
     protected getReplacements(): Record<string, string> {
         return {};
+    }
+
+    /**
+     * Smart default path resolution - widgets can override for custom paths
+     * More extensible: automatically infers from widget class name
+     */
+    protected override resolveResourcePath(filename: string): string {
+        return inferChatWidgetPath(this.config.widgetName, filename);
     }
 }

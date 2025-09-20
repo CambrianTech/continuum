@@ -122,12 +122,9 @@ export class ChatWidget extends ChatWidgetBase {
 
 
 
-   protected override resolveResourcePath(filename: string): string {
-      // Extract widget directory name from widget name (ChatWidget -> chat)
-      //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
-      // Return relative path from current working directory
-      return `widgets/chat/chat-widget/${filename}`;
-    }
+  protected override resolveResourcePath(filename: string): string {
+    return `widgets/chat/chat-widget/${filename}`;
+  }
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
