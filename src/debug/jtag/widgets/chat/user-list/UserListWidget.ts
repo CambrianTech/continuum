@@ -7,6 +7,7 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { UserData } from '../../../system/data/domains/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
+import { CommandDaemon } from '../../../daemons/command-daemon/shared/CommandDaemon';
 
 export class UserListWidget extends ChatWidgetBase {
   private users: UserData[] = [];
@@ -31,8 +32,8 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
   private async loadUsersFromDatabase(): Promise<void> {
-    // More elegant: automatic client context injection
-    const result = await this.executeCommand<DataListParams, DataListResult<UserData>>('data/list', {
+    // Domain-owned: CommandDaemon handles optimization, caching, retries
+    const result = await CommandDaemon.execute<DataListParams, DataListResult<UserData>>('data/list', {
       collection: COLLECTIONS.USERS,
       orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
       limit: 100

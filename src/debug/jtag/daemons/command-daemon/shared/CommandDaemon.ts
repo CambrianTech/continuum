@@ -13,11 +13,71 @@ import type { CommandResponse } from './CommandResponseTypes';
 import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { globalSessionContext } from '../../../system/core/types/SystemScopes';
+import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
+import type { CommandErrorResponse, CommandSuccessResponse } from './CommandResponseTypes';
 
 
 export abstract class CommandDaemon extends DaemonBase {
   public readonly subpath: string = 'commands';
   public commands: Map<string, CommandBase<CommandParams, CommandResult>> = new Map();
+
+  /**
+   * Static convenience method - same as BaseWidget.executeCommand but domain-owned
+   * Gives CommandDaemon control over caching, optimization, batching, retries
+   *
+   * @example
+   * // ONE LINE CHANGE: Replace this.executeCommand with CommandDaemon.execute
+   * const result = await CommandDaemon.execute<DataListParams, DataListResult<UserData>>('data/list', {
+   *   collection: COLLECTIONS.USERS
+   * });
+   */
+  static async execute<P extends CommandParams, R extends CommandResult>(
+    command: string,
+    params?: Omit<P, 'context' | 'sessionId'> | P
+  ): Promise<R> {
+    try {
+      // Use window.jtag directly like BaseWidget does
+      const client = (window as any).jtag;
+      if (!client?.commands) {
+        throw new Error('JTAG client not available - system not ready');
+      }
+
+      // Auto-inject context and sessionId if not already provided (same logic as BaseWidget)
+      let finalParams = params || {} as P;
+      if (!('context' in finalParams) || !('sessionId' in finalParams)) {
+        const jtagClient = await JTAGClient.sharedInstance;
+        finalParams = {
+          context: jtagClient.context,
+          sessionId: jtagClient.sessionId,
+          ...finalParams
+        } as P;
+      }
+
+      // Execute command through the global JTAG system - same as BaseWidget
+      const wrappedResult = await client.commands[command](finalParams) as CommandResponse;
+
+      if (!wrappedResult.success) {
+        const commandError = wrappedResult as CommandErrorResponse;
+        throw new Error(commandError.error ?? `Command ${command} failed without error message`);
+      }
+
+      // Type-safe access to commandResult for success responses
+      const successResult = wrappedResult as CommandSuccessResponse;
+
+      // Extract the actual command result from the wrapped response
+      const finalResult = successResult.commandResult as R;
+
+      // Check if commandResult is missing and use direct result
+      if (!finalResult && wrappedResult.success) {
+        return wrappedResult as unknown as R;
+      }
+
+      return finalResult;
+    } catch (error) {
+      console.error(`❌ CommandDaemon: Command ${command} failed:`, error);
+      throw error;
+    }
+  }
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('command-daemon', context, router);
