@@ -450,17 +450,14 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`✨ ChatWidget: Using ChatMessage domain object directly:`, chatMessage);
 
       if (this.chatScroller) {
-        // Use generic scroller for real-time updates - add at end for chronological order
-        this.chatScroller.add(chatMessage, 'end'); // Newest messages go at bottom (chronological order)
+        // Use EntityScroller's smart auto-scroll - it knows where new content goes
+        this.chatScroller.addWithAutoScroll(chatMessage); // No position needed, EntityScroller knows
         this.messages = this.chatScroller.entities() as ChatMessageData[];
-
-        // Smart scroll: only auto-scroll if user is near bottom
-        this.smartScrollToBottom();
       } else {
         // Fallback to old method
         this.messages.push(chatMessage);
         await this.renderWidget(); // Re-render with new message
-        this.smartScrollToBottom();
+        this.smartScrollToBottom(); // Keep fallback behavior for now
       }
 
       // Real-time message added successfully using domain object
@@ -499,6 +496,7 @@ export class ChatWidget extends ChatWidgetBase {
         version: 1
       };
       if (this.chatScroller) {
+        // System messages use regular add() since they don't need auto-scroll
         this.chatScroller.add(systemMessage, 'start');
         this.messages = this.chatScroller.entities() as ChatMessageData[];
       } else {
@@ -540,6 +538,7 @@ export class ChatWidget extends ChatWidgetBase {
         version: 1
       };
       if (this.chatScroller) {
+        // System messages use regular add() since they don't need auto-scroll
         this.chatScroller.add(systemMessage, 'start');
         this.messages = this.chatScroller.entities() as ChatMessageData[];
       } else {
@@ -782,7 +781,7 @@ export class ChatWidget extends ChatWidgetBase {
       // Always scroll to bottom after sending own message
       // User expects to see their message immediately
       requestAnimationFrame(() => {
-        this.scrollToBottomSmooth();
+        this.scrollToBottom(); // Use simple scroll since user sent the message
       });
     } catch (error) {
       console.error('❌ Failed to send message:', error);

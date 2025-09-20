@@ -34,6 +34,11 @@ export interface ScrollerConfig {
   readonly direction: 'newest-first' | 'oldest-first';
   readonly threshold?: number;
   readonly rootMargin?: string;
+  readonly autoScroll?: {
+    readonly enabled: boolean;
+    readonly threshold: number; // Distance from natural end before auto-scroll triggers
+    readonly behavior: 'smooth' | 'instant';
+  };
 }
 
 // Clean scroller interface - like React hooks
@@ -47,6 +52,9 @@ export interface EntityScroller<T extends BaseEntity> {
   readonly add: (entity: T, position?: 'start' | 'end') => void;
   readonly update: (id: string, entity: T) => boolean;
   readonly remove: (id: string) => boolean;
+
+  // Smart real-time updates with auto-scroll
+  readonly addWithAutoScroll: (entity: T, position?: 'start' | 'end') => void;
 
   // State queries
   readonly entities: () => readonly T[];
@@ -75,6 +83,36 @@ export function createScroller<T extends BaseEntity>(
   let cursor: string | undefined;
   let observer: IntersectionObserver | undefined;
   let sentinel: HTMLElement | undefined;
+
+  // Smart scroll utilities - check if user is near bottom (where new content appears)
+  const isNearEnd = (threshold: number = config.autoScroll?.threshold || 100): boolean => {
+    const { scrollTop, scrollHeight, clientHeight } = container;
+
+    // Always check distance from bottom since new items are added at 'end' (bottom)
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    return distanceFromBottom <= threshold;
+  };
+
+  const scrollToEnd = (behavior: 'smooth' | 'instant' = config.autoScroll?.behavior || 'smooth'): void => {
+    const scrollOptions: ScrollToOptions = {
+      behavior: behavior === 'smooth' ? 'smooth' : 'auto',
+      // Always scroll to bottom since new items are always added at 'end' (bottom)
+      top: container.scrollHeight
+    };
+
+    container.scrollTo(scrollOptions);
+  };
+
+  const smartScrollToNewContent = (): void => {
+    if (!config.autoScroll?.enabled) return;
+
+    if (isNearEnd()) {
+      console.log(`📍 EntityScroller: User near new content area, auto-scrolling`);
+      scrollToEnd();
+    } else {
+      console.log(`📍 EntityScroller: User reading away from new content area, not auto-scrolling`);
+    }
+  };
 
   // Efficient DOM operations using fragments
   const addEntitiesToDOM = (newEntities: readonly T[], position: 'start' | 'end'): void => {
@@ -209,6 +247,22 @@ export function createScroller<T extends BaseEntity>(
       addEntitiesToDOM([entity], position);
     },
 
+    // Smart real-time updates with intrinsic direction awareness
+    addWithAutoScroll(entity: T, position?: 'start' | 'end'): void {
+      // Determine where "new content" naturally goes based on direction
+      const newContentPosition = config.direction === 'newest-first' ? 'end' : 'start';
+      const actualPosition = position || newContentPosition;
+
+      addEntitiesToDOM([entity], actualPosition);
+
+      // Auto-scroll only if this is truly new content being added to the natural position
+      if (actualPosition === newContentPosition) {
+        requestAnimationFrame(() => {
+          smartScrollToNewContent();
+        });
+      }
+    },
+
     update(id: string, entity: T): boolean {
       const index = entities.findIndex(e => e.id === id);
       if (index === -1) return false;
@@ -263,13 +317,23 @@ export const SCROLLER_PRESETS = {
     pageSize: 20,
     direction: 'newest-first' as const,
     threshold: 0.1,
-    rootMargin: '50px'
+    rootMargin: '50px',
+    autoScroll: {
+      enabled: true,
+      threshold: 100, // 100px from bottom
+      behavior: 'smooth' as const
+    }
   },
 
   LIST: {
     pageSize: 50,
     direction: 'oldest-first' as const,
     threshold: 0.2,
-    rootMargin: '100px'
+    rootMargin: '100px',
+    autoScroll: {
+      enabled: false, // Lists typically don't need auto-scroll
+      threshold: 100,
+      behavior: 'smooth' as const
+    }
   }
 } as const;
