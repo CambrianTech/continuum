@@ -277,13 +277,9 @@ export class ChatWidget extends ChatWidgetBase {
     try {
       console.log(`📚 ChatWidget: Loading room history using cursor-based pagination`);
 
-      const client = await JTAGClient.sharedInstance;
-
       // Load initial batch of recent messages (no cursor = most recent)
       // chat/get-messages should return messages in chronological order (oldest to newest)
       const historyResult = await this.executeCommand<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
-        context: client.context,
-        sessionId: client.sessionId,
         roomId: this.currentRoom,
         limit: 20 // Initial page size
       });
@@ -317,14 +313,10 @@ export class ChatWidget extends ChatWidgetBase {
     try {
       console.log(`📚 ChatWidget: Loading older messages with cursor: ${cursor}`);
 
-      const client = await JTAGClient.sharedInstance;
-
       // Use data/list command with cursor for older messages
       // NOTE: We want messages BEFORE (older than) the cursor timestamp
       // But we need them in ascending order to append at the beginning correctly
       const olderResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
-        context: client.context,
-        sessionId: client.sessionId,
         collection: 'chat_messages',
         filter: { roomId: this.currentRoom },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
@@ -367,10 +359,7 @@ export class ChatWidget extends ChatWidgetBase {
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
-        const client = await JTAGClient.sharedInstance;
         const subscribeResult = await this.executeCommand<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
-          context: client.context,
-          sessionId: client.sessionId,
           roomId: this.currentRoom,
           eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
@@ -733,10 +722,7 @@ export class ChatWidget extends ChatWidgetBase {
 
   private async sendChatMessage(content: string): Promise<void> {
     try {
-      const client = await JTAGClient.sharedInstance;
       const sendResult = await this.executeCommand<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
-        context: client.context,
-        sessionId: client.sessionId,
         content: content,
         roomId: this.currentRoom,
         senderType: 'user'
