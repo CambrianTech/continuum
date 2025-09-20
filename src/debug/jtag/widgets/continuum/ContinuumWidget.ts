@@ -6,7 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
+import { CommandDaemon } from '../../daemons/command-daemon/shared/CommandDaemon';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {
@@ -84,11 +84,8 @@ export class ContinuumWidget extends BaseWidget {
    */
   private async loadThemeCSS(): Promise<string> {
     try {
-      // Load base theme CSS using correct path (same as ThemeWidget)
-      const client = await JTAGClient.sharedInstance;
-      const baseResult = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
-        context: client.context,
-        sessionId: client.sessionId,
+      // Domain-owned: CommandDaemon handles file loading with optimization
+      const baseResult = await CommandDaemon.execute<FileLoadParams, FileLoadResult>('file/load', {
         filepath: 'widgets/shared/themes/base/base.css'
       });
       
