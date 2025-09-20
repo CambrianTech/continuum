@@ -163,6 +163,54 @@ async function runTests() {
     }
   });
 
+  // Test NEW STATIC INTERFACE - DataDaemon domain-owned methods
+  test('should work with clean static interface (DataDaemon.store)', async () => {
+    const config = {
+      strategy: 'memory' as const,
+      backend: 'memory',
+      namespace: 'test-static-interface',
+      options: {
+        maxRecords: 1000,
+        enablePersistence: false
+      }
+    };
+
+    const dataDaemon = new DataDaemon(config);
+
+    try {
+      // Initialize static interface (like system would do)
+      const context: DataOperationContext = {
+        sessionId: 'test-session-static' as UUID,
+        timestamp: new Date().toISOString(),
+        source: 'unit-test-static'
+      };
+
+      DataDaemon.initialize(dataDaemon, context);
+
+      // Test NEW PATTERN - clean, domain-owned interface
+      const testData = { name: 'Static Interface Test', value: 999 };
+      const storeResult = await DataDaemon.store<typeof testData>('static-test', testData);
+
+      expect(storeResult.success).toBe(true);
+      expect(storeResult.data?.data).toEqual(testData);
+      expect(storeResult.data?.collection).toBe('static-test');
+
+      // Test query method
+      const queryResult = await DataDaemon.query<typeof testData>({
+        collection: 'static-test',
+        filters: { name: 'Static Interface Test' }
+      });
+
+      expect(queryResult.success).toBe(true);
+      expect(queryResult.data?.length).toBe(1);
+      expect(queryResult.data?.[0]?.data).toEqual(testData);
+
+      console.log('✅ DataDaemon static interface test passed - clean, typed, auto-context!');
+    } finally {
+      await dataDaemon.close();
+    }
+  });
+
   // Test DataDaemon with File Backend
   test('should work with FileStorageAdapter backend', async () => {
     const config = {

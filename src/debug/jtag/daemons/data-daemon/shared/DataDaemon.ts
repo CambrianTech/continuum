@@ -52,9 +52,20 @@ export interface DataOperationContext {
 
 /**
  * Universal Data Daemon - Storage Strategy Abstraction
- * 
+ *
  * Orchestrates data operations across any storage backend while maintaining
  * consistent interface regardless of underlying SQL/NoSQL/File strategy
+ *
+ * CLEAN DOMAIN-OWNED INTERFACE (like CommandDaemon.execute):
+ *
+ * OLD PATTERN (scattered, context-heavy):
+ * const context = { sessionId, timestamp, source };
+ * const result = await this.dataDaemon.create('users', userData, context);
+ *
+ * NEW PATTERN (domain-owned, auto-context):
+ * const result = await DataDaemon.store<UserData>('users', userData);
+ * const users = await DataDaemon.query<UserData>({ collection: 'users', filters: {...} });
+ * const success = await DataDaemon.remove('users', userId);
  */
 export class DataDaemon {
   private adapter: DataStorageAdapter;
@@ -278,8 +289,131 @@ export class DataDaemon {
         error: 'DataOperationContext.timestamp is required'
       };
     }
-    
+
     return { success: true, data: null };
+  }
+
+  // =============================================
+  // CLEAN DOMAIN-OWNED STATIC INTERFACE
+  // =============================================
+
+  private static sharedInstance: DataDaemon | undefined;
+  private static context: DataOperationContext | undefined;
+
+  /**
+   * Initialize static DataDaemon context (called by system)
+   */
+  static initialize(instance: DataDaemon, context: DataOperationContext): void {
+    DataDaemon.sharedInstance = instance;
+    DataDaemon.context = context;
+  }
+
+  /**
+   * Store data with automatic context injection - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.store<UserData>('users', userData);
+   * const result = await DataDaemon.store<ChatMessageData>('messages', messageData, customId);
+   */
+  static async store<T>(
+    collection: string,
+    data: T,
+    id?: UUID
+  ): Promise<StorageResult<DataRecord<T>>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context, id);
+  }
+
+  /**
+   * Query data with automatic context injection - CLEAN INTERFACE
+   *
+   * @example
+   * const users = await DataDaemon.query<UserData>({ collection: 'users', filters: { active: true } });
+   * const messages = await DataDaemon.query<ChatMessageData>({
+   *   collection: 'messages',
+   *   filters: { roomId: 'general' },
+   *   sort: [{ field: 'timestamp', direction: 'desc' }],
+   *   limit: 50
+   * });
+   */
+  static async query<T>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.query<T>(query, DataDaemon.context);
+  }
+
+  /**
+   * Read single record by ID with automatic context injection - CLEAN INTERFACE
+   *
+   * @example
+   * const user = await DataDaemon.read<UserData>('users', userId);
+   */
+  static async read<T>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.read<T>(collection, id, DataDaemon.context);
+  }
+
+  /**
+   * Update data with automatic context injection - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.update<UserData>('users', userId, { lastActive: now() });
+   */
+  static async update<T>(
+    collection: string,
+    id: UUID,
+    data: Partial<T>,
+    incrementVersion: boolean = true
+  ): Promise<StorageResult<DataRecord<T>>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.update<T>(collection, id, data, DataDaemon.context, incrementVersion);
+  }
+
+  /**
+   * Remove data with automatic context injection - CLEAN INTERFACE
+   *
+   * @example
+   * const success = await DataDaemon.remove('users', userId);
+   */
+  static async remove(collection: string, id: UUID): Promise<StorageResult<boolean>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context);
+  }
+
+  /**
+   * List collections with automatic context injection - CLEAN INTERFACE
+   */
+  static async collections(): Promise<StorageResult<string[]>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.listCollections(DataDaemon.context);
+  }
+
+  /**
+   * Batch operations with automatic context injection - CLEAN INTERFACE
+   */
+  static async batch(operations: StorageOperation[]): Promise<StorageResult<any[]>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.batch(operations, DataDaemon.context);
   }
 }
 
