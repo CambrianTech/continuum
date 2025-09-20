@@ -6,7 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { CommandDaemon } from '../../daemons/command-daemon/shared/CommandDaemon';
+import { Commands } from '../../system/core/client/shared/Commands';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {
@@ -85,7 +85,7 @@ export class ContinuumWidget extends BaseWidget {
   private async loadThemeCSS(): Promise<string> {
     try {
       // Domain-owned: CommandDaemon handles file loading with optimization
-      const baseResult = await CommandDaemon.execute<FileLoadParams, FileLoadResult>('file/load', {
+      const baseResult = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
         filepath: 'widgets/shared/themes/base/base.css'
       });
       

@@ -23,7 +23,7 @@ import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/sh
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import { WIDGET_DEFAULTS} from './WidgetConstants';
 import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from '../../daemons/command-daemon/shared/CommandResponseTypes';
-import { CommandDaemon } from '../../daemons/command-daemon/shared/CommandDaemon';
+import { Commands } from '../../system/core/client/shared/Commands';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
@@ -378,7 +378,7 @@ export abstract class BaseWidget extends HTMLElement {
     console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
-      const result = await CommandDaemon.execute<FileLoadParams, FileLoadResult>('file/load', {
+      const result = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
         filepath: resourcePath
       });
       

@@ -8,7 +8,7 @@
 
 import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
-import { CommandDaemon } from '../../daemons/command-daemon/shared/CommandDaemon';
+import { Commands } from '../../system/core/client/shared/Commands';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry, ThemeManifest } from './themes/ThemeTypes';
 
@@ -228,7 +228,7 @@ export class ThemeWidget extends BaseWidget {
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
           console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
 
-          const result = await CommandDaemon.execute<FileLoadParams, FileLoadResult>('file/load', {
+          const result = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
             filepath: filePath
           });
           
@@ -312,7 +312,7 @@ export class ThemeWidget extends BaseWidget {
         // Use the actual JTAG theme/set command for proper theme switching
         try {
           // Domain-owned: CommandDaemon handles theme switching with optimization
-          await CommandDaemon.execute('theme/set', {
+          await Commands.execute('theme/set', {
             themeName: selectedTheme
           });
           console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via CommandDaemon`);

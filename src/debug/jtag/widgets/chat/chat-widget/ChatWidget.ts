@@ -27,7 +27,7 @@ import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type Enti
 import { createDataLoader, PAGINATION_PRESETS } from '../../shared/DataLoaders';
 import { createDataExecutor } from '../../shared/DataExecutorAdapter';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
-import { CommandDaemon } from '../../../daemons/command-daemon/shared/CommandDaemon';
+import { Commands } from '../../../system/core/client/shared/Commands';
 
 // ChatMessageData already extends Entity via BaseEntity - no need for new interface
 
@@ -206,7 +206,7 @@ export class ChatWidget extends ChatWidgetBase {
 
       try {
         // Create clean data executor - elegant protocol with firm typing
-        const executor = createDataExecutor<ChatMessageData>(CommandDaemon.execute);
+        const executor = createDataExecutor<ChatMessageData>(Commands.execute);
         const loader = createDataLoader<ChatMessageData>(executor, {
           collection: COLLECTIONS.CHAT_MESSAGES,
           filter: { roomId: this.currentRoom },
@@ -280,7 +280,7 @@ export class ChatWidget extends ChatWidgetBase {
 
       // Load initial batch of recent messages (no cursor = most recent)
       // chat/get-messages should return messages in chronological order (oldest to newest)
-      const historyResult = await CommandDaemon.execute<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
+      const historyResult = await Commands.execute<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
         roomId: this.currentRoom,
         limit: 20 // Initial page size
       });
@@ -317,7 +317,7 @@ export class ChatWidget extends ChatWidgetBase {
       // Use data/list command with cursor for older messages
       // NOTE: We want messages BEFORE (older than) the cursor timestamp
       // But we need them in ascending order to append at the beginning correctly
-      const olderResult = await CommandDaemon.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
+      const olderResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         collection: 'chat_messages',
         filter: { roomId: this.currentRoom },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
@@ -360,7 +360,7 @@ export class ChatWidget extends ChatWidgetBase {
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
-        const subscribeResult = await CommandDaemon.execute<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
+        const subscribeResult = await Commands.execute<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
           roomId: this.currentRoom,
           eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
@@ -770,7 +770,7 @@ export class ChatWidget extends ChatWidgetBase {
 
   private async sendChatMessage(content: string): Promise<void> {
     try {
-      const sendResult = await CommandDaemon.execute<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
+      const sendResult = await Commands.execute<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
         content: content,
         roomId: this.currentRoom,
         senderType: 'user'
