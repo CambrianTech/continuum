@@ -21,7 +21,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 
 // Existing architecture imports
-import type { DataDaemon, DataOperationContext } from '../../data-daemon/shared/DataDaemon';
+import { DataDaemon, type DataOperationContext } from '../../data-daemon/shared/DataDaemon';
 import type { StorageResult } from '../../data-daemon/shared/DataStorageAdapter';
 import { UserRepository, HumanUserRepository, AgentUserRepository, PersonaUserRepository } from '../../../domain/user/UserRepository';
 import type { BaseUser, UserCitizenType } from '../../../domain/user/BaseUser';
@@ -206,9 +206,342 @@ export class UserPresenceRepository extends EntityRepository<UserPresence> {
 }
 
 /**
- * UserDaemon - Complete User Management System
+ * UserDaemon - Complete User Management System with Clean Static Interface
+ *
+ * Following the proven DataDaemon.store() pattern with:
+ * - Auto-context injection
+ * - Strict TypeScript typing
+ * - Integration with authentication, chat, and state management
  */
 export class UserDaemon extends DaemonBase {
+    // Static interface for clean daemon access
+    private static sharedInstance: UserDaemon | null = null;
+    private static context: DataOperationContext | null = null;
+
+    /**
+     * Initialize UserDaemon static interface - called by system during startup
+     */
+    static initialize(instance: UserDaemon, context: DataOperationContext): void {
+        UserDaemon.sharedInstance = instance;
+        UserDaemon.context = context;
+    }
+
+    static isInitialized(): boolean {
+        return UserDaemon.sharedInstance !== null && UserDaemon.context !== null;
+    }
+
+    // ========================================================================
+    // CLEAN STATIC USER OPERATIONS - Following DataDaemon.store() pattern
+    // ========================================================================
+
+    /**
+     * Create Human user - type-safe, no generics
+     */
+    static async createHuman(
+        displayName: string,
+        sessionId: UUID
+    ): Promise<StorageResult<HumanUser>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.createHuman(displayName, sessionId, UserDaemon.context!);
+    }
+
+    /**
+     * Create Agent user - type-safe, no generics
+     */
+    static async createAgent(
+        displayName: string,
+        sessionId: UUID,
+        agentPortalConfig: AgentPortalConfig,
+        modelConfig: AIModelConfig
+    ): Promise<StorageResult<AgentUser>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.createAgent(
+            displayName,
+            sessionId,
+            agentPortalConfig,
+            modelConfig,
+            UserDaemon.context!
+        );
+    }
+
+    /**
+     * Create Persona user - type-safe, no generics
+     */
+    static async createPersona(
+        displayName: string,
+        sessionId: UUID,
+        personaConfig: PersonaConfig,
+        modelConfig: AIModelConfig
+    ): Promise<StorageResult<PersonaUser>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.createPersona(
+            displayName,
+            sessionId,
+            personaConfig,
+            modelConfig,
+            UserDaemon.context!
+        );
+    }
+
+    /**
+     * Create user with automatic polymorphic instantiation
+     * Returns BaseUser - caller must cast if they need specific type
+     * Rust-like: explicit about what we're returning
+     */
+    static async create(userData: {
+        displayName: string;
+        sessionId: UUID;
+        citizenType: UserCitizenType;
+        aiType?: 'agent' | 'persona';
+        agentPortalConfig?: AgentPortalConfig;
+        modelConfig?: AIModelConfig;
+        personaConfig?: PersonaConfig;
+    }): Promise<StorageResult<BaseUser>> {
+        if (userData.citizenType === 'human') {
+            return UserDaemon.createHuman(userData.displayName, userData.sessionId);
+        } else if (userData.citizenType === 'ai' && userData.aiType === 'agent') {
+            if (!userData.agentPortalConfig || !userData.modelConfig) {
+                return {
+                    success: false,
+                    error: 'Agent users require agentPortalConfig and modelConfig'
+                };
+            }
+            return UserDaemon.createAgent(
+                userData.displayName,
+                userData.sessionId,
+                userData.agentPortalConfig,
+                userData.modelConfig
+            );
+        } else if (userData.citizenType === 'ai' && userData.aiType === 'persona') {
+            if (!userData.personaConfig || !userData.modelConfig) {
+                return {
+                    success: false,
+                    error: 'Persona users require personaConfig and modelConfig'
+                };
+            }
+            return UserDaemon.createPersona(
+                userData.displayName,
+                userData.sessionId,
+                userData.personaConfig,
+                userData.modelConfig
+            );
+        }
+
+        return {
+            success: false,
+            error: `Unsupported user type: ${userData.citizenType}${userData.aiType ? '/' + userData.aiType : ''}`
+        };
+    }
+
+    /**
+     * Find user by ID - critical for authentication and chat
+     */
+    static async findById(userId: UUID): Promise<StorageResult<BaseUser | null>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.findUserById(userId, UserDaemon.context!);
+    }
+
+    /**
+     * Query users with type-safe filters - for chat participant lists
+     * Returns BaseUser[] - caller can cast if needed
+     * Rust-like: explicit return type, no unsafe generics
+     */
+    static async query(filters: {
+        citizenType?: UserCitizenType;
+        aiType?: 'agent' | 'persona';
+        sessionId?: UUID;
+        isActive?: boolean;
+        limit?: number;
+    } = {}): Promise<StorageResult<BaseUser[]>> {
+        UserDaemon.ensureInitialized();
+
+        if (filters.citizenType) {
+            const result = await UserDaemon.sharedInstance!.findUsersByType(
+                filters.citizenType,
+                UserDaemon.context!,
+                filters.aiType
+            );
+            return result;
+        }
+
+        if (filters.isActive) {
+            const result = await UserDaemon.sharedInstance!.findActiveUsers(UserDaemon.context!);
+            return result;
+        }
+
+        // For sessionId filtering, use DataDaemon directly
+        if (filters.sessionId) {
+            const queryResult = await DataDaemon.query<{userId: UUID; sessionId: UUID}>({
+                collection: 'users',
+                filters: { sessionId: filters.sessionId },
+                limit: filters.limit
+            });
+
+            if (!queryResult.success || !queryResult.data) {
+                return { success: false, error: queryResult.error };
+            }
+
+            // Convert each found user using the findById method to get proper domain objects
+            const users: BaseUser[] = [];
+            for (const record of queryResult.data) {
+                const userResult = await UserDaemon.findById(record.data.userId);
+                if (userResult.success && userResult.data) {
+                    users.push(userResult.data);
+                }
+            }
+
+            return {
+                success: true,
+                data: users
+            };
+        }
+
+        // Default: return active users
+        const result = await UserDaemon.sharedInstance!.findActiveUsers(UserDaemon.context!);
+        return result;
+    }
+
+    /**
+     * Authenticate user by session - critical for chat and state management
+     */
+    static async authenticateBySession(sessionId: UUID): Promise<StorageResult<BaseUser | null>> {
+        const result = await UserDaemon.query({ sessionId, limit: 1 });
+
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+
+        return {
+            success: true,
+            data: result.data?.[0] ?? null
+        };
+    }
+
+    /**
+     * Get or create session user - handles both human and AI users for chat
+     */
+    static async getOrCreateSessionUser(
+        sessionId: UUID,
+        userType: UserCitizenType = 'human',
+        displayName?: string
+    ): Promise<StorageResult<BaseUser>> {
+        // First try to find existing user for session
+        const existing = await UserDaemon.authenticateBySession(sessionId);
+
+        if (existing.success && existing.data) {
+            return existing as StorageResult<BaseUser>;
+        }
+
+        // Create new user for session
+        const userData = {
+            displayName: displayName ?? `${userType}-${sessionId.substring(0, 8)}`,
+            sessionId,
+            citizenType: userType
+        };
+
+        if (userType === 'ai') {
+            // Default to agent type for AI users
+            return UserDaemon.create({
+                ...userData,
+                aiType: 'agent' as const,
+                agentPortalConfig: {
+                    portalType: 'api',
+                    endpoint: 'https://api.anthropic.com/v1',
+                    config: {}
+                },
+                modelConfig: {
+                    provider: 'anthropic',
+                    model: 'claude-3-sonnet',
+                    temperature: 0.7,
+                    maxTokens: 4096
+                }
+            });
+        }
+
+        return UserDaemon.create(userData);
+    }
+
+    /**
+     * Get user presence - for chat online/offline status
+     */
+    static async getPresence(userId: UUID): Promise<StorageResult<UserPresence | null>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.getUserPresence(userId, UserDaemon.context!);
+    }
+
+    /**
+     * Update user presence - for chat status integration
+     */
+    static async updatePresence(
+        userId: UUID,
+        status: UserPresence['status'],
+        customStatus?: string
+    ): Promise<StorageResult<UserPresence>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.updateUserPresence(userId, status, UserDaemon.context!, customStatus);
+    }
+
+    /**
+     * Get online users - for chat participant lists
+     */
+    static async getOnlineUsers(): Promise<StorageResult<UserPresence[]>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.getOnlineUsers(UserDaemon.context!);
+    }
+
+    /**
+     * Set typing indicator - for chat real-time features
+     */
+    static async setTyping(userId: UUID, roomId: UUID): Promise<StorageResult<TypingIndicator>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.setTyping(userId, roomId, UserDaemon.context!);
+    }
+
+    /**
+     * Clear typing indicator - for chat real-time features
+     */
+    static async clearTyping(userId: UUID, roomId: UUID): Promise<StorageResult<void>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.clearTyping(userId, roomId, UserDaemon.context!);
+    }
+
+    /**
+     * Get typing users in room - for chat real-time features
+     */
+    static async getTypingUsers(roomId: UUID): Promise<StorageResult<TypingIndicator[]>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.getTypingUsers(roomId, UserDaemon.context!);
+    }
+
+    /**
+     * Add message reaction - for chat interactions
+     */
+    static async addReaction(userId: UUID, messageId: UUID, emoji: string): Promise<StorageResult<MessageReaction>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.addReaction(userId, messageId, emoji, UserDaemon.context!);
+    }
+
+    /**
+     * Remove message reaction - for chat interactions
+     */
+    static async removeReaction(userId: UUID, messageId: UUID, emoji: string): Promise<StorageResult<void>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.removeReaction(userId, messageId, emoji, UserDaemon.context!);
+    }
+
+    /**
+     * Get message reactions - for chat display
+     */
+    static async getMessageReactions(messageId: UUID): Promise<StorageResult<MessageReaction[]>> {
+        UserDaemon.ensureInitialized();
+        return UserDaemon.sharedInstance!.getMessageReactions(messageId, UserDaemon.context!);
+    }
+
+    private static ensureInitialized(): void {
+        if (!UserDaemon.sharedInstance || !UserDaemon.context) {
+            throw new Error('UserDaemon not initialized - system must call UserDaemon.initialize() first');
+        }
+    }
     public readonly subpath = 'user';
 
     // Existing repositories (leveraged)
