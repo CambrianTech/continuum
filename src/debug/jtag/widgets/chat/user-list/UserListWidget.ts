@@ -24,12 +24,8 @@ export class UserListWidget extends ChatWidgetBase {
     });
   }
 
-  protected override resolveResourcePath(filename: string): string {
-      // Extract widget directory name from widget name (ChatWidget -> chat)
-      //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
-      // Return relative path from current working directory
-      return `widgets/chat/user-list/${filename}`;
-    }
+  // Path resolution now handled automatically by ChatWidgetBase
+  // Generates: widgets/chat/user-list/{filename} from "UserListWidget"
 
   async onWidgetInitialize(): Promise<void> {
     await this.loadUsersFromDatabase();
@@ -45,30 +41,23 @@ export class UserListWidget extends ChatWidgetBase {
       limit: 100
     });
 
-    // FAIL FAST: Don't allow silent failures with optional chaining
+    // FAIL FAST: Don't allow silent failures
     if (!result) {
       throw new Error('UserListWidget: Database command returned null - system failure');
     }
-
     if (!result.success) {
       throw new Error(`UserListWidget: Database command failed: ${result.error || 'Unknown error'}`);
     }
-
     if (!result.items) {
       throw new Error('UserListWidget: Database returned no items array - data structure error');
     }
-
     if (result.items.length === 0) {
       throw new Error('UserListWidget: No users found in database - check data seeding');
     }
 
-    // Validate required fields - no optional chaining
+    // Validate required fields
     const validUsers = result.items.filter((user: UserData) => {
-      if (!user) {
-        console.error('❌ UserListWidget: Null user in database results');
-        return false;
-      }
-      if (!user.id) {
+      if (!user?.id) {
         console.error('❌ UserListWidget: User missing required id:', user);
         return false;
       }
@@ -84,7 +73,7 @@ export class UserListWidget extends ChatWidgetBase {
     }
 
     this.users = validUsers;
-    console.log(`✅ UserListWidget: Loaded ${this.users.length} valid users from database`);
+    console.log(`✅ UserListWidget: Loaded ${this.users.length} valid users`);
     console.log(`   Users: ${this.users.map(u => u.profile.displayName).join(', ')}`);
   }
 
@@ -135,22 +124,7 @@ export class UserListWidget extends ChatWidgetBase {
     }).join('');
   }
 
-  /**
-   * REQUIRED ROW FUNCTION: Renders a single user item
-   * This is the "row function" that must work for any valid user data
-   */
   private renderUserItem(user: UserData): string {
-    // FAIL FAST: Validate required fields for row rendering
-    if (!user) {
-      throw new Error('UserListWidget: Cannot render null user');
-    }
-    if (!user.id) {
-      throw new Error(`UserListWidget: User missing required 'id' field: ${JSON.stringify(user)}`);
-    }
-    if (!user.profile?.displayName) {
-      throw new Error(`UserListWidget: User missing required 'profile.displayName' field: ${JSON.stringify(user)}`);
-    }
-
     const statusClass = user.status === 'online' ? 'online' : 'offline';
     const avatar = user.profile.avatar || (user.type === 'human' ? '👤' : '🤖');
     const displayName = user.profile.displayName;

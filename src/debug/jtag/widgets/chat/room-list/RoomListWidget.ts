@@ -39,12 +39,8 @@ export class RoomListWidget extends ChatWidgetBase {
     console.log('✅ RoomListWidget: Initialized with', this.rooms.length, 'rooms');
   }
 
-  protected override resolveResourcePath(filename: string): string {
-      // Extract widget directory name from widget name (ChatWidget -> chat)
-      //const widgetDir = this.config.widgetName.toLowerCase().replace('widget', '');
-      // Return relative path from current working directory
-      return `widgets/chat/room-list/${filename}`;
-    }
+  // Path resolution now handled automatically by ChatWidgetBase
+  // Generates: widgets/chat/room-list/{filename} from "RoomListWidget"
 
   protected override getReplacements(): Record<string, string> {
       return {
