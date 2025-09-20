@@ -7,7 +7,7 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { UserData } from '../../../system/data/domains/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
-import { CommandDaemon } from '../../../daemons/command-daemon/shared/CommandDaemon';
+import { Commands } from '../../../system/core/client/shared/Commands';
 import { USER_EVENTS } from '../../../system/events/user/UserEventConstants';
 import type { UserCreatedEventData, UserEventMap } from '../../../system/events/user/UserEventTypes';
 
@@ -80,7 +80,7 @@ export class UserListWidget extends ChatWidgetBase {
 
   private async loadUsersFromDatabase(): Promise<void> {
     // Domain-owned: CommandDaemon handles optimization, caching, retries
-    const result = await CommandDaemon.execute<DataListParams, DataListResult<UserData>>('data/list', {
+    const result = await Commands.execute<DataListParams, DataListResult<UserData>>('data/list', {
       collection: COLLECTIONS.USERS,
       orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
       limit: 100

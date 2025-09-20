@@ -10,7 +10,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
-import { CommandDaemon } from '../../../daemons/command-daemon/shared/CommandDaemon';
+import { Commands } from '../../../system/core/client/shared/Commands';
 
 export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
@@ -53,7 +53,7 @@ export class RoomListWidget extends ChatWidgetBase {
     // For each room, get actual unread message count from database
     for (const room of this.rooms) {
       // Domain-owned: CommandDaemon handles optimization, caching, retries
-      const messageResult = await CommandDaemon.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
+      const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId: room.id, isRead: false }
       });
@@ -65,7 +65,7 @@ export class RoomListWidget extends ChatWidgetBase {
 
   private async loadRooms(): Promise<void> {
     // Domain-owned: CommandDaemon handles optimization, caching, retries
-    const result = await CommandDaemon.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
+    const result = await Commands.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
       collection: COLLECTIONS.ROOMS,
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
