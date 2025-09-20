@@ -12,9 +12,9 @@ import { SERVER_COMMANDS } from '../../../server/generated';
 import type { CommandBase } from '../shared/CommandBase';
 
 export class CommandDaemonServer extends CommandDaemon {
-  
+
   protected override get commandEntries(): CommandEntry[] { return SERVER_COMMANDS; }
-  
+
   protected override createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase<CommandParams, CommandResult> | null {
       return new entry.commandClass(context, subpath, this);
   }

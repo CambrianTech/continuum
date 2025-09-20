@@ -44,6 +44,20 @@ export abstract class UserDaemonBase extends DaemonBase {
   }
 
   /**
+   * Static convenience method - same pattern as CommandDaemon.execute()
+   * Server-side interface for user operations with automatic context injection
+   */
+  static async execute<T>(
+    operation: 'create_human' | 'create_agent' | 'query' | 'get_by_id' | 'update_presence' | 'get_presence',
+    params: any
+  ): Promise<T> {
+    // For server-side, we'll use DataDaemon.store() and other established patterns
+    // This will be implemented once we have the proper server-side equivalent
+    // of the browser's window.jtag interface
+    throw new Error('UserDaemon.execute() not yet implemented - need server-side equivalent of CommandDaemon.execute()');
+  }
+
+  /**
    * Handle incoming user operation messages
    */
   async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {

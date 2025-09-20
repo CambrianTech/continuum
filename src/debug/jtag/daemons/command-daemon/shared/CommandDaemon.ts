@@ -22,7 +22,7 @@ export abstract class CommandDaemon extends DaemonBase {
   public commands: Map<string, CommandBase<CommandParams, CommandResult>> = new Map();
 
   /**
-   * Static convenience method - same as BaseWidget.executeCommand but domain-owned
+   * Static convenience method - works on both browser and server
    * Gives CommandDaemon control over caching, optimization, batching, retries
    *
    * @example
@@ -36,44 +36,20 @@ export abstract class CommandDaemon extends DaemonBase {
     params?: Omit<P, 'context' | 'sessionId'> | P
   ): Promise<R> {
     try {
-      // Wait for JTAG client to be ready (like BaseWidget does)
+      // Get the shared JTAG client instance (works in both browser and server)
       const jtagClient = await JTAGClient.sharedInstance;
-      const client = (window as any).jtag;
 
-      if (!client?.commands) {
-        throw new Error('JTAG client not available - system not ready');
-      }
+      // Auto-inject context and sessionId if not already provided
+      const finalParams: CommandParams = {
+        context: jtagClient.context,
+        sessionId: jtagClient.sessionId,
+        ...(params || {})
+      };
 
-      // Auto-inject context and sessionId if not already provided (same logic as BaseWidget)
-      let finalParams = params || {} as P;
-      if (!('context' in finalParams) || !('sessionId' in finalParams)) {
-        finalParams = {
-          context: jtagClient.context,
-          sessionId: jtagClient.sessionId,
-          ...finalParams
-        } as P;
-      }
+      // Use the JTAG client's elegant daemon interface for command execution
+      const result = await jtagClient.daemons.commands.execute<CommandParams, R>(command, finalParams);
 
-      // Execute command through the global JTAG system - same as BaseWidget
-      const wrappedResult = await client.commands[command](finalParams) as CommandResponse;
-
-      if (!wrappedResult.success) {
-        const commandError = wrappedResult as CommandErrorResponse;
-        throw new Error(commandError.error ?? `Command ${command} failed without error message`);
-      }
-
-      // Type-safe access to commandResult for success responses
-      const successResult = wrappedResult as CommandSuccessResponse;
-
-      // Extract the actual command result from the wrapped response
-      const finalResult = successResult.commandResult as R;
-
-      // Check if commandResult is missing and use direct result
-      if (!finalResult && wrappedResult.success) {
-        return wrappedResult as unknown as R;
-      }
-
-      return finalResult;
+      return result;
     } catch (error) {
       console.error(`❌ CommandDaemon: Command ${command} failed:`, error);
       throw error;
