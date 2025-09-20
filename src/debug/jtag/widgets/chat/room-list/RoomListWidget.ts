@@ -9,8 +9,8 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
-import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
+import { CommandDaemon } from '../../../daemons/command-daemon/shared/CommandDaemon';
 
 export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
@@ -52,8 +52,8 @@ export class RoomListWidget extends ChatWidgetBase {
   private async calculateUnreadCounts(): Promise<void> {
     // For each room, get actual unread message count from database
     for (const room of this.rooms) {
-      // More elegant: automatic client context injection
-      const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
+      // Domain-owned: CommandDaemon handles optimization, caching, retries
+      const messageResult = await CommandDaemon.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId: room.id, isRead: false }
       });
@@ -64,8 +64,8 @@ export class RoomListWidget extends ChatWidgetBase {
   }
 
   private async loadRooms(): Promise<void> {
-    // Load rooms from database with automatic client context injection
-    const result = await this.executeCommand<DataListParams, DataListResult<ChatRoomData>>('data/list', {
+    // Domain-owned: CommandDaemon handles optimization, caching, retries
+    const result = await CommandDaemon.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
       collection: COLLECTIONS.ROOMS,
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
