@@ -8,6 +8,8 @@ import type { UserData } from '../../../system/data/domains/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { CommandDaemon } from '../../../daemons/command-daemon/shared/CommandDaemon';
+import { USER_EVENTS } from '../../../system/events/user/UserEventConstants';
+import type { UserCreatedEventData, UserEventMap } from '../../../system/events/user/UserEventTypes';
 
 export class UserListWidget extends ChatWidgetBase {
   private users: UserData[] = [];
@@ -29,6 +31,51 @@ export class UserListWidget extends ChatWidgetBase {
 
   async onWidgetInitialize(): Promise<void> {
     await this.loadUsersFromDatabase();
+    await this.setupUserEventSubscriptions();
+  }
+
+  /**
+   * Set up user event subscriptions for real-time updates
+   * Uses EventsDaemon directly instead of widget-specific event system
+   */
+  private async setupUserEventSubscriptions(): Promise<void> {
+    try {
+      // Subscribe to USER_CREATED events through EventsDaemon
+      document.addEventListener(USER_EVENTS.USER_CREATED, (event: Event) => {
+        const customEvent = event as CustomEvent<UserCreatedEventData>;
+        console.log(`🔥 SERVER-EVENT-RECEIVED: ${USER_EVENTS.USER_CREATED}`, customEvent.detail);
+        this.onUserCreated(customEvent.detail);
+      });
+
+      console.log(`🎧 UserListWidget: Subscribed to user events`);
+
+      // TODO: Add other user event subscriptions
+      // document.addEventListener(USER_EVENTS.USER_UPDATED, this.onUserUpdated.bind(this));
+      // document.addEventListener(USER_EVENTS.USER_DELETED, this.onUserDeleted.bind(this));
+    } catch (error) {
+      console.error('❌ UserListWidget: Failed to set up user event subscriptions:', error);
+    }
+  }
+
+  /**
+   * Handle USER_CREATED event - add new user to list with proper sorting
+   * Different from chat (append) - users get inserted in sort order
+   */
+  private onUserCreated(eventData: UserCreatedEventData): void {
+    console.log(`👤 UserListWidget: Adding new user ${eventData.userData.profile.displayName}`);
+
+    // Add user to local list
+    this.users.push(eventData.userData);
+
+    // Re-sort by lastActiveAt (newest first) - same as database query
+    this.users.sort((a, b) => {
+      const aTime = new Date(a.lastActiveAt).getTime();
+      const bTime = new Date(b.lastActiveAt).getTime();
+      return bTime - aTime; // Descending order
+    });
+
+    // Re-render with updated user list
+    this.renderWidget();
   }
 
   private async loadUsersFromDatabase(): Promise<void> {

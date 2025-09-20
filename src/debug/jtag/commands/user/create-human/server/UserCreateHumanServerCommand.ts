@@ -15,6 +15,12 @@ import { COLLECTIONS } from '../../../../system/data/core/FieldMapping';
 import { ISOString, UserId, CitizenId, SessionId } from '../../../../system/data/domains/CoreTypes';
 import type { UserData } from '../../../../system/data/domains/User';
 import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import { USER_EVENTS } from '../../../../system/events/user/UserEventConstants';
+import type { UserCreatedEventData } from '../../../../system/events/user/UserEventTypes';
+import { EVENT_SCOPES } from '../../../../system/events/shared/EventSystemConstants';
+import type { EventBridgePayload } from '../../../../system/events/shared/EventSystemTypes';
+import { JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
+import { JTAG_ENDPOINTS } from '../../../../system/core/router/shared/JTAGEndpoints';
 
 export class UserCreateHumanServerCommand extends CommandBase<UserCreateHumanParams, UserCreateHumanResult> {
 
@@ -101,6 +107,9 @@ export class UserCreateHumanServerCommand extends CommandBase<UserCreateHumanPar
 
       console.log(`✅ USER SERVER: Created HumanUser ${humanUser.displayName} (${userId})`);
 
+      // Emit USER_CREATED event (following chat message pattern)
+      await this.emitUserCreatedEvent(humanUser, userData, userId);
+
       return createUserCreateHumanResultFromParams(params, {
         success: true,
         userId,
@@ -115,6 +124,52 @@ export class UserCreateHumanServerCommand extends CommandBase<UserCreateHumanPar
         success: false,
         error: errorMessage
       });
+    }
+  }
+
+  /**
+   * Emit USER_CREATED event for real-time widget updates
+   * Follows the same pattern as chat message events
+   */
+  private async emitUserCreatedEvent(humanUser: HumanUser, userData: UserData, userId: string): Promise<void> {
+    try {
+      const eventPayload: EventBridgePayload = {
+        context: this.context,
+        sessionId: userData.sessionsActive[0], // Use first active session
+        type: 'event-bridge',
+        scope: {
+          type: EVENT_SCOPES.GLOBAL, // User events are global (not room-scoped like chat)
+          id: 'users',
+          sessionId: userData.sessionsActive[0]
+        },
+        eventName: USER_EVENTS.USER_CREATED,
+        data: {
+          eventType: 'user:user-created',
+          userId,
+          user: humanUser,
+          userData,
+          timestamp: new Date().toISOString()
+        } as UserCreatedEventData,
+        originSessionId: userData.sessionsActive[0] as string,
+        originContextUUID: this.context.uuid,
+        timestamp: new Date().toISOString()
+      };
+
+      // Create event message using JTAG message factory
+      const eventMessage = JTAGMessageFactory.createEvent(
+        this.context,
+        'user-create-human',
+        JTAG_ENDPOINTS.EVENTS.BRIDGE,
+        eventPayload
+      );
+
+      // Route event through Router (handles cross-context distribution)
+      const result = await this.commander.router.postMessage(eventMessage);
+      console.log(`📨 SERVER-EVENT: Emitted USER_CREATED for user ${humanUser.displayName} (${userId})`, result);
+
+    } catch (error) {
+      console.error(`❌ USER-EVENT-EMISSION-FAILED-${Date.now()}: Failed to emit user created event:`, error);
+      // Don't fail the entire operation if event emission fails
     }
   }
 
