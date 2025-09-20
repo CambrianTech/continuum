@@ -450,8 +450,8 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`✨ ChatWidget: Using ChatMessage domain object directly:`, chatMessage);
 
       if (this.chatScroller) {
-        // Use generic scroller for real-time updates
-        this.chatScroller.add(chatMessage, 'start'); // Chat adds newest at top
+        // Use generic scroller for real-time updates - add at end for chronological order
+        this.chatScroller.add(chatMessage, 'end'); // Newest messages go at bottom (chronological order)
         this.messages = this.chatScroller.entities() as ChatMessageData[];
       } else {
         // Fallback to old method
