@@ -36,8 +36,10 @@ export abstract class CommandDaemon extends DaemonBase {
     params?: Omit<P, 'context' | 'sessionId'> | P
   ): Promise<R> {
     try {
-      // Use window.jtag directly like BaseWidget does
+      // Wait for JTAG client to be ready (like BaseWidget does)
+      const jtagClient = await JTAGClient.sharedInstance;
       const client = (window as any).jtag;
+
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }
@@ -45,7 +47,6 @@ export abstract class CommandDaemon extends DaemonBase {
       // Auto-inject context and sessionId if not already provided (same logic as BaseWidget)
       let finalParams = params || {} as P;
       if (!('context' in finalParams) || !('sessionId' in finalParams)) {
-        const jtagClient = await JTAGClient.sharedInstance;
         finalParams = {
           context: jtagClient.context,
           sessionId: jtagClient.sessionId,

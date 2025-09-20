@@ -8,7 +8,7 @@
 
 import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
-import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
+import { CommandDaemon } from '../../daemons/command-daemon/shared/CommandDaemon';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry, ThemeManifest } from './themes/ThemeTypes';
 
@@ -29,7 +29,7 @@ export class ThemeWidget extends BaseWidget {
     });
     
     // Initialize dynamic theme discovery service
-    this.themeDiscovery = new ThemeDiscoveryService(this);
+    this.themeDiscovery = new ThemeDiscoveryService();
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -228,10 +228,7 @@ export class ThemeWidget extends BaseWidget {
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
           console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
 
-          const client = await JTAGClient.sharedInstance;
-          const result = await this.executeCommand<FileLoadParams, FileLoadResult>('file/load', {
-            context: client.context,
-            sessionId: client.sessionId,
+          const result = await CommandDaemon.execute<FileLoadParams, FileLoadResult>('file/load', {
             filepath: filePath
           });
           
@@ -314,20 +311,11 @@ export class ThemeWidget extends BaseWidget {
         
         // Use the actual JTAG theme/set command for proper theme switching
         try {
-          // Get JTAG client if available (for command execution)
-          const client = await JTAGClient.sharedInstance;
-          if (client?.commands) {
-            await this.executeCommand('theme/set', {
-              context: client.context,
-              sessionId: client.sessionId,
-              themeName: selectedTheme
-            });
-            console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via JTAG command`);
-          } else {
-            // Fallback to internal method if JTAG not available
-            await this.setTheme(selectedTheme);
-            console.log(`✅ ThemeWidget: Applied theme '${selectedTheme}' via internal method`);
-          }
+          // Domain-owned: CommandDaemon handles theme switching with optimization
+          await CommandDaemon.execute('theme/set', {
+            themeName: selectedTheme
+          });
+          console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via CommandDaemon`);
         } catch (error) {
           console.error(`❌ ThemeWidget: Failed to apply theme '${selectedTheme}':`, error);
           // Try fallback method
