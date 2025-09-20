@@ -13,7 +13,7 @@
  */
 
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import type { DataDaemon, DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
+import { DataDaemon, type DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
 import type { StorageResult, StorageQuery } from '../../daemons/data-daemon/shared/DataStorageAdapter';
 import { BaseUser, type UserCitizenType } from './BaseUser';
 import { HumanUser, type HumanUserData } from './HumanUser';
@@ -114,7 +114,8 @@ export class UserRepository {
     userData: BaseUserDataWithRelationships,
     context: DataOperationContext
   ): Promise<StorageResult<T>> {
-    const result = await this.dataDaemon.create('users', userData, context);
+    // USE NEW CLEAN INTERFACE - DataDaemon.store() with auto-context
+    const result = await DataDaemon.store('users', userData);
 
     if (!result.success || !result.data) {
       return { success: false, error: result.error };
@@ -140,7 +141,8 @@ export class UserRepository {
       includeRoomParticipations?: boolean;
     } = {}
   ): Promise<StorageResult<T | null>> {
-    const result = await this.dataDaemon.read('users', userId, context);
+    // USE NEW CLEAN INTERFACE - DataDaemon.read() with auto-context
+    const result = await DataDaemon.read('users', userId);
 
     if (!result.success) {
       return { success: false, error: result.error };

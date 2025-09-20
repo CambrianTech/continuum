@@ -12,7 +12,7 @@
  * - Maintains backward compatibility with current domain objects
  */
 
-import type { DataDaemon, DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
+import { DataDaemon, type DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
 import type { StorageResult, StorageQuery } from '../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
@@ -266,7 +266,9 @@ export abstract class EntityRepository<T extends BaseEntity> {
 
         // Convert to storage format before sending to DataDaemon
         const storageData = this.toStorageFormat(entity);
-        const result = await this.dataDaemon.create(this.metadata.tableName, storageData, context);
+
+        // USE NEW CLEAN INTERFACE - DataDaemon.store() with auto-context
+        const result = await DataDaemon.store(this.metadata.tableName, storageData, entity.id);
 
         if (!result.success || !result.data) {
             return {
@@ -287,7 +289,8 @@ export abstract class EntityRepository<T extends BaseEntity> {
      * Find by ID
      */
     async findById(id: UUID, context: DataOperationContext): Promise<StorageResult<T | null>> {
-        const result = await this.dataDaemon.read(this.metadata.tableName, id, context);
+        // USE NEW CLEAN INTERFACE - DataDaemon.read() with auto-context
+        const result = await DataDaemon.read(this.metadata.tableName, id);
 
         if (!result.success) {
             return {
@@ -352,7 +355,8 @@ export abstract class EntityRepository<T extends BaseEntity> {
      */
     async query(queryBuilder: ORMQueryBuilder<T>, context: DataOperationContext): Promise<StorageResult<T[]>> {
         const storageQuery = queryBuilder.toStorageQuery();
-        const result = await this.dataDaemon.query(storageQuery, context);
+        // USE NEW CLEAN INTERFACE - DataDaemon.query() with auto-context
+        const result = await DataDaemon.query(storageQuery);
 
         if (!result.success || !result.data) {
             return {
