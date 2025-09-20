@@ -453,10 +453,14 @@ export class ChatWidget extends ChatWidgetBase {
         // Use generic scroller for real-time updates - add at end for chronological order
         this.chatScroller.add(chatMessage, 'end'); // Newest messages go at bottom (chronological order)
         this.messages = this.chatScroller.entities() as ChatMessageData[];
+
+        // Smart scroll: only auto-scroll if user is near bottom
+        this.smartScrollToBottom();
       } else {
         // Fallback to old method
         this.messages.push(chatMessage);
         await this.renderWidget(); // Re-render with new message
+        this.smartScrollToBottom();
       }
 
       // Real-time message added successfully using domain object
@@ -562,6 +566,50 @@ export class ChatWidget extends ChatWidgetBase {
       }
     } catch (error) {
       console.error('❌ ChatWidget: Auto-scroll failed:', error);
+    }
+  }
+
+  /**
+   * Check if user is near the bottom of the chat (within scrolling threshold)
+   */
+  private isNearBottom(threshold: number = 100): boolean {
+    if (!this.messagesContainer) return false;
+
+    const { scrollTop, scrollHeight, clientHeight } = this.messagesContainer;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+    return distanceFromBottom <= threshold;
+  }
+
+  /**
+   * Smart scroll to bottom - only if user is already near bottom
+   * This prevents interrupting users who are reading older messages
+   */
+  private smartScrollToBottom(): void {
+    if (this.isNearBottom()) {
+      console.log('📍 ChatWidget: User near bottom, auto-scrolling to show new message');
+      this.scrollToBottomSmooth();
+    } else {
+      console.log('📍 ChatWidget: User reading older messages, not auto-scrolling');
+    }
+  }
+
+  /**
+   * Smooth scroll to bottom with visual feedback
+   */
+  private scrollToBottomSmooth(): void {
+    try {
+      if (this.messagesContainer) {
+        // Use smooth scrolling behavior for better UX
+        this.messagesContainer.scrollTo({
+          top: this.messagesContainer.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    } catch (error) {
+      console.error('❌ ChatWidget: Smooth scroll failed:', error);
+      // Fallback to instant scroll
+      this.scrollToBottom();
     }
   }
 
@@ -730,6 +778,12 @@ export class ChatWidget extends ChatWidgetBase {
       });
 
       console.log('✅ Message sent successfully:', sendResult);
+
+      // Always scroll to bottom after sending own message
+      // User expects to see their message immediately
+      requestAnimationFrame(() => {
+        this.scrollToBottomSmooth();
+      });
     } catch (error) {
       console.error('❌ Failed to send message:', error);
       // Re-add content to input on error
