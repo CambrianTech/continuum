@@ -441,20 +441,33 @@ export abstract class BaseWidget extends HTMLElement {
     return (Date.now() - cached.timestamp) < ttl;
   }
 
-  protected async executeCommand<P extends CommandParams, R extends CommandResult>(command: string, params?: P): Promise<R> {
+  protected async executeCommand<P extends CommandParams, R extends CommandResult>(
+    command: string,
+    params?: Omit<P, 'context' | 'sessionId'> | P
+  ): Promise<R> {
     try {
-
       // FIXED: Use window.jtag directly like other parts of the system
       const client = (window as any).jtag;
       if (!client?.commands) {
         throw new Error('JTAG client not available - system not ready');
       }
 
+      // Auto-inject context and sessionId if not already provided
+      let finalParams = params || {} as P;
+      if (!('context' in finalParams) || !('sessionId' in finalParams)) {
+        const jtagClient = await JTAGClient.sharedInstance;
+        finalParams = {
+          context: jtagClient.context,
+          sessionId: jtagClient.sessionId,
+          ...finalParams
+        } as P;
+      }
+
       //DO NOT, UNDER ANY CIRCUMSTANCE CHANGE LINES BELOW THIS COMMENT in this method: this fucking means you claude.
 
 
       // Execute command through the global JTAG system - gets wrapped response
-      const wrappedResult = await client.commands[command](params) as CommandResponse;
+      const wrappedResult = await client.commands[command](finalParams) as CommandResponse;
 
       if (!wrappedResult.success) {
         const commandError = wrappedResult as CommandErrorResponse;

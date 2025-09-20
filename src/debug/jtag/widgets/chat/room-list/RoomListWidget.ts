@@ -51,11 +51,9 @@ export class RoomListWidget extends ChatWidgetBase {
 
   private async calculateUnreadCounts(): Promise<void> {
     // For each room, get actual unread message count from database
-    const client = await JTAGClient.sharedInstance;
     for (const room of this.rooms) {
+      // More elegant: automatic client context injection
       const messageResult = await this.executeCommand<DataListParams, DataListResult<ChatMessageData>>('data/list', {
-        context: client.context,
-        sessionId: client.sessionId,
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId: room.id, isRead: false }
       });
@@ -66,11 +64,8 @@ export class RoomListWidget extends ChatWidgetBase {
   }
 
   private async loadRooms(): Promise<void> {
-    // Load rooms from database using proper executeCommand with strict typing
-    const client = await JTAGClient.sharedInstance;
+    // Load rooms from database with automatic client context injection
     const result = await this.executeCommand<DataListParams, DataListResult<ChatRoomData>>('data/list', {
-      context: client.context,
-      sessionId: client.sessionId,
       collection: COLLECTIONS.ROOMS,
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
@@ -88,8 +83,11 @@ export class RoomListWidget extends ChatWidgetBase {
       throw new Error('RoomListWidget: Database returned no items array - data structure error');
     }
 
+    // Empty results are OK - UI will show "no rooms" message
     if (result.items.length === 0) {
-      throw new Error('RoomListWidget: No rooms found in database - check data seeding');
+      console.log('ℹ️ RoomListWidget: No rooms found - showing empty state');
+      this.rooms = [];
+      return;
     }
 
     // Validate required fields - no optional chaining
@@ -109,8 +107,11 @@ export class RoomListWidget extends ChatWidgetBase {
       return true;
     });
 
+    // Empty valid rooms is OK - show empty state, don't crash
     if (validRooms.length === 0) {
-      throw new Error('RoomListWidget: No valid rooms found - all rooms missing required fields');
+      console.log('ℹ️ RoomListWidget: All rooms invalid - showing empty state');
+      this.rooms = [];
+      return;
     }
 
     this.rooms = validRooms;

@@ -69,4 +69,5 @@ export abstract class ChatWidgetBase extends BaseWidget {
     protected override resolveResourcePath(filename: string): string {
         return inferChatWidgetPath(this.config.widgetName, filename);
     }
+
 }

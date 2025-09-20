@@ -4,7 +4,6 @@
  */
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
-import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import type { UserData } from '../../../system/data/domains/User';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
@@ -32,10 +31,8 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
   private async loadUsersFromDatabase(): Promise<void> {
-    const client = await JTAGClient.sharedInstance;
+    // More elegant: automatic client context injection
     const result = await this.executeCommand<DataListParams, DataListResult<UserData>>('data/list', {
-      context: client.context,
-      sessionId: client.sessionId,
       collection: COLLECTIONS.USERS,
       orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
       limit: 100
@@ -51,25 +48,33 @@ export class UserListWidget extends ChatWidgetBase {
     if (!result.items) {
       throw new Error('UserListWidget: Database returned no items array - data structure error');
     }
+    // Empty results are OK - UI will show "no users" message
     if (result.items.length === 0) {
-      throw new Error('UserListWidget: No users found in database - check data seeding');
+      console.log('ℹ️ UserListWidget: No users found - showing empty state');
+      this.users = [];
+      return;
     }
 
-    // Validate required fields
+    // Validate required fields - check both 'id' and 'userId'
     const validUsers = result.items.filter((user: UserData) => {
-      if (!user?.id) {
-        console.error('❌ UserListWidget: User missing required id:', user);
+      const userId = user?.id || user?.userId;
+      if (!userId) {
+        console.error('❌ UserListWidget: User missing required id/userId:', user);
         return false;
       }
-      if (!user.profile?.displayName) {
-        console.error('❌ UserListWidget: User missing required profile.displayName:', user);
+      const displayName = user.profile?.displayName;
+      if (!displayName) {
+        console.error('❌ UserListWidget: User missing required displayName/name:', user);
         return false;
       }
       return true;
     });
 
+    // Empty valid users is OK - show empty state, don't crash
     if (validUsers.length === 0) {
-      throw new Error('UserListWidget: No valid users found - all users missing required fields');
+      console.log('ℹ️ UserListWidget: All users invalid - showing empty state');
+      this.users = [];
+      return;
     }
 
     this.users = validUsers;
@@ -126,11 +131,11 @@ export class UserListWidget extends ChatWidgetBase {
 
   private renderUserItem(user: UserData): string {
     const statusClass = user.status === 'online' ? 'online' : 'offline';
-    const avatar = user.profile.avatar || (user.type === 'human' ? '👤' : '🤖');
-    const displayName = user.profile.displayName;
+    const avatar = user.profile?.avatar || (user.type === 'human' ? '👤' : '🤖');
+    const displayName = user.profile?.displayName;
 
     return `
-      <div class="user-item ${statusClass}" data-user-id="${user.id}">
+      <div class="user-item ${statusClass}" data-user-id="${user.id || user.userId}">
         <span class="user-avatar">${avatar}</span>
         <div class="user-info">
           <div class="user-name">${displayName}</div>
