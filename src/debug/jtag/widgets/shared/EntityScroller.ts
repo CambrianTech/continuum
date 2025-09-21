@@ -160,7 +160,8 @@ export function createScroller<T extends BaseEntity>(
     // Create sentinel
     sentinel = document.createElement('div');
     sentinel.className = 'entity-scroller-sentinel';
-    sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none;';
+    sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0; position: absolute; top: -1px;';
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: EntityScroller sentinel created with improved positioning for ${config.direction}`);
 
     // For newest-first (chat), sentinel at TOP triggers when scrolling UP to load older messages
     if (config.direction === 'newest-first') {
@@ -221,9 +222,15 @@ export function createScroller<T extends BaseEntity>(
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
-          // Reposition sentinel after adding items to start
-          if (config.direction === 'newest-first' && sentinel && position === 'start') {
-            container.insertBefore(sentinel, container.firstChild);
+          // Reposition sentinel after adding items
+          if (sentinel) {
+            if (config.direction === 'newest-first' && position === 'start') {
+              // For newest-first (chat), keep sentinel at top when adding older messages to start
+              container.insertBefore(sentinel, container.firstChild);
+            } else if (config.direction === 'oldest-first' && position === 'end') {
+              // For oldest-first (lists), keep sentinel at bottom when adding newer items to end
+              container.appendChild(sentinel);
+            }
           }
         } else {
           hasMoreItems = false;

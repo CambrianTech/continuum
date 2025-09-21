@@ -34,30 +34,50 @@ export class ThemeWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🎨 ThemeWidget: Initializing with dynamic theme discovery...');
-    
+
     try {
       // Discover all available themes dynamically (like widget/command discovery)
       await this.themeDiscovery.discoverThemes();
-      
+
       // Load current theme using dynamic system
       const themeResult = await this.themeDiscovery.loadTheme(this.currentTheme);
-      
+
       if (themeResult.success) {
         // Inject theme CSS into document head for global access
         await this.injectThemeIntoDocumentHead(themeResult.cssContent);
         console.log('✅ ThemeWidget: Dynamic theme system initialized successfully');
       } else {
         console.error('❌ ThemeWidget: Failed to load theme:', themeResult.error);
+        // Fallback: try loading base theme manually if discovery fails
+        console.log('🎨 ThemeWidget: Attempting fallback base theme loading...');
+        await this.setTheme('base');
       }
     } catch (error) {
       console.error('❌ ThemeWidget: Theme discovery failed:', error);
+      // Fallback: try loading base theme manually if discovery fails completely
+      console.log('🎨 ThemeWidget: Attempting fallback base theme loading after error...');
+      try {
+        await this.setTheme('base');
+      } catch (fallbackError) {
+        console.error('❌ ThemeWidget: Even fallback theme loading failed:', fallbackError);
+      }
     }
-    
+
     console.log('✅ ThemeWidget: BaseWidget initialization complete');
   }
 
   protected async renderWidget(): Promise<void> {
     console.log('🎨 ThemeWidget: renderWidget() called - using BaseWidget template system');
+
+    // FORCE load base theme immediately if not already loaded
+    if (!this.themeStyleElement) {
+      console.log('🎨 ThemeWidget: FORCING base theme load since no theme element exists');
+      try {
+        await this.setTheme('base');
+      } catch (error) {
+        console.error('❌ ThemeWidget: Failed to force load base theme:', error);
+      }
+    }
     
     // Use external template and styles loaded by BaseWidget (like ChatWidget does)
     const styles = this.templateCSS || '/* No styles loaded */';

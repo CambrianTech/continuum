@@ -39,25 +39,25 @@ export class ContinuumWidget extends BaseWidget {
     // Use BaseWidget's template and styles system
     const styles = this.templateCSS ?? '/* No styles loaded */';
     const template = this.templateHTML ?? '<div>No template loaded</div>';
-    
-    // Load theme CSS directly into shadow DOM (since theme CSS can't cross shadow boundary)
+
+    // Load theme CSS and inject into document head for global access (like ThemeWidget does)
     const themeCSS = await this.loadThemeCSS();
-    
+    await this.injectThemeIntoDocumentHead(themeCSS);
+
     // Ensure template is a string
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
+
     // Replace any dynamic content
     const dynamicContent = templateString
       .replace('<!-- CONNECTION_STATUS -->', await this.getConnectionStatusHTML())
       .replace('<!-- CURRENT_TIMESTAMP -->', new Date().toLocaleTimeString());
 
     this.shadowRoot.innerHTML = `
-      <style>${themeCSS}</style>
       <style>${styles}</style>
       ${dynamicContent}
     `;
-    
-    console.log('✅ ContinuumWidget: Desktop interface rendered with theme CSS');
+
+    console.log('✅ ContinuumWidget: Desktop interface rendered with theme CSS injected into document head');
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -84,17 +84,25 @@ export class ContinuumWidget extends BaseWidget {
    */
   private async loadThemeCSS(): Promise<string> {
     try {
-      // Domain-owned: CommandDaemon handles file loading with optimization
-      const baseResult = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
-        filepath: 'widgets/shared/themes/base/base.css'
-      });
-      
+      // Load both base layout CSS and theme variables CSS
+      const [baseLayoutResult, themeVariablesResult] = await Promise.all([
+        Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+          filepath: 'widgets/shared/themes/base/base.css'
+        }),
+        Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+          filepath: 'widgets/shared/themes/base/theme.css'
+        })
+      ]);
+
       // Extract content directly from FileLoadResult
-      const baseCss = baseResult.content ?? '/* Base theme not found */';
-      console.log('🎨 ContinuumWidget: Loaded base theme CSS for shadow DOM injection');
-      
-      // For now, just use base theme (can expand later)
-      return baseCss;
+      const baseLayoutCss = baseLayoutResult.content ?? '/* Base layout CSS not found */';
+      const themeVariablesCss = themeVariablesResult.content ?? '/* Theme variables CSS not found */';
+
+      // Combine both CSS files - theme variables first, then layout
+      const combinedCss = themeVariablesCss + '\n' + baseLayoutCss;
+
+      console.log('🎨 ContinuumWidget: Loaded base theme CSS variables and layout for shadow DOM injection');
+      return combinedCss;
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to load theme CSS:', error);
       return '/* Theme CSS loading failed */';
@@ -108,6 +116,33 @@ export class ContinuumWidget extends BaseWidget {
     return 'base';
   }
 
+
+  /**
+   * Inject theme CSS into document head for global widget access (copied from ThemeWidget)
+   */
+  private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
+    try {
+      console.log('🎨 ContinuumWidget: Injecting theme CSS into document head for global access...');
+
+      // Remove existing theme style element
+      const existingTheme = document.head.querySelector('#jtag-theme-base');
+      if (existingTheme) {
+        existingTheme.remove();
+      }
+
+      // Create new theme style element and inject into document head
+      const themeStyleElement = document.createElement('style');
+      themeStyleElement.id = 'jtag-theme-base';
+      themeStyleElement.textContent = combinedCSS;
+
+      document.head.appendChild(themeStyleElement);
+
+      console.log(`✅ ContinuumWidget: Base theme CSS injected into document head (${combinedCSS.length} chars)`);
+
+    } catch (error) {
+      console.error('❌ ContinuumWidget: Failed to inject theme CSS into document head:', error);
+    }
+  }
 
   /**
    * Load external scripts into shadow DOM for complete encapsulation
