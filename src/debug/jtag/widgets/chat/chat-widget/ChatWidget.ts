@@ -874,7 +874,7 @@ export class ChatWidget extends ChatWidgetBase {
       this.currentRoom = newRoomId;
       this.currentRoomEntity = roomEntity;
 
-      // If no room entity provided, load it
+      // If no room entity provided in the event, load it
       if (!this.currentRoomEntity) {
         await this.loadRoomEntity();
       }
@@ -890,7 +890,7 @@ export class ChatWidget extends ChatWidgetBase {
       await this.subscribeToRoomEvents();
       await this.renderWidget(); // Will create new EntityScroller for new room
 
-      console.log(`✅ ChatWidget: Successfully changed to room "${newRoomId}"`);
+      console.log(`✅ ChatWidget: Successfully changed to room "${this.getRoomDisplayName()}" (${newRoomId})`);
     } catch (error) {
       console.error(`❌ ChatWidget: Failed to change room:`, error);
     }
@@ -915,6 +915,10 @@ export class ChatWidget extends ChatWidgetBase {
       return this.currentRoomEntity.displayName;
     } else if (this.currentRoomEntity?.name) {
       return this.currentRoomEntity.name;
+    } else if (this.currentRoom === DEFAULT_ROOMS.GENERAL) {
+      return 'General';
+    } else if (this.currentRoom === DEFAULT_ROOMS.ACADEMY) {
+      return 'Academy';
     } else {
       // Fallback: try to get a readable name from the UUID or use it as-is
       return this.currentRoom.includes('-') ? 'Room' : this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
