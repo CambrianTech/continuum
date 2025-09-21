@@ -10,12 +10,15 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
 import { Commands } from '../../../system/core/client/shared/Commands';
+import { Events } from '../../../system/core/client/shared/Events';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
+import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
 export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
-  private rooms: ChatRoomData[] = [];
+  private roomScroller?: EntityScroller<RoomEntity>;
   private unreadCounts: Map<string, number> = new Map();
   
   constructor() {
@@ -31,30 +34,146 @@ export class RoomListWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': RoomListWidget onWidgetInitialize called with FAIL-FAST validation');
-    console.log('🏠 RoomListWidget: Initializing with strict validation...');
+    console.log('🔧 CLAUDE-FIX-' + Date.now() + ': RoomListWidget onWidgetInitialize with EntityScroller');
+    console.log('🏠 RoomListWidget: Initializing with EntityScroller...');
 
-    // Load rooms from data system or use defaults
-    await this.loadRooms();
+    // Setup event subscriptions first - EntityScroller will be set up after template renders
+    await this.setupRoomEventSubscriptions();
 
-    console.log('✅ RoomListWidget: Initialized with', this.rooms.length, 'rooms');
+    console.log('✅ RoomListWidget: Initialized event subscriptions');
+  }
+
+  protected override async renderWidget(): Promise<void> {
+    // Render template first
+    await super.renderWidget();
+
+    // Now set up EntityScroller after DOM exists
+    await this.setupRoomScroller();
   }
 
   // Path resolution now handled automatically by ChatWidgetBase
   // Generates: widgets/chat/room-list/{filename} from "RoomListWidget"
 
   protected override getReplacements(): Record<string, string> {
+      const roomCount = this.roomScroller?.entities().length || 0;
       return {
-          '<!-- ROOM_LIST_CONTENT -->': this.renderRoomList(),
-          '<!-- ROOM_COUNT -->': this.rooms.length.toString(),
+          '<!-- ROOM_LIST_CONTENT -->': '', // EntityScroller will populate .room-list container
+          '<!-- ROOM_COUNT -->': roomCount.toString(),
       };
+  }
+
+  /**
+   * Setup EntityScroller with proper deduplication and real-time updates
+   */
+  private async setupRoomScroller(): Promise<void> {
+    const container = this.shadowRoot.querySelector('.room-list') as HTMLElement;
+    if (!container) {
+      console.error('❌ RoomListWidget: Could not find .room-list container');
+      return;
+    }
+
+    // Render function for individual room items
+    const renderRoom: RenderFn<RoomEntity> = (room: RoomEntity, context) => {
+      const unreadCount = this.unreadCounts.get(room.id) || 0;
+      const isActive = room.name === this.currentRoomId;
+      const activeClass = isActive ? 'active' : '';
+
+      const roomElement = document.createElement('div');
+      roomElement.className = `room-item ${activeClass}`;
+      roomElement.innerHTML = `
+        <div class="room-info">
+          <div class="room-name">${room.displayName || room.name}</div>
+          <div class="room-topic">${room.topic || ''}</div>
+        </div>
+        ${unreadCount > 0 ? `<div class="unread-count">${unreadCount}</div>` : ''}
+      `;
+
+      return roomElement;
+    };
+
+    // Load function using existing data/list command
+    const loadRooms: LoadFn<RoomEntity> = async (cursor, limit) => {
+      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>('data/list', {
+        collection: RoomEntity.collection,
+        orderBy: [{ field: 'name', direction: 'asc' }],
+        limit: limit || 100
+      });
+
+      if (!result?.success || !result.items) {
+        throw new Error(`Failed to load rooms: ${result?.error || 'Unknown error'}`);
+      }
+
+      return {
+        items: result.items,
+        hasMore: false, // Room lists are typically small, no pagination needed
+        nextCursor: undefined
+      };
+    };
+
+    // Create scroller with LIST preset (no auto-scroll, larger page size)
+    this.roomScroller = createScroller(
+      container,
+      renderRoom,
+      loadRooms,
+      SCROLLER_PRESETS.LIST
+    );
+
+    // Load initial data
+    await this.roomScroller.load();
+    console.log(`✅ RoomListWidget: Initialized EntityScroller with automatic deduplication`);
+
+    // Update count after initial load
+    this.updateRoomCount();
+  }
+
+  /**
+   * Set up room event subscriptions for real-time updates
+   * Uses EntityScroller's built-in deduplication via add() method
+   */
+  private async setupRoomEventSubscriptions(): Promise<void> {
+    try {
+      // Subscribe to data:Room:created events using static Events interface
+      const eventName = getDataEventName(RoomEntity.collection, 'created');
+      Events.subscribe<RoomEntity>(eventName, (roomEntity: RoomEntity) => {
+        console.log(`🔥 SERVER-EVENT-RECEIVED: ${eventName}`, roomEntity);
+        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.add() for automatic room deduplication`);
+
+        // EntityScroller automatically handles deduplication using entity.id
+        this.roomScroller?.add(roomEntity);
+
+        // Update count after adding room
+        this.updateRoomCount();
+      });
+
+      console.log(`🎧 RoomListWidget: Subscribed to data:${RoomEntity.collection}:created events via Events.subscribe()`);
+
+      // TODO: Add update/delete events
+      // Events.subscribe(getDataEventName(RoomEntity.collection, 'updated'), (room) => this.roomScroller?.update(room.id, room));
+      // Events.subscribe(getDataEventName(RoomEntity.collection, 'deleted'), (room) => this.roomScroller?.remove(room.id));
+    } catch (error) {
+      console.error('❌ RoomListWidget: Failed to set up room event subscriptions:', error);
+    }
+  }
+
+  /**
+   * Update the room count display in the header
+   */
+  private updateRoomCount(): void {
+    const roomCountElement = this.shadowRoot.querySelector('.room-count') as HTMLElement;
+    if (roomCountElement && this.roomScroller) {
+      const count = this.roomScroller.entities().length;
+      roomCountElement.textContent = count.toString();
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Updated room count to ${count}`);
+    }
   }
 
   private async calculateUnreadCounts(): Promise<void> {
     // For each room, get actual unread message count from database
-    for (const room of this.rooms) {
+    if (!this.roomScroller) return;
+
+    for (const room of this.roomScroller.entities()) {
       // Domain-owned: CommandDaemon handles optimization, caching, retries
-      const roomId = room.id || room.roomId;
+      const roomId = room.id;
       const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         collection: ChatMessageEntity.collection,
         filter: { roomId, isRead: false }
@@ -65,116 +184,7 @@ export class RoomListWidget extends ChatWidgetBase {
     }
   }
 
-  private async loadRooms(): Promise<void> {
-    // Domain-owned: CommandDaemon handles optimization, caching, retries
-    const result = await Commands.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
-      collection: RoomEntity.collection,
-      orderBy: [{ field: 'name', direction: 'asc' }]
-    });
 
-    // FAIL FAST: Don't allow silent failures with optional chaining
-    if (!result) {
-      throw new Error('RoomListWidget: Database command returned null - system failure');
-    }
-
-    if (!result.success) {
-      throw new Error(`RoomListWidget: Database command failed: ${result.error || 'Unknown error'}`);
-    }
-
-    if (!result.items) {
-      throw new Error('RoomListWidget: Database returned no items array - data structure error');
-    }
-
-    // Empty results are OK - UI will show "no rooms" message
-    if (result.items.length === 0) {
-      console.log('ℹ️ RoomListWidget: No rooms found - showing empty state');
-      this.rooms = [];
-      return;
-    }
-
-    // Validate required fields - no optional chaining
-    const validRooms = result.items.filter((room: ChatRoomData) => {
-      if (!room) {
-        console.error('❌ RoomListWidget: Null room in database results');
-        return false;
-      }
-      const roomId = room.id || room.roomId;
-      if (!roomId) {
-        console.error('❌ RoomListWidget: Room missing required id/roomId:', room);
-        return false;
-      }
-      if (!room.name) {
-        console.error('❌ RoomListWidget: Room missing required name:', room);
-        return false;
-      }
-      return true;
-    });
-
-    // Empty valid rooms is OK - show empty state, don't crash
-    if (validRooms.length === 0) {
-      console.log('ℹ️ RoomListWidget: All rooms invalid - showing empty state');
-      this.rooms = [];
-      return;
-    }
-
-    this.rooms = validRooms;
-    console.log(`✅ RoomListWidget: Loaded ${this.rooms.length} valid rooms from database`);
-
-    // Calculate actual unread counts for each room
-    await this.calculateUnreadCounts();
-  }
-
-  private renderRoomList(): string {
-    // GRACEFUL EMPTY STATE: Show "no content" template instead of failing
-    if (!this.rooms || this.rooms.length === 0) {
-      return `
-        <div class="no-rooms-message">
-          <span class="no-content-icon">🏠</span>
-          <p class="no-content-text">No chat rooms yet</p>
-          <small class="no-content-hint">Start a conversation to begin</small>
-        </div>
-      `;
-    }
-
-    // REQUIRED ROW FUNCTION: Map each room using validated row rendering
-    return this.rooms.map((room, index) => {
-      try {
-        return this.renderSingleRoom(room);
-      } catch (error) {
-        throw new Error(`RoomListWidget: Failed to render room at index ${index}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }).join('');
-  }
-
-  /**
-   * REQUIRED ROW FUNCTION: Renders a single room item
-   * This is the "row function" that must work for any valid room data
-   */
-  private renderSingleRoom(room: ChatRoomData): string {
-    // FAIL FAST: Validate required fields for row rendering
-    if (!room) {
-      throw new Error('RoomListWidget: Cannot render null room');
-    }
-    const roomId = room.id || room.roomId;
-    if (!roomId) {
-      throw new Error(`RoomListWidget: Room missing required 'id/roomId' field: ${JSON.stringify(room)}`);
-    }
-    if (!room.name) {
-      throw new Error(`RoomListWidget: Room missing required 'name' field: ${JSON.stringify(room)}`);
-    }
-
-    const isActive = this.currentRoomId === roomId;
-    const unreadCount = this.unreadCounts.get(roomId) || 0;
-    const unreadBadge = unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : '';
-    const displayName = room.displayName || room.name;
-
-    return `
-      <div class="room-item ${isActive ? 'active' : ''}" data-room-id="${roomId}">
-        <span class="room-name">${displayName}</span>
-        ${unreadBadge}
-      </div>
-    `;
-  }
 
   protected override setupEventListeners(): void {
     this.shadowRoot?.addEventListener('click', (e) => {
@@ -214,7 +224,11 @@ export class RoomListWidget extends ChatWidgetBase {
   protected async onWidgetCleanup(): Promise<void> {
     // Save current state
     await this.storeData('current_room', this.currentRoomId, { persistent: true });
-    this.rooms = [];
+
+    // Clean up EntityScroller
+    this.roomScroller?.destroy();
+    this.roomScroller = undefined;
+
     this.unreadCounts.clear();
     console.log('🧹 RoomListWidget: Cleanup complete');
   }
