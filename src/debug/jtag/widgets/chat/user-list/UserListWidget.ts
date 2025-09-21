@@ -7,8 +7,8 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { Commands } from '../../../system/core/client/shared/Commands';
-import { USER_EVENTS } from '../../../system/events/user/UserEventConstants';
-import type { UserCreatedEventData, UserEventMap } from '../../../system/events/user/UserEventTypes';
+import { Events } from '../../../system/core/client/shared/Events';
+import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
 
 export class UserListWidget extends ChatWidgetBase {
   private users: UserEntity[] = [];
@@ -35,38 +35,37 @@ export class UserListWidget extends ChatWidgetBase {
 
   /**
    * Set up user event subscriptions for real-time updates
-   * Uses EventsDaemon directly instead of widget-specific event system
+   * Uses static Events.subscribe() for data:User:created events
    */
   private async setupUserEventSubscriptions(): Promise<void> {
     try {
-      // Subscribe to USER_CREATED events through EventsDaemon
-      document.addEventListener(USER_EVENTS.USER_CREATED, (event: Event) => {
-        const customEvent = event as CustomEvent<UserCreatedEventData>;
-        console.log(`🔥 SERVER-EVENT-RECEIVED: ${USER_EVENTS.USER_CREATED}`, customEvent.detail);
-        this.onUserCreated(customEvent.detail);
+      // Subscribe to data:User:created events using static Events interface
+      const eventName = getDataEventName(UserEntity.collection, 'created');
+      Events.subscribe<UserEntity>(eventName, (userEntity: UserEntity) => {
+        console.log(`🔥 SERVER-EVENT-RECEIVED: ${eventName}`, userEntity);
+        this.onDataUserCreated(userEntity);
       });
 
-      console.log(`🎧 UserListWidget: Subscribed to user events`);
+      console.log(`🎧 UserListWidget: Subscribed to data:${UserEntity.collection}:created events via Events.subscribe()`);
 
-      // TODO: Add other user event subscriptions
-      // document.addEventListener(USER_EVENTS.USER_UPDATED, this.onUserUpdated.bind(this));
-      // document.addEventListener(USER_EVENTS.USER_DELETED, this.onUserDeleted.bind(this));
+      // TODO: Add other data event subscriptions
+      // Events.subscribe(`data:${UserEntity.collection}:updated`, this.onDataUserUpdated.bind(this));
+      // Events.subscribe(`data:${UserEntity.collection}:deleted`, this.onDataUserDeleted.bind(this));
     } catch (error) {
       console.error('❌ UserListWidget: Failed to set up user event subscriptions:', error);
     }
   }
 
   /**
-   * Handle USER_CREATED event - add new user to list with proper sorting
-   * Different from chat (append) - users get inserted in sort order
+   * Handle data:User:created event - add new user to list with proper sorting
+   * Uses generic data events from DataCreateServerCommand
    */
-  private onUserCreated(eventData: UserCreatedEventData): void {
-    const displayName = eventData.userData.displayName || eventData.userData.profile?.displayName || 'Unknown User';
-    console.log(`👤 UserListWidget: Adding new user ${displayName}`);
+  private onDataUserCreated(userEntity: UserEntity): void {
+    // The userEntity is the exact same structure that data/list returns
+    const displayName = userEntity.profile?.displayName || userEntity.displayName || 'Unknown User';
+    console.log(`👤 UserListWidget: Adding new user ${displayName} from data:${UserEntity.collection}:created event`);
+    console.log(`🔧 CLAUDE-DEBUG: UserEntity data:`, userEntity);
 
-    // Create new UserEntity and populate from event data
-    const userEntity = new UserEntity();
-    // TODO: populate userEntity fields from eventData.userData
     this.users.push(userEntity);
 
     // Re-sort by lastActiveAt (newest first) - same as database query
