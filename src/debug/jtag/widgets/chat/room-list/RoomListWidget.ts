@@ -12,13 +12,14 @@ import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
 import type { RoomId } from '../../../system/data/domains/CoreTypes';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
+import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
 export class RoomListWidget extends ChatWidgetBase {
-  private currentRoomId: RoomId = 'general' as RoomId;
+  private currentRoomId: RoomId = DEFAULT_ROOMS.GENERAL as RoomId; // Sync with ChatWidget's default
   private roomScroller?: EntityScroller<RoomEntity>;
   private unreadCounts: Map<string, number> = new Map();
   
@@ -216,25 +217,58 @@ export class RoomListWidget extends ChatWidgetBase {
      * 
     **/
   private async selectRoom(roomId: RoomId): Promise<void> {
+    // Early exit - prevent unnecessary work if already in this room
+    if (this.currentRoomId === roomId) {
+      console.log(`🔄 RoomListWidget: Already in room "${roomId}", ignoring selection`);
+      return;
+    }
+
     console.log(`🎯 RoomListWidget: Room selection requested: "${roomId}"`);
 
     // Find room entity for the selected room by id
     const roomEntity = this.roomScroller?.entities().find(room => room.id === roomId);
 
+    // Update visual highlighting with CSS only (no redraw needed)
+    this.updateRoomHighlighting(this.currentRoomId, roomId);
+
+    // Update local state
+    this.currentRoomId = roomId;
+
     // Emit room change event for other widgets (like ChatWidget) to respond to
     Events.emit('chat:room-changed', { roomId, roomEntity: roomEntity as ChatRoomData });
 
-    // Update local state for visual highlighting
-    if (this.currentRoomId !== roomId) {
-      this.currentRoomId = roomId;
+    console.log(`✅ RoomListWidget: Room changed to "${roomId}"`);
+  }
 
-      // Re-render to update visual state (highlight selected room)
-      await this.renderWidget();
+  /**
+   * Update room highlighting with CSS only - no full redraw needed
+   */
+  private updateRoomHighlighting(oldRoomId: RoomId, newRoomId: RoomId): void {
+    // Access DOM relative to this widget's own shadow root, not from document
+    const container = this.shadowRoot;
 
-      console.log(`✅ RoomListWidget: Emitted room change event for "${roomId}"`);
-    } else {
-      console.log(`🔄 RoomListWidget: Already in room "${roomId}", no change needed`);
+    if (!container) {
+      console.warn(`🎨 RoomListWidget: No shadow root available for highlighting`);
+      return;
     }
+
+    // Remove active class from previously selected room
+    const oldActiveRoom = container.querySelector(`[data-room-id="${oldRoomId}"]`);
+    if (oldActiveRoom) {
+      oldActiveRoom.classList.remove('active');
+      console.log(`🎨 RoomListWidget: Removed active class from "${oldRoomId}"`);
+    }
+
+    // Add active class to newly selected room
+    const newActiveRoom = container.querySelector(`[data-room-id="${newRoomId}"]`);
+    if (newActiveRoom) {
+      newActiveRoom.classList.add('active');
+      console.log(`🎨 RoomListWidget: Added active class to "${newRoomId}"`);
+    } else {
+      console.warn(`🎨 RoomListWidget: Could not find room element for "${newRoomId}"`);
+    }
+
+    console.log(`🎨 RoomListWidget: Updated CSS highlighting "${oldRoomId}" → "${newRoomId}"`);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
