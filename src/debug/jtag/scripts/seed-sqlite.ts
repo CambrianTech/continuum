@@ -10,6 +10,9 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { generatedSeedData } from '../data/seed/generatedSeedData';
 import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
+import { UserEntity } from '../system/data/entities/UserEntity';
+import { RoomEntity } from '../system/data/entities/RoomEntity';
+import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
 
 const execAsync = promisify(exec);
 
@@ -33,7 +36,7 @@ async function seedViaJTAG() {
       const { id, createdAt, updatedAt, version, ...cleanUser } = user;
 
       const dataArg = JSON.stringify(JSON.stringify(cleanUser));
-      const cmd = `./jtag data/create --collection=User --data=${dataArg}`;
+      const cmd = `./jtag data/create --collection=${UserEntity.collection} --data=${dataArg}`;
 
       try {
         await execAsync(cmd);
@@ -49,7 +52,7 @@ async function seedViaJTAG() {
       const { id, createdAt, updatedAt, version, ...cleanRoom } = room;
 
       const dataArg = JSON.stringify(JSON.stringify(cleanRoom));
-      const cmd = `./jtag data/create --collection=Room --data=${dataArg}`;
+      const cmd = `./jtag data/create --collection=${RoomEntity.collection} --data=${dataArg}`;
 
       try {
         await execAsync(cmd);
@@ -65,7 +68,7 @@ async function seedViaJTAG() {
       const { id, createdAt, updatedAt, version, ...cleanMessage } = message;
 
       const dataArg = JSON.stringify(JSON.stringify(cleanMessage));
-      const cmd = `./jtag data/create --collection=ChatMessage --data=${dataArg}`;
+      const cmd = `./jtag data/create --collection=${ChatMessageEntity.collection} --data=${dataArg}`;
 
       try {
         await execAsync(cmd);
@@ -78,15 +81,15 @@ async function seedViaJTAG() {
     // Verify via JTAG
     console.log('\n📊 Verifying seeded data via JTAG...');
 
-    const usersResult = await execAsync('./jtag data/list --collection=User');
+    const usersResult = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
     const userCount = usersResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
     console.log(`   Users: ${userCount}`);
 
-    const roomsResult = await execAsync('./jtag data/list --collection=Room');
+    const roomsResult = await execAsync(`./jtag data/list --collection=${RoomEntity.collection}`);
     const roomCount = roomsResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
     console.log(`   Rooms: ${roomCount}`);
 
-    const messagesResult = await execAsync('./jtag data/list --collection=ChatMessage');
+    const messagesResult = await execAsync(`./jtag data/list --collection=${ChatMessageEntity.collection}`);
     const messageCount = messagesResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
     console.log(`   Messages: ${messageCount}`);
 
