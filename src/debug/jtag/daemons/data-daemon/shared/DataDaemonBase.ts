@@ -44,10 +44,15 @@ export const createDataOperationPayload = (
  */
 export abstract class DataDaemonBase extends DaemonBase {
   public readonly subpath: string = 'data';
-  
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('data-daemon', context, router);
   }
+
+  /**
+   * Initialize data daemon - must be implemented by subclasses
+   */
+  protected abstract initialize(): Promise<void>;
   
   /**
    * Handle incoming data operation messages

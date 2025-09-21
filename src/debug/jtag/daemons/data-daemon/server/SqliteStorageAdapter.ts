@@ -18,6 +18,7 @@ import {
   type StorageOperation,
   type RecordData
 } from '../shared/DataStorageAdapter';
+import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 // Import field extraction mapping from shared layer
 import type { FieldExtractionMapping } from '../shared/FieldExtractionMapping';
 import {
@@ -57,51 +58,194 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
    * Initialize SQLite database with configuration
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
+    console.log('🚀 SQLite: Starting initialization...');
+
     if (this.isInitialized && this.db) {
+      console.log('✅ SQLite: Already initialized, skipping');
       return;
     }
 
     this.config = config;
     const options = config.options as SqliteOptions || {};
 
-    // Determine database file path - use configured path if available
-    const configOptions = config.options as any; // Access generic config options
-    const dbPath = options.filename ||
-      (configOptions.basePath && configOptions.databaseName
-        ? path.join(configOptions.basePath, configOptions.databaseName)
-        : path.join(process.cwd(), '.continuum', 'jtag', 'data', 'database.sqlite')
-      );
+    // Use centralized database path - no fallbacks
+    const dbPath = DATABASE_PATHS.SQLITE;
+    console.log(`📍 SQLite: Using database path: ${dbPath}`);
 
-    // Ensure directory exists
+    // Ensure directory exists with proper permissions
     const dbDir = path.dirname(dbPath);
-    await fs.mkdir(dbDir, { recursive: true });
+    console.log(`📁 SQLite: Ensuring directory exists: ${dbDir}`);
+    await fs.mkdir(dbDir, { recursive: true, mode: 0o755 });
 
-    console.log(`🗄️ SQLite: Initializing database at ${dbPath}`);
+    // Check if database file exists before connection
+    try {
+      const stats = await fs.stat(dbPath);
+      console.log(`📊 SQLite: Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
+    } catch (error) {
+      console.log('📄 SQLite: No existing database file, will create new');
+    }
 
-    // Create database connection
+    console.log(`🔗 SQLite: Opening database connection with READWRITE | CREATE mode`);
+
+    // Create database connection with explicit write mode
     await new Promise<void>((resolve, reject) => {
-      const mode = options.mode || (sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
-      console.log('🔧 SQLite: Opening database with mode:', mode, 'READWRITE|CREATE:', sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
+      const mode = sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE;
+      console.log(`🔧 SQLite: Connection mode flags: ${mode}`);
 
       this.db = new sqlite3.Database(dbPath, mode, (err) => {
         if (err) {
           console.error('❌ SQLite: Failed to open database:', err);
+          console.error('❌ SQLite: Error details:', err.message, (err as any).code || 'NO_CODE');
           reject(err);
         } else {
-          console.log('✅ SQLite: Database connection established');
+          console.log('✅ SQLite: Database connection established successfully');
           resolve();
         }
       });
     });
 
+    console.log('⚙️ SQLite: Configuring database settings...');
     // Configure SQLite settings
     await this.configureSqlite(options);
 
+    console.log('🏗️ SQLite: Creating core schema...');
     // Create core schema
     await this.createCoreSchema();
 
+    console.log('🔒 SQLite: Setting file permissions...');
+    // Ensure database file has correct permissions
+    try {
+      await fs.chmod(dbPath, 0o644);
+      console.log('✅ SQLite: File permissions set successfully');
+    } catch (error) {
+      console.warn('⚠️ SQLite: Could not set database file permissions:', error);
+    }
+
+    // Verify integrity after initialization
+    console.log('🔍 SQLite: Verifying database integrity...');
+    await this.verifyIntegrity();
+
     this.isInitialized = true;
-    console.log('🎯 SQLite: Initialization complete');
+    console.log('🎯 SQLite: Initialization complete and verified');
+  }
+
+  /**
+   * Verify database integrity and write capability
+   */
+  private async verifyIntegrity(): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    console.log('🧪 SQLite: Testing database write capability...');
+
+    // Create test metadata using real daemon context information
+    const testId = `integrity-test-${Date.now()}`;
+    const testMetadata = {
+      adapterType: 'SqliteStorageAdapter',
+      initializationTime: new Date().toISOString(),
+      databasePath: DATABASE_PATHS.SQLITE,
+      configOptions: this.config?.options || {},
+      nodeVersion: process.version,
+      platform: process.platform,
+      test: true
+    };
+
+    try {
+      // First register the collection to avoid foreign key constraint errors
+      console.log('🧪 SQLite: Registering test collection...');
+      await this.runSql(
+        'INSERT OR IGNORE INTO _collections (name, created_at) VALUES (?, ?)',
+        ['DAEMON_METADATA', new Date().toISOString()]
+      );
+      console.log('✅ SQLite: Test collection registered');
+
+      // Test 1: Insert daemon metadata record
+      console.log('🧪 SQLite: Testing insert operation...');
+      await this.runSql(
+        'INSERT INTO _data (id, collection, data, created_at) VALUES (?, ?, ?, ?)',
+        [testId, 'DAEMON_METADATA', JSON.stringify(testMetadata), new Date().toISOString()]
+      );
+      console.log('✅ SQLite: Insert test successful');
+
+      // Test 2: Read back the metadata
+      console.log('🧪 SQLite: Testing read operation...');
+      const results = await this.runSql(
+        'SELECT data, created_at FROM _data WHERE id = ? AND collection = ?',
+        [testId, 'DAEMON_METADATA']
+      );
+
+      if (!results || results.length === 0) {
+        throw new Error('Read test failed - no data returned');
+      }
+
+      const result = results[0];
+      const retrievedData = JSON.parse(result.data);
+      if (retrievedData.test !== true || retrievedData.adapterType !== 'SqliteStorageAdapter') {
+        throw new Error('Read test failed - data integrity mismatch');
+      }
+      console.log('✅ SQLite: Read test successful');
+
+      // Test 3: Update the record
+      console.log('🧪 SQLite: Testing update operation...');
+      const updatedMetadata = { ...testMetadata, verified: true, verificationTime: new Date().toISOString() };
+      await this.runSql(
+        'UPDATE _data SET data = ?, updated_at = ? WHERE id = ? AND collection = ?',
+        [JSON.stringify(updatedMetadata), new Date().toISOString(), testId, 'DAEMON_METADATA']
+      );
+      console.log('✅ SQLite: Update test successful');
+
+      // Test 4: Verify update worked
+      const updatedResults = await this.runSql(
+        'SELECT data FROM _data WHERE id = ? AND collection = ?',
+        [testId, 'DAEMON_METADATA']
+      );
+
+      if (!updatedResults || updatedResults.length === 0 || !JSON.parse(updatedResults[0].data).verified) {
+        throw new Error('Update verification failed');
+      }
+      console.log('✅ SQLite: Update verification successful');
+
+      // Test 5: Test collection query (like the commands use)
+      console.log('🧪 SQLite: Testing collection query...');
+      const collectionResults = await this.runSql(
+        'SELECT id, data FROM _data WHERE collection = ?',
+        ['DAEMON_METADATA']
+      );
+
+      if (!collectionResults || collectionResults.length === 0) {
+        throw new Error('Collection query failed');
+      }
+      console.log('✅ SQLite: Collection query test successful');
+
+      // Cleanup: Delete test record and collection
+      await this.runSql(
+        'DELETE FROM _data WHERE id = ? AND collection = ?',
+        [testId, 'DAEMON_METADATA']
+      );
+      await this.runSql(
+        'DELETE FROM _collections WHERE name = ?',
+        ['DAEMON_METADATA']
+      );
+      console.log('✅ SQLite: Cleanup successful - database fully operational');
+
+      // Final verification: Ensure cleanup worked
+      const cleanupResults = await this.runSql(
+        'SELECT COUNT(*) as count FROM _data WHERE collection = ?',
+        ['DAEMON_METADATA']
+      );
+
+      if (cleanupResults && cleanupResults.length > 0 && parseInt(cleanupResults[0].count) > 0) {
+        console.warn('⚠️ SQLite: Test data may not have been fully cleaned up');
+      }
+
+      console.log('🎉 SQLite: All integrity checks passed - adapter fully functional');
+
+    } catch (error) {
+      console.error('❌ SQLite: Integrity verification failed:', error);
+      console.error('❌ SQLite: Error details:', error instanceof Error ? error.message : String(error));
+      throw new Error(`Database integrity check failed: ${error}`);
+    }
   }
 
   /**
@@ -1189,6 +1333,90 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         processOperations();
       });
     });
+  }
+
+  /**
+   * Clear all data from all collections
+   */
+  async clear(): Promise<StorageResult<boolean>> {
+    if (!this.isInitialized || !this.db) {
+      return {
+        success: false,
+        error: 'Database not initialized'
+      };
+    }
+
+    try {
+      const result = await this.withTransaction(async () => {
+        // Clear all data and collections
+        await this.runStatement('DELETE FROM _data');
+        await this.runStatement('DELETE FROM _collections');
+
+        // Clear field extraction tables if they exist
+        const tables = await this.runSql("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_field_%'");
+        for (const table of tables) {
+          await this.runStatement(`DELETE FROM ${table.name}`);
+        }
+
+        return true;
+      });
+
+      console.log('🧹 SQLite: All data cleared successfully');
+      return {
+        success: true,
+        data: result
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ SQLite: Error clearing data:', errorMessage);
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
+  }
+
+  /**
+   * Clear all records from a specific collection
+   */
+  async truncate(collection: string): Promise<StorageResult<boolean>> {
+    if (!this.isInitialized || !this.db) {
+      return {
+        success: false,
+        error: 'Database not initialized'
+      };
+    }
+
+    try {
+      const result = await this.withTransaction(async () => {
+        // Delete all records from the collection
+        const deleteResult = await this.runStatement('DELETE FROM _data WHERE collection = ?', [collection]);
+
+        // Clear field extraction data for this collection
+        const tables = await this.runSql("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_field_%'");
+        for (const table of tables) {
+          await this.runStatement(`DELETE FROM ${table.name} WHERE collection = ?`, [collection]);
+        }
+
+        // Update collection stats
+        await this.updateCollectionStats(collection);
+
+        return deleteResult.changes;
+      });
+
+      console.log(`🧹 SQLite: Truncated collection '${collection}' - ${result} records removed`);
+      return {
+        success: true,
+        data: result > 0
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ SQLite: Error truncating collection '${collection}':`, errorMessage);
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
   }
 
   /**

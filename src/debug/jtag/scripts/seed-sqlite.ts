@@ -9,6 +9,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { generatedSeedData } from '../data/seed/generatedSeedData';
+import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 
 const execAsync = promisify(exec);
 
@@ -16,6 +17,16 @@ async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
+    // CRITICAL: Clear existing database tables first to prevent duplicates
+    console.log('🧹 Clearing existing database tables...');
+    try {
+      // Clear SQLite database tables directly
+      await execAsync(`sqlite3 ${DATABASE_PATHS.SQLITE} "DELETE FROM _data; DELETE FROM _collections;" 2>/dev/null || true`);
+      console.log('✅ Database tables cleared');
+    } catch (error: any) {
+      console.log('ℹ️ Database tables not found or already empty, proceeding with seeding...');
+    }
+
     // Seed users
     console.log('👥 Creating users via JTAG...');
     for (const user of generatedSeedData.collections.users) {

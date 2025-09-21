@@ -219,6 +219,22 @@ export class DataDaemon {
   }
   
   /**
+   * Clear all data from all collections
+   */
+  async clear(): Promise<StorageResult<boolean>> {
+    await this.ensureInitialized();
+    return await this.adapter.clear();
+  }
+
+  /**
+   * Truncate all records from a specific collection
+   */
+  async truncate(collection: string): Promise<StorageResult<boolean>> {
+    await this.ensureInitialized();
+    return await this.adapter.truncate(collection);
+  }
+
+  /**
    * Storage maintenance - VACUUM, reindex, cleanup
    */
   async maintenance(): Promise<void> {
@@ -398,12 +414,40 @@ export class DataDaemon {
   /**
    * List collections with automatic context injection - CLEAN INTERFACE
    */
-  static async collections(): Promise<StorageResult<string[]>> {
+  static async listCollections(): Promise<StorageResult<string[]>> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
     return await DataDaemon.sharedInstance.listCollections(DataDaemon.context);
+  }
+
+  /**
+   * Clear all data from all collections - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.clear();
+   */
+  static async clear(): Promise<StorageResult<boolean>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.clear();
+  }
+
+  /**
+   * Truncate all records from a specific collection - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.truncate('users');
+   */
+  static async truncate(collection: string): Promise<StorageResult<boolean>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.truncate(collection);
   }
 
   /**

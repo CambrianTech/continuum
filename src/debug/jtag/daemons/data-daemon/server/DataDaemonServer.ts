@@ -12,6 +12,7 @@ import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonB
 import { DataDaemon, type StorageStrategyConfig, type DataOperationContext } from '../shared/DataDaemon';
 import { FileStorageAdapter } from './FileStorageAdapter';
 import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStorageAdapter';
+import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/DatabaseConfig';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -28,8 +29,8 @@ export class DataDaemonServer extends DataDaemonBase {
       backend: 'sqlite',
       namespace: context.uuid, // Use context UUID as namespace
       options: {
-        basePath: '.continuum/jtag/data',
-        databaseName: 'jtag-data.sqlite'
+        basePath: DATABASE_PATHS.DATA_DIR,
+        databaseName: DATABASE_FILES.SQLITE_FILENAME
       },
       features: {
         enableTransactions: true,
@@ -55,7 +56,6 @@ export class DataDaemonServer extends DataDaemonBase {
     DataDaemon.initialize(this.dataDaemon, context);
 
     console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Static DataDaemon interface initialized`);
   }
   
   /**
