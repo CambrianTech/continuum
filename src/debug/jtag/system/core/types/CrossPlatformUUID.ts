@@ -93,10 +93,41 @@ export function createPseudoUUID(input: string): UUID {
     hash = ((hash << 5) - hash) + char;
     hash = hash & hash; // Convert to 32-bit integer
   }
-  
+
   // Convert hash to hex and pad/truncate to create UUID format
   const hex = Math.abs(hash).toString(16).padStart(8, '0').slice(0, 8);
   const randomSuffix = generateUUIDFallback().slice(9); // Use random for the rest
-  
+
   return `${hex}-${randomSuffix}` as UUID;
+}
+
+/**
+ * Generate deterministic UUID from string input
+ * Creates consistent UUIDs for the same input string across all sessions
+ * Perfect for seeding data with consistent IDs based on entity names
+ */
+export function stringToUUID(input: string): UUID {
+  // Create multiple hash values from the input string for UUID segments
+  const hashes = [];
+
+  // Generate 4 different hash values using different algorithms
+  for (let seed = 0; seed < 4; seed++) {
+    let hash = seed;
+    for (let i = 0; i < input.length; i++) {
+      const char = input.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char + seed;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    hashes.push(Math.abs(hash));
+  }
+
+  // Convert hashes to hex segments for UUID format
+  const segments = hashes.map(hash =>
+    hash.toString(16).padStart(8, '0').slice(0, 8)
+  );
+
+  // Build UUID string with proper RFC 4122 v4 format
+  const uuid = `${segments[0]}-${segments[1].slice(0, 4)}-4${segments[1].slice(5, 8)}-${(parseInt(segments[2].slice(0, 1), 16) & 0x3 | 0x8).toString(16)}${segments[2].slice(1, 4)}-${segments[3]}`;
+
+  return uuid as UUID;
 }

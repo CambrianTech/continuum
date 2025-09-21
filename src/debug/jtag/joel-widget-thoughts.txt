@@ -217,4 +217,57 @@ Daemon Consolidation Opportunities:
   This gives us Discord-scale chat where humans and AI personas collaborate seamlessly, with the same elegant command/event architecture powering
   everything. Perfect foundation!
 
+------
+minor issue:
 
+UserListWidget: User missing required displayName/name: 
+Object
+created
+: 
+"2025-09-20T00:08:43.410Z"
+name
+: 
+"Database Test User"
+type
+: 
+"human"
+userId
+: 
+"test-user-1758326923380"
+[[Prototype]]
+: 
+Object
+ConsoleDaemon.ts:384 ❌ UserListWidget: User missing required id/userId: 
+Object
+displayName
+: 
+"Test User"
+type
+: 
+"human"
+
+-----------------------
+
+But then it seems to hang when trying to execute the CommandDaemon.execute() call inside the command. The issue is likely that the server-side command is
+  trying to create another client connection to itself, creating an infinite loop or deadlock.
+
+  The problem is that the server-side command is using CommandDaemon.execute() which calls JTAGClient.sharedInstance, but there's no server-side JTAGClient
+  setup for internal command execution. Server commands should execute other server commands directly, not through the client interface.
+
+ Let me fix this by reverting the user creation commands to use this.remoteExecute() instead of the problematic CommandDaemon.execute():
+
+ ---
+ Ok, now it is time to fix the CommandDaemon.execute problem for the server side.
+
+ ===============================================================
+
+ Now let me deploy this fix and your brilliant idea about using entity update events is perfect! Instead of complex replacement logic in the
+  EntityScroller, we can:
+
+  1. Send an entityupdate event when any entity changes
+  2. Widgets subscribe to their entities and automatically update
+  3. EntityScroller just handles deduplication - no complex replacement needed
+
+  THIS COMPLETES THE AI DRIVEN WIDGETS EASILY, PERSONA, HUMANS, ALL, TOGETHER, COLLABORATIVE!
+
+  ==================================================================

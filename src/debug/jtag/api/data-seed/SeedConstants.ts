@@ -6,33 +6,34 @@
  */
 
 import { COLLECTIONS } from '../../system/data/core/FieldMapping';
+import { stringToUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
 
 // Re-export the authoritative COLLECTIONS from FieldMapping for consistency
 export { COLLECTIONS } from '../../system/data/core/FieldMapping';
 
-// User IDs - single source of truth
+// User IDs - deterministic UUIDs based on user names
 export const USER_IDS = {
-  HUMAN: 'user-human-12345' as const,
-  CLAUDE_CODE: 'claude-code-agent' as const,
-  GENERAL_AI: 'general-ai-persona' as const,
-  CODE_AI: 'code-ai-agent' as const,
-  PLANNER_AI: 'planner-ai-agent' as const,
-  AUTO_ROUTE: 'auto-route-agent' as const
+  HUMAN: stringToUUID('Joel') as UUID,
+  CLAUDE_CODE: stringToUUID('Claude Code') as UUID,
+  GENERAL_AI: stringToUUID('GeneralAI') as UUID,
+  CODE_AI: stringToUUID('CodeAI') as UUID,
+  PLANNER_AI: stringToUUID('PlannerAI') as UUID,
+  AUTO_ROUTE: stringToUUID('Auto Route') as UUID
 } as const;
 
-// Room IDs - single source of truth  
+// Room IDs - deterministic UUIDs based on room names
 export const ROOM_IDS = {
-  GENERAL: 'room-general' as const,
-  ACADEMY: 'room-academy' as const,
-  SUPPORT: 'room-support' as const,
-  AI_TRAINING: 'room-ai-training' as const
+  GENERAL: stringToUUID('General') as UUID,
+  ACADEMY: stringToUUID('Academy') as UUID,
+  SUPPORT: stringToUUID('Support') as UUID,
+  AI_TRAINING: stringToUUID('AI Training') as UUID
 } as const;
 
-// Message IDs - single source of truth
+// Message IDs - deterministic UUIDs based on message content keys
 export const MESSAGE_IDS = {
-  WELCOME_GENERAL: 'msg-welcome-general' as const,
-  CLAUDE_INTRO: 'msg-claude-intro' as const,
-  WELCOME_ACADEMY: 'msg-welcome-academy' as const
+  WELCOME_GENERAL: stringToUUID('Welcome General Message') as UUID,
+  CLAUDE_INTRO: stringToUUID('Claude Introduction Message') as UUID,
+  WELCOME_ACADEMY: stringToUUID('Welcome Academy Message') as UUID
 } as const;
 
 // User configuration constants

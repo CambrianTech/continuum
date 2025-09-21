@@ -249,17 +249,66 @@ export function createScroller<T extends BaseEntity>(
       await scroller.load();
     },
 
-    // Real-time updates - efficient DOM operations
+    // Real-time updates with automatic deduplication and replacement
     add(entity: T, position = 'end'): void {
+      // Check if entity already exists in DOM using data-entity-id
+      const existingElement = container.querySelector(`[data-entity-id="${entity.id}"]`);
+      if (existingElement) {
+        // Replace existing entity with updated one
+        const entityIndex = entities.findIndex(e => e.id === entity.id);
+        if (entityIndex !== -1) {
+          entities[entityIndex] = entity; // Update in entities array
+
+          // Re-render the element with updated data
+          const renderContext: RenderContext<T> = {
+            index: entityIndex,
+            total: entities.length
+          };
+          const newElement = render(entity, renderContext);
+          newElement.setAttribute('data-entity-id', entity.id);
+          existingElement.replaceWith(newElement);
+
+          console.log(`🔧 EntityScroller: Replaced existing entity with ID: ${entity.id}`);
+          return;
+        }
+      }
+
+      // Add new entity to entities array and DOM
+      entities.push(entity);
       addEntitiesToDOM([entity], position);
+      console.log(`🔧 EntityScroller: Added new entity with ID: ${entity.id}`);
     },
 
-    // Smart real-time updates with intrinsic direction awareness
+    // Smart real-time updates with intrinsic direction awareness and replacement
     addWithAutoScroll(entity: T, position?: 'start' | 'end'): void {
+      // Check if entity already exists in DOM using data-entity-id
+      const existingElement = container.querySelector(`[data-entity-id="${entity.id}"]`);
+      if (existingElement) {
+        // Replace existing entity with updated one
+        const entityIndex = entities.findIndex(e => e.id === entity.id);
+        if (entityIndex !== -1) {
+          entities[entityIndex] = entity; // Update in entities array
+
+          // Re-render the element with updated data
+          const renderContext: RenderContext<T> = {
+            index: entityIndex,
+            total: entities.length
+          };
+          const newElement = render(entity, renderContext);
+          newElement.setAttribute('data-entity-id', entity.id);
+          existingElement.replaceWith(newElement);
+
+          console.log(`🔧 EntityScroller: Replaced existing entity with ID: ${entity.id}`);
+          return; // Don't auto-scroll for replacements
+        }
+      }
+
       // Determine where "new content" naturally goes based on direction
       const newContentPosition = config.direction === 'newest-first' ? 'end' : 'start';
       const actualPosition = position || newContentPosition;
 
+      // Add new entity to entities array and DOM
+      entities.push(entity);
       addEntitiesToDOM([entity], actualPosition);
 
       // Auto-scroll only if this is truly new content being added to the natural position

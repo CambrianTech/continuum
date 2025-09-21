@@ -9,6 +9,7 @@
  */
 
 import { createHumanUser, PersonaUser, AgentUser } from '../api/types/User';
+import { USER_IDS } from '../api/data-seed/SeedConstants';
 
 // Human Users
 const joelUser = createHumanUser({
@@ -23,8 +24,8 @@ const joelUser = createHumanUser({
   }
 });
 
-// Override Joel's ID to match existing chat data
-joelUser.id = 'user-joel-12345';
+// Use deterministic UUID based on Joel's name
+joelUser.id = USER_IDS.HUMAN;
 joelUser.isAuthenticated = true; // Joel is always authenticated in dev
 
 // Claude Code - AI Assistant Agent
@@ -50,8 +51,8 @@ const claudeUser = new AgentUser({
   }
 });
 
-// Override Claude's ID for consistency
-claudeUser.id = 'claude-code-agent';
+// Use deterministic UUID based on Claude's name
+claudeUser.id = USER_IDS.CLAUDE_CODE;
 
 // GeneralAI - General Assistant Persona
 const generalAI = new PersonaUser({
@@ -71,8 +72,8 @@ const generalAI = new PersonaUser({
   }
 });
 
-// Override GeneralAI's ID
-generalAI.id = 'general-ai-persona';
+// Use deterministic UUID based on GeneralAI's name
+generalAI.id = USER_IDS.GENERAL_AI;
 
 // CodeAI - Code Analysis Specialist
 const codeAI = new AgentUser({
@@ -92,7 +93,7 @@ const codeAI = new AgentUser({
   }
 });
 
-codeAI.id = 'code-ai-agent';
+codeAI.id = USER_IDS.CODE_AI;
 
 // PlannerAI - Strategic Planning Assistant
 const plannerAI = new AgentUser({
@@ -112,7 +113,7 @@ const plannerAI = new AgentUser({
   }
 });
 
-plannerAI.id = 'planner-ai-agent';
+plannerAI.id = USER_IDS.PLANNER_AI;
 
 // Auto Route - Smart Agent Selection
 const autoRoute = new AgentUser({
@@ -132,7 +133,7 @@ const autoRoute = new AgentUser({
   }
 });
 
-autoRoute.id = 'auto-route-agent';
+autoRoute.id = USER_IDS.AUTO_ROUTE;
 
 // Export all users for seeding
 export const SEED_USERS = [

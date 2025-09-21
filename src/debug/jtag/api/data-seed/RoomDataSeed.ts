@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { USER_IDS, ROOM_IDS, MESSAGE_IDS } from './SeedConstants';
 
 // Rust-like branded type for strict typing
 export type RoomId = string & { readonly __brand: 'RoomId' };
@@ -76,9 +77,9 @@ export class RoomDataSeed {
             allowAI: room.allowAI,
             requireModeration: room.requireModeration,
             maxHistoryLength: room.maxHistoryLength,
-            createdBy: 'user-human-12345',
+            createdBy: USER_IDS.HUMAN,
             createdAt: now,
-            members: ['user-human-12345'], // Joel is in all rooms initially
+            members: [USER_IDS.HUMAN], // Joel is in all rooms initially
             category: room.category
           });
         }
@@ -100,9 +101,9 @@ export class RoomDataSeed {
               allowAI: room.allowAI,
               requireModeration: room.requireModeration,
               maxHistoryLength: room.maxHistoryLength,
-              createdBy: 'user-human-12345',
+              createdBy: USER_IDS.HUMAN,
               createdAt: now,
-              members: ['user-human-12345'],
+              members: [USER_IDS.HUMAN],
               category: room.category
             });
           }
@@ -117,29 +118,29 @@ export class RoomDataSeed {
     if (rooms.length === 0) {
       rooms = [
         {
-          id: createRoomId('room-general'),
+          id: createRoomId(ROOM_IDS.GENERAL),
           name: 'General',
           description: 'Main discussion room for all users',
           isPublic: true,
           allowAI: true,
           requireModeration: false,
           maxHistoryLength: 1000,
-          createdBy: 'user-joel-12345',
+          createdBy: USER_IDS.HUMAN,
           createdAt: now,
-          members: ['user-joel-12345'],
+          members: [USER_IDS.HUMAN],
           category: 'general'
         },
         {
-          id: createRoomId('room-academy'),
+          id: createRoomId(ROOM_IDS.ACADEMY),
           name: 'Academy',
           description: 'Learning and educational discussions',
           isPublic: true,
           allowAI: true,
           requireModeration: false,
           maxHistoryLength: 500,
-          createdBy: 'user-joel-12345',
+          createdBy: USER_IDS.HUMAN,
           createdAt: now,
-          members: ['user-joel-12345'],
+          members: [USER_IDS.HUMAN],
           category: 'education'
         }
       ];
@@ -147,11 +148,11 @@ export class RoomDataSeed {
     
     // Add AI agents to appropriate rooms
     const allAIAgents = [
-      'claude-code-agent',
-      'general-ai-persona',
-      'code-ai-agent',
-      'planner-ai-agent',
-      'auto-route-agent'
+      USER_IDS.CLAUDE_CODE,
+      USER_IDS.GENERAL_AI,
+      USER_IDS.CODE_AI,
+      USER_IDS.PLANNER_AI,
+      USER_IDS.AUTO_ROUTE
     ];
     
     for (const room of rooms) {
@@ -177,29 +178,29 @@ export class RoomDataSeed {
     
     // Welcome message for general room
     messages.push({
-      id: 'msg-welcome-general',
-      roomId: createRoomId('room-general'),
-      userId: 'user-human-12345',
+      id: MESSAGE_IDS.WELCOME_GENERAL,
+      roomId: createRoomId(ROOM_IDS.GENERAL),
+      userId: USER_IDS.HUMAN,
       content: 'Welcome to the General room! This is where we discuss development, collaborate, and share ideas.',
       timestamp: now,
       type: 'text'
     });
-    
+
     // Claude introduction
     messages.push({
-      id: 'msg-claude-intro',
-      roomId: createRoomId('room-general'),
-      userId: 'claude-code-agent',
+      id: MESSAGE_IDS.CLAUDE_INTRO,
+      roomId: createRoomId(ROOM_IDS.GENERAL),
+      userId: USER_IDS.CLAUDE_CODE,
       content: 'Hello! I\'m Claude Code, your AI development assistant. I can help with TypeScript, React, debugging, and system architecture. Feel free to ask me anything!',
       timestamp: new Date(Date.now() + 1000).toISOString(),
       type: 'text'
     });
-    
+
     // Academy welcome if it exists
     messages.push({
-      id: 'msg-welcome-academy',
-      roomId: createRoomId('room-academy'),
-      userId: 'user-human-12345',
+      id: MESSAGE_IDS.WELCOME_ACADEMY,
+      roomId: createRoomId(ROOM_IDS.ACADEMY),
+      userId: USER_IDS.HUMAN,
       content: 'Welcome to the Academy! This room is for learning, tutorials, and educational discussions.',
       timestamp: new Date(Date.now() + 2000).toISOString(),
       type: 'text'
