@@ -64,13 +64,13 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     this.config = config;
     const options = config.options as SqliteOptions || {};
 
-    // Determine database file path
-    const dbPath = options.filename || path.join(
-      process.cwd(),
-      '.continuum',
-      'database',
-      `${config.namespace || 'jtag'}.db`
-    );
+    // Determine database file path - use configured path if available
+    const configOptions = config.options as any; // Access generic config options
+    const dbPath = options.filename ||
+      (configOptions.basePath && configOptions.databaseName
+        ? path.join(configOptions.basePath, configOptions.databaseName)
+        : path.join(process.cwd(), '.continuum', 'jtag', 'data', 'database.sqlite')
+      );
 
     // Ensure directory exists
     const dbDir = path.dirname(dbPath);

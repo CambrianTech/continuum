@@ -69,8 +69,11 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       console.debug(`✅ DATA SERVER: Listed ${result.data?.length || 0} items from ${collection} via DataDaemon`);
       console.debug(`🔧 CLAUDE-FIX-${Date.now()}: DataListServerCommand now uses entity-type-driven collection mapping`);
 
-      // Extract data from DataRecord array
-      const items: T[] = result.data ? result.data.map(record => record.data as T) : [];
+      // Extract data from DataRecord array and merge database ID into entity data
+      const items: T[] = result.data ? result.data.map(record => ({
+        ...record.data as T,
+        id: record.id  // Merge database-generated UUID into entity
+      })) : [];
 
       return createDataListResultFromParams(params, {
         success: true,
