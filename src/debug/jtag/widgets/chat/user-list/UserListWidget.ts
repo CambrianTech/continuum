@@ -162,13 +162,27 @@ export class UserListWidget extends ChatWidgetBase {
     }
 
     // REQUIRED ROW FUNCTION: Map each user using validated row rendering
-    return this.users.map((user, index) => {
-      try {
-        return this.renderUserItem(user);
-      } catch (error) {
-        throw new Error(`UserListWidget: Failed to render user at index ${index}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }).join('');
+    return this.users
+      .filter((user, index) => {
+        // CRITICAL: Filter out invalid users to prevent crashes
+        if (!user || typeof user !== 'object') {
+          console.warn(`⚠️ UserListWidget: Skipping invalid user at index ${index}:`, user);
+          return false;
+        }
+        if (!user.displayName) {
+          console.warn(`⚠️ UserListWidget: Skipping user without displayName at index ${index}:`, user);
+          return false;
+        }
+        return true;
+      })
+      .map((user, index) => {
+        try {
+          return this.renderUserItem(user);
+        } catch (error) {
+          console.error(`❌ UserListWidget: Failed to render user at index ${index}:`, error);
+          return `<div class="user-item error">⚠️ Invalid User</div>`;
+        }
+      }).join('');
   }
 
   private renderUserItem(user: UserEntity): string {

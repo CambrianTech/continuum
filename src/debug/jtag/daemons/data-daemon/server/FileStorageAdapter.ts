@@ -385,7 +385,80 @@ export class FileStorageAdapter extends DataStorageAdapter {
       };
     }
   }
-  
+
+  /**
+   * Clear all data from all collections
+   */
+  async clear(): Promise<StorageResult<boolean>> {
+    try {
+      const collections = await this.listCollections();
+      if (collections.success && collections.data) {
+        for (const collection of collections.data) {
+          const truncateResult = await this.truncate(collection);
+          if (!truncateResult.success) {
+            return truncateResult;
+          }
+        }
+      }
+
+      console.log('🧹 FileStorage: All data cleared successfully');
+      return {
+        success: true,
+        data: true
+      };
+
+    } catch (error: any) {
+      console.error('❌ FileStorage: Error clearing data:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Truncate all records from a specific collection
+   */
+  async truncate(collection: string): Promise<StorageResult<boolean>> {
+    try {
+      const collectionPath = path.join(this.basePath, collection);
+
+      try {
+        const files = await fs.readdir(collectionPath);
+        const jsonFiles = files.filter(f => f.endsWith('.json'));
+
+        // Delete all JSON files in the collection
+        for (const file of jsonFiles) {
+          await fs.unlink(path.join(collectionPath, file));
+        }
+
+        console.log(`🗑️ FileStorage: Truncated collection '${collection}' (${jsonFiles.length} records)`);
+        return {
+          success: true,
+          data: true
+        };
+
+      } catch (dirError: any) {
+        if (dirError.code === 'ENOENT') {
+          // Collection doesn't exist, nothing to truncate
+          console.log(`ℹ️ FileStorage: Collection '${collection}' doesn't exist, skipping truncate`);
+          return {
+            success: true,
+            data: true
+          };
+        }
+        throw dirError;
+      }
+
+    } catch (error: any) {
+      console.error(`❌ FileStorage: Error truncating collection '${collection}':`, error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   /**
    * Cleanup - Remove empty directories, optimize storage
    */

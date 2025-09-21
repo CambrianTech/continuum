@@ -133,10 +133,20 @@ export abstract class DataStorageAdapter {
   abstract batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>>;
   
   /**
+   * Clear all data from all collections
+   */
+  abstract clear(): Promise<StorageResult<boolean>>;
+
+  /**
+   * Truncate all records from a specific collection
+   */
+  abstract truncate(collection: string): Promise<StorageResult<boolean>>;
+
+  /**
    * Cleanup and optimization
    */
   abstract cleanup(): Promise<void>;
-  
+
   /**
    * Close storage connection
    */

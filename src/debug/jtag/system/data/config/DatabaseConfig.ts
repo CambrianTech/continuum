@@ -22,6 +22,14 @@ export const DATABASE_PATHS = {
 } as const;
 
 /**
+ * Database filenames - centralized naming
+ */
+export const DATABASE_FILES = {
+  /** Main SQLite database filename */
+  SQLITE_FILENAME: 'database.sqlite'
+} as const;
+
+/**
  * Database configuration settings
  */
 export const DATABASE_CONFIG = {

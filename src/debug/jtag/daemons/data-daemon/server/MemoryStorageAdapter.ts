@@ -417,7 +417,69 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
       };
     }
   }
-  
+
+  /**
+   * Clear all data from all collections
+   */
+  async clear(): Promise<StorageResult<boolean>> {
+    try {
+      const collectionCount = this.collections.size;
+      let totalRecords = 0;
+
+      for (const collection of this.collections.values()) {
+        totalRecords += collection.size;
+      }
+
+      this.collections.clear();
+
+      console.log(`🧹 MemoryStorage: All data cleared successfully (${collectionCount} collections, ${totalRecords} records)`);
+      return {
+        success: true,
+        data: true
+      };
+
+    } catch (error: any) {
+      console.error('❌ MemoryStorage: Error clearing data:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Truncate all records from a specific collection
+   */
+  async truncate(collection: string): Promise<StorageResult<boolean>> {
+    try {
+      const collectionMap = this.collections.get(collection);
+
+      if (!collectionMap) {
+        console.log(`ℹ️ MemoryStorage: Collection '${collection}' doesn't exist, skipping truncate`);
+        return {
+          success: true,
+          data: true
+        };
+      }
+
+      const recordCount = collectionMap.size;
+      this.collections.delete(collection);
+
+      console.log(`🗑️ MemoryStorage: Truncated collection '${collection}' (${recordCount} records)`);
+      return {
+        success: true,
+        data: true
+      };
+
+    } catch (error: any) {
+      console.error(`❌ MemoryStorage: Error truncating collection '${collection}':`, error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   /**
    * Cleanup - Clear expired records based on TTL
    */
