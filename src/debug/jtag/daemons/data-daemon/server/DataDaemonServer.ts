@@ -30,7 +30,8 @@ export class DataDaemonServer extends DataDaemonBase {
       namespace: context.uuid, // Use context UUID as namespace
       options: {
         basePath: DATABASE_PATHS.DATA_DIR,
-        databaseName: DATABASE_FILES.SQLITE_FILENAME
+        databaseName: DATABASE_FILES.SQLITE_FILENAME,
+        foreignKeys: false  // Disable foreign key constraints to avoid constraint violations
       },
       features: {
         enableTransactions: true,
