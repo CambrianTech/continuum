@@ -29,7 +29,11 @@ import { createDataLoader, PAGINATION_PRESETS } from '../../shared/DataLoaders';
 import { createDataExecutor } from '../../shared/DataExecutorAdapter';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { Commands } from '../../../system/core/client/shared/Commands';
+import { Events } from '../../../system/core/client/shared/Events';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
+import { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
+import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 
 // ChatMessageData already extends Entity via BaseEntity - no need for new interface
 
@@ -89,7 +93,8 @@ interface ScrollState {
 
 export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessageData[] = [];
-  private currentRoom: string;
+  private currentRoom: RoomId;
+  private currentRoomEntity?: ChatRoomData;
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
   private messagesContainer?: HTMLElement;
@@ -103,7 +108,7 @@ export class ChatWidget extends ChatWidgetBase {
   public currentUserId!: UserId; // Persistent User ID for "me" attribution
   public currentSessionId!: SessionId; // Current browser session ID
   
-  constructor(roomId: string = DEFAULT_ROOMS.GENERAL) {
+  constructor(roomId: RoomId = DEFAULT_ROOMS.GENERAL as RoomId) {
     super({
       widgetName: 'ChatWidget',
       template: 'chat-widget.html',
@@ -144,9 +149,12 @@ export class ChatWidget extends ChatWidgetBase {
       throw new Error('ChatWidget requires session context - cannot initialize without sessionId');
     }
     this.currentSessionId = client.sessionId as SessionId;
-    
-    // EntityScroller will load messages after DOM is ready in renderWidget()
-    // Skip old loading method for now - let EntityScroller handle it
+
+    // Load room entity data for display name and metadata
+    await this.loadRoomEntity();
+
+    // Subscribe to room change events
+    await this.subscribeToRoomChangeEvents();
 
     // Subscribe to room-specific events
     await this.subscribeToRoomEvents();
@@ -800,8 +808,116 @@ export class ChatWidget extends ChatWidgetBase {
 
   // REMOVED: getPersistentUserId() - now using UserIdManager properly
 
+  /**
+   * Load room entity data to get display name and metadata
+   */
+  private async loadRoomEntity(): Promise<void> {
+    try {
+      console.log(`🏠 ChatWidget: Loading room entity for ID "${this.currentRoom}"`);
+
+      // Use data/list with filter instead of data/read since room uses 'id' field
+      const roomResult = await Commands.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
+        collection: RoomEntity.collection,
+        filter: { id: this.currentRoom },
+        limit: 1
+      });
+
+      if (roomResult?.success && roomResult.items && roomResult.items.length > 0) {
+        this.currentRoomEntity = roomResult.items[0];
+        console.log(`✅ ChatWidget: Loaded room entity: "${this.currentRoomEntity?.displayName || this.currentRoomEntity?.name}"`);
+      } else {
+        console.warn(`⚠️ ChatWidget: Could not load room entity for "${this.currentRoom}", using fallback display`);
+        this.currentRoomEntity = undefined;
+      }
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to load room entity:`, error);
+      this.currentRoomEntity = undefined;
+    }
+  }
+
+  /**
+   * Subscribe to room change events from other widgets (like RoomListWidget)
+   */
+  private async subscribeToRoomChangeEvents(): Promise<void> {
+    try {
+      console.log(`🎧 ChatWidget: Subscribing to room change events`);
+
+      // Listen for room selection events from RoomListWidget or other sources
+      Events.subscribe<{ roomId: RoomId, roomEntity?: ChatRoomData }>('chat:room-changed', async (eventData) => {
+        console.log(`🔥 SERVER-EVENT-RECEIVED: chat:room-changed`, eventData);
+        await this.handleRoomChange(eventData.roomId, eventData.roomEntity);
+      });
+
+      console.log(`✅ ChatWidget: Subscribed to room change events`);
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to subscribe to room change events:`, error);
+    }
+  }
+
+  /**
+   * Handle room changes from events with proper change detection to prevent loops
+   */
+  private async handleRoomChange(newRoomId: RoomId, roomEntity?: ChatRoomData): Promise<void> {
+    // Prevent infinite loops - only change if room actually changed
+    if (newRoomId === this.currentRoom) {
+      console.log(`🔄 ChatWidget: Room change ignored - already in room "${newRoomId}"`);
+      return;
+    }
+
+    console.log(`🏠 ChatWidget: Changing room from "${this.currentRoom}" to "${newRoomId}"`);
+
+    try {
+      // Save current scroll position before switching
+      await this.onWidgetCleanup();
+
+      // Update room references
+      this.currentRoom = newRoomId;
+      this.currentRoomEntity = roomEntity;
+
+      // If no room entity provided, load it
+      if (!this.currentRoomEntity) {
+        await this.loadRoomEntity();
+      }
+
+      // Clear current messages and scroller
+      this.messages = [];
+      if (this.chatScroller) {
+        this.chatScroller.destroy();
+        this.chatScroller = undefined;
+      }
+
+      // Re-initialize for new room
+      await this.subscribeToRoomEvents();
+      await this.renderWidget(); // Will create new EntityScroller for new room
+
+      console.log(`✅ ChatWidget: Successfully changed to room "${newRoomId}"`);
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to change room:`, error);
+    }
+  }
+
+  /**
+   * Public method to change room programmatically and emit event
+   */
+  public async changeRoom(roomId: RoomId, roomEntity?: ChatRoomData): Promise<void> {
+    console.log(`🎯 ChatWidget: Public room change requested to "${roomId}"`);
+
+    // Emit room change event for other widgets to subscribe to
+    Events.emit('chat:room-changed', { roomId, roomEntity });
+
+    // Handle the change locally (will ignore if already in the room)
+    await this.handleRoomChange(roomId, roomEntity);
+  }
+
   private getRoomDisplayName(): string {
-    // Capitalize the room name for display
-    return this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
+    // Use room entity display name if available, otherwise use fallback
+    if (this.currentRoomEntity?.displayName) {
+      return this.currentRoomEntity.displayName;
+    } else if (this.currentRoomEntity?.name) {
+      return this.currentRoomEntity.name;
+    } else {
+      // Fallback: try to get a readable name from the UUID or use it as-is
+      return this.currentRoom.includes('-') ? 'Room' : this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
+    }
   }
 }

@@ -9,6 +9,7 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
+import type { RoomId } from '../../../system/data/domains/CoreTypes';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
@@ -17,7 +18,7 @@ import { getDataEventName } from '../../../commands/data/shared/DataEventConstan
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
 export class RoomListWidget extends ChatWidgetBase {
-  private currentRoomId: string = 'general';
+  private currentRoomId: RoomId = 'general' as RoomId;
   private roomScroller?: EntityScroller<RoomEntity>;
   private unreadCounts: Map<string, number> = new Map();
   
@@ -75,11 +76,14 @@ export class RoomListWidget extends ChatWidgetBase {
     // Render function for individual room items
     const renderRoom: RenderFn<RoomEntity> = (room: RoomEntity, context) => {
       const unreadCount = this.unreadCounts.get(room.id) || 0;
-      const isActive = room.name === this.currentRoomId;
+      // Compare with room.id (actual field from database)
+      const isActive = room.id === this.currentRoomId;
       const activeClass = isActive ? 'active' : '';
 
       const roomElement = document.createElement('div');
       roomElement.className = `room-item ${activeClass}`;
+      // Use room.id (actual field from database) for click handling
+      roomElement.setAttribute('data-room-id', room.id);
       roomElement.innerHTML = `
         <div class="room-info">
           <div class="room-name">${room.displayName || room.name}</div>
@@ -192,7 +196,7 @@ export class RoomListWidget extends ChatWidgetBase {
       const roomItem = target.closest('.room-item') as HTMLElement;
       
       if (roomItem) {
-        const roomId = roomItem.dataset.roomId;
+        const roomId = roomItem.dataset.roomId as RoomId;
         if (roomId) {
           this.selectRoom(roomId);
         }
@@ -211,14 +215,26 @@ export class RoomListWidget extends ChatWidgetBase {
      * 5. The chat message list widget also receives the event and re-renders to show messages for the new room.
      * 
     **/
-  private async selectRoom(roomId: string): Promise<void> {
-    // TODO: incorrect implementation - should ONLY call set room command 
-    this.currentRoomId = roomId;
-    
-    // Re-render to update visual state
-    await this.renderWidget();
-    
-    console.log('🏠 RoomListWidget: Selected room:', roomId);
+  private async selectRoom(roomId: RoomId): Promise<void> {
+    console.log(`🎯 RoomListWidget: Room selection requested: "${roomId}"`);
+
+    // Find room entity for the selected room by id
+    const roomEntity = this.roomScroller?.entities().find(room => room.id === roomId);
+
+    // Emit room change event for other widgets (like ChatWidget) to respond to
+    Events.emit('chat:room-changed', { roomId, roomEntity: roomEntity as ChatRoomData });
+
+    // Update local state for visual highlighting
+    if (this.currentRoomId !== roomId) {
+      this.currentRoomId = roomId;
+
+      // Re-render to update visual state (highlight selected room)
+      await this.renderWidget();
+
+      console.log(`✅ RoomListWidget: Emitted room change event for "${roomId}"`);
+    } else {
+      console.log(`🔄 RoomListWidget: Already in room "${roomId}", no change needed`);
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {
