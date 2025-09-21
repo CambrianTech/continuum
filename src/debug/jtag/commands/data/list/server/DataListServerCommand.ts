@@ -10,10 +10,13 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
-import { DataServiceFactory } from '../../../../system/data/services/DataServiceFactory';
-import type { QueryOptions, BaseEntity } from '../../../../system/data/domains/CoreTypes';
-import { convertToDomainObjects, hasDomainSupport, getDomainFactory } from '../../../../system/data/core/DomainRegistry';
-import { DATABASE_PATHS } from '../../../../system/data/config/DatabaseConfig';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
+import { UserEntity } from '../../../../system/data/entities/UserEntity';
+import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
+
+import type { StorageQuery, RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 
 // Rust-style config defaults for generic data access
 const DEFAULT_CONFIG = {
@@ -25,71 +28,49 @@ const DEFAULT_CONFIG = {
 } as const;
 
 
-export class DataListServerCommand<T extends BaseEntity> extends CommandBase<DataListParams, DataListResult<T>> {
+
+export class DataListServerCommand<T extends BaseEntity> extends CommandBase<DataListParams<T>, DataListResult<T>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-list', context, subpath, commander);
   }
 
 
-  async execute(params: DataListParams): Promise<DataListResult<T>> {
-    console.debug(`🗄️ DATA SERVER: Listing ${params.collection} via DataService`);
+  async execute(params: DataListParams<T>): Promise<DataListResult<T>> {
+    const collection = params.collection;
+    console.debug(`🗄️ DATA SERVER: Listing ${collection} entities via elegant type extraction`);
 
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
-      // Create DataService using existing abstraction with centralized config
-      const dataService = await DataServiceFactory.createSQLiteOnly(
-        DATABASE_PATHS.SQLITE
-      );
-
-      // Convert DataListParams to QueryOptions format
-      const queryOptions: QueryOptions<T> = {
-        limit,
-        filters: params.filter as Record<keyof T, unknown>,
-        orderBy: params.orderBy?.map(order => ({
-          field: order.field as keyof T,
-          direction: order.direction.toUpperCase() as 'ASC' | 'DESC'
+      // Use enhanced DataDaemon with field extraction - same as DataCreateCommand
+      const storageQuery = {
+        collection,
+        filters: params.filter,
+        sort: params.orderBy?.map(order => ({
+          field: order.field,
+          direction: order.direction
         })),
-        cursor: params.cursor ? {
-          field: params.cursor.field as keyof T,
-          value: params.cursor.value,
-          direction: params.cursor.direction
-        } : undefined
+        limit
       };
 
-      // Use DataService list method - storage agnostic
-      const result = await dataService.list<T>(params.collection, queryOptions);
-
-      // Close DataService connection
-      await dataService.close();
+      const result = await DataDaemon.query<RecordData>(storageQuery);
 
       if (!result.success) {
-        console.error(`❌ DATA SERVER: DataService query failed:`, result.error?.message);
+        console.error(`❌ DATA SERVER: DataDaemon query failed:`, result.error);
         return createDataListResultFromParams(params, {
           success: false,
           items: [],
           count: 0,
-          error: result.error?.message || 'Unknown DataService error'
+          error: result.error || 'Unknown DataDaemon error'
         });
       }
 
-      console.debug(`✅ DATA SERVER: Listed ${result.data.length} items from ${params.collection}`);
+      console.debug(`✅ DATA SERVER: Listed ${result.data?.length || 0} items from ${collection} via DataDaemon`);
+      console.debug(`🔧 CLAUDE-FIX-${Date.now()}: DataListServerCommand now uses entity-type-driven collection mapping`);
 
-      // Elegantly convert to domain objects if requested
-      let items: T[] = result.data;
-      if (params.convertToDomain && hasDomainSupport(params.collection)) {
-        try {
-          const domainFactory = getDomainFactory<T>(params.collection);
-          if (domainFactory) {
-            items = result.data.map(data => domainFactory.fromData(data)) as T[];
-            console.debug(`✨ DATA SERVER: Converted ${items.length} items to domain objects for ${params.collection}`);
-          }
-        } catch (error) {
-          console.error(`❌ DATA SERVER: Domain conversion failed for ${params.collection}:`, error);
-          throw error; // Fail fast, don't return bad data
-        }
-      }
+      // Extract data from DataRecord array
+      const items: T[] = result.data ? result.data.map(record => record.data as T) : [];
 
       return createDataListResultFromParams(params, {
         success: true,
@@ -99,7 +80,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
 
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ DATA SERVER: DataService execution failed:`, errorMessage);
+      console.error(`❌ DATA SERVER: DataDaemon execution failed:`, errorMessage);
       return createDataListResultFromParams(params, {
         success: false,
         items: [],

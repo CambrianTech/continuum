@@ -13,6 +13,7 @@ import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
  * Data Create Parameters
  */
 export interface DataCreateParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
+  // Collection name - comes from Entity.collection static property
   readonly collection: string;
   readonly data: Omit<T, keyof BaseEntity>; // Adapter adds BaseEntity fields automatically
   readonly id?: UUID;

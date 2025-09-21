@@ -222,7 +222,7 @@ export class DataSeeder {
         if (collection === 'rooms' && count < 2) {
           throw new Error(`Expected at least 2 rooms, found ${count}`);
         }
-        if (collection === 'messages' && count < 3) {
+        if (collection === 'chat_messages' && count < 3) {
           throw new Error(`Expected at least 3 messages, found ${count}`);
         }
         

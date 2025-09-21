@@ -13,6 +13,7 @@
  */
 
 import { DataDaemon, type DataOperationContext } from '../../daemons/data-daemon/shared/DataDaemon';
+import type { RecordData } from '../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { StorageResult, StorageQuery } from '../../daemons/data-daemon/shared/DataStorageAdapter';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
@@ -239,7 +240,7 @@ export abstract class EntityRepository<T extends BaseEntity> {
      * Convert storage format back to clean entity
      * Handles the DataRecord wrapper and type conversions
      */
-    protected fromStorageFormat(dataRecord: import('../../daemons/data-daemon/shared/DataStorageAdapter').DataRecord<unknown>): T {
+    protected fromStorageFormat(dataRecord: import('../../daemons/data-daemon/shared/DataStorageAdapter').DataRecord<RecordData>): T {
         const rawData = dataRecord.data as Record<string, unknown>;
 
         return {

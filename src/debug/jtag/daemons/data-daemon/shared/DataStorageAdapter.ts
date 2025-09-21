@@ -11,9 +11,15 @@
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
+ * Type alias for structured record data that can be indexed by field names
+ * This is our primary constraint for data content stored in the system
+ */
+export type RecordData = Record<string, unknown>;
+
+/**
  * Universal Data Record
  */
-export interface DataRecord<T = any> {
+export interface DataRecord<T extends RecordData = RecordData> {
   readonly id: UUID;
   readonly collection: string;
   readonly data: T;
@@ -37,7 +43,7 @@ export interface DataRecordMetadata {
  */
 export interface StorageQuery {
   readonly collection: string;
-  readonly filters?: Record<string, any>;
+  readonly filters?: RecordData;
   readonly sort?: { field: string; direction: 'asc' | 'desc' }[];
   readonly limit?: number;
   readonly offset?: number;
@@ -89,22 +95,22 @@ export abstract class DataStorageAdapter {
   /**
    * Create or update a record
    */
-  abstract create<T>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>>;
-  
+  abstract create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>>;
+
   /**
    * Read a single record by ID
    */
-  abstract read<T>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>>;
-  
+  abstract read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>>;
+
   /**
    * Query records with complex filters
    */
-  abstract query<T>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>>;
-  
+  abstract query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>>;
+
   /**
    * Update an existing record
    */
-  abstract update<T>(collection: string, id: UUID, data: Partial<T>, incrementVersion?: boolean): Promise<StorageResult<DataRecord<T>>>;
+  abstract update<T extends RecordData>(collection: string, id: UUID, data: Partial<T>, incrementVersion?: boolean): Promise<StorageResult<DataRecord<T>>>;
   
   /**
    * Delete a record
@@ -124,7 +130,7 @@ export abstract class DataStorageAdapter {
   /**
    * Batch operations for efficiency
    */
-  abstract batch(operations: StorageOperation[]): Promise<StorageResult<any[]>>;
+  abstract batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>>;
   
   /**
    * Cleanup and optimization
@@ -143,7 +149,7 @@ export abstract class DataStorageAdapter {
 export interface StorageAdapterConfig {
   readonly type: 'file' | 'memory' | 'sqlite' | 'postgres' | 'mongodb' | 'network';
   readonly namespace: string; // Instead of sessionId - more generic
-  readonly options?: Record<string, any>;
+  readonly options?: RecordData;
 }
 
 /**
@@ -161,11 +167,11 @@ export interface CollectionStats {
 /**
  * Batch Storage Operation
  */
-export interface StorageOperation {
+export interface StorageOperation<T extends RecordData = RecordData> {
   readonly type: 'create' | 'read' | 'update' | 'delete';
   readonly collection: string;
   readonly id?: UUID;
-  readonly data?: any;
+  readonly data?: T | Partial<T>;
   readonly query?: StorageQuery;
 }
 

@@ -92,3 +92,34 @@
   font-weight: bold;
   padding: 0 4px;
 }
+
+/* Empty State Styling */
+.no-rooms-message {
+  padding: var(--spacing-lg, 24px) var(--spacing-md, 12px);
+  text-align: center;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+}
+
+.no-content-icon {
+  font-size: 2em;
+  opacity: 0.5;
+  margin-bottom: var(--spacing-sm, 8px);
+}
+
+.no-content-text {
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--text-primary, rgba(255, 255, 255, 0.8));
+  margin: 0;
+}
+
+.no-content-hint {
+  font-size: 0.75em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.4));
+  font-style: italic;
+  margin: 0;
+}

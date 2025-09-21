@@ -9,8 +9,9 @@ import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
-import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { Commands } from '../../../system/core/client/shared/Commands';
+import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 
 export class RoomListWidget extends ChatWidgetBase {
   private currentRoomId: string = 'general';
@@ -53,20 +54,21 @@ export class RoomListWidget extends ChatWidgetBase {
     // For each room, get actual unread message count from database
     for (const room of this.rooms) {
       // Domain-owned: CommandDaemon handles optimization, caching, retries
+      const roomId = room.id || room.roomId;
       const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
-        collection: COLLECTIONS.CHAT_MESSAGES,
-        filter: { roomId: room.id, isRead: false }
+        collection: ChatMessageEntity.collection,
+        filter: { roomId, isRead: false }
       });
 
       const count = messageResult?.success ? (messageResult.count || 0) : 0;
-      this.unreadCounts.set(room.id, count);
+      this.unreadCounts.set(roomId, count);
     }
   }
 
   private async loadRooms(): Promise<void> {
     // Domain-owned: CommandDaemon handles optimization, caching, retries
     const result = await Commands.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
-      collection: COLLECTIONS.ROOMS,
+      collection: RoomEntity.collection,
       orderBy: [{ field: 'name', direction: 'asc' }]
     });
 
@@ -96,8 +98,9 @@ export class RoomListWidget extends ChatWidgetBase {
         console.error('❌ RoomListWidget: Null room in database results');
         return false;
       }
-      if (!room.id) {
-        console.error('❌ RoomListWidget: Room missing required id:', room);
+      const roomId = room.id || room.roomId;
+      if (!roomId) {
+        console.error('❌ RoomListWidget: Room missing required id/roomId:', room);
         return false;
       }
       if (!room.name) {
@@ -127,8 +130,8 @@ export class RoomListWidget extends ChatWidgetBase {
       return `
         <div class="no-rooms-message">
           <span class="no-content-icon">🏠</span>
-          <p class="no-content-text">No rooms available</p>
-          <small class="no-content-hint">Check your data seeding or create some rooms</small>
+          <p class="no-content-text">No chat rooms yet</p>
+          <small class="no-content-hint">Start a conversation to begin</small>
         </div>
       `;
     }
@@ -152,20 +155,21 @@ export class RoomListWidget extends ChatWidgetBase {
     if (!room) {
       throw new Error('RoomListWidget: Cannot render null room');
     }
-    if (!room.id) {
-      throw new Error(`RoomListWidget: Room missing required 'id' field: ${JSON.stringify(room)}`);
+    const roomId = room.id || room.roomId;
+    if (!roomId) {
+      throw new Error(`RoomListWidget: Room missing required 'id/roomId' field: ${JSON.stringify(room)}`);
     }
     if (!room.name) {
       throw new Error(`RoomListWidget: Room missing required 'name' field: ${JSON.stringify(room)}`);
     }
 
-    const isActive = this.currentRoomId === room.id;
-    const unreadCount = this.unreadCounts.get(room.id) || 0;
+    const isActive = this.currentRoomId === roomId;
+    const unreadCount = this.unreadCounts.get(roomId) || 0;
     const unreadBadge = unreadCount > 0 ? `<span class="unread-badge">${unreadCount}</span>` : '';
     const displayName = room.displayName || room.name;
 
     return `
-      <div class="room-item ${isActive ? 'active' : ''}" data-room-id="${room.id}">
+      <div class="room-item ${isActive ? 'active' : ''}" data-room-id="${roomId}">
         <span class="room-name">${displayName}</span>
         ${unreadBadge}
       </div>

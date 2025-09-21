@@ -11,13 +11,14 @@ import type { DataExecutor, DataQueryParams, DataQueryResult } from './DataLoade
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 
 export function createDataExecutor<T extends BaseEntity>(
-  executeCommand: <P extends CommandParams, R extends CommandResult>(command: string, params?: P) => Promise<R>
+  executeCommand: <P extends CommandParams, R extends CommandResult>(command: string, params?: P) => Promise<R>,
+  collection: string
 ): DataExecutor<T> {
   return {
     async execute(params: DataQueryParams): Promise<DataQueryResult<T>> {
       // Elegant translation - BaseWidget executeCommand will add context/sessionId
       const dataListParams = {
-        collection: params.collection,
+        collection,
         filter: params.filter ?? {},
         orderBy: params.orderBy ? [...params.orderBy] : [],
         limit: params.limit ?? 50,
@@ -26,7 +27,7 @@ export function createDataExecutor<T extends BaseEntity>(
 
       const result = await executeCommand<DataListParams, DataListResult<T>>(
         'data/list',
-        dataListParams as DataListParams
+        dataListParams as unknown as DataListParams
       );
 
       return {

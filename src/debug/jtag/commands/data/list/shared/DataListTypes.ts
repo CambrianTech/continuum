@@ -7,7 +7,8 @@ import { createPayload, transformPayload } from '../../../../system/core/types/J
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
 
-export interface DataListParams extends JTAGPayload {
+export interface DataListParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
+  // Collection name - comes from Entity.collection static property
   readonly collection: string;
   readonly limit?: number;
   readonly filter?: Record<string, any>;
@@ -29,14 +30,14 @@ export interface DataListResult<T extends BaseEntity> extends JTAGPayload {
   readonly error?: string;
 }
 
-export const createDataListParams = (
+export const createDataListParams = <T extends BaseEntity>(
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataListParams, 'context' | 'sessionId'>
-): DataListParams => createPayload(context, sessionId, data);
+  data: Omit<DataListParams<T>, 'context' | 'sessionId'>
+): DataListParams<T> => createPayload(context, sessionId, data);
 
 export const createDataListResultFromParams = <T extends BaseEntity>(
-  params: DataListParams,
+  params: DataListParams<T>,
   differences: Omit<Partial<DataListResult<T>>, 'context' | 'sessionId'>
 ): DataListResult<T> => transformPayload(params, {
   success: false,

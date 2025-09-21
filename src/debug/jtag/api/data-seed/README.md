@@ -24,7 +24,7 @@ npx tsx api/data-seed/seedUsers.ts
 # Verify what's in the system
 ./jtag data/list --collection="users"
 ./jtag data/list --collection="rooms"
-./jtag data/list --collection="messages"
+./jtag data/list --collection="chat_messages"
 ```
 
 ## 📋 What Gets Created

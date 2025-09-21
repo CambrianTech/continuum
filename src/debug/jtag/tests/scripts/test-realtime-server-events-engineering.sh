@@ -78,7 +78,7 @@ fi
 # Check if message was stored
 echo ""
 echo "6. Validating message persistence..."
-MESSAGE_STORED=$(./jtag data/list --collection="messages" --filters='{"roomId":"general"}' | grep -c "ENGINEERING TEST.*Real-time server event validation")
+MESSAGE_STORED=$(./jtag data/list --collection="chat_messages" --filters='{"roomId":"general"}' | grep -c "ENGINEERING TEST.*Real-time server event validation")
 
 if [ "$MESSAGE_STORED" -gt 0 ]; then
     echo "✅ SUCCESS: Message persisted to database"

@@ -16,6 +16,7 @@ import type { CreateMessageData } from '../../../../system/data/domains/ChatMess
 import { ChatMessageData, type MessagePriority, MESSAGE_STATUS } from '../../../../system/data/domains/ChatMessage';
 import { processMessageFormatting } from '../../../../system/data/domains/ChatMessage';
 import { UserId, RoomId, MessageId, ISOString } from '../../../../system/data/domains/CoreTypes';
+import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { userIdManager } from '../../../../system/shared/UserIdManager';
 
 export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, ChatSendMessageResult> {
@@ -166,7 +167,7 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
     };
 
     const createParams: DataCreateParams<ChatMessageData> = {
-      collection: 'chat_messages',
+      collection: ChatMessageEntity.collection,
       data: domainData, // Properly typed as Omit<ChatMessageData, keyof BaseEntity>
       context: this.context,
       sessionId: messageData.senderId

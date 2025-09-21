@@ -12,6 +12,7 @@ import { createUserCreatePersonaResultFromParams } from '../shared/UserCreatePer
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { PersonaUser } from '../../../../domain/user/PersonaUser';
 import { COLLECTIONS } from '../../../../system/data/core/FieldMapping';
+import { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { ISOString, UserId, CitizenId, SessionId } from '../../../../system/data/domains/CoreTypes';
 import type { UserData } from '../../../../system/data/domains/User';
 import type { AIModelConfig } from '../../../../domain/user/UserRelationships';
@@ -102,7 +103,7 @@ export class UserCreatePersonaServerCommand extends CommandBase<UserCreatePerson
       // Store using server-side command delegation
       const createResult = await this.remoteExecute<DataCreateParams, DataCreateResult>(
         {
-          collection: COLLECTIONS.USERS,
+          collection: UserEntity.collection,
           data: userData,
           id: userId,
           context: this.context,

@@ -86,6 +86,9 @@ export interface UserData extends BaseEntity {
   readonly status: UserStatus;
   readonly lastActiveAt: ISOString;
   readonly sessionsActive: readonly SessionId[];
+
+  // Index signature to make compatible with RecordData
+  readonly [key: string]: unknown;
 }
 
 /**

@@ -7,6 +7,7 @@
 
 import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 
 export interface CursorPaginationState {
   readonly hasMore: boolean;
@@ -224,7 +225,7 @@ export class InfiniteScrollHelper {
     });
 
     return {
-      collection: 'chat_messages',
+      collection: ChatMessageEntity.collection,
       filter: { roomId },
       orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
       limit: this.options.pageSize,
