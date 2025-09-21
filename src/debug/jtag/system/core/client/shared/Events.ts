@@ -1,8 +1,9 @@
 /**
- * Events - Clean Client Interface
+ * Events - Universal Static Interface
  *
- * Provides simple static interface for event emission.
- * Replaces manual EventBridge payload creation.
+ * Clean interface for event emission and subscription that works everywhere.
+ * Server: Uses EventBridge mechanism like Commands.execute<T>()
+ * Browser: Uses DOM events for subscription, EventBridge for emission
  */
 
 import { JTAGClient } from './JTAGClient';
@@ -18,9 +19,17 @@ export interface EventEmitOptions {
   sessionId?: string;
 }
 
+/**
+ * Universal Events Interface - Works on Server and Browser
+ * Same elegance as Commands.execute<T>()
+ */
 export class Events {
   /**
-   * Emit an event with clean interface
+   * Emit an event with clean interface - Works on Server and Browser
+   * Same elegance as Commands.execute<T>()
+   *
+   * @example Server: await Events.emit<UserEntity>('data:User:created', userEntity)
+   * @example Browser: await Events.emit<ChatMessage>('chat:message-sent', message)
    */
   static async emit<T>(
     eventName: string,
@@ -60,7 +69,7 @@ export class Events {
         eventPayload
       );
 
-      // Route event through Router (using protected getRouter method)
+      // Route event through Router - same mechanism as DataCreateServerCommand
       const router = (jtagClient as any).getRouter();
       const result = await router.postMessage(eventMessage);
 
@@ -74,7 +83,7 @@ export class Events {
         console.log(`📨 Events: Also dispatched DOM event ${eventName}`);
       }
 
-      console.log(`📨 Events: Emitted ${eventName} (${options.scope || 'global'})`, result);
+      console.log(`📨 Events: Emitted ${eventName} via EventBridge`, result);
 
       return { success: true };
     } catch (error) {
