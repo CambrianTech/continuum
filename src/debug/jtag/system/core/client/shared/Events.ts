@@ -38,8 +38,8 @@ export class Events {
         type: 'event-bridge',
         scope: {
           type: options.scope || EVENT_SCOPES.GLOBAL,
-          id: options.scopeId,
-          sessionId: options.sessionId || jtagClient.sessionId
+          id: options.scopeId || '',
+          sessionId: options.sessionId || jtagClient.sessionId || jtagClient.context.uuid
         },
         eventName,
         data: EventRoutingUtils.addBridgeMetadata(
@@ -60,8 +60,19 @@ export class Events {
         eventPayload
       );
 
-      // Route event through Router
-      const result = await jtagClient.router.postMessage(eventMessage);
+      // Route event through Router (using protected getRouter method)
+      const router = (jtagClient as any).getRouter();
+      const result = await router.postMessage(eventMessage);
+
+      // Also dispatch DOM event for local subscribers (bridge server→browser)
+      if (typeof document !== 'undefined') {
+        const domEvent = new CustomEvent(eventName, {
+          detail: eventData,
+          bubbles: true
+        });
+        document.dispatchEvent(domEvent);
+        console.log(`📨 Events: Also dispatched DOM event ${eventName}`);
+      }
 
       console.log(`📨 Events: Emitted ${eventName} (${options.scope || 'global'})`, result);
 
@@ -70,6 +81,36 @@ export class Events {
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`❌ Events: Failed to emit ${eventName}:`, error);
       return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
+   * Subscribe to an event with clean interface
+   */
+  static subscribe<T>(
+    eventName: string,
+    listener: (eventData: T) => void,
+    options: EventEmitOptions = {}
+  ): () => void {
+    try {
+      console.log(`🎧 Events: Subscribing to ${eventName}`);
+
+      // Use DOM events for now - later this can be enhanced
+      const eventHandler = (event: Event) => {
+        const customEvent = event as CustomEvent<T>;
+        listener(customEvent.detail);
+      };
+
+      document.addEventListener(eventName, eventHandler);
+
+      // Return unsubscribe function
+      return () => {
+        document.removeEventListener(eventName, eventHandler);
+        console.log(`🔌 Events: Unsubscribed from ${eventName}`);
+      };
+    } catch (error) {
+      console.error(`❌ Events: Failed to subscribe to ${eventName}:`, error);
+      return () => {}; // No-op unsubscribe
     }
   }
 }
