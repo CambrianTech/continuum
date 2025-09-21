@@ -29,6 +29,7 @@ import { createDataLoader, PAGINATION_PRESETS } from '../../shared/DataLoaders';
 import { createDataExecutor } from '../../shared/DataExecutorAdapter';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { Commands } from '../../../system/core/client/shared/Commands';
+import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 
 // ChatMessageData already extends Entity via BaseEntity - no need for new interface
 
@@ -102,7 +103,7 @@ export class ChatWidget extends ChatWidgetBase {
   public currentUserId!: UserId; // Persistent User ID for "me" attribution
   public currentSessionId!: SessionId; // Current browser session ID
   
-  constructor(roomId: string = 'general') {
+  constructor(roomId: string = DEFAULT_ROOMS.GENERAL) {
     super({
       widgetName: 'ChatWidget',
       template: 'chat-widget.html',
