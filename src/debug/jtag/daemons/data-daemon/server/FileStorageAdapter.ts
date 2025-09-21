@@ -11,14 +11,15 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { 
-  DataStorageAdapter, 
-  type DataRecord, 
-  type StorageQuery, 
-  type StorageResult, 
+import {
+  DataStorageAdapter,
+  type DataRecord,
+  type StorageQuery,
+  type StorageResult,
   type StorageAdapterConfig,
   type CollectionStats,
-  type StorageOperation 
+  type StorageOperation,
+  type RecordData
 } from '../shared/DataStorageAdapter';
 
 /**
@@ -62,7 +63,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Create record as JSON file
    */
-  async create<T>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
+  async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
       const collectionPath = path.join(this.basePath, record.collection);
       await fs.mkdir(collectionPath, { recursive: true });
@@ -93,7 +94,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Read record from JSON file
    */
-  async read<T>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+  async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
       const filePath = path.join(this.basePath, collection, `${id}.json`);
       const content = await fs.readFile(filePath, 'utf-8');
@@ -122,7 +123,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Query records via filesystem traversal with filters
    */
-  async query<T>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+  async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
       const collectionPath = path.join(this.basePath, query.collection);
       
@@ -188,7 +189,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Update record in place
    */
-  async update<T>(
+  async update<T extends RecordData>(
     collection: string, 
     id: UUID, 
     data: Partial<T>, 
@@ -328,7 +329,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Batch operations - Sequential file operations
    */
-  async batch(operations: StorageOperation[]): Promise<StorageResult<any[]>> {
+  async batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>> {
     const results: any[] = [];
     
     try {
@@ -340,7 +341,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
             result = await this.create({
               id: op.id!,
               collection: op.collection,
-              data: op.data,
+              data: op.data as T,
               metadata: {
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -354,7 +355,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
             break;
             
           case 'update':
-            result = await this.update(op.collection, op.id!, op.data);
+            result = await this.update(op.collection, op.id!, op.data as Partial<T>);
             break;
             
           case 'delete':
@@ -415,7 +416,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Check if record matches query filters
    */
-  private matchesFilters<T>(record: DataRecord<T>, filters?: Record<string, any>): boolean {
+  private matchesFilters<T extends RecordData>(record: DataRecord<T>, filters?: Record<string, any>): boolean {
     if (!filters) return true;
     
     for (const [key, value] of Object.entries(filters)) {
@@ -440,9 +441,9 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Compare records for sorting
    */
-  private compareRecords<T>(
-    a: DataRecord<T>, 
-    b: DataRecord<T>, 
+  private compareRecords<T extends RecordData>(
+    a: DataRecord<T>,
+    b: DataRecord<T>,
     sortFields: { field: string; direction: 'asc' | 'desc' }[]
   ): number {
     for (const sort of sortFields) {

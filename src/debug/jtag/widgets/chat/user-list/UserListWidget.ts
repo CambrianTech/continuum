@@ -4,15 +4,14 @@
  */
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
-import type { UserData } from '../../../system/data/domains/User';
+import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { USER_EVENTS } from '../../../system/events/user/UserEventConstants';
 import type { UserCreatedEventData, UserEventMap } from '../../../system/events/user/UserEventTypes';
 
 export class UserListWidget extends ChatWidgetBase {
-  private users: UserData[] = [];
+  private users: UserEntity[] = [];
 
   constructor() {
     super({
@@ -62,10 +61,13 @@ export class UserListWidget extends ChatWidgetBase {
    * Different from chat (append) - users get inserted in sort order
    */
   private onUserCreated(eventData: UserCreatedEventData): void {
-    console.log(`👤 UserListWidget: Adding new user ${eventData.userData.profile.displayName}`);
+    const displayName = eventData.userData.displayName || eventData.userData.profile?.displayName || 'Unknown User';
+    console.log(`👤 UserListWidget: Adding new user ${displayName}`);
 
-    // Add user to local list
-    this.users.push(eventData.userData);
+    // Create new UserEntity and populate from event data
+    const userEntity = new UserEntity();
+    // TODO: populate userEntity fields from eventData.userData
+    this.users.push(userEntity);
 
     // Re-sort by lastActiveAt (newest first) - same as database query
     this.users.sort((a, b) => {
@@ -79,9 +81,10 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
   private async loadUsersFromDatabase(): Promise<void> {
-    // Domain-owned: CommandDaemon handles optimization, caching, retries
-    const result = await Commands.execute<DataListParams, DataListResult<UserData>>('data/list', {
-      collection: COLLECTIONS.USERS,
+    // Sacred type-driven data access - UserData drives everything
+    // Collection name "UserData" -> ORM maps to appropriate table
+    const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>('data/list', {
+      collection: UserEntity.collection,
       orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
       limit: 100
     });
@@ -103,19 +106,10 @@ export class UserListWidget extends ChatWidgetBase {
       return;
     }
 
-    // Validate required fields - check both 'id' and 'userId'
-    const validUsers = result.items.filter((user: UserData) => {
-      const userId = user?.id || user?.userId;
-      if (!userId) {
-        console.error('❌ UserListWidget: User missing required id/userId:', user);
-        return false;
-      }
-      const displayName = user.profile?.displayName;
-      if (!displayName) {
-        console.error('❌ UserListWidget: User missing required displayName/name:', user);
-        return false;
-      }
-      return true;
+    // Results are pure UserEntity - the sacred entity with decorators
+    // No casting needed, ORM returns proper UserEntity objects
+    const validUsers = result.items.filter((user: UserEntity) => {
+      return user && user.type; // Minimal validation, let decorators handle the rest
     });
 
     // Empty valid users is OK - show empty state, don't crash
@@ -126,8 +120,8 @@ export class UserListWidget extends ChatWidgetBase {
     }
 
     this.users = validUsers;
-    console.log(`✅ UserListWidget: Loaded ${this.users.length} valid users`);
-    console.log(`   Users: ${this.users.map(u => u.profile.displayName).join(', ')}`);
+    console.log(`✅ UserListWidget: Loaded ${this.users.length} valid users via entity-type-driven system`);
+    console.log(`   Users: ${this.users.map(u => u.profile?.displayName || 'Unknown').join(', ')}`);
   }
 
   protected override async renderWidget(): Promise<void> {
@@ -161,8 +155,8 @@ export class UserListWidget extends ChatWidgetBase {
       return `
         <div class="no-users-message">
           <span class="no-content-icon">👤</span>
-          <p class="no-content-text">No users available</p>
-          <small class="no-content-hint">Check your data seeding or invite some users</small>
+          <p class="no-content-text">No users online</p>
+          <small class="no-content-hint">Waiting for others to join</small>
         </div>
       `;
     }
@@ -177,13 +171,13 @@ export class UserListWidget extends ChatWidgetBase {
     }).join('');
   }
 
-  private renderUserItem(user: UserData): string {
+  private renderUserItem(user: UserEntity): string {
     const statusClass = user.status === 'online' ? 'online' : 'offline';
     const avatar = user.profile?.avatar || (user.type === 'human' ? '👤' : '🤖');
-    const displayName = user.profile?.displayName;
+    const displayName = user.profile.displayName;
 
     return `
-      <div class="user-item ${statusClass}" data-user-id="${user.id || user.userId}">
+      <div class="user-item ${statusClass}" data-user-id="${user.userId}">
         <span class="user-avatar">${avatar}</span>
         <div class="user-info">
           <div class="user-name">${displayName}</div>

@@ -9,14 +9,15 @@
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { 
-  DataStorageAdapter, 
-  type DataRecord, 
-  type StorageQuery, 
-  type StorageResult, 
+import {
+  DataStorageAdapter,
+  type DataRecord,
+  type StorageQuery,
+  type StorageResult,
   type StorageAdapterConfig,
   type CollectionStats,
-  type StorageOperation 
+  type StorageOperation,
+  type RecordData
 } from '../shared/DataStorageAdapter';
 
 /**
@@ -68,7 +69,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Create record in memory
    */
-  async create<T>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
+  async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
       // Check memory limits
       if (this.options.maxRecords && this.getTotalRecordCount() >= this.options.maxRecords) {
@@ -112,7 +113,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Read record from memory
    */
-  async read<T>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+  async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
       const collectionMap = this.collections.get(collection);
       if (!collectionMap) {
@@ -140,7 +141,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Query records with in-memory filtering and sorting
    */
-  async query<T>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+  async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
       const collectionMap = this.collections.get(query.collection);
       if (!collectionMap) {
@@ -210,7 +211,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Update record in memory
    */
-  async update<T>(
+  async update<T extends RecordData>(
     collection: string, 
     id: UUID, 
     data: Partial<T>, 
@@ -360,7 +361,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Batch operations - Memory operations are fast
    */
-  async batch(operations: StorageOperation[]): Promise<StorageResult<any[]>> {
+  async batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>> {
     const results: any[] = [];
     
     try {
@@ -372,7 +373,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
             result = await this.create({
               id: op.id!,
               collection: op.collection,
-              data: op.data,
+              data: op.data as T,
               metadata: {
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
@@ -386,7 +387,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
             break;
             
           case 'update':
-            result = await this.update(op.collection, op.id!, op.data);
+            result = await this.update(op.collection, op.id!, op.data as Partial<T>);
             break;
             
           case 'delete':
@@ -482,7 +483,7 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Check if record matches query filters
    */
-  private matchesFilters<T>(record: DataRecord<T>, filters?: Record<string, any>): boolean {
+  private matchesFilters<T extends RecordData>(record: DataRecord<T>, filters?: Record<string, any>): boolean {
     if (!filters) return true;
     
     for (const [key, value] of Object.entries(filters)) {
@@ -519,9 +520,9 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
   /**
    * Compare records for sorting
    */
-  private compareRecords<T>(
-    a: DataRecord<T>, 
-    b: DataRecord<T>, 
+  private compareRecords<T extends RecordData>(
+    a: DataRecord<T>,
+    b: DataRecord<T>,
     sortFields: { field: string; direction: 'asc' | 'desc' }[]
   ): number {
     for (const sort of sortFields) {

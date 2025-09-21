@@ -7,6 +7,7 @@
 
 import { ChatMessageData, type MessageReaction } from '../../../system/data/domains/ChatMessage';
 import { DEFAULT_MESSAGE_METADATA, DEFAULT_MESSAGE_FORMATTING } from '../../../system/data/domains/ChatMessage';
+import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { MessageId, RoomId, UserId, ISOString } from '../../../system/data/domains/CoreTypes';
 import type { SessionId } from '../../../system/data/domains/CoreTypes';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
@@ -206,7 +207,7 @@ export class ChatWidget extends ChatWidgetBase {
 
       try {
         // Create clean data executor - elegant protocol with firm typing
-        const executor = createDataExecutor<ChatMessageData>(Commands.execute);
+        const executor = createDataExecutor<ChatMessageData>(Commands.execute, ChatMessageEntity.collection);
         const loader = createDataLoader<ChatMessageData>(executor, {
           collection: COLLECTIONS.CHAT_MESSAGES,
           filter: { roomId: this.currentRoom },
@@ -318,7 +319,7 @@ export class ChatWidget extends ChatWidgetBase {
       // NOTE: We want messages BEFORE (older than) the cursor timestamp
       // But we need them in ascending order to append at the beginning correctly
       const olderResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
-        collection: 'chat_messages',
+        collection: ChatMessageEntity.collection,
         filter: { roomId: this.currentRoom },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
         limit: 20,

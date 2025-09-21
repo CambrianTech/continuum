@@ -15,7 +15,7 @@ echo "1. Sending server message via chat/send-message..."
 
 echo ""
 echo "2. Verifying server message was stored..."
-SERVER_MESSAGES=$(./jtag data/list --collection="messages" --filters='{"roomId":"general"}' | grep -c "Testing sendMessage error fix validation")
+SERVER_MESSAGES=$(./jtag data/list --collection="chat_messages" --filters='{"roomId":"general"}' | grep -c "Testing sendMessage error fix validation")
 if [ "$SERVER_MESSAGES" -gt 0 ]; then
     echo "✅ Server message successfully stored"
 else
@@ -113,7 +113,7 @@ echo "5. Testing message persistence after widget send..."
 sleep 2
 
 # Check if widget-sent message was stored  
-WIDGET_MESSAGES=$(./jtag data/list --collection="messages" --filters='{"roomId":"general"}' | grep -c "WIDGET TEST: Direct sendMessage method validation")
+WIDGET_MESSAGES=$(./jtag data/list --collection="chat_messages" --filters='{"roomId":"general"}' | grep -c "WIDGET TEST: Direct sendMessage method validation")
 if [ "$WIDGET_MESSAGES" -gt 0 ]; then
     echo "✅ Widget-sent message successfully stored in database"
 else

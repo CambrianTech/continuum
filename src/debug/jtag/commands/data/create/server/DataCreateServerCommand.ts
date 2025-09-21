@@ -10,8 +10,12 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
-import type { DataDaemon, DataOperationContext } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { DATABASE_PATHS } from '../../../../system/data/config/DatabaseConfig';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
+import { UserEntity } from '../../../../system/data/entities/UserEntity';
+import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
+
 
 export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataCreateResult> {
 
@@ -19,53 +23,39 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
     super('data-create', context, subpath, commander);
   }
 
+
   async execute(params: DataCreateParams): Promise<DataCreateResult> {
-    console.debug(`🗄️ DATA SERVER: Creating ${params.collection} record in SQLite`);
+    const collection = params.collection;
+    console.debug(`🗄️ DATA SERVER: Creating ${collection} record via DataDaemon`);
 
     try {
       const id = params.id ?? generateUUID();
-      const now = new Date().toISOString();
 
-      // Use SQLite database directly for now - with centralized config
-      const sqlite3 = require('sqlite3').verbose();
-      const db = new sqlite3.Database(DATABASE_PATHS.SQLITE);
+      // Use enhanced DataDaemon with field extraction
+      const result = await DataDaemon.store(collection, params.data, id);
 
-      await new Promise<void>((resolve, reject) => {
-        const sql = `INSERT INTO entities (id, collection, data, created_at, updated_at, version, search_content)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)`;
+      if (result.success && result.data) {
+        console.debug(`✅ DATA SERVER: Created ${collection}/${result.data.id} with field extraction`);
+        console.debug(`🔧 CLAUDE-FIX-${Date.now()}: DataCreateServerCommand now uses DataDaemon.store() for field extraction`);
 
-        const searchContent = typeof params.data === 'string' ? params.data : JSON.stringify(params.data);
-
-        db.run(sql, [
-          id,
-          params.collection,
-          JSON.stringify(params.data),
-          now,
-          now,
-          1,
-          searchContent
-        ], function(err: any) {
-          db.close();
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
+        return createDataCreateResultFromParams(params, {
+          success: true,
+          id: result.data.id
         });
-      });
+      } else {
+        console.error(`❌ DATA SERVER: DataDaemon.store failed:`, result.error);
+        return createDataCreateResultFromParams(params, {
+          success: false,
+          error: result.error || 'Unknown error'
+        });
+      }
 
-      console.debug(`✅ DATA SERVER: Created ${params.collection}/${id} in SQLite`);
-
-      return createDataCreateResultFromParams(params, {
-        success: true,
-        id
-      });
-
-    } catch (error: any) {
-      console.error(`❌ DATA SERVER: SQLite create failed:`, error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ DATA SERVER: DataDaemon create failed:`, errorMessage);
       return createDataCreateResultFromParams(params, {
         success: false,
-        error: error.message
+        error: errorMessage
       });
     }
   }

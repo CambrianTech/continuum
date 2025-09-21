@@ -22,17 +22,18 @@ export class DataDaemonServer extends DataDaemonBase {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
     
-    // Create storage configuration - file-based by default (will be configurable later)
+    // Create storage configuration - SQLite-based for proper data storage
     const storageConfig: StorageStrategyConfig = {
-      strategy: 'file',
-      backend: 'file',
+      strategy: 'sql',
+      backend: 'sqlite',
       namespace: context.uuid, // Use context UUID as namespace
       options: {
-        basePath: '.continuum/jtag/data'
+        basePath: '.continuum/jtag/data',
+        databaseName: 'jtag-data.sqlite'
       },
       features: {
-        enableTransactions: false,
-        enableIndexing: false,
+        enableTransactions: true,
+        enableIndexing: true,
         enableReplication: false,
         enableSharding: false,
         enableCaching: true
@@ -48,7 +49,13 @@ export class DataDaemonServer extends DataDaemonBase {
    */
   protected async initialize(): Promise<void> {
     await this.dataDaemon.initialize();
-    console.log(`🗄️ ${this.toString()}: Data daemon server initialized`);
+
+    // Initialize static DataDaemon interface for commands to use
+    const context = this.createDataContext('data-daemon-server');
+    DataDaemon.initialize(this.dataDaemon, context);
+
+    console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Static DataDaemon interface initialized`);
   }
   
   /**

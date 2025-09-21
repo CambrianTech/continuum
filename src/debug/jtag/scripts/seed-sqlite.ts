@@ -1,106 +1,95 @@
 #!/usr/bin/env tsx
 /**
- * Professional Database Seeding using ORM Export/Import
+ * Proper Database Seeding via JTAG Commands
  *
- * Uses DataService built-in import/export functionality
- * Same mechanism used for regular data operations - no special seeding logic
- * Import entities that were previously exported from live system
+ * Uses shell commands to JTAG CLI - same connection that widgets use
+ * This ensures single source of truth and immediate visibility
  */
 
-import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { generatedSeedData } from '../data/seed/generatedSeedData';
-import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 
-async function seedDatabase() {
-  console.log('🌱 Seeding database using ORM import/export functionality...');
+const execAsync = promisify(exec);
+
+async function seedViaJTAG() {
+  console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // Create DataService with proper initialization using centralized config
-    const dataService = await DataServiceFactory.createSQLiteOnly(DATABASE_PATHS.SQLITE);
-
-    console.log('🔧 Initializing DataService and creating tables...');
-    const initResult = await dataService.initialize();
-    if (!initResult.success) {
-      throw new Error(`DataService initialization failed: ${initResult.error?.message}`);
-    }
-
-    console.log(`📦 Loading seed data exported at: ${generatedSeedData.exportedAt}`);
-
-    // Import users using ORM import method
-    console.log('👥 Importing users...');
-    const usersResult = await dataService.import('users', generatedSeedData.collections.users.map(user => {
+    // Seed users
+    console.log('👥 Creating users via JTAG...');
+    for (const user of generatedSeedData.collections.users) {
       const { id, createdAt, updatedAt, version, ...cleanUser } = user;
-      return cleanUser;
-    }));
-    if (!usersResult.success) {
-      throw new Error(`Failed to import users: ${usersResult.error?.message}`);
-    }
-    console.log(`✅ Imported ${usersResult.data.imported} users`);
-    if (usersResult.data.errors.length > 0) {
-      console.warn('⚠️ User import errors:', usersResult.data.errors);
+
+      const dataArg = JSON.stringify(JSON.stringify(cleanUser));
+      const cmd = `./jtag data/create --collection=User --data=${dataArg}`;
+
+      try {
+        await execAsync(cmd);
+        console.log(`✅ Created user: ${cleanUser.profile?.displayName || cleanUser.userId}`);
+      } catch (error: any) {
+        console.warn(`⚠️ Failed to create user ${cleanUser.userId}: ${error.message}`);
+      }
     }
 
-    // Import rooms using ORM import method
-    console.log('🏠 Importing rooms...');
-    const roomsResult = await dataService.import('rooms', generatedSeedData.collections.rooms.map(room => {
+    // Seed rooms
+    console.log('🏠 Creating rooms via JTAG...');
+    for (const room of generatedSeedData.collections.rooms) {
       const { id, createdAt, updatedAt, version, ...cleanRoom } = room;
-      return cleanRoom;
-    }));
-    if (!roomsResult.success) {
-      throw new Error(`Failed to import rooms: ${roomsResult.error?.message}`);
-    }
-    console.log(`✅ Imported ${roomsResult.data.imported} rooms`);
-    if (roomsResult.data.errors.length > 0) {
-      console.warn('⚠️ Room import errors:', roomsResult.data.errors);
+
+      const dataArg = JSON.stringify(JSON.stringify(cleanRoom));
+      const cmd = `./jtag data/create --collection=Room --data=${dataArg}`;
+
+      try {
+        await execAsync(cmd);
+        console.log(`✅ Created room: ${cleanRoom.name}`);
+      } catch (error: any) {
+        console.warn(`⚠️ Failed to create room ${cleanRoom.roomId}: ${error.message}`);
+      }
     }
 
-    // Import messages using ORM import method
-    console.log('💬 Importing chat messages...');
-    const messagesResult = await dataService.import('chat_messages', generatedSeedData.collections.chat_messages.map(message => {
+    // Seed messages
+    console.log('💬 Creating messages via JTAG...');
+    for (const message of generatedSeedData.collections.chat_messages) {
       const { id, createdAt, updatedAt, version, ...cleanMessage } = message;
-      return cleanMessage;
-    }));
-    if (!messagesResult.success) {
-      throw new Error(`Failed to import messages: ${messagesResult.error?.message}`);
-    }
-    console.log(`✅ Imported ${messagesResult.data.imported} messages`);
-    if (messagesResult.data.errors.length > 0) {
-      console.warn('⚠️ Message import errors:', messagesResult.data.errors);
-    }
 
-    // Verify what we imported using DataService.list()
-    console.log('\n📊 Verifying imported data...');
+      const dataArg = JSON.stringify(JSON.stringify(cleanMessage));
+      const cmd = `./jtag data/create --collection=ChatMessage --data=${dataArg}`;
 
-    const usersVerify = await dataService.list('users');
-    if (usersVerify.success) {
-      console.log(`   Users: ${usersVerify.data.length} records`);
+      try {
+        await execAsync(cmd);
+        console.log(`✅ Created message from: ${cleanMessage.authorId}`);
+      } catch (error: any) {
+        console.warn(`⚠️ Failed to create message: ${error.message}`);
+      }
     }
 
-    const roomsVerify = await dataService.list('rooms');
-    if (roomsVerify.success) {
-      console.log(`   Rooms: ${roomsVerify.data.length} records`);
-    }
+    // Verify via JTAG
+    console.log('\n📊 Verifying seeded data via JTAG...');
 
-    const messagesVerify = await dataService.list('chat_messages');
-    if (messagesVerify.success) {
-      console.log(`   Chat Messages: ${messagesVerify.data.length} records`);
-    }
+    const usersResult = await execAsync('./jtag data/list --collection=User');
+    const userCount = usersResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+    console.log(`   Users: ${userCount}`);
 
-    await dataService.close();
+    const roomsResult = await execAsync('./jtag data/list --collection=Room');
+    const roomCount = roomsResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+    console.log(`   Rooms: ${roomCount}`);
 
-    console.log('\n🎉 Database seeding completed using ORM import/export!');
-    console.log('💡 To export current data: dataService.exportAll([\'users\', \'rooms\', \'chat_messages\'])');
+    const messagesResult = await execAsync('./jtag data/list --collection=ChatMessage');
+    const messageCount = messagesResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+    console.log(`   Messages: ${messageCount}`);
+
+    console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
   } catch (error: any) {
     console.error('❌ SEEDING FAILED:', error.message);
-    console.error(error.stack);
     process.exit(1);
   }
 }
 
 // Run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  seedDatabase();
+  seedViaJTAG();
 }
 
-export default seedDatabase;
+export default seedViaJTAG;

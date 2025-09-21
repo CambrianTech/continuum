@@ -8,7 +8,8 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { GetMessagesParams, MessageData } from '../shared/GetMessagesTypes';
 import type { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
 import type { DataListParams, DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
-import { COLLECTIONS, DOMAIN_FIELDS } from '../../../../system/data/core/FieldMapping';
+import { DOMAIN_FIELDS } from '../../../../system/data/core/FieldMapping';
+import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 
 // Domain record format (what adapter returns after Date conversion)
 interface ChatMessageRecord {
@@ -56,7 +57,7 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
 
       // Use data/list with elegant domain conversion
       const dataListParams: DataListParams = {
-        collection: COLLECTIONS.CHAT_MESSAGES,
+        collection: ChatMessageEntity.collection,
         filter: { roomId: params.roomId },
         orderBy: [{ field: DOMAIN_FIELDS.TIMESTAMP, direction: 'desc' }], // Get newest first from DB
         limit: limit * 2, // Buffer for filtering

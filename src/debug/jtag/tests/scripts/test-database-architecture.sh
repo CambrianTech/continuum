@@ -54,7 +54,7 @@ echo ""
 echo "🛠️  Example SQLite Commands (future):"
 echo '   ./jtag data/list --backend=sqlite --collection=users --where="userType=agent AND isOnline=true"'
 echo '   ./jtag data/list --backend=sqlite --collection=users --join="user_sessions ON userId=userId"'
-echo '   ./jtag data/list --backend=sqlite --collection=messages --aggregate="COUNT(*) GROUP BY roomId"'
+echo '   ./jtag data/list --backend=sqlite --collection=chat_messages --aggregate="COUNT(*) GROUP BY roomId"'
 
 echo ""
 echo "📋 Current vs Future Comparison:"

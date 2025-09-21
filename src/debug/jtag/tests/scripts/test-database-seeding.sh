@@ -188,7 +188,7 @@ echo "========================="
 
 echo ""
 echo "1. Welcome message in general..."
-./jtag data/create --collection=messages --data='{
+./jtag data/create --collection=chat_messages --data='{
   "id": "msg-welcome-11111",
   "roomId": "room-general-11111",
   "senderId": "user-joel-12345",
@@ -199,7 +199,7 @@ echo "1. Welcome message in general..."
 
 echo ""
 echo "2. Agent response in general..."
-./jtag data/create --collection=messages --data='{
+./jtag data/create --collection=chat_messages --data='{
   "id": "msg-agent-response-22222",
   "roomId": "room-general-11111",
   "senderId": "agent-claude-code-67890",
@@ -210,7 +210,7 @@ echo "2. Agent response in general..."
 
 echo ""
 echo "3. Academy announcement..."
-./jtag data/create --collection=messages --data='{
+./jtag data/create --collection=chat_messages --data='{
   "id": "msg-academy-announcement-33333",
   "roomId": "room-academy-22222",
   "senderId": "persona-alpha-11111",
@@ -304,7 +304,7 @@ echo "Rooms in system:"
 
 echo ""
 echo "Messages in system:"
-./jtag data/list --collection=messages --limit=5
+./jtag data/list --collection=chat_messages --limit=5
 
 echo ""
 echo "Participations in system:"

@@ -11,16 +11,17 @@
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { 
-  DataStorageAdapter, 
-  DataRecord, 
-  StorageQuery, 
-  StorageResult, 
+import type {
+  DataStorageAdapter,
+  DataRecord,
+  StorageQuery,
+  StorageResult,
   StorageAdapterConfig,
   CollectionStats,
-  StorageOperation 
+  StorageOperation,
+  RecordData
 } from './DataStorageAdapter';
-import { DefaultStorageAdapterFactory } from '../server/StorageAdapterFactory';
+import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
 
 /**
  * Storage Strategy Configuration
@@ -110,9 +111,9 @@ export class DataDaemon {
   /**
    * Create record - Universal interface for SQL INSERT or NoSQL insert
    */
-  async create<T>(
-    collection: string, 
-    data: T, 
+  async create<T extends RecordData>(
+    collection: string,
+    data: T,
     context: DataOperationContext,
     id?: UUID
   ): Promise<StorageResult<DataRecord<T>>> {
@@ -141,8 +142,8 @@ export class DataDaemon {
   /**
    * Read single record - Universal interface for SQL SELECT or NoSQL findOne
    */
-  async read<T>(
-    collection: string, 
+  async read<T extends RecordData>(
+    collection: string,
     id: UUID,
     context: DataOperationContext
   ): Promise<StorageResult<DataRecord<T>>> {
@@ -153,7 +154,7 @@ export class DataDaemon {
   /**
    * Query with complex filters - SQL WHERE clauses or NoSQL queries
    */
-  async query<T>(
+  async query<T extends RecordData>(
     query: StorageQuery,
     context: DataOperationContext
   ): Promise<StorageResult<DataRecord<T>[]>> {
@@ -164,9 +165,9 @@ export class DataDaemon {
   /**
    * Update record - SQL UPDATE or NoSQL updateOne
    */
-  async update<T>(
-    collection: string, 
-    id: UUID, 
+  async update<T extends RecordData>(
+    collection: string,
+    id: UUID,
     data: Partial<T>,
     context: DataOperationContext,
     incrementVersion: boolean = true
@@ -315,7 +316,7 @@ export class DataDaemon {
    * const result = await DataDaemon.store<UserData>('users', userData);
    * const result = await DataDaemon.store<ChatMessageData>('messages', messageData, customId);
    */
-  static async store<T>(
+  static async store<T extends RecordData>(
     collection: string,
     data: T,
     id?: UUID
@@ -339,7 +340,7 @@ export class DataDaemon {
    *   limit: 50
    * });
    */
-  static async query<T>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+  static async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
@@ -353,7 +354,7 @@ export class DataDaemon {
    * @example
    * const user = await DataDaemon.read<UserData>('users', userId);
    */
-  static async read<T>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+  static async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
@@ -367,7 +368,7 @@ export class DataDaemon {
    * @example
    * const result = await DataDaemon.update<UserData>('users', userId, { lastActive: now() });
    */
-  static async update<T>(
+  static async update<T extends RecordData>(
     collection: string,
     id: UUID,
     data: Partial<T>,

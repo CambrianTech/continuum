@@ -1,16 +1,14 @@
 /**
  * Seed Data Constants - Single Source of Truth
- * 
+ *
  * All IDs, collections, and seed data values defined once.
  * Typing like Rust - strict, explicit, and predictable.
  */
 
-// Collection names - branded types for safety
-export const COLLECTIONS = {
-  USERS: 'users' as const,
-  ROOMS: 'rooms' as const,  
-  MESSAGES: 'messages' as const
-} as const;
+import { COLLECTIONS } from '../../system/data/core/FieldMapping';
+
+// Re-export the authoritative COLLECTIONS from FieldMapping for consistency
+export { COLLECTIONS } from '../../system/data/core/FieldMapping';
 
 // User IDs - single source of truth
 export const USER_IDS = {

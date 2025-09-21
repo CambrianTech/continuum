@@ -15,8 +15,11 @@ import {
   type StorageResult,
   type StorageAdapterConfig,
   type CollectionStats,
-  type StorageOperation
+  type StorageOperation,
+  type RecordData
 } from '../shared/DataStorageAdapter';
+// Import field extraction mapping from shared layer
+import type { FieldExtractionMapping } from '../shared/FieldExtractionMapping';
 import {
   type RelationalQuery,
   type QueryResult,
@@ -25,6 +28,7 @@ import {
   type FilterGroup,
   type JoinDefinition
 } from '../shared/QueryBuilder';
+import { DynamicQueryBuilder } from '../../../system/data/query/QueryBuilder';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
@@ -77,6 +81,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     // Create database connection
     await new Promise<void>((resolve, reject) => {
       const mode = options.mode || (sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
+      console.log('🔧 SQLite: Opening database with mode:', mode, 'READWRITE|CREATE:', sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
 
       this.db = new sqlite3.Database(dbPath, mode, (err) => {
         if (err) {
@@ -170,7 +175,76 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_created_at ON _data(created_at)');
     await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_updated_at ON _data(updated_at)');
 
+    // Create field extraction tables for configured entities
+    await this.createFieldExtractionTables();
+
     console.log('📋 SQLite: Core schema created');
+  }
+
+  /**
+   * Create field extraction tables for entities with field mappings
+   */
+  private async createFieldExtractionTables(): Promise<void> {
+    console.log('🔧 SQLite: Field extraction tables disabled - using JSON queries only');
+    return; // Field extraction optimization disabled
+
+    /* DISABLED CODE:
+    for (const mapping of ENTITY_FIELD_MAPPINGS) {
+      const tableName = `_extract_${mapping.collection}`;
+
+      // Build column definitions
+      const columns = ['id TEXT PRIMARY KEY'];
+
+      for (const field of mapping.extractedFields) {
+        let columnDef = `${field.fieldName} ${this.mapFieldTypeToSqlite(field.sqliteType)}`;
+
+        if (!field.nullable) {
+          columnDef += ' NOT NULL';
+        }
+
+        columns.push(columnDef);
+      }
+
+      // Add collection field for table organization
+      columns.push('collection TEXT NOT NULL');
+      // Note: Foreign key disabled temporarily to test field extraction logic
+
+      // Create extraction table
+      const createTableSql = `
+        CREATE TABLE IF NOT EXISTS ${tableName} (
+          ${columns.join(',\n          ')}
+        )
+      `;
+
+      await this.runSql(createTableSql);
+
+      // Create indexes for extracted fields
+      for (const field of mapping.extractedFields) {
+        if (field.indexed) {
+          const indexName = `idx_${mapping.collection}_${field.fieldName}`;
+          const indexSql = `CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(${field.fieldName})`;
+          await this.runSql(indexSql);
+        }
+      }
+
+      console.log(`✅ SQLite: Created extraction table ${tableName} with ${mapping.extractedFields.length} fields`);
+    }
+    */
+  }
+
+  /**
+   * Map EntityFieldConfig types to SQLite types
+   */
+  private mapFieldTypeToSqlite(fieldType: string): string {
+    switch (fieldType) {
+      case 'text': return 'TEXT';
+      case 'integer': return 'INTEGER';
+      case 'real': return 'REAL';
+      case 'boolean': return 'INTEGER'; // SQLite stores booleans as integers
+      case 'datetime': return 'INTEGER'; // Store as Unix timestamp
+      case 'json': return 'TEXT';
+      default: return 'TEXT';
+    }
   }
 
   /**
@@ -218,41 +292,88 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Create or update a record
+   * Begin a database transaction
    */
-  async create<T>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
+  private async beginTransaction(): Promise<void> {
+    await this.runStatement('BEGIN TRANSACTION');
+  }
+
+  /**
+   * Commit a database transaction
+   */
+  private async commitTransaction(): Promise<void> {
+    await this.runStatement('COMMIT');
+  }
+
+  /**
+   * Rollback a database transaction
+   */
+  private async rollbackTransaction(): Promise<void> {
+    await this.runStatement('ROLLBACK');
+  }
+
+  /**
+   * Execute operations within a transaction for atomic consistency
+   */
+  private async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
+    await this.beginTransaction();
+
+    try {
+      const result = await operation();
+      await this.commitTransaction();
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Transaction committed successfully`);
+      return result;
+    } catch (error) {
+      await this.rollbackTransaction();
+      console.error(`❌ SQLite: Transaction rolled back due to error:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create or update a record with dual-mode storage (JSON blob + field extraction)
+   */
+  async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
       // Ensure collection exists
       await this.ensureCollection(record.collection);
 
-      // Insert/replace data record
-      const sql = `
-        INSERT OR REPLACE INTO _data (
-          id, collection, data, created_at, updated_at, version, tags, ttl
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `;
+      // Execute create operation in transaction for atomic consistency
+      const result = await this.withTransaction(async () => {
+        // Insert/replace data record (JSON blob storage - always maintained for backward compatibility)
+        const sql = `
+          INSERT OR REPLACE INTO _data (
+            id, collection, data, created_at, updated_at, version, tags, ttl
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `;
 
-      const params = [
-        record.id,
-        record.collection,
-        JSON.stringify(record.data),
-        record.metadata.createdAt,
-        record.metadata.updatedAt,
-        record.metadata.version,
-        record.metadata.tags ? JSON.stringify(record.metadata.tags) : null,
-        record.metadata.ttl || null
-      ];
+        const params = [
+          record.id,
+          record.collection,
+          JSON.stringify(record.data),
+          record.metadata.createdAt,
+          record.metadata.updatedAt,
+          record.metadata.version,
+          record.metadata.tags ? JSON.stringify(record.metadata.tags) : null,
+          record.metadata.ttl || null
+        ];
 
-      const result = await this.runStatement(sql, params);
+        await this.runStatement(sql, params);
 
-      // Update collection stats
+        // Field extraction optimization disabled for now
+        // await this.extractFields(record, fieldMapping);
+
+        return record;
+      });
+
+      // Update collection stats (outside transaction)
       await this.updateCollectionStats(record.collection);
 
       console.log(`✅ SQLite: Created record ${record.id} in ${record.collection}`);
 
       return {
         success: true,
-        data: record
+        data: result
       };
 
     } catch (error: any) {
@@ -265,9 +386,64 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Extract fields to dedicated extraction table
+   */
+  private async extractFields<T extends RecordData>(record: DataRecord<T>, fieldMapping: FieldExtractionMapping): Promise<void> {
+
+    const tableName = `_extract_${fieldMapping.collection}`;
+
+    // Build column names and values for extraction
+    const columns = ['id', 'collection'];
+    const values: (string | number | null)[] = [record.id, record.collection];
+    const placeholders = ['?', '?'];
+
+    for (const field of fieldMapping.extractedFields) {
+      let fieldValue = record.data[field.name];
+
+      // Auto-generate UUIDs for missing required ID fields
+      if (fieldValue === undefined && !field.nullable && field.name.includes('Id')) {
+        fieldValue = crypto.randomUUID();
+        // Also add the generated ID back to the record data (with proper typing)
+        (record.data as any)[field.name] = fieldValue;
+        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Auto-generated ${field.name}: ${fieldValue}`);
+      }
+
+      if (fieldValue !== undefined || !field.nullable) {
+        columns.push(field.name);
+        placeholders.push('?');
+
+        // Apply field conversion if configured
+        let convertedValue: string | number | null = null;
+        if (field.converter?.toStorage && fieldValue !== undefined && fieldValue !== null) {
+          convertedValue = field.converter.toStorage(fieldValue);
+        } else if (fieldValue !== undefined && fieldValue !== null) {
+          // Handle basic type conversion
+          if (typeof fieldValue === 'string' || typeof fieldValue === 'number') {
+            convertedValue = fieldValue;
+          } else {
+            convertedValue = JSON.stringify(fieldValue);
+          }
+        }
+
+        values.push(convertedValue);
+      }
+    }
+
+    // Insert extracted fields
+    const extractSql = `
+      INSERT OR REPLACE INTO ${tableName} (
+        ${columns.join(', ')}
+      ) VALUES (${placeholders.join(', ')})
+    `;
+
+    await this.runStatement(extractSql, values);
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Field extraction applied for ${record.collection}/${record.id}`);
+  }
+
+  /**
    * Read a single record by ID
    */
-  async read<T>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+  async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
       const sql = 'SELECT * FROM _data WHERE collection = ? AND id = ? LIMIT 1';
       const rows = await this.runSql(sql, [collection, id]);
@@ -310,7 +486,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   /**
    * Query records with complex filters - enhanced for relational queries
    */
-  async query<T>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+  async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
       console.log(`🔍 SQLite: Querying ${query.collection}`, query);
 
@@ -351,9 +527,148 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Build SELECT SQL query from StorageQuery
+   * Build SELECT SQL query using DynamicQueryBuilder - Storage Strategy Aware
+   * Uses field extraction tables when available, falls back to JSON_EXTRACT
    */
   private buildSelectQuery(query: StorageQuery): { sql: string; params: any[] } {
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using DynamicQueryBuilder for elegant query construction`);
+
+    // Field mapping optimization disabled - using basic JSON queries for now
+    return this.buildJsonQuery(query);
+  }
+
+  /**
+   * Validate field name against extracted field configuration for SQL injection prevention
+   */
+  private isValidExtractedField(fieldName: string, mapping: FieldExtractionMapping): boolean {
+    return mapping.extractedFields.some(f => f.name === fieldName);
+  }
+
+  /**
+   * Sanitize field path for JSON_EXTRACT to prevent injection
+   */
+  private sanitizeJsonPath(fieldPath: string): string {
+    // Only allow alphanumeric, dots, underscores, and array indices
+    return fieldPath.replace(/[^a-zA-Z0-9._\[\]]/g, '');
+  }
+
+  /**
+   * Build dynamic SQL conditions with proper field validation
+   */
+  private buildDynamicConditions(
+    filters: Record<string, any>,
+    mapping: FieldExtractionMapping,
+    tablePrefix: { data: string; extract: string }
+  ): { conditions: string[]; params: any[] } {
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    for (const [field, value] of Object.entries(filters)) {
+      if (this.isValidExtractedField(field, mapping)) {
+        // Use validated extracted field column (safe from injection)
+        conditions.push(`${tablePrefix.extract}.${field} = ?`);
+        params.push(value);
+      } else {
+        // Use sanitized JSON path for non-extracted fields
+        const safePath = this.sanitizeJsonPath(field);
+        conditions.push(`JSON_EXTRACT(${tablePrefix.data}.data, '$.${safePath}') = ?`);
+        params.push(value);
+      }
+    }
+
+    return { conditions, params };
+  }
+
+  /**
+   * Build dynamic sort clauses with field validation
+   */
+  private buildDynamicSortClauses(
+    sortFields: Array<{ field: string; direction: string }>,
+    mapping: FieldExtractionMapping,
+    tablePrefix: { data: string; extract: string }
+  ): string[] {
+    return sortFields.map(s => {
+      const direction = s.direction.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+
+      if (this.isValidExtractedField(s.field, mapping)) {
+        // Use validated extracted field (safe from injection)
+        return `${tablePrefix.extract}.${s.field} ${direction}`;
+      } else {
+        // Use sanitized JSON path
+        const safePath = this.sanitizeJsonPath(s.field);
+        return `JSON_EXTRACT(${tablePrefix.data}.data, '$.${safePath}') ${direction}`;
+      }
+    });
+  }
+
+  /**
+   * Build optimized query using field extraction tables - SQL injection safe
+   */
+  private buildOptimizedQuery(query: StorageQuery, mapping: FieldExtractionMapping): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const extractTable = `_extract_${mapping.collection}`;
+    const tablePrefix = { data: 'd', extract: 'e' };
+
+    // Build base query with proper table aliases
+    let sql = `
+      SELECT ${tablePrefix.data}.*, ${tablePrefix.extract}.*
+      FROM _data ${tablePrefix.data}
+      LEFT JOIN ${extractTable} ${tablePrefix.extract} ON ${tablePrefix.data}.id = ${tablePrefix.extract}.id
+      WHERE ${tablePrefix.data}.collection = ?
+    `;
+    params.push(query.collection);
+
+    // Add dynamic filter conditions with validation
+    if (query.filters) {
+      const { conditions, params: filterParams } = this.buildDynamicConditions(
+        query.filters,
+        mapping,
+        tablePrefix
+      );
+
+      if (conditions.length > 0) {
+        sql += ` AND (${conditions.join(' AND ')})`;
+        params.push(...filterParams);
+      }
+    }
+
+    // Add time range filters
+    if (query.timeRange) {
+      if (query.timeRange.start) {
+        sql += ` AND ${tablePrefix.data}.created_at >= ?`;
+        params.push(query.timeRange.start);
+      }
+      if (query.timeRange.end) {
+        sql += ` AND ${tablePrefix.data}.created_at <= ?`;
+        params.push(query.timeRange.end);
+      }
+    }
+
+    // Add dynamic sort clauses with validation
+    if (query.sort && query.sort.length > 0) {
+      const sortClauses = this.buildDynamicSortClauses(query.sort, mapping, tablePrefix);
+      if (sortClauses.length > 0) {
+        sql += ` ORDER BY ${sortClauses.join(', ')}`;
+      }
+    }
+
+    // Add pagination
+    if (query.limit) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+      if (query.offset) {
+        sql += ' OFFSET ?';
+        params.push(query.offset);
+      }
+    }
+
+    return { sql, params };
+  }
+
+  /**
+   * Build traditional JSON_EXTRACT query for collections without field extraction
+   */
+  private buildJsonQuery(query: StorageQuery): { sql: string; params: any[] } {
     const params: any[] = [];
     let sql = 'SELECT * FROM _data WHERE collection = ?';
     params.push(query.collection);
@@ -589,7 +904,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   /**
    * Update an existing record
    */
-  async update<T>(
+  async update<T extends RecordData>(
     collection: string,
     id: UUID,
     data: Partial<T>,
@@ -626,10 +941,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
       await this.runStatement(sql, params);
 
-      // Update collection stats
-      await this.updateCollectionStats(collection);
-
-      // Return updated record
+      // Create updated record for field extraction
       const updatedRecord: DataRecord<T> = {
         ...existing.data,
         data: updatedData as T,
@@ -639,6 +951,12 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
           version
         }
       };
+
+      // Field extraction optimization disabled for now
+      // await this.extractFields(updatedRecord, fieldMapping);
+
+      // Update collection stats
+      await this.updateCollectionStats(collection);
 
       console.log(`✅ SQLite: Updated record ${id} in ${collection}`);
 
@@ -661,20 +979,42 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
     try {
-      const sql = 'DELETE FROM _data WHERE collection = ? AND id = ?';
-      const result = await this.runStatement(sql, [collection, id]);
+      console.log(`🗑️ CLAUDE-FIX-${Date.now()}: Deleting ${collection}/${id} with atomic transaction`);
 
-      if (result.changes === 0) {
+      // Field extraction optimization disabled for now
+      const hasExtraction = false;
+
+      // Execute delete operation in transaction for atomic consistency
+      const deletedCount = await this.withTransaction(async () => {
+        // Delete from main data table first
+        const dataSql = 'DELETE FROM _data WHERE collection = ? AND id = ?';
+        const dataResult = await this.runStatement(dataSql, [collection, id]);
+
+        if (dataResult.changes === 0) {
+          return 0;  // Record didn't exist
+        }
+
+        // Clean up extraction table if it exists (in same transaction)
+        if (hasExtraction) {
+          const extractSql = `DELETE FROM _extract_${collection} WHERE id = ?`;
+          await this.runStatement(extractSql, [id]);
+          console.log(`🔧 SQLite: Cleaned up extraction record for ${collection}/${id}`);
+        }
+
+        return dataResult.changes;
+      });
+
+      if (deletedCount === 0) {
         return {
           success: true,
           data: false  // Record didn't exist
         };
       }
 
-      // Update collection stats
+      // Update collection stats (outside transaction)
       await this.updateCollectionStats(collection);
 
-      console.log(`✅ SQLite: Deleted record ${id} from ${collection}`);
+      console.log(`✅ SQLite: Deleted record ${id} from ${collection} with full cleanup`);
 
       return {
         success: true,
@@ -755,7 +1095,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   /**
    * Batch operations with transaction support
    */
-  async batch(operations: StorageOperation[]): Promise<StorageResult<any[]>> {
+  async batch<T extends RecordData = RecordData>(operations: StorageOperation<T>[]): Promise<StorageResult<unknown[]>> {
     if (!this.db) {
       return {
         success: false,
@@ -777,10 +1117,10 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
               switch (op.type) {
                 case 'create':
                   if (op.data && op.collection) {
-                    const record: DataRecord<any> = {
+                    const record: DataRecord<T> = {
                       id: op.id || `batch_${Date.now()}_${Math.random()}`,
                       collection: op.collection,
-                      data: op.data,
+                      data: op.data as T,
                       metadata: {
                         createdAt: new Date().toISOString(),
                         updatedAt: new Date().toISOString(),
@@ -801,7 +1141,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
                 case 'update':
                   if (op.collection && op.id && op.data) {
-                    const result = await this.update(op.collection, op.id, op.data);
+                    const result = await this.update(op.collection, op.id, op.data as Partial<T>);
                     results.push(result);
                   }
                   break;

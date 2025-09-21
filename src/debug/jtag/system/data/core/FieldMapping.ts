@@ -95,9 +95,9 @@ export const DomainField = (name: string): FieldName => name as FieldName;
 
 // Collection constants (for type safety)
 export const COLLECTIONS = {
-  CHAT_MESSAGES: 'chat_messages' as const,
-  USERS: 'users' as const,
-  ROOMS: 'rooms' as const,
+  CHAT_MESSAGES: 'ChatMessage' as const,
+  USERS: 'User' as const,
+  ROOMS: 'Room' as const,
   SESSIONS: 'sessions' as const
 } as const;
 
