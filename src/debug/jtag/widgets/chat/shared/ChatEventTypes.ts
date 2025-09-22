@@ -11,9 +11,7 @@ import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
 
 export interface ChatMessageEventData {
   readonly eventType: 'chat:message-received';
-  readonly roomId: string;
-  readonly messageId: string;
-  readonly message: ChatMessageData;  // Full domain object, not flat fields
+  readonly entity: ChatMessageData;  // Full entity - BaseEntity approach
   readonly timestamp: string;
 }
 

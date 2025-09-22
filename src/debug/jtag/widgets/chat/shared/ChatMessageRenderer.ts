@@ -33,7 +33,7 @@ export class ChatMessageRenderer {
     // Create elements using DOM methods - no HTML strings
     const messageRow = document.createElement('div');
     messageRow.className = `message-row ${tempAlignment}`;
-    messageRow.setAttribute('data-message-id', message.id);
+    messageRow.setAttribute('data-message-id', message.messageId || message.id);
 
     const messageBubble = document.createElement('div');
     messageBubble.className = `message-bubble ${tempIsCurrentUser ? 'current-user' : 'other-user'}`;
