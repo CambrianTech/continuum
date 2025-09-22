@@ -10,6 +10,7 @@ import { DEFAULT_MESSAGE_METADATA, DEFAULT_MESSAGE_FORMATTING } from '../../../s
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { MessageId, RoomId, UserId, ISOString } from '../../../system/data/domains/CoreTypes';
 import type { SessionId } from '../../../system/data/domains/CoreTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
@@ -149,6 +150,24 @@ export class ChatWidget extends ChatWidgetBase {
       throw new Error('ChatWidget requires session context - cannot initialize without sessionId');
     }
     this.currentSessionId = client.sessionId as SessionId;
+
+    // 🔧 CLAUDE-STATE-TEST-' + Date.now() + ': Test State system with properties
+    console.log('🔧 CLAUDE-STATE-TEST-' + Date.now() + ': Testing State system with properties...');
+    try {
+      // Test property access
+      const currentRoomId = client.state.room.currentId;
+      const currentRoom = client.state.room.currentRoom;
+      console.log('🔧 CLAUDE-STATE-TEST: Current room ID (property):', currentRoomId);
+      console.log('🔧 CLAUDE-STATE-TEST: Current room entity (property):', currentRoom);
+
+      // Test property assignment
+      client.state.room.currentId = this.currentRoomId as UUID;
+      console.log('🔧 CLAUDE-STATE-TEST: Set room ID to:', this.currentRoomId);
+      console.log('🔧 CLAUDE-STATE-TEST: New room ID (property):', client.state.room.currentId);
+      console.log('✅ CLAUDE-STATE-TEST: State system properties work perfectly!');
+    } catch (error) {
+      console.error('❌ CLAUDE-STATE-TEST: State system property access failed:', error);
+    }
 
     // Load room entity data for display name and metadata
     await this.loadRoomEntity();
