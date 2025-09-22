@@ -93,7 +93,7 @@ interface ScrollState {
 
 export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessageData[] = [];
-  private currentRoom: RoomId;
+  private currentRoomId: RoomId;
   private currentRoomEntity?: ChatRoomData;
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
@@ -118,7 +118,7 @@ export class ChatWidget extends ChatWidgetBase {
       enableRouterEvents: true,
       enableScreenshots: true
     });
-    this.currentRoom = roomId;
+    this.currentRoomId = roomId;
 
     // ChatBubbleScroller will be initialized after currentUserId is set
   }
@@ -135,7 +135,7 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoom}"...`);
+    console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoomId}"...`);
 
     // CRITICAL: Initialize persistent User ID using UserIdManager (REQUIRED)
     const userIdString = await userIdManager.getCurrentUserId();
@@ -160,7 +160,7 @@ export class ChatWidget extends ChatWidgetBase {
     await this.subscribeToRoomEvents();
 
     const messageCount = this.chatScroller?.entities().length || this.messages.length;
-    console.log(`✅ ChatWidget: Initialized for room "${this.currentRoom}" with ${messageCount} messages`);
+    console.log(`✅ ChatWidget: Initialized for room "${this.currentRoomId}" with ${messageCount} messages`);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -174,10 +174,13 @@ export class ChatWidget extends ChatWidgetBase {
         visibleMessageIds: this.getVisibleMessageIds()
       };
 
-      const scrollStateKey = `chat_scroll_${this.currentRoom}`;
+      const scrollStateKey = `chat_scroll_${this.currentRoomId}`;
       await this.storeData(scrollStateKey, scrollState, { persistent: true });
-      console.log(`💾 ChatWidget: Saved scroll position for room "${this.currentRoom}"`, scrollState);
+      console.log(`💾 ChatWidget: Saved scroll position for room "${this.currentRoomId}"`, scrollState);
     }
+
+    // Cleanup message input handlers
+    this.cleanupMessageInputHandlers();
 
     // Cleanup chat scroller
     if (this.chatScroller) {
@@ -192,24 +195,72 @@ export class ChatWidget extends ChatWidgetBase {
     //     await this.executeCommand<ChatUnsubscribeEventResult>('events/unsubscribe', {
     //       subscriptionId: this.eventSubscriptionId
     //     });
-    //     console.log(`🔌 ChatWidget: Unsubscribed from room ${this.currentRoom} events`);
+    //     console.log(`🔌 ChatWidget: Unsubscribed from room ${this.currentRoomId} events`);
     //   } catch (error) {
     //     console.error(`❌ ChatWidget: Failed to unsubscribe from events:`, error);
     //   }
     // }
 
     // Save room-specific messages using BaseWidget abstraction
-    const roomMessageKey = `chat_messages_${this.currentRoom}`;
+    const roomMessageKey = `chat_messages_${this.currentRoomId}`;
     await this.storeData(roomMessageKey, this.messages, { persistent: true });
-    console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoom}"`);
+    console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoomId}"`);
+  }
+
+  /**
+   * Load and cache room entity data by ID
+   * This is used throughout the chat system to get room display names and metadata
+   */
+  private async loadRoomEntity(): Promise<void> {
+    try {
+      const result = await this.executeCommand<DataReadParams, DataReadResult>('data/read', {
+        collection: COLLECTIONS.ROOMS,
+        id: this.currentRoomId
+      });
+
+      if (result.success && result.data) {
+        this.currentRoomEntity = result.data;
+        console.log(`📋 ChatWidget: Loaded room entity "${this.currentRoomEntity?.displayName || this.currentRoomEntity?.name}"`);
+      } else {
+        console.warn(`⚠️ ChatWidget: Could not load room entity for ID "${this.currentRoomId}"`);
+        this.currentRoomEntity = undefined;
+      }
+    } catch (error) {
+      console.error(`❌ ChatWidget: Failed to load room entity:`, error);
+      this.currentRoomEntity = undefined;
+    }
+  }
+
+  /**
+   * Get room display name from cached entity data
+   * No more hardcoded room ID comparisons!
+   */
+  private getRoomDisplayName(): string {
+    if (this.currentRoomEntity?.displayName) {
+      return this.currentRoomEntity.displayName;
+    } else if (this.currentRoomEntity?.name) {
+      return this.currentRoomEntity.name;
+    } else {
+      // Fallback: extract from room ID if it's a UUID
+      return this.currentRoomId.includes('-') ? 'Room' : this.currentRoomId.charAt(0).toUpperCase() + this.currentRoomId.slice(1);
+    }
   }
 
   protected override async renderWidget(skipScrollRestoration = false): Promise<void> {
     super.renderWidget();
 
+    // Replace room name in template using cached entity data
+    if (this.shadowRoot) {
+      const roomName = this.getRoomDisplayName();
+      this.shadowRoot.innerHTML = this.shadowRoot.innerHTML.replace('<!-- ROOM_NAME -->', roomName);
+    }
+
     // Cache input element and messages container
     this.messageInput = this.shadowRoot.getElementById('messageInput') as HTMLInputElement;
     this.messagesContainer = this.shadowRoot.getElementById('messages') as HTMLElement;
+
+    // Set up message input handlers after room changes
+    this.setupMessageInputHandlers();
 
     // Initialize EntityScroller now that DOM is ready
     if (!this.chatScroller && this.messagesContainer) {
@@ -219,14 +270,14 @@ export class ChatWidget extends ChatWidgetBase {
         const executor = createDataExecutor<ChatMessageData>(Commands.execute, ChatMessageEntity.collection);
         const loader = createDataLoader<ChatMessageData>(executor, {
           collection: COLLECTIONS.CHAT_MESSAGES,
-          filter: { roomId: this.currentRoom },
+          filter: { roomId: this.currentRoomId },
           cursor: PAGINATION_PRESETS.CHAT_MESSAGES,
           defaultLimit: 20
         });
 
         const context = {
           isCurrentUser: false, // Will be set per message by checking senderId
-          customData: { roomId: this.currentRoom, currentUserId: this.currentUserId }
+          customData: { roomId: this.currentRoomId, currentUserId: this.currentUserId }
         };
 
         // Enhanced render function that checks current user for each message
@@ -291,7 +342,7 @@ export class ChatWidget extends ChatWidgetBase {
       // Load initial batch of recent messages (no cursor = most recent)
       // chat/get-messages should return messages in chronological order (oldest to newest)
       const historyResult = await Commands.execute<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
-        roomId: this.currentRoom,
+        roomId: this.currentRoomId,
         limit: 20 // Initial page size
       });
 
@@ -302,12 +353,12 @@ export class ChatWidget extends ChatWidgetBase {
 
         // EntityScroller handles initialization internally
 
-        console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.currentRoom}"`);
+        console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.currentRoomId}"`);
       } else if (historyResult?.success === false) {
         console.error(`❌ ChatWidget: Failed to get messages: ${historyResult.error}`);
         this.messages = [];
       } else {
-        console.log(`ℹ️ ChatWidget: No messages found for room "${this.currentRoom}"`);
+        console.log(`ℹ️ ChatWidget: No messages found for room "${this.currentRoomId}"`);
         this.messages = [];
       }
 
@@ -329,7 +380,7 @@ export class ChatWidget extends ChatWidgetBase {
       // But we need them in ascending order to append at the beginning correctly
       const olderResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
         collection: ChatMessageEntity.collection,
-        filter: { roomId: this.currentRoom },
+        filter: { roomId: this.currentRoomId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
         limit: 20,
         cursor: {
@@ -366,18 +417,18 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async subscribeToRoomEvents(): Promise<void> {
     try {
-      console.log(`🔗 ChatWidget: Subscribing to room events for "${this.currentRoom}"`);
+      console.log(`🔗 ChatWidget: Subscribing to room events for "${this.currentRoomId}"`);
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
         const subscribeResult = await Commands.execute<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
-          roomId: this.currentRoom,
+          roomId: this.currentRoomId,
           eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
         
         if (subscribeResult && subscribeResult.success && subscribeResult.subscriptionId) {
           this.eventSubscriptionId = subscribeResult.subscriptionId;
-          console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoom}" events via JTAG`);
+          console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoomId}" events via JTAG`);
         }
       } catch (jtagError) {
         console.error(`ℹ️ ChatWidget: JTAG room subscription not available, using DOM events fallback`, jtagError);
@@ -396,7 +447,7 @@ export class ChatWidget extends ChatWidgetBase {
    * Set up type-safe event handlers for real-time room updates using BaseWidget
    */
   private setupRoomEventHandlers(): void {
-    console.log(`📡 ChatWidget: Setting up type-safe room event handlers for room ${this.currentRoom}`);
+    console.log(`📡 ChatWidget: Setting up type-safe room event handlers for room ${this.currentRoomId}`);
     
     // Type-safe event listeners using BaseWidget's executeEvent system
     // These ONLY respond to genuine server-originated events
@@ -429,7 +480,7 @@ export class ChatWidget extends ChatWidgetBase {
     eventType: string, 
     eventData: ChatMessageEventData | ChatParticipantEventData
   ): Promise<void> {
-    console.log(`📨 ChatWidget: Received room event "${eventType}" for room ${this.currentRoom}`);
+    console.log(`📨 ChatWidget: Received room event "${eventType}" for room ${this.currentRoomId}`);
     
     switch (eventType) {
       case 'chat:message-received':
@@ -451,9 +502,9 @@ export class ChatWidget extends ChatWidgetBase {
    * Handle incoming chat messages for this room - STRICT TYPING
    */
   private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
-    console.log(`📨 ChatWidget: Received message for room ${this.currentRoom}:`, eventData);
+    console.log(`📨 ChatWidget: Received message for room ${this.currentRoomId}:`, eventData);
 
-    if (eventData.entity.roomId === this.currentRoom) {
+    if (eventData.entity.roomId === this.currentRoomId) {
       // Use the full entity from the event - consistent with BaseEntity approach
       const chatMessage = eventData.entity;
 
@@ -478,13 +529,13 @@ export class ChatWidget extends ChatWidgetBase {
    * Handle user joined events - STRICT TYPING
    */
   private async onUserJoined(eventData: ChatParticipantEventData): Promise<void> {
-    console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoom}`);
+    console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoomId}`);
     
-    if (eventData.roomId === this.currentRoom) {
+    if (eventData.roomId === this.currentRoomId) {
       // Add system message for user join using ChatMessageData interface
       const systemMessage: ChatMessageData = {
         messageId: MessageId(`system_${Date.now()}`),
-        roomId: RoomId(this.currentRoom),
+        roomId: RoomId(this.currentRoomId),
         senderId: UserId('system'),
         senderName: 'System',
         content: {
@@ -520,13 +571,13 @@ export class ChatWidget extends ChatWidgetBase {
    * Handle user left events - STRICT TYPING
    */
   private async onUserLeft(eventData: ChatParticipantEventData): Promise<void> {
-    console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoom}`);
+    console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoomId}`);
     
-    if (eventData.roomId === this.currentRoom) {
+    if (eventData.roomId === this.currentRoomId) {
       // Add system message for user leave using ChatMessageData interface
       const systemMessage: ChatMessageData = {
         messageId: MessageId(`system_${Date.now()}`),
-        roomId: RoomId(this.currentRoom),
+        roomId: RoomId(this.currentRoomId),
         senderId: UserId('system'),
         senderName: 'System',
         content: {
@@ -649,7 +700,7 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async restoreScrollPosition(): Promise<void> {
     try {
-      const scrollStateKey = `chat_scroll_${this.currentRoom}`;
+      const scrollStateKey = `chat_scroll_${this.currentRoomId}`;
       const savedState = await this.getData(scrollStateKey) as ScrollState | null;
 
       if (savedState && savedState.timestamp && this.messagesContainer) {
@@ -780,10 +831,10 @@ export class ChatWidget extends ChatWidgetBase {
 
   private async sendChatMessage(content: string): Promise<void> {
     try {
-      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: sendChatMessage called with currentRoom="${this.currentRoom}"`);
+      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: sendChatMessage called with currentRoom="${this.currentRoomId}"`);
       const sendResult = await Commands.execute<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
         content: content,
-        roomId: this.currentRoom,
+        roomId: this.currentRoomId,
         senderType: 'user'
       });
 
@@ -809,32 +860,6 @@ export class ChatWidget extends ChatWidgetBase {
 
   // REMOVED: getPersistentUserId() - now using UserIdManager properly
 
-  /**
-   * Load room entity data to get display name and metadata
-   */
-  private async loadRoomEntity(): Promise<void> {
-    try {
-      console.log(`🏠 ChatWidget: Loading room entity for ID "${this.currentRoom}"`);
-
-      // Use data/list with filter instead of data/read since room uses 'id' field
-      const roomResult = await Commands.execute<DataListParams, DataListResult<ChatRoomData>>('data/list', {
-        collection: RoomEntity.collection,
-        filter: { id: this.currentRoom },
-        limit: 1
-      });
-
-      if (roomResult?.success && roomResult.items && roomResult.items.length > 0) {
-        this.currentRoomEntity = roomResult.items[0];
-        console.log(`✅ ChatWidget: Loaded room entity: "${this.currentRoomEntity?.displayName || this.currentRoomEntity?.name}"`);
-      } else {
-        console.warn(`⚠️ ChatWidget: Could not load room entity for "${this.currentRoom}", using fallback display`);
-        this.currentRoomEntity = undefined;
-      }
-    } catch (error) {
-      console.error(`❌ ChatWidget: Failed to load room entity:`, error);
-      this.currentRoomEntity = undefined;
-    }
-  }
 
   /**
    * Subscribe to room change events from other widgets (like RoomListWidget)
@@ -860,19 +885,19 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async handleRoomChange(newRoomId: RoomId, roomEntity?: ChatRoomData): Promise<void> {
     // Prevent infinite loops - only change if room actually changed
-    if (newRoomId === this.currentRoom) {
+    if (newRoomId === this.currentRoomId) {
       console.log(`🔄 ChatWidget: Room change ignored - already in room "${newRoomId}"`);
       return;
     }
 
-    console.log(`🏠 ChatWidget: Changing room from "${this.currentRoom}" to "${newRoomId}"`);
+    console.log(`🏠 ChatWidget: Changing room from "${this.currentRoomId}" to "${newRoomId}"`);
 
     try {
       // Save current scroll position before switching
       await this.onWidgetCleanup();
 
       // Update room references
-      this.currentRoom = newRoomId;
+      this.currentRoomId = newRoomId;
       this.currentRoomEntity = roomEntity;
 
       // If no room entity provided in the event, load it
@@ -910,19 +935,62 @@ export class ChatWidget extends ChatWidgetBase {
     await this.handleRoomChange(roomId, roomEntity);
   }
 
-  private getRoomDisplayName(): string {
-    // Use room entity display name if available, otherwise use fallback
-    if (this.currentRoomEntity?.displayName) {
-      return this.currentRoomEntity.displayName;
-    } else if (this.currentRoomEntity?.name) {
-      return this.currentRoomEntity.name;
-    } else if (this.currentRoom === DEFAULT_ROOMS.GENERAL) {
-      return 'General';
-    } else if (this.currentRoom === DEFAULT_ROOMS.ACADEMY) {
-      return 'Academy';
-    } else {
-      // Fallback: try to get a readable name from the UUID or use it as-is
-      return this.currentRoom.includes('-') ? 'Room' : this.currentRoom.charAt(0).toUpperCase() + this.currentRoom.slice(1);
+  /**
+   * Set up message input event handlers
+   * Called after DOM rendering to ensure input elements are available
+   */
+  private setupMessageInputHandlers(): void {
+    // Clean up existing listeners first
+    this.cleanupMessageInputHandlers();
+
+    if (!this.messageInput) {
+      console.warn('⚠️ ChatWidget: Cannot set up input handlers - messageInput not found');
+      return;
+    }
+
+    // Send message on Enter key
+    const keydownHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    };
+
+    // Send message on button click
+    const clickHandler = (e: Event) => {
+      e.preventDefault();
+      this.sendMessage();
+    };
+
+    // Store handlers for cleanup
+    this._keydownHandler = keydownHandler;
+    this._clickHandler = clickHandler;
+
+    // Attach event listeners
+    this.messageInput.addEventListener('keydown', keydownHandler);
+
+    const sendButton = this.shadowRoot?.getElementById('sendButton');
+    sendButton?.addEventListener('click', clickHandler);
+
+    console.log('✅ ChatWidget: Message input handlers set up for room', this.currentRoomId);
+  }
+
+  /**
+   * Clean up message input event handlers
+   */
+  private cleanupMessageInputHandlers(): void {
+    if (this._keydownHandler && this.messageInput) {
+      this.messageInput.removeEventListener('keydown', this._keydownHandler);
+      this._keydownHandler = undefined;
+    }
+
+    if (this._clickHandler) {
+      const sendButton = this.shadowRoot?.getElementById('sendButton');
+      if (sendButton) {
+        sendButton.removeEventListener('click', this._clickHandler);
+      }
+      this._clickHandler = undefined;
     }
   }
+
 }
