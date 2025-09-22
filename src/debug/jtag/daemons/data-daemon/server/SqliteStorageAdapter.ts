@@ -19,17 +19,7 @@ import {
   type RecordData
 } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
-// Import field extraction mapping from shared layer
-import type { FieldExtractionMapping } from '../shared/FieldExtractionMapping';
-import {
-  type RelationalQuery,
-  type QueryResult,
-  QueryUtils,
-  type FilterCondition,
-  type FilterGroup,
-  type JoinDefinition
-} from '../shared/QueryBuilder';
-import { DynamicQueryBuilder } from '../../../system/data/query/QueryBuilder';
+// Clean imports - field extraction removed for now
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
@@ -319,77 +309,14 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_created_at ON _data(created_at)');
     await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_updated_at ON _data(updated_at)');
 
-    // Create field extraction tables for configured entities
-    await this.createFieldExtractionTables();
+    // Ready for future SQL query builder integration
 
     console.log('📋 SQLite: Core schema created');
   }
 
-  /**
-   * Create field extraction tables for entities with field mappings
-   */
-  private async createFieldExtractionTables(): Promise<void> {
-    console.log('🔧 SQLite: Field extraction tables disabled - using JSON queries only');
-    return; // Field extraction optimization disabled
+  // Field extraction removed - will be added back with SQL query builder
 
-    /* DISABLED CODE:
-    for (const mapping of ENTITY_FIELD_MAPPINGS) {
-      const tableName = `_extract_${mapping.collection}`;
-
-      // Build column definitions
-      const columns = ['id TEXT PRIMARY KEY'];
-
-      for (const field of mapping.extractedFields) {
-        let columnDef = `${field.fieldName} ${this.mapFieldTypeToSqlite(field.sqliteType)}`;
-
-        if (!field.nullable) {
-          columnDef += ' NOT NULL';
-        }
-
-        columns.push(columnDef);
-      }
-
-      // Add collection field for table organization
-      columns.push('collection TEXT NOT NULL');
-      // Note: Foreign key disabled temporarily to test field extraction logic
-
-      // Create extraction table
-      const createTableSql = `
-        CREATE TABLE IF NOT EXISTS ${tableName} (
-          ${columns.join(',\n          ')}
-        )
-      `;
-
-      await this.runSql(createTableSql);
-
-      // Create indexes for extracted fields
-      for (const field of mapping.extractedFields) {
-        if (field.indexed) {
-          const indexName = `idx_${mapping.collection}_${field.fieldName}`;
-          const indexSql = `CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(${field.fieldName})`;
-          await this.runSql(indexSql);
-        }
-      }
-
-      console.log(`✅ SQLite: Created extraction table ${tableName} with ${mapping.extractedFields.length} fields`);
-    }
-    */
-  }
-
-  /**
-   * Map EntityFieldConfig types to SQLite types
-   */
-  private mapFieldTypeToSqlite(fieldType: string): string {
-    switch (fieldType) {
-      case 'text': return 'TEXT';
-      case 'integer': return 'INTEGER';
-      case 'real': return 'REAL';
-      case 'boolean': return 'INTEGER'; // SQLite stores booleans as integers
-      case 'datetime': return 'INTEGER'; // Store as Unix timestamp
-      case 'json': return 'TEXT';
-      default: return 'TEXT';
-    }
-  }
+  // Type mapping will be added back with SQL query builder
 
   /**
    * Execute SQL query with parameters
@@ -504,8 +431,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
         await this.runStatement(sql, params);
 
-        // Field extraction optimization disabled for now
-        // await this.extractFields(record, fieldMapping);
+        // Field extraction will be added back with SQL query builder
 
         return record;
       });
@@ -529,60 +455,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     }
   }
 
-  /**
-   * Extract fields to dedicated extraction table
-   */
-  private async extractFields<T extends RecordData>(record: DataRecord<T>, fieldMapping: FieldExtractionMapping): Promise<void> {
-
-    const tableName = `_extract_${fieldMapping.collection}`;
-
-    // Build column names and values for extraction
-    const columns = ['id', 'collection'];
-    const values: (string | number | null)[] = [record.id, record.collection];
-    const placeholders = ['?', '?'];
-
-    for (const field of fieldMapping.extractedFields) {
-      let fieldValue = record.data[field.name];
-
-      // Auto-generate UUIDs for missing required ID fields
-      if (fieldValue === undefined && !field.nullable && field.name.includes('Id')) {
-        fieldValue = crypto.randomUUID();
-        // Also add the generated ID back to the record data (with proper typing)
-        (record.data as any)[field.name] = fieldValue;
-        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Auto-generated ${field.name}: ${fieldValue}`);
-      }
-
-      if (fieldValue !== undefined || !field.nullable) {
-        columns.push(field.name);
-        placeholders.push('?');
-
-        // Apply field conversion if configured
-        let convertedValue: string | number | null = null;
-        if (field.converter?.toStorage && fieldValue !== undefined && fieldValue !== null) {
-          convertedValue = field.converter.toStorage(fieldValue);
-        } else if (fieldValue !== undefined && fieldValue !== null) {
-          // Handle basic type conversion
-          if (typeof fieldValue === 'string' || typeof fieldValue === 'number') {
-            convertedValue = fieldValue;
-          } else {
-            convertedValue = JSON.stringify(fieldValue);
-          }
-        }
-
-        values.push(convertedValue);
-      }
-    }
-
-    // Insert extracted fields
-    const extractSql = `
-      INSERT OR REPLACE INTO ${tableName} (
-        ${columns.join(', ')}
-      ) VALUES (${placeholders.join(', ')})
-    `;
-
-    await this.runStatement(extractSql, values);
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Field extraction applied for ${record.collection}/${record.id}`);
-  }
+  // Removed extractFields - cross-cutting concern
 
   /**
    * Read a single record by ID
@@ -671,21 +544,10 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Build SELECT SQL query using DynamicQueryBuilder - Storage Strategy Aware
-   * Uses field extraction tables when available, falls back to JSON_EXTRACT
+   * Build SELECT SQL query - currently JSON-based, ready for SQL query builder
    */
   private buildSelectQuery(query: StorageQuery): { sql: string; params: any[] } {
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using DynamicQueryBuilder for elegant query construction`);
-
-    // Field mapping optimization disabled - using basic JSON queries for now
     return this.buildJsonQuery(query);
-  }
-
-  /**
-   * Validate field name against extracted field configuration for SQL injection prevention
-   */
-  private isValidExtractedField(fieldName: string, mapping: FieldExtractionMapping): boolean {
-    return mapping.extractedFields.some(f => f.name === fieldName);
   }
 
   /**
@@ -694,119 +556,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   private sanitizeJsonPath(fieldPath: string): string {
     // Only allow alphanumeric, dots, underscores, and array indices
     return fieldPath.replace(/[^a-zA-Z0-9._\[\]]/g, '');
-  }
-
-  /**
-   * Build dynamic SQL conditions with proper field validation
-   */
-  private buildDynamicConditions(
-    filters: Record<string, any>,
-    mapping: FieldExtractionMapping,
-    tablePrefix: { data: string; extract: string }
-  ): { conditions: string[]; params: any[] } {
-    const conditions: string[] = [];
-    const params: any[] = [];
-
-    for (const [field, value] of Object.entries(filters)) {
-      if (this.isValidExtractedField(field, mapping)) {
-        // Use validated extracted field column (safe from injection)
-        conditions.push(`${tablePrefix.extract}.${field} = ?`);
-        params.push(value);
-      } else {
-        // Use sanitized JSON path for non-extracted fields
-        const safePath = this.sanitizeJsonPath(field);
-        conditions.push(`JSON_EXTRACT(${tablePrefix.data}.data, '$.${safePath}') = ?`);
-        params.push(value);
-      }
-    }
-
-    return { conditions, params };
-  }
-
-  /**
-   * Build dynamic sort clauses with field validation
-   */
-  private buildDynamicSortClauses(
-    sortFields: Array<{ field: string; direction: string }>,
-    mapping: FieldExtractionMapping,
-    tablePrefix: { data: string; extract: string }
-  ): string[] {
-    return sortFields.map(s => {
-      const direction = s.direction.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
-
-      if (this.isValidExtractedField(s.field, mapping)) {
-        // Use validated extracted field (safe from injection)
-        return `${tablePrefix.extract}.${s.field} ${direction}`;
-      } else {
-        // Use sanitized JSON path
-        const safePath = this.sanitizeJsonPath(s.field);
-        return `JSON_EXTRACT(${tablePrefix.data}.data, '$.${safePath}') ${direction}`;
-      }
-    });
-  }
-
-  /**
-   * Build optimized query using field extraction tables - SQL injection safe
-   */
-  private buildOptimizedQuery(query: StorageQuery, mapping: FieldExtractionMapping): { sql: string; params: any[] } {
-    const params: any[] = [];
-    const extractTable = `_extract_${mapping.collection}`;
-    const tablePrefix = { data: 'd', extract: 'e' };
-
-    // Build base query with proper table aliases
-    let sql = `
-      SELECT ${tablePrefix.data}.*, ${tablePrefix.extract}.*
-      FROM _data ${tablePrefix.data}
-      LEFT JOIN ${extractTable} ${tablePrefix.extract} ON ${tablePrefix.data}.id = ${tablePrefix.extract}.id
-      WHERE ${tablePrefix.data}.collection = ?
-    `;
-    params.push(query.collection);
-
-    // Add dynamic filter conditions with validation
-    if (query.filters) {
-      const { conditions, params: filterParams } = this.buildDynamicConditions(
-        query.filters,
-        mapping,
-        tablePrefix
-      );
-
-      if (conditions.length > 0) {
-        sql += ` AND (${conditions.join(' AND ')})`;
-        params.push(...filterParams);
-      }
-    }
-
-    // Add time range filters
-    if (query.timeRange) {
-      if (query.timeRange.start) {
-        sql += ` AND ${tablePrefix.data}.created_at >= ?`;
-        params.push(query.timeRange.start);
-      }
-      if (query.timeRange.end) {
-        sql += ` AND ${tablePrefix.data}.created_at <= ?`;
-        params.push(query.timeRange.end);
-      }
-    }
-
-    // Add dynamic sort clauses with validation
-    if (query.sort && query.sort.length > 0) {
-      const sortClauses = this.buildDynamicSortClauses(query.sort, mapping, tablePrefix);
-      if (sortClauses.length > 0) {
-        sql += ` ORDER BY ${sortClauses.join(', ')}`;
-      }
-    }
-
-    // Add pagination
-    if (query.limit) {
-      sql += ' LIMIT ?';
-      params.push(query.limit);
-      if (query.offset) {
-        sql += ' OFFSET ?';
-        params.push(query.offset);
-      }
-    }
-
-    return { sql, params };
   }
 
   /**
@@ -859,191 +608,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     return { sql, params };
   }
 
-  /**
-   * Enhanced query method for relational queries with joins
-   */
-  async queryRelational<T>(query: RelationalQuery): Promise<QueryResult<T>> {
-    try {
-      console.log(`🔍 SQLite: Relational query on ${query.collection}`, query);
-
-      const { sql, params } = this.buildRelationalQuery(query);
-      const startTime = Date.now();
-
-      const rows = await this.runSql(sql, params);
-      const queryTime = Date.now() - startTime;
-
-      // Process joined results
-      const records = this.processJoinedResults<T>(rows, query);
-
-      console.log(`✅ SQLite: Relational query returned ${records.length} records in ${queryTime}ms`);
-
-      return {
-        success: true,
-        data: records,
-        metadata: {
-          totalCount: records.length,
-          queryTime,
-          joinCount: query.joins?.length || 0
-        }
-      };
-
-    } catch (error: any) {
-      console.error(`❌ SQLite: Relational query failed:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Build complex SQL with joins
-   */
-  private buildRelationalQuery(query: RelationalQuery): { sql: string; params: any[] } {
-    const params: any[] = [];
-    const mainAlias = query.alias || 'main';
-
-    // Start with main table
-    let sql = `SELECT ${mainAlias}.* FROM _data ${mainAlias} WHERE ${mainAlias}.collection = ?`;
-    params.push(query.collection);
-
-    // Add joins
-    if (query.joins) {
-      for (const join of query.joins) {
-        const joinAlias = join.alias || join.collection;
-        sql += ` ${join.type.toUpperCase()} JOIN _data ${joinAlias} ON `;
-        sql += `${joinAlias}.collection = ? AND `;
-        sql += `JSON_EXTRACT(${mainAlias}.data, '$.${join.on.local}') = `;
-        sql += `JSON_EXTRACT(${joinAlias}.data, '$.${join.on.foreign}')`;
-        params.push(join.collection);
-      }
-    }
-
-    // Add WHERE conditions
-    if (query.where) {
-      const { whereClause, whereParams } = this.buildWhereClause(query.where, mainAlias);
-      sql += ` AND (${whereClause})`;
-      params.push(...whereParams);
-    }
-
-    // Add GROUP BY
-    if (query.groupBy) {
-      const groupFields = query.groupBy.map(field =>
-        `JSON_EXTRACT(${mainAlias}.data, '$.${field}')`
-      );
-      sql += ` GROUP BY ${groupFields.join(', ')}`;
-    }
-
-    // Add ORDER BY
-    if (query.orderBy) {
-      const orderFields = query.orderBy.map(order => {
-        const tablePrefix = order.collection || mainAlias;
-        return `JSON_EXTRACT(${tablePrefix}.data, '$.${order.field}') ${order.direction.toUpperCase()}`;
-      });
-      sql += ` ORDER BY ${orderFields.join(', ')}`;
-    }
-
-    // Add LIMIT/OFFSET
-    if (query.limit) {
-      sql += ' LIMIT ?';
-      params.push(query.limit);
-
-      if (query.offset) {
-        sql += ' OFFSET ?';
-        params.push(query.offset);
-      }
-    }
-
-    return { sql, params };
-  }
-
-  /**
-   * Build WHERE clause from FilterGroup/FilterCondition
-   */
-  private buildWhereClause(
-    filter: FilterGroup | FilterCondition,
-    tableAlias: string
-  ): { whereClause: string; whereParams: any[] } {
-    const params: any[] = [];
-
-    if ('field' in filter) {
-      // Single condition
-      const condition = filter as FilterCondition;
-      const tablePart = condition.collection ? `${condition.collection}.` : `${tableAlias}.`;
-
-      let clause = `JSON_EXTRACT(${tablePart}data, '$.${condition.field}')`;
-
-      switch (condition.operator) {
-        case 'eq':
-          clause += ' = ?';
-          params.push(condition.value);
-          break;
-        case 'ne':
-          clause += ' != ?';
-          params.push(condition.value);
-          break;
-        case 'gt':
-          clause += ' > ?';
-          params.push(condition.value);
-          break;
-        case 'gte':
-          clause += ' >= ?';
-          params.push(condition.value);
-          break;
-        case 'lt':
-          clause += ' < ?';
-          params.push(condition.value);
-          break;
-        case 'lte':
-          clause += ' <= ?';
-          params.push(condition.value);
-          break;
-        case 'like':
-          clause += ' LIKE ?';
-          params.push(`%${condition.value}%`);
-          break;
-        case 'in':
-          clause += ` IN (${condition.value.map(() => '?').join(',')})`;
-          params.push(...condition.value);
-          break;
-        case 'null':
-          clause += ' IS NULL';
-          break;
-        case 'exists':
-          clause += ' IS NOT NULL';
-          break;
-        default:
-          throw new Error(`Unsupported operator: ${condition.operator}`);
-      }
-
-      return { whereClause: clause, whereParams: params };
-    } else {
-      // Group of conditions
-      const group = filter as FilterGroup;
-      const subClauses: string[] = [];
-
-      for (const subCondition of group.conditions) {
-        const { whereClause, whereParams } = this.buildWhereClause(subCondition, tableAlias);
-        subClauses.push(`(${whereClause})`);
-        params.push(...whereParams);
-      }
-
-      const operator = group.operator === 'and' ? ' AND ' : ' OR ';
-      return {
-        whereClause: subClauses.join(operator),
-        whereParams: params
-      };
-    }
-  }
-
-  /**
-   * Process joined query results
-   */
-  private processJoinedResults<T>(rows: any[], query: RelationalQuery): T[] {
-    // For now, return main collection records
-    // TODO: Implement proper join result processing with nested data
-    return rows.map(row => JSON.parse(row.data));
-  }
+  // Removed relational query methods - cross-cutting concerns
 
   /**
    * Update an existing record
@@ -1125,25 +690,11 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     try {
       console.log(`🗑️ CLAUDE-FIX-${Date.now()}: Deleting ${collection}/${id} with atomic transaction`);
 
-      // Field extraction optimization disabled for now
-      const hasExtraction = false;
-
       // Execute delete operation in transaction for atomic consistency
       const deletedCount = await this.withTransaction(async () => {
-        // Delete from main data table first
+        // Delete from main data table
         const dataSql = 'DELETE FROM _data WHERE collection = ? AND id = ?';
         const dataResult = await this.runStatement(dataSql, [collection, id]);
-
-        if (dataResult.changes === 0) {
-          return 0;  // Record didn't exist
-        }
-
-        // Clean up extraction table if it exists (in same transaction)
-        if (hasExtraction) {
-          const extractSql = `DELETE FROM _extract_${collection} WHERE id = ?`;
-          await this.runStatement(extractSql, [id]);
-          console.log(`🔧 SQLite: Cleaned up extraction record for ${collection}/${id}`);
-        }
 
         return dataResult.changes;
       });
@@ -1352,11 +903,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         await this.runStatement('DELETE FROM _data');
         await this.runStatement('DELETE FROM _collections');
 
-        // Clear field extraction tables if they exist
-        const tables = await this.runSql("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_field_%'");
-        for (const table of tables) {
-          await this.runStatement(`DELETE FROM ${table.name}`);
-        }
+        // Ready for future field extraction cleanup
 
         return true;
       });
@@ -1392,11 +939,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         // Delete all records from the collection
         const deleteResult = await this.runStatement('DELETE FROM _data WHERE collection = ?', [collection]);
 
-        // Clear field extraction data for this collection
-        const tables = await this.runSql("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_field_%'");
-        for (const table of tables) {
-          await this.runStatement(`DELETE FROM ${table.name} WHERE collection = ?`, [collection]);
-        }
+        // Ready for future field extraction cleanup
 
         // Update collection stats
         await this.updateCollectionStats(collection);

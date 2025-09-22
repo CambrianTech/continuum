@@ -16,6 +16,44 @@ import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
 
 const execAsync = promisify(exec);
 
+/**
+ * Create a record via JTAG command with proper shell escaping
+ */
+async function createRecord(collection: string, data: any, id: string, displayName?: string): Promise<boolean> {
+  const dataArg = JSON.stringify(data).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}' --id=${id}`;
+
+  try {
+    await execAsync(cmd);
+    if (displayName) {
+      console.log(`✅ Created ${collection}: ${displayName}`);
+    } else {
+      console.log(`✅ Created ${collection}: ${id}`);
+    }
+    return true;
+  } catch (error: any) {
+    console.warn(`⚠️ Failed to create ${collection} ${displayName || id}: ${error.message}`);
+    console.warn(`Command: ${cmd}`);
+    return false;
+  }
+}
+
+/**
+ * Seed multiple records of the same type
+ */
+async function seedRecords<T extends { id: string; displayName?: string }>(collection: string, records: T[], getDisplayName?: (record: T) => string): Promise<void> {
+  console.log(`📝 Creating ${records.length} ${collection} records via JTAG...`);
+
+  let successCount = 0;
+  for (const record of records) {
+    const displayName = getDisplayName ? getDisplayName(record) : record.displayName || record.id;
+    const success = await createRecord(collection, record, record.id, displayName);
+    if (success) successCount++;
+  }
+
+  console.log(`📊 Created ${successCount}/${records.length} ${collection} records`);
+}
+
 async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
@@ -30,9 +68,7 @@ async function seedViaJTAG() {
       console.log('ℹ️ Database tables not found or already empty, proceeding with seeding...');
     }
 
-    // Seed users with deterministic UUIDs
-    console.log('👥 Creating users via JTAG...');
-
+    // Prepare users data
     const users = [
       {
         id: USER_IDS.HUMAN,
@@ -114,21 +150,7 @@ async function seedViaJTAG() {
       }
     ];
 
-    for (const user of users) {
-      const dataArg = JSON.stringify(JSON.stringify(user));
-      const cmd = `./jtag data/create --collection=${UserEntity.collection} --data=${dataArg} --id=${user.id}`;
-
-      try {
-        await execAsync(cmd);
-        console.log(`✅ Created user: ${user.displayName}`);
-      } catch (error: any) {
-        console.warn(`⚠️ Failed to create user ${user.displayName}: ${error.message}`);
-      }
-    }
-
-    // Seed rooms with deterministic UUIDs
-    console.log('🏠 Creating rooms via JTAG...');
-
+    // Prepare rooms data
     const rooms = [
       {
         id: ROOM_IDS.GENERAL,
@@ -190,21 +212,7 @@ async function seedViaJTAG() {
       }
     ];
 
-    for (const room of rooms) {
-      const dataArg = JSON.stringify(JSON.stringify(room));
-      const cmd = `./jtag data/create --collection=${RoomEntity.collection} --data=${dataArg} --id=${room.id}`;
-
-      try {
-        await execAsync(cmd);
-        console.log(`✅ Created room: ${room.displayName}`);
-      } catch (error: any) {
-        console.warn(`⚠️ Failed to create room ${room.displayName}: ${error.message}`);
-      }
-    }
-
-    // Seed messages with deterministic UUIDs and proper user references
-    console.log('💬 Creating messages via JTAG...');
-
+    // Prepare messages data
     const messages = [
       {
         id: MESSAGE_IDS.WELCOME_GENERAL,
@@ -271,17 +279,13 @@ async function seedViaJTAG() {
       }
     ];
 
-    for (const message of messages) {
-      const dataArg = JSON.stringify(JSON.stringify(message));
-      const cmd = `./jtag data/create --collection=${ChatMessageEntity.collection} --data=${dataArg} --id=${message.id}`;
-
-      try {
-        await execAsync(cmd);
-        console.log(`✅ Created message from: ${message.senderId === USER_IDS.HUMAN ? 'Joel' : message.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown'}`);
-      } catch (error: any) {
-        console.warn(`⚠️ Failed to create message: ${error.message}`);
-      }
-    }
+    // Seed all data types using modular approach
+    await seedRecords(UserEntity.collection, users, (user) => user.displayName);
+    await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName);
+    await seedRecords(ChatMessageEntity.collection, messages, (msg) =>
+      msg.senderId === USER_IDS.HUMAN ? 'Joel' :
+      msg.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown'
+    );
 
     // Verify via JTAG
     console.log('\n📊 Verifying seeded data via JTAG...');

@@ -46,7 +46,7 @@ const renderChatMessage: RenderFn<ChatMessageData> = (message, context) => {
   // Create exact same DOM structure as existing ChatWidget
   const messageRow = document.createElement('div');
   messageRow.className = `message-row ${isCurrentUser ? 'right' : 'left'}`;
-  messageRow.setAttribute('data-message-id', message.id);
+  messageRow.setAttribute('data-message-id', message.messageId || message.id);
 
   const messageBubble = document.createElement('div');
   messageBubble.className = `message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}`;
@@ -453,11 +453,11 @@ export class ChatWidget extends ChatWidgetBase {
   private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
     console.log(`📨 ChatWidget: Received message for room ${this.currentRoom}:`, eventData);
 
-    if (eventData.roomId === this.currentRoom) {
-      // Use the ChatMessage domain object directly - no reconstruction needed!
-      const chatMessage = eventData.message;
+    if (eventData.entity.roomId === this.currentRoom) {
+      // Use the full entity from the event - consistent with BaseEntity approach
+      const chatMessage = eventData.entity;
 
-      console.log(`✨ ChatWidget: Using ChatMessage domain object directly:`, chatMessage);
+      console.log(`✨ ChatWidget: Using ChatMessage entity directly:`, chatMessage);
 
       if (this.chatScroller) {
         // Use EntityScroller's smart auto-scroll - it knows where new content goes
@@ -780,6 +780,7 @@ export class ChatWidget extends ChatWidgetBase {
 
   private async sendChatMessage(content: string): Promise<void> {
     try {
+      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: sendChatMessage called with currentRoom="${this.currentRoom}"`);
       const sendResult = await Commands.execute<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
         content: content,
         roomId: this.currentRoom,

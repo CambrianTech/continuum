@@ -18,6 +18,7 @@ import {
   EnumField,
   JsonField
 } from '../decorators/FieldDecorators';
+import { BaseEntityClass } from '../core/BaseEntityClass';
 
 /**
  * Decorated ChatMessage Entity - Storage-aware version of ChatMessageData
@@ -25,7 +26,7 @@ import {
  * The decorators define which fields get extracted to dedicated columns
  * vs stored as JSON blobs for optimal query performance
  */
-export class ChatMessageEntity {
+export class ChatMessageEntity extends BaseEntityClass {
   // Single source of truth for collection name - used by both decorators and commands
   static readonly collection = 'ChatMessage';
 
@@ -68,13 +69,15 @@ export class ChatMessageEntity {
   @JsonField()
   metadata: MessageMetadata;
 
-  // BaseEntity inherited fields
-  id: string;
-  createdAt: ISOString;
-  updatedAt: ISOString;
-  version: number;
+  // BaseEntity inherited fields - initialized by super()
+  declare id: string;
+  declare createdAt: ISOString;
+  declare updatedAt: ISOString;
+  declare version: number;
 
   constructor() {
+    super(); // Initialize BaseEntity fields
+
     // Default values
     this.messageId = '' as MessageId;
     this.roomId = '' as RoomId;
@@ -86,11 +89,6 @@ export class ChatMessageEntity {
     this.timestamp = new Date().toISOString() as ISOString;
     this.reactions = [];
     this.metadata = { source: 'user' };
-
-    // BaseEntity fields
-    this.id = '';
-    this.createdAt = new Date().toISOString() as ISOString;
-    this.updatedAt = new Date().toISOString() as ISOString;
-    this.version = 1;
   }
+
 }

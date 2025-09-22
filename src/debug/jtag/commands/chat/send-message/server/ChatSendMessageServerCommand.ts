@@ -11,6 +11,7 @@ import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../shared/ChatSendMessageTypes';
 import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
 import { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
+import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { EVENT_SCOPES } from '../../../../system/events/shared/EventSystemConstants';
 
 export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
@@ -57,13 +58,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
           sessionId: message.senderId
         },
         eventName: CHAT_EVENTS.MESSAGE_RECEIVED,
-        data: {
-          eventType: 'chat:message-received',
-          roomId: message.roomId,
-          messageId: message.messageId,
-          message: message,  // Send full ChatMessage domain object
-          timestamp: new Date().toISOString()
-        },
+        data: ChatMessageEntity.createEntityEvent(message, CHAT_EVENTS.MESSAGE_RECEIVED),
         originSessionId: message.senderId as string,
         originContextUUID: this.context.uuid,
         timestamp: new Date().toISOString()

@@ -126,7 +126,7 @@ export function createScroller<T extends BaseEntity>(
       };
 
       const element = render(entity, renderContext);
-      element.setAttribute('data-entity-id', entity.id);
+      element.setAttribute('data-entity-id', entity.id || (entity as any).messageId || 'unknown');
       fragment.appendChild(element);
     });
 
@@ -252,7 +252,8 @@ export function createScroller<T extends BaseEntity>(
     // Real-time updates with automatic deduplication and replacement
     add(entity: T, position = 'end'): void {
       // Check if entity already exists in DOM using data-entity-id
-      const existingElement = container.querySelector(`[data-entity-id="${entity.id}"]`);
+      const entityId = entity.id || (entity as any).messageId || 'unknown';
+      const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
       if (existingElement) {
         // Replace existing entity with updated one
         const entityIndex = entities.findIndex(e => e.id === entity.id);
@@ -265,7 +266,7 @@ export function createScroller<T extends BaseEntity>(
             total: entities.length
           };
           const newElement = render(entity, renderContext);
-          newElement.setAttribute('data-entity-id', entity.id);
+          newElement.setAttribute('data-entity-id', entityId);
           existingElement.replaceWith(newElement);
 
           console.log(`🔧 EntityScroller: Replaced existing entity with ID: ${entity.id}`);
@@ -282,7 +283,8 @@ export function createScroller<T extends BaseEntity>(
     // Smart real-time updates with intrinsic direction awareness and replacement
     addWithAutoScroll(entity: T, position?: 'start' | 'end'): void {
       // Check if entity already exists in DOM using data-entity-id
-      const existingElement = container.querySelector(`[data-entity-id="${entity.id}"]`);
+      const entityId = entity.id || (entity as any).messageId || 'unknown';
+      const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
       if (existingElement) {
         // Replace existing entity with updated one
         const entityIndex = entities.findIndex(e => e.id === entity.id);
@@ -295,7 +297,7 @@ export function createScroller<T extends BaseEntity>(
             total: entities.length
           };
           const newElement = render(entity, renderContext);
-          newElement.setAttribute('data-entity-id', entity.id);
+          newElement.setAttribute('data-entity-id', entityId);
           existingElement.replaceWith(newElement);
 
           console.log(`🔧 EntityScroller: Replaced existing entity with ID: ${entity.id}`);
