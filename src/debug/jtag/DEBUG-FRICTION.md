@@ -367,13 +367,83 @@ ERROR: Connection failed - WebSocket connection error: Connection failed
 - Taking screenshots but not viewing them (incomplete feedback loop)
 - Checking logs but not recent logs (wrong time range)
 
-**Potential Solutions**:
-- **Loud deployment reminders**: System could detect code changes and shout "🚨 DEPLOY FIRST: npm start"
-- **Change detection**: Track file modification times vs last deployment time
-- **Workflow validation**: Check if agent follows proper sequences (edit → build → deploy → test)
-- **Step verification prompts**: "Did you actually view that screenshot?" type checks
+**REAL EXAMPLE (2025-09-23)**: Agent spent time analyzing WebSocket connection retry logic when the actual problem was simply forgetting to run `npm start`. The verbose WebSocket errors were masking the real issue: no server was running.
+
+**Before fix**:
+```
+❌ websocket-server-client: connection error: [20+ lines of stack traces]
+🔍 PROBLEM: No JTAG system is currently running
+✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds
+```
+
+**After `npm start`**: All commands work perfectly.
+
+**SECOND CONFUSION (Same Session)**: After making code changes, agent ran `npm run build` to "verify TypeScript compilation" instead of `npm start` to deploy changes. Then tested against old compiled JavaScript and wondered why changes didn't take effect.
+
+**Wrong Thinking**: "Let me verify the build step works separately"
+**Correct Thinking**: "`npm start` is the ONLY way to deploy code changes"
+
+**Root Cause**: Agent doesn't internalize that `npm start` = complete deployment pipeline, while `npm run build` = just compilation without deployment.
+
+## 📦 PACKAGE.JSON SCRIPT CONFUSION - SOLUTION IDENTIFIED
+
+**Good Design Pattern**: The package.json uses **prefix-based categorization**:
+- `system:*` - System management (start, stop, restart, seed)
+- `test:*` - Testing with specific categories (chat, transport, widgets, etc.)
+- `data:*` - Database operations (clear, seed, reseed)
+- `logs:*` - Log management (dashboard, ai, human, status)
+- `dev:*` - Development tools (diagnose, iterate, stress)
+
+**Problem Area**: **Intermediate build scripts cause confusion**:
+- `prebuild`, `build`, `build:ts`, `postbuild`, `smart-build`
+- These expose implementation details that agents incorrectly try to use
+
+**Solution**:
+1. **Hide build scripts** - Move to internal implementation, not public interface
+2. **Emphasize primary commands**:
+   - `npm start` - ONLY deployment command
+   - `npm test` - ONLY testing command (with intelligent categories)
+   - `npm run test:help` - Show available test categories
+3. **Clear documentation** - Make it obvious which commands are public vs internal
 
 **This could reduce autonomous development friction significantly**
+
+### **CRITICAL AGENT WAKE-UP CALL NEEDED**
+
+**Problem**: Agent gets stuck analyzing WebSocket connection errors instead of just running `npm start`
+
+**Perfect Wake-Up Message**: *"try 'npm start' you dingaling"*
+
+**Why This Works**:
+- Direct, unambiguous command
+- Breaks error analysis paralysis
+- Forces the obvious solution instead of technical rabbit holes
+
+**System Insight**: The startup process is super verbose with normal-looking "errors" during bootstrap that aren't actually failures - just noisy progress indicators.
+
+### **WebSocket Connection Failure - EASY FIX NEEDED**
+
+**Problem**: Client doesn't fail rapidly when server is down, creates verbose error spam
+
+**Current Bad Behavior**:
+- Repeats WebSocket connection errors dozens of times
+- Takes 20+ seconds to fail instead of failing fast
+- Buries useful message ("No JTAG system is currently running") in noise
+- Error spam makes it hard to see actual command failure reasons
+
+**Desired Behavior**:
+- **Fast failure**: Detect server down in 1-2 seconds max
+- **Clean error**: Single message "❌ Server not running. Run: npm start"
+- **No WebSocket spam**: Don't repeat connection errors
+- **Exit immediately**: Don't waste time on retries when server is clearly down
+
+**Easy Implementation**:
+- Add connection timeout (1-2 seconds) in WebSocket client
+- Detect connection failure patterns and exit fast
+- Suppress repetitive WebSocket error logging
+- Show single actionable error message
+
+**Impact**: Will eliminate major frustration when server goes down during development
 
 ### **Session Directory Audit - RESOLVED**
 
