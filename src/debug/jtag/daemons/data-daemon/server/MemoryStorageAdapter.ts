@@ -652,9 +652,49 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
       const tempPath = `${this.options.persistencePath}.tmp`;
       await fs.writeFile(tempPath, JSON.stringify(serialized, null, 2));
       await fs.rename(tempPath, this.options.persistencePath);
-      
+
     } catch (error) {
       console.warn('Memory storage persistence save failed:', error);
+    }
+  }
+
+  /**
+   * Clear all data with detailed reporting (Memory Storage implementation)
+   */
+  async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
+    try {
+      const tablesCleared: string[] = [];
+      let recordsDeleted = 0;
+
+      // Count records before clearing
+      for (const [collectionName, collectionMap] of this.collections.entries()) {
+        recordsDeleted += collectionMap.size;
+        tablesCleared.push(collectionName);
+      }
+
+      // Clear all data
+      this.collections.clear();
+
+      // Persist if configured
+      if (this.options.persistencePath) {
+        await this.saveToDisk();
+      }
+
+      console.log(`🧹 MemoryStorage: Cleared ${recordsDeleted} records from ${tablesCleared.length} collections`);
+
+      return {
+        success: true,
+        data: {
+          tablesCleared,
+          recordsDeleted
+        }
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        error: `MemoryStorage clearAll failed: ${error}`
+      };
     }
   }
 }

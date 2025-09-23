@@ -64,17 +64,19 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
       };
       const messageFormatting = processMessageFormatting(baseContent);
 
+      // Create message entity naturally
       const messageData = new ChatMessageEntity();
-      // BaseEntity auto-generates id, createdAt, updatedAt, version
       messageData.roomId = chatParams.roomId as UUID;
       messageData.senderId = senderId as UUID;
-      messageData.senderName = senderName; // Historical snapshot of displayName
+      messageData.senderName = senderName;
       messageData.content = messageFormatting;
-      messageData.priority = 'normal';
       messageData.status = 'sending';
+      messageData.priority = 'normal';
       messageData.timestamp = new Date();
       messageData.reactions = [];
-      messageData.replyToId = chatParams.replyToId as UUID;
+      if (chatParams.replyToId) {
+        messageData.replyToId = chatParams.replyToId;
+      }
 
       // 2. Store message using data/create command - returns ChatMessage directly
       const storedMessage = await this.storeMessage(messageData, chatParams.sessionId);
@@ -110,7 +112,7 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
     const params: DataCreateParams<ChatMessageEntity> = {
       collection: ChatMessageEntity.collection,
       data: messageData,
-      id: messageData.id,
+      id: messageData.id as string,
       sessionId: sessionId,
       context: this.context
     };
