@@ -6,7 +6,7 @@ import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBa
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataListParams, DataListResult } from '../shared/DataListTypes';
-import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 export class DataListBrowserCommand<T extends BaseEntity> extends CommandBase<DataListParams, DataListResult<T>> {
 

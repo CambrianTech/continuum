@@ -5,7 +5,7 @@
  * to provide a complete chat-specific infinite scroll solution.
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { GenericInfiniteScroll } from '../../shared/GenericInfiniteScroll';
 import type {
   InfiniteScrollConfig,
@@ -19,7 +19,7 @@ import { ChatMessageRenderer } from './ChatMessageRenderer';
  * Handles loading and rendering chat messages with cursor pagination
  */
 export class ChatInfiniteScroll {
-  private genericScroll: GenericInfiniteScroll<ChatMessageData, string>;
+  private genericScroll: GenericInfiniteScroll<ChatMessageEntity, string>;
   private loader: ChatMessageLoader;
   private renderer: ChatMessageRenderer;
 
@@ -37,7 +37,7 @@ export class ChatInfiniteScroll {
     this.loader = new ChatMessageLoader(executeCommand);
     this.renderer = new ChatMessageRenderer(currentUserId);
 
-    const callbacks: InfiniteScrollCallbacks<ChatMessageData, string> = {
+    const callbacks: InfiniteScrollCallbacks<ChatMessageEntity, string> = {
       loadItems: (cursor, pageSize) => this.loader.loadMessages(this.roomId, cursor, pageSize),
       getCursor: (message) => this.renderer.getCursor(message),
       compareCursors: (a, b) => this.renderer.compareCursors(a, b),
@@ -52,7 +52,7 @@ export class ChatInfiniteScroll {
    */
   async initialize(
     scrollContainer: HTMLElement,
-    initialMessages: ChatMessageData[] = []
+    initialMessages: ChatMessageEntity[] = []
   ): Promise<void> {
     this.genericScroll.initialize(scrollContainer, initialMessages);
   }
@@ -60,21 +60,21 @@ export class ChatInfiniteScroll {
   /**
    * Load initial messages for the room
    */
-  async loadInitialMessages(limit = 20): Promise<ChatMessageData[]> {
+  async loadInitialMessages(limit = 20): Promise<ChatMessageEntity[]> {
     return this.loader.loadInitialMessages(this.roomId, limit);
   }
 
   /**
    * Render messages to HTML string (for initial template)
    */
-  renderMessages(messages: ChatMessageData[]): string {
+  renderMessages(messages: ChatMessageEntity[]): string {
     return this.renderer.renderMessages(messages);
   }
 
   /**
    * Create a single message element
    */
-  createMessageElement(message: ChatMessageData): HTMLElement {
+  createMessageElement(message: ChatMessageEntity): HTMLElement {
     return this.renderer.createMessageElement(message);
   }
 

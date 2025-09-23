@@ -4,7 +4,7 @@
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 
 /**
  * Parameters for sending a chat message
@@ -25,7 +25,7 @@ export interface ChatSendMessageParams extends CommandParams {
 export interface ChatSendMessageResult extends CommandResult {
   readonly success?: boolean;
   readonly messageId?: UUID;
-  readonly message?: ChatMessageData;
+  readonly message?: ChatMessageEntity;
   readonly error?: string;
 }
 

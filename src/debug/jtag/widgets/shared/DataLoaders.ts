@@ -5,7 +5,7 @@
  * Supports cursor-based, offset-based, and hybrid pagination with proper type safety.
  */
 
-import type { BaseEntity } from '../../system/data/domains/CoreTypes';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 import type { LoadFn, LoadResult } from './EntityScroller';
 
 // =============================================================================

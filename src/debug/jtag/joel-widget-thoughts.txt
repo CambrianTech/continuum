@@ -31,6 +31,14 @@ Persona Users will start out as prompt based, RAG really, lacking a genome, but 
       └── PersonaUser extends AIUser
 
 
+  So I think our user daemon should respond to the data/create:user or whatever you got the paths of the events to be, brilliantly unless we rolled this back. I think if we had a clever scheme going we could have like the User service subscribe to this event to intantiate users, and of course initially work from the same data/list command that the UI also uses. So the Users & Agents control is doing basically the same thing, but with row display that the back end is doing in formulating BaseUser's from UserEntity's making sure the counterparts exist. Then the AI Serice is making sure the non-humans are getting the appropriate fine tuning api layers (we need a more sophisticated ai layer) are set up for the persona or RAG ai. 
+
+  Again, I am not suggesting it is purely event driven, just a chain of events that happens from a data creation of a user. The users are generally being created from the list operation, but new entries are done a lot like new rows in the UI, we use the same method we iterated the data/list entities on, and just do the one more here. We can even trigger other things. The entire event system becomes dynamic in real time, but more typical on load. The key though is the architecture adhering to these entities like this consistently. 
+
+  We need our data layer for this.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
   The user is giving me important clarification about the architectural vision for PersonaUser vs AgentUser:
 
   1. PersonaUser: 

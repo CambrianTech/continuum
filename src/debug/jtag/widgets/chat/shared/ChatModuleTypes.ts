@@ -8,7 +8,7 @@
  * - Tab System Integration
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 
 export interface ChatUser {
   id: string;
@@ -51,10 +51,10 @@ export interface ChatRoom {
 
 
 /**
- * Convenience methods for ChatMessageData (Rust-like approach with explicit typing)
+ * Convenience methods for ChatMessageEntity (Rust-like approach with explicit typing)
  * These methods provide semantic operations while maintaining type safety
  */
-export interface ChatMessageDataMethods {
+export interface ChatMessageEntityMethods {
   /** Determine if this message was sent by the current user (for positioning) */
   isFromCurrentUser(currentUserId: string): boolean;
 
@@ -95,9 +95,9 @@ export interface ChatModuleEvents {
   'user:status-changed': { userId: string; user: ChatUser; oldStatus: string; newStatus: string };
   
   // Message events
-  'message:received': { message: ChatMessageData; roomId: string };
-  'message:sent': { message: ChatMessageData; roomId: string };
-  'message:updated': { messageId: string; message: ChatMessageData };
+  'message:received': { message: ChatMessageEntity; roomId: string };
+  'message:sent': { message: ChatMessageEntity; roomId: string };
+  'message:updated': { messageId: string; message: ChatMessageEntity };
   'message:deleted': { messageId: string; roomId: string };
   
   // Tab events
@@ -240,47 +240,47 @@ export function getUserStatusColor(status: ChatUser['status']): string {
 }
 
 /**
- * ChatMessageData convenience methods implementation
+ * ChatMessageEntity convenience methods implementation
  * Rust-like approach: explicit, predictable, type-safe
  */
-export const ChatMessageDataHelpers = {
+export const ChatMessageEntityHelpers = {
   /** Determine if this message was sent by the current user (for positioning) */
-  isFromCurrentUser(message: ChatMessageData, currentUserId: string): boolean {
+  isFromCurrentUser(message: ChatMessageEntity, currentUserId: string): boolean {
     return message.senderId === currentUserId;
   },
 
   /** Get semantic CSS class for user positioning (current-user vs other-user) */
-  getUserPositionClass(message: ChatMessageData, currentUserId: string): 'current-user' | 'other-user' {
-    return ChatMessageDataHelpers.isFromCurrentUser(message, currentUserId) ? 'current-user' : 'other-user';
+  getUserPositionClass(message: ChatMessageEntity, currentUserId: string): 'current-user' | 'other-user' {
+    return ChatMessageEntityHelpers.isFromCurrentUser(message, currentUserId) ? 'current-user' : 'other-user';
   },
 
   /** Get alignment direction for message positioning */
-  getAlignment(message: ChatMessageData, currentUserId: string): 'right' | 'left' {
-    return ChatMessageDataHelpers.isFromCurrentUser(message, currentUserId) ? 'right' : 'left';
+  getAlignment(message: ChatMessageEntity, currentUserId: string): 'right' | 'left' {
+    return ChatMessageEntityHelpers.isFromCurrentUser(message, currentUserId) ? 'right' : 'left';
   },
 
   /** Check if message is from an AI assistant */
-  isFromAssistant(message: ChatMessageData): boolean {
-    return message.metadata.source === 'bot';
+  isFromAssistant(message: ChatMessageEntity): boolean {
+    return message.senderId === 'claude' || message.senderId.includes('-ai');
   },
 
   /** Check if message is a system message */
-  isSystemMessage(message: ChatMessageData): boolean {
-    return message.metadata.source === 'system';
+  isSystemMessage(message: ChatMessageEntity): boolean {
+    return message.senderId === 'system';
   },
 
   /** Get display name with fallback logic */
-  getDisplayName(message: ChatMessageData): string {
+  getDisplayName(message: ChatMessageEntity): string {
     return message.senderName || message.senderId || 'Unknown User';
   },
 
   /** Check if message has error status */
-  hasError(message: ChatMessageData): boolean {
+  hasError(message: ChatMessageEntity): boolean {
     return message.status === 'failed';
   },
 
   /** Check if message is still being sent */
-  isPending(message: ChatMessageData): boolean {
+  isPending(message: ChatMessageEntity): boolean {
     return message.status === 'sending';
   }
 } as const;

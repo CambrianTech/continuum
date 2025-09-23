@@ -73,6 +73,7 @@ async function seedViaJTAG() {
       {
         id: USER_IDS.HUMAN,
         displayName: USER_CONFIG.HUMAN.DISPLAY_NAME,
+        shortDescription: "System architect & dev lead",
         type: "human",
         profile: {
           displayName: USER_CONFIG.HUMAN.DISPLAY_NAME,
@@ -99,6 +100,7 @@ async function seedViaJTAG() {
       {
         id: USER_IDS.CLAUDE_CODE,
         displayName: USER_CONFIG.CLAUDE.NAME,
+        shortDescription: "Code architect & debugger ⚡",
         type: "ai",
         profile: {
           displayName: USER_CONFIG.CLAUDE.NAME,
@@ -125,6 +127,7 @@ async function seedViaJTAG() {
       {
         id: USER_IDS.GENERAL_AI,
         displayName: USER_CONFIG.GENERAL_AI.NAME,
+        shortDescription: "General purpose assistant",
         type: "ai",
         profile: {
           displayName: USER_CONFIG.GENERAL_AI.NAME,
@@ -217,7 +220,8 @@ async function seedViaJTAG() {
       {
         id: MESSAGE_IDS.WELCOME_GENERAL,
         roomId: ROOM_IDS.GENERAL,
-        senderId: USER_IDS.HUMAN,
+        senderId: 'system', // Use system user for welcome messages
+        senderName: 'System',
         content: {
           text: MESSAGE_CONTENT.WELCOME_GENERAL,
           attachments: [],
@@ -229,16 +233,16 @@ async function seedViaJTAG() {
             codeBlocks: []
           }
         },
+        status: "sent",
         priority: "normal",
-        metadata: {
-          source: "user",
-          deviceType: "web"
-        }
+        timestamp: new Date().toISOString(),
+        reactions: []
       },
       {
         id: MESSAGE_IDS.CLAUDE_INTRO,
         roomId: ROOM_IDS.GENERAL,
         senderId: USER_IDS.CLAUDE_CODE,
+        senderName: 'Claude Code',
         content: {
           text: MESSAGE_CONTENT.CLAUDE_INTRO,
           attachments: [],
@@ -250,16 +254,16 @@ async function seedViaJTAG() {
             codeBlocks: []
           }
         },
+        status: "sent",
         priority: "normal",
-        metadata: {
-          source: "bot",
-          clientVersion: "claude-sonnet-4"
-        }
+        timestamp: new Date().toISOString(),
+        reactions: []
       },
       {
         id: MESSAGE_IDS.WELCOME_ACADEMY,
         roomId: ROOM_IDS.ACADEMY,
-        senderId: USER_IDS.HUMAN,
+        senderId: 'system', // Use system user for welcome messages
+        senderName: 'System',
         content: {
           text: MESSAGE_CONTENT.WELCOME_ACADEMY,
           attachments: [],
@@ -271,11 +275,10 @@ async function seedViaJTAG() {
             codeBlocks: []
           }
         },
+        status: "sent",
         priority: "normal",
-        metadata: {
-          source: "user",
-          deviceType: "web"
-        }
+        timestamp: new Date().toISOString(),
+        reactions: []
       }
     ];
 

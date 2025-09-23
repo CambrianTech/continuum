@@ -11,13 +11,13 @@ import {
   createChatSendMessageResult,
   createChatSendMessageError
 } from './ChatSendMessageTypes';
+import { ChatMessageEntity, type CreateMessageData, type MessagePriority, type MessageContent, MESSAGE_STATUS, processMessageFormatting } from '../../../../system/data/entities/ChatMessageEntity';
+import { UserEntity } from '../../../../system/data/entities/UserEntity';
+import { DEFAULT_USERS } from '../../../../system/data/domains/DefaultEntities';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
-import type { CreateMessageData } from '../../../../system/data/domains/ChatMessage';
-import { ChatMessageData, type MessagePriority, MESSAGE_STATUS } from '../../../../system/data/domains/ChatMessage';
-import { processMessageFormatting } from '../../../../system/data/domains/ChatMessage';
-import { UserId, RoomId, MessageId, ISOString } from '../../../../system/data/domains/CoreTypes';
-import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
-import { userIdManager } from '../../../../system/shared/UserIdManager';
+// Domain types removed - using UUID directly
+// UserIdManager removed - using direct user lookup via commands
 
 export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessageParams, ChatSendMessageResult> {
   
@@ -40,55 +40,53 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
       // TODO: Need User and ChatRoom objects - for now create directly
       // CRITICAL FIX: Use persistent User ID for user messages, system sender for others
       let senderId: string;
-      
+      let senderName: string;
+
       if (chatParams.senderType === 'system') {
         senderId = 'system';
+        senderName = 'System';
       } else if (chatParams.senderType === 'server') {
         senderId = 'server';
+        senderName = 'Server';
       } else {
-        // For user messages, use persistent User ID from UserIdManager
-        try {
-          senderId = await userIdManager.getCurrentUserId();
-          console.log(`🔧 CLAUDE-USER-ID-DEBUG: Using persistent User ID for user message: ${senderId}`);
-        } catch (error) {
-          console.warn('⚠️ ChatSendMessage: Failed to get User ID, falling back to Session ID:', error);
-          senderId = chatParams.sessionId; // Fallback to Session ID
-        }
+        // For user messages, use the hardcoded Joel user ID
+        senderId = DEFAULT_USERS.HUMAN;
+        senderName = 'Joel'; // Historical snapshot of displayName
+        console.log(`🔧 CLAUDE-USER-ID-DEBUG: Using Joel's UUID: ${senderId}`);
       }
       
       console.log(`🔧 CLAUDE-SENDER-DEBUG: senderType="${chatParams.senderType}", sessionId="${chatParams.sessionId}", using senderId="${senderId}"`);
 
-      // Create proper MessageContent object with formatting
-      const messageFormatting = processMessageFormatting(chatParams.content);
-
-      const messageData: CreateMessageData = {
-        roomId: RoomId(chatParams.roomId),
-        senderId: UserId(senderId),
-        content: {
-          text: chatParams.content,
-          attachments: [],
-          formatting: messageFormatting
-        },
-        priority: 'normal',
-        mentions: messageFormatting.mentions,
-        replyToId: chatParams.replyToId ? chatParams.replyToId as any : undefined,
-        metadata: {
-          source: chatParams.senderType === 'system' ? 'system' : 'user',
-          deviceType: 'web'
-        }
+      // Create MessageContent object
+      const baseContent: MessageContent = {
+        text: chatParams.content,
+        attachments: []
       };
+      const messageFormatting = processMessageFormatting(baseContent);
+
+      const messageData = new ChatMessageEntity();
+      // BaseEntity auto-generates id, createdAt, updatedAt, version
+      messageData.roomId = chatParams.roomId as UUID;
+      messageData.senderId = senderId as UUID;
+      messageData.senderName = senderName; // Historical snapshot of displayName
+      messageData.content = messageFormatting;
+      messageData.priority = 'normal';
+      messageData.status = 'sending';
+      messageData.timestamp = new Date();
+      messageData.reactions = [];
+      messageData.replyToId = chatParams.replyToId as UUID;
 
       // 2. Store message using data/create command - returns ChatMessage directly
-      const storedMessage = await this.storeMessage(messageData);
+      const storedMessage = await this.storeMessage(messageData, chatParams.sessionId);
 
       // 4. Emit event for widgets and other listeners (server-specific)
       await this.emitMessageEvent(storedMessage);
 
       const duration = Date.now() - startTime;
-      console.log(`✅ ${this.getEnvironmentLabel()}: Message ${storedMessage.messageId} sent in ${duration}ms`);
+      console.log(`✅ ${this.getEnvironmentLabel()}: Message ${storedMessage.id} sent in ${duration}ms`);
 
       return createChatSendMessageResult(chatParams, {
-        messageId: storedMessage.messageId,
+        messageId: storedMessage.id,
         message: storedMessage
       });
 
@@ -103,91 +101,32 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   }
 
   /**
-   * Store message using data/create command - now returns actual ChatMessage
+   * Store message using superior data/create command system
    */
-  private async storeMessage(messageData: CreateMessageData): Promise<ChatMessageData> {
-    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: About to store message to database`);
+  private async storeMessage(messageData: ChatMessageEntity, sessionId: string): Promise<ChatMessageEntity> {
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE: Using superior data/create system for message ${messageData.id}`);
 
-    // Use CreateMessageData - let the data layer handle BaseEntity fields
-    const messageId = MessageId(generateUUID());
-
-    const createData: CreateMessageData = {
-      roomId: messageData.roomId,
-      senderId: messageData.senderId,
-      content: {
-        text: messageData.content.text,
-        attachments: messageData.content.attachments || [],
-        formatting: {
-          markdown: messageData.content.formatting?.markdown || false,
-          mentions: messageData.content.formatting?.mentions || [],
-          hashtags: messageData.content.formatting?.hashtags || [],
-          links: messageData.content.formatting?.links || [],
-          codeBlocks: messageData.content.formatting?.codeBlocks || []
-        }
-      },
-      priority: 'normal' as MessagePriority, // Default priority
-      mentions: messageData.content.formatting?.mentions,
-      replyToId: messageData.replyToId as MessageId | undefined,
-      metadata: {
-        source: messageData.metadata?.source || 'user',
-        deviceType: messageData.metadata?.deviceType,
-        clientVersion: messageData.metadata?.clientVersion,
-        editHistory: messageData.metadata?.editHistory,
-        deliveryReceipts: messageData.metadata?.deliveryReceipts
-      }
-    };
-
-    // Clean domain data - adapter handles BaseEntity fields + timestamp conversion
-    const domainData = {
-      messageId,
-      senderName: `User-${messageData.senderId.substring(0, 8)}`,
-      status: MESSAGE_STATUS.SENT,
-      timestamp: new Date().toISOString() as ISOString, // Domain requires ISOString
-      reactions: [],
-      ...createData,
-      priority: createData.priority || 'normal', // Ensure priority is always set
-      content: {
-        ...createData.content,
-        attachments: createData.content.attachments || [], // Ensure attachments is always defined
-        formatting: {
-          markdown: createData.content.formatting?.markdown || false,
-          mentions: createData.content.formatting?.mentions || [],
-          hashtags: createData.content.formatting?.hashtags || [],
-          links: createData.content.formatting?.links || [],
-          codeBlocks: createData.content.formatting?.codeBlocks || []
-        }
-      },
-      metadata: {
-        source: createData.metadata?.source || 'user',
-        deviceType: createData.metadata?.deviceType,
-        clientVersion: createData.metadata?.clientVersion,
-        editHistory: createData.metadata?.editHistory,
-        deliveryReceipts: createData.metadata?.deliveryReceipts
-      }
-    };
-
-    const createParams: DataCreateParams<ChatMessageData> = {
+    // Use the superior command system instead of legacy DataDaemon.store()
+    const params: DataCreateParams<ChatMessageEntity> = {
       collection: ChatMessageEntity.collection,
-      data: domainData, // Properly typed as Omit<ChatMessageData, keyof BaseEntity>
-      context: this.context,
-      sessionId: messageData.senderId
+      data: messageData,
+      id: messageData.id,
+      sessionId: sessionId,
+      context: this.context
     };
 
-    const result = await this.remoteExecute<DataCreateParams<ChatMessageData>, DataCreateResult<ChatMessageData>>(
-      createParams,
-      'data/create'
+    const result = await this.remoteExecute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
+      params,
+      'data/create',
+      'server'
     );
 
-    console.log(`🔥 CLAUDE-FIX-${Date.now()}: STORE-RESULT: Store result for ${messageId}:`, result);
-
-    if (!result.success) {
-      throw new Error(`Failed to store message ${messageId}: ${result.error}`);
+    if (!result.success || !result.data) {
+      throw new Error(`Failed to store message ${messageData.id}: ${result.error}`);
     }
 
-    console.log(`💾 Stored message ${messageId} in global database`);
-
-    // Return the stored ChatMessageData - adapter filled in BaseEntity fields
-    return result.data!;
+    console.log(`💾 Stored message ${messageData.id} using superior command system`);
+    return result.data; // Return the data from the successful create
   }
 
   /**
@@ -209,7 +148,7 @@ export abstract class ChatSendMessageCommand extends CommandBase<ChatSendMessage
   /**
    * Emit message event for widgets and listeners (abstract - implemented per environment)
    */
-  protected abstract emitMessageEvent(message: ChatMessageData): Promise<void>;
+  protected abstract emitMessageEvent(message: ChatMessageEntity): Promise<void>;
 
   /**
    * Get environment label for logging

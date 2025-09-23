@@ -5,7 +5,7 @@
 import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 export interface DataListParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
   // Collection name - comes from Entity.collection static property

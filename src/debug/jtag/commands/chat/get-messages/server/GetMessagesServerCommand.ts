@@ -6,7 +6,7 @@ import { GetMessagesCommand } from '../shared/GetMessagesCommand';
 import { type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { GetMessagesParams, MessageData } from '../shared/GetMessagesTypes';
-import type { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
+// Using ChatMessageEntity directly - no separate data interface needed
 import type { DataListParams, DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import { DOMAIN_FIELDS } from '../../../../system/data/core/FieldMapping';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
@@ -67,7 +67,7 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       };
 
       console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: Calling data/list with params:`, JSON.stringify(dataListParams, null, 2));
-      const typedResult = await this.remoteExecute<DataListParams, DataListResult<ChatMessageData>>(
+      const typedResult = await this.remoteExecute<DataListParams, DataListResult<ChatMessageEntity>>(
         dataListParams,
         'data/list'
       );
@@ -85,7 +85,7 @@ export class GetMessagesServerCommand extends GetMessagesCommand {
       console.log(`📚 Server: Retrieved ${domainMessages.length} messages for room ${params.roomId}`);
       console.log(`🔧 CLAUDE-TIMESTAMP-DEBUG: First message timestamp: ${domainMessages[0]?.timestamp}`);
 
-      // Return domain data directly - no .toData() method since ChatMessageData is interface
+      // Return entities directly - using actual entity instances
       return domainMessages as MessageData[];
 
     } catch (error) {

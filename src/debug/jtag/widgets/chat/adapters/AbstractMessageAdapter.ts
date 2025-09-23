@@ -6,7 +6,7 @@
  * that handles rendering, interaction, and lifecycle independently.
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { ChatContentType } from '../shared/ChatMessagePayload';
 
 export interface AdapterRenderOptions {
@@ -54,7 +54,7 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
    * Parse message content into typed data structure
    * Each adapter implements its own content parsing logic
    */
-  abstract parseContent(message: ChatMessageData): TContentData | null;
+  abstract parseContent(message: ChatMessageEntity): TContentData | null;
 
   /**
    * Render the content HTML
@@ -102,7 +102,7 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
    * Main render method - just returns HTML, no per-row CSS injection
    * Efficient for dynamic paging/infinite scroll
    */
-  renderMessage(message: ChatMessageData, currentUserId: string): string {
+  renderMessage(message: ChatMessageEntity, currentUserId: string): string {
     try {
       // Parse content using adapter-specific logic
       this.contentData = this.parseContent(message) || undefined;

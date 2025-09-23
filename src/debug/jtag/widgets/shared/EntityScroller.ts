@@ -5,7 +5,7 @@
  * Clean interfaces, efficient data handling, no coupling to specific implementations.
  */
 
-import type { BaseEntity } from '../../system/data/domains/CoreTypes';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 
 // Pure render function - like React components, constrained to our BaseEntity
 export type RenderFn<T extends BaseEntity> = (entity: T, context: RenderContext<T>) => HTMLElement;

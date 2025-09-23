@@ -9,7 +9,7 @@
  * - Phantom types to encode invariants in the type system
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { ChatContentType } from '../shared/ChatMessagePayload';
 
 // ============================================================================
@@ -308,7 +308,7 @@ export interface MessageAdapter<TContentData extends ContentData = ContentData> 
   readonly hooks: AdapterLifecycleHooks;
 
   // Rust-style Result types for error handling
-  parseContent(message: ChatMessageData): Result<TContentData>;
+  parseContent(message: ChatMessageEntity): Result<TContentData>;
   renderContent(data: TContentData, currentUserId: string): Result<string>;
   handleContentLoading(element: HTMLElement): AsyncResult<void>;
 
@@ -317,7 +317,7 @@ export interface MessageAdapter<TContentData extends ContentData = ContentData> 
   getCSS(): string;
 
   // Main interface methods
-  renderMessage(message: ChatMessageData, currentUserId: string): Result<string>;
+  renderMessage(message: ChatMessageEntity, currentUserId: string): Result<string>;
   initializeInDOM(element: HTMLElement): AsyncResult<void>;
 }
 

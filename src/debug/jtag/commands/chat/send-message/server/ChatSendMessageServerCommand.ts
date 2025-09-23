@@ -10,7 +10,6 @@ import type { EventBridgePayload } from '../../../../daemons/events-daemon/share
 import { ChatSendMessageCommand } from '../shared/ChatSendMessageCommand';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../shared/ChatSendMessageTypes';
 import { CHAT_EVENTS } from '../../../../widgets/chat/shared/ChatEventConstants';
-import { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { EVENT_SCOPES } from '../../../../system/events/shared/EventSystemConstants';
 
@@ -38,9 +37,9 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
   /**
    * Server-specific event emission using Router's event facilities
    */
-  protected async emitMessageEvent(message: ChatMessageData): Promise<void> {
-    console.log(`🚨 CLAUDE-EMIT-CALLED-${Date.now()}: ChatSendMessageServerCommand.emitMessageEvent() called for ${message.messageId}`);
-    console.log(`🔥 CLAUDE-FIX-${Date.now()}: SERVER-EVENT: emitMessageEvent called for message ${message.messageId}`);
+  protected async emitMessageEvent(message: ChatMessageEntity): Promise<void> {
+    console.log(`🚨 CLAUDE-EMIT-CALLED-${Date.now()}: ChatSendMessageServerCommand.emitMessageEvent() called for ${message.id}`);
+    console.log(`🔥 CLAUDE-FIX-${Date.now()}: SERVER-EVENT: emitMessageEvent called for message ${message.id}`);
 
     try {
       if (!this.commander?.router) {
@@ -74,7 +73,7 @@ export class ChatSendMessageServerCommand extends ChatSendMessageCommand {
 
       // Route event through Router (handles cross-context distribution)
       const result = await this.commander.router.postMessage(eventMessage);
-      console.log(`📨 SERVER-EVENT: Emitted MESSAGE_RECEIVED for message ${message.messageId} in room ${message.roomId}`, result);
+      console.log(`📨 SERVER-EVENT: Emitted MESSAGE_RECEIVED for message ${message.id} in room ${message.roomId}`, result);
 
     } catch (error) {
       console.error(`❌ CLAUDE-EVENT-EMISSION-FAILED-${Date.now()}: Failed to emit message event:`, error);

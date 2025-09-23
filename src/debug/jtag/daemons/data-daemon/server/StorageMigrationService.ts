@@ -13,6 +13,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataRecord, StorageResult } from '../shared/DataStorageAdapter';
 import type { StorageStrategyConfig, DataOperationContext } from '../shared/DataDaemon';
 import { DataDaemon } from '../shared/DataDaemon';
+import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -66,7 +67,14 @@ export class StorageMigrationService {
     context: DataOperationContext
   ): Promise<MigrationPlan> {
     // Initialize source daemon to discover collections
-    const fromDaemon = new DataDaemon(fromStrategy);
+    const factory = new DefaultStorageAdapterFactory();
+    const adapterConfig = {
+      type: fromStrategy.backend as any,
+      namespace: fromStrategy.namespace,
+      options: fromStrategy.options
+    };
+    const adapter = factory.createAdapter(adapterConfig);
+    const fromDaemon = new DataDaemon(fromStrategy, adapter);
     await fromDaemon.initialize();
 
     const collectionsResult = await fromDaemon.listCollections(context);
@@ -104,8 +112,23 @@ export class StorageMigrationService {
 
     try {
       // Initialize daemons
-      this.fromDaemon = new DataDaemon(plan.fromStrategy);
-      this.toDaemon = new DataDaemon(plan.toStrategy);
+      const factory = new DefaultStorageAdapterFactory();
+
+      const fromAdapterConfig = {
+        type: plan.fromStrategy.backend as any,
+        namespace: plan.fromStrategy.namespace,
+        options: plan.fromStrategy.options
+      };
+      const fromAdapter = factory.createAdapter(fromAdapterConfig);
+      this.fromDaemon = new DataDaemon(plan.fromStrategy, fromAdapter);
+
+      const toAdapterConfig = {
+        type: plan.toStrategy.backend as any,
+        namespace: plan.toStrategy.namespace,
+        options: plan.toStrategy.options
+      };
+      const toAdapter = factory.createAdapter(toAdapterConfig);
+      this.toDaemon = new DataDaemon(plan.toStrategy, toAdapter);
       
       await this.fromDaemon.initialize();
       await this.toDaemon.initialize();
@@ -204,8 +227,7 @@ export class StorageMigrationService {
         const createResult = await this.toDaemon.create(
           collection,
           record.data,
-          context,
-          record.id
+          context
         );
 
         if (!createResult.success) {

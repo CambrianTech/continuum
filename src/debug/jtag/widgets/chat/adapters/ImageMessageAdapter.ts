@@ -5,7 +5,7 @@
  * No shadow DOM per row - just embedded CSS and HTML
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
 interface ImageContentData {
@@ -32,7 +32,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
    * Parse image URL from message text
    * Future: Support structured image data from ChatMessagePayload
    */
-  parseContent(message: ChatMessageData): ImageContentData | null {
+  parseContent(message: ChatMessageEntity): ImageContentData | null {
     const text = message.content?.text;
     if (!text) return null;
 

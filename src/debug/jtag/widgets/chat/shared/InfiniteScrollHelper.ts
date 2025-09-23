@@ -5,15 +5,14 @@
  * for efficient loading of chat history
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
-import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
 export interface CursorPaginationState {
   readonly hasMore: boolean;
   readonly isLoading: boolean;
-  readonly oldestTimestamp?: string; // Cursor for loading older messages
-  readonly newestTimestamp?: string; // Cursor for loading newer messages
+  readonly oldestTimestamp?: Date; // Cursor for loading older messages
+  readonly newestTimestamp?: Date; // Cursor for loading newer messages
 }
 
 export interface InfiniteScrollOptions {
@@ -32,7 +31,7 @@ export class InfiniteScrollHelper {
   };
 
   private observer?: IntersectionObserver;
-  private loadMoreCallback?: (cursor: string) => Promise<ChatMessageData[]>;
+  private loadMoreCallback?: (cursor: Date) => Promise<ChatMessageEntity[]>;
   private sentinel?: HTMLElement;
   private scrollContainer?: Element;
 
@@ -50,7 +49,7 @@ export class InfiniteScrollHelper {
    */
   setupIntersectionObserver(
     scrollContainer: Element,
-    loadMoreCallback: (cursor: string) => Promise<ChatMessageData[]>
+    loadMoreCallback: (cursor: Date) => Promise<ChatMessageEntity[]>
   ): void {
     this.loadMoreCallback = loadMoreCallback;
     this.scrollContainer = scrollContainer;
@@ -179,7 +178,7 @@ export class InfiniteScrollHelper {
   /**
    * Initialize pagination state with first batch of messages
    */
-  initializeWithMessages(messages: ChatMessageData[]): void {
+  initializeWithMessages(messages: ChatMessageEntity[]): void {
     console.log('🔄 InfiniteScrollHelper: initializeWithMessages called with', messages.length, 'messages');
     if (messages.length > 0) {
       const sortedMessages = [...messages].sort((a, b) =>

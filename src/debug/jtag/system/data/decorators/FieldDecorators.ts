@@ -8,6 +8,17 @@
 export type FieldType = 'primary' | 'foreign_key' | 'date' | 'enum' | 'text' | 'json' | 'number' | 'boolean';
 
 /**
+ * Text length constants
+ */
+export const TEXT_LENGTH = {
+  UNLIMITED: 0,        // Use 0 to indicate unlimited/LONGTEXT
+  DEFAULT: 256,        // Standard varchar length
+  SHORT: 30,          // For short descriptions in UI
+  MEDIUM: 128,        // Medium text fields
+  LONG: 1024          // Long text fields
+} as const;
+
+/**
  * Type for entity constructor function
  */
 type EntityConstructor = new (...args: unknown[]) => unknown;
@@ -34,10 +45,30 @@ export interface FieldMetadata {
 const FIELD_METADATA = new Map<EntityConstructor, Map<string, FieldMetadata>>();
 
 /**
- * Get field metadata for an entity class
+ * Get field metadata for an entity class, including inherited fields
  */
 export function getFieldMetadata(entityClass: EntityConstructor): Map<string, FieldMetadata> {
-  return FIELD_METADATA.get(entityClass) || new Map();
+  const allMetadata = new Map<string, FieldMetadata>();
+
+  // Walk up the prototype chain to collect inherited field metadata
+  let currentClass = entityClass;
+  while (currentClass) {
+    const classMetadata = FIELD_METADATA.get(currentClass);
+    if (classMetadata) {
+      // Add parent class metadata first (so child can override)
+      for (const [fieldName, metadata] of classMetadata) {
+        if (!allMetadata.has(fieldName)) {
+          allMetadata.set(fieldName, metadata);
+        }
+      }
+    }
+
+    // Move to parent class
+    const parent = Object.getPrototypeOf(currentClass);
+    currentClass = parent === Function.prototype ? null : parent;
+  }
+
+  return allMetadata;
 }
 
 /**

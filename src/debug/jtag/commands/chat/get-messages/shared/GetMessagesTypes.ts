@@ -8,26 +8,26 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 // Bridge API types with command system types
 import type { GetMessageHistoryParams, GetMessageHistoryResult } from '../../../../api/commands/chat/ChatCommands';
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
-import type { ChatMessageData } from '../../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 
 // Command system compatible types
 export interface GetMessagesParams extends CommandParams, GetMessageHistoryParams {}
 
 export interface GetMessagesResult extends CommandResult {
   readonly success: boolean;
-  readonly messages: ChatMessageData[];
+  readonly messages: ChatMessageEntity[];
   readonly roomId: string;
   readonly totalCount?: number;
   readonly hasMore: boolean;
   readonly error?: string;
 }
 
-export type MessageData = ChatMessageData;
+export type MessageData = ChatMessageEntity;
 
 // Factory functions for type-safe result creation  
 export function createGetMessagesSuccess(
   params: GetMessagesParams,
-  messages: ChatMessageData[],
+  messages: ChatMessageEntity[],
   hasMore: boolean = false,
   totalCount?: number
 ): GetMessagesResult {

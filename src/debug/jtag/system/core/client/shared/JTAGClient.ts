@@ -427,10 +427,11 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     }
 
     await this.discoverCommands();
-    
+
     // Initialize scoped event system now that connection is established
     this.initializeScopedEvents();
   }
+
 
   /**
    * Get environment-specific transport factory - implemented by JTAGClientServer/JTAGClientBrowser

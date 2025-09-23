@@ -5,7 +5,7 @@
  * elegant executeCommand pattern, preserving full type safety.
  */
 
-import type { BaseEntity } from '../../system/data/domains/CoreTypes';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataExecutor, DataQueryParams, DataQueryResult } from './DataLoaders';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
