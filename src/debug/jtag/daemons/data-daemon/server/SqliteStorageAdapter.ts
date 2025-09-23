@@ -1079,17 +1079,92 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     const tableName = SqlNamingConverter.toTableName(query.collection);
     let sql = `SELECT * FROM ${tableName}`;
 
-    // Add filters (translate field names to column names)
+    // Build WHERE clause from filters
+    const whereClauses: string[] = [];
+
+    // Legacy filters (backward compatibility)
     if (query.filters) {
-      const filterClauses: string[] = [];
       for (const [field, value] of Object.entries(query.filters)) {
         const columnName = SqlNamingConverter.toSnakeCase(field);
-        filterClauses.push(`${columnName} = ?`);
+        whereClauses.push(`${columnName} = ?`);
         params.push(value);
       }
-      if (filterClauses.length > 0) {
-        sql += ` WHERE ${filterClauses.join(' AND ')}`;
+    }
+
+    // Universal filters with operators
+    if (query.filter) {
+      for (const [field, filter] of Object.entries(query.filter)) {
+        const columnName = SqlNamingConverter.toSnakeCase(field);
+
+        if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
+          // Handle operators like { $gt: value, $in: [...] }
+          for (const [operator, value] of Object.entries(filter)) {
+            switch (operator) {
+              case '$eq':
+                whereClauses.push(`${columnName} = ?`);
+                params.push(value);
+                break;
+              case '$ne':
+                whereClauses.push(`${columnName} != ?`);
+                params.push(value);
+                break;
+              case '$gt':
+                whereClauses.push(`${columnName} > ?`);
+                params.push(value);
+                break;
+              case '$gte':
+                whereClauses.push(`${columnName} >= ?`);
+                params.push(value);
+                break;
+              case '$lt':
+                whereClauses.push(`${columnName} < ?`);
+                params.push(value);
+                break;
+              case '$lte':
+                whereClauses.push(`${columnName} <= ?`);
+                params.push(value);
+                break;
+              case '$in':
+                if (Array.isArray(value) && value.length > 0) {
+                  const placeholders = value.map(() => '?').join(',');
+                  whereClauses.push(`${columnName} IN (${placeholders})`);
+                  params.push(...value);
+                }
+                break;
+              case '$nin':
+                if (Array.isArray(value) && value.length > 0) {
+                  const placeholders = value.map(() => '?').join(',');
+                  whereClauses.push(`${columnName} NOT IN (${placeholders})`);
+                  params.push(...value);
+                }
+                break;
+              case '$exists':
+                if (value) {
+                  whereClauses.push(`${columnName} IS NOT NULL`);
+                } else {
+                  whereClauses.push(`${columnName} IS NULL`);
+                }
+                break;
+              case '$regex':
+                whereClauses.push(`${columnName} REGEXP ?`);
+                params.push(value);
+                break;
+              case '$contains':
+                whereClauses.push(`${columnName} LIKE ?`);
+                params.push(`%${value}%`);
+                break;
+            }
+          }
+        } else {
+          // Direct value implies $eq
+          whereClauses.push(`${columnName} = ?`);
+          params.push(filter);
+        }
       }
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
     }
 
     // Add time range filter

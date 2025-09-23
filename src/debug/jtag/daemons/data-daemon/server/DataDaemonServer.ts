@@ -114,7 +114,20 @@ export class DataDaemonServer extends DataDaemonBase {
    */
   protected async handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
     const context = this.createDataContext('data-daemon-server');
-    return await this.dataDaemon.update(payload.collection!, payload.id!, payload.data, context);
+    const entity = await this.dataDaemon.update(payload.collection!, payload.id!, payload.data, context);
+    return {
+      success: true,
+      data: {
+        id: entity.id,
+        collection: payload.collection!,
+        data: entity,
+        metadata: {
+          createdAt: entity.createdAt.toISOString(),
+          updatedAt: entity.updatedAt.toISOString(),
+          version: entity.version
+        }
+      }
+    };
   }
   
   /**

@@ -12,8 +12,6 @@ import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatfor
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { GetMessagesParams, GetMessagesResult } from '../../../commands/chat/get-messages/shared/GetMessagesTypes';
-import type { SubscribeRoomParams, SubscribeRoomResult } from '../../../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { CHAT_EVENTS, CHAT_EVENT_TYPES } from '../shared/ChatEventConstants';
 import type {
@@ -364,19 +362,17 @@ export class ChatWidget extends ChatWidgetBase {
     try {
       console.log(`📚 ChatWidget: Loading room history using cursor-based pagination`);
 
-      // Load initial batch of recent messages (no cursor = most recent)
-      // chat/get-messages should return messages in chronological order (oldest to newest)
-      const historyResult = await Commands.execute<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
-        roomId: this.roomId,
-        limit: 20 // Initial page size
+      // Load initial batch of recent messages using data/list
+      const historyResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+        collection: ChatMessageEntity.collection,
+        filter: { roomId: this.roomId },
+        orderBy: [{ field: 'timestamp', direction: 'asc' }],
+        limit: 20
       });
 
-
-      if (historyResult?.success && historyResult?.messages) {
-        this.messages = historyResult.messages
+      if (historyResult?.success && historyResult?.items) {
+        this.messages = historyResult.items
           .filter((message): message is ChatMessageEntity => !!message.content?.text && message.content.text.trim().length > 0);
-
-        // EntityScroller handles initialization internally
 
         console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.roomId}"`);
       } else if (historyResult?.success === false) {
@@ -451,20 +447,8 @@ export class ChatWidget extends ChatWidgetBase {
     try {
       console.log(`🔗 ChatWidget: Subscribing to room events for "${this.roomId}"`);
       
-      // Try JTAG operation to subscribe to room events via the chat daemon
-      try {
-        const subscribeResult = await Commands.execute<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
-          roomId: this.roomId,
-          eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
-        });
-        
-        if (subscribeResult && subscribeResult.success && subscribeResult.subscriptionId) {
-          this.eventSubscriptionId = subscribeResult.subscriptionId;
-          console.log(`✅ ChatWidget: Subscribed to room "${this.roomId}" events via JTAG`);
-        }
-      } catch (jtagError) {
-        console.error(`ℹ️ ChatWidget: JTAG room subscription not available, using DOM events fallback`, jtagError);
-      }
+      // Subscribe to data events directly - no need for separate chat/subscribe-room command
+      console.log(`✅ ChatWidget: Using direct data event subscription for room "${this.roomId}"`);
       
       // Set up DOM event listeners as fallback (these are emitted by EventsDaemon)
       this.setupRoomEventHandlers();
@@ -916,7 +900,6 @@ export class ChatWidget extends ChatWidgetBase {
       const createResult = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
         collection: 'ChatMessage',
         data: messageEntity,
-        id: generateUUID(),
         context: client.context,
         sessionId: client.sessionId
       });

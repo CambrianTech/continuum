@@ -9,7 +9,6 @@
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 
 /**
  * Type alias for structured record data that can be indexed by field names
@@ -40,14 +39,54 @@ export interface DataRecordMetadata {
 }
 
 /**
- * Storage Query Interface - Data Retrieval
+ * Primitive values that can be compared and filtered
+ */
+export type ComparableValue = string | number | boolean | Date;
+
+/**
+ * Universal Query Operators - Database-agnostic filtering
+ */
+export interface QueryOperators {
+  $eq?: ComparableValue | null;           // Equal to
+  $ne?: ComparableValue | null;           // Not equal to
+  $gt?: ComparableValue;                  // Greater than
+  $gte?: ComparableValue;                 // Greater than or equal
+  $lt?: ComparableValue;                  // Less than
+  $lte?: ComparableValue;                 // Less than or equal
+  $in?: ComparableValue[];                // In array
+  $nin?: ComparableValue[];               // Not in array
+  $exists?: boolean;                      // Field exists
+  $regex?: string;                        // Regular expression match
+  $contains?: string;                     // String contains (case insensitive)
+}
+
+/**
+ * Field filter - direct value (implies $eq) or operator object
+ */
+export type FieldFilter = ComparableValue | null | QueryOperators;
+
+/**
+ * Universal filter object - maps field names to filters
+ */
+export interface UniversalFilter {
+  [fieldName: string]: FieldFilter;
+}
+
+/**
+ * Enhanced Storage Query Interface - Universal & Backward Compatible
  */
 export interface StorageQuery {
   readonly collection: string;
-  readonly filters?: RecordData;
+  readonly filters?: RecordData; // Legacy simple filters (backward compatibility)
+  readonly filter?: UniversalFilter; // New universal filter system
   readonly sort?: { field: string; direction: 'asc' | 'desc' }[];
   readonly limit?: number;
   readonly offset?: number;
+  readonly cursor?: {
+    field: string;
+    value: ComparableValue;
+    direction: 'before' | 'after';
+  };
   readonly tags?: readonly string[];
   readonly timeRange?: {
     start?: string;
@@ -70,7 +109,7 @@ export interface StorageCapabilities {
 /**
  * Storage Operation Result
  */
-export interface StorageResult<T = any> {
+export interface StorageResult<T = unknown> {
   readonly success: boolean;
   readonly data?: T;
   readonly error?: string;
