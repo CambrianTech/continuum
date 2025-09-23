@@ -5,14 +5,14 @@
  * to validate error handling flow and session mapping
  */
 
-import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { type TestErrorParams, type TestErrorResult, createTestErrorResult } from '../shared/TestErrorTypes';
 
-export class TestErrorServerCommand extends CommandBase<TestErrorParams, TestErrorResult> {
-  
+export class DebugErrorServerCommand extends CommandBase<TestErrorParams, TestErrorResult> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('test-error', context, subpath, commander);
+    super('debug/error', context, subpath, commander);
   }
 
   async execute(params: JTAGPayload): Promise<TestErrorResult> {

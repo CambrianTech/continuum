@@ -7,14 +7,10 @@
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import { UserEntity } from '../../../../system/data/entities/UserEntity';
-import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
-import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
 import { getDataEventName } from '../../shared/DataEventConstants';
 import { Events } from '../../../../system/core/server/shared/Events';
 
@@ -31,22 +27,31 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
     console.debug(`🗄️ DATA SERVER: Creating ${collection} record via DataDaemon`);
 
     try {
+      // Parse data if it's a string (from CLI)
+      let entityData = params.data;
+      if (typeof params.data === 'string') {
+        try {
+          entityData = JSON.parse(params.data);
+        } catch (e) {
+          return createDataCreateResultFromParams(params, {
+            success: false,
+            error: `Invalid JSON in data parameter: ${e instanceof Error ? e.message : 'Unknown error'}`
+          });
+        }
+      }
+
       // Use enhanced DataDaemon with field extraction
-      const result = await DataDaemon.store(collection, params.data as BaseEntity);
+      const result = await DataDaemon.store(collection, entityData as BaseEntity);
 
       if (result.success && result.data) {
         console.debug(`✅ DATA SERVER: Created ${collection}/${result.data.id} with field extraction`);
-        console.debug(`🔧 CLAUDE-FIX-${Date.now()}: DataCreateServerCommand now uses DataDaemon.store() for field extraction`);
 
         // Emit generic data creation event for real-time UI updates
-        // Same elegance as Commands.execute<T>() - works everywhere!
         try {
           console.log(`📡 DataCreateServerCommand: Emitting data:${collection}:created event via Events.emit<T>()`);
           // Match DataListServerCommand format: merge record.data + record.id
-          // Parse JSON string to object before spreading (result.data.data is a JSON string)
-          const parsedData = typeof result.data.data === 'string' ? JSON.parse(result.data.data) : result.data.data;
-          const entityData = {
-            ...parsedData,
+          const eventData = {
+            ...result.data.data,
             id: result.data.id  // Same merge as DataListServerCommand lines 73-76
           };
           const eventName = getDataEventName(collection, 'created');
