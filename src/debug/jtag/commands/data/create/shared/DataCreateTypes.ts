@@ -15,8 +15,7 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 export interface DataCreateParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
   // Collection name - comes from Entity.collection static property
   readonly collection: string;
-  readonly data: Omit<T, keyof BaseEntity>; // Adapter adds BaseEntity fields automatically
-  readonly id?: UUID;
+  readonly data: T; 
 }
 
 /**
@@ -24,9 +23,7 @@ export interface DataCreateParams<T extends BaseEntity = BaseEntity> extends JTA
  */
 export interface DataCreateResult<T extends BaseEntity = BaseEntity> extends JTAGPayload {
   readonly success: boolean;
-  readonly id?: UUID;
   readonly data?: T;
-  readonly timestamp: string;
   readonly error?: string;
 }
 

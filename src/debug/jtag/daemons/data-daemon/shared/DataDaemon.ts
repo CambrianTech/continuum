@@ -105,17 +105,17 @@ export class DataDaemon {
     collection: string,
     data: T,
     context: DataOperationContext
-  ): Promise<StorageResult<DataRecord<T>>> {
+  ): Promise<T> {
     await this.ensureInitialized();
     
     // Validate context and data
     const validationResult = this.validateOperation(collection, data, context);
-    if (!validationResult.success) {
-      return validationResult as StorageResult<DataRecord<T>>;
+    if (!validationResult.success && !validationResult.data) {
+      throw new Error(validationResult.error ?? 'Unknown error during data storage');
     }
     
     const record: DataRecord<T> = {
-      id: data.id,
+      id: data.id ?? this.generateId(), //possibly unnecessary if adapter generates IDs. possibly BAD
       collection,
       data,
       metadata: {
@@ -125,7 +125,12 @@ export class DataDaemon {
       }
     };
     
-    return await this.adapter.create(record);
+    const result = await this.adapter.create(record);
+    if (result.success && result.data) {
+      return result.data.data;
+    } else {
+      throw new Error(result.error ?? 'Unknown error during data storage');
+    }
   }
   
   /**
@@ -134,7 +139,7 @@ export class DataDaemon {
   async read<T extends BaseEntity>(
     collection: string,
     id: UUID,
-    context: DataOperationContext
+    _context: DataOperationContext // TODO: use context for read consistency
   ): Promise<StorageResult<DataRecord<T>>> {
     await this.ensureInitialized();
     return await this.adapter.read<T>(collection, id);
@@ -145,7 +150,7 @@ export class DataDaemon {
    */
   async query<T extends BaseEntity>(
     query: StorageQuery,
-    context: DataOperationContext
+    _context: DataOperationContext // TODO: use context for query consistency
   ): Promise<StorageResult<DataRecord<T>[]>> {
     await this.ensureInitialized();
     return await this.adapter.query<T>(query);
@@ -160,9 +165,14 @@ export class DataDaemon {
     data: Partial<T>,
     context: DataOperationContext,
     incrementVersion: boolean = true
-  ): Promise<StorageResult<DataRecord<T>>> {
+  ): Promise<T> {
     await this.ensureInitialized();
-    return await this.adapter.update<T>(collection, id, data, incrementVersion);
+    const result = await this.adapter.update<T>(collection, id, data, incrementVersion);
+    if (result.success && result.data) {
+      return result.data.data;
+    } else {
+      throw new Error(result.error ?? 'Unknown error during data update');
+    }
   }
   
   /**
@@ -332,11 +342,10 @@ export class DataDaemon {
   static async store<T extends BaseEntity>(
     collection: string,
     data: T
-  ): Promise<StorageResult<DataRecord<T>>> {
+  ): Promise<T> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
-
     return await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context);
   }
 
@@ -385,7 +394,7 @@ export class DataDaemon {
     id: UUID,
     data: Partial<T>,
     incrementVersion: boolean = true
-  ): Promise<StorageResult<DataRecord<T>>> {
+  ): Promise<T> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }

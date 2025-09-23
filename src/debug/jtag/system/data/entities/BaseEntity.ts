@@ -3,13 +3,14 @@
  */
 
 import { PrimaryField, DateField, NumberField } from '../decorators/FieldDecorators';
-import { generateUUID } from '../../core/types/CrossPlatformUUID';
+import { generateUUID, UUID } from '../../core/types/CrossPlatformUUID';
+import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
 
 export abstract class BaseEntity {
   [key: string]: unknown;
 
   @PrimaryField()
-  id: string;
+  id: UUID; //TODO; all entities must have id field
 
   @DateField({ index: true })
   createdAt: Date;
@@ -24,22 +25,23 @@ export abstract class BaseEntity {
     this.id = generateUUID();
     this.createdAt = new Date();
     this.updatedAt = new Date();
-    this.version = 1;
+    this.version = 0; //0 indeicates new record
   }
 
   /**
-   * Static factory method for creating events from entity data
+   * Create event name for this entity and action
    */
-  static createEntityEvent<E extends BaseEntity, T extends Record<string, any>>(
-    entityData: E,
-    eventType: string,
-    additionalData?: T
-  ) {
+  static getEventName(collection: string, action: 'created' | 'updated' | 'deleted'): string {
+    return getDataEventName(collection, action);
+  }
+
+  /**
+   * Create entity event data for real-time updates
+   */
+  static createEntityEvent<T extends BaseEntity>(entity: T, eventType: string): { data: T; type: string } {
     return {
-      eventType,
-      timestamp: new Date().toISOString(),
-      entity: entityData,
-      ...additionalData
+      data: entity,
+      type: eventType
     };
   }
 }
