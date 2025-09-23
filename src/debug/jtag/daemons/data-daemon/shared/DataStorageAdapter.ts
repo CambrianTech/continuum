@@ -9,6 +9,7 @@
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 
 /**
  * Type alias for structured record data that can be indexed by field names

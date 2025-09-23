@@ -7,11 +7,11 @@
 
 import { CHAT_EVENTS } from './ChatEventConstants';
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 
 export interface ChatMessageEventData {
   readonly eventType: 'chat:message-received';
-  readonly entity: ChatMessageData;  // Full entity - BaseEntity approach
+  readonly entity: ChatMessageEntity;  // Full entity - BaseEntity approach
   readonly timestamp: string;
 }
 

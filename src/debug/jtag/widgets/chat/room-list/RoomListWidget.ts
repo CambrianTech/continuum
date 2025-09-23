@@ -7,19 +7,17 @@
 
 import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
-import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
-import type { RoomId } from '../../../system/data/domains/CoreTypes';
+import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
-import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
-import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
 export class RoomListWidget extends ChatWidgetBase {
-  private currentRoomId: RoomId = DEFAULT_ROOMS.GENERAL as RoomId; // Sync with ChatWidget's default
+  private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID; // Sync with ChatWidget's default
   private roomScroller?: EntityScroller<RoomEntity>;
   private unreadCounts: Map<string, number> = new Map();
   
@@ -179,7 +177,7 @@ export class RoomListWidget extends ChatWidgetBase {
     for (const room of this.roomScroller.entities()) {
       // Domain-owned: CommandDaemon handles optimization, caching, retries
       const roomId = room.id;
-      const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
+      const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
         collection: ChatMessageEntity.collection,
         filter: { roomId, isRead: false }
       });
@@ -197,7 +195,7 @@ export class RoomListWidget extends ChatWidgetBase {
       const roomItem = target.closest('.room-item') as HTMLElement;
       
       if (roomItem) {
-        const roomId = roomItem.dataset.roomId as RoomId;
+        const roomId = roomItem.dataset.roomId as UUID;
         if (roomId) {
           this.selectRoom(roomId);
         }
@@ -216,7 +214,7 @@ export class RoomListWidget extends ChatWidgetBase {
      * 5. The chat message list widget also receives the event and re-renders to show messages for the new room.
      * 
     **/
-  private async selectRoom(roomId: RoomId): Promise<void> {
+  private async selectRoom(roomId: UUID): Promise<void> {
     // Early exit - prevent unnecessary work if already in this room
     if (this.currentRoomId === roomId) {
       console.log(`🔄 RoomListWidget: Already in room "${roomId}", ignoring selection`);
@@ -235,7 +233,7 @@ export class RoomListWidget extends ChatWidgetBase {
     this.currentRoomId = roomId;
 
     // Emit room change event for other widgets (like ChatWidget) to respond to
-    Events.emit('chat:room-changed', { roomId, roomEntity: roomEntity as ChatRoomData });
+    Events.emit('chat:room-changed', { roomId, roomEntity: roomEntity as RoomEntity });
 
     console.log(`✅ RoomListWidget: Room changed to "${roomId}"`);
   }
@@ -243,7 +241,7 @@ export class RoomListWidget extends ChatWidgetBase {
   /**
    * Update room highlighting with CSS only - no full redraw needed
    */
-  private updateRoomHighlighting(oldRoomId: RoomId, newRoomId: RoomId): void {
+  private updateRoomHighlighting(oldRoomId: UUID, newRoomId: UUID): void {
     // Access DOM relative to this widget's own shadow root, not from document
     const container = this.shadowRoot;
 

@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonBase';
 import { DataDaemon, type StorageStrategyConfig, type DataOperationContext } from '../shared/DataDaemon';
-import { FileStorageAdapter } from './FileStorageAdapter';
+import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
 import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/DatabaseConfig';
 
@@ -22,7 +22,7 @@ export class DataDaemonServer extends DataDaemonBase {
   
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
-    
+
     // Create storage configuration - SQLite-based for proper data storage
     const storageConfig: StorageStrategyConfig = {
       strategy: 'sql',
@@ -41,15 +41,27 @@ export class DataDaemonServer extends DataDaemonBase {
         enableCaching: true
       }
     };
-    
-    // Initialize DataDaemon with factory-based approach
-    this.dataDaemon = new DataDaemon(storageConfig);
+
+    // Create adapter via factory - server-side dependency injection
+    const factory = new DefaultStorageAdapterFactory();
+    const adapterConfig = {
+      type: storageConfig.backend as any,
+      namespace: storageConfig.namespace,
+      options: storageConfig.options
+    };
+    const adapter = factory.createAdapter(adapterConfig);
+
+    // Initialize DataDaemon with injected adapter
+    this.dataDaemon = new DataDaemon(storageConfig, adapter);
   }
   
   /**
    * Initialize data daemon
    */
   protected async initialize(): Promise<void> {
+    // Initialize entity registry before DataDaemon initialization
+    await this.initializeEntityRegistry();
+
     await this.dataDaemon.initialize();
 
     // Initialize static DataDaemon interface for commands to use
@@ -58,13 +70,27 @@ export class DataDaemonServer extends DataDaemonBase {
 
     console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
   }
+
+  /**
+   * Initialize entity registry for SqliteStorageAdapter
+   */
+  private async initializeEntityRegistry(): Promise<void> {
+    try {
+      const { initializeEntityRegistry } = await import('./EntityRegistry');
+      initializeEntityRegistry();
+      console.log(`🏷️ ${this.toString()}: Entity registry initialized`);
+    } catch (error) {
+      console.error(`❌ ${this.toString()}: Failed to initialize entity registry:`, error);
+      throw error;
+    }
+  }
   
   /**
    * Handle create operation using DataDaemon
    */
   protected async handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
     const context = this.createDataContext('data-daemon-server');
-    return await this.dataDaemon.create(payload.collection!, payload.data, context, payload.id);
+    return await this.dataDaemon.create(payload.collection!, payload.data, context);
   }
   
   /**

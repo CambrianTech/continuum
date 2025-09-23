@@ -5,11 +5,9 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import { ChatMessageData, type MessageReaction } from '../../../system/data/domains/ChatMessage';
-import { DEFAULT_MESSAGE_METADATA, DEFAULT_MESSAGE_FORMATTING } from '../../../system/data/domains/ChatMessage';
-import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
-import { MessageId, RoomId, UserId, ISOString } from '../../../system/data/domains/CoreTypes';
-import type { SessionId } from '../../../system/data/domains/CoreTypes';
+import { ChatMessageEntity, type MessageStatus } from '../../../system/data/entities/ChatMessageEntity';
+import { UserEntity } from '../../../system/data/entities/UserEntity';
+// Using UUID directly instead of domain type aliases
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
@@ -23,7 +21,7 @@ import type {
   ChatParticipantEventData,
   ChatEventName
 } from '../shared/ChatEventTypes';
-import { userIdManager } from '../../../system/shared/UserIdManager';
+// UserIdManager removed - using UserEntity.id directly
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 import { createDataLoader, PAGINATION_PRESETS } from '../../shared/DataLoaders';
@@ -31,23 +29,28 @@ import { createDataExecutor } from '../../shared/DataExecutorAdapter';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
-import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
+import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
-import type { ChatRoomData } from '../../../system/data/domains/ChatRoom';
+// ChatRoomData removed - using RoomEntity directly
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 
-// ChatMessageData already extends Entity via BaseEntity - no need for new interface
+// Default constants extracted from ChatMessageEntity
+const DEFAULT_MESSAGE_METADATA = {
+  source: 'system' as const
+};
+
+// ChatMessageEntity already extends Entity via BaseEntity - no need for new interface
 
 /**
  * Chat Message Renderer - Pure function for generic scroller
  */
-const renderChatMessage: RenderFn<ChatMessageData> = (message, context) => {
+const renderChatMessage: RenderFn<ChatMessageEntity> = (message, context) => {
   const isCurrentUser = context.isCurrentUser || false;
 
   // Create exact same DOM structure as existing ChatWidget
   const messageRow = document.createElement('div');
   messageRow.className = `message-row ${isCurrentUser ? 'right' : 'left'}`;
-  messageRow.setAttribute('data-message-id', message.messageId || message.id);
+  messageRow.setAttribute('data-message-id', message.id);
 
   const messageBubble = document.createElement('div');
   messageBubble.className = `message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}`;
@@ -89,27 +92,28 @@ interface ScrollState {
   readonly scrollHeight: number;
   readonly clientHeight: number;
   readonly timestamp: number;
-  readonly visibleMessageIds: string[];
+  readonly visibleUUIDs: string[];
 }
 
 export class ChatWidget extends ChatWidgetBase {
-  private messages: ChatMessageData[] = [];
-  private currentRoomId: RoomId;
-  private currentRoomEntity?: ChatRoomData;
+  private messages: ChatMessageEntity[] = [];
+  private currentRoomEntity?: RoomEntity;
   private messageInput?: HTMLInputElement;
   private eventSubscriptionId?: string;
   private messagesContainer?: HTMLElement;
-  private chatScroller?: EntityScroller<ChatMessageData>;
+  private chatScroller?: EntityScroller<ChatMessageEntity>;
+
+  // Cached current user - avoids repeated database lookups
+  private cachedCurrentUser?: UserEntity;
 
   // Event handler references for proper cleanup
   private _keydownHandler?: (e: KeyboardEvent) => void;
   private _clickHandler?: (e: Event) => void;
 
   // PUBLIC properties required by integration tests (NOT optional - must be set)
-  public currentUserId!: UserId; // Persistent User ID for "me" attribution
-  public currentSessionId!: SessionId; // Current browser session ID
+  public roomId!: UUID; // Current room ID for chat context
   
-  constructor(roomId: RoomId = DEFAULT_ROOMS.GENERAL as RoomId) {
+  constructor(roomId: UUID = DEFAULT_ROOMS.GENERAL as UUID) {
     super({
       widgetName: 'ChatWidget',
       template: 'chat-widget.html',
@@ -119,9 +123,9 @@ export class ChatWidget extends ChatWidgetBase {
       enableRouterEvents: true,
       enableScreenshots: true
     });
-    this.currentRoomId = roomId;
+    this.roomId = roomId;
 
-    // ChatBubbleScroller will be initialized after currentUserId is set
+    // EntityScroller will be initialized after roomId is set
   }
 
   // Static property required by widget registration system
@@ -136,20 +140,18 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log(`🎯 ChatWidget: Initializing for room "${this.currentRoomId}"...`);
+    console.log(`🎯 ChatWidget: Initializing for room "${this.roomId}"...`);
 
-    // CRITICAL: Initialize persistent User ID using UserIdManager (REQUIRED)
-    const userIdString = await userIdManager.getCurrentUserId();
-    this.currentUserId = userIdString as UserId; // Cast to branded type
+    // Set current room ID from constructor parameter or default
+    // (roomId set in constructor)
 
     // EntityScroller will be initialized after DOM is rendered in renderWidget()
 
-    // Set current session ID from JTAG system context (REQUIRED)
+    // Verify client context exists (REQUIRED)
     const client = await JTAGClient.sharedInstance;
     if (!client?.sessionId) {
       throw new Error('ChatWidget requires session context - cannot initialize without sessionId');
     }
-    this.currentSessionId = client.sessionId as SessionId;
 
     // 🔧 CLAUDE-STATE-TEST-' + Date.now() + ': Test State system with properties
     console.log('🔧 CLAUDE-STATE-TEST-' + Date.now() + ': Testing State system with properties...');
@@ -161,8 +163,8 @@ export class ChatWidget extends ChatWidgetBase {
       console.log('🔧 CLAUDE-STATE-TEST: Current room entity (property):', currentRoom);
 
       // Test property assignment
-      client.state.room.currentId = this.currentRoomId as UUID;
-      console.log('🔧 CLAUDE-STATE-TEST: Set room ID to:', this.currentRoomId);
+      client.state.room.currentId = this.roomId as UUID;
+      console.log('🔧 CLAUDE-STATE-TEST: Set room ID to:', this.roomId);
       console.log('🔧 CLAUDE-STATE-TEST: New room ID (property):', client.state.room.currentId);
       console.log('✅ CLAUDE-STATE-TEST: State system properties work perfectly!');
     } catch (error) {
@@ -179,7 +181,7 @@ export class ChatWidget extends ChatWidgetBase {
     await this.subscribeToRoomEvents();
 
     const messageCount = this.chatScroller?.entities().length || this.messages.length;
-    console.log(`✅ ChatWidget: Initialized for room "${this.currentRoomId}" with ${messageCount} messages`);
+    console.log(`✅ ChatWidget: Initialized for room "${this.roomId}" with ${messageCount} messages`);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -190,12 +192,12 @@ export class ChatWidget extends ChatWidgetBase {
         scrollHeight: this.messagesContainer.scrollHeight,
         clientHeight: this.messagesContainer.clientHeight,
         timestamp: Date.now(),
-        visibleMessageIds: this.getVisibleMessageIds()
+        visibleUUIDs: this.getVisibleUUIDs()
       };
 
-      const scrollStateKey = `chat_scroll_${this.currentRoomId}`;
+      const scrollStateKey = `chat_scroll_${this.roomId}`;
       await this.storeData(scrollStateKey, scrollState, { persistent: true });
-      console.log(`💾 ChatWidget: Saved scroll position for room "${this.currentRoomId}"`, scrollState);
+      console.log(`💾 ChatWidget: Saved scroll position for room "${this.roomId}"`, scrollState);
     }
 
     // Cleanup message input handlers
@@ -214,16 +216,16 @@ export class ChatWidget extends ChatWidgetBase {
     //     await this.executeCommand<ChatUnsubscribeEventResult>('events/unsubscribe', {
     //       subscriptionId: this.eventSubscriptionId
     //     });
-    //     console.log(`🔌 ChatWidget: Unsubscribed from room ${this.currentRoomId} events`);
+    //     console.log(`🔌 ChatWidget: Unsubscribed from room ${this.roomId} events`);
     //   } catch (error) {
     //     console.error(`❌ ChatWidget: Failed to unsubscribe from events:`, error);
     //   }
     // }
 
     // Save room-specific messages using BaseWidget abstraction
-    const roomMessageKey = `chat_messages_${this.currentRoomId}`;
+    const roomMessageKey = `chat_messages_${this.roomId}`;
     await this.storeData(roomMessageKey, this.messages, { persistent: true });
-    console.log(`✅ ChatWidget: Cleanup complete for room "${this.currentRoomId}"`);
+    console.log(`✅ ChatWidget: Cleanup complete for room "${this.roomId}"`);
   }
 
   /**
@@ -232,16 +234,20 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async loadRoomEntity(): Promise<void> {
     try {
+      const client = await JTAGClient.sharedInstance;
+
       const result = await this.executeCommand<DataReadParams, DataReadResult>('data/read', {
-        collection: COLLECTIONS.ROOMS,
-        id: this.currentRoomId
+        collection: RoomEntity.collection,
+        id: this.roomId,
+        context: client.context,
+        sessionId: client.sessionId
       });
 
       if (result.success && result.data) {
         this.currentRoomEntity = result.data;
         console.log(`📋 ChatWidget: Loaded room entity "${this.currentRoomEntity?.displayName || this.currentRoomEntity?.name}"`);
       } else {
-        console.warn(`⚠️ ChatWidget: Could not load room entity for ID "${this.currentRoomId}"`);
+        console.warn(`⚠️ ChatWidget: Could not load room entity for ID "${this.roomId}"`);
         this.currentRoomEntity = undefined;
       }
     } catch (error) {
@@ -261,7 +267,7 @@ export class ChatWidget extends ChatWidgetBase {
       return this.currentRoomEntity.name;
     } else {
       // Fallback: extract from room ID if it's a UUID
-      return this.currentRoomId.includes('-') ? 'Room' : this.currentRoomId.charAt(0).toUpperCase() + this.currentRoomId.slice(1);
+      return this.roomId.includes('-') ? 'Room' : this.roomId.charAt(0).toUpperCase() + this.roomId.slice(1);
     }
   }
 
@@ -286,24 +292,24 @@ export class ChatWidget extends ChatWidgetBase {
 
       try {
         // Create clean data executor - elegant protocol with firm typing
-        const executor = createDataExecutor<ChatMessageData>(Commands.execute, ChatMessageEntity.collection);
-        const loader = createDataLoader<ChatMessageData>(executor, {
+        const executor = createDataExecutor<ChatMessageEntity>(Commands.execute, ChatMessageEntity.collection);
+        const loader = createDataLoader<ChatMessageEntity>(executor, {
           collection: COLLECTIONS.CHAT_MESSAGES,
-          filter: { roomId: this.currentRoomId },
+          filter: { roomId: this.roomId },
           cursor: PAGINATION_PRESETS.CHAT_MESSAGES,
           defaultLimit: 20
         });
 
         const context = {
           isCurrentUser: false, // Will be set per message by checking senderId
-          customData: { roomId: this.currentRoomId, currentUserId: this.currentUserId }
+          customData: { roomId: this.roomId, currentUUID: this.roomId }
         };
 
         // Enhanced render function that checks current user for each message
-        const renderWithUserCheck: RenderFn<ChatMessageData> = (message, ctx) => {
+        const renderWithUserCheck: RenderFn<ChatMessageEntity> = (message, ctx) => {
           const enhancedContext = {
             ...ctx,
-            isCurrentUser: message.senderId === this.currentUserId
+            isCurrentUser: message.senderId === this.getCurrentUserId()
           };
           return renderChatMessage(message, enhancedContext);
         };
@@ -321,7 +327,7 @@ export class ChatWidget extends ChatWidgetBase {
         // Load initial messages using EntityScroller
         if (this.chatScroller) {
           this.chatScroller.load().then(() => {
-            this.messages = this.chatScroller!.entities() as ChatMessageData[];
+            this.messages = this.chatScroller!.entities() as ChatMessageEntity[];
             console.log(`✅ EntityScroller: Loaded ${this.messages.length} messages`);
 
             // CRITICAL FIX: Scroll to bottom AFTER messages are loaded
@@ -361,23 +367,23 @@ export class ChatWidget extends ChatWidgetBase {
       // Load initial batch of recent messages (no cursor = most recent)
       // chat/get-messages should return messages in chronological order (oldest to newest)
       const historyResult = await Commands.execute<GetMessagesParams, GetMessagesResult>('chat/get-messages', {
-        roomId: this.currentRoomId,
+        roomId: this.roomId,
         limit: 20 // Initial page size
       });
 
 
       if (historyResult?.success && historyResult?.messages) {
         this.messages = historyResult.messages
-          .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0);
+          .filter((message): message is ChatMessageEntity => !!message.content?.text && message.content.text.trim().length > 0);
 
         // EntityScroller handles initialization internally
 
-        console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.currentRoomId}"`);
+        console.log(`✅ ChatWidget: Loaded ${this.messages.length} initial messages for room "${this.roomId}"`);
       } else if (historyResult?.success === false) {
         console.error(`❌ ChatWidget: Failed to get messages: ${historyResult.error}`);
         this.messages = [];
       } else {
-        console.log(`ℹ️ ChatWidget: No messages found for room "${this.currentRoomId}"`);
+        console.log(`ℹ️ ChatWidget: No messages found for room "${this.roomId}"`);
         this.messages = [];
       }
 
@@ -388,18 +394,25 @@ export class ChatWidget extends ChatWidgetBase {
   }
 
   /**
+   * Get current user ID (using constant for Joel)
+   */
+  private getCurrentUserId(): string {
+    return DEFAULT_USERS.HUMAN;
+  }
+
+  /**
    * Load older messages when user scrolls to top
    */
-  private async loadOlderMessages(cursor: string): Promise<ChatMessageData[]> {
+  private async loadOlderMessages(cursor: string): Promise<ChatMessageEntity[]> {
     try {
       console.log(`📚 ChatWidget: Loading older messages with cursor: ${cursor}`);
 
       // Use data/list command with cursor for older messages
       // NOTE: We want messages BEFORE (older than) the cursor timestamp
       // But we need them in ascending order to append at the beginning correctly
-      const olderResult = await Commands.execute<DataListParams, DataListResult<ChatMessageData>>('data/list', {
+      const olderResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
         collection: ChatMessageEntity.collection,
-        filter: { roomId: this.currentRoomId },
+        filter: { roomId: this.roomId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // DESC to get messages before cursor
         limit: 20,
         cursor: {
@@ -411,7 +424,7 @@ export class ChatWidget extends ChatWidgetBase {
 
       if (olderResult?.success && olderResult?.items) {
         const olderMessages = olderResult.items
-          .filter((message): message is ChatMessageData => !!message.content?.text && message.content.text.trim().length > 0)
+          .filter((message): message is ChatMessageEntity => !!message.content?.text && message.content.text.trim().length > 0)
           .reverse(); // Reverse DESC results to get chronological order (oldest first)
 
         // Insert older messages at the beginning of our data array
@@ -436,18 +449,18 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async subscribeToRoomEvents(): Promise<void> {
     try {
-      console.log(`🔗 ChatWidget: Subscribing to room events for "${this.currentRoomId}"`);
+      console.log(`🔗 ChatWidget: Subscribing to room events for "${this.roomId}"`);
       
       // Try JTAG operation to subscribe to room events via the chat daemon
       try {
         const subscribeResult = await Commands.execute<SubscribeRoomParams, SubscribeRoomResult>('chat/subscribe-room', {
-          roomId: this.currentRoomId,
+          roomId: this.roomId,
           eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED, CHAT_EVENTS.PARTICIPANT_JOINED, CHAT_EVENTS.PARTICIPANT_LEFT]
         });
         
         if (subscribeResult && subscribeResult.success && subscribeResult.subscriptionId) {
           this.eventSubscriptionId = subscribeResult.subscriptionId;
-          console.log(`✅ ChatWidget: Subscribed to room "${this.currentRoomId}" events via JTAG`);
+          console.log(`✅ ChatWidget: Subscribed to room "${this.roomId}" events via JTAG`);
         }
       } catch (jtagError) {
         console.error(`ℹ️ ChatWidget: JTAG room subscription not available, using DOM events fallback`, jtagError);
@@ -466,7 +479,7 @@ export class ChatWidget extends ChatWidgetBase {
    * Set up type-safe event handlers for real-time room updates using BaseWidget
    */
   private setupRoomEventHandlers(): void {
-    console.log(`📡 ChatWidget: Setting up type-safe room event handlers for room ${this.currentRoomId}`);
+    console.log(`📡 ChatWidget: Setting up type-safe room event handlers for room ${this.roomId}`);
     
     // Type-safe event listeners using BaseWidget's executeEvent system
     // These ONLY respond to genuine server-originated events
@@ -499,7 +512,7 @@ export class ChatWidget extends ChatWidgetBase {
     eventType: string, 
     eventData: ChatMessageEventData | ChatParticipantEventData
   ): Promise<void> {
-    console.log(`📨 ChatWidget: Received room event "${eventType}" for room ${this.currentRoomId}`);
+    console.log(`📨 ChatWidget: Received room event "${eventType}" for room ${this.roomId}`);
     
     switch (eventType) {
       case 'chat:message-received':
@@ -521,9 +534,9 @@ export class ChatWidget extends ChatWidgetBase {
    * Handle incoming chat messages for this room - STRICT TYPING
    */
   private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
-    console.log(`📨 ChatWidget: Received message for room ${this.currentRoomId}:`, eventData);
+    console.log(`📨 ChatWidget: Received message for room ${this.roomId}:`, eventData);
 
-    if (eventData.entity.roomId === this.currentRoomId) {
+    if (eventData.entity.roomId === this.roomId) {
       // Use the full entity from the event - consistent with BaseEntity approach
       const chatMessage = eventData.entity;
 
@@ -532,7 +545,7 @@ export class ChatWidget extends ChatWidgetBase {
       if (this.chatScroller) {
         // Use EntityScroller's smart auto-scroll - it knows where new content goes
         this.chatScroller.addWithAutoScroll(chatMessage); // No position needed, EntityScroller knows
-        this.messages = this.chatScroller.entities() as ChatMessageData[];
+        this.messages = this.chatScroller.entities() as ChatMessageEntity[];
       } else {
         // Fallback to old method
         this.messages.push(chatMessage);
@@ -548,37 +561,30 @@ export class ChatWidget extends ChatWidgetBase {
    * Handle user joined events - STRICT TYPING
    */
   private async onUserJoined(eventData: ChatParticipantEventData): Promise<void> {
-    console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.currentRoomId}`);
+    console.log(`👋 ChatWidget: User ${eventData.userName} joined room ${this.roomId}`);
     
-    if (eventData.roomId === this.currentRoomId) {
-      // Add system message for user join using ChatMessageData interface
-      const systemMessage: ChatMessageData = {
-        messageId: MessageId(`system_${Date.now()}`),
-        roomId: RoomId(this.currentRoomId),
-        senderId: UserId('system'),
-        senderName: 'System',
-        content: {
-          text: `${eventData.userName} joined the room`,
-          attachments: [],
-          formatting: DEFAULT_MESSAGE_FORMATTING
-        },
-        status: 'sent',
-        priority: 'normal',
-        timestamp: ISOString(eventData.timestamp),
-        reactions: [],
-        metadata: {
-          ...DEFAULT_MESSAGE_METADATA,
-          source: 'system'
-        },
-        id: `system_${Date.now()}`,
-        createdAt: ISOString(eventData.timestamp),
-        updatedAt: ISOString(eventData.timestamp),
-        version: 1
+    if (eventData.roomId === this.roomId) {
+      // Create ChatMessageEntity directly - no field copying
+      const systemMessage = new ChatMessageEntity();
+      systemMessage.roomId = this.roomId as UUID;
+      systemMessage.senderId = 'system' as UUID;
+      systemMessage.senderName = 'System';
+      systemMessage.content = {
+        text: `${eventData.userName} joined the room`,
+        attachments: []
+      };
+      systemMessage.status = 'sent';
+      systemMessage.priority = 'normal';
+      systemMessage.timestamp = new Date(eventData.timestamp);
+      systemMessage.reactions = [];
+      systemMessage.metadata = {
+        ...DEFAULT_MESSAGE_METADATA,
+        source: 'system'
       };
       if (this.chatScroller) {
         // System messages use regular add() since they don't need auto-scroll
         this.chatScroller.add(systemMessage, 'start');
-        this.messages = this.chatScroller.entities() as ChatMessageData[];
+        this.messages = this.chatScroller.entities() as ChatMessageEntity[];
       } else {
         this.messages.push(systemMessage);
         await this.renderWidget();
@@ -590,37 +596,30 @@ export class ChatWidget extends ChatWidgetBase {
    * Handle user left events - STRICT TYPING
    */
   private async onUserLeft(eventData: ChatParticipantEventData): Promise<void> {
-    console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.currentRoomId}`);
+    console.log(`👋 ChatWidget: User ${eventData.userName} left room ${this.roomId}`);
     
-    if (eventData.roomId === this.currentRoomId) {
-      // Add system message for user leave using ChatMessageData interface
-      const systemMessage: ChatMessageData = {
-        messageId: MessageId(`system_${Date.now()}`),
-        roomId: RoomId(this.currentRoomId),
-        senderId: UserId('system'),
-        senderName: 'System',
-        content: {
-          text: `${eventData.userName} left the room`,
-          attachments: [],
-          formatting: DEFAULT_MESSAGE_FORMATTING
-        },
-        status: 'sent',
-        priority: 'normal',
-        timestamp: ISOString(eventData.timestamp),
-        reactions: [],
-        metadata: {
-          ...DEFAULT_MESSAGE_METADATA,
-          source: 'system'  // Proper system message classification
-        },
-        id: `system_${Date.now()}`,  // For BaseEntity compatibility
-        createdAt: ISOString(eventData.timestamp),
-        updatedAt: ISOString(eventData.timestamp),
-        version: 1
+    if (eventData.roomId === this.roomId) {
+      // Create ChatMessageEntity directly - no field copying
+      const systemMessage = new ChatMessageEntity();
+      systemMessage.roomId = this.roomId as UUID;
+      systemMessage.senderId = 'system' as UUID;
+      systemMessage.senderName = 'System';
+      systemMessage.content = {
+        text: `${eventData.userName} left the room`,
+        attachments: []
+      };
+      systemMessage.status = 'sent';
+      systemMessage.priority = 'normal';
+      systemMessage.timestamp = new Date(eventData.timestamp);
+      systemMessage.reactions = [];
+      systemMessage.metadata = {
+        ...DEFAULT_MESSAGE_METADATA,
+        source: 'system'
       };
       if (this.chatScroller) {
         // System messages use regular add() since they don't need auto-scroll
         this.chatScroller.add(systemMessage, 'start');
-        this.messages = this.chatScroller.entities() as ChatMessageData[];
+        this.messages = this.chatScroller.entities() as ChatMessageEntity[];
       } else {
         this.messages.push(systemMessage);
         await this.renderWidget();
@@ -695,7 +694,7 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Get message IDs currently visible in the viewport
    */
-  private getVisibleMessageIds(): string[] {
+  private getVisibleUUIDs(): string[] {
     if (!this.messagesContainer) return [];
 
     const containerRect = this.messagesContainer.getBoundingClientRect();
@@ -719,7 +718,7 @@ export class ChatWidget extends ChatWidgetBase {
    */
   private async restoreScrollPosition(): Promise<void> {
     try {
-      const scrollStateKey = `chat_scroll_${this.currentRoomId}`;
+      const scrollStateKey = `chat_scroll_${this.roomId}`;
       const savedState = await this.getData(scrollStateKey) as ScrollState | null;
 
       if (savedState && savedState.timestamp && this.messagesContainer) {
@@ -733,8 +732,8 @@ export class ChatWidget extends ChatWidgetBase {
           this.messagesContainer.scrollTop = savedState.scrollTop;
 
           // Verify we landed on a familiar message, if not scroll to bottom
-          const currentVisibleIds = this.getVisibleMessageIds();
-          const hasMatchingMessage = savedState.visibleMessageIds.some((id: string) =>
+          const currentVisibleIds = this.getVisibleUUIDs();
+          const hasMatchingMessage = savedState.visibleUUIDs.some((id: string) =>
             currentVisibleIds.includes(id)
           );
 
@@ -850,10 +849,10 @@ export class ChatWidget extends ChatWidgetBase {
 
   private async sendChatMessage(content: string): Promise<void> {
     try {
-      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: sendChatMessage called with currentRoom="${this.currentRoomId}"`);
+      console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: sendChatMessage called with currentRoom="${this.roomId}"`);
       const sendResult = await Commands.execute<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
         content: content,
-        roomId: this.currentRoomId,
+        roomId: this.roomId,
         senderType: 'user'
       });
 
@@ -877,7 +876,7 @@ export class ChatWidget extends ChatWidgetBase {
     }
   }
 
-  // REMOVED: getPersistentUserId() - now using UserIdManager properly
+  // REMOVED: getPersistentUUID() - now using UUIDManager properly
 
 
   /**
@@ -888,7 +887,7 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`🎧 ChatWidget: Subscribing to room change events`);
 
       // Listen for room selection events from RoomListWidget or other sources
-      Events.subscribe<{ roomId: RoomId, roomEntity?: ChatRoomData }>('chat:room-changed', async (eventData) => {
+      Events.subscribe<{ roomId: UUID, roomEntity?: RoomEntity }>('chat:room-changed', async (eventData) => {
         console.log(`🔥 SERVER-EVENT-RECEIVED: chat:room-changed`, eventData);
         await this.handleRoomChange(eventData.roomId, eventData.roomEntity);
       });
@@ -902,21 +901,21 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Handle room changes from events with proper change detection to prevent loops
    */
-  private async handleRoomChange(newRoomId: RoomId, roomEntity?: ChatRoomData): Promise<void> {
+  private async handleRoomChange(newUUID: UUID, roomEntity?: RoomEntity): Promise<void> {
     // Prevent infinite loops - only change if room actually changed
-    if (newRoomId === this.currentRoomId) {
-      console.log(`🔄 ChatWidget: Room change ignored - already in room "${newRoomId}"`);
+    if (newUUID === this.roomId) {
+      console.log(`🔄 ChatWidget: Room change ignored - already in room "${newUUID}"`);
       return;
     }
 
-    console.log(`🏠 ChatWidget: Changing room from "${this.currentRoomId}" to "${newRoomId}"`);
+    console.log(`🏠 ChatWidget: Changing room from "${this.roomId}" to "${newUUID}"`);
 
     try {
       // Save current scroll position before switching
       await this.onWidgetCleanup();
 
       // Update room references
-      this.currentRoomId = newRoomId;
+      this.roomId = newUUID;
       this.currentRoomEntity = roomEntity;
 
       // If no room entity provided in the event, load it
@@ -935,7 +934,7 @@ export class ChatWidget extends ChatWidgetBase {
       await this.subscribeToRoomEvents();
       await this.renderWidget(); // Will create new EntityScroller for new room
 
-      console.log(`✅ ChatWidget: Successfully changed to room "${this.getRoomDisplayName()}" (${newRoomId})`);
+      console.log(`✅ ChatWidget: Successfully changed to room "${this.getRoomDisplayName()}" (${newUUID})`);
     } catch (error) {
       console.error(`❌ ChatWidget: Failed to change room:`, error);
     }
@@ -944,7 +943,7 @@ export class ChatWidget extends ChatWidgetBase {
   /**
    * Public method to change room programmatically and emit event
    */
-  public async changeRoom(roomId: RoomId, roomEntity?: ChatRoomData): Promise<void> {
+  public async changeRoom(roomId: UUID, roomEntity?: RoomEntity): Promise<void> {
     console.log(`🎯 ChatWidget: Public room change requested to "${roomId}"`);
 
     // Emit room change event for other widgets to subscribe to
@@ -991,7 +990,7 @@ export class ChatWidget extends ChatWidgetBase {
     const sendButton = this.shadowRoot?.getElementById('sendButton');
     sendButton?.addEventListener('click', clickHandler);
 
-    console.log('✅ ChatWidget: Message input handlers set up for room', this.currentRoomId);
+    console.log('✅ ChatWidget: Message input handlers set up for room', this.roomId);
   }
 
   /**

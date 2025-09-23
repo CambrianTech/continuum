@@ -11,7 +11,7 @@ import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
@@ -31,10 +31,8 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
     console.debug(`🗄️ DATA SERVER: Creating ${collection} record via DataDaemon`);
 
     try {
-      const id = params.id ?? generateUUID();
-
       // Use enhanced DataDaemon with field extraction
-      const result = await DataDaemon.store(collection, params.data, id);
+      const result = await DataDaemon.store(collection, params.data as BaseEntity);
 
       if (result.success && result.data) {
         console.debug(`✅ DATA SERVER: Created ${collection}/${result.data.id} with field extraction`);

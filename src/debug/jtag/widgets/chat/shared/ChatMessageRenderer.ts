@@ -5,7 +5,7 @@
  * Handles all message DOM creation and rendering logic.
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 
 /**
  * Handles creating DOM elements for chat messages
@@ -16,7 +16,7 @@ export class ChatMessageRenderer {
   /**
    * Create a single message DOM element
    */
-  createMessageElement(message: ChatMessageData): HTMLElement {
+  createMessageElement(message: ChatMessageEntity): HTMLElement {
     const isCurrentUser = message.senderId === this.currentUserId;
     const alignment = isCurrentUser ? 'right' : 'left';
     const timestamp = new Date(message.timestamp).toLocaleString();
@@ -33,7 +33,7 @@ export class ChatMessageRenderer {
     // Create elements using DOM methods - no HTML strings
     const messageRow = document.createElement('div');
     messageRow.className = `message-row ${tempAlignment}`;
-    messageRow.setAttribute('data-message-id', message.messageId || message.id);
+    messageRow.setAttribute('data-message-id', message.id);
 
     const messageBubble = document.createElement('div');
     messageBubble.className = `message-bubble ${tempIsCurrentUser ? 'current-user' : 'other-user'}`;
@@ -66,7 +66,7 @@ export class ChatMessageRenderer {
   /**
    * Render multiple messages to HTML string (for initial template rendering)
    */
-  renderMessages(messages: ChatMessageData[]): string {
+  renderMessages(messages: ChatMessageEntity[]): string {
     const tempContainer = document.createElement('div');
     messages.forEach(msg => {
       tempContainer.appendChild(this.createMessageElement(msg));
@@ -77,8 +77,8 @@ export class ChatMessageRenderer {
   /**
    * Extract cursor (timestamp) from message
    */
-  getCursor(message: ChatMessageData): string {
-    return message.timestamp;
+  getCursor(message: ChatMessageEntity): string {
+    return message.timestamp.toISOString();
   }
 
   /**

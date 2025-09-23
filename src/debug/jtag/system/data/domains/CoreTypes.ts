@@ -26,14 +26,15 @@ export const SessionId = (id: string): SessionId => id as SessionId;
 export const ISOString = (timestamp: string): ISOString => timestamp as ISOString;
 
 /**
- * Base Entity - All domain objects extend this
+ * Base Entity Data - All data storage interfaces extend this
  */
-export interface BaseEntity {
-  readonly id: UUID;
+export interface BaseEntityData {
+  readonly id: string;
   readonly createdAt: ISOString;
   readonly updatedAt: ISOString;
   readonly version: number;
 }
+
 
 /**
  * Result Type - Rust-inspired error handling (no throwing)
@@ -66,7 +67,7 @@ export interface DataError {
 /**
  * Query Options - Type-safe querying
  */
-export interface QueryOptions<T extends BaseEntity> {
+export interface QueryOptions<T extends BaseEntityData> {
   readonly limit?: number;
   readonly offset?: number; // Use cursor instead for better performance
   readonly orderBy?: Array<{

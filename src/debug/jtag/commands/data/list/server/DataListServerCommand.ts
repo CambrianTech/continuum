@@ -10,8 +10,8 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import type { BaseEntity } from '../../../../system/data/domains/CoreTypes';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
@@ -54,7 +54,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         limit
       };
 
-      const result = await DataDaemon.query<RecordData>(storageQuery);
+      const result = await DataDaemon.query<BaseEntity>(storageQuery);
 
       if (!result.success) {
         console.error(`❌ DATA SERVER: DataDaemon query failed:`, result.error);

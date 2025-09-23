@@ -8,8 +8,8 @@
  * Each ChatContentType gets its own specialized renderer that extends this base.
  */
 
-import { ChatMessageData } from '../../../system/data/domains/ChatMessage';
-import { ChatMessageDataHelpers } from './ChatModuleTypes';
+import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import { ChatMessageEntityHelpers } from './ChatModuleTypes';
 import type { ChatMessagePayload, ChatContentType } from './ChatMessagePayload';
 
 /**
@@ -56,19 +56,19 @@ export abstract class BaseMessageRowWidget {
    * Each message type implements this differently
    * Future: May return Promise<string> for async widget rendering
    */
-  abstract renderContent(message: ChatMessageData): string;
+  abstract renderContent(message: ChatMessageEntity): string;
   
   /**
    * Abstract method for content type validation
    * Ensures type safety and proper renderer selection
    */
-  abstract canRender(message: ChatMessageData): boolean;
+  abstract canRender(message: ChatMessageEntity): boolean;
   
   /**
    * Hook for future intersection observer integration
    * Called when message becomes visible in viewport
    */
-  protected onMessageVisible(message: ChatMessageData): void {
+  protected onMessageVisible(message: ChatMessageEntity): void {
     this.state = { ...this.state, isVisible: true };
   }
   
@@ -76,7 +76,7 @@ export abstract class BaseMessageRowWidget {
    * Hook for future interaction handling
    * Called when user interacts with rendered message
    */
-  protected onMessageInteraction(message: ChatMessageData, interactionType: string): void {
+  protected onMessageInteraction(message: ChatMessageEntity, interactionType: string): void {
     this.state = { 
       ...this.state, 
       interactionCount: (this.state.interactionCount || 0) + 1 
@@ -90,14 +90,14 @@ export abstract class BaseMessageRowWidget {
    * - Timestamp display
    * - Reaction system
    */
-  public renderMessageContainer(message: ChatMessageData, currentUserId: string): string {
+  public renderMessageContainer(message: ChatMessageEntity, currentUserId: string): string {
     // Use semantic helper methods for clean, explicit logic
-    const isCurrentUser = ChatMessageDataHelpers.isFromCurrentUser(message, currentUserId);
-    const alignment = ChatMessageDataHelpers.getAlignment(message, currentUserId);
-    const userClass = ChatMessageDataHelpers.getUserPositionClass(message, currentUserId);
-    const displayName = ChatMessageDataHelpers.getDisplayName(message);
+    const isCurrentUser = ChatMessageEntityHelpers.isFromCurrentUser(message, currentUserId);
+    const alignment = ChatMessageEntityHelpers.getAlignment(message, currentUserId);
+    const userClass = ChatMessageEntityHelpers.getUserPositionClass(message, currentUserId);
+    const displayName = ChatMessageEntityHelpers.getDisplayName(message);
 
-    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", source="${message.metadata.source}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
+    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
 
     return `
       <div class="message-row ${alignment}">
@@ -136,7 +136,7 @@ export abstract class BaseMessageRowWidget {
   /**
    * Render reaction system (if message has reactions)
    */
-  private renderReactions(message: ChatMessageData): string {
+  private renderReactions(message: ChatMessageEntity): string {
     // For future ChatMessageDataPayload integration
     // const payload = message as unknown as ChatMessageDataPayload;
     // if (payload.reactions && payload.reactions.length > 0) {
@@ -150,17 +150,17 @@ export abstract class BaseMessageRowWidget {
   /**
    * Render message status (sending, sent, delivered, error)
    */
-  private renderMessageStatus(message: ChatMessageData): string {
+  private renderMessageStatus(message: ChatMessageEntity): string {
     if (message.status && message.status !== 'sent') {
-      const statusIcon = {
+      const statusIcon: Record<string, string> = {
         'sending': '⏳',
         'delivered': '✓✓',
         'read': '✓✓',
         'failed': '❌',
         'deleted': '🗑️'
-      }[message.status] || '';
-      
-      return `<div class="message-status">${statusIcon}</div>`;
+      };
+
+      return `<div class="message-status">${statusIcon[message.status] || ''}</div>`;
     }
     return '';
   }
@@ -178,7 +178,7 @@ export type MessageRendererRegistry = Record<ChatContentType, new(options?: Mess
  */
 export type WidgetMessageRendererRegistry = Record<ChatContentType, {
   readonly rendererClass: new(options?: MessageRendererOptions) => BaseMessageRowWidget;
-  readonly widgetClass?: new(message: ChatMessageData) => any; // Future BaseWidget extension
+  readonly widgetClass?: new(message: ChatMessageEntity) => any; // Future BaseWidget extension
   readonly requiresIntersectionObserver?: boolean;
   readonly supportsLazyLoading?: boolean;
 }>;
@@ -197,8 +197,8 @@ export class TextMessageRowWidget extends BaseMessageRowWidget {
       ...options
     });
   }
-  
-  canRender(message: ChatMessageData): boolean {
+
+  canRender(message: ChatMessageEntity): boolean {
     if (!message.content) {
       throw new Error('TextMessageRowWidget.canRender: message.content is required');
     }
@@ -208,7 +208,7 @@ export class TextMessageRowWidget extends BaseMessageRowWidget {
     return message.content.text.trim().length > 0;
   }
 
-  renderContent(message: ChatMessageData): string {
+  renderContent(message: ChatMessageEntity): string {
     if (!this.canRender(message)) {
       throw new Error('TextMessageRowWidget.renderContent: message failed canRender check');
     }
@@ -246,15 +246,15 @@ export class ImageMessageRowWidget extends BaseMessageRowWidget {
       ...options
     });
   }
-  
-  canRender(message: ChatMessageData): boolean {
+
+  canRender(message: ChatMessageEntity): boolean {
     // Future: Check for image content type in ChatMessageDataPayload
     return message.content.text.includes('http') &&
            (message.content.text.includes('.jpg') || message.content.text.includes('.png') ||
             message.content.text.includes('.gif') || message.content.text.includes('.webp'));
   }
-  
-  renderContent(message: ChatMessageData): string {
+
+  renderContent(message: ChatMessageEntity): string {
     if (!this.canRender(message)) {
       return '<p class="text-content error">Invalid image content</p>';
     }
@@ -304,7 +304,7 @@ export class MessageRowWidgetFactory {
    * Type-safe renderer selection with strong typing
    */
   static createRenderer(
-    message: ChatMessageData,
+    message: ChatMessageEntity,
     options: MessageRendererOptions = {}
   ): BaseMessageRowWidget {
     if (!message) {

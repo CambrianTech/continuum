@@ -5,7 +5,7 @@
  * and future AI capabilities (content summarization, link verification)
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
 interface URLCardData {
@@ -34,7 +34,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
   /**
    * Parse URL and extract metadata from message text
    */
-  parseContent(message: ChatMessageData): URLCardData | null {
+  parseContent(message: ChatMessageEntity): URLCardData | null {
     const text = message.content?.text;
     if (!text) return null;
 

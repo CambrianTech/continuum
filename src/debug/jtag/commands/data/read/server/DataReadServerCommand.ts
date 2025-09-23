@@ -1,15 +1,16 @@
 /**
  * Data Read Command - Server Implementation
+ *
+ * Updated to use DataDaemon for consistent storage access
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
-import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 export class DataReadServerCommand extends CommandBase<DataReadParams, DataReadResult> {
   
@@ -18,30 +19,35 @@ export class DataReadServerCommand extends CommandBase<DataReadParams, DataReadR
   }
 
   async execute(params: DataReadParams): Promise<DataReadResult> {
-    console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id}`);
-    
+    console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id} via DataDaemon`);
+
     try {
-      // Use global database path following ArtifactsDaemon database storage pattern
-      // Database storage type uses: .continuum/database/{relativePath}
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const databasePath = `${continuumPath}/database`;
-      const filePath = path.join(databasePath, params.collection, `${params.id}.json`);
-      
-      const data = await fs.readFile(filePath, 'utf-8');
-      const record = JSON.parse(data);
-      
-      console.log(`✅ DATA SERVER: Read ${params.collection}/${params.id}`);
-      
+      // Use DataDaemon for consistent storage access
+      const result = await DataDaemon.read<BaseEntity>(params.collection, params.id);
+
+      if (result.success && result.data) {
+        console.log(`✅ DATA SERVER: Read ${params.collection}/${params.id}`);
+
+        return createDataReadResultFromParams(params, {
+          success: true,
+          data: result.data.data, // Extract entity data from DataRecord
+          found: true
+        });
+      } else {
+        console.log(`ℹ️ DATA SERVER: Record not found ${params.collection}/${params.id}`);
+
+        return createDataReadResultFromParams(params, {
+          success: true,
+          data: null,
+          found: false
+        });
+      }
+    } catch (error) {
+      console.error(`❌ DATA SERVER: Failed to read ${params.collection}/${params.id}:`, error);
+
       return createDataReadResultFromParams(params, {
-        success: true,
-        data: record,
-        found: true
-      });
-      
-    } catch (error: any) {
-      console.log(`ℹ️ DATA SERVER: ${params.collection}/${params.id} not found`);
-      return createDataReadResultFromParams(params, {
-        success: true,
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
         found: false
       });
     }

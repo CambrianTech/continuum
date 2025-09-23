@@ -6,11 +6,11 @@
  */
 
 import { ReactiveState } from './ReactiveState';
-import type { ChatRoomData } from '../../system/data/domains/ChatRoom';
+import type { RoomEntity } from '../../system/data/entities/RoomEntity';
 
 export interface AppStateData {
   currentRoomId: string | null;
-  currentRoomEntity: ChatRoomData | null;
+  currentRoomEntity: RoomEntity | null;
 }
 
 class AppStateManager extends ReactiveState<AppStateData> {
@@ -24,7 +24,7 @@ class AppStateManager extends ReactiveState<AppStateData> {
   /**
    * Change the current room (triggers watchers automatically)
    */
-  changeRoom(roomId: string, roomEntity?: ChatRoomData): void {
+  changeRoom(roomId: string, roomEntity?: RoomEntity): void {
     console.log(`🎯 AppState: Changing room to "${roomId}"`);
 
     // Update state - watchers will be notified automatically
@@ -35,7 +35,7 @@ class AppStateManager extends ReactiveState<AppStateData> {
   /**
    * Get current room info
    */
-  getCurrentRoom(): { roomId: string | null, roomEntity: ChatRoomData | null } {
+  getCurrentRoom(): { roomId: string | null, roomEntity: RoomEntity | null } {
     return {
       roomId: this.current.currentRoomId,
       roomEntity: this.current.currentRoomEntity

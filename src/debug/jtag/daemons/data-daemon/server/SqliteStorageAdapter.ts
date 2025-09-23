@@ -19,8 +19,8 @@ import {
   type RecordData
 } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
-// Clean imports - field extraction removed for now
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
 
 /**
  * SQLite Configuration Options
@@ -37,12 +37,59 @@ interface SqliteOptions {
 }
 
 /**
- * SQLite Storage Adapter with Full SQL Support
+ * Entity Class Registry - Maps collection names to entity classes
+ * Entities register themselves when their modules are imported
+ */
+type EntityConstructor = new (...args: any[]) => any;
+const ENTITY_REGISTRY = new Map<string, EntityConstructor>();
+
+/**
+ * Register an entity class with its collection name
+ * Called automatically when entity classes are imported/loaded
+ */
+export function registerEntity(collectionName: string, entityClass: EntityConstructor): void {
+  console.log(`🏷️ SQLite: Registering entity ${collectionName} -> ${entityClass.name}`);
+  ENTITY_REGISTRY.set(collectionName, entityClass);
+}
+
+/**
+ * SQL Naming Convention Converter
+ */
+class SqlNamingConverter {
+  /**
+   * Convert camelCase to snake_case for SQL columns
+   */
+  static toSnakeCase(camelCase: string): string {
+    return camelCase.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
+  }
+
+  /**
+   * Convert snake_case back to camelCase for object properties
+   */
+  static toCamelCase(snakeCase: string): string {
+    return snakeCase.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+  }
+
+  /**
+   * Convert collection name to table name (pluralized, snake_case)
+   */
+  static toTableName(collectionName: string): string {
+    const snakeCase = this.toSnakeCase(collectionName);
+    // Simple pluralization - add 's' or 'es'
+    return snakeCase.endsWith('s') || snakeCase.endsWith('x') || snakeCase.endsWith('ch') || snakeCase.endsWith('sh')
+      ? `${snakeCase}es`
+      : `${snakeCase}s`;
+  }
+}
+
+/**
+ * SQLite Storage Adapter with Proper Relational Schema
  */
 export class SqliteStorageAdapter extends DataStorageAdapter {
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
+  private createdTables = new Set<string>(); // Track created tables
 
   /**
    * Initialize SQLite database with configuration
@@ -98,14 +145,23 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     // Configure SQLite settings
     await this.configureSqlite(options);
 
+    console.log('📋 SQLite: Initializing entity registry...');
+    // Import and register all known entities (server-side only)
+    const { initializeEntityRegistry } = await import('./EntityRegistry');
+    initializeEntityRegistry();
+
     console.log('🏗️ SQLite: Creating core schema...');
     // Create core schema
     await this.createCoreSchema();
 
+    console.log('🔍 SQLite: Testing entity schema generation...');
+    // Test schema generation for registered entities (just log, don't create yet)
+    await this.logEntitySchemas();
+
     console.log('🔒 SQLite: Setting file permissions...');
-    // Ensure database file has correct permissions
+    // Ensure database file has correct permissions (read/write for owner)
     try {
-      await fs.chmod(dbPath, 0o644);
+      await fs.chmod(dbPath, 0o666);
       console.log('✅ SQLite: File permissions set successfully');
     } catch (error) {
       console.warn('⚠️ SQLite: Could not set database file permissions:', error);
@@ -245,8 +301,8 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     if (!this.db) return;
 
     const settings = [
-      // Enable foreign keys if requested
-      options.foreignKeys !== false ? 'PRAGMA foreign_keys = ON' : null,
+      // Set foreign keys based on configuration
+      options.foreignKeys === false ? 'PRAGMA foreign_keys = OFF' : 'PRAGMA foreign_keys = ON',
 
       // Set WAL mode for better concurrency
       options.wal ? 'PRAGMA journal_mode = WAL' : null,
@@ -268,6 +324,184 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     }
 
     console.log('⚙️ SQLite: Configuration applied');
+  }
+
+  /**
+   * Map FieldType to SQL column type
+   */
+  private mapFieldTypeToSql(fieldType: FieldType, options?: FieldMetadata['options']): string {
+    switch (fieldType) {
+      case 'primary':
+        return 'TEXT PRIMARY KEY';
+      case 'foreign_key':
+        return 'TEXT' + (options?.nullable ? '' : ' NOT NULL');
+      case 'text':
+        const maxLength = options?.maxLength;
+        return maxLength ? `VARCHAR(${maxLength})` : 'TEXT';
+      case 'number':
+        return 'REAL';
+      case 'boolean':
+        return 'INTEGER'; // SQLite uses INTEGER for booleans (0/1)
+      case 'date':
+        return 'TEXT'; // ISO string format
+      case 'enum':
+        return 'TEXT';
+      case 'json':
+        return 'TEXT'; // JSON stored as TEXT
+      default:
+        return 'TEXT';
+    }
+  }
+
+  /**
+   * Generate SQL CREATE TABLE statement from entity metadata
+   */
+  private generateCreateTableSql(collectionName: string, entityClass: EntityConstructor): string {
+    const tableName = SqlNamingConverter.toTableName(collectionName);
+    const fieldMetadata = getFieldMetadata(entityClass);
+
+    const columns: string[] = [];
+    const constraints: string[] = [];
+
+    // Base entity fields come from @PrimaryField, @DateField, @NumberField decorators
+    // No hardcoded base fields - let the decorator system handle them
+
+    // Add entity-specific fields
+    for (const [fieldName, metadata] of fieldMetadata.entries()) {
+      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+      const columnType = this.mapFieldTypeToSql(metadata.fieldType, metadata.options);
+
+      let columnDef = `${columnName} ${columnType}`;
+
+      // Add constraints
+      if (metadata.options?.nullable === false && metadata.fieldType !== 'primary') {
+        columnDef += ' NOT NULL';
+      }
+
+      if (metadata.options?.unique) {
+        columnDef += ' UNIQUE';
+      }
+
+      if (metadata.options?.default !== undefined) {
+        columnDef += ` DEFAULT ${JSON.stringify(metadata.options.default)}`;
+      }
+
+      columns.push(columnDef);
+
+      // Handle foreign key references
+      if (metadata.fieldType === 'foreign_key' && metadata.options?.references) {
+        const ref = metadata.options.references;
+        // Parse "TableName.columnName" format
+        const [refTable, refColumn] = ref.split('.');
+        if (refTable && refColumn) {
+          const refTableName = SqlNamingConverter.toTableName(refTable);
+          const refColumnName = SqlNamingConverter.toSnakeCase(refColumn);
+          constraints.push(`FOREIGN KEY (${columnName}) REFERENCES ${refTableName}(${refColumnName})`);
+        }
+      }
+    }
+
+    // Build CREATE TABLE statement
+    let sql = `CREATE TABLE IF NOT EXISTS ${tableName} (\n`;
+    sql += '  ' + columns.join(',\n  ');
+
+    if (constraints.length > 0) {
+      sql += ',\n  ' + constraints.join(',\n  ');
+    }
+
+    sql += '\n)';
+
+    return sql;
+  }
+
+  /**
+   * Generate CREATE INDEX statements for indexed fields
+   */
+  private generateCreateIndexSql(collectionName: string, entityClass: EntityConstructor): string[] {
+    const tableName = SqlNamingConverter.toTableName(collectionName);
+    const fieldMetadata = getFieldMetadata(entityClass);
+    const indexes: string[] = [];
+
+    for (const [fieldName, metadata] of fieldMetadata.entries()) {
+      if (metadata.options?.index) {
+        const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+        const indexName = `idx_${tableName}_${columnName}`;
+        indexes.push(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(${columnName})`);
+      }
+    }
+
+    return indexes;
+  }
+
+  /**
+   * Create table for entity if it doesn't exist
+   */
+  private async ensureEntityTable(collectionName: string): Promise<void> {
+    const tableName = SqlNamingConverter.toTableName(collectionName);
+
+    if (this.createdTables.has(tableName)) {
+      return; // Already created
+    }
+
+    const entityClass = ENTITY_REGISTRY.get(collectionName);
+    if (!entityClass || !hasFieldMetadata(entityClass)) {
+      console.warn(`⚠️ No entity metadata found for collection: ${collectionName}`);
+      return;
+    }
+
+    console.log(`🏗️ Creating table for entity: ${collectionName} -> ${tableName}`);
+
+    // Create table
+    const createTableSql = this.generateCreateTableSql(collectionName, entityClass);
+    await this.runSql(createTableSql);
+
+    // Create indexes
+    const indexSqls = this.generateCreateIndexSql(collectionName, entityClass);
+    for (const indexSql of indexSqls) {
+      await this.runSql(indexSql);
+    }
+
+    this.createdTables.add(tableName);
+    console.log(`✅ Table created: ${tableName} with ${indexSqls.length} indexes`);
+  }
+
+  /**
+   * Log what schemas would be generated for all registered entities
+   */
+  private async logEntitySchemas(): Promise<void> {
+    console.log('📋 SQLite: Analyzing registered entities...');
+
+    for (const [collectionName, entityClass] of ENTITY_REGISTRY.entries()) {
+      if (!hasFieldMetadata(entityClass)) {
+        console.log(`⚠️ ${collectionName}: No field metadata found`);
+        continue;
+      }
+
+      const tableName = SqlNamingConverter.toTableName(collectionName);
+      console.log(`\n🏗️ ${collectionName} -> ${tableName}:`);
+
+      // Log what CREATE TABLE would look like
+      const createTableSql = this.generateCreateTableSql(collectionName, entityClass);
+      console.log('   CREATE TABLE SQL:');
+      console.log('   ' + createTableSql.split('\n').join('\n   '));
+
+      // Log field metadata
+      const fieldMetadata = getFieldMetadata(entityClass);
+      console.log(`   📊 Fields: ${fieldMetadata.size}`);
+      for (const [fieldName, metadata] of fieldMetadata.entries()) {
+        const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+        console.log(`   • ${fieldName} -> ${columnName} (${metadata.fieldType}${metadata.options?.index ? ', indexed' : ''})`);
+      }
+
+      // Log indexes
+      const indexSqls = this.generateCreateIndexSql(collectionName, entityClass);
+      if (indexSqls.length > 0) {
+        console.log(`   🔍 Indexes: ${indexSqls.length}`);
+        indexSqls.forEach(sql => console.log(`   • ${sql}`));
+      }
+    }
+
+    console.log('\n✅ SQLite: Entity schema analysis complete');
   }
 
   /**
@@ -402,44 +636,85 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Create or update a record with dual-mode storage (JSON blob + field extraction)
+   * Create a record with proper relational schema (always use entity-specific tables)
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
-      // Ensure collection exists
-      await this.ensureCollection(record.collection);
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Creating ${record.collection}/${record.id} in entity-specific table`);
+
+      // Ensure entity table exists
+      await this.ensureEntityTable(record.collection);
 
       // Execute create operation in transaction for atomic consistency
       const result = await this.withTransaction(async () => {
-        // Insert/replace data record (JSON blob storage - always maintained for backward compatibility)
+        const tableName = SqlNamingConverter.toTableName(record.collection);
+        const entityClass = ENTITY_REGISTRY.get(record.collection);
+
+        if (!entityClass || !hasFieldMetadata(entityClass)) {
+          // For collections without registered entities, we still create entity-specific tables
+          // but with a simple structure
+          console.log(`🔧 Creating simple entity table for ${record.collection} without metadata`);
+          await this.createSimpleEntityTable(record.collection);
+          return await this.createInSimpleEntityTable(record);
+        }
+
+        // Process ALL fields uniformly using decorator metadata (min 4: id, createdAt, updatedAt, version)
+        const columns: string[] = [];
+        const values: any[] = [];
+        const placeholders: string[] = [];
+
+        const fieldMetadata = getFieldMetadata(entityClass);
+        for (const [fieldName, metadata] of fieldMetadata.entries()) {
+          const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+          let fieldValue: any;
+
+          // Get field value from appropriate source
+          if (fieldName === 'id') {
+            fieldValue = record.id;
+          } else if (fieldName === 'createdAt') {
+            fieldValue = record.metadata.createdAt;
+          } else if (fieldName === 'updatedAt') {
+            fieldValue = record.metadata.updatedAt;
+          } else if (fieldName === 'version') {
+            fieldValue = record.metadata.version;
+          } else {
+            fieldValue = (record.data as any)[fieldName];
+          }
+
+          if (fieldValue !== undefined) {
+            columns.push(columnName);
+            placeholders.push('?');
+
+            // Convert field value based on decorator type
+            switch (metadata.fieldType) {
+              case 'boolean':
+                values.push(fieldValue ? 1 : 0);
+                break;
+              case 'json':
+                values.push(JSON.stringify(fieldValue));
+                break;
+              case 'date':
+                values.push(typeof fieldValue === 'string' ? fieldValue : new Date(fieldValue).toISOString());
+                break;
+              default:
+                values.push(fieldValue);
+            }
+          }
+        }
+
+        // Build and execute INSERT statement
         const sql = `
-          INSERT OR REPLACE INTO _data (
-            id, collection, data, created_at, updated_at, version, tags, ttl
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')})
+          VALUES (${placeholders.join(', ')})
         `;
 
-        const params = [
-          record.id,
-          record.collection,
-          JSON.stringify(record.data),
-          record.metadata.createdAt,
-          record.metadata.updatedAt,
-          record.metadata.version,
-          record.metadata.tags ? JSON.stringify(record.metadata.tags) : null,
-          record.metadata.ttl || null
-        ];
+        await this.runStatement(sql, values);
 
-        await this.runStatement(sql, params);
-
-        // Field extraction will be added back with SQL query builder
-
+        console.log(`✅ SQLite: Inserted into entity table ${tableName} with ${columns.length} columns`);
         return record;
       });
 
-      // Update collection stats (outside transaction)
-      await this.updateCollectionStats(record.collection);
-
-      console.log(`✅ SQLite: Created record ${record.id} in ${record.collection}`);
+      console.log(`✅ SQLite: Created record ${record.id} in entity table for ${record.collection}`);
 
       return {
         success: true,
@@ -455,41 +730,115 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     }
   }
 
+  /**
+   * Create a simple entity table for collections without registered metadata
+   */
+  private async createSimpleEntityTable(collectionName: string): Promise<void> {
+    const tableName = SqlNamingConverter.toTableName(collectionName);
+
+    if (this.createdTables.has(tableName)) {
+      return; // Already created
+    }
+
+    console.log(`🏗️ Creating simple entity table: ${collectionName} -> ${tableName}`);
+
+    // Create simple entity table with basic structure + JSON data column
+    const sql = `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,  -- JSON data for all entity fields
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        version INTEGER DEFAULT 1
+      )
+    `;
+
+    await this.runSql(sql);
+
+    // Create basic indexes
+    await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_created_at ON ${tableName}(created_at)`);
+    await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_updated_at ON ${tableName}(updated_at)`);
+
+    this.createdTables.add(tableName);
+    console.log(`✅ Simple entity table created: ${tableName}`);
+  }
+
+  /**
+   * Insert record into simple entity table (for unregistered entities)
+   */
+  private async createInSimpleEntityTable<T extends RecordData>(record: DataRecord<T>): Promise<DataRecord<T>> {
+    const tableName = SqlNamingConverter.toTableName(record.collection);
+
+    const sql = `
+      INSERT OR REPLACE INTO ${tableName} (
+        id, data, created_at, updated_at, version
+      ) VALUES (?, ?, ?, ?, ?)
+    `;
+
+    const params = [
+      record.id,
+      JSON.stringify(record.data),
+      record.metadata.createdAt,
+      record.metadata.updatedAt,
+      record.metadata.version
+    ];
+
+    await this.runStatement(sql, params);
+    console.log(`✅ SQLite: Inserted into simple entity table ${tableName}`);
+
+    return record;
+  }
+
+  /**
+   * Legacy blob storage fallback - DEPRECATED, kept for backwards compatibility
+   */
+  private async createLegacyBlob<T extends RecordData>(record: DataRecord<T>): Promise<DataRecord<T>> {
+    console.warn(`⚠️ DEPRECATED: Using legacy blob storage for ${record.collection} - should use entity tables`);
+
+    // Ensure collection exists in legacy table
+    await this.ensureCollection(record.collection);
+
+    const sql = `
+      INSERT OR REPLACE INTO _data (
+        id, collection, data, created_at, updated_at, version, tags, ttl
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const params = [
+      record.id,
+      record.collection,
+      JSON.stringify(record.data),
+      record.metadata.createdAt,
+      record.metadata.updatedAt,
+      record.metadata.version,
+      record.metadata.tags ? JSON.stringify(record.metadata.tags) : null,
+      record.metadata.ttl || null
+    ];
+
+    await this.runStatement(sql, params);
+    await this.updateCollectionStats(record.collection);
+
+    return record;
+  }
+
   // Removed extractFields - cross-cutting concern
 
   /**
-   * Read a single record by ID
+   * Read a single record by ID - uses entity-specific tables
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
-      const sql = 'SELECT * FROM _data WHERE collection = ? AND id = ? LIMIT 1';
-      const rows = await this.runSql(sql, [collection, id]);
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Reading ${collection}/${id} from entity-specific table`);
 
-      if (rows.length === 0) {
-        return {
-          success: true,
-          data: undefined
-        };
+      const entityClass = ENTITY_REGISTRY.get(collection);
+
+      if (entityClass && hasFieldMetadata(entityClass)) {
+        // Use entity-specific table
+        return await this.readFromEntityTable<T>(collection, id, entityClass);
+      } else {
+        // Use simple entity table (fallback)
+        return await this.readFromSimpleEntityTable<T>(collection, id);
       }
-
-      const row = rows[0];
-      const record: DataRecord<T> = {
-        id: row.id,
-        collection: row.collection,
-        data: JSON.parse(row.data),
-        metadata: {
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          version: row.version,
-          tags: row.tags ? JSON.parse(row.tags) : undefined,
-          ttl: row.ttl || undefined
-        }
-      };
-
-      return {
-        success: true,
-        data: record
-      };
 
     } catch (error: any) {
       console.error(`❌ SQLite: Read failed for ${collection}/${id}:`, error.message);
@@ -501,38 +850,119 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Query records with complex filters - enhanced for relational queries
+   * Read from entity-specific table with proper column mapping
+   */
+  private async readFromEntityTable<T extends RecordData>(collection: string, id: UUID, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(collection);
+    const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
+    const rows = await this.runSql(sql, [id]);
+
+    if (rows.length === 0) {
+      return {
+        success: true,
+        data: undefined
+      };
+    }
+
+    const row = rows[0];
+    const entityData: any = {};
+
+    // Process ALL fields uniformly using decorator metadata
+    const fieldMetadata = getFieldMetadata(entityClass);
+    for (const [fieldName, metadata] of fieldMetadata.entries()) {
+      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+      let value = row[columnName];
+
+      if (value !== undefined && value !== null) {
+        // Convert SQL value back to JavaScript type based on decorator metadata
+        switch (metadata.fieldType) {
+          case 'boolean':
+            value = value === 1;
+            break;
+          case 'json':
+            value = JSON.parse(value);
+            break;
+          case 'date':
+            value = new Date(value);
+            break;
+        }
+
+        // Put BaseEntity fields in metadata, others in data
+        if (['id', 'createdAt', 'updatedAt', 'version'].includes(fieldName)) {
+          // BaseEntity fields go to their proper locations
+          continue; // We'll handle these separately
+        } else {
+          entityData[fieldName] = value;
+        }
+      }
+    }
+
+    const record: DataRecord<T> = {
+      id: row.id,
+      collection,
+      data: entityData as T,
+      metadata: {
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        version: row.version
+      }
+    };
+
+    return {
+      success: true,
+      data: record
+    };
+  }
+
+  /**
+   * Read from simple entity table (JSON data column)
+   */
+  private async readFromSimpleEntityTable<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(collection);
+    const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
+    const rows = await this.runSql(sql, [id]);
+
+    if (rows.length === 0) {
+      return {
+        success: true,
+        data: undefined
+      };
+    }
+
+    const row = rows[0];
+    const record: DataRecord<T> = {
+      id: row.id,
+      collection,
+      data: JSON.parse(row.data),
+      metadata: {
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        version: row.version
+      }
+    };
+
+    return {
+      success: true,
+      data: record
+    };
+  }
+
+  /**
+   * Query records with complex filters - uses entity-specific tables
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
-      console.log(`🔍 SQLite: Querying ${query.collection}`, query);
+      console.log(`🔍 SQLite: Querying ${query.collection} from entity-specific table`, query);
 
-      const { sql, params } = this.buildSelectQuery(query);
-      const rows = await this.runSql(sql, params);
+      const entityClass = ENTITY_REGISTRY.get(query.collection);
 
-      const records: DataRecord<T>[] = rows.map(row => ({
-        id: row.id,
-        collection: row.collection,
-        data: JSON.parse(row.data),
-        metadata: {
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          version: row.version,
-          tags: row.tags ? JSON.parse(row.tags) : undefined,
-          ttl: row.ttl || undefined
-        }
-      }));
-
-      console.log(`✅ SQLite: Query returned ${records.length} records`);
-
-      return {
-        success: true,
-        data: records,
-        metadata: {
-          totalCount: records.length,
-          queryTime: 0 // TODO: Add timing
-        }
-      };
+      if (entityClass && hasFieldMetadata(entityClass)) {
+        // Use entity-specific table
+        return await this.queryFromEntityTable<T>(query, entityClass);
+      } else {
+        // Use simple entity table (fallback)
+        return await this.queryFromSimpleEntityTable<T>(query);
+      }
 
     } catch (error: any) {
       console.error(`❌ SQLite: Query failed for ${query.collection}:`, error.message);
@@ -544,7 +974,221 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Build SELECT SQL query - currently JSON-based, ready for SQL query builder
+   * Query from entity-specific table with proper column mapping
+   */
+  private async queryFromEntityTable<T extends RecordData>(query: StorageQuery, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>[]>> {
+    const { sql, params } = this.buildEntitySelectQuery(query, entityClass);
+    const rows = await this.runSql(sql, params);
+
+    const records: DataRecord<T>[] = rows.map(row => {
+      const entityData: any = {};
+
+      // Process ALL fields uniformly using decorator metadata
+      const fieldMetadata = getFieldMetadata(entityClass);
+      for (const [fieldName, metadata] of fieldMetadata.entries()) {
+        const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+        let value = row[columnName];
+
+        if (value !== undefined && value !== null) {
+          // Convert SQL value back to JavaScript type based on decorator metadata
+          switch (metadata.fieldType) {
+            case 'boolean':
+              value = value === 1;
+              break;
+            case 'json':
+              value = JSON.parse(value);
+              break;
+            case 'date':
+              value = new Date(value);
+              break;
+          }
+
+          // Put BaseEntity fields in metadata, others in data
+          if (['id', 'createdAt', 'updatedAt', 'version'].includes(fieldName)) {
+            // BaseEntity fields go to their proper locations (handled below)
+            continue;
+          } else {
+            entityData[fieldName] = value;
+          }
+        }
+      }
+
+      return {
+        id: row.id,
+        collection: query.collection,
+        data: entityData as T,
+        metadata: {
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          version: row.version
+        }
+      };
+    });
+
+    console.log(`✅ SQLite: Entity query returned ${records.length} records`);
+
+    return {
+      success: true,
+      data: records,
+      metadata: {
+        totalCount: records.length,
+        queryTime: 0 // TODO: Add timing
+      }
+    };
+  }
+
+  /**
+   * Query from simple entity table (JSON data column)
+   */
+  private async queryFromSimpleEntityTable<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+    const { sql, params } = this.buildSimpleEntitySelectQuery(query);
+    const rows = await this.runSql(sql, params);
+
+    const records: DataRecord<T>[] = rows.map(row => ({
+      id: row.id,
+      collection: query.collection,
+      data: JSON.parse(row.data),
+      metadata: {
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        version: row.version
+      }
+    }));
+
+    console.log(`✅ SQLite: Simple entity query returned ${records.length} records`);
+
+    return {
+      success: true,
+      data: records,
+      metadata: {
+        totalCount: records.length,
+        queryTime: 0 // TODO: Add timing
+      }
+    };
+  }
+
+  /**
+   * Build SELECT SQL query for entity-specific tables
+   */
+  private buildEntitySelectQuery(query: StorageQuery, entityClass: EntityConstructor): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const tableName = SqlNamingConverter.toTableName(query.collection);
+    let sql = `SELECT * FROM ${tableName}`;
+
+    // Add filters (translate field names to column names)
+    if (query.filters) {
+      const filterClauses: string[] = [];
+      for (const [field, value] of Object.entries(query.filters)) {
+        const columnName = SqlNamingConverter.toSnakeCase(field);
+        filterClauses.push(`${columnName} = ?`);
+        params.push(value);
+      }
+      if (filterClauses.length > 0) {
+        sql += ` WHERE ${filterClauses.join(' AND ')}`;
+      }
+    }
+
+    // Add time range filter
+    if (query.timeRange) {
+      const timeFilters: string[] = [];
+      if (query.timeRange.start) {
+        timeFilters.push('created_at >= ?');
+        params.push(query.timeRange.start);
+      }
+      if (query.timeRange.end) {
+        timeFilters.push('created_at <= ?');
+        params.push(query.timeRange.end);
+      }
+      if (timeFilters.length > 0) {
+        const whereClause = query.filters ? ' AND ' : ' WHERE ';
+        sql += whereClause + timeFilters.join(' AND ');
+      }
+    }
+
+    // Add sorting (translate field names to column names)
+    if (query.sort && query.sort.length > 0) {
+      const sortClauses = query.sort.map(s => {
+        const columnName = SqlNamingConverter.toSnakeCase(s.field);
+        return `${columnName} ${s.direction.toUpperCase()}`;
+      });
+      sql += ` ORDER BY ${sortClauses.join(', ')}`;
+    }
+
+    // Add pagination
+    if (query.limit) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+
+      if (query.offset) {
+        sql += ' OFFSET ?';
+        params.push(query.offset);
+      }
+    }
+
+    return { sql, params };
+  }
+
+  /**
+   * Build SELECT SQL query for simple entity tables (with JSON data column)
+   */
+  private buildSimpleEntitySelectQuery(query: StorageQuery): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const tableName = SqlNamingConverter.toTableName(query.collection);
+    let sql = `SELECT * FROM ${tableName}`;
+
+    // Add basic filters using JSON_EXTRACT on data column
+    if (query.filters) {
+      const filterClauses: string[] = [];
+      for (const [field, value] of Object.entries(query.filters)) {
+        filterClauses.push(`JSON_EXTRACT(data, '$.${field}') = ?`);
+        params.push(value);
+      }
+      if (filterClauses.length > 0) {
+        sql += ` WHERE ${filterClauses.join(' AND ')}`;
+      }
+    }
+
+    // Add time range filter
+    if (query.timeRange) {
+      const timeFilters: string[] = [];
+      if (query.timeRange.start) {
+        timeFilters.push('created_at >= ?');
+        params.push(query.timeRange.start);
+      }
+      if (query.timeRange.end) {
+        timeFilters.push('created_at <= ?');
+        params.push(query.timeRange.end);
+      }
+      if (timeFilters.length > 0) {
+        const whereClause = query.filters ? ' AND ' : ' WHERE ';
+        sql += whereClause + timeFilters.join(' AND ');
+      }
+    }
+
+    // Add sorting using JSON_EXTRACT on data column
+    if (query.sort && query.sort.length > 0) {
+      const sortClauses = query.sort.map(s =>
+        `JSON_EXTRACT(data, '$.${s.field}') ${s.direction.toUpperCase()}`
+      );
+      sql += ` ORDER BY ${sortClauses.join(', ')}`;
+    }
+
+    // Add pagination
+    if (query.limit) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+
+      if (query.offset) {
+        sql += ' OFFSET ?';
+        params.push(query.offset);
+      }
+    }
+
+    return { sql, params };
+  }
+
+  /**
+   * Build SELECT SQL query - legacy method for backwards compatibility
    */
   private buildSelectQuery(query: StorageQuery): { sql: string; params: any[] } {
     return this.buildJsonQuery(query);

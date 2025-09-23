@@ -5,7 +5,7 @@
  * Handles all message loading and pagination logic.
  */
 
-import type { ChatMessageData } from '../../../system/data/domains/ChatMessage';
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { LoadResult } from '../../shared/InfiniteScrollTypes';
 
@@ -29,7 +29,7 @@ export class ChatMessageLoader {
     roomId: string,
     cursor?: string,
     pageSize = 20
-  ): Promise<LoadResult<ChatMessageData>> {
+  ): Promise<LoadResult<ChatMessageEntity>> {
     console.log('📚 ChatMessageLoader: Loading messages', { roomId, cursor, pageSize });
 
     const result = await this.executeCommand('data/list', {
@@ -54,7 +54,7 @@ export class ChatMessageLoader {
   /**
    * Load initial messages for a room
    */
-  async loadInitialMessages(roomId: string, limit = 20): Promise<ChatMessageData[]> {
+  async loadInitialMessages(roomId: string, limit = 20): Promise<ChatMessageEntity[]> {
     const result = await this.loadMessages(roomId, undefined, limit);
     return result.items.slice();
   }
