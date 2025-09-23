@@ -19,8 +19,8 @@ export function initializeEntityRegistry(): void {
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
-  // ChatMessage uses simple entity table approach like Users/Rooms (data column + JSON_EXTRACT)
-  // registerEntity(ChatMessageEntity.collection, ChatMessageEntity);
+  // Enable ChatMessage relational ORM with individual columns for optimal querying
+  registerEntity(ChatMessageEntity.collection, ChatMessageEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }
