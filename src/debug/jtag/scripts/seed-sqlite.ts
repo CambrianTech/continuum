@@ -24,17 +24,43 @@ async function createRecord(collection: string, data: any, id: string, displayNa
   const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}' --id=${id}`;
 
   try {
-    await execAsync(cmd);
-    if (displayName) {
-      console.log(`✅ Created ${collection}: ${displayName}`);
+    const result = await execAsync(cmd);
+
+    // Parse JSON response to check actual success
+    const success = result.stdout.includes('"success": true');
+
+    if (success) {
+      if (displayName) {
+        console.log(`✅ Created ${collection}: ${displayName}`);
+      } else {
+        console.log(`✅ Created ${collection}: ${id}`);
+      }
+      return true;
     } else {
-      console.log(`✅ Created ${collection}: ${id}`);
+      console.error(`❌ Failed to create ${collection} ${displayName || id}: Command returned unsuccessful result`);
+      console.error(`Response: ${result.stdout}`);
+      return false;
     }
-    return true;
   } catch (error: any) {
-    console.warn(`⚠️ Failed to create ${collection} ${displayName || id}: ${error.message}`);
-    console.warn(`Command: ${cmd}`);
-    return false;
+    // Check if this is a real error or just JTAG transport logs in stderr
+    const hasSuccess = error.stdout && error.stdout.includes('"success": true');
+
+    if (hasSuccess) {
+      // Command actually succeeded, stderr just contains transport logs
+      if (displayName) {
+        console.log(`✅ Created ${collection}: ${displayName}`);
+      } else {
+        console.log(`✅ Created ${collection}: ${id}`);
+      }
+      return true;
+    } else {
+      // Real error - show the actual error message for debugging
+      console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
+      console.error(`   Error: ${error.message}`);
+      if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
+      if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}...`);
+      return false;
+    }
   }
 }
 
@@ -293,17 +319,33 @@ async function seedViaJTAG() {
     // Verify via JTAG
     console.log('\n📊 Verifying seeded data via JTAG...');
 
-    const usersResult = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
-    const userCount = usersResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-    console.log(`   Users: ${userCount}`);
+    // Use same error handling for verification commands
+    try {
+      const usersResult = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
+      const userCount = usersResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+      console.log(`   Users: ${userCount}`);
+    } catch (error: any) {
+      const userCount = error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
+      console.log(`   Users: ${userCount}`);
+    }
 
-    const roomsResult = await execAsync(`./jtag data/list --collection=${RoomEntity.collection}`);
-    const roomCount = roomsResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-    console.log(`   Rooms: ${roomCount}`);
+    try {
+      const roomsResult = await execAsync(`./jtag data/list --collection=${RoomEntity.collection}`);
+      const roomCount = roomsResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+      console.log(`   Rooms: ${roomCount}`);
+    } catch (error: any) {
+      const roomCount = error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
+      console.log(`   Rooms: ${roomCount}`);
+    }
 
-    const messagesResult = await execAsync(`./jtag data/list --collection=${ChatMessageEntity.collection}`);
-    const messageCount = messagesResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-    console.log(`   Messages: ${messageCount}`);
+    try {
+      const messagesResult = await execAsync(`./jtag data/list --collection=${ChatMessageEntity.collection}`);
+      const messageCount = messagesResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+      console.log(`   Messages: ${messageCount}`);
+    } catch (error: any) {
+      const messageCount = error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
+      console.log(`   Messages: ${messageCount}`);
+    }
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
