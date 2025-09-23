@@ -512,6 +512,50 @@ export class FileStorageAdapter extends DataStorageAdapter {
   }
   
   /**
+   * Clear all data with detailed reporting (File Storage implementation)
+   */
+  async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
+    try {
+      const collections = await this.listCollections();
+      if (!collections.success || !collections.data) {
+        return { success: false, error: 'Failed to list collections for clearing' };
+      }
+
+      const tablesCleared: string[] = [];
+      let recordsDeleted = 0;
+
+      for (const collection of collections.data) {
+        const query = await this.query({ collection });
+        if (query.success && query.data) {
+          recordsDeleted += query.data.length;
+
+          // Clear collection by truncating
+          const truncateResult = await this.truncate(collection);
+          if (truncateResult.success) {
+            tablesCleared.push(collection);
+          }
+        }
+      }
+
+      console.log(`🧹 FileStorage: Cleared ${recordsDeleted} records from ${tablesCleared.length} collections`);
+
+      return {
+        success: true,
+        data: {
+          tablesCleared,
+          recordsDeleted
+        }
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        error: `FileStorage clearAll failed: ${error}`
+      };
+    }
+  }
+
+  /**
    * Compare records for sorting
    */
   private compareRecords<T extends RecordData>(
@@ -522,11 +566,11 @@ export class FileStorageAdapter extends DataStorageAdapter {
     for (const sort of sortFields) {
       const aValue = this.getNestedProperty(a, sort.field);
       const bValue = this.getNestedProperty(b, sort.field);
-      
+
       if (aValue < bValue) return sort.direction === 'asc' ? -1 : 1;
       if (aValue > bValue) return sort.direction === 'asc' ? 1 : -1;
     }
-    
+
     return 0;
   }
 }

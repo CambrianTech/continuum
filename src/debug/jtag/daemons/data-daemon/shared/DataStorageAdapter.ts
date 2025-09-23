@@ -139,6 +139,18 @@ export abstract class DataStorageAdapter {
   abstract clear(): Promise<StorageResult<boolean>>;
 
   /**
+   * Clear all data from all collections with detailed reporting
+   *
+   * Provides comprehensive information about what was cleared,
+   * preserving database structure while removing all records.
+   * Useful for reseeding operations and development workflows.
+   */
+  abstract clearAll(): Promise<StorageResult<{
+    tablesCleared: string[];
+    recordsDeleted: number;
+  }>>;
+
+  /**
    * Truncate all records from a specific collection
    */
   abstract truncate(collection: string): Promise<StorageResult<boolean>>;

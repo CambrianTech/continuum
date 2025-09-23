@@ -1692,4 +1692,89 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       await this.runStatement(updateSql, [count, total_size || 0, new Date().toISOString(), collection]);
     }
   }
+
+  /**
+   * Clear all entity data from the database (preserving structure)
+   *
+   * This method:
+   * - Deletes all records from _data table
+   * - Deletes all records from entity-specific tables
+   * - Resets collection statistics
+   * - Preserves database schema and table structure
+   * - Uses transactions for consistency
+   */
+  async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
+    if (!this.isInitialized || !this.db) {
+      throw new Error('SqliteStorageAdapter not initialized');
+    }
+
+    console.log('🧹 SQLite: Starting complete database clear (preserving structure)...');
+
+    const tablesCleared: string[] = [];
+    let totalRecordsDeleted = 0;
+
+    try {
+      await this.withTransaction(async () => {
+        // Get list of all tables to clear
+        const tables = await this.runSql(`
+          SELECT name FROM sqlite_master
+          WHERE type='table'
+          AND name NOT LIKE 'sqlite_%'
+        `);
+
+        for (const table of tables) {
+          const tableName = table.name;
+
+          // Count records before deletion
+          const countRows = await this.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+          const recordCount = countRows[0]?.count || 0;
+
+          if (recordCount > 0) {
+            // Delete all records from this table
+            await this.runStatement(`DELETE FROM \`${tableName}\``);
+
+            tablesCleared.push(tableName);
+            totalRecordsDeleted += recordCount;
+
+            console.log(`✅ SQLite: Cleared ${recordCount} records from table '${tableName}'`);
+          } else {
+            console.log(`📋 SQLite: Table '${tableName}' was already empty`);
+          }
+        }
+
+        // Reset collection statistics
+        await this.runStatement(`
+          UPDATE _collections
+          SET record_count = 0, total_size = 0, updated_at = ?
+          WHERE record_count > 0
+        `, [new Date().toISOString()]);
+
+        // Reset SQLite sequence counters for tables that use them
+        const sequenceTables = await this.runSql(`
+          SELECT name FROM sqlite_sequence
+        `);
+
+        for (const seqTable of sequenceTables) {
+          await this.runStatement(`UPDATE sqlite_sequence SET seq = 0 WHERE name = ?`, [seqTable.name]);
+        }
+      });
+
+      console.log(`🎉 SQLite: Database clearing complete!`);
+      console.log(`   📊 Tables processed: ${tablesCleared.length}`);
+      console.log(`   🗑️ Records deleted: ${totalRecordsDeleted}`);
+      console.log(`   🏗️ Database structure preserved`);
+
+      return {
+        success: true,
+        data: {
+          tablesCleared,
+          recordsDeleted: totalRecordsDeleted
+        }
+      };
+
+    } catch (error) {
+      console.error('❌ SQLite: Database clear failed:', error);
+      throw new Error(`Database clear failed: ${error}`);
+    }
+  }
 }

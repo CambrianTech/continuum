@@ -5,11 +5,11 @@
  * Demonstrates dramatic code simplification through proper abstraction.
  */
 
-import { ChatMessageEntity, type MessageStatus } from '../../../system/data/entities/ChatMessageEntity';
+import { ChatMessageEntity, type MessageStatus, type CreateMessageData, type MessageContent } from '../../../system/data/entities/ChatMessageEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 // Using UUID directly instead of domain type aliases
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { ChatSendMessageParams, ChatSendMessageResult } from '../../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { GetMessagesParams, GetMessagesResult } from '../../../commands/chat/get-messages/shared/GetMessagesTypes';
@@ -483,8 +483,10 @@ export class ChatWidget extends ChatWidgetBase {
     
     // Type-safe event listeners using BaseWidget's executeEvent system
     // These ONLY respond to genuine server-originated events
-    this.addWidgetEventListener(CHAT_EVENTS.MESSAGE_RECEIVED, (eventData: ChatMessageEventData) => {
-      console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.MESSAGE_RECEIVED}`, eventData);
+
+    // Listen for unified data events (ChatMessage creation via data/create)
+    this.addWidgetEventListener('data:ChatMessage:created' as any, (eventData: ChatMessageEntity) => {
+      console.log(`🔥 UNIFIED-DATA-EVENT: data:ChatMessage:created`, eventData);
       this.onMessageReceived(eventData);
     });
     
@@ -532,13 +534,19 @@ export class ChatWidget extends ChatWidgetBase {
 
   /**
    * Handle incoming chat messages for this room - STRICT TYPING
+   * Supports both unified data events (ChatMessageEntity) and legacy chat events (ChatMessageEventData)
    */
-  private async onMessageReceived(eventData: ChatMessageEventData): Promise<void> {
+  private async onMessageReceived(eventData: ChatMessageEntity | ChatMessageEventData): Promise<void> {
     console.log(`📨 ChatWidget: Received message for room ${this.roomId}:`, eventData);
 
-    if (eventData.entity.roomId === this.roomId) {
-      // Use the full entity from the event - consistent with BaseEntity approach
-      const chatMessage = eventData.entity;
+    // Handle both unified data events (ChatMessageEntity) and legacy chat events (ChatMessageEventData)
+    const chatMessage = 'entity' in eventData
+      ? (eventData as ChatMessageEventData).entity
+      : eventData as ChatMessageEntity;
+    const roomId = chatMessage.roomId;
+
+    if (roomId === this.roomId) {
+      // Use the ChatMessage entity - unified approach
 
       console.log(`✨ ChatWidget: Using ChatMessage entity directly:`, chatMessage);
 
@@ -850,13 +858,31 @@ export class ChatWidget extends ChatWidgetBase {
   private async sendChatMessage(content: string): Promise<void> {
     try {
       console.log(`🔧 CLAUDE-DEBUG-${Date.now()}: sendChatMessage called with currentRoom="${this.roomId}"`);
-      const sendResult = await Commands.execute<ChatSendMessageParams, ChatSendMessageResult>('chat/send-message', {
-        content: content,
-        roomId: this.roomId,
-        senderType: 'user'
+
+      // Create ChatMessageEntity instance for data/create command
+      const messageEntity = new ChatMessageEntity();
+      messageEntity.roomId = this.roomId;
+      messageEntity.senderId = "002350cc-0031-408d-8040-004f000f" as UUID; // Joel's user ID
+      messageEntity.senderName = "Joel";
+      messageEntity.content = {
+        text: content,
+        attachments: []
+      };
+      messageEntity.status = "sending" as const;
+      messageEntity.priority = "normal" as const;
+      messageEntity.timestamp = new Date();
+      messageEntity.reactions = [];
+
+      const client = await JTAGClient.sharedInstance;
+      const createResult = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
+        collection: 'ChatMessage',
+        data: messageEntity,
+        id: generateUUID(),
+        context: client.context,
+        sessionId: client.sessionId
       });
 
-      console.log('✅ Message sent successfully:', sendResult);
+      console.log('✅ Message sent successfully via data/create:', createResult);
 
       // Always scroll to bottom after sending own message
       // User expects to see their message immediately

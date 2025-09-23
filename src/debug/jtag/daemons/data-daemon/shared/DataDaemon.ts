@@ -216,6 +216,14 @@ export class DataDaemon {
   }
 
   /**
+   * Clear all data with detailed reporting (instance method)
+   */
+  async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
+    await this.ensureInitialized();
+    return await this.adapter.clearAll();
+  }
+
+  /**
    * Truncate all records from a specific collection
    */
   async truncate(collection: string): Promise<StorageResult<boolean>> {
@@ -422,6 +430,24 @@ export class DataDaemon {
     }
 
     return await DataDaemon.sharedInstance.clear();
+  }
+
+  /**
+   * Clear all data with detailed reporting - CLEAN INTERFACE
+   *
+   * Provides comprehensive clearing with detailed statistics about what was removed.
+   * Preserves database structure while removing all records. Perfect for reseeding.
+   *
+   * @example
+   * const result = await DataDaemon.clearAll();
+   * console.log(`Cleared ${result.data.recordsDeleted} records from ${result.data.tablesCleared.length} tables`);
+   */
+  static async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.clearAll();
   }
 
   /**
