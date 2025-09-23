@@ -859,8 +859,8 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
     if (rows.length === 0) {
       return {
-        success: true,
-        data: undefined
+        success: false,
+        error: `Record not found: ${collection}/${id}`
       };
     }
 
@@ -924,8 +924,8 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
     if (rows.length === 0) {
       return {
-        success: true,
-        data: undefined
+        success: false,
+        error: `Record not found: ${collection}/${id}`
       };
     }
 

@@ -130,8 +130,22 @@ export class UserListWidget extends ChatWidgetBase {
 
       console.log(`🎧 UserListWidget: Subscribed to data:${UserEntity.collection}:created events via Events.subscribe()`);
 
-      // TODO: Add update/delete events
-      // Events.subscribe(getDataEventName(UserEntity.collection, 'updated'), (user) => this.userScroller?.update(user.id, user));
+      // Subscribe to data:User:updated events using static Events interface
+      const updateEventName = getDataEventName(UserEntity.collection, 'updated');
+      Events.subscribe<UserEntity>(updateEventName, (userEntity: UserEntity) => {
+        console.log(`🔥 SERVER-EVENT-RECEIVED: ${updateEventName}`, userEntity);
+        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.updateEntity() for user updates`);
+
+        // EntityScroller updates the user in place
+        this.userScroller?.update(userEntity.id, userEntity);
+
+        // Update count if needed (though should remain same for updates)
+        this.updateUserCount();
+      });
+
+      console.log(`🎧 UserListWidget: Subscribed to data:${UserEntity.collection}:updated events via Events.subscribe()`);
+
+      // TODO: Add delete events
       // Events.subscribe(getDataEventName(UserEntity.collection, 'deleted'), (user) => this.userScroller?.remove(user.id));
     } catch (error) {
       console.error('❌ UserListWidget: Failed to set up user event subscriptions:', error);

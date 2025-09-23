@@ -150,8 +150,22 @@ export class RoomListWidget extends ChatWidgetBase {
 
       console.log(`🎧 RoomListWidget: Subscribed to data:${RoomEntity.collection}:created events via Events.subscribe()`);
 
-      // TODO: Add update/delete events
-      // Events.subscribe(getDataEventName(RoomEntity.collection, 'updated'), (room) => this.roomScroller?.update(room.id, room));
+      // Subscribe to data:Room:updated events using static Events interface
+      const updateEventName = getDataEventName(RoomEntity.collection, 'updated');
+      Events.subscribe<RoomEntity>(updateEventName, (roomEntity: RoomEntity) => {
+        console.log(`🔥 SERVER-EVENT-RECEIVED: ${updateEventName}`, roomEntity);
+        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.updateEntity() for room updates`);
+
+        // EntityScroller updates the room in place
+        this.roomScroller?.update(roomEntity.id, roomEntity);
+
+        // Update count if needed (though should remain same for updates)
+        this.updateRoomCount();
+      });
+
+      console.log(`🎧 RoomListWidget: Subscribed to data:${RoomEntity.collection}:updated events via Events.subscribe()`);
+
+      // TODO: Add delete events
       // Events.subscribe(getDataEventName(RoomEntity.collection, 'deleted'), (room) => this.roomScroller?.remove(room.id));
     } catch (error) {
       console.error('❌ RoomListWidget: Failed to set up room event subscriptions:', error);

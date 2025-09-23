@@ -489,6 +489,12 @@ export class ChatWidget extends ChatWidgetBase {
       console.log(`🔥 UNIFIED-DATA-EVENT: data:ChatMessage:created`, eventData);
       this.onMessageReceived(eventData);
     });
+
+    // Listen for unified data events (ChatMessage updates via data/update)
+    this.addWidgetEventListener('data:ChatMessage:updated' as any, (eventData: ChatMessageEntity) => {
+      console.log(`🔥 UNIFIED-DATA-EVENT: data:ChatMessage:updated`, eventData);
+      this.onMessageUpdated(eventData);
+    });
     
     this.addWidgetEventListener(CHAT_EVENTS.PARTICIPANT_JOINED, (eventData: ChatParticipantEventData) => {
       console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.PARTICIPANT_JOINED}`, eventData);
@@ -562,6 +568,39 @@ export class ChatWidget extends ChatWidgetBase {
       }
 
       // Real-time message added successfully using domain object
+    }
+  }
+
+  /**
+   * Handle updated chat messages for this room - STRICT TYPING
+   * Supports unified data events (ChatMessageEntity from data/update)
+   */
+  private async onMessageUpdated(eventData: ChatMessageEntity): Promise<void> {
+    console.log(`🔄 ChatWidget: Received message update for room ${this.roomId}:`, eventData);
+
+    // ChatMessageEntity from unified data events
+    const chatMessage = eventData;
+    const roomId = chatMessage.roomId;
+
+    if (roomId === this.roomId) {
+      console.log(`✨ ChatWidget: Updating ChatMessage entity:`, chatMessage);
+
+      if (this.chatScroller) {
+        // Use EntityScroller to update the message in place
+        this.chatScroller.update(chatMessage.id, chatMessage);
+        this.messages = this.chatScroller.entities() as ChatMessageEntity[];
+      } else {
+        // Fallback: Find and update in messages array
+        const messageIndex = this.messages.findIndex(msg => msg.id === chatMessage.id);
+        if (messageIndex !== -1) {
+          this.messages[messageIndex] = chatMessage;
+          await this.renderWidget(); // Re-render with updated message
+        } else {
+          console.warn(`⚠️ ChatWidget: Could not find message to update: ${chatMessage.id}`);
+        }
+      }
+
+      console.log(`✅ ChatWidget: Message updated successfully`);
     }
   }
 
