@@ -578,7 +578,9 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
    * Execute SQL statement (INSERT, UPDATE, DELETE)
    */
   private async runStatement(sql: string, params: any[] = []): Promise<{ lastID?: number; changes: number }> {
+    console.log(`🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL:`, { sql: sql.trim(), params });
     if (!this.db) {
+      console.error(`❌ SQLite RUNSTATEMENT DEBUG: Database not initialized!`);
       throw new Error('SQLite database not initialized');
     }
 
@@ -590,7 +592,9 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
           console.error('Params:', params);
           reject(err);
         } else {
-          resolve({ lastID: this.lastID, changes: this.changes });
+          const result = { lastID: this.lastID, changes: this.changes };
+          console.log(`✅ SQLite RUNSTATEMENT DEBUG: Success:`, result);
+          resolve(result);
         }
       });
     });
@@ -1255,7 +1259,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   // Removed relational query methods - cross-cutting concerns
 
   /**
-   * Update an existing record
+   * Update an existing record - uses same table selection logic as read()
    */
   async update<T extends RecordData>(
     collection: string,
@@ -1264,7 +1268,9 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     incrementVersion: boolean = true
   ): Promise<StorageResult<DataRecord<T>>> {
     try {
-      // First read existing record
+      console.log(`🔧 SQLite UPDATE: Starting update for ${collection}/${id}`);
+
+      // First read existing record using same logic
       const existing = await this.read<T>(collection, id);
       if (!existing.success || !existing.data) {
         return {
@@ -1273,50 +1279,24 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         };
       }
 
+      console.log(`🔧 SQLite UPDATE: Found existing record, merging data`);
+
       // Merge data
       const updatedData = { ...existing.data.data, ...data };
       const version = incrementVersion ? existing.data.metadata.version + 1 : existing.data.metadata.version;
 
-      // Update record
-      const sql = `
-        UPDATE _data
-        SET data = ?, updated_at = ?, version = ?
-        WHERE collection = ? AND id = ?
-      `;
+      // Use same table selection logic as read()
+      const entityClass = ENTITY_REGISTRY.get(collection);
 
-      const params = [
-        JSON.stringify(updatedData),
-        new Date().toISOString(),
-        version,
-        collection,
-        id
-      ];
-
-      await this.runStatement(sql, params);
-
-      // Create updated record for field extraction
-      const updatedRecord: DataRecord<T> = {
-        ...existing.data,
-        data: updatedData as T,
-        metadata: {
-          ...existing.data.metadata,
-          updatedAt: new Date().toISOString(),
-          version
-        }
-      };
-
-      // Field extraction optimization disabled for now
-      // await this.extractFields(updatedRecord, fieldMapping);
-
-      // Update collection stats
-      await this.updateCollectionStats(collection);
-
-      console.log(`✅ SQLite: Updated record ${id} in ${collection}`);
-
-      return {
-        success: true,
-        data: updatedRecord
-      };
+      if (entityClass && hasFieldMetadata(entityClass)) {
+        // Update in entity-specific table (same as readFromEntityTable)
+        console.log(`🔧 SQLite UPDATE: Using entity-specific table for ${collection}`);
+        return await this.updateInEntityTable<T>(collection, id, updatedData as T, version, existing.data);
+      } else {
+        // Update in simple entity table (same as readFromSimpleEntityTable)
+        console.log(`🔧 SQLite UPDATE: Using simple entity table for ${collection}`);
+        return await this.updateInSimpleEntityTable<T>(collection, id, updatedData as T, version, existing.data);
+      }
 
     } catch (error: any) {
       console.error(`❌ SQLite: Update failed for ${collection}/${id}:`, error.message);
@@ -1325,6 +1305,112 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         error: error.message
       };
     }
+  }
+
+  /**
+   * Update record in entity-specific table (mirrors readFromEntityTable)
+   */
+  private async updateInEntityTable<T extends RecordData>(
+    collection: string,
+    id: UUID,
+    updatedData: T,
+    version: number,
+    existingRecord: DataRecord<T>
+  ): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(collection);
+
+    // Use same WHERE clause as readFromEntityTable
+    const sql = `UPDATE ${tableName} SET data = ?, updated_at = ?, version = ? WHERE id = ?`;
+    const params = [
+      JSON.stringify(updatedData),
+      new Date().toISOString(),
+      version,
+      id
+    ];
+
+    console.log(`🔧 SQLite UPDATE ENTITY DEBUG: SQL:`, { sql, params });
+    const result = await this.runStatement(sql, params);
+    console.log(`🔧 SQLite UPDATE ENTITY DEBUG: Result:`, result);
+
+    if (result.changes === 0) {
+      return {
+        success: false,
+        error: `No rows updated in ${tableName} for id: ${id}`
+      };
+    }
+
+    // Create updated record
+    const updatedRecord: DataRecord<T> = {
+      ...existingRecord,
+      data: updatedData,
+      metadata: {
+        ...existingRecord.metadata,
+        updatedAt: new Date().toISOString(),
+        version
+      }
+    };
+
+    await this.updateCollectionStats(collection);
+
+    console.log(`✅ SQLite: Updated record ${id} in entity table ${tableName}`);
+
+    return {
+      success: true,
+      data: updatedRecord
+    };
+  }
+
+  /**
+   * Update record in simple entity table (mirrors readFromSimpleEntityTable)
+   */
+  private async updateInSimpleEntityTable<T extends RecordData>(
+    collection: string,
+    id: UUID,
+    updatedData: T,
+    version: number,
+    existingRecord: DataRecord<T>
+  ): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(collection);
+
+    // Use same WHERE clause as readFromSimpleEntityTable
+    const sql = `UPDATE ${tableName} SET data = ?, updated_at = ?, version = ? WHERE id = ?`;
+    const params = [
+      JSON.stringify(updatedData),
+      new Date().toISOString(),
+      version,
+      id
+    ];
+
+    console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: SQL:`, { sql, params });
+    const result = await this.runStatement(sql, params);
+    console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: Result:`, result);
+
+    if (result.changes === 0) {
+      return {
+        success: false,
+        error: `No rows updated in ${tableName} for id: ${id}`
+      };
+    }
+
+    // Create updated record
+    const updatedRecord: DataRecord<T> = {
+      ...existingRecord,
+      data: updatedData,
+      metadata: {
+        ...existingRecord.metadata,
+        updatedAt: new Date().toISOString(),
+        version
+      }
+    };
+
+    await this.updateCollectionStats(collection);
+
+    console.log(`✅ SQLite: Updated record ${id} in simple entity table ${tableName}`);
+
+    return {
+      success: true,
+      data: updatedRecord
+    };
   }
 
   /**

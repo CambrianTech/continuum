@@ -2,6 +2,12 @@
 
 *Date: 2025-09-23 - After ChatMessage unified events implementation*
 
+## ⏱️ DEPLOYMENT TIMING EXPECTATIONS
+**"npm start" deployment process takes 90+ seconds (1.5+ minutes)**
+- Database seeding completion message: "🎉 Database seeding completed via JTAG (single source of truth)!"
+- Browser processing completion: "✅ Generated browser/generated.ts with 59 entries"
+- **BE PATIENT** - Multiple developers have been impatient during this normal deployment time
+
 This document captures critical friction points encountered during autonomous development, particularly debugging and feedback loops. The goal is to enable true autonomous development where AI can iterate as effectively as a human developer.
 
 ## 🎯 MISSION: Autonomous Development Parity

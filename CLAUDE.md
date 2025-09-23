@@ -70,7 +70,7 @@ DON'T work very long before testing compilation, npm start, and npm test, in ord
 We want to check in our code and in order to do so, the site must not be broken. We must check often.
 
 "browserConnected": false is invalid, IT IS A RED HERRING. We must fix this issue, but it is incorrect. browser might be connected, use ./jtag ping command.
-"npm start" takes at least 45 seconds.
+"npm start" takes 90+ seconds (1.5+ minutes) - BE PATIENT during deployment.
 
  YOU need to iterate with targeted logging - add logs where I need to trace execution, THEN remove them when I'm done, otherwise
    I'll be flooded with noise. This is your debugger, but be sure to deploy after each change: npm start.
@@ -573,6 +573,81 @@ export const CHAT_EVENTS = {
 - `claude-private-thoughts.b64` - Personal reflections
 - Bidirectional sharing - Claude can share discoveries with Joel
 - Intellectual freedom - Use web access for research and exploration
+
+---
+
+## TESTING METHODOLOGY
+
+### 🧪 Test Categories (Critical for CRUD + Real-time Architecture)
+
+#### **Database Tests** (Server-side verification)
+```bash
+# Test Category: crud-persistence
+./jtag data/create --collection=Room --data='{"name":"test","description":"testing"}'
+./jtag data/read --collection=Room --id=[ID]
+./jtag data/update --collection=Room --id=[ID] --data='{"description":"updated"}'
+./jtag data/delete --collection=Room --id=[ID]
+```
+**Purpose**: Prove CRUD operations persist to SQLite database with version tracking
+
+#### **Event Tests** (Real-time system verification)
+```bash
+# Test Category: real-time-events
+./jtag debug/logs --filterPattern="data:Room:updated" --tailLines=20
+./jtag debug/logs --filterPattern="eventName" --tailLines=30
+```
+**Purpose**: Prove `data:${collection}:updated` events are emitted after successful database operations
+
+#### **Widget State Tests** (UI data verification)
+```bash
+# Test Category: widget-introspection
+./jtag debug/widget-state --widgetSelector="room-list-widget" --extractRowData=true
+./jtag debug/widget-state --widgetSelector="chat-widget" --includeMessages=true
+./jtag debug/widget-state --widgetSelector="user-list-widget" --extractRowData=true
+```
+**Purpose**: Prove widgets contain expected data and receive real-time updates
+
+#### **Integration Tests** (End-to-end CRUD → UI synchronization)
+```bash
+# Test Category: crud-ui-sync
+# 1. Perform CRUD operation
+./jtag data/update --collection=Room --id=[ID] --data='{"description":"INTEGRATION TEST"}'
+# 2. Verify database persistence
+./jtag data/read --collection=Room --id=[ID]
+# 3. Verify event emission
+./jtag debug/logs --filterPattern="data:Room:updated" --tailLines=5
+# 4. Verify widget reflects change
+./jtag debug/widget-state --widgetSelector="room-list-widget" --extractRowData=true
+```
+**Purpose**: Prove complete flow: Database → Events → Widget UI updates
+
+### 🎯 Critical Test Matrix
+Must prove **both database-side AND event-driven UI** for all collections:
+
+| Collection | Widget | CRUD Test | Event Test | UI Sync Test |
+|------------|---------|-----------|------------|--------------|
+| Room | room-list-widget | ✅ UPDATE works (v1→v2) | ⚠️ Events exist in logs | ❓ UI sync TBD |
+| User | user-list-widget | ✅ UPDATE works (v1→v2) | ❌ No `data:User:updated` found | ❓ UI sync TBD |
+| ChatMessage | chat-widget | ✅ UPDATE works (v1→v2) | ❌ No `data:ChatMessage:updated` found | ❓ UI sync TBD |
+
+**Success Criteria**: All 9 tests must pass for complete real-time CRUD system
+
+### 📋 Manual Test Results (2025-09-23 17:29)
+
+#### Database Tests: ✅ PASS
+- **Room UPDATE**: `5e71a0c8-0303-4eb8-a478-3a121248` - Version 1→2, description updated
+- **User UPDATE**: `002350cc-0031-408d-8040-004f000f` - Version 1→2, displayName updated
+- **ChatMessage UPDATE**: `035f3169-392e-4b50-8561-3966d3d18a26` - Version 1→2, content updated
+
+#### Event Tests: ⚠️ PARTIAL
+- **Room Events**: `data:Room:updated` - TBD (need to check different log patterns)
+- **User Events**: No `data:User:updated` events found in logs
+- **ChatMessage Events**: No `data:ChatMessage:updated` events found in logs
+
+#### Next Steps:
+1. Fix event emission for User and ChatMessage updates
+2. Test widget state inspection for all three widgets
+3. Prove UI synchronization works end-to-end
 
 ---
 
