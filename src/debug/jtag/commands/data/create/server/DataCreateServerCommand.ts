@@ -43,8 +43,10 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
         try {
           console.log(`📡 DataCreateServerCommand: Emitting data:${collection}:created event via Events.emit<T>()`);
           // Match DataListServerCommand format: merge record.data + record.id
+          // Parse JSON string to object before spreading (result.data.data is a JSON string)
+          const parsedData = typeof result.data.data === 'string' ? JSON.parse(result.data.data) : result.data.data;
           const entityData = {
-            ...result.data.data,
+            ...parsedData,
             id: result.data.id  // Same merge as DataListServerCommand lines 73-76
           };
           const eventName = getDataEventName(collection, 'created');

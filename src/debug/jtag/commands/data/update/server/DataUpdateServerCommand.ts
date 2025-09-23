@@ -1,16 +1,19 @@
 /**
  * Data Update Command - Server Implementation
- * 
- * Direct filesystem operations following working data create pattern
+ *
+ * Uses DataDaemon for proper storage abstraction (SQLite backend)
+ * Mirrors DataCreateServerCommand pattern for consistency
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataUpdateParams, DataUpdateResult } from '../shared/DataUpdateTypes';
 import { createDataUpdateResultFromParams } from '../shared/DataUpdateTypes';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { getDataEventName } from '../../shared/DataEventConstants';
+import { Events } from '../../../../system/core/server/shared/Events';
 
 export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataUpdateResult> {
   
@@ -19,28 +22,10 @@ export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataU
   }
 
   async execute(params: DataUpdateParams): Promise<DataUpdateResult> {
-    console.log(`🔄 DATA UPDATE: Updating ${params.collection}/${params.id}`);
-    
+    const collection = params.collection;
+    console.debug(`🔄 DATA UPDATE: Updating ${collection}/${params.id} via DataDaemon`);
+
     try {
-      // Follow session-based path structure like DataCreateServerCommand
-      const sessionId = params.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
-      const dataDir = path.resolve(basePath, 'data');
-      const collectionDir = path.join(dataDir, params.collection);
-      const filePath = path.join(collectionDir, `${params.id}.json`);
-      
-      // Check if record exists
-      let existingRecord;
-      try {
-        const fileContent = await fs.readFile(filePath, 'utf-8');
-        existingRecord = JSON.parse(fileContent);
-      } catch (e) {
-        return createDataUpdateResultFromParams(params, {
-          error: `Record not found: ${params.collection}/${params.id}`,
-          found: false
-        });
-      }
-      
       // Parse update data if it's a string (from CLI)
       let updateData = params.data;
       if (typeof params.data === 'string') {
@@ -49,34 +34,48 @@ export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataU
         } catch (e) {
           return createDataUpdateResultFromParams(params, {
             error: `Invalid JSON in data parameter: ${e instanceof Error ? e.message : 'Unknown error'}`,
-            found: true
+            found: false
           });
         }
       }
-      
-      // Merge update data with existing record
-      const updatedRecord = {
-        ...existingRecord,
-        data: {
-          ...existingRecord.data,
-          ...updateData
-        },
-        updatedAt: new Date().toISOString(),
-        version: params.incrementVersion !== false ? (existingRecord.version || 1) + 1 : existingRecord.version
-      };
-      
-      // Write updated record
-      await fs.writeFile(filePath, JSON.stringify(updatedRecord, null, 2));
-      
-      console.log(`✅ DATA UPDATE: Updated ${params.collection}/${params.id} (v${updatedRecord.version})`);
-      
-      return createDataUpdateResultFromParams(params, {
-        found: true,
-        data: updatedRecord,
-        previousVersion: existingRecord.version,
-        newVersion: updatedRecord.version
-      });
-      
+
+      // Use DataDaemon.update (mirroring DataDaemon.store pattern from create command)
+      const result = await DataDaemon.update(collection, params.id, updateData as Partial<BaseEntity>);
+
+      if (result.success && result.data) {
+        console.log(`✅ DATA UPDATE: Updated ${collection}/${params.id} via DataDaemon`);
+
+        // Emit data:collection:updated event (mirror the create pattern)
+        try {
+          console.log(`📡 DataUpdateServerCommand: Emitting data:${collection}:updated event via Events.emit<T>()`);
+          // Parse JSON string to object before spreading (same as create command)
+          const parsedData = typeof result.data.data === 'string' ? JSON.parse(result.data.data) : result.data.data;
+          const entityData = {
+            ...parsedData,
+            id: result.data.id
+          };
+          const eventName = getDataEventName(collection, 'updated');
+          await Events.emit(eventName, entityData, this.context, this.commander);
+          console.log(`✅ DataUpdateServerCommand: Successfully emitted ${eventName} via Events.emit<T>()`);
+        } catch (eventError) {
+          console.error(`❌ DataUpdateServerCommand: Failed to emit event:`, eventError);
+          // Don't fail the command if event emission fails
+        }
+
+        return createDataUpdateResultFromParams(params, {
+          found: true,
+          data: result.data,
+          previousVersion: result.data.metadata.version - 1, // Assuming version was incremented
+          newVersion: result.data.metadata.version
+        });
+      } else {
+        console.error(`❌ DATA UPDATE: DataDaemon.update failed:`, result.error);
+        return createDataUpdateResultFromParams(params, {
+          error: result.error || 'Record not found',
+          found: false
+        });
+      }
+
     } catch (error: any) {
       console.error(`❌ DATA UPDATE: Update failed:`, error.message);
       return createDataUpdateResultFromParams(params, {
