@@ -39,7 +39,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   constructor(config: WebSocketConfig = {}) {
     super();
     this.config = {
-      reconnectAttempts: 5,
+      reconnectAttempts: 1, // Fail fast - don't spam retries when server is clearly down
       reconnectDelay: 1000,
       pingInterval: 30000,
       sessionHandshake: true,
@@ -248,7 +248,22 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Handle WebSocket error with consistent logging
    */
   protected handleWebSocketError(error: Error, context = 'connection'): void {
-    console.error(`❌ ${this.name}: ${context} error:`, error);
+    // For connection errors, check if it's a "server down" situation
+    const isConnectionFailed = error.message.includes('Connection failed') ||
+                              error.message.includes('ECONNREFUSED') ||
+                              error.message.includes('connect ECONNREFUSED');
+
+    if (isConnectionFailed && context === 'connection') {
+      // Show clear, prominent message for server down instead of technical error spam
+      console.error('🚨 SERVER NOT RUNNING');
+      console.error('🔍 PROBLEM: No JTAG system is currently running');
+      console.error('✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds');
+      console.error(''); // Empty line for separation
+    } else {
+      // Only show detailed errors for non-connection failures
+      console.error(`❌ ${this.name}: ${context} error:`, error);
+    }
+
     this.emitTransportEvent('ERROR', {
       error: error.message,
       context

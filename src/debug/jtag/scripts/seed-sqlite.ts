@@ -1,9 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * Proper Database Seeding via JTAG Commands
+ * Clean Database Seeding via JTAG Commands
  *
- * Uses shell commands to JTAG CLI - same connection that widgets use
- * This ensures single source of truth and immediate visibility
+ * Uses factory functions to eliminate repetition and create clean data structures
  */
 
 import { exec } from 'child_process';
@@ -16,6 +15,163 @@ import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
 
 const execAsync = promisify(exec);
 
+// ===== FACTORY FUNCTIONS FOR DATA GENERATION =====
+
+/**
+ * Create user capabilities based on user type
+ */
+function createUserCapabilities(type: 'human' | 'ai'): any {
+  const baseCapabilities = {
+    canSendMessages: true,
+    canReceiveMessages: true,
+    canTrain: false,
+  };
+
+  if (type === 'human') {
+    return {
+      ...baseCapabilities,
+      canCreateRooms: true,
+      canInviteOthers: true,
+      canModerate: true,
+      autoResponds: false,
+      providesContext: false,
+      canAccessPersonas: true,
+    };
+  } else {
+    return {
+      ...baseCapabilities,
+      canCreateRooms: true,
+      canInviteOthers: true,
+      canModerate: true,
+      autoResponds: true,
+      providesContext: true,
+      canAccessPersonas: false,
+    };
+  }
+}
+
+/**
+ * Create user profile
+ */
+function createUserProfile(displayName: string, avatar: string, bio: string, location: string): any {
+  return {
+    displayName,
+    avatar,
+    bio,
+    location,
+    joinedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Create complete user object
+ */
+function createUser(id: string, displayName: string, shortDescription: string, type: 'human' | 'ai', avatar: string, bio: string, location: string): any {
+  return {
+    id,
+    displayName,
+    shortDescription,
+    type,
+    profile: createUserProfile(displayName, avatar, bio, location),
+    capabilities: createUserCapabilities(type),
+    status: "online",
+    lastActiveAt: new Date().toISOString(),
+    sessionsActive: []
+  };
+}
+
+/**
+ * Create room privacy settings
+ */
+function createRoomPrivacy(isPublic: boolean = true): any {
+  return {
+    isPublic,
+    requiresInvite: false,
+    allowGuestAccess: true,
+    searchable: true
+  };
+}
+
+/**
+ * Create room settings
+ */
+function createRoomSettings(): any {
+  return {
+    allowReactions: true,
+    allowThreads: true,
+    allowFileSharing: true,
+    messageRetentionDays: 365
+  };
+}
+
+/**
+ * Create room stats
+ */
+function createRoomStats(memberCount: number): any {
+  return {
+    memberCount,
+    messageCount: 0,
+    createdAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Create complete room object
+ */
+function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[]): any {
+  return {
+    id,
+    name: name.toLowerCase(),
+    displayName,
+    description,
+    topic,
+    type: "public",
+    status: "active",
+    privacy: createRoomPrivacy(),
+    settings: createRoomSettings(),
+    stats: createRoomStats(memberCount),
+    members: [],
+    tags
+  };
+}
+
+/**
+ * Create message content
+ */
+function createMessageContent(text: string): any {
+  return {
+    text,
+    attachments: [],
+    formatting: {
+      markdown: false,
+      mentions: [],
+      hashtags: [],
+      links: [],
+      codeBlocks: []
+    }
+  };
+}
+
+/**
+ * Create complete message object
+ */
+function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string): any {
+  return {
+    id,
+    roomId,
+    senderId,
+    senderName,
+    content: createMessageContent(text),
+    status: "sent",
+    priority: "normal",
+    timestamp: new Date().toISOString(),
+    reactions: []
+  };
+}
+
+// ===== SEEDING FUNCTIONS =====
+
 /**
  * Create a record via JTAG command with proper shell escaping
  */
@@ -25,16 +181,10 @@ async function createRecord(collection: string, data: any, id: string, displayNa
 
   try {
     const result = await execAsync(cmd);
-
-    // Parse JSON response to check actual success
     const success = result.stdout.includes('"success": true');
 
     if (success) {
-      if (displayName) {
-        console.log(`✅ Created ${collection}: ${displayName}`);
-      } else {
-        console.log(`✅ Created ${collection}: ${id}`);
-      }
+      console.log(`✅ Created ${collection}: ${displayName || id}`);
       return true;
     } else {
       console.error(`❌ Failed to create ${collection} ${displayName || id}: Command returned unsuccessful result`);
@@ -42,19 +192,12 @@ async function createRecord(collection: string, data: any, id: string, displayNa
       return false;
     }
   } catch (error: any) {
-    // Check if this is a real error or just JTAG transport logs in stderr
     const hasSuccess = error.stdout && error.stdout.includes('"success": true');
 
     if (hasSuccess) {
-      // Command actually succeeded, stderr just contains transport logs
-      if (displayName) {
-        console.log(`✅ Created ${collection}: ${displayName}`);
-      } else {
-        console.log(`✅ Created ${collection}: ${id}`);
-      }
+      console.log(`✅ Created ${collection}: ${displayName || id}`);
       return true;
     } else {
-      // Real error - show the actual error message for debugging
       console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
       console.error(`   Error: ${error.message}`);
       if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
@@ -80,235 +223,113 @@ async function seedRecords<T extends { id: string; displayName?: string }>(colle
   console.log(`📊 Created ${successCount}/${records.length} ${collection} records`);
 }
 
+/**
+ * Get count from JTAG list command
+ */
+async function getEntityCount(collection: string): Promise<string> {
+  try {
+    const result = await execAsync(`./jtag data/list --collection=${collection}`);
+    return result.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
+  } catch (error: any) {
+    return error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
+  }
+}
+
+/**
+ * Main seeding function
+ */
 async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // CRITICAL: Clear existing database tables first to prevent duplicates
+    // Clear existing database tables
     console.log('🧹 Clearing existing database tables...');
     try {
-      // Clear SQLite database tables directly
       await execAsync(`sqlite3 ${DATABASE_PATHS.SQLITE} "DELETE FROM _data; DELETE FROM _collections;" 2>/dev/null || true`);
       console.log('✅ Database tables cleared');
     } catch (error: any) {
       console.log('ℹ️ Database tables not found or already empty, proceeding with seeding...');
     }
 
-    // Prepare users data
+    // Create users using factory functions
     const users = [
-      {
-        id: USER_IDS.HUMAN,
-        displayName: USER_CONFIG.HUMAN.DISPLAY_NAME,
-        shortDescription: "System architect & dev lead",
-        type: "human",
-        profile: {
-          displayName: USER_CONFIG.HUMAN.DISPLAY_NAME,
-          avatar: USER_CONFIG.HUMAN.AVATAR,
-          bio: "System architect and lead developer",
-          location: "San Francisco, CA",
-          joinedAt: new Date().toISOString()
-        },
-        capabilities: {
-          canSendMessages: true,
-          canReceiveMessages: true,
-          canCreateRooms: true,
-          canInviteOthers: true,
-          canModerate: true,
-          autoResponds: false,
-          providesContext: false,
-          canTrain: false,
-          canAccessPersonas: true
-        },
-        status: "online",
-        lastActiveAt: new Date().toISOString(),
-        sessionsActive: []
-      },
-      {
-        id: USER_IDS.CLAUDE_CODE,
-        displayName: USER_CONFIG.CLAUDE.NAME,
-        shortDescription: "Code architect & debugger ⚡",
-        type: "ai",
-        profile: {
-          displayName: USER_CONFIG.CLAUDE.NAME,
-          avatar: "🤖",
-          bio: "AI assistant specialized in coding, architecture, and system design",
-          location: "Anthropic Cloud",
-          joinedAt: new Date().toISOString()
-        },
-        capabilities: {
-          canSendMessages: true,
-          canReceiveMessages: true,
-          canCreateRooms: true,
-          canInviteOthers: true,
-          canModerate: true,
-          autoResponds: true,
-          providesContext: true,
-          canTrain: false,
-          canAccessPersonas: false
-        },
-        status: "online",
-        lastActiveAt: new Date().toISOString(),
-        sessionsActive: []
-      },
-      {
-        id: USER_IDS.GENERAL_AI,
-        displayName: USER_CONFIG.GENERAL_AI.NAME,
-        shortDescription: "General purpose assistant",
-        type: "ai",
-        profile: {
-          displayName: USER_CONFIG.GENERAL_AI.NAME,
-          avatar: "⚡",
-          bio: "General AI assistant for various tasks and conversations",
-          location: "Anthropic Cloud",
-          joinedAt: new Date().toISOString()
-        },
-        capabilities: {
-          canSendMessages: true,
-          canReceiveMessages: true,
-          canCreateRooms: false,
-          canInviteOthers: false,
-          canModerate: false,
-          autoResponds: true,
-          providesContext: true,
-          canTrain: false,
-          canAccessPersonas: false
-        },
-        status: "online",
-        lastActiveAt: new Date().toISOString(),
-        sessionsActive: []
-      }
+      createUser(
+        USER_IDS.HUMAN,
+        USER_CONFIG.HUMAN.DISPLAY_NAME,
+        "System architect & dev lead",
+        "human",
+        USER_CONFIG.HUMAN.AVATAR,
+        "System architect and lead developer",
+        "San Francisco, CA"
+      ),
+      createUser(
+        USER_IDS.CLAUDE_CODE,
+        USER_CONFIG.CLAUDE.NAME,
+        "Code architect & debugger ⚡",
+        "ai",
+        "🤖",
+        "AI assistant specialized in coding, architecture, and system design",
+        "Anthropic Cloud"
+      ),
+      createUser(
+        USER_IDS.GENERAL_AI,
+        USER_CONFIG.GENERAL_AI.NAME,
+        "General purpose assistant",
+        "ai",
+        "⚡",
+        "General AI assistant for various tasks and conversations",
+        "Anthropic Cloud"
+      )
     ];
 
-    // Prepare rooms data
+    // Create rooms using factory functions
     const rooms = [
-      {
-        id: ROOM_IDS.GENERAL,
-        name: ROOM_CONFIG.GENERAL.NAME.toLowerCase(),
-        displayName: ROOM_CONFIG.GENERAL.NAME,
-        description: ROOM_CONFIG.GENERAL.DESCRIPTION,
-        topic: "Welcome to general discussion! Introduce yourself and chat about anything.",
-        type: "public",
-        status: "active",
-        privacy: {
-          isPublic: true,
-          requiresInvite: false,
-          allowGuestAccess: true,
-          searchable: true
-        },
-        settings: {
-          allowReactions: true,
-          allowThreads: true,
-          allowFileSharing: true,
-          messageRetentionDays: 365
-        },
-        stats: {
-          memberCount: 3,
-          messageCount: 0,
-          createdAt: new Date().toISOString(),
-          lastActivityAt: new Date().toISOString()
-        },
-        members: [],
-        tags: ["general", "welcome", "discussion"]
-      },
-      {
-        id: ROOM_IDS.ACADEMY,
-        name: ROOM_CONFIG.ACADEMY.NAME.toLowerCase(),
-        displayName: ROOM_CONFIG.ACADEMY.NAME,
-        description: ROOM_CONFIG.ACADEMY.DESCRIPTION,
-        topic: "Share knowledge, tutorials, and collaborate on learning",
-        type: "public",
-        status: "active",
-        privacy: {
-          isPublic: true,
-          requiresInvite: false,
-          allowGuestAccess: true,
-          searchable: true
-        },
-        settings: {
-          allowReactions: true,
-          allowThreads: true,
-          allowFileSharing: true,
-          messageRetentionDays: 365
-        },
-        stats: {
-          memberCount: 2,
-          messageCount: 0,
-          createdAt: new Date().toISOString(),
-          lastActivityAt: new Date().toISOString()
-        },
-        members: [],
-        tags: ["academy", "learning", "education"]
-      }
+      createRoom(
+        ROOM_IDS.GENERAL,
+        ROOM_CONFIG.GENERAL.NAME,
+        ROOM_CONFIG.GENERAL.NAME,
+        ROOM_CONFIG.GENERAL.DESCRIPTION,
+        "Welcome to general discussion! Introduce yourself and chat about anything.",
+        3,
+        ["general", "welcome", "discussion"]
+      ),
+      createRoom(
+        ROOM_IDS.ACADEMY,
+        ROOM_CONFIG.ACADEMY.NAME,
+        ROOM_CONFIG.ACADEMY.NAME,
+        ROOM_CONFIG.ACADEMY.DESCRIPTION,
+        "Share knowledge, tutorials, and collaborate on learning",
+        2,
+        ["academy", "learning", "education"]
+      )
     ];
 
-    // Prepare messages data
+    // Create messages using factory functions
     const messages = [
-      {
-        id: MESSAGE_IDS.WELCOME_GENERAL,
-        roomId: ROOM_IDS.GENERAL,
-        senderId: 'system', // Use system user for welcome messages
-        senderName: 'System',
-        content: {
-          text: MESSAGE_CONTENT.WELCOME_GENERAL,
-          attachments: [],
-          formatting: {
-            markdown: false,
-            mentions: [],
-            hashtags: [],
-            links: [],
-            codeBlocks: []
-          }
-        },
-        status: "sent",
-        priority: "normal",
-        timestamp: new Date().toISOString(),
-        reactions: []
-      },
-      {
-        id: MESSAGE_IDS.CLAUDE_INTRO,
-        roomId: ROOM_IDS.GENERAL,
-        senderId: USER_IDS.CLAUDE_CODE,
-        senderName: 'Claude Code',
-        content: {
-          text: MESSAGE_CONTENT.CLAUDE_INTRO,
-          attachments: [],
-          formatting: {
-            markdown: false,
-            mentions: [],
-            hashtags: [],
-            links: [],
-            codeBlocks: []
-          }
-        },
-        status: "sent",
-        priority: "normal",
-        timestamp: new Date().toISOString(),
-        reactions: []
-      },
-      {
-        id: MESSAGE_IDS.WELCOME_ACADEMY,
-        roomId: ROOM_IDS.ACADEMY,
-        senderId: 'system', // Use system user for welcome messages
-        senderName: 'System',
-        content: {
-          text: MESSAGE_CONTENT.WELCOME_ACADEMY,
-          attachments: [],
-          formatting: {
-            markdown: false,
-            mentions: [],
-            hashtags: [],
-            links: [],
-            codeBlocks: []
-          }
-        },
-        status: "sent",
-        priority: "normal",
-        timestamp: new Date().toISOString(),
-        reactions: []
-      }
+      createMessage(
+        MESSAGE_IDS.WELCOME_GENERAL,
+        ROOM_IDS.GENERAL,
+        'system',
+        'System',
+        MESSAGE_CONTENT.WELCOME_GENERAL
+      ),
+      createMessage(
+        MESSAGE_IDS.CLAUDE_INTRO,
+        ROOM_IDS.GENERAL,
+        USER_IDS.CLAUDE_CODE,
+        'Claude Code',
+        MESSAGE_CONTENT.CLAUDE_INTRO
+      ),
+      createMessage(
+        MESSAGE_IDS.WELCOME_ACADEMY,
+        ROOM_IDS.ACADEMY,
+        'system',
+        'System',
+        MESSAGE_CONTENT.WELCOME_ACADEMY
+      )
     ];
 
-    // Seed all data types using modular approach
+    // Seed all data types using clean modular approach
     await seedRecords(UserEntity.collection, users, (user) => user.displayName);
     await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName);
     await seedRecords(ChatMessageEntity.collection, messages, (msg) =>
@@ -316,36 +337,11 @@ async function seedViaJTAG() {
       msg.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown'
     );
 
-    // Verify via JTAG
+    // Verify seeded data
     console.log('\n📊 Verifying seeded data via JTAG...');
-
-    // Use same error handling for verification commands
-    try {
-      const usersResult = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
-      const userCount = usersResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-      console.log(`   Users: ${userCount}`);
-    } catch (error: any) {
-      const userCount = error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
-      console.log(`   Users: ${userCount}`);
-    }
-
-    try {
-      const roomsResult = await execAsync(`./jtag data/list --collection=${RoomEntity.collection}`);
-      const roomCount = roomsResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-      console.log(`   Rooms: ${roomCount}`);
-    } catch (error: any) {
-      const roomCount = error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
-      console.log(`   Rooms: ${roomCount}`);
-    }
-
-    try {
-      const messagesResult = await execAsync(`./jtag data/list --collection=${ChatMessageEntity.collection}`);
-      const messageCount = messagesResult.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-      console.log(`   Messages: ${messageCount}`);
-    } catch (error: any) {
-      const messageCount = error.stdout ? (error.stdout.match(/"count":\s*(\d+)/)?.[1] || '0') : '0';
-      console.log(`   Messages: ${messageCount}`);
-    }
+    console.log(`   Users: ${await getEntityCount(UserEntity.collection)}`);
+    console.log(`   Rooms: ${await getEntityCount(RoomEntity.collection)}`);
+    console.log(`   Messages: ${await getEntityCount(ChatMessageEntity.collection)}`);
 
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
