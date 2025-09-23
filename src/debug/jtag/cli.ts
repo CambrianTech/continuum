@@ -226,13 +226,17 @@ async function main() {
     const agentContext = entryPoint.getAgentContext();
     const behavior = entryPoint.getBehavior();
 
-    // Show debug params if verbose mode
-    if (behavior.logLevel === 'verbose') {
-      console.log(`🔧 DEBUG PARAMS:`, JSON.stringify(params, null, 2));
-    }
+    // Suppress ALL output unless verbose mode
+    const originalStdoutWrite = process.stdout.write;
+    const originalStderrWrite = process.stderr.write;
 
-    // Log agent detection based on intelligent behavior
-    entryPoint.logAgentDetection();
+    if (behavior.logLevel !== 'verbose') {
+      process.stdout.write = () => true;
+      process.stderr.write = () => true;
+    } else {
+      console.log(`🔧 DEBUG PARAMS:`, JSON.stringify(params, null, 2));
+      entryPoint.logAgentDetection();
+    }
     
     // Add environment routing parameter for exec commands
     if (command === 'exec' && params.environment) {
@@ -244,7 +248,9 @@ async function main() {
     let sessionId: string | undefined;
     if (!params['new-session'] && command !== 'session/create') {
       sessionId = getPersistentSessionId();
-      console.log(`🔄 Session persistence: ${sessionId ? `reusing ${sessionId}` : 'creating new session'}`);
+      if (behavior.logLevel === 'verbose') {
+        originalLog(`🔄 Session persistence: ${sessionId ? `reusing ${sessionId}` : 'creating new session'}`);
+      }
     }
     
     const clientOptions: JTAGClientConnectOptions = {
@@ -266,60 +272,63 @@ async function main() {
     
     // Pure client - no server startup, just connect to existing server
     if (behavior.logLevel === 'verbose') {
-      console.log('🔗 CLI connecting to existing server...');
+      originalLog('🔗 CLI connecting to existing server...');
     }
-    
-    // Conditionally suppress verbose connection logs based on agent behavior
-    const originalLog = console.log;
-    const originalWarn = console.warn;
-    if (!entryPoint.shouldShowVerboseLogs()) {
-      console.log = () => {}; // Suppress logs during connection for AI agents
-      console.warn = () => {}; // Suppress warnings during connection for AI agents  
-    }
-    
+
     let client;
     try {
       const result = await JTAGClientServer.connect(clientOptions);
       client = result.client;
     } catch (err) {
-      // Restore console logging first
-      console.log = originalLog;
-      console.warn = originalWarn;
       
       // Type guard for proper error handling
       const connectionError = err instanceof Error ? err : new Error(String(err));
       
-      // Use consistent error formatting for all connection failures
-      console.log('='.repeat(60));
-      console.log('\x1b[31mERROR: Connection failed - ' + connectionError.message + '\x1b[0m');
-      console.log('='.repeat(60));
-      
-      const isConnectionRefused = connectionError.message.includes('ECONNREFUSED') || 
+      // Restore output streams first
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+
+      const isConnectionRefused = connectionError.message.includes('ECONNREFUSED') ||
                                 connectionError.message.includes('connect') ||
                                 (err && typeof err === 'object' && 'code' in err && err.code === 'ECONNREFUSED');
-      
-      if (isConnectionRefused) {
-        console.error('🔍 PROBLEM: No JTAG system is currently running');
-        console.error('✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds');
+
+      if (behavior.logLevel === 'verbose') {
+        console.log('='.repeat(60));
+        console.log('\x1b[31mERROR: Connection failed - ' + connectionError.message + '\x1b[0m');
+        console.log('='.repeat(60));
+        if (isConnectionRefused) {
+          console.error('🔍 PROBLEM: No JTAG system is currently running');
+          console.error('✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds');
+        } else {
+          console.error('🔍 Connection details:', connectionError.message);
+          console.error('🔍 Error code:', connectionError.code || 'unknown');
+        }
       } else {
-        console.error('🔍 Connection details:', connectionError.message);
-        console.error('🔍 Error code:', connectionError.code || 'unknown');
+        // Clean JSON error for connection failures - send to stderr
+        console.error(JSON.stringify({
+          success: false,
+          error: isConnectionRefused ?
+            'No JTAG system running - run "npm start" and wait 60 seconds' :
+            connectionError.message,
+          timestamp: new Date().toISOString(),
+          hint: "Use --verbose for detailed output"
+        }, null, 2));
       }
       
       process.exit(1);
     }
-    
-    // Restore console logging
-    console.log = originalLog;
-    console.warn = originalWarn;
-    
+
     // Store session ID for persistence (will reuse browser session)
-    console.log(`🔍 Session storage check: client.sessionId=${client.sessionId}, sessionId=${sessionId}`);
+    if (behavior.logLevel === 'verbose') {
+      console.log(`🔍 Session storage check: client.sessionId=${client.sessionId}, sessionId=${sessionId}`);
+    }
     if (client.sessionId && !sessionId) {
       // Only store if we didn't already have one (new session created)
-      console.log(`💾 Storing new session ID for persistence: ${client.sessionId}`);
+      if (behavior.logLevel === 'verbose') {
+        console.log(`💾 Storing new session ID for persistence: ${client.sessionId}`);
+      }
       storePersistentSessionId(client.sessionId);
-    } else {
+    } else if (behavior.logLevel === 'verbose') {
       console.log(`⏭️ Skipping session storage - already had existing session or no client sessionId`);
     }
     
@@ -375,12 +384,17 @@ async function main() {
       const commandExecution = (client as any).commands[command](params);
       
       const result = await Promise.race([commandExecution, commandTimeout]);
-      
-      // Show actual command result for debugging
-      console.log('='.repeat(60));
-      console.log('COMMAND RESULT:');
-      console.log(JSON.stringify(result, null, 2));
-      console.log('='.repeat(60));
+
+      // Show command result based on verbosity level
+      if (behavior.logLevel === 'verbose') {
+        console.log('='.repeat(60));
+        console.log('COMMAND RESULT:');
+        console.log(JSON.stringify(result, null, 2));
+        console.log('='.repeat(60));
+      } else {
+        // Clean JSON output for non-verbose mode
+        console.log(JSON.stringify(result, null, 2));
+      }
       
       // Session persistence: only destroy session if explicitly requested
       if (params['new-session'] || command.startsWith('session/')) {
@@ -392,25 +406,64 @@ async function main() {
         const transport = (client as any).getSystemTransport();
         if (transport) {
           await transport.disconnect();
-          console.log('✅ JTAGClient: Transport disconnected (session preserved)');
+          if (behavior.logLevel === 'verbose') {
+            console.log('✅ JTAGClient: Transport disconnected (session preserved)');
+          }
         }
       }
-      
+
+      // Restore output streams and send final result
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+
+      // Output final result only
+      if (behavior.logLevel === 'verbose') {
+        console.log('='.repeat(60));
+        console.log('COMMAND RESULT:');
+        console.log(JSON.stringify(result, null, 2));
+        console.log('='.repeat(60));
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+
       process.exit(result?.success ? 0 : 1);
     } catch (err) {
       const cmdError = err instanceof Error ? err : new Error(String(err));
-      console.log('='.repeat(60));
-      console.log('\x1b[31mERROR: ' + cmdError.message + '\x1b[0m');
-      console.log('='.repeat(60));
-      if (cmdError.message.includes('timeout')) {
-        console.error('🔍 Debug: Check system logs: npm run signal:errors');
+
+      if (behavior.logLevel === 'verbose') {
+        console.log('='.repeat(60));
+        console.log('\x1b[31mERROR: ' + cmdError.message + '\x1b[0m');
+        console.log('='.repeat(60));
+        if (cmdError.message.includes('timeout')) {
+          console.error('🔍 Debug: Check system logs: npm run signal:errors');
+        }
+      } else {
+        // Clean JSON error output for non-verbose mode - send to stderr
+        console.error(JSON.stringify({
+          success: false,
+          error: cmdError.message,
+          timestamp: new Date().toISOString(),
+          hint: "Use --verbose for detailed output"
+        }, null, 2));
       }
       
       // Cleanup client connection even on command failure
       if (client) {
         await client.disconnect();
       }
-      
+
+      // Restore output streams and send error result
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+
+      // Output error result to stderr
+      console.error(JSON.stringify({
+        success: false,
+        error: cmdError.message,
+        timestamp: new Date().toISOString(),
+        hint: behavior.logLevel !== 'verbose' ? "Use --verbose for detailed output" : undefined
+      }, null, 2));
+
       process.exit(1);
     }
     

@@ -5,8 +5,8 @@
  * Supports environment-specific triggers and multi-level error testing.
  */
 
-import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Error trigger types for comprehensive testing

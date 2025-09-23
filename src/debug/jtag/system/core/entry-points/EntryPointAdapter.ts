@@ -76,13 +76,13 @@ export class EntryPointAdapter {
       case 'human':
       default:
         behavior = {
-          shouldShowAgentInfo: options.showAgentInfo ?? true, // Humans like to see what's detected
-          shouldShowProgressIndicators: true, // Humans like progress feedback
-          shouldSuppressVerboseLogs: false, // Humans want helpful output
+          shouldShowAgentInfo: options.showAgentInfo ?? false, // Clean output by default
+          shouldShowProgressIndicators: false, // Clean output by default
+          shouldSuppressVerboseLogs: true, // Quiet by default for everyone
           outputFormat: outputFormat as any,
-          logLevel: 'normal',
-          showTimestamps: false, // Humans don't care about precise timestamps
-          showCorrelationIds: false // Humans don't need correlation debugging
+          logLevel: 'minimal', // Quiet by default
+          showTimestamps: false,
+          showCorrelationIds: false
         };
         break;
     }
