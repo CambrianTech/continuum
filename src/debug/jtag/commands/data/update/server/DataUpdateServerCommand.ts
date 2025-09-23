@@ -71,15 +71,16 @@ export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataU
       } else {
         console.error(`❌ DATA UPDATE: DataDaemon.update failed:`, result.error);
         return createDataUpdateResultFromParams(params, {
-          error: result.error || 'Record not found',
+          error: result.error ?? 'Record not found',
           found: false
         });
       }
 
-    } catch (error: any) {
-      console.error(`❌ DATA UPDATE: Update failed:`, error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ DATA UPDATE: Update failed:`, errorMessage);
       return createDataUpdateResultFromParams(params, {
-        error: error.message,
+        error: errorMessage,
         found: false
       });
     }

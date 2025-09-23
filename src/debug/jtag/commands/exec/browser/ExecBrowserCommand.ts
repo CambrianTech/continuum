@@ -19,30 +19,41 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
    */
   async execute(params: ExecCommandParams): Promise<ExecCommandResult> {
     console.log(`🎯 BROWSER EXEC: Starting execution`);
-    
+
     if (!params.code) {
       return createExecErrorResult('validation', 'Missing required code parameter', 'browser', params);
     }
-    
+
     if (params.code.type === 'inline' && params.code.language === 'javascript') {
       const sourceCode = params.code.source;
       console.log(`🎯 BROWSER EXEC: Executing JavaScript in browser`);
-      
-      // Simple JavaScript execution - let errors bubble up to CommandDaemon
-      const func = new Function(sourceCode);
-      const result = await func();
-      
-      console.log(`✅ BROWSER EXEC: Success - result:`, result);
-      
-      // Add result to params and metadata
-      params.result = result;
-      params.executedAt = Date.now();
-      params.executedIn = 'browser';
-      
-      // EXEC COMMANDS NEVER DELEGATE - execute locally in whatever environment they're called
-      // This prevents infinite loops where browser exec triggers server exec which triggers browser exec
-      console.log(`✅ BROWSER EXEC: Completed locally - no delegation`);
-      return createExecSuccessResult(result, 'browser', params, Date.now());
+
+      try {
+        // Simple JavaScript execution - let errors bubble up to CommandDaemon
+        const func = new Function(sourceCode);
+        const result = await func();
+
+        console.log(`✅ BROWSER EXEC: Success - result:`, result);
+
+        // FOLLOW SCREENSHOT PATTERN: Enrich params with result data before delegation
+        params.result = result;
+        params.executedAt = Date.now();
+        params.executedIn = 'browser';
+
+        // For cross-context execution, delegate to server with enriched params (like screenshot)
+        if (params.context.uuid !== this.context.uuid) {
+          console.log(`🔀 BROWSER EXEC: Cross-context detected - delegating to server with result`);
+          return await this.remoteExecute(params);
+        }
+
+        // Same context - return directly
+        console.log(`✅ BROWSER EXEC: Same context - returning result directly`);
+        return createExecSuccessResult(result, 'browser', params, Date.now());
+
+      } catch (error) {
+        console.error(`❌ BROWSER EXEC: JavaScript execution failed:`, error);
+        return createExecErrorResult('runtime', error instanceof Error ? error.message : String(error), 'browser', params, Date.now());
+      }
     } else {
       return createExecErrorResult('validation', 'Browser exec: unsupported code type', 'browser', params, Date.now());
     }
