@@ -14,7 +14,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 export interface DataUpdateParams extends JTAGPayload {
   readonly collection: string;
   readonly id: UUID;
-  readonly data: any;
+  readonly data: Record<string, unknown>;
   readonly format?: 'json' | 'yaml' | 'table';
   readonly incrementVersion?: boolean;
 }
@@ -26,7 +26,7 @@ export interface DataUpdateResult extends JTAGPayload {
   readonly collection: string;
   readonly id: UUID;
   readonly found: boolean;
-  readonly data?: any;
+  readonly data?: Record<string, unknown>;
   readonly previousVersion?: number;
   readonly newVersion?: number;
   readonly timestamp: string;

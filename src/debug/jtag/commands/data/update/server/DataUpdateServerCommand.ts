@@ -26,7 +26,9 @@ export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataU
     // DataDaemon returns updated entity directly or throws
     const entity = await DataDaemon.update(collection, params.id, params.data);
 
-    console.debug(`✅ DATA UPDATE: Updated ${collection}/${entity.id}`);
+    // Better typed logging - use params.id since entity.id might be undefined
+    const entityId = entity?.id ?? params.id;
+    console.debug(`✅ DATA UPDATE: Updated ${collection}/${entityId}`);
 
     // Emit event using BaseEntity helper
     const eventName = BaseEntity.getEventName(collection, 'updated');
@@ -34,7 +36,7 @@ export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataU
     console.log(`✅ DataUpdateServerCommand: Emitted ${eventName}`);
 
     return createDataUpdateResultFromParams(params, {
-      found: true,
+      found: Boolean(entity),
       data: entity,
     });
   }
