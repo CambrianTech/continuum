@@ -81,6 +81,9 @@ export class Events {
         });
         document.dispatchEvent(domEvent);
         console.log(`📨 Events: Also dispatched DOM event ${eventName}`);
+
+        // Also check wildcard subscriptions for pattern matches
+        this.checkWildcardSubscriptions(eventName, eventData);
       }
 
       console.log(`📨 Events: Emitted ${eventName} via EventBridge`, result);
@@ -94,7 +97,10 @@ export class Events {
   }
 
   /**
-   * Subscribe to an event with clean interface
+   * Subscribe to an event with clean interface and wildcard support
+   *
+   * @example Events.subscribe('data:User:*', handler)  // All User CRUD operations
+   * @example Events.subscribe('data:User:updated', handler)  // Specific operation
    */
   static subscribe<T>(
     eventName: string,
@@ -104,22 +110,87 @@ export class Events {
     try {
       console.log(`🎧 Events: Subscribing to ${eventName}`);
 
-      // Use DOM events for now - later this can be enhanced
-      const eventHandler = (event: Event) => {
-        const customEvent = event as CustomEvent<T>;
-        listener(customEvent.detail);
-      };
+      // Check if this is a wildcard subscription (contains *)
+      const isWildcard = eventName.includes('*');
 
-      document.addEventListener(eventName, eventHandler);
+      if (isWildcard) {
+        // Convert wildcard pattern to regex (e.g., 'data:User:*' -> /^data:User:.*$/)
+        const pattern = new RegExp('^' + eventName.replace(/\*/g, '.*') + '$');
+        console.log(`🎯 Events: Created wildcard pattern ${pattern} for ${eventName}`);
 
-      // Return unsubscribe function
-      return () => {
-        document.removeEventListener(eventName, eventHandler);
-        console.log(`🔌 Events: Unsubscribed from ${eventName}`);
-      };
+        // Store wildcard subscriptions in a registry for pattern matching
+        if (!this.wildcardSubscriptions) {
+          this.wildcardSubscriptions = new Map();
+        }
+
+        const subscriptionId = `${eventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+        this.wildcardSubscriptions.set(subscriptionId, { pattern, listener, eventName });
+
+        console.log(`🎧 Events: Added wildcard subscription ${subscriptionId} for pattern ${eventName}`);
+
+        // Return unsubscribe function for wildcard
+        return () => {
+          this.wildcardSubscriptions?.delete(subscriptionId);
+          console.log(`🔌 Events: Unsubscribed wildcard pattern ${eventName} (${subscriptionId})`);
+        };
+      } else {
+        // Regular exact match subscription
+        const eventHandler = (event: Event) => {
+          const customEvent = event as CustomEvent<T>;
+          listener(customEvent.detail);
+        };
+
+        document.addEventListener(eventName, eventHandler);
+
+        // Return unsubscribe function
+        return () => {
+          document.removeEventListener(eventName, eventHandler);
+          console.log(`🔌 Events: Unsubscribed from ${eventName}`);
+        };
+      }
     } catch (error) {
       console.error(`❌ Events: Failed to subscribe to ${eventName}:`, error);
       return () => {}; // No-op unsubscribe
+    }
+  }
+
+  // Storage for wildcard subscriptions
+  private static wildcardSubscriptions?: Map<string, { pattern: RegExp; listener: (data: any) => void; eventName: string }>;
+
+  /**
+   * Check if any wildcard subscriptions match the emitted event
+   * Made public so EventsDaemonBrowser can trigger wildcard subscriptions for EventBridge events
+   */
+  public static checkWildcardSubscriptions(eventName: string, eventData: any): void {
+    if (!this.wildcardSubscriptions || this.wildcardSubscriptions.size === 0) {
+      return;
+    }
+
+    let matchCount = 0;
+    this.wildcardSubscriptions.forEach((subscription, subscriptionId) => {
+      if (subscription.pattern.test(eventName)) {
+        try {
+          console.log(`🎯 Events: Wildcard match! ${subscription.eventName} pattern matches ${eventName}`);
+
+          // Create a synthetic event object with the actual event name
+          const syntheticEvent = {
+            detail: eventData,
+            type: eventName,
+            target: null,
+            currentTarget: null
+          };
+
+          // Pass the synthetic event to mimic DOM event structure
+          subscription.listener(eventData);
+          matchCount++;
+        } catch (error) {
+          console.error(`❌ Events: Wildcard listener error for ${subscriptionId}:`, error);
+        }
+      }
+    });
+
+    if (matchCount > 0) {
+      console.log(`🎯 Events: Triggered ${matchCount} wildcard subscription(s) for ${eventName}`);
     }
   }
 }

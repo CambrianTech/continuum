@@ -328,7 +328,7 @@ export const CodeInputTypes = {
 /**
  * Default configurations
  */
-export const DEFAULT_EXEC_TIMEOUT = 30000; // 30 seconds
+export const DEFAULT_EXEC_TIMEOUT = 3000; // 3 seconds - reasonable timeout with Web Worker protection
 export const DEFAULT_EXEC_PERMISSIONS: ExecPermissions = {
   allowNetworkRequests: true,
   allowFileSystemAccess: false,
