@@ -93,10 +93,22 @@ export class DatabaseVerifier {
     collection: string,
     entityId: string
   ): Promise<{ exists: boolean; data?: EntityInstance }> {
-    const dbResult = await runJtagCommand(`data/read --collection=${collection} --id=${entityId}`);
+    try {
+      const dbResult = await runJtagCommand(`data/read --collection=${collection} --id=${entityId}`);
 
-    const exists = Boolean(dbResult.success && dbResult.data?.id === entityId);
-    return { exists, data: dbResult.data as EntityInstance };
+      console.log(`   🔍 DB verification for ${collection}/${entityId}: success=${dbResult.success}, hasData=${Boolean(dbResult.data)}`);
+
+      if (!dbResult.success) {
+        console.log(`   ❌ DB read failed: ${dbResult.error || 'Unknown error'}`);
+        return { exists: false };
+      }
+
+      const exists = Boolean(dbResult.success && dbResult.data?.id === entityId);
+      return { exists, data: dbResult.data as EntityInstance };
+    } catch (error) {
+      console.log(`   ❌ DB verification error: ${error instanceof Error ? error.message : String(error)}`);
+      return { exists: false };
+    }
   }
 
   // Verify UPDATE: Did row change to expected values?
@@ -237,7 +249,39 @@ export class CRUDOperationTester {
     private eventVerifier: EventVerifier
   ) {}
 
-  // Test complete CREATE chain: Operation → Event → DB → UI
+  /**
+   * Validate data against entity schema using the data/schema command
+   */
+  private async validateAgainstSchema(data: Record<string, unknown>): Promise<{
+    valid: boolean;
+    error?: string;
+    validatedEntity?: Record<string, unknown>;
+  }> {
+    try {
+      const schemaCommand = `data/schema --collection=${this.collection} --validateData='${JSON.stringify(data)}'`;
+      const schemaResult = await runJtagCommand(schemaCommand);
+
+      if (schemaResult.success && schemaResult.validation) {
+        return {
+          valid: schemaResult.validation.valid,
+          error: schemaResult.validation.error,
+          validatedEntity: schemaResult.validation.validatedEntity
+        };
+      } else {
+        return {
+          valid: false,
+          error: 'Schema validation command failed'
+        };
+      }
+    } catch (error) {
+      return {
+        valid: false,
+        error: `Schema validation error: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+  }
+
+  // Test complete CREATE chain: Schema Validation → Operation → Event → DB → UI
   async testCreateOperation(
     testData: Partial<EntityInstance>
   ): Promise<TestResult[]> {
@@ -246,8 +290,29 @@ export class CRUDOperationTester {
     console.log(`\n🔧 Testing CREATE chain: ${this.collection}`);
 
     try {
-      // Execute CREATE operation
-      const createCommand = `data/create --collection=${this.collection} --data='${JSON.stringify(testData)}'`;
+      // STEP 1: Schema Validation (NEW!)
+      console.log(`   🔍 Validating JSON against ${this.collection} schema...`);
+      const schemaValidationResult = await this.validateAgainstSchema(testData);
+      testResults.push({
+        step: `${this.collection} CREATE Schema Validation`,
+        success: schemaValidationResult.valid,
+        details: {
+          validationResult: schemaValidationResult,
+          validatedData: schemaValidationResult.validatedEntity
+        },
+        error: schemaValidationResult.error
+      });
+
+      // Use validated data if available, otherwise original
+      const dataToCreate = schemaValidationResult.validatedEntity || testData;
+
+      if (!schemaValidationResult.valid) {
+        console.log(`   ❌ Schema validation failed: ${schemaValidationResult.error}`);
+        // Continue with test to show the CREATE would also fail
+      }
+
+      // STEP 2: Execute CREATE operation
+      const createCommand = `data/create --collection=${this.collection} --data='${JSON.stringify(dataToCreate)}'`;
       const createResult = await runJtagCommand(createCommand);
       const entityId = createResult.id ?? createResult.data?.id;
 
@@ -311,8 +376,8 @@ export class CRUDOperationTester {
 
       testResults.push({
         step: `${this.collection} UPDATE Operation`,
-        success: Boolean(updateResult.success),
-        details: { updateSuccess: updateResult.success }
+        success: Boolean(updateResult.found),
+        details: { updateFound: updateResult.found }
       });
 
       // Verify event emission
