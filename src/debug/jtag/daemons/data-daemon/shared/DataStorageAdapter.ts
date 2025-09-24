@@ -121,6 +121,19 @@ export interface StorageResult<T = unknown> {
 }
 
 /**
+ * Query Explanation Result - For dry-run/debugging
+ */
+export interface QueryExplanation {
+  readonly query: StorageQuery;
+  readonly translatedQuery: string;
+  readonly parameters?: readonly unknown[];
+  readonly estimatedRows?: number;
+  readonly executionPlan?: string;
+  readonly adapterType: string;
+  readonly timestamp: string;
+}
+
+/**
  * Universal Storage Adapter Interface
  * 
  * ALL storage backends must implement this interface for AI memory persistence
@@ -203,6 +216,11 @@ export abstract class DataStorageAdapter {
    * Close storage connection
    */
   abstract close(): Promise<void>;
+
+  /**
+   * Explain query execution (dry-run) - shows what query would be generated
+   */
+  abstract explainQuery(query: StorageQuery): Promise<QueryExplanation>;
 }
 
 /**

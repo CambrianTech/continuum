@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.1925",
+  "version": "1.0.1927",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -277,7 +277,7 @@
     "dev:iterate": "npx tsx scripts/autonomous-dev-toolkit.ts iterate",
     "dev:stress": "npx tsx scripts/autonomous-dev-toolkit.ts stress",
     "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
-    "data:clear": "echo '🧹 Clearing data tables only (preserving active database)...' && echo '✅ Data cleared (database structure preserved)'",
+    "data:clear": "npx tsx -e \"import { execSync } from 'child_process'; console.log('🧹 Clearing SQLite tables...'); try { execSync('sqlite3 .continuum/jtag/data/database.sqlite \\'DELETE FROM users; DELETE FROM rooms; DELETE FROM chat_messages;\\'', {stdio: 'inherit'}); console.log('✅ Data tables cleared'); } catch(e) { console.log('⚠️  Could not clear tables:', e.message); }\"",
     "data:seed": "npx tsx scripts/seed-sqlite.ts",
     "data:reseed": "npm run data:clear && npm run data:seed",
     "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'"

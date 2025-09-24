@@ -19,7 +19,8 @@ import {
   type StorageAdapterConfig,
   type CollectionStats,
   type StorageOperation,
-  type RecordData
+  type RecordData,
+  type QueryExplanation
 } from '../shared/DataStorageAdapter';
 
 /**
@@ -572,5 +573,20 @@ export class FileStorageAdapter extends DataStorageAdapter {
     }
 
     return 0;
+  }
+
+  /**
+   * Explain query execution (dry-run) - Legacy file adapter
+   */
+  async explainQuery(query: StorageQuery): Promise<QueryExplanation> {
+    return {
+      query,
+      translatedQuery: `Legacy FileStorageAdapter query for collection "${query.collection}"`,
+      parameters: [],
+      estimatedRows: 0,
+      executionPlan: 'This is a legacy adapter - use JsonFileStorageAdapter for detailed explanations',
+      adapterType: 'file-legacy',
+      timestamp: new Date().toISOString()
+    };
   }
 }
