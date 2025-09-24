@@ -17,7 +17,8 @@ import {
   type StorageAdapterConfig,
   type CollectionStats,
   type StorageOperation,
-  type RecordData
+  type RecordData,
+  type QueryExplanation
 } from '../shared/DataStorageAdapter';
 
 /**
@@ -696,5 +697,20 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
         error: `MemoryStorage clearAll failed: ${error}`
       };
     }
+  }
+
+  /**
+   * Explain query execution (dry-run) - Memory adapter
+   */
+  async explainQuery(query: StorageQuery): Promise<QueryExplanation> {
+    return {
+      query,
+      translatedQuery: `In-memory query for collection "${query.collection}"`,
+      parameters: [],
+      estimatedRows: this.collections.get(query.collection)?.size || 0,
+      executionPlan: 'In-memory Map-based filtering and JavaScript array operations',
+      adapterType: 'memory',
+      timestamp: new Date().toISOString()
+    };
   }
 }

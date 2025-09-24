@@ -16,10 +16,12 @@ import {
   type StorageAdapterConfig,
   type CollectionStats,
   type StorageOperation,
-  type RecordData
+  type RecordData,
+  type QueryExplanation
 } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SqliteQueryBuilder } from './SqliteQueryBuilder';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
 
 /**
@@ -55,7 +57,7 @@ export function registerEntity(collectionName: string, entityClass: EntityConstr
 /**
  * SQL Naming Convention Converter
  */
-class SqlNamingConverter {
+export class SqlNamingConverter {
   /**
    * Convert camelCase to snake_case for SQL columns
    */
@@ -1936,6 +1938,77 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     } catch (error) {
       console.error('❌ SQLite: Database clear failed:', error);
       throw new Error(`Database clear failed: ${error}`);
+    }
+  }
+
+  /**
+   * Explain query execution (dry-run) - shows what SQL would be generated
+   * Uses the same query builder as actual execution for true-to-life results
+   */
+  async explainQuery(query: StorageQuery): Promise<QueryExplanation> {
+    try {
+      // Apply SQL naming rules to collection name
+      const tableName = SqlNamingConverter.toTableName(query.collection);
+      const { sql, params, description } = SqliteQueryBuilder.buildSelect(query, tableName);
+
+      // Get SQLite query plan using EXPLAIN QUERY PLAN
+      const executionPlan = await this.getSqliteQueryPlan(sql, params);
+
+      // Estimate row count
+      const estimatedRows = await this.estimateRowCount(query);
+
+      return {
+        query,
+        translatedQuery: sql,
+        parameters: params,
+        estimatedRows,
+        executionPlan: `Query Operations:\n${description}\n\nSQLite Execution Plan:\n${executionPlan}`,
+        adapterType: 'sqlite',
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown explanation error';
+      return {
+        query,
+        translatedQuery: `-- Error generating SQL: ${errorMessage}`,
+        parameters: [],
+        estimatedRows: 0,
+        executionPlan: `Error: ${errorMessage}`,
+        adapterType: 'sqlite',
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+
+  /**
+   * Get SQLite query execution plan
+   */
+  private async getSqliteQueryPlan(sql: string, params: unknown[]): Promise<string> {
+    try {
+      const planSql = `EXPLAIN QUERY PLAN ${sql}`;
+      const plan = await this.runSql(planSql, params);
+
+      return plan.map((row: any) => {
+        return `${row.id || 0}|${row.parent || 0}|${row.notused || 0}|${row.detail || 'No details'}`;
+      }).join('\n');
+    } catch (error) {
+      return `Error getting query plan: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    }
+  }
+
+  /**
+   * Estimate row count for query
+   */
+  private async estimateRowCount(query: StorageQuery): Promise<number> {
+    try {
+      const tableName = SqlNamingConverter.toTableName(query.collection);
+
+      // Simple count - could be enhanced with more sophisticated estimation
+      const result = await this.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+      return result[0]?.count || 0;
+    } catch (error) {
+      return 0;
     }
   }
 }

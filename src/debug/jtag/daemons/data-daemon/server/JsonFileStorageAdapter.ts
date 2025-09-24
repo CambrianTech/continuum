@@ -17,7 +17,8 @@ import {
   type StorageOperation,
   type RecordData,
   type FieldFilter,
-  type QueryOperators
+  type QueryOperators,
+  type QueryExplanation
 } from '../shared/DataStorageAdapter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -859,5 +860,156 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
         return this.compareValues(fieldValue, cursor.value, QUERY_OPERATORS.LESS_THAN);
       }
     });
+  }
+
+  /**
+   * Explain query execution (dry-run) - shows what operations would be performed
+   */
+  async explainQuery(query: StorageQuery): Promise<QueryExplanation> {
+    try {
+      // Build a human-readable description of the JSON filtering operations
+      const operations: string[] = [];
+
+      // Collection loading
+      operations.push(`1. LOAD collection "${query.collection}" from ${query.collection}.json`);
+
+      // Filter operations
+      if (query.filter) {
+        operations.push(`2. FILTER records where:`);
+        for (const [field, filter] of Object.entries(query.filter)) {
+          if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
+            // Handle operators
+            for (const [operator, value] of Object.entries(filter)) {
+              const operatorDesc = this.getOperatorDescription(operator, field, value);
+              operations.push(`   - ${operatorDesc}`);
+            }
+          } else {
+            // Direct value implies equality
+            operations.push(`   - field "${field}" equals ${JSON.stringify(filter)}`);
+          }
+        }
+      }
+
+      // Legacy filters
+      if (query.filters) {
+        operations.push(`2. FILTER records (legacy) where:`);
+        for (const [field, value] of Object.entries(query.filters)) {
+          operations.push(`   - field "${field}" equals ${JSON.stringify(value)}`);
+        }
+      }
+
+      // Sorting
+      if (query.sort && query.sort.length > 0) {
+        const sortDesc = query.sort.map(s => `"${s.field}" ${s.direction.toUpperCase()}`).join(', ');
+        operations.push(`3. SORT by ${sortDesc}`);
+      }
+
+      // Pagination
+      if (query.offset) {
+        operations.push(`4. SKIP first ${query.offset} records`);
+      }
+      if (query.limit) {
+        operations.push(`${query.offset ? '5' : '4'}. LIMIT to ${query.limit} records`);
+      }
+
+      // Estimate record count
+      const filePath = path.join(this.dataDirectory, `${query.collection}${FILE_CONSTANTS.JSON_EXTENSION}`);
+      let estimatedRows = 0;
+      try {
+        const data = await this.loadCollection<RecordData>(query.collection);
+        estimatedRows = data.length;
+      } catch (error) {
+        // File doesn't exist or is empty
+      }
+
+      const translatedQuery = operations.join('\n');
+
+      return {
+        query,
+        translatedQuery,
+        parameters: this.extractQueryParameters(query),
+        estimatedRows,
+        executionPlan: `JSON File Operations:\n${translatedQuery}\n\nFile: ${filePath}`,
+        adapterType: 'json-file',
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown explanation error';
+      return {
+        query,
+        translatedQuery: `-- Error generating explanation: ${errorMessage}`,
+        parameters: [],
+        estimatedRows: 0,
+        executionPlan: `Error: ${errorMessage}`,
+        adapterType: 'json-file',
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Get human-readable description for query operators
+   */
+  private getOperatorDescription(operator: string, field: string, value: unknown): string {
+    switch (operator) {
+      case '$eq':
+        return `field "${field}" equals ${JSON.stringify(value)}`;
+      case '$ne':
+        return `field "${field}" does not equal ${JSON.stringify(value)}`;
+      case '$gt':
+        return `field "${field}" is greater than ${JSON.stringify(value)}`;
+      case '$gte':
+        return `field "${field}" is greater than or equal to ${JSON.stringify(value)}`;
+      case '$lt':
+        return `field "${field}" is less than ${JSON.stringify(value)}`;
+      case '$lte':
+        return `field "${field}" is less than or equal to ${JSON.stringify(value)}`;
+      case '$in':
+        return `field "${field}" is in ${JSON.stringify(value)}`;
+      case '$nin':
+        return `field "${field}" is not in ${JSON.stringify(value)}`;
+      case '$exists':
+        return `field "${field}" ${value ? 'exists' : 'does not exist'}`;
+      case '$regex':
+        return `field "${field}" matches pattern ${JSON.stringify(value)}`;
+      case '$contains':
+        return `field "${field}" contains ${JSON.stringify(value)}`;
+      default:
+        return `field "${field}" ${operator} ${JSON.stringify(value)}`;
+    }
+  }
+
+  /**
+   * Extract parameters from query for debugging
+   */
+  private extractQueryParameters(query: StorageQuery): readonly unknown[] {
+    const params: unknown[] = [];
+
+    if (query.filter) {
+      for (const [field, filter] of Object.entries(query.filter)) {
+        if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
+          for (const [operator, value] of Object.entries(filter)) {
+            if (Array.isArray(value)) {
+              params.push(...value);
+            } else {
+              params.push(value);
+            }
+          }
+        } else {
+          params.push(filter);
+        }
+      }
+    }
+
+    if (query.filters) {
+      for (const value of Object.values(query.filters)) {
+        params.push(value);
+      }
+    }
+
+    if (query.limit) params.push(query.limit);
+    if (query.offset) params.push(query.offset);
+
+    return params;
   }
 }
