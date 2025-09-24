@@ -127,7 +127,11 @@ export class DataDaemon {
     
     const result = await this.adapter.create(record);
     if (result.success && result.data) {
-      return result.data.data;
+      // Return complete entity with ID from DataRecord
+      return {
+        ...result.data.data,
+        id: result.data.id
+      } as T;
     } else {
       throw new Error(result.error ?? 'Unknown error during data storage');
     }
