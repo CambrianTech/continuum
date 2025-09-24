@@ -153,13 +153,27 @@ interface TestResult {
 
 async function runTests(verbose: boolean = false): Promise<{ success: boolean; summary?: string }> {
   console.log('🧪 Running test suite...');
-  
+
+  // Get test configuration from environment variables
+  const testProfile = process.env.JTAG_TEST_PROFILE || 'comprehensive';
+  const testFile = process.env.JTAG_TEST_FILE;
+
+  // Build command based on profile and test file
+  let command: string[];
+  if (testProfile === 'single-test' && testFile) {
+    command = ['./scripts/run-categorized-tests.sh', 'single-test', testFile];
+  } else {
+    command = ['./scripts/run-categorized-tests.sh', testProfile];
+  }
+
+  console.log(`📋 Running test command: ${command.join(' ')}`);
+
   const config: TestConfig = {
-    command: ['npm', 'run', 'test:comprehensive'],
+    command,
     verbose,
     summaryMarker: '═══════════════════════════════════════════════════════════════════════════════'
   };
-  
+
   const result = await executeCommand(config);
   return {
     success: result.success,

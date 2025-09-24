@@ -1,13 +1,32 @@
 #!/usr/bin/env tsx
 /**
  * Intelligent Test Runner - Handles cross-example switching and versioning
- * 
- * PROBLEM SOLVED: When you run widget-ui, then npm test (test-bench), 
+ *
+ * USAGE RULES:
+ *
+ * Run by categories:
+ *   npm test                                 # Comprehensive (all tests)
+ *   npm test -- comprehensive               # All tests
+ *   npm test -- integration                 # Integration tests only
+ *   npm test -- unit                        # Unit tests only
+ *   npm test -- chat                        # Chat-related tests only
+ *   npm test -- database                    # Database/CRUD tests only
+ *   npm test -- events                      # Event system tests only
+ *
+ * Run individual tests:
+ *   npm test -- single-test path/to/test.ts    # Run single test file
+ *   npm test -- crud-event-chain               # Run specific test by name match
+ *   npm test -- transport-architecture         # Run specific test by name match
+ *
+ * Available categories: comprehensive, integration, unit, chat, screenshots,
+ *   themes, transport, events, blocker, critical, widgets, database, ai, performance
+ *
+ * PROBLEM SOLVED: When you run widget-ui, then npm test (test-bench),
  * ports conflict because different examples use same ports.
- * 
- * INTELLIGENCE: 
+ *
+ * INTELLIGENCE:
  * 1. Force cleanup ALL existing systems (any example)
- * 2. Handle versioning conflicts automatically 
+ * 2. Handle versioning conflicts automatically
  * 3. Wait for ports to be released properly
  * 4. Start clean active example environment (from examples.json)
  */
@@ -15,10 +34,54 @@
 import { spawn } from 'child_process';
 import { getActiveExampleName } from '../examples/shared/ExampleConfig';
 
-async function runIntelligentTest(): Promise<boolean> {
+async function runIntelligentTest(testArgs: string[] = []): Promise<boolean> {
   const activeExample = getActiveExampleName();
   console.log('🧠 INTELLIGENT TEST RUNNER: Handling cross-example switching');
   console.log(`📋 Using active example: ${activeExample} (from examples.json)`);
+
+  // Process test arguments
+  let profile = 'comprehensive';
+  let testFile: string | undefined;
+
+  if (testArgs.length > 0) {
+    const firstArg = testArgs[0];
+
+    // Check if it's a single-test call
+    if (firstArg === 'single-test' && testArgs.length > 1) {
+      profile = 'single-test';
+      testFile = testArgs[1];
+      console.log(`📋 Running single test: ${testFile}`);
+    }
+    // Check if it's a test name pattern (look for common test names)
+    else if (firstArg.includes('test') || firstArg.includes('integration') || firstArg.includes('crud')) {
+      // Try to find matching test file
+      const potentialFiles = [
+        `tests/integration/${firstArg}.test.ts`,
+        `tests/${firstArg}.test.ts`,
+        `tests/integration/${firstArg}.ts`
+      ];
+
+      const fs = require('fs');
+      for (const file of potentialFiles) {
+        if (fs.existsSync(file)) {
+          profile = 'single-test';
+          testFile = file;
+          console.log(`📋 Found matching test: ${testFile}`);
+          break;
+        }
+      }
+
+      if (!testFile) {
+        console.log(`📋 No specific test file found for "${firstArg}", treating as profile`);
+        profile = firstArg;
+      }
+    }
+    // Otherwise, treat as profile name
+    else {
+      profile = firstArg;
+      console.log(`📋 Running test profile: ${profile}`);
+    }
+  }
   
   // INTELLIGENCE: Step 0 - TypeScript compilation check first
   console.log('\n🔧 STEP 0: TypeScript compilation verification');
@@ -137,15 +200,25 @@ async function runIntelligentTest(): Promise<boolean> {
   console.log('\n🚀 STEP 3: Starting active example system with intelligent configuration');
   
   return new Promise<boolean>((resolve) => {
-    const testProcess = spawn('npm', ['run', 'test:start-and-test'], {
+    const testArgs = ['run', 'test:start-and-test'];
+
+    // Pass through the profile and test file as environment variables
+    const env = {
+      ...process.env,
+      // Use active_example from examples.json instead of hardcoding 'test-bench'
+      JTAG_FORCE_RESTART: 'true',           // Force restart to handle version conflicts
+      JTAG_IGNORE_EXISTING: 'true',         // Ignore any existing systems
+      JTAG_TEST_PROFILE: profile,           // Pass the test profile
+    };
+
+    if (testFile) {
+      env.JTAG_TEST_FILE = testFile;
+    }
+
+    const testProcess = spawn('npm', testArgs, {
       stdio: 'inherit',
       shell: true,
-      env: {
-        ...process.env,
-        // Use active_example from examples.json instead of hardcoding 'test-bench'
-        JTAG_FORCE_RESTART: 'true',           // Force restart to handle version conflicts
-        JTAG_IGNORE_EXISTING: 'true'         // Ignore any existing systems
-      }
+      env
     });
     
     // Handle interruption
@@ -179,7 +252,9 @@ async function runIntelligentTest(): Promise<boolean> {
 // Main execution
 async function main() {
   try {
-    const success = await runIntelligentTest();
+    // Parse command line arguments (skip node and script name)
+    const testArgs = process.argv.slice(2);
+    const success = await runIntelligentTest(testArgs);
     process.exit(success ? 0 : 1);
   } catch (error: any) {
     console.error('\n💥 Intelligent test runner failed:', error.message);
