@@ -99,6 +99,7 @@ export class RoomEntity extends BaseEntity {
     this.type = 'public';
     this.status = 'active';
     this.ownerId = '' as UUID;
+    this.lastMessageAt = new Date(); // FIX: Prevents NOT NULL constraint failure
     this.privacy = { isPublic: true, requiresInvite: false, allowGuestAccess: false, searchable: true };
     this.settings = { allowThreads: true, allowReactions: true, allowFileSharing: true, messageRetentionDays: 365, slowMode: 0 };
     // Stats removed - will be a relationship/join query
