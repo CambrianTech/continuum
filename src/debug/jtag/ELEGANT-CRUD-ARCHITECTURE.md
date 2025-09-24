@@ -367,3 +367,217 @@ The pattern is:
 This works with infinite entity types without code changes. The elegance is in the **zero-modification extensibility** - adding new entities extends the system without touching existing code.
 
 **The goal achieved: Write code once, works with infinite entity types - now with bulletproof type safety.**
+
+## 🚀 **THE NEXT EVOLUTION: DECORATOR-DRIVEN ENTITY INTELLIGENCE** *(PHASE 2 - DESIGN DOCUMENTATION)*
+
+⚠️ **STATUS**: This section documents the PLANNED next evolution. Current system uses manual constructor defaults (working). This decorator system will be implemented in a future phase to avoid confusion during current development.
+
+### **The Breakthrough Insight** 💡
+> "Make entity creation so easy that we do it everywhere. We want it to be versatile but lock and key perfect with the data, so we aren't delivering bunk data. This is why we NEED constraints, but we still gotta make it easy on people. Just be logical."
+
+**The Solution**: Put ALL the intelligence in the decorators, keep entities trivially simple.
+
+### **✅ CONSTRAINTS + EASE = DECORATOR LOGIC**
+
+**Current Reality (Manual Defaults)**:
+```typescript
+export class RoomEntity extends BaseEntity {
+  @DateField({ index: true })
+  lastMessageAt?: Date;
+
+  constructor() {
+    super();
+    this.name = '';
+    this.displayName = '';
+    this.lastMessageAt = new Date(); // Manual default in constructor
+    // ...50+ lines of boilerplate defaults
+  }
+}
+```
+
+**Future Reality (Decorator Intelligence)**:
+```typescript
+export class RoomEntity extends BaseEntity {
+  @SmartTextField({
+    default: () => `Room_${Date.now()}`,
+    required: true,
+    validate: (name) => name.length > 0
+  })
+  name: string;
+
+  @SmartDateField({
+    default: () => new Date(),
+    required: true,
+    validate: (date) => date > new Date('2020-01-01')
+  })
+  lastMessageAt: Date;
+
+  // Constructor becomes EMPTY - decorators handle everything!
+  constructor() { super(); }
+}
+```
+
+### **🎯 THE LOGICAL ARCHITECTURE**
+
+#### **1. Single Source of Truth**
+```typescript
+// File: system/data/decorators/SmartDecorators.ts
+
+export function SmartDateField(options: {
+  default: () => Date,
+  required?: boolean,
+  validate?: (date: Date) => boolean,
+  index?: boolean
+}) {
+  return function(target: any, propertyKey: string) {
+    // ALL intelligence stored in decorator metadata
+    Reflect.defineMetadata('smart:type', 'date', target, propertyKey);
+    Reflect.defineMetadata('smart:default', options.default, target, propertyKey);
+    Reflect.defineMetadata('smart:required', options.required ?? true, target, propertyKey);
+    Reflect.defineMetadata('smart:validate', options.validate, target, propertyKey);
+    Reflect.defineMetadata('smart:index', options.index ?? false, target, propertyKey);
+  };
+}
+
+export function SmartTextField(options: {
+  default: () => string,
+  required?: boolean,
+  validate?: (text: string) => boolean,
+  index?: boolean
+}) {
+  return function(target: any, propertyKey: string) {
+    Reflect.defineMetadata('smart:type', 'text', target, propertyKey);
+    Reflect.defineMetadata('smart:default', options.default, target, propertyKey);
+    Reflect.defineMetadata('smart:required', options.required ?? true, target, propertyKey);
+    Reflect.defineMetadata('smart:validate', options.validate, target, propertyKey);
+    Reflect.defineMetadata('smart:index', options.index ?? false, target, propertyKey);
+  };
+}
+```
+
+#### **2. Intelligent Entity Creation**
+```typescript
+// Enhanced BaseEntity.applyDefaults()
+export abstract class BaseEntity {
+  /**
+   * Apply decorator-driven defaults and validation
+   * Rust equivalent: serde::Deserialize with validation
+   */
+  static applyDefaults<T extends BaseEntity>(
+    this: new() => T,
+    partialData: Partial<T> = {}
+  ): T {
+    const instance = new this();
+    const proto = Object.getPrototypeOf(instance);
+    const properties = Object.getOwnPropertyNames(proto);
+
+    for (const prop of properties) {
+      const defaultFn = Reflect.getMetadata('smart:default', proto, prop);
+      const validator = Reflect.getMetadata('smart:validate', proto, prop);
+      const required = Reflect.getMetadata('smart:required', proto, prop);
+
+      // Apply default if missing
+      if (defaultFn && !(prop in partialData)) {
+        (partialData as any)[prop] = defaultFn();
+      }
+
+      // Validate value (both provided and defaulted)
+      if (validator && prop in partialData) {
+        const value = (partialData as any)[prop];
+        if (!validator(value)) {
+          throw new Error(`Validation failed for ${prop}: ${value}`);
+        }
+      }
+
+      // Check required constraint
+      if (required && !(prop in partialData)) {
+        throw new Error(`Required field missing: ${prop}`);
+      }
+    }
+
+    return Object.assign(instance, partialData) as T;
+  }
+}
+```
+
+#### **3. Effortless Creation Results**
+```typescript
+// ✅ MAGIC: Empty object creates perfect entity
+const user = UserEntity.applyDefaults({});
+// Result: Full user with all defaults, passes all validation
+
+// ✅ SELECTIVE: Override only what matters
+const customUser = UserEntity.applyDefaults({
+  displayName: "Claude"
+});
+// Result: Claude user with smart defaults for everything else
+
+// ❌ PROTECTION: Bad data rejected
+const invalidUser = UserEntity.applyDefaults({
+  displayName: "" // Fails validation
+});
+// Result: Throws validation error, prevents garbage data
+```
+
+### **🔥 COMMAND INTEGRATION**
+
+```bash
+# ✅ EFFORTLESS: Creates perfect room with all defaults
+./jtag data/create --collection=Room --data='{}'
+
+# ✅ SELECTIVE: Override specific fields, smart defaults for rest
+./jtag data/create --collection=Room --data='{"name":"Claude Chat"}'
+
+# ❌ PROTECTED: Garbage data rejected
+./jtag data/create --collection=Room --data='{"name":""}'
+# Returns: Validation failed for name: (empty string)
+```
+
+### **🎯 SUCCESS CRITERIA**
+
+#### **Easy Everywhere** ✅
+- [ ] `{}` creates valid entity for any collection
+- [ ] Partial data intelligently merged with defaults
+- [ ] No manual constructor boilerplate needed
+- [ ] Works seamlessly with existing CRUD commands
+
+#### **Lock-and-Key Perfect** ✅
+- [ ] All constraints satisfied automatically
+- [ ] Invalid data rejected with clear errors
+- [ ] Type safety preserved throughout
+- [ ] No way to create malformed entities
+
+#### **Logical Architecture** ✅
+- [ ] Single source of truth in decorators
+- [ ] Entity classes stay minimal and clean
+- [ ] Intelligence concentrated in reusable system
+- [ ] Works with infinite entity types
+
+### **🌟 THE ELEGANT VISION REALIZED**
+
+**Before (Scattered Complexity)**:
+- Manual constructor defaults
+- Scattered validation logic
+- Easy to forget constraints
+- Copy-paste entity patterns
+
+**After (Decorator Intelligence)**:
+- Zero boilerplate entities
+- Bulletproof data integrity
+- Impossible to forget constraints
+- Write once, works everywhere
+
+**Just like Rust's derive macros**: `#[derive(Default, Serialize, Deserialize)]` gives you everything you need.
+
+**Our TypeScript evolution**: `@SmartTextField({ default, validate })` gives you bulletproof creation.
+
+### **🔄 IMPLEMENTATION PHASES**
+
+1. **Phase 1**: Build `SmartDecorators` with default/validation support
+2. **Phase 2**: Enhance `BaseEntity.applyDefaults()` to read decorator metadata
+3. **Phase 3**: Update entity classes to use smart decorators
+4. **Phase 4**: Integration with CREATE/UPDATE commands
+
+**The dream**: Entity creation as effortless as architecture is elegant, but data quality never compromised.
+
+**Constraints + Ease = Decorator Intelligence**
