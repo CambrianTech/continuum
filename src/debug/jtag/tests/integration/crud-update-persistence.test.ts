@@ -61,7 +61,7 @@ async function testUserUpdatePersistence(): Promise<void> {
   try {
     // Step 1: Read initial user data
     console.log('🔍 Step 1: Reading initial User data...');
-    const initialRead = await runJtagCommand('data/read --collection=User --id=002350cc-0031-408d-8040-004f000f');
+    const initialRead = await runJtagCommand('data/read --collection=User --id=test-user');
     const initialDisplayName = initialRead.data.displayName;
     console.log(`   Initial displayName: "${initialDisplayName}"`);
 
@@ -104,7 +104,7 @@ async function testUserUpdatePersistence(): Promise<void> {
     // Step 4: Verify update persisted via direct database query
     console.log('🔍 Step 4: Verifying update persisted (Direct DB query)...');
     const dbResults = await queryDatabase(
-      "SELECT id, json_extract(data, '$.displayName') as displayName FROM User WHERE id = '002350cc-0031-408d-8040-004f000f'"
+      "SELECT id, display_name as displayName FROM user WHERE id = '002350cc-0031-408d-8040-004f000f'"
     );
 
     const dbDisplayName = dbResults[0]?.displayName;

@@ -8,11 +8,12 @@ import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
-import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
+import { createEntityCrudHandler } from '../../../commands/data/shared/DataEventUtils';
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
 export class UserListWidget extends ChatWidgetBase {
   private userScroller?: EntityScroller<UserEntity>;
+  private unsubscribeUserEvents?: () => void;
 
   constructor() {
     super({
@@ -30,8 +31,12 @@ export class UserListWidget extends ChatWidgetBase {
   // Generates: widgets/chat/user-list/{filename} from "UserListWidget"
 
   async onWidgetInitialize(): Promise<void> {
+    console.log('🔧 CLAUDE-DEBUG-' + Date.now() + ': UserListWidget onWidgetInitialize() called');
+
     // Setup event subscriptions first - EntityScroller will be set up after template renders
     await this.setupUserEventSubscriptions();
+
+    console.log('✅ CLAUDE-DEBUG-' + Date.now() + ': UserListWidget onWidgetInitialize() completed');
   }
 
   protected override async renderWidget(): Promise<void> {
@@ -110,50 +115,52 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
   /**
-   * Set up user event subscriptions for real-time updates
-   * Uses EntityScroller's built-in deduplication via add() method
+   * Set up comprehensive CRUD event subscriptions for real-time updates
+   * Now handles CREATE, UPDATE, DELETE operations with a single subscription
    */
   private async setupUserEventSubscriptions(): Promise<void> {
+    console.log('🔧 CLAUDE-DEBUG-' + Date.now() + ': UserListWidget setupUserEventSubscriptions() called');
+
     try {
-      // Subscribe to data:User:created events using static Events interface
-      const eventName = getDataEventName(UserEntity.collection, 'created');
-      Events.subscribe<UserEntity>(eventName, (userEntity: UserEntity) => {
-        console.log(`🔥 SERVER-EVENT-RECEIVED: ${eventName}`, userEntity);
-        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.add() for automatic deduplication`);
+      console.log(`🎧 UserListWidget: Setting up unified CRUD subscriptions for ${UserEntity.collection}`);
 
-        // EntityScroller automatically handles deduplication using entity.id
-        this.userScroller?.add(userEntity);
+      // Single subscription for ALL User CRUD operations (create, update, delete)
+      this.unsubscribeUserEvents = createEntityCrudHandler<UserEntity>(
+        UserEntity.collection,
+        {
+          add: (user: UserEntity) => {
+            console.log(`🔥 CRUD-CREATE: Adding user ${user.id}`, user);
+            this.userScroller?.add(user);
+            this.updateUserCount();
+          },
+          update: (id: string, user: UserEntity) => {
+            console.log(`🔥 CRUD-UPDATE: Updating user ${id}`, user);
+            this.userScroller?.update(id, user);
+            this.updateUserCount(); // In case display name affects count display
+          },
+          remove: (id: string) => {
+            console.log(`🔥 CRUD-DELETE: Removing user ${id}`);
+            this.userScroller?.remove(id);
+            this.updateUserCount();
+          }
+        }
+      );
 
-        // Update count after adding user
-        this.updateUserCount();
-      });
-
-      console.log(`🎧 UserListWidget: Subscribed to data:${UserEntity.collection}:created events via Events.subscribe()`);
-
-      // Subscribe to data:User:updated events using static Events interface
-      const updateEventName = getDataEventName(UserEntity.collection, 'updated');
-      Events.subscribe<UserEntity>(updateEventName, (userEntity: UserEntity) => {
-        console.log(`🔥 SERVER-EVENT-RECEIVED: ${updateEventName}`, userEntity);
-        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.updateEntity() for user updates`);
-
-        // EntityScroller updates the user in place
-        this.userScroller?.update(userEntity.id, userEntity);
-
-        // Update count if needed (though should remain same for updates)
-        this.updateUserCount();
-      });
-
-      console.log(`🎧 UserListWidget: Subscribed to data:${UserEntity.collection}:updated events via Events.subscribe()`);
-
-      // TODO: Add delete events
-      // Events.subscribe(getDataEventName(UserEntity.collection, 'deleted'), (user) => this.userScroller?.remove(user.id));
+      console.log(`✅ UserListWidget: Unified CRUD subscriptions active for ${UserEntity.collection}`);
+      console.log('✅ CLAUDE-DEBUG-' + Date.now() + ': UserListWidget setupUserEventSubscriptions() completed successfully');
     } catch (error) {
+      console.error('❌ CLAUDE-DEBUG-' + Date.now() + ': UserListWidget setupUserEventSubscriptions() FAILED:', error);
       console.error('❌ UserListWidget: Failed to set up user event subscriptions:', error);
     }
   }
 
 
   protected async onWidgetCleanup(): Promise<void> {
+    // Clean up event subscriptions
+    this.unsubscribeUserEvents?.();
+    this.unsubscribeUserEvents = undefined;
+
+    // Clean up scroller
     this.userScroller?.destroy();
     this.userScroller = undefined;
   }

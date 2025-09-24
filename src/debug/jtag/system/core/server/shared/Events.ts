@@ -44,16 +44,16 @@ export class Events {
       // Create EventBridge payload - same mechanism as DataCreateServerCommand
       const eventPayload: EventBridgePayload = {
         context,
-        sessionId: options.sessionId || context.uuid,
+        sessionId: options.sessionId ?? context.uuid,
         type: 'event-bridge',
         scope: {
-          type: options.scope || EVENT_SCOPES.GLOBAL,
-          id: options.scopeId || '',
-          sessionId: options.sessionId || context.uuid
+          type: options.scope ?? EVENT_SCOPES.GLOBAL,
+          id: options.scopeId ?? '',
+          sessionId: options.sessionId ?? context.uuid
         },
         eventName,
-        data: eventData as any, // Entity directly - same structure as data/list returns
-        originSessionId: options.sessionId || context.uuid,
+        data: eventData as Record<string, unknown>, // Entity directly - same structure as data/list returns
+        originSessionId: options.sessionId ?? context.uuid,
         originContextUUID: context.uuid,
         timestamp: new Date().toISOString()
       };

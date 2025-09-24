@@ -10,7 +10,17 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { DOMEventBridge } from '../../../system/events/browser/DOMEventBridge';
+import { Events } from '../../../system/core/client/shared/Events';
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+
+// EventBridge metadata structure for better type safety
+interface EventBridgeMetadata {
+  __JTAG_BRIDGED__?: boolean;
+  __JTAG_ORIGINAL_CONTEXT__?: string;
+  __JTAG_BRIDGE_TIMESTAMP__?: string;
+  __JTAG_BRIDGE_HOP_COUNT__?: number;
+  message?: unknown;
+}
 
 export class EventsDaemonBrowser extends EventsDaemon {
   protected eventManager = new EventManager();
@@ -42,8 +52,21 @@ export class EventsDaemonBrowser extends EventsDaemon {
     const domEvent = new CustomEvent(eventName, {
       detail: eventData
     });
-    document.dispatchEvent(domEvent);
+
+    // Type-safe document access for browser environment
+    if (typeof globalThis !== 'undefined' && 'document' in globalThis) {
+      (globalThis as typeof globalThis & { document: Document }).document.dispatchEvent(domEvent);
+    }
     console.log(`🔥 CLAUDE-DOM-EVENT-${Date.now()}: Dispatched DOM event '${eventName}' for BaseWidget`);
+
+    // CRITICAL FIX: Also check wildcard subscriptions from Events.subscribe()
+    // This ensures server events trigger browser widget handlers properly
+    try {
+      Events.checkWildcardSubscriptions(eventName, eventData);
+      console.log(`🎯 CLAUDE-WILDCARD-${Date.now()}: Checked wildcard subscriptions for '${eventName}'`);
+    } catch (error) {
+      console.error(`❌ CLAUDE-WILDCARD-ERROR-${Date.now()}: Failed to check wildcard subscriptions:`, error);
+    }
   }
 
   /**

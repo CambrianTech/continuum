@@ -5,7 +5,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { ExecCommandParams, ExecCommandResult } from '../shared/ExecTypes';
-import { createExecErrorResult, createExecSuccessResult } from '../shared/ExecTypes';
+import { createExecErrorResult, createExecSuccessResult, DEFAULT_EXEC_TIMEOUT } from '../shared/ExecTypes';
 
 export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecCommandResult> {
   
@@ -15,7 +15,7 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
   
   /**
    * Browser exec: Execute JavaScript directly in browser context
-   * Note: Error handling is done by CommandDaemon, not individual commands
+   * Simple execution with DOM access preserved
    */
   async execute(params: ExecCommandParams): Promise<ExecCommandResult> {
     console.log(`🎯 BROWSER EXEC: Starting execution`);
@@ -26,12 +26,16 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
 
     if (params.code.type === 'inline' && params.code.language === 'javascript') {
       const sourceCode = params.code.source;
+
       console.log(`🎯 BROWSER EXEC: Executing JavaScript in browser`);
 
       try {
-        // Simple JavaScript execution - let errors bubble up to CommandDaemon
-        const func = new Function(sourceCode);
-        const result = await func();
+        // Simple execution with DOM access
+        const func = new Function(`
+          ${sourceCode}
+        `);
+
+        const result = func();
 
         console.log(`✅ BROWSER EXEC: Success - result:`, result);
 
@@ -52,7 +56,9 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
 
       } catch (error) {
         console.error(`❌ BROWSER EXEC: JavaScript execution failed:`, error);
-        return createExecErrorResult('runtime', error instanceof Error ? error.message : String(error), 'browser', params, Date.now());
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return createExecErrorResult('runtime', errorMessage, 'browser', params, Date.now());
       }
     } else {
       return createExecErrorResult('validation', 'Browser exec: unsupported code type', 'browser', params, Date.now());

@@ -1,62 +1,56 @@
 /**
  * Data Delete Command - Server Implementation
- * 
- * Direct filesystem operations following working data create pattern
+ *
+ * Uses DataDaemon for proper storage abstraction (SQLite backend)
  */
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataDeleteParams, DataDeleteResult } from '../shared/DataDeleteTypes';
 import { createDataDeleteResultFromParams } from '../shared/DataDeleteTypes';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { Events } from '../../../../system/core/server/shared/Events';
 
 export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataDeleteResult> {
-  
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-delete', context, subpath, commander);
   }
 
   async execute(params: DataDeleteParams): Promise<DataDeleteResult> {
-    console.log(`🗑️ DATA DELETE: Deleting ${params.collection}/${params.id}`);
-    
+    const collection = params.collection;
+    console.debug(`🗑️ DATA DELETE: Deleting ${collection}/${params.id} entity`);
+
+    // First read the entity before deletion for the event
+    let entityBeforeDelete;
     try {
-      // Follow session-based path structure like DataCreateServerCommand
-      const sessionId = params.sessionId;
-      const basePath = `.continuum/jtag/sessions/user/${sessionId}`;
-      const dataDir = path.resolve(basePath, 'data');
-      const collectionDir = path.join(dataDir, params.collection);
-      const filePath = path.join(collectionDir, `${params.id}.json`);
-      
-      // Check if record exists before deleting
-      let existingRecord;
-      try {
-        const fileContent = await fs.readFile(filePath, 'utf-8');
-        existingRecord = JSON.parse(fileContent);
-      } catch (e) {
-        return createDataDeleteResultFromParams(params, {
-          error: `Record not found: ${params.collection}/${params.id}`,
-          found: false
-        });
-      }
-      
-      // Delete the file
-      await fs.unlink(filePath);
-      
-      console.log(`✅ DATA DELETE: Deleted ${params.collection}/${params.id}`);
-      
-      return createDataDeleteResultFromParams(params, {
-        found: true,
-        deleted: true
-      });
-      
+      entityBeforeDelete = await DataDaemon.read(collection, params.id);
     } catch (error: any) {
-      console.error(`❌ DATA DELETE: Delete failed:`, error.message);
       return createDataDeleteResultFromParams(params, {
-        error: error.message,
+        error: `Record not found: ${collection}/${params.id}`,
         found: false
       });
     }
+
+    // DataDaemon throws on failure, returns success result on success
+    const result = await DataDaemon.remove(collection, params.id);
+
+    if (!result.success) {
+      throw new Error(result.error ?? 'Unknown error during data delete');
+    }
+
+    console.debug(`✅ DATA DELETE: Deleted ${collection}/${params.id}`);
+
+    // Emit event using BaseEntity helper (with the entity data before deletion)
+    const eventName = BaseEntity.getEventName(collection, 'deleted');
+    await Events.emit(eventName, entityBeforeDelete, this.context, this.commander);
+    console.log(`✅ DataDeleteServerCommand: Emitted ${eventName}`);
+
+    return createDataDeleteResultFromParams(params, {
+      found: true,
+      deleted: true,
+    });
   }
 }

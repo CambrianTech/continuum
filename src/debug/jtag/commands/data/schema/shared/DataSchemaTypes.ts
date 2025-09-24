@@ -15,6 +15,8 @@ import type { FieldMetadata } from '../../../../system/data/decorators/FieldDeco
  */
 export interface DataSchemaParams extends JTAGPayload {
   readonly collection: string; // Entity collection name to get schema for
+  readonly examples?: boolean; // Include example JSON objects
+  readonly sql?: boolean; // Include SQL CREATE statements
 }
 
 /**
@@ -33,6 +35,24 @@ export interface SchemaField {
 }
 
 /**
+ * Example JSON objects for entity creation
+ */
+export interface EntityExamples {
+  minimal: Record<string, any>; // Only required fields
+  complete: Record<string, any>; // All fields with realistic values
+  description: string; // Explanation of the examples
+}
+
+/**
+ * SQL statements for entity
+ */
+export interface EntitySQL {
+  createTable: string; // CREATE TABLE statement
+  indexes: string[]; // CREATE INDEX statements
+  foreignKeys: string[]; // ALTER TABLE ADD FOREIGN KEY statements
+}
+
+/**
  * Complete entity schema information
  */
 export interface EntitySchema {
@@ -46,6 +66,8 @@ export interface EntitySchema {
     references: string;
   }>;
   requiredFields: string[]; // Fields where nullable: false
+  examples?: EntityExamples; // Example JSON objects (when requested)
+  sql?: EntitySQL; // SQL statements (when requested)
 }
 
 /**

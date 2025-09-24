@@ -1403,19 +1403,48 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     existingRecord: DataRecord<T>
   ): Promise<StorageResult<DataRecord<T>>> {
     const tableName = SqlNamingConverter.toTableName(collection);
+    const entityClass = ENTITY_REGISTRY.get(collection);
 
-    // Use same WHERE clause as readFromEntityTable
-    const sql = `UPDATE ${tableName} SET data = ?, updated_at = ?, version = ? WHERE id = ?`;
-    const params = [
-      JSON.stringify(updatedData),
-      new Date().toISOString(),
-      version,
-      id
-    ];
+    if (!entityClass || !hasFieldMetadata(entityClass)) {
+      throw new Error(`Entity class not found or missing field metadata for ${collection}`);
+    }
 
-    console.log(`🔧 SQLite UPDATE ENTITY DEBUG: SQL:`, { sql, params });
+    const fieldMetadata = getFieldMetadata(entityClass);
+    const setColumns: string[] = [];
+    const params: any[] = [];
+
+    // Always update base entity fields
+    setColumns.push('updated_at = ?', 'version = ?');
+    params.push(new Date().toISOString(), version);
+
+    // Update each decorated field based on its type
+    for (const [fieldName, metadata] of fieldMetadata.entries()) {
+      if (fieldName === 'id') continue; // Skip primary key
+
+      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+      const value = (updatedData as any)[fieldName];
+
+      if (value !== undefined) {
+        setColumns.push(`${columnName} = ?`);
+
+        if (metadata.fieldType === 'json') {
+          params.push(JSON.stringify(value));
+        } else if (metadata.fieldType === 'date' && value instanceof Date) {
+          params.push(value.toISOString());
+        } else if (metadata.fieldType === 'date' && typeof value === 'string') {
+          params.push(value);
+        } else {
+          params.push(value);
+        }
+      }
+    }
+
+    const sql = `UPDATE ${tableName} SET ${setColumns.join(', ')} WHERE id = ?`;
+    params.push(id);
+
+    console.log(`🔧 SQLite UPDATE ENTITY: SQL:`, { sql, paramCount: params.length });
     const result = await this.runStatement(sql, params);
-    console.log(`🔧 SQLite UPDATE ENTITY DEBUG: Result:`, result);
+    console.log(`🔧 SQLite UPDATE ENTITY: Result:`, result);
 
     if (result.changes === 0) {
       return {
@@ -1424,10 +1453,13 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       };
     }
 
-    // Create updated record
+    // Create updated record - ensure ID is preserved from existing record
     const updatedRecord: DataRecord<T> = {
       ...existingRecord,
-      data: updatedData,
+      data: {
+        ...existingRecord.data, // Preserve all existing data including ID
+        ...updatedData // Override with updated fields
+      } as T,
       metadata: {
         ...existingRecord.metadata,
         updatedAt: new Date().toISOString(),
@@ -1437,7 +1469,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
     await this.updateCollectionStats(collection);
 
-    console.log(`✅ SQLite: Updated record ${id} in entity table ${tableName}`);
+    console.log(`✅ SQLite: Updated record ${id} in entity table ${tableName} - ID preserved in event data`);
 
     return {
       success: true,
