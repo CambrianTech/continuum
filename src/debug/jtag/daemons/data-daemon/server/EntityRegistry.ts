@@ -17,6 +17,12 @@ import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEnti
 export function initializeEntityRegistry(): void {
   console.log('🏷️ EntityRegistry: Registering all known entities...');
 
+  // Initialize decorators by creating instances (required for Stage 3 decorators)
+  console.log('🔧 EntityRegistry: Initializing decorator metadata...');
+  new UserEntity();
+  new RoomEntity();
+  new ChatMessageEntity();
+
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
   // Enable ChatMessage relational ORM with individual columns for optimal querying
