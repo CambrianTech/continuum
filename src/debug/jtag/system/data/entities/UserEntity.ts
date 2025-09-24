@@ -116,4 +116,53 @@ export class UserEntity extends BaseEntity {
     this.preferences = { theme: 'auto', language: 'en', timezone: 'UTC', notifications: { mentions: true, directMessages: true, roomUpdates: false }, privacy: { showOnlineStatus: true, allowDirectMessages: true, shareActivity: false } };
     this.sessionsActive = [];
   }
+
+  /**
+   * Implement BaseEntity abstract method
+   */
+  get collection(): string {
+    return UserEntity.collection;
+  }
+
+  /**
+   * Implement BaseEntity abstract method - validate user data
+   */
+  validate(): { success: boolean; error?: string } {
+    // Required fields validation
+    if (!this.displayName?.trim()) {
+      return { success: false, error: 'User displayName is required' };
+    }
+
+    if (this.displayName.length > 100) {
+      return { success: false, error: 'User displayName must be 100 characters or less' };
+    }
+
+    // Enum validation
+    const validTypes: UserType[] = ['human', 'agent', 'persona', 'system'];
+    if (!validTypes.includes(this.type)) {
+      return { success: false, error: `User type must be one of: ${validTypes.join(', ')}` };
+    }
+
+    const validStatuses: UserStatus[] = ['online', 'offline', 'away', 'busy'];
+    if (!validStatuses.includes(this.status)) {
+      return { success: false, error: `User status must be one of: ${validStatuses.join(', ')}` };
+    }
+
+    // Profile validation
+    if (this.profile) {
+      if (!this.profile.displayName?.trim()) {
+        return { success: false, error: 'User profile.displayName is required' };
+      }
+      if (this.profile.displayName !== this.displayName) {
+        return { success: false, error: 'User profile.displayName must match displayName field' };
+      }
+    }
+
+    // Date validation
+    if (!(this.lastActiveAt instanceof Date) || isNaN(this.lastActiveAt.getTime())) {
+      return { success: false, error: 'User lastActiveAt must be a valid Date' };
+    }
+
+    return { success: true };
+  }
 }

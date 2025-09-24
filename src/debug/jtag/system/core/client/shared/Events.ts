@@ -12,6 +12,7 @@ import { JTAG_ENDPOINTS } from '../../router/shared/JTAGEndpoints';
 import { EVENT_SCOPES, EventRoutingUtils } from '../../../events/shared/EventSystemConstants';
 import type { EventBridgePayload } from '../../../events/shared/EventSystemTypes';
 import type { EventScope } from '../../../events/shared/EventSystemConstants';
+import { ElegantSubscriptionParser, type SubscriptionFilter } from '../../../events/shared/ElegantSubscriptionParser';
 
 export interface EventEmitOptions {
   scope?: EventScope;
@@ -97,42 +98,71 @@ export class Events {
   }
 
   /**
-   * Subscribe to an event with clean interface and wildcard support
+   * Subscribe to events with elegant patterns and filtering
    *
-   * @example Events.subscribe('data:User:*', handler)  // All User CRUD operations
-   * @example Events.subscribe('data:User:updated', handler)  // Specific operation
+   * @example Events.subscribe('data:users {created,updated}', handler)  // Multiple actions
+   * @example Events.subscribe('data:users', handler, { where: { roomId: 'uuid' } })  // With filtering
+   * @example Events.subscribe('data:users:uuid {updated}', handler)  // Specific entity
    */
   static subscribe<T>(
-    eventName: string,
+    patternOrEventName: string,
     listener: (eventData: T) => void,
-    options: EventEmitOptions = {}
+    filter?: SubscriptionFilter
   ): () => void {
     try {
-      console.log(`🎧 Events: Subscribing to ${eventName}`);
+      console.log(`🎧 Events: Subscribing to ${patternOrEventName}`);
 
-      // Check if this is a wildcard subscription (contains *)
-      const isWildcard = eventName.includes('*');
+      // Check if this is an elegant pattern (contains data: with optional {})
+      const isElegantPattern = patternOrEventName.startsWith('data:') &&
+        (patternOrEventName.includes('{') || !patternOrEventName.includes(':'));
 
-      if (isWildcard) {
-        // Convert wildcard pattern to regex (e.g., 'data:User:*' -> /^data:User:.*$/)
-        const pattern = new RegExp('^' + eventName.replace(/\*/g, '.*') + '$');
-        console.log(`🎯 Events: Created wildcard pattern ${pattern} for ${eventName}`);
+      if (isElegantPattern) {
+        // Parse elegant pattern
+        const parsedPattern = ElegantSubscriptionParser.parsePattern(patternOrEventName);
+        console.log(`🎯 Events: Parsed elegant pattern:`, parsedPattern);
 
-        // Store wildcard subscriptions in a registry for pattern matching
+        // Create subscription ID
+        const subscriptionId = `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+        // Store elegant subscriptions in registry
+        if (!this.elegantSubscriptions) {
+          this.elegantSubscriptions = new Map();
+        }
+
+        this.elegantSubscriptions.set(subscriptionId, {
+          pattern: parsedPattern,
+          filter,
+          listener,
+          originalPattern: patternOrEventName
+        });
+
+        console.log(`🎧 Events: Added elegant subscription ${subscriptionId} for pattern ${patternOrEventName}`);
+
+        // Return unsubscribe function
+        return () => {
+          this.elegantSubscriptions?.delete(subscriptionId);
+          console.log(`🔌 Events: Unsubscribed elegant pattern ${patternOrEventName} (${subscriptionId})`);
+        };
+
+      } else if (patternOrEventName.includes('*')) {
+        // Legacy wildcard support
+        const pattern = new RegExp('^' + patternOrEventName.replace(/\*/g, '.*') + '$');
+        const subscriptionId = `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
         if (!this.wildcardSubscriptions) {
           this.wildcardSubscriptions = new Map();
         }
 
-        const subscriptionId = `${eventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-        this.wildcardSubscriptions.set(subscriptionId, { pattern, listener, eventName });
+        this.wildcardSubscriptions.set(subscriptionId, {
+          pattern,
+          listener,
+          eventName: patternOrEventName
+        });
 
-        console.log(`🎧 Events: Added wildcard subscription ${subscriptionId} for pattern ${eventName}`);
-
-        // Return unsubscribe function for wildcard
         return () => {
           this.wildcardSubscriptions?.delete(subscriptionId);
-          console.log(`🔌 Events: Unsubscribed wildcard pattern ${eventName} (${subscriptionId})`);
         };
+
       } else {
         // Regular exact match subscription
         const eventHandler = (event: Event) => {
@@ -140,16 +170,15 @@ export class Events {
           listener(customEvent.detail);
         };
 
-        document.addEventListener(eventName, eventHandler);
+        document.addEventListener(patternOrEventName, eventHandler);
 
-        // Return unsubscribe function
         return () => {
-          document.removeEventListener(eventName, eventHandler);
-          console.log(`🔌 Events: Unsubscribed from ${eventName}`);
+          document.removeEventListener(patternOrEventName, eventHandler);
+          console.log(`🔌 Events: Unsubscribed from ${patternOrEventName}`);
         };
       }
     } catch (error) {
-      console.error(`❌ Events: Failed to subscribe to ${eventName}:`, error);
+      console.error(`❌ Events: Failed to subscribe to ${patternOrEventName}:`, error);
       return () => {}; // No-op unsubscribe
     }
   }
@@ -157,40 +186,62 @@ export class Events {
   // Storage for wildcard subscriptions
   private static wildcardSubscriptions?: Map<string, { pattern: RegExp; listener: (data: any) => void; eventName: string }>;
 
+  // Storage for elegant subscriptions
+  private static elegantSubscriptions?: Map<string, {
+    pattern: import('../../../events/shared/ElegantSubscriptionParser').SubscriptionPattern;
+    filter?: SubscriptionFilter;
+    listener: (data: any) => void;
+    originalPattern: string;
+  }>;
+
   /**
-   * Check if any wildcard subscriptions match the emitted event
-   * Made public so EventsDaemonBrowser can trigger wildcard subscriptions for EventBridge events
+   * Check if any pattern subscriptions match the emitted event
+   * Made public so EventsDaemonBrowser can trigger subscriptions for EventBridge events
    */
   public static checkWildcardSubscriptions(eventName: string, eventData: any): void {
-    if (!this.wildcardSubscriptions || this.wildcardSubscriptions.size === 0) {
-      return;
+    let totalMatchCount = 0;
+
+    // Check wildcard subscriptions
+    if (this.wildcardSubscriptions && this.wildcardSubscriptions.size > 0) {
+      this.wildcardSubscriptions.forEach((subscription, subscriptionId) => {
+        if (subscription.pattern.test(eventName)) {
+          try {
+            console.log(`🎯 Events: Wildcard match! ${subscription.eventName} pattern matches ${eventName}`);
+            subscription.listener(eventData);
+            totalMatchCount++;
+          } catch (error) {
+            console.error(`❌ Events: Wildcard listener error for ${subscriptionId}:`, error);
+          }
+        }
+      });
     }
 
-    let matchCount = 0;
-    this.wildcardSubscriptions.forEach((subscription, subscriptionId) => {
-      if (subscription.pattern.test(eventName)) {
+    // Check elegant subscriptions
+    if (this.elegantSubscriptions && this.elegantSubscriptions.size > 0) {
+      this.elegantSubscriptions.forEach((subscription, subscriptionId) => {
         try {
-          console.log(`🎯 Events: Wildcard match! ${subscription.eventName} pattern matches ${eventName}`);
+          // Check if event matches pattern
+          if (ElegantSubscriptionParser.matchesPattern(eventName, subscription.pattern)) {
+            // Check if event data matches filters
+            if (ElegantSubscriptionParser.matchesFilter(eventData, subscription.filter)) {
+              console.log(`🎯 Events: Elegant pattern match! ${subscription.originalPattern} matches ${eventName}`);
 
-          // Create a synthetic event object with the actual event name
-          const syntheticEvent = {
-            detail: eventData,
-            type: eventName,
-            target: null,
-            currentTarget: null
-          };
-
-          // Pass the synthetic event to mimic DOM event structure
-          subscription.listener(eventData);
-          matchCount++;
+              // Create enhanced event data with action metadata
+              const enhancedEvent = ElegantSubscriptionParser.createEnhancedEvent(eventName, eventData);
+              subscription.listener(enhancedEvent);
+              totalMatchCount++;
+            } else {
+              console.log(`🔍 Events: Pattern matched but filter rejected for ${subscription.originalPattern}`);
+            }
+          }
         } catch (error) {
-          console.error(`❌ Events: Wildcard listener error for ${subscriptionId}:`, error);
+          console.error(`❌ Events: Elegant subscription error for ${subscriptionId}:`, error);
         }
-      }
-    });
+      });
+    }
 
-    if (matchCount > 0) {
-      console.log(`🎯 Events: Triggered ${matchCount} wildcard subscription(s) for ${eventName}`);
+    if (totalMatchCount > 0) {
+      console.log(`🎯 Events: Triggered ${totalMatchCount} subscription(s) for ${eventName}`);
     }
   }
 }
