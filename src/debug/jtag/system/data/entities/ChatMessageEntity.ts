@@ -119,4 +119,55 @@ export class ChatMessageEntity extends BaseEntity {
     this.reactions = [];
   }
 
+  /**
+   * Implement BaseEntity abstract method
+   */
+  get collection(): string {
+    return ChatMessageEntity.collection;
+  }
+
+  /**
+   * Implement BaseEntity abstract method - validate message data
+   */
+  validate(): { success: boolean; error?: string } {
+    // Required fields validation
+    if (!this.roomId?.trim()) {
+      return { success: false, error: 'Message roomId is required' };
+    }
+
+    if (!this.senderId?.trim()) {
+      return { success: false, error: 'Message senderId is required' };
+    }
+
+    if (!this.senderName?.trim()) {
+      return { success: false, error: 'Message senderName is required' };
+    }
+
+    if (!this.content) {
+      return { success: false, error: 'Message content is required' };
+    }
+
+    if (!this.content.text?.trim() && (!this.content.attachments || this.content.attachments.length === 0)) {
+      return { success: false, error: 'Message must have either text content or attachments' };
+    }
+
+    // Enum validation
+    const validStatuses: MessageStatus[] = ['sending', 'sent', 'delivered', 'read', 'failed', 'deleted'];
+    if (!validStatuses.includes(this.status)) {
+      return { success: false, error: `Message status must be one of: ${validStatuses.join(', ')}` };
+    }
+
+    const validPriorities: MessagePriority[] = ['low', 'normal', 'high', 'urgent'];
+    if (!validPriorities.includes(this.priority)) {
+      return { success: false, error: `Message priority must be one of: ${validPriorities.join(', ')}` };
+    }
+
+    // Date validation
+    if (!(this.timestamp instanceof Date) || isNaN(this.timestamp.getTime())) {
+      return { success: false, error: 'Message timestamp must be a valid Date' };
+    }
+
+    return { success: true };
+  }
+
 }

@@ -105,4 +105,47 @@ export class RoomEntity extends BaseEntity {
     this.members = [];
     this.tags = [];
   }
+
+  /**
+   * Implement BaseEntity abstract method
+   */
+  get collection(): string {
+    return RoomEntity.collection;
+  }
+
+  /**
+   * Implement BaseEntity abstract method - validate room data
+   */
+  validate(): { success: boolean; error?: string } {
+    // Required fields validation
+    if (!this.name?.trim()) {
+      return { success: false, error: 'Room name is required' };
+    }
+
+    if (this.name.length > 100) {
+      return { success: false, error: 'Room name must be 100 characters or less' };
+    }
+
+    if (!this.displayName?.trim()) {
+      return { success: false, error: 'Room displayName is required' };
+    }
+
+    // Enum validation
+    const validTypes: RoomType[] = ['public', 'private', 'direct'];
+    if (!validTypes.includes(this.type)) {
+      return { success: false, error: `Room type must be one of: ${validTypes.join(', ')}` };
+    }
+
+    const validStatuses: RoomStatus[] = ['active', 'archived', 'deleted'];
+    if (!validStatuses.includes(this.status)) {
+      return { success: false, error: `Room status must be one of: ${validStatuses.join(', ')}` };
+    }
+
+    // Owner validation
+    if (!this.ownerId?.trim()) {
+      return { success: false, error: 'Room ownerId is required' };
+    }
+
+    return { success: true };
+  }
 }

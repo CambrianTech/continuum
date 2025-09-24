@@ -196,22 +196,80 @@ interface StorageCapabilities {
 - **JSON Support**: Complex nested JSON data parsing
 - **Type Safety**: Strong typing from CLI through to storage
 
+## 🎯 **Event Integration System**
+
+### **Real-time Data Events** (Built-In)
+All CRUD operations automatically emit structured events for real-time widget updates:
+
+```typescript
+// Server automatically emits on data operations
+await Events.emit('data:users:created', userEntity);
+await Events.emit('data:rooms:updated', roomEntity);
+await Events.emit('data:messages:deleted', messageEntity);
+```
+
+### **Elegant Event Subscription** (New Feature)
+Widgets subscribe to data changes using clean, flexible syntax:
+
+```typescript
+// Basic patterns - all operations for entity type
+Events.subscribe('data:users');           // All user CRUD operations
+Events.subscribe('data:rooms');           // All room CRUD operations
+
+// Operation filtering using set syntax
+Events.subscribe('data:users {created,updated}');     // Only creates/updates
+Events.subscribe('data:users {c,u}');                 // Shorthand
+Events.subscribe('data:users !{deleted}');            // Exclude deletes
+
+// Entity-specific subscriptions
+Events.subscribe('data:users:user123');               // Specific user changes
+Events.subscribe('data:rooms:room456 {updated}');     // Specific room updates
+
+// Parameter filtering with existing ORM syntax
+Events.subscribe('data:users {updated}', {
+  where: { roomId: 'current-room', status: 'active' }
+});
+```
+
+### **Subscription Architecture**
+- **String parser** - Tokenizes subscription patterns into filters
+- **Pattern matching** - Matches emitted events against subscriptions
+- **Parameter filtering** - Client-side filtering using ORM-style where clauses
+- **Backward compatible** - Existing event emission unchanged
+
+### **Real-world Usage Examples**
+```typescript
+// User list widget - show all user changes in current room
+Events.subscribe('data:users', { where: { roomId: currentRoom.id } });
+
+// Online status indicator - only status updates for this user
+Events.subscribe('data:users:user123 {updated}', { where: { status: 'online' } });
+
+// Activity feed - new registrations and updates, exclude deletes
+Events.subscribe('data:users {created,updated}');
+
+// Chat participant list - live updates for room members
+Events.subscribe('data:users {created,updated,deleted}', {
+  where: { roomId: roomId, active: true }
+});
+```
+
 ## 🎯 **Next Steps**
 
 ### **Immediate Architecture Tasks**
 1. ✅ **DataDaemon Server**: Concrete implementation using storage adapters
-2. ✅ **Memory Storage Adapter**: In-memory backend for fast operations  
-3. **File Command Integration**: Replace direct fs operations with file commands for persistent handles
-4. **Query System**: Advanced filtering, sorting, pagination
-5. **Index System**: Automatic indexing for performance
-6. **Migration System**: Upgrade path from current direct-filesystem commands
+2. ✅ **Memory Storage Adapter**: In-memory backend for fast operations
+3. ✅ **Event Integration**: Real-time CRUD events with elegant subscription syntax
+4. **File Command Integration**: Replace direct fs operations with file commands for persistent handles
+5. **Query System**: Advanced filtering, sorting, pagination
+6. **Index System**: Automatic indexing for performance
+7. **Migration System**: Upgrade path from current direct-filesystem commands
 
 ### **Advanced Features** (Post-Foundation)
 1. **Relational Queries**: JOIN-like operations across collections
-2. **Event Integration**: Data change events for real-time updates
-3. **Backup/Restore**: Data export/import across storage backends
-4. **Replication**: Multi-node data synchronization
-5. **Caching Layer**: Intelligent caching with invalidation
+2. **Backup/Restore**: Data export/import across storage backends
+3. **Replication**: Multi-node data synchronization
+4. **Caching Layer**: Intelligent caching with invalidation
 
 ## 🧠 **Memory Architecture Insights** (From Previous Research)
 

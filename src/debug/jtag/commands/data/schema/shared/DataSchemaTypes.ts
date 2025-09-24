@@ -17,6 +17,7 @@ export interface DataSchemaParams extends JTAGPayload {
   readonly collection: string; // Entity collection name to get schema for
   readonly examples?: boolean; // Include example JSON objects
   readonly sql?: boolean; // Include SQL CREATE statements
+  readonly validateData?: Record<string, unknown>; // JSON data to validate against schema
 }
 
 /**
@@ -53,6 +54,15 @@ export interface EntitySQL {
 }
 
 /**
+ * Validation result for JSON data against entity schema
+ */
+export interface ValidationResult {
+  readonly valid: boolean;
+  readonly error?: string;
+  readonly validatedEntity?: Record<string, unknown>;
+}
+
+/**
  * Complete entity schema information
  */
 export interface EntitySchema {
@@ -79,6 +89,7 @@ export interface DataSchemaResult extends JTAGPayload {
   readonly collection: string;
   readonly timestamp: string;
   readonly error?: string;
+  readonly validation?: ValidationResult; // Present when validateData was provided
 }
 
 export const createDataSchemaParams = (
