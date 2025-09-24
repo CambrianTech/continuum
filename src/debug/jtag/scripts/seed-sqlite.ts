@@ -20,7 +20,7 @@ const execAsync = promisify(exec);
 /**
  * Create user capabilities based on user type
  */
-function createUserCapabilities(type: 'human' | 'ai'): any {
+function createUserCapabilities(type: 'human' | 'agent'): any {
   const baseCapabilities = {
     canSendMessages: true,
     canReceiveMessages: true,
@@ -37,7 +37,7 @@ function createUserCapabilities(type: 'human' | 'ai'): any {
       providesContext: false,
       canAccessPersonas: true,
     };
-  } else {
+  } else { // agent
     return {
       ...baseCapabilities,
       canCreateRooms: true,
@@ -64,9 +64,30 @@ function createUserProfile(displayName: string, avatar: string, bio: string, loc
 }
 
 /**
+ * Create user preferences with sensible defaults
+ */
+function createUserPreferences(): any {
+  return {
+    theme: 'dark',
+    language: 'en',
+    timezone: 'UTC',
+    notifications: {
+      mentions: true,
+      directMessages: true,
+      roomUpdates: false
+    },
+    privacy: {
+      showOnlineStatus: true,
+      allowDirectMessages: true,
+      shareActivity: false
+    }
+  };
+}
+
+/**
  * Create complete user object
  */
-function createUser(id: string, displayName: string, shortDescription: string, type: 'human' | 'ai', avatar: string, bio: string, location: string): any {
+function createUser(id: string, displayName: string, shortDescription: string, type: 'human' | 'agent', avatar: string, bio: string, location: string): any {
   return {
     id,
     displayName,
@@ -74,6 +95,7 @@ function createUser(id: string, displayName: string, shortDescription: string, t
     type,
     profile: createUserProfile(displayName, avatar, bio, location),
     capabilities: createUserCapabilities(type),
+    preferences: createUserPreferences(),
     status: "online",
     lastActiveAt: new Date().toISOString(),
     sessionsActive: []
@@ -119,7 +141,7 @@ function createRoomStats(memberCount: number): any {
 /**
  * Create complete room object
  */
-function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[]): any {
+function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[], ownerId: string): any {
   return {
     id,
     name: name.toLowerCase(),
@@ -128,6 +150,8 @@ function createRoom(id: string, name: string, displayName: string, description: 
     topic,
     type: "public",
     status: "active",
+    ownerId,
+    lastMessageAt: new Date().toISOString(), // Set to current time for new rooms
     privacy: createRoomPrivacy(),
     settings: createRoomSettings(),
     stats: createRoomStats(memberCount),
@@ -266,7 +290,7 @@ async function seedViaJTAG() {
         USER_IDS.CLAUDE_CODE,
         USER_CONFIG.CLAUDE.NAME,
         "Code architect & debugger ⚡",
-        "ai",
+        "agent",
         "🤖",
         "AI assistant specialized in coding, architecture, and system design",
         "Anthropic Cloud"
@@ -275,14 +299,14 @@ async function seedViaJTAG() {
         USER_IDS.GENERAL_AI,
         USER_CONFIG.GENERAL_AI.NAME,
         "General purpose assistant",
-        "ai",
+        "agent",
         "⚡",
         "General AI assistant for various tasks and conversations",
         "Anthropic Cloud"
       )
     ];
 
-    // Create rooms using factory functions
+    // Create rooms using factory functions (using human user as owner)
     const rooms = [
       createRoom(
         ROOM_IDS.GENERAL,
@@ -291,7 +315,8 @@ async function seedViaJTAG() {
         ROOM_CONFIG.GENERAL.DESCRIPTION,
         "Welcome to general discussion! Introduce yourself and chat about anything.",
         3,
-        ["general", "welcome", "discussion"]
+        ["general", "welcome", "discussion"],
+        USER_IDS.HUMAN
       ),
       createRoom(
         ROOM_IDS.ACADEMY,
@@ -300,7 +325,8 @@ async function seedViaJTAG() {
         ROOM_CONFIG.ACADEMY.DESCRIPTION,
         "Share knowledge, tutorials, and collaborate on learning",
         2,
-        ["academy", "learning", "education"]
+        ["academy", "learning", "education"],
+        USER_IDS.HUMAN
       )
     ];
 

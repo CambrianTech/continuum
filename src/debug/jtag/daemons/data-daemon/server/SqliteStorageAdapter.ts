@@ -55,6 +55,14 @@ export function registerEntity(collectionName: string, entityClass: EntityConstr
 }
 
 /**
+ * Get registered entity class for a collection
+ * Used by data/schema command for schema introspection
+ */
+export function getRegisteredEntity(collectionName: string): EntityConstructor | undefined {
+  return ENTITY_REGISTRY.get(collectionName);
+}
+
+/**
  * SQL Naming Convention Converter
  */
 export class SqlNamingConverter {

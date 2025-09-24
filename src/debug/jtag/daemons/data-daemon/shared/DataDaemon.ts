@@ -23,6 +23,8 @@ import type {
   RecordData
 } from './DataStorageAdapter';
 
+// Removed complex decorator dependency - using simple field validation instead
+
 /**
  * Storage Strategy Configuration
  */
@@ -49,6 +51,19 @@ export interface DataOperationContext {
   readonly source: string;
   readonly transactionId?: UUID;
   readonly consistency?: 'eventual' | 'strong' | 'session';
+}
+
+/**
+ * Entity Constructor Type
+ */
+type EntityConstructor = new (...args: unknown[]) => BaseEntity;
+
+/**
+ * Schema Validation Result
+ */
+export interface SchemaValidationResult {
+  success: boolean;
+  errors?: string[];
 }
 
 /**
@@ -113,25 +128,33 @@ export class DataDaemon {
     if (!validationResult.success && !validationResult.data) {
       throw new Error(validationResult.error ?? 'Unknown error during data storage');
     }
+
+    // Schema validation using decorator metadata
+    const schemaResult = this.validateSchema(collection, data);
+    if (!schemaResult.success) {
+      const errorMessages = schemaResult.errors?.join(', ') || 'Schema validation failed';
+      throw new Error(`Schema validation failed for collection "${collection}": ${errorMessages}`);
+    }
     
+    // Ensure entity has ID before storage
+    const entityId = data.id ?? this.generateId();
+    const completeEntity = { ...data, id: entityId } as T;
+
     const record: DataRecord<T> = {
-      id: data.id ?? this.generateId(), //possibly unnecessary if adapter generates IDs. possibly BAD
+      id: entityId,
       collection,
-      data,
+      data: completeEntity,
       metadata: {
         createdAt: context.timestamp,
         updatedAt: context.timestamp,
         version: 1
       }
     };
-    
+
     const result = await this.adapter.create(record);
     if (result.success && result.data) {
-      // Return complete entity with ID from DataRecord
-      return {
-        ...result.data.data,
-        id: result.data.id
-      } as T;
+      // Return the complete entity (already includes proper ID)
+      return result.data.data;
     } else {
       throw new Error(result.error ?? 'Unknown error during data storage');
     }
@@ -319,6 +342,193 @@ export class DataDaemon {
     }
 
     return { success: true, data: null };
+  }
+
+  /**
+   * Validate entity data - simple field-based validation
+   */
+  private validateSchema<T extends BaseEntity>(collection: string, data: T): SchemaValidationResult {
+    const errors: string[] = [];
+
+    // Basic validation - ensure essential fields exist
+    if (!data.id || typeof data.id !== 'string' || data.id.trim() === '') {
+      errors.push(`Field "id" is required and must be a non-empty string`);
+    }
+
+    // Collection-specific validation
+    switch (collection) {
+      case 'ChatMessage':
+        this.validateChatMessage(data as any, errors);
+        break;
+      case 'User':
+        this.validateUser(data as any, errors);
+        break;
+      case 'Room':
+        this.validateRoom(data as any, errors);
+        break;
+    }
+
+    if (errors.length > 0) {
+      console.error(`❌ DataDaemon: Schema validation failed for "${collection}":`, errors);
+      return { success: false, errors };
+    }
+
+    console.log(`✅ DataDaemon: Schema validation passed for "${collection}"`);
+    return { success: true };
+  }
+
+  private validateChatMessage(data: any, errors: string[]): void {
+    if (!data.roomId || typeof data.roomId !== 'string') {
+      errors.push('ChatMessage.roomId is required and must be a string');
+    }
+    if (!data.senderId || typeof data.senderId !== 'string') {
+      errors.push('ChatMessage.senderId is required and must be a string');
+    }
+    if (!data.senderName || typeof data.senderName !== 'string') {
+      errors.push('ChatMessage.senderName is required and must be a string');
+    }
+    if (!data.content || typeof data.content !== 'object') {
+      errors.push('ChatMessage.content is required and must be an object');
+    }
+    if (!data.status || typeof data.status !== 'string') {
+      errors.push('ChatMessage.status is required and must be a string');
+    }
+    if (!this.isValidDate(data.timestamp)) {
+      errors.push('ChatMessage.timestamp is required and must be a valid Date or ISO date string');
+    }
+  }
+
+  private validateUser(data: any, errors: string[]): void {
+    // Required scalar fields
+    if (!data.displayName || typeof data.displayName !== 'string') {
+      errors.push('User.displayName is required and must be a string');
+    }
+    if (!data.shortDescription || typeof data.shortDescription !== 'string') {
+      errors.push('User.shortDescription is required and must be a string');
+    }
+    if (!data.type || !['human', 'agent', 'persona', 'system'].includes(data.type)) {
+      errors.push('User.type is required and must be one of: human, agent, persona, system');
+    }
+    if (!data.status || !['online', 'offline', 'away', 'busy'].includes(data.status)) {
+      errors.push('User.status is required and must be one of: online, offline, away, busy');
+    }
+
+    // Date field validation
+    if (!this.isValidDate(data.lastActiveAt)) {
+      errors.push('User.lastActiveAt is required and must be a valid Date or ISO date string');
+    }
+
+    // JSON field validation
+    if (!data.profile || typeof data.profile !== 'object') {
+      errors.push('User.profile is required and must be an object');
+    } else {
+      if (!data.profile.displayName || typeof data.profile.displayName !== 'string') {
+        errors.push('User.profile.displayName is required and must be a string');
+      }
+      if (!data.profile.avatar || typeof data.profile.avatar !== 'string') {
+        errors.push('User.profile.avatar is required and must be a string');
+      }
+      if (!data.profile.bio || typeof data.profile.bio !== 'string') {
+        errors.push('User.profile.bio is required and must be a string');
+      }
+      if (!data.profile.location || typeof data.profile.location !== 'string') {
+        errors.push('User.profile.location is required and must be a string');
+      }
+      if (!this.isValidDate(data.profile.joinedAt)) {
+        errors.push('User.profile.joinedAt is required and must be a valid Date or ISO date string');
+      }
+    }
+
+    if (!data.capabilities || typeof data.capabilities !== 'object') {
+      errors.push('User.capabilities is required and must be an object');
+    }
+
+    if (!Array.isArray(data.sessionsActive)) {
+      errors.push('User.sessionsActive is required and must be an array');
+    }
+  }
+
+  /**
+   * Flexible date validation - accepts Date objects or valid ISO date strings
+   */
+  private isValidDate(value: any): boolean {
+    if (!value) return false;
+
+    // Accept Date objects
+    if (value instanceof Date) {
+      return !isNaN(value.getTime());
+    }
+
+    // Accept ISO date strings
+    if (typeof value === 'string') {
+      const dateObj = new Date(value);
+      return !isNaN(dateObj.getTime());
+    }
+
+    return false;
+  }
+
+  private validateRoom(data: any, errors: string[]): void {
+    // Required scalar fields
+    if (!data.name || typeof data.name !== 'string') {
+      errors.push('Room.name is required and must be a string');
+    }
+    if (!data.displayName || typeof data.displayName !== 'string') {
+      errors.push('Room.displayName is required and must be a string');
+    }
+    if (!data.type || !['public', 'private', 'direct'].includes(data.type)) {
+      errors.push('Room.type is required and must be one of: public, private, direct');
+    }
+    if (!data.status || !['active', 'archived', 'deleted'].includes(data.status)) {
+      errors.push('Room.status is required and must be one of: active, archived, deleted');
+    }
+    if (!data.ownerId || typeof data.ownerId !== 'string') {
+      errors.push('Room.ownerId is required and must be a string');
+    }
+
+    // Optional date field validation
+    if (data.lastMessageAt !== undefined && !this.isValidDate(data.lastMessageAt)) {
+      errors.push('Room.lastMessageAt must be a valid Date or ISO date string when provided');
+    }
+
+    // JSON field validation
+    if (!data.privacy || typeof data.privacy !== 'object') {
+      errors.push('Room.privacy is required and must be an object');
+    } else {
+      if (typeof data.privacy.isPublic !== 'boolean') {
+        errors.push('Room.privacy.isPublic is required and must be a boolean');
+      }
+      if (typeof data.privacy.requiresInvite !== 'boolean') {
+        errors.push('Room.privacy.requiresInvite is required and must be a boolean');
+      }
+      if (typeof data.privacy.allowGuestAccess !== 'boolean') {
+        errors.push('Room.privacy.allowGuestAccess is required and must be a boolean');
+      }
+      if (typeof data.privacy.searchable !== 'boolean') {
+        errors.push('Room.privacy.searchable is required and must be a boolean');
+      }
+    }
+
+    if (!data.settings || typeof data.settings !== 'object') {
+      errors.push('Room.settings is required and must be an object');
+    }
+
+    if (!Array.isArray(data.members)) {
+      errors.push('Room.members is required and must be an array');
+    } else {
+      data.members.forEach((member: any, index: number) => {
+        if (member.joinedAt !== undefined && !this.isValidDate(member.joinedAt)) {
+          errors.push(`Room.members[${index}].joinedAt must be a valid Date or ISO date string when provided`);
+        }
+        if (member.lastReadAt !== undefined && !this.isValidDate(member.lastReadAt)) {
+          errors.push(`Room.members[${index}].lastReadAt must be a valid Date or ISO date string when provided`);
+        }
+      });
+    }
+
+    if (!Array.isArray(data.tags)) {
+      errors.push('Room.tags is required and must be an array');
+    }
   }
 
   // =============================================
