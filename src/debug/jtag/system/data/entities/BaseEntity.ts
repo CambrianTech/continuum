@@ -29,6 +29,31 @@ export abstract class BaseEntity {
   }
 
   /**
+   * Protected utility methods for entity validation
+   */
+
+  /**
+   * Serde-like date validation - accepts Date objects or ISO strings
+   * Protected method available to all entities for consistent date validation
+   */
+  protected isValidDate(value: any): boolean {
+    if (!value) return false;
+
+    // Accept Date objects
+    if (value instanceof Date) {
+      return !isNaN(value.getTime());
+    }
+
+    // Accept ISO date strings
+    if (typeof value === 'string') {
+      const dateObj = new Date(value);
+      return !isNaN(dateObj.getTime());
+    }
+
+    return false;
+  }
+
+  /**
    * Abstract methods that child entities must implement
    */
   abstract get collection(): string;

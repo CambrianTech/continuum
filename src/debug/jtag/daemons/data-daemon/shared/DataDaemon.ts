@@ -23,6 +23,9 @@ import type {
   RecordData
 } from './DataStorageAdapter';
 
+// Import entity registry for proper entity instantiation during validation
+import { getRegisteredEntity } from '../server/SqliteStorageAdapter';
+
 // Removed complex decorator dependency - using simple field validation instead
 
 /**
@@ -54,9 +57,9 @@ export interface DataOperationContext {
 }
 
 /**
- * Entity Constructor Type
+ * Entity Constructor Type with BaseEntity static methods
  */
-type EntityConstructor = new (...args: unknown[]) => BaseEntity;
+type EntityConstructor = (new (...args: unknown[]) => BaseEntity) & typeof BaseEntity;
 
 /**
  * Schema Validation Result
@@ -129,16 +132,19 @@ export class DataDaemon {
       throw new Error(validationResult.error ?? 'Unknown error during data storage');
     }
 
-    // Schema validation using decorator metadata
-    const schemaResult = this.validateSchema(collection, data);
+    // Ensure entity has ID before validation
+    const entityId = data.id ?? this.generateId();
+    const completeData = { ...data, id: entityId };
+
+    // Schema validation using entity registry and BaseEntity factory method - PROPER ARCHITECTURE
+    const schemaResult = this.validateSchema(collection, completeData);
     if (!schemaResult.success) {
       const errorMessages = schemaResult.errors?.join(', ') || 'Schema validation failed';
-      throw new Error(`Schema validation failed for collection "${collection}": ${errorMessages}`);
+      throw new Error(`Entity validation failed: ${errorMessages}`);
     }
-    
-    // Ensure entity has ID before storage
-    const entityId = data.id ?? this.generateId();
-    const completeEntity = { ...data, id: entityId } as T;
+
+    // Use the validated data as the entity (still need plain object for storage)
+    const completeEntity = completeData as T;
 
     const record: DataRecord<T> = {
       id: entityId,
@@ -345,191 +351,29 @@ export class DataDaemon {
   }
 
   /**
-   * Validate entity data - simple field-based validation
+   * Validate entity data - generic validation using BaseEntity.validate()
+   * ARCHITECTURE: Data daemon only knows BaseEntity, never specific entity types
+   * Uses entity registry to create proper instances for validation
    */
-  private validateSchema<T extends BaseEntity>(collection: string, data: T): SchemaValidationResult {
-    const errors: string[] = [];
-
-    // Basic validation - ensure essential fields exist
-    if (!data.id || typeof data.id !== 'string' || data.id.trim() === '') {
-      errors.push(`Field "id" is required and must be a non-empty string`);
+  private validateSchema<T extends BaseEntity>(collection: string, data: Record<string, unknown>): SchemaValidationResult {
+    // Get entity class from registry - works generically with ANY registered entity type
+    const EntityClass = getRegisteredEntity(collection) as EntityConstructor;
+    if (!EntityClass) {
+      console.error(`❌ DataDaemon: No entity class registered for collection "${collection}"`);
+      return { success: false, errors: [`No entity class registered for collection "${collection}"`] };
     }
 
-    // Collection-specific validation
-    switch (collection) {
-      case 'ChatMessage':
-        this.validateChatMessage(data as any, errors);
-        break;
-      case 'User':
-        this.validateUser(data as any, errors);
-        break;
-      case 'Room':
-        this.validateRoom(data as any, errors);
-        break;
+    // Create proper entity instance using BaseEntity factory method
+    const entityResult = EntityClass.create(data);
+    if (!entityResult.success || !entityResult.entity) {
+      console.error(`❌ DataDaemon: Entity creation failed for "${collection}":`, entityResult.error);
+      return { success: false, errors: [entityResult.error || 'Entity creation failed'] };
     }
 
-    if (errors.length > 0) {
-      console.error(`❌ DataDaemon: Schema validation failed for "${collection}":`, errors);
-      return { success: false, errors };
-    }
-
-    console.log(`✅ DataDaemon: Schema validation passed for "${collection}"`);
+    console.log(`✅ DataDaemon: Entity validation passed for "${collection}"`);
     return { success: true };
   }
 
-  private validateChatMessage(data: any, errors: string[]): void {
-    if (!data.roomId || typeof data.roomId !== 'string') {
-      errors.push('ChatMessage.roomId is required and must be a string');
-    }
-    if (!data.senderId || typeof data.senderId !== 'string') {
-      errors.push('ChatMessage.senderId is required and must be a string');
-    }
-    if (!data.senderName || typeof data.senderName !== 'string') {
-      errors.push('ChatMessage.senderName is required and must be a string');
-    }
-    if (!data.content || typeof data.content !== 'object') {
-      errors.push('ChatMessage.content is required and must be an object');
-    }
-    if (!data.status || typeof data.status !== 'string') {
-      errors.push('ChatMessage.status is required and must be a string');
-    }
-    if (!this.isValidDate(data.timestamp)) {
-      errors.push('ChatMessage.timestamp is required and must be a valid Date or ISO date string');
-    }
-  }
-
-  private validateUser(data: any, errors: string[]): void {
-    // Required scalar fields
-    if (!data.displayName || typeof data.displayName !== 'string') {
-      errors.push('User.displayName is required and must be a string');
-    }
-    if (!data.shortDescription || typeof data.shortDescription !== 'string') {
-      errors.push('User.shortDescription is required and must be a string');
-    }
-    if (!data.type || !['human', 'agent', 'persona', 'system'].includes(data.type)) {
-      errors.push('User.type is required and must be one of: human, agent, persona, system');
-    }
-    if (!data.status || !['online', 'offline', 'away', 'busy'].includes(data.status)) {
-      errors.push('User.status is required and must be one of: online, offline, away, busy');
-    }
-
-    // Date field validation
-    if (!this.isValidDate(data.lastActiveAt)) {
-      errors.push('User.lastActiveAt is required and must be a valid Date or ISO date string');
-    }
-
-    // JSON field validation
-    if (!data.profile || typeof data.profile !== 'object') {
-      errors.push('User.profile is required and must be an object');
-    } else {
-      if (!data.profile.displayName || typeof data.profile.displayName !== 'string') {
-        errors.push('User.profile.displayName is required and must be a string');
-      }
-      if (!data.profile.avatar || typeof data.profile.avatar !== 'string') {
-        errors.push('User.profile.avatar is required and must be a string');
-      }
-      if (!data.profile.bio || typeof data.profile.bio !== 'string') {
-        errors.push('User.profile.bio is required and must be a string');
-      }
-      if (!data.profile.location || typeof data.profile.location !== 'string') {
-        errors.push('User.profile.location is required and must be a string');
-      }
-      if (!this.isValidDate(data.profile.joinedAt)) {
-        errors.push('User.profile.joinedAt is required and must be a valid Date or ISO date string');
-      }
-    }
-
-    if (!data.capabilities || typeof data.capabilities !== 'object') {
-      errors.push('User.capabilities is required and must be an object');
-    }
-
-    if (!Array.isArray(data.sessionsActive)) {
-      errors.push('User.sessionsActive is required and must be an array');
-    }
-  }
-
-  /**
-   * Flexible date validation - accepts Date objects or valid ISO date strings
-   */
-  private isValidDate(value: any): boolean {
-    if (!value) return false;
-
-    // Accept Date objects
-    if (value instanceof Date) {
-      return !isNaN(value.getTime());
-    }
-
-    // Accept ISO date strings
-    if (typeof value === 'string') {
-      const dateObj = new Date(value);
-      return !isNaN(dateObj.getTime());
-    }
-
-    return false;
-  }
-
-  private validateRoom(data: any, errors: string[]): void {
-    // Required scalar fields
-    if (!data.name || typeof data.name !== 'string') {
-      errors.push('Room.name is required and must be a string');
-    }
-    if (!data.displayName || typeof data.displayName !== 'string') {
-      errors.push('Room.displayName is required and must be a string');
-    }
-    if (!data.type || !['public', 'private', 'direct'].includes(data.type)) {
-      errors.push('Room.type is required and must be one of: public, private, direct');
-    }
-    if (!data.status || !['active', 'archived', 'deleted'].includes(data.status)) {
-      errors.push('Room.status is required and must be one of: active, archived, deleted');
-    }
-    if (!data.ownerId || typeof data.ownerId !== 'string') {
-      errors.push('Room.ownerId is required and must be a string');
-    }
-
-    // Optional date field validation
-    if (data.lastMessageAt !== undefined && !this.isValidDate(data.lastMessageAt)) {
-      errors.push('Room.lastMessageAt must be a valid Date or ISO date string when provided');
-    }
-
-    // JSON field validation
-    if (!data.privacy || typeof data.privacy !== 'object') {
-      errors.push('Room.privacy is required and must be an object');
-    } else {
-      if (typeof data.privacy.isPublic !== 'boolean') {
-        errors.push('Room.privacy.isPublic is required and must be a boolean');
-      }
-      if (typeof data.privacy.requiresInvite !== 'boolean') {
-        errors.push('Room.privacy.requiresInvite is required and must be a boolean');
-      }
-      if (typeof data.privacy.allowGuestAccess !== 'boolean') {
-        errors.push('Room.privacy.allowGuestAccess is required and must be a boolean');
-      }
-      if (typeof data.privacy.searchable !== 'boolean') {
-        errors.push('Room.privacy.searchable is required and must be a boolean');
-      }
-    }
-
-    if (!data.settings || typeof data.settings !== 'object') {
-      errors.push('Room.settings is required and must be an object');
-    }
-
-    if (!Array.isArray(data.members)) {
-      errors.push('Room.members is required and must be an array');
-    } else {
-      data.members.forEach((member: any, index: number) => {
-        if (member.joinedAt !== undefined && !this.isValidDate(member.joinedAt)) {
-          errors.push(`Room.members[${index}].joinedAt must be a valid Date or ISO date string when provided`);
-        }
-        if (member.lastReadAt !== undefined && !this.isValidDate(member.lastReadAt)) {
-          errors.push(`Room.members[${index}].lastReadAt must be a valid Date or ISO date string when provided`);
-        }
-      });
-    }
-
-    if (!Array.isArray(data.tags)) {
-      errors.push('Room.tags is required and must be an array');
-    }
-  }
 
   // =============================================
   // CLEAN DOMAIN-OWNED STATIC INTERFACE

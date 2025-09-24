@@ -39,13 +39,7 @@ const TEST_CONFIGS: TestConfig[] = [
       type: 'human',
       status: 'online',
       shortDescription: 'Test user for CRUD validation',
-      profile: {
-        displayName: 'Test User CRUD',
-        bio: 'Test bio for CRUD testing',
-        avatar: '👤',
-        location: 'Test Location',
-        joinedAt: new Date()
-      },
+      // NOTE: profile data removed - now in separate UserProfileEntity (relational architecture)
       capabilities: {
         canSendMessages: true,
         canReceiveMessages: true,
@@ -73,7 +67,7 @@ const TEST_CONFIGS: TestConfig[] = [
         }
       },
       sessionsActive: [],
-      lastActiveAt: new Date()
+      lastActiveAt: new Date().toISOString()
     },
     updateData: {
       displayName: 'Updated Test User',

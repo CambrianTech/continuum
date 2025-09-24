@@ -126,6 +126,7 @@ export class ChatMessageEntity extends BaseEntity {
     return ChatMessageEntity.collection;
   }
 
+
   /**
    * Implement BaseEntity abstract method - validate message data
    */
@@ -162,9 +163,9 @@ export class ChatMessageEntity extends BaseEntity {
       return { success: false, error: `Message priority must be one of: ${validPriorities.join(', ')}` };
     }
 
-    // Date validation
-    if (!(this.timestamp instanceof Date) || isNaN(this.timestamp.getTime())) {
-      return { success: false, error: 'Message timestamp must be a valid Date' };
+    // Date validation - serde-like graceful conversion
+    if (!this.isValidDate(this.timestamp)) {
+      return { success: false, error: 'Message timestamp must be a valid Date or ISO date string' };
     }
 
     return { success: true };

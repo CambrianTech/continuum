@@ -60,8 +60,17 @@ export class UserListWidget extends ChatWidgetBase {
     // Render function for individual user items
     const renderUser: RenderFn<UserEntity> = (user: UserEntity, context) => {
       const statusClass = user.status === 'online' ? 'online' : 'offline';
-      const avatar = user.profile?.avatar || (user.type === 'human' ? '👤' : '🤖');
-      const displayName = user.profile?.displayName || user.displayName || 'Unknown User';
+
+      // ✨ BEAUTIFUL: Intelligent avatar defaults based on user type
+      // Note: Plain data from DB, not entity instances, so compute avatar directly
+      const avatar = user.profile?.visualIdentity?.avatar ||
+        (user.type === 'human' ? '👤' :
+         user.type === 'agent' ? '🤖' :
+         user.type === 'persona' ? '⭐' :
+         user.type === 'system' ? '⚙️' : '❓');
+
+      const speciality = user.profile?.speciality || null;
+      const displayName = user.displayName || 'Unknown User';
 
       const userElement = document.createElement('div');
       userElement.className = `user-item ${statusClass}`;
@@ -69,7 +78,10 @@ export class UserListWidget extends ChatWidgetBase {
         <span class="user-avatar">${avatar}</span>
         <div class="user-info">
           <div class="user-name">${displayName}</div>
-          <div class="user-type">${user.type}</div>
+          <div class="user-meta">
+            <span class="user-type">${user.type}</span>
+            ${speciality ? `<span class="user-speciality">${speciality}</span>` : ''}
+          </div>
         </div>
         <div class="user-status">
           <span class="status-indicator"></span>

@@ -1,23 +1,16 @@
 /**
- * User Entity - Decorated UserData for field extraction
+ * User Entity - Core system functionality for citizens
  *
+ * Handles core chat/system functionality only - display data in UserProfileEntity
+ * Supports three-tier citizen architecture: humans, agents, personas
  * Uses field decorators to define storage requirements for the serde-style adapter system
- * Replaces manual field mappings with elegant decorator-based schema definition
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
-// User-specific types moved here since domain files are deleted
+// User-specific types for three-tier citizen architecture
 export type UserType = 'human' | 'agent' | 'persona' | 'system';
 export type UserStatus = 'online' | 'offline' | 'away' | 'busy';
-
-export interface UserProfile {
-  displayName: string;
-  avatar: string;
-  bio: string;
-  location: string;
-  joinedAt: Date;
-}
 
 export interface UserCapabilities {
   canSendMessages: boolean;
@@ -31,22 +24,6 @@ export interface UserCapabilities {
   canAccessPersonas: boolean;
 }
 
-export interface UserPreferences {
-  theme: 'light' | 'dark' | 'auto';
-  language: string;
-  timezone: string;
-  notifications: {
-    mentions: boolean;
-    directMessages: boolean;
-    roomUpdates: boolean;
-  };
-  privacy: {
-    showOnlineStatus: boolean;
-    allowDirectMessages: boolean;
-    shareActivity: boolean;
-  };
-}
-
 import {
   PrimaryField,
   TextField,
@@ -57,12 +34,14 @@ import {
   TEXT_LENGTH
 } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
+import type { UserProfileEntity } from './UserProfileEntity';
+import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
 /**
- * Decorated User Entity - Storage-aware version of UserData
+ * User Entity - Core system functionality for citizens
  *
- * The decorators define which fields get extracted to dedicated columns
- * vs stored as JSON blobs for optimal query performance
+ * Contains only core chat/system fields - display data separated to UserProfileEntity
+ * Supports three-tier citizen architecture through proper relational design
  */
 export class UserEntity extends BaseEntity {
   // Single source of truth for collection name - used by both decorators and commands
@@ -77,8 +56,8 @@ export class UserEntity extends BaseEntity {
   @TextField({ index: true })
   displayName: string;
 
-  @TextField({ maxLength: TEXT_LENGTH.SHORT })
-  shortDescription: string;
+  @TextField({ maxLength: TEXT_LENGTH.SHORT, nullable: true })
+  shortDescription?: string;
 
   @EnumField({ index: true })
   status: UserStatus;
@@ -86,21 +65,55 @@ export class UserEntity extends BaseEntity {
   @DateField({ index: true })
   lastActiveAt: Date;
 
-  // Complex objects stored as JSON blobs
-  @JsonField()
-  profile: UserProfile;
-
+  // Core system functionality stored as JSON blobs
   @JsonField()
   capabilities: UserCapabilities;
 
   @JsonField()
-  preferences: UserPreferences;
-
-  @JsonField()
   sessionsActive: readonly UUID[];
+
+  // ✨ DECORATOR-DRIVEN AUTO-JOIN: Profile always included (future: @JoinField decorator)
+  // For now, manually joined - decorator system will automate this
+  profile?: UserProfileEntity;
 
   // Index signature for compatibility
   [key: string]: unknown;
+
+  /**
+   * Get user's avatar with smart defaults
+   * Beautiful: Direct access with intelligent fallbacks
+   */
+  get avatar(): string {
+    // Auto-join not yet implemented - use smart defaults for now
+    if (this.profile?.visualIdentity?.avatar) {
+      return this.profile.visualIdentity.avatar;
+    }
+
+    // Intelligent fallbacks based on user type
+    switch (this.type) {
+      case 'human': return '👤';
+      case 'agent': return '🤖';
+      case 'persona': return '⭐';
+      case 'system': return '⚙️';
+      default: return '❓';
+    }
+  }
+
+  /**
+   * Get user's bio
+   * Beautiful: Direct access since profile will be auto-joined
+   */
+  get bio(): string {
+    return this.profile?.bio || '';
+  }
+
+  /**
+   * Get user's speciality (for agents/personas)
+   * Beautiful: Direct access since profile will be auto-joined
+   */
+  get speciality(): string | null {
+    return this.profile?.speciality || null;
+  }
 
   constructor() {
     super(); // Initialize BaseEntity fields (id, createdAt, updatedAt, version)
@@ -111,9 +124,17 @@ export class UserEntity extends BaseEntity {
     this.shortDescription = '';
     this.status = 'offline';
     this.lastActiveAt = new Date();
-    this.profile = { displayName: '', avatar: '', bio: '', location: '', joinedAt: new Date() };
-    this.capabilities = { canSendMessages: true, canReceiveMessages: true, canCreateRooms: false, canInviteOthers: false, canModerate: false, autoResponds: false, providesContext: false, canTrain: false, canAccessPersonas: false };
-    this.preferences = { theme: 'auto', language: 'en', timezone: 'UTC', notifications: { mentions: true, directMessages: true, roomUpdates: false }, privacy: { showOnlineStatus: true, allowDirectMessages: true, shareActivity: false } };
+    this.capabilities = {
+      canSendMessages: true,
+      canReceiveMessages: true,
+      canCreateRooms: false,
+      canInviteOthers: false,
+      canModerate: false,
+      autoResponds: false,
+      providesContext: false,
+      canTrain: false,
+      canAccessPersonas: false
+    };
     this.sessionsActive = [];
   }
 
@@ -124,8 +145,9 @@ export class UserEntity extends BaseEntity {
     return UserEntity.collection;
   }
 
+
   /**
-   * Implement BaseEntity abstract method - validate user data
+   * Implement BaseEntity abstract method - validate core user data
    */
   validate(): { success: boolean; error?: string } {
     // Required fields validation
@@ -148,19 +170,9 @@ export class UserEntity extends BaseEntity {
       return { success: false, error: `User status must be one of: ${validStatuses.join(', ')}` };
     }
 
-    // Profile validation
-    if (this.profile) {
-      if (!this.profile.displayName?.trim()) {
-        return { success: false, error: 'User profile.displayName is required' };
-      }
-      if (this.profile.displayName !== this.displayName) {
-        return { success: false, error: 'User profile.displayName must match displayName field' };
-      }
-    }
-
-    // Date validation
-    if (!(this.lastActiveAt instanceof Date) || isNaN(this.lastActiveAt.getTime())) {
-      return { success: false, error: 'User lastActiveAt must be a valid Date' };
+    // Date validation - serde-like graceful conversion
+    if (!this.isValidDate(this.lastActiveAt)) {
+      return { success: false, error: 'User lastActiveAt must be a valid Date or ISO date string' };
     }
 
     return { success: true };
