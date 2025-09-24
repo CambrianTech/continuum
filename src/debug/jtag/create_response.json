@@ -1,0 +1,123 @@
+📋 ExampleConfig: Loaded via package.json discovery - active: widget-ui
+🤖 Claude Code detected (vunknown)
+{
+  "collection": "Room",
+  "data": {
+    "name": "debug-id-test",
+    "displayName": "Debug ID Test"
+  },
+  "context": {
+    "uuid": "5bbee137-c38f-4505-8817-30c4143ac99f",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "@continuum/jtag-widget-ui",
+        "description": "JTAG Widget UI - Standalone Widget Development Environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "sessionId": "a18dcb6b-030b-483a-ae91-d3d40fd9f839",
+  "success": true,
+  "timestamp": "2025-09-24T01:30:13.968Z"
+}

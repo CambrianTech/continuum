@@ -37,6 +37,7 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
 
     return createDataCreateResultFromParams(params, {
       success: true,
+      data: entity,
     });
   }
 

@@ -34,7 +34,8 @@ export class DataUpdateServerCommand extends CommandBase<DataUpdateParams, DataU
     console.log(`✅ DataUpdateServerCommand: Emitted ${eventName}`);
 
     return createDataUpdateResultFromParams(params, {
-      found: true
+      found: true,
+      data: entity,
     });
   }
 
