@@ -14,6 +14,11 @@ import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.
 import * as fs from 'fs';
 import * as path from 'path';
 
+// Check for verbose flag EARLY to control module initialization logging
+if (process.argv.includes('--verbose')) {
+  process.env.JTAG_VERBOSE = 'true';
+}
+
 // Load config once at startup
 const instanceConfig = loadInstanceConfigForContext();
 
@@ -226,6 +231,11 @@ async function main() {
     const agentContext = entryPoint.getAgentContext();
     const behavior = entryPoint.getBehavior();
 
+    // Set environment variable for modules to check verbose mode
+    if (behavior.logLevel === 'verbose') {
+      process.env.JTAG_VERBOSE = 'true';
+    }
+
     // Suppress ALL output unless verbose mode
     const originalStdoutWrite = process.stdout.write;
     const originalStderrWrite = process.stderr.write;
@@ -249,7 +259,7 @@ async function main() {
     if (!params['new-session'] && command !== 'session/create') {
       sessionId = getPersistentSessionId();
       if (behavior.logLevel === 'verbose') {
-        originalLog(`🔄 Session persistence: ${sessionId ? `reusing ${sessionId}` : 'creating new session'}`);
+        console.log(`🔄 Session persistence: ${sessionId ? `reusing ${sessionId}` : 'creating new session'}`);
       }
     }
     
@@ -272,7 +282,7 @@ async function main() {
     
     // Pure client - no server startup, just connect to existing server
     if (behavior.logLevel === 'verbose') {
-      originalLog('🔗 CLI connecting to existing server...');
+      console.log('🔗 CLI connecting to existing server...');
     }
 
     let client;

@@ -84,7 +84,9 @@ function loadConfig(): ExampleConfig {
           }
         }
       };
-      console.log(`📋 ExampleConfig: Loaded via package.json discovery - active: ${config!.active_example}`);
+      if (process.env.JTAG_VERBOSE === 'true') {
+        console.log(`📋 ExampleConfig: Loaded via package.json discovery - active: ${config!.active_example}`);
+      }
       return config!;
     } catch (error) {
       throw new Error(`ExampleConfig: Failed to load config file: ${(error as Error).message}`);
