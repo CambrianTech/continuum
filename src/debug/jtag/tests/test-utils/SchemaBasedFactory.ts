@@ -39,7 +39,7 @@ const schemaCache = new Map<string, EntitySchema>();
  * Parse JSON from JTAG command output with robust error handling
  */
 function parseJtagResponse(output: string): Record<string, unknown> {
-  // Find JSON start
+  // Find JSON start - use first complete JSON object (not nested sub-objects)
   const jsonStart = output.indexOf('{');
   if (jsonStart < 0) {
     throw new Error('No JSON found in output');
@@ -128,6 +128,122 @@ async function getExampleEntity(collection: string): Promise<Record<string, unkn
 }
 
 /**
+ * Create complete entity data structures following the seeding approach
+ * This mirrors the exact structure used in successful seeding
+ */
+function createCompleteEntityData(collection: string, timestamp: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const now = new Date().toISOString();
+
+  switch (collection) {
+    case 'User':
+      // Mirror the exact successful seeding structure
+      return {
+        displayName: overrides.displayName || `Test User ${timestamp}`,
+        shortDescription: overrides.shortDescription || "Test user entity",
+        type: overrides.type || "human",
+        profile: {
+          displayName: overrides.displayName || `Test User ${timestamp}`,
+          avatar: "🧪",
+          bio: "Test user for integration testing",
+          location: "Test Environment",
+          joinedAt: now
+        },
+        capabilities: {
+          canSendMessages: true,
+          canReceiveMessages: true,
+          canTrain: false,
+          canCreateRooms: true,
+          canInviteOthers: true,
+          canModerate: true,
+          autoResponds: false,
+          providesContext: false,
+          canAccessPersonas: true,
+        },
+        preferences: {
+          theme: 'dark',
+          language: 'en',
+          timezone: 'UTC',
+          notifications: {
+            mentions: true,
+            directMessages: true,
+            roomUpdates: false
+          },
+          privacy: {
+            showOnlineStatus: true,
+            allowDirectMessages: true,
+            shareActivity: false
+          }
+        },
+        status: "online",
+        lastActiveAt: now,
+        sessionsActive: [],
+        ...overrides
+      };
+
+    case 'Room':
+      // Mirror the exact successful seeding structure
+      return {
+        name: (overrides.name || `test-room-${timestamp}`).toLowerCase(), // Ensure lowercase like seeding
+        displayName: overrides.displayName || overrides.name || `Test Room ${timestamp}`,
+        description: overrides.description || "Test room for integration testing",
+        topic: "Test room topic for development",
+        type: "public",
+        status: "active",
+        ownerId: "002350cc-0031-408d-8040-004f000f", // Use actual seeded user ID
+        lastMessageAt: now,
+        privacy: {
+          isPublic: true,
+          requiresInvite: false,
+          allowGuestAccess: true,
+          searchable: true
+        },
+        settings: {
+          allowReactions: true,
+          allowThreads: true,
+          allowFileSharing: true,
+          messageRetentionDays: 365
+        },
+        stats: {
+          memberCount: 1,
+          messageCount: 0,
+          createdAt: now,
+          lastActivityAt: now
+        },
+        members: [],
+        tags: ["test", "integration"],
+        ...overrides
+      };
+
+    case 'ChatMessage':
+      // Mirror the exact successful seeding structure
+      return {
+        roomId: overrides.roomId || "5e71a0c8-0303-4eb8-a478-3a121248", // Use actual seeded room ID
+        senderId: overrides.senderId || "002350cc-0031-408d-8040-004f000f", // Use actual seeded user ID
+        senderName: overrides.senderName || "Test Sender",
+        content: overrides.content || {
+          text: `Test message ${timestamp}`,
+          attachments: [],
+          formatting: {
+            markdown: false,
+            mentions: [],
+            hashtags: [],
+            links: [],
+            codeBlocks: []
+          }
+        },
+        status: "sent",
+        priority: "normal",
+        timestamp: now,
+        reactions: [],
+        ...overrides
+      };
+
+    default:
+      throw new Error(`Unknown collection: ${collection}`);
+  }
+}
+
+/**
  * Generate smart default value based on field type and schema
  */
 function generateFieldDefault(field: SchemaField, example?: unknown): unknown {
@@ -146,7 +262,7 @@ function generateFieldDefault(field: SchemaField, example?: unknown): unknown {
     case 'date':
       // Use existing example timestamp for compatibility instead of generating new Date()
       // Database has specific timestamp format requirements that new Date().toISOString() doesn't meet
-      return exampleValue || '2025-09-25T04:38:38.452Z';
+      return example || now;
 
     case 'number':
       if (field.fieldName === 'version') return 0;
@@ -217,12 +333,63 @@ function generateFieldDefault(field: SchemaField, example?: unknown): unknown {
 }
 
 /**
- * Create entity with schema-driven defaults
+ * Create entity with complete structure following successful seeding approach
+ */
+export async function createCompleteEntity(
+  collection: string,
+  overrides: Record<string, unknown> = {}
+): Promise<FactoryResult> {
+  try {
+    console.log(`🏗️ SchemaFactory: Creating ${collection} with complete structure (seeding approach)...`);
+
+    const timestamp = Date.now();
+
+    // Use the complete entity data structure that mirrors successful seeding
+    const entityData = createCompleteEntityData(collection, timestamp, overrides);
+
+    console.log(`🏗️ SchemaFactory: Generated complete data for ${collection}:`, entityData);
+
+    // Create entity via JTAG
+    const result = runJtagCommand(`data/create --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
+
+    if (result.success && result.data?.id) {
+      console.log(`✅ SchemaFactory: Created ${collection}/${result.data.id}`);
+      return {
+        success: true,
+        id: result.data.id,
+        data: result.data
+      };
+    } else {
+      return {
+        success: false,
+        error: result.error ?? 'Entity creation failed'
+      };
+    }
+
+  } catch (error) {
+    console.error(`❌ SchemaFactory: Failed to create ${collection}:`, error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/**
+ * Create entity with schema-driven defaults (original approach, now fallback)
  */
 export async function createSchemaBasedEntity(
   collection: string,
   overrides: Record<string, unknown> = {}
 ): Promise<FactoryResult> {
+  // Try the complete entity approach first (mirrors successful seeding)
+  try {
+    return await createCompleteEntity(collection, overrides);
+  } catch (error) {
+    console.log(`🔄 SchemaFactory: Complete entity approach failed, falling back to schema-driven approach...`);
+  }
+
+  // Fallback to original schema-driven approach
   try {
     console.log(`🏗️ SchemaFactory: Creating ${collection} with schema-based defaults...`);
 
