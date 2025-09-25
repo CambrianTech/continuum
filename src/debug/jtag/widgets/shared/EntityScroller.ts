@@ -119,15 +119,24 @@ export function createScroller<T extends BaseEntity>(
     }
   };
 
-  // Efficient DOM operations using fragments
+  // Efficient DOM operations using fragments - only add genuinely new entities
   const addEntitiesToDOM = (newEntities: readonly T[], position: 'start' | 'end'): void => {
     const fragment = document.createDocumentFragment();
+    const validEntities: T[] = [];
 
-    newEntities.forEach((entity, idx) => {
+    // First check which entities are actually new
+    newEntities.forEach((entity) => {
+      if (entityManager.add(entity)) {
+        validEntities.push(entity);
+      }
+    });
+
+    // Only render genuinely new entities
+    validEntities.forEach((entity, idx) => {
       const renderContext: RenderContext<T> = {
         ...context,
-        index: idx + entityManager.count(),
-        total: entityManager.count() + newEntities.length
+        index: idx,
+        total: entityManager.count()
       };
 
       const element = render(entity, renderContext);
@@ -136,10 +145,9 @@ export function createScroller<T extends BaseEntity>(
     });
 
     // Always append to DOM - CSS handles display direction
-    container.appendChild(fragment);
-
-    // Add entities to manager
-    newEntities.forEach(entity => entityManager.add(entity));
+    if (validEntities.length > 0) {
+      container.appendChild(fragment);
+    }
   };
 
   // Intersection observer for infinite scroll
@@ -275,11 +283,9 @@ export function createScroller<T extends BaseEntity>(
         existingElement.remove();
       }
 
-      // Add genuinely new entity - EntityManager handles deduplication
-      if (entityManager.add(entity)) {
-        addEntitiesToDOM([entity], 'end'); // Always append
-        console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() added new entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
-      }
+      // Add entity - addEntitiesToDOM handles deduplication via EntityManager
+      addEntitiesToDOM([entity], 'end');
+      console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
     },
 
     // Smart real-time updates with intrinsic direction awareness and replacement
@@ -316,12 +322,15 @@ export function createScroller<T extends BaseEntity>(
       const newContentPosition = config.direction === 'newest-first' ? 'end' : 'start';
       const actualPosition = position || newContentPosition;
 
-      // Add genuinely new entity - EntityManager handles deduplication
-      if (entityManager.add(entity)) {
-        addEntitiesToDOM([entity], 'end'); // Always append
-        console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() added new entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
+      // Track count before attempting add
+      const initialCount = entityManager.count();
 
-        // Auto-scroll for new content (simplified since we always append)
+      // Add entity - addEntitiesToDOM handles deduplication via EntityManager
+      addEntitiesToDOM([entity], 'end');
+      console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() processed entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
+
+      // Auto-scroll only if entity was genuinely added
+      if (entityManager.count() > initialCount) {
         requestAnimationFrame(() => {
           smartScrollToNewContent();
         });
