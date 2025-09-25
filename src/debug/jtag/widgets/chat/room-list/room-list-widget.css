@@ -5,7 +5,8 @@
   width: 100%;
 }
 
-.room-list-container {
+/* Shared Entity List Widget Styles */
+.entity-list-container {
   background: var(--widget-surface-solid);
   border: 1px solid var(--widget-border);
   border-radius: var(--radius-lg);
@@ -13,7 +14,7 @@
   margin-bottom: var(--spacing-lg);
 }
 
-.room-list-header {
+.entity-list-header {
   padding: var(--spacing-sm) var(--spacing-md);
   background: var(--widget-header-background);
   border-bottom: 1px solid var(--border-subtle);
@@ -22,11 +23,33 @@
   align-items: center;
 }
 
+.list-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+}
+
+.list-count {
+  background: var(--badge-background);
+  color: var(--badge-text);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  font-weight: 500;
+}
+
+.entity-list-body {
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
 .header-title {
   color: var(--content-primary);
   font-weight: 600;
   font-size: 0.85em;
-  text-transform: uppercase;
+  text-transform: capitalize;
   letter-spacing: 0.5px;
 }
 
@@ -44,10 +67,7 @@
   font-weight: bold;
 }
 
-.room-list {
-  max-height: 200px;
-  overflow-y: auto;
-}
+/* Room-specific item styling */
 
 .room-item {
   display: flex;

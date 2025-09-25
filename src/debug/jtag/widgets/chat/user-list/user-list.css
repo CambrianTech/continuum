@@ -1,4 +1,4 @@
-.user-list-container {
+.entity-list-container {
   background: var(--widget-surface-solid);
   border-radius: var(--radius-lg);
   padding: var(--spacing-lg);
@@ -8,7 +8,7 @@
   border: 1px solid var(--widget-border);
 }
 
-.user-list-header {
+.entity-list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -17,13 +17,21 @@
   padding-bottom: var(--spacing-md);
 }
 
-.user-list-header h3 {
+.entity-list-header h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--content-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.header-title {
+  color: var(--content-primary);
+  font-weight: 600;
+  font-size: 0.85em;
+  text-transform: capitalize;
+  letter-spacing: 0.5px;
 }
 
 .user-count {

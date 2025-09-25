@@ -5,7 +5,7 @@
  * Shows list of chat rooms for easy navigation.
  */
 
-import { ChatWidgetBase } from '../shared/ChatWidgetBase';
+import { EntityListWidget } from '../../shared/EntityListWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
@@ -16,7 +16,7 @@ import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
-export class RoomListWidget extends ChatWidgetBase {
+export class RoomListWidget extends EntityListWidget<RoomEntity> {
   private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID; // Sync with ChatWidget's default
   private roomScroller?: EntityScroller<RoomEntity>;
   private unreadCounts: Map<string, number> = new Map();
@@ -24,7 +24,6 @@ export class RoomListWidget extends ChatWidgetBase {
   constructor() {
     super({
       widgetName: 'RoomListWidget',
-      template: 'room-list-widget.html',
       styles: 'room-list-widget.css',
       enableAI: false,
       enableDatabase: true,
@@ -54,12 +53,16 @@ export class RoomListWidget extends ChatWidgetBase {
   // Path resolution now handled automatically by ChatWidgetBase
   // Generates: widgets/chat/room-list/{filename} from "RoomListWidget"
 
-  protected override getReplacements(): Record<string, string> {
-      const roomCount = this.roomScroller?.entities().length || 0;
-      return {
-          '<!-- ROOM_LIST_CONTENT -->': '', // EntityScroller will populate .room-list container
-          '<!-- ROOM_COUNT -->': roomCount.toString(),
-      };
+  protected renderTemplate(): string {
+    return `
+      <div class="entity-list-container">
+        ${this.renderHeader()}
+
+        <div class="entity-list-body room-list">
+          <!-- EntityScroller will populate this container -->
+        </div>
+      </div>
+    `;
   }
 
   /**
@@ -186,15 +189,11 @@ export class RoomListWidget extends ChatWidgetBase {
   }
 
   /**
-   * Update the room count display in the header
+   * Update the room count display in the header using inherited EntityListWidget method
    */
   private updateRoomCount(): void {
-    const roomCountElement = this.shadowRoot.querySelector('.room-count') as HTMLElement;
-    if (roomCountElement && this.roomScroller) {
-      const count = this.roomScroller.entities().length;
-      roomCountElement.textContent = count.toString();
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Updated room count to ${count}`);
-    }
+    this.updateEntityCount(); // Use inherited method that looks for .list-count
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Updated room count to ${this.getEntityCount()}`);
   }
 
   private async calculateUnreadCounts(): Promise<void> {
@@ -294,6 +293,14 @@ export class RoomListWidget extends ChatWidgetBase {
     }
 
     console.log(`🎨 RoomListWidget: Updated CSS highlighting "${oldRoomId}" → "${newRoomId}"`);
+  }
+
+  protected getEntityCount(): number {
+    return this.roomScroller?.entities().length || 0;
+  }
+
+  protected getEntityTitle(entity?: RoomEntity): string {
+    return 'Rooms';
   }
 
   protected async onWidgetCleanup(): Promise<void> {
