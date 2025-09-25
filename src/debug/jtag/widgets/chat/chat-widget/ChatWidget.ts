@@ -182,12 +182,16 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
   }
 
   protected getEntityCount(): number {
-    return this.chatScroller?.entities().length || this.messages.length;
+    // Return count of loaded messages (EntityScroller approach)
+    const count = this.chatScroller?.entities().length || 0;
+    console.log(`🔧 CLAUDE-COUNT-DEBUG: ChatWidget.getEntityCount() returning ${count}, chatScroller has ${this.chatScroller?.entities().length} entities`);
+    return count;
   }
 
   protected getEntityTitle(entity?: ChatMessageEntity): string {
     return this.currentRoomEntity?.name || 'Chat';
   }
+
 
   protected async onWidgetCleanup(): Promise<void> {
     // Save scroll position and context before cleanup
@@ -554,15 +558,15 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
         // Use EntityScroller's smart auto-scroll - it knows where new content goes
         this.chatScroller.addWithAutoScroll(chatMessage); // No position needed, EntityScroller knows
         this.messages = this.chatScroller.entities() as ChatMessageEntity[];
+        // Update header count (EntityScroller automatically has new message)
+        this.updateEntityCount();
       } else {
         // Fallback to old method
         this.messages.push(chatMessage);
         await this.renderWidget(); // Re-render with new message
         this.smartScrollToBottom(); // Keep fallback behavior for now
+        this.updateEntityCount();
       }
-
-      // Update message count in header after adding new message
-      this.updateEntityCount();
 
       // Real-time message added successfully using domain object
     }
@@ -873,6 +877,13 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
         ${this.renderMessages()}
       </div>
 
+      ${this.renderFooter()}
+    `;
+  }
+
+  // ChatWidget overrides renderFooter to provide input controls
+  protected renderFooter(): string {
+    return `
       <div class="input-container">
         <input type="text" class="message-input" id="messageInput" placeholder="Type a message...">
         <button class="send-button" id="sendButton">Send</button>

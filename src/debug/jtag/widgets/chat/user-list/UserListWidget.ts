@@ -192,6 +192,8 @@ export class UserListWidget extends EntityListWidget<UserEntity> {
         <div class="entity-list-body user-list">
           <!-- EntityScroller will populate this container -->
         </div>
+
+        ${this.renderFooter()}
       </div>
     `;
   }

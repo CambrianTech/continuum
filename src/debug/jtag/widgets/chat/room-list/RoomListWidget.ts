@@ -61,6 +61,8 @@ export class RoomListWidget extends EntityListWidget<RoomEntity> {
         <div class="entity-list-body room-list">
           <!-- EntityScroller will populate this container -->
         </div>
+
+        ${this.renderFooter()}
       </div>
     `;
   }
