@@ -6,6 +6,7 @@
  */
 
 import type { BaseEntity } from '../../system/data/entities/BaseEntity';
+import { EntityManager } from './EntityManager';
 
 // Pure render function - like React components, constrained to our BaseEntity
 export type RenderFn<T extends BaseEntity> = (entity: T, context: RenderContext<T>) => HTMLElement;
@@ -76,8 +77,12 @@ export function createScroller<T extends BaseEntity>(
   context?: Omit<RenderContext<T>, 'index' | 'total'>
 ): EntityScroller<T> {
 
-  // Internal state
-  let entities: T[] = [];
+  // Internal state with EntityManager for robust entity management
+  const entityManager = new EntityManager<T>({
+    name: `Scroller-${config.direction}`,
+    maxSize: config.pageSize * 10, // Reasonable limit to prevent memory issues
+    debugMode: true
+  });
   let isLoading = false;
   let hasMoreItems = true;
   let cursor: string | undefined;
@@ -121,8 +126,8 @@ export function createScroller<T extends BaseEntity>(
     newEntities.forEach((entity, idx) => {
       const renderContext: RenderContext<T> = {
         ...context,
-        index: position === 'start' ? idx : entities.length + idx,
-        total: entities.length + newEntities.length
+        index: idx + entityManager.count(),
+        total: entityManager.count() + newEntities.length
       };
 
       const element = render(entity, renderContext);
@@ -130,14 +135,11 @@ export function createScroller<T extends BaseEntity>(
       fragment.appendChild(element);
     });
 
-    // Batch DOM update - efficient
-    if (position === 'start') {
-      container.insertBefore(fragment, container.firstChild);
-      entities = [...newEntities, ...entities];
-    } else {
-      container.appendChild(fragment);
-      entities = [...entities, ...newEntities];
-    }
+    // Always append to DOM - CSS handles display direction
+    container.appendChild(fragment);
+
+    // Add entities to manager
+    newEntities.forEach(entity => entityManager.add(entity));
   };
 
   // Intersection observer for infinite scroll
@@ -183,7 +185,7 @@ export function createScroller<T extends BaseEntity>(
       try {
         const result = await load(undefined, config.pageSize);
 
-        entities = [];
+        entityManager.clear();
         container.innerHTML = '';
 
         if (result.items.length > 0) {
@@ -217,20 +219,14 @@ export function createScroller<T extends BaseEntity>(
         const result = await load(cursor, config.pageSize);
 
         if (result.items.length > 0) {
-          const position = config.direction === 'newest-first' ? 'start' : 'end';
-          addEntitiesToDOM(result.items, position);
+          // Always append - CSS handles visual direction
+          addEntitiesToDOM(result.items, 'end');
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
-          // Reposition sentinel after adding items
+          // Keep sentinel at bottom for intersection observer
           if (sentinel) {
-            if (config.direction === 'newest-first' && position === 'start') {
-              // For newest-first (chat), keep sentinel at top when adding older messages to start
-              container.insertBefore(sentinel, container.firstChild);
-            } else if (config.direction === 'oldest-first' && position === 'end') {
-              // For oldest-first (lists), keep sentinel at bottom when adding newer items to end
-              container.appendChild(sentinel);
-            }
+            container.appendChild(sentinel);
           }
         } else {
           hasMoreItems = false;
@@ -251,70 +247,81 @@ export function createScroller<T extends BaseEntity>(
 
     // Real-time updates with automatic deduplication and replacement
     add(entity: T, position = 'end'): void {
-      // Check if entity already exists in DOM using data-entity-id
       const entityId = entity.id || (entity as any).messageId || 'unknown';
-      const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
-      if (existingElement) {
-        // Replace existing entity with updated one
-        const entityIndex = entities.findIndex(e => e.id === entity.id);
-        if (entityIndex !== -1) {
-          entities[entityIndex] = entity; // Update in entities array
 
-          // Re-render the element with updated data
-          const renderContext: RenderContext<T> = {
-            index: entityIndex,
-            total: entities.length
-          };
+      // Check for duplicate using EntityManager
+      if (entityManager.has(entityId)) {
+        console.warn(`⚠️ EntityScroller: Duplicate entity blocked: ${entityId}`);
+        // Update existing entity
+        entityManager.update(entityId, entity);
+
+        // Update DOM element if it exists
+        const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
+        if (existingElement) {
+          const renderContext: RenderContext<T> = { index: 0, total: entityManager.count() };
           const newElement = render(entity, renderContext);
           newElement.setAttribute('data-entity-id', entityId);
           existingElement.replaceWith(newElement);
-
-          console.log(`🔧 EntityScroller: Replaced existing entity with ID: ${entity.id}`);
-          return;
         }
+
+        console.log(`🔧 EntityScroller: Updated existing entity with ID: ${entityId}`);
+        return;
       }
 
-      // Add new entity to entities array and DOM
-      entities.push(entity);
-      addEntitiesToDOM([entity], position);
-      console.log(`🔧 EntityScroller: Added new entity with ID: ${entity.id}`);
+      // SECOND: Check DOM for orphaned elements (shouldn't happen but defensive)
+      const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
+      if (existingElement) {
+        console.warn(`⚠️ EntityScroller: Found orphaned DOM element for ID: ${entityId}, removing it`);
+        existingElement.remove();
+      }
+
+      // Add genuinely new entity - EntityManager handles deduplication
+      if (entityManager.add(entity)) {
+        addEntitiesToDOM([entity], 'end'); // Always append
+        console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() added new entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
+      }
     },
 
     // Smart real-time updates with intrinsic direction awareness and replacement
     addWithAutoScroll(entity: T, position?: 'start' | 'end'): void {
-      // Check if entity already exists in DOM using data-entity-id
       const entityId = entity.id || (entity as any).messageId || 'unknown';
-      const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
-      if (existingElement) {
-        // Replace existing entity with updated one
-        const entityIndex = entities.findIndex(e => e.id === entity.id);
-        if (entityIndex !== -1) {
-          entities[entityIndex] = entity; // Update in entities array
 
-          // Re-render the element with updated data
-          const renderContext: RenderContext<T> = {
-            index: entityIndex,
-            total: entities.length
-          };
+      // Check for duplicate using EntityManager
+      if (entityManager.has(entityId)) {
+        console.warn(`⚠️ EntityScroller: Duplicate entity blocked: ${entityId}`);
+        // Update existing entity - no auto-scroll for updates
+        entityManager.update(entityId, entity);
+
+        // Update DOM element if it exists
+        const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
+        if (existingElement) {
+          const renderContext: RenderContext<T> = { index: 0, total: entityManager.count() };
           const newElement = render(entity, renderContext);
           newElement.setAttribute('data-entity-id', entityId);
           existingElement.replaceWith(newElement);
-
-          console.log(`🔧 EntityScroller: Replaced existing entity with ID: ${entity.id}`);
-          return; // Don't auto-scroll for replacements
         }
+
+        console.log(`🔧 EntityScroller: Updated existing entity with ID: ${entityId}`);
+        return;
+      }
+
+      // SECOND: Check DOM for orphaned elements (shouldn't happen but defensive)
+      const existingElement = container.querySelector(`[data-entity-id="${entityId}"]`);
+      if (existingElement) {
+        console.warn(`⚠️ EntityScroller: Found orphaned DOM element for ID: ${entityId}, removing it`);
+        existingElement.remove();
       }
 
       // Determine where "new content" naturally goes based on direction
       const newContentPosition = config.direction === 'newest-first' ? 'end' : 'start';
       const actualPosition = position || newContentPosition;
 
-      // Add new entity to entities array and DOM
-      entities.push(entity);
-      addEntitiesToDOM([entity], actualPosition);
+      // Add genuinely new entity - EntityManager handles deduplication
+      if (entityManager.add(entity)) {
+        addEntitiesToDOM([entity], 'end'); // Always append
+        console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() added new entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
 
-      // Auto-scroll only if this is truly new content being added to the natural position
-      if (actualPosition === newContentPosition) {
+        // Auto-scroll for new content (simplified since we always append)
         requestAnimationFrame(() => {
           smartScrollToNewContent();
         });
@@ -322,17 +329,16 @@ export function createScroller<T extends BaseEntity>(
     },
 
     update(id: string, entity: T): boolean {
-      const index = entities.findIndex(e => e.id === id);
-      if (index === -1) return false;
-
-      entities[index] = entity;
+      if (!entityManager.update(id, entity)) {
+        return false;
+      }
 
       const element = container.querySelector(`[data-entity-id="${id}"]`) as HTMLElement;
       if (element) {
         const renderContext: RenderContext<T> = {
           ...context,
-          index,
-          total: entities.length
+          index: 0, // Index not critical for display since CSS handles layout
+          total: entityManager.count()
         };
 
         const newElement = render(entity, renderContext);
@@ -344,17 +350,16 @@ export function createScroller<T extends BaseEntity>(
     },
 
     remove(id: string): boolean {
-      const index = entities.findIndex(e => e.id === id);
-      if (index === -1) return false;
+      if (!entityManager.remove(id)) {
+        return false;
+      }
 
-      entities.splice(index, 1);
       container.querySelector(`[data-entity-id="${id}"]`)?.remove();
-
       return true;
     },
 
     // State queries - clean getters
-    entities: () => entities,
+    entities: () => entityManager.getAll(),
     loading: () => isLoading,
     hasMore: () => hasMoreItems,
 
@@ -362,7 +367,7 @@ export function createScroller<T extends BaseEntity>(
     destroy(): void {
       observer?.disconnect();
       sentinel?.remove();
-      entities = [];
+      entityManager.clear();
     }
   };
 

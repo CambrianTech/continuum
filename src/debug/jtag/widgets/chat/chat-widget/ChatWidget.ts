@@ -184,7 +184,6 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
   protected getEntityCount(): number {
     // Return count of loaded messages (EntityScroller approach)
     const count = this.chatScroller?.entities().length || 0;
-    console.log(`🔧 CLAUDE-COUNT-DEBUG: ChatWidget.getEntityCount() returning ${count}, chatScroller has ${this.chatScroller?.entities().length} entities`);
     return count;
   }
 
@@ -536,12 +535,29 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
   }
 
 
+  // Circuit breaker to prevent infinite loops
+  private messageProcessingCount = 0;
+  private lastMessageProcessingReset = 0;
+
   /**
    * Handle incoming chat messages for this room - STRICT TYPING
    * Supports both unified data events (ChatMessageEntity) and legacy chat events (ChatMessageEventData)
    */
   private async onMessageReceived(eventData: ChatMessageEntity | ChatMessageEventData): Promise<void> {
-    console.log(`📨 ChatWidget: Received message for room ${this.roomId}:`, eventData);
+    // Circuit breaker: prevent infinite loops
+    const now = Date.now();
+    if (now - this.lastMessageProcessingReset > 5000) {
+      this.messageProcessingCount = 0;
+      this.lastMessageProcessingReset = now;
+    }
+
+    this.messageProcessingCount++;
+    if (this.messageProcessingCount > 10) {
+      console.error(`🚨 CIRCUIT BREAKER: ChatWidget prevented infinite loop. Dropping message.`);
+      return;
+    }
+
+    console.log(`📨 ChatWidget: Received message for room ${this.roomId} (count: ${this.messageProcessingCount}):`, eventData);
 
     // Handle both unified data events (ChatMessageEntity) and legacy chat events (ChatMessageEventData)
     const chatMessage = 'entity' in eventData
