@@ -25,6 +25,35 @@
   gap: var(--spacing-sm, 8px);
 }
 
+/* Entity List Header - standardized styling */
+.entity-list-header {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--widget-header-background, var(--surface-secondary, rgba(10, 15, 20, 0.9)));
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: var(--text-primary, rgba(255, 255, 255, 0.95));
+  font-size: 16px;
+}
+
+.header-title {
+  color: var(--content-primary, var(--text-primary, rgba(255, 255, 255, 0.95)));
+  font-weight: 600;
+  font-size: 0.85em;
+  text-transform: capitalize;
+}
+
+.list-count {
+  background: var(--badge-background, var(--accent-color, #00d4ff));
+  color: var(--badge-text, var(--bg-primary, #000));
+  padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
+  border-radius: var(--radius-md, 8px);
+  font-size: var(--font-xs, 12px);
+  font-weight: 500;
+}
+
 .messages-container {
   flex: 1;
   overflow-y: auto;

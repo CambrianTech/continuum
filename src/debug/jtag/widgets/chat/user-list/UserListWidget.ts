@@ -3,7 +3,7 @@
  * Properly located in chat directory structure
  */
 
-import { ChatWidgetBase } from '../shared/ChatWidgetBase';
+import { EntityListWidget } from '../../shared/EntityListWidget';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { Commands } from '../../../system/core/client/shared/Commands';
@@ -11,14 +11,13 @@ import { Events } from '../../../system/core/client/shared/Events';
 import { createEntityCrudHandler } from '../../../commands/data/shared/DataEventUtils';
 import { createScroller, SCROLLER_PRESETS, type RenderFn, type LoadFn, type EntityScroller } from '../../shared/EntityScroller';
 
-export class UserListWidget extends ChatWidgetBase {
+export class UserListWidget extends EntityListWidget<UserEntity> {
   private userScroller?: EntityScroller<UserEntity>;
   private unsubscribeUserEvents?: () => void;
 
   constructor() {
     super({
       widgetName: 'UserListWidget',
-      // No template specified - use renderTemplate() method instead
       styles: 'user-list.css',
       enableAI: false,
       enableDatabase: true,
@@ -123,7 +122,7 @@ export class UserListWidget extends ChatWidgetBase {
     console.log(`✅ UserListWidget: Initialized EntityScroller with automatic deduplication`);
 
     // Update count after initial load
-    this.updateUserCount();
+    this.updateEntityCount();
   }
 
   /**
@@ -143,17 +142,17 @@ export class UserListWidget extends ChatWidgetBase {
           add: (user: UserEntity) => {
             console.log(`🔥 CRUD-CREATE: Adding user ${user.id}`, user);
             this.userScroller?.add(user);
-            this.updateUserCount();
+            this.updateEntityCount();
           },
           update: (id: string, user: UserEntity) => {
             console.log(`🔥 CRUD-UPDATE: Updating user ${id}`, user);
             this.userScroller?.update(id, user);
-            this.updateUserCount(); // In case display name affects count display
+            this.updateEntityCount(); // In case display name affects count display
           },
           remove: (id: string) => {
             console.log(`🔥 CRUD-DELETE: Removing user ${id}`);
             this.userScroller?.remove(id);
-            this.updateUserCount();
+            this.updateEntityCount();
           }
         }
       );
@@ -167,6 +166,14 @@ export class UserListWidget extends ChatWidgetBase {
   }
 
 
+  protected getEntityCount(): number {
+    return this.userScroller?.entities().length || 0;
+  }
+
+  protected getEntityTitle(entity?: UserEntity): string {
+    return 'Users & Agents';
+  }
+
   protected async onWidgetCleanup(): Promise<void> {
     // Clean up event subscriptions
     this.unsubscribeUserEvents?.();
@@ -179,30 +186,14 @@ export class UserListWidget extends ChatWidgetBase {
 
   protected renderTemplate(): string {
     return `
-      <!-- User List Widget - Sidebar navigation for users and agents -->
-      <div class="user-list-container">
-        <div class="user-list-header">
-          <span class="header-title">Users & Agents</span>
-          <span class="user-count">0</span>
-        </div>
+      <div class="entity-list-container">
+        ${this.renderHeader()}
 
-        <!-- EntityScroller will manage this container -->
-        <div class="user-list">
-          <!-- Users will be added here by EntityScroller -->
+        <div class="entity-list-body user-list">
+          <!-- EntityScroller will populate this container -->
         </div>
       </div>
     `;
   }
 
-  /**
-   * Update the user count display in the header
-   */
-  private updateUserCount(): void {
-    const userCountElement = this.shadowRoot.querySelector('.user-count') as HTMLElement;
-    if (userCountElement && this.userScroller) {
-      const count = this.userScroller.entities().length;
-      userCountElement.textContent = count.toString();
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Updated user count to ${count}`);
-    }
-  }
 }

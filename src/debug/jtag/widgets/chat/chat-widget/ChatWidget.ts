@@ -12,7 +12,7 @@ import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatfor
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import { ChatWidgetBase } from '../shared/ChatWidgetBase';
+import { EntityListWidget } from '../../shared/EntityListWidget';
 import { CHAT_EVENTS, CHAT_EVENT_TYPES } from '../shared/ChatEventConstants';
 import type {
   ChatMessageEventData,
@@ -93,7 +93,7 @@ interface ScrollState {
   readonly visibleUUIDs: string[];
 }
 
-export class ChatWidget extends ChatWidgetBase {
+export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
   private messages: ChatMessageEntity[] = [];
   private currentRoomEntity?: RoomEntity;
   private messageInput?: HTMLInputElement;
@@ -114,7 +114,6 @@ export class ChatWidget extends ChatWidgetBase {
   constructor(roomId: UUID = DEFAULT_ROOMS.GENERAL as UUID) {
     super({
       widgetName: 'ChatWidget',
-      template: 'chat-widget.html',
       styles: 'chat-widget.css',
       enableAI: true,
       enableDatabase: true,
@@ -180,6 +179,14 @@ export class ChatWidget extends ChatWidgetBase {
 
     const messageCount = this.chatScroller?.entities().length || this.messages.length;
     console.log(`✅ ChatWidget: Initialized for room "${this.roomId}" with ${messageCount} messages`);
+  }
+
+  protected getEntityCount(): number {
+    return this.chatScroller?.entities().length || this.messages.length;
+  }
+
+  protected getEntityTitle(entity?: ChatMessageEntity): string {
+    return this.currentRoomEntity?.name || 'Chat';
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -327,6 +334,9 @@ export class ChatWidget extends ChatWidgetBase {
           this.chatScroller.load().then(() => {
             this.messages = this.chatScroller!.entities() as ChatMessageEntity[];
             console.log(`✅ EntityScroller: Loaded ${this.messages.length} messages`);
+
+            // Update entity count in header
+            this.updateEntityCount();
 
             // CRITICAL FIX: Scroll to bottom AFTER messages are loaded
             // This fixes the "starts scrolled to top" issue
@@ -550,6 +560,9 @@ export class ChatWidget extends ChatWidgetBase {
         await this.renderWidget(); // Re-render with new message
         this.smartScrollToBottom(); // Keep fallback behavior for now
       }
+
+      // Update message count in header after adding new message
+      this.updateEntityCount();
 
       // Real-time message added successfully using domain object
     }
@@ -852,11 +865,19 @@ export class ChatWidget extends ChatWidgetBase {
     }
   }
 
-  protected override getReplacements(): Record<string, string> {
-      return {
-          '<!-- ROOM_NAME -->': this.getRoomDisplayName(),
-          '<!-- Dynamic messages rendered here -->': this.renderMessages()
-      };
+  protected renderTemplate(): string {
+    return `
+      ${this.renderHeader()}
+
+      <div class="messages-container" id="messages">
+        ${this.renderMessages()}
+      </div>
+
+      <div class="input-container">
+        <input type="text" class="message-input" id="messageInput" placeholder="Type a message...">
+        <button class="send-button" id="sendButton">Send</button>
+      </div>
+    `;
   }
 
   public async sendMessage(): Promise<void> {
