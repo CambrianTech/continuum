@@ -157,7 +157,8 @@ export class RoomListWidget extends ChatWidgetBase {
         console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.updateEntity() for room updates`);
 
         // EntityScroller updates the room in place
-        this.roomScroller?.update(roomEntity.id, roomEntity);
+        const updateResult = this.roomScroller?.update(roomEntity.id, roomEntity);
+        console.log(`🔧 CLAUDE-FIX-${Date.now()}: EntityScroller.update() result: ${updateResult} for room ${roomEntity.id}`);
 
         // Update count if needed (though should remain same for updates)
         this.updateRoomCount();
@@ -165,8 +166,20 @@ export class RoomListWidget extends ChatWidgetBase {
 
       console.log(`🎧 RoomListWidget: Subscribed to data:${RoomEntity.collection}:updated events via Events.subscribe()`);
 
-      // TODO: Add delete events
-      // Events.subscribe(getDataEventName(RoomEntity.collection, 'deleted'), (room) => this.roomScroller?.remove(room.id));
+      // Subscribe to data:Room:deleted events using static Events interface
+      const deleteEventName = getDataEventName(RoomEntity.collection, 'deleted');
+      Events.subscribe<RoomEntity>(deleteEventName, (roomEntity: RoomEntity) => {
+        console.log(`🔥 SERVER-EVENT-RECEIVED: ${deleteEventName}`, roomEntity);
+        console.log(`🔧 CLAUDE-FIX-${Date.now()}: Using EntityScroller.remove() for room deletion`);
+
+        // EntityScroller removes the room from UI
+        this.roomScroller?.remove(roomEntity.id);
+
+        // Update count after deletion
+        this.updateRoomCount();
+      });
+
+      console.log(`🎧 RoomListWidget: Subscribed to data:${RoomEntity.collection}:deleted events via Events.subscribe()`);
     } catch (error) {
       console.error('❌ RoomListWidget: Failed to set up room event subscriptions:', error);
     }
