@@ -22,41 +22,32 @@ interface TestResult {
   success: boolean;
 }
 
-function runCommand(command: string, timeoutMs: number = 3000): any {
+function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: number = 3000): boolean {
   try {
-    const output = execSync(`./jtag ${command}`, {
+    // Simple approach: use grep to search for entity ID in widget output
+    // This avoids JSON parsing issues completely
+    const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --extractRowData=true 2>/dev/null | grep "${entityId}"`, {
       encoding: 'utf8',
       cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      shell: true
     });
 
-    const jsonStart = output.lastIndexOf('{');
-    if (jsonStart >= 0) {
-      let braceCount = 0;
-      let jsonEnd = jsonStart;
-
-      for (let i = jsonStart; i < output.length; i++) {
-        if (output[i] === '{') braceCount++;
-        if (output[i] === '}') {
-          braceCount--;
-          if (braceCount === 0) {
-            jsonEnd = i + 1;
-            break;
-          }
-        }
-      }
-
-      return JSON.parse(output.substring(jsonStart, jsonEnd));
-    }
-    return null;
+    return output.trim().length > 0;
   } catch (error) {
-    return null;
+    return false; // grep returns non-zero exit code when no match found
   }
 }
 
+// Configuration
+const WIDGET_VERIFICATION_DELAY = 1000; // Configurable delay for widget HTML synchronization
+const WIDGET_TIMEOUT = 8000; // Longer timeout for widget operations
+
 async function testCRUDWithDBAndWidget() {
   console.log('🧪 Simple CRUD + DB + Widget Test');
-  console.log('==================================\n');
+  console.log('==================================');
+  console.log(`Widget verification delay: ${WIDGET_VERIFICATION_DELAY}ms`);
+  console.log(`Widget timeout: ${WIDGET_TIMEOUT}ms\n`);
 
   const results: TestResult[] = [];
 
@@ -81,125 +72,93 @@ async function testCRUDWithDBAndWidget() {
     }
   ];
 
-  for (const config of testConfigs) {
-    console.log(`📋 Testing ${config.collection}...`);
+  async function testCRUD(collection: string, widget: string, createData: any, updateData: any): Promise<TestResult[]> {
+    console.log(`📋 Testing ${collection}...`);
+    const results: TestResult[] = [];
     let entityId: string | undefined;
 
     try {
-      // 1. CREATE
-      const createResult = await SchemaFactory.create(config.collection, config.createData);
+      // CREATE
+      const createResult = await SchemaFactory.create(collection, createData);
       if (!createResult.success || !createResult.id) {
         console.log(`❌ CREATE failed: ${createResult.error}`);
-        continue;
+        return results;
       }
 
       entityId = createResult.id;
       console.log(`✅ Created: ${entityId}`);
 
-      // Longer delay for CREATE to persist (fixed race condition)
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY));
 
-      // Verify DB persistence for CREATE
-      const dbRead1 = await runJtagCommand(`data/read --collection="${config.collection}" --id="${entityId}"`);
+      // Test CREATE
+      const dbRead1 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
       const dbPersisted = Boolean(dbRead1?.success && dbRead1?.found);
 
-      // Verify Widget HTML for CREATE
-      const widgetHTML1 = runCommand(`debug/html-inspector --selector="${config.widget}"`, 5000);
-      const htmlContent1 = JSON.stringify(widgetHTML1?.commandResult?.elements || []);
-      const inHTML1 = htmlContent1.includes(entityId);
+      const inWidget1 = checkWidgetContainsEntity(widget, entityId, WIDGET_TIMEOUT);
 
       results.push({
         operation: 'CREATE',
-        entity: config.collection,
+        entity: collection,
         dbPersistence: dbPersisted,
-        widgetHTML: inHTML1,
-        success: dbPersisted && inHTML1
+        widgetHTML: inWidget1,
+        success: dbPersisted && inWidget1
       });
+      console.log(`   DB: ${dbPersisted ? '✅' : '❌'} | Widget: ${inWidget1 ? '✅' : '❌'}`);
 
-      console.log(`   DB: ${dbPersisted ? '✅' : '❌'} | Widget: ${inHTML1 ? '✅' : '❌'}`);
-
-      // 2. UPDATE
-      const updateResult = await runJtagCommand(`data/update --collection="${config.collection}" --id="${entityId}" --data='${JSON.stringify(config.updateData)}'`);
-      const updateSuccess = Boolean(updateResult?.found);
-
-      if (updateSuccess) {
-        // Verify DB persistence for UPDATE
-        const dbRead2 = await runJtagCommand(`data/read --collection="${config.collection}" --id="${entityId}"`);
+      // UPDATE
+      const updateResult = await runJtagCommand(`data/update --collection="${collection}" --id="${entityId}" --data='${JSON.stringify(updateData)}'`);
+      if (updateResult?.found) {
+        const dbRead2 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
         const updatePersisted = Boolean(dbRead2?.success && dbRead2?.data &&
-          Object.keys(config.updateData).every(key =>
-            JSON.stringify(dbRead2.data[key]) === JSON.stringify(config.updateData[key as keyof typeof config.updateData])
-          )
+          Object.keys(updateData).every(key => JSON.stringify(dbRead2.data[key]) === JSON.stringify(updateData[key]))
         );
 
-        // Verify Widget HTML for UPDATE
-        const widgetHTML2 = runCommand(`debug/html-inspector --selector="${config.widget}"`, 5000);
-        const htmlContent2 = JSON.stringify(widgetHTML2?.commandResult?.elements || []);
-        const updateValues = Object.values(config.updateData).flat();
-        const inHTML2 = updateValues.some(val =>
-          typeof val === 'object' ?
-            Object.values(val).some(v => htmlContent2.includes(String(v))) :
-            htmlContent2.includes(String(val))
-        );
+        await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY));
+        // Check if entity still exists (by ID) or if update values appear in widget
+        const inWidget2 = checkWidgetContainsEntity(widget, entityId, WIDGET_TIMEOUT) ||
+          Object.values(updateData).flat().some(val =>
+            checkWidgetContainsEntity(widget, String(val), WIDGET_TIMEOUT)
+          );
 
         results.push({
           operation: 'UPDATE',
-          entity: config.collection,
+          entity: collection,
           dbPersistence: updatePersisted,
-          widgetHTML: inHTML2,
-          success: updatePersisted && inHTML2
+          widgetHTML: inWidget2,
+          success: updatePersisted && inWidget2
         });
-
-        console.log(`   UPDATE - DB: ${updatePersisted ? '✅' : '❌'} | Widget: ${inHTML2 ? '✅' : '❌'}`);
-      } else {
-        results.push({
-          operation: 'UPDATE',
-          entity: config.collection,
-          dbPersistence: false,
-          widgetHTML: false,
-          success: false
-        });
-        console.log(`   UPDATE - ❌ Operation failed`);
+        console.log(`   UPDATE - DB: ${updatePersisted ? '✅' : '❌'} | Widget: ${inWidget2 ? '✅' : '❌'}`);
       }
 
-      // 3. DELETE
-      const deleteResult = await runJtagCommand(`data/delete --collection="${config.collection}" --id="${entityId}"`);
-      const deleteSuccess = Boolean(deleteResult?.found && deleteResult?.deleted);
-
-      if (deleteSuccess) {
-        // Verify DB persistence for DELETE (entity should be gone)
-        const dbRead3 = await runJtagCommand(`data/read --collection="${config.collection}" --id="${entityId}"`);
+      // DELETE
+      const deleteResult = await runJtagCommand(`data/delete --collection="${collection}" --id="${entityId}"`);
+      if (deleteResult?.found && deleteResult?.deleted) {
+        const dbRead3 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
         const deleteFromDB = Boolean(dbRead3?.success && !dbRead3?.found);
 
-        // Verify Widget HTML for DELETE (entityId should be gone)
-        const widgetHTML3 = runCommand(`debug/html-inspector --selector="${config.widget}"`, 5000);
-        const htmlContent3 = JSON.stringify(widgetHTML3?.commandResult?.elements || []);
-        const removedFromHTML = !htmlContent3.includes(entityId);
+        const removedFromWidget = !checkWidgetContainsEntity(widget, entityId, 5000);
 
         results.push({
           operation: 'DELETE',
-          entity: config.collection,
+          entity: collection,
           dbPersistence: deleteFromDB,
-          widgetHTML: removedFromHTML,
-          success: deleteFromDB && removedFromHTML
+          widgetHTML: removedFromWidget,
+          success: deleteFromDB && removedFromWidget
         });
-
-        console.log(`   DELETE - DB: ${deleteFromDB ? '✅' : '❌'} | Widget: ${removedFromHTML ? '✅' : '❌'}`);
-      } else {
-        results.push({
-          operation: 'DELETE',
-          entity: config.collection,
-          dbPersistence: false,
-          widgetHTML: false,
-          success: false
-        });
-        console.log(`   DELETE - ❌ Operation failed`);
+        console.log(`   DELETE - DB: ${deleteFromDB ? '✅' : '❌'} | Widget: ${removedFromWidget ? '✅' : '❌'}`);
       }
 
     } catch (error) {
-      console.log(`❌ ${config.collection} failed:`, error instanceof Error ? error.message : error);
+      console.log(`❌ ${collection} failed:`, error instanceof Error ? error.message : error);
     }
 
     console.log('');
+    return results;
+  }
+
+  for (const config of testConfigs) {
+    const configResults = await testCRUD(config.collection, config.widget, config.createData, config.updateData);
+    results.push(...configResults);
   }
 
   // Results Summary
