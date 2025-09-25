@@ -1509,10 +1509,21 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       };
     }
 
-    // Create updated record
+    // Create updated record - merge updated fields with existing data to preserve all fields including id
+    const mergedData = {
+      ...existingRecord.data,  // Start with existing complete entity
+      ...updatedData           // Apply partial updates
+    };
+
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Merging update data for ${collection}/${id}`, {
+      existingData: existingRecord.data,
+      updatedData,
+      mergedData
+    });
+
     const updatedRecord: DataRecord<T> = {
       ...existingRecord,
-      data: updatedData,
+      data: mergedData as T,   // Use merged data to preserve all fields including id
       metadata: {
         ...existingRecord.metadata,
         updatedAt: new Date().toISOString(),
@@ -1539,9 +1550,10 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
       // Execute delete operation in transaction for atomic consistency
       const deletedCount = await this.withTransaction(async () => {
-        // Delete from main data table
-        const dataSql = 'DELETE FROM _data WHERE collection = ? AND id = ?';
-        const dataResult = await this.runStatement(dataSql, [collection, id]);
+        // Delete from entity-specific table (not _data table)
+        const tableName = SqlNamingConverter.toTableName(collection);
+        const dataSql = `DELETE FROM ${tableName} WHERE id = ?`;
+        const dataResult = await this.runStatement(dataSql, [id]);
 
         return dataResult.changes;
       });

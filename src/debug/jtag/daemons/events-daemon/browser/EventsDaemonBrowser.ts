@@ -11,7 +11,7 @@ import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { DOMEventBridge } from '../../../system/events/browser/DOMEventBridge';
 import { Events } from '../../../system/core/client/shared/Events';
-import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 
 // EventBridge metadata structure for better type safety
 interface EventBridgeMetadata {
@@ -70,10 +70,11 @@ export class EventsDaemonBrowser extends EventsDaemon {
   }
 
   /**
-   * Emit a chat message event to trigger DOM events for widgets
+   * Emit a generic entity event to trigger DOM events for widgets
+   * Architecture-compliant: Works with any BaseEntity, not specific types
    */
-  public emitChatMessageEvent(message: ChatMessageEntity): void {
-    this.eventManager.events.emit('chat-message-sent', { message });
-    console.log(`💬 EventsDaemonBrowser: Emitted chat-message-sent event for message ${message.id}`);
+  public emitEntityEvent<T extends BaseEntity>(eventName: string, entity: T): void {
+    this.eventManager.events.emit(eventName, { entity });
+    console.log(`🔄 EventsDaemonBrowser: Emitted ${eventName} event for ${entity.collection}/${entity.id}`);
   }
 }

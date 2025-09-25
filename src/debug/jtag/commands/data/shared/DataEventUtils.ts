@@ -14,6 +14,24 @@ import { getDataEventName } from './DataEventConstants';
 export type CrudAction = 'created' | 'updated' | 'deleted';
 
 /**
+ * Command response structure for CRUD events
+ */
+interface CrudEventResponse<T> {
+  success: boolean;
+  data: {
+    collection: string;
+    id: string;
+    data: T;
+    metadata?: {
+      createdAt: string;
+      updatedAt: string;
+      version: number;
+    };
+  };
+  timestamp?: string;
+}
+
+/**
  * CRUD event handler with action type
  */
 export interface CrudEventHandler<T> {
@@ -42,11 +60,29 @@ export function subscribeToAllCrudEvents<T>(
 
   (['created', 'updated', 'deleted'] as CrudAction[]).forEach(action => {
     const eventName = getDataEventName(collection, action);
-    const unsubscribe = Events.subscribe<T>(eventName, (eventData: T) => {
+    const unsubscribe = Events.subscribe<CrudEventResponse<T>>(eventName, (eventData: CrudEventResponse<T>) => {
       console.log(`🔥 DataEventUtils: CRUD event received - ${collection}.${action}`, eventData);
 
       try {
-        handler(eventData, action);
+        // Extract actual entity data from command response structure
+        let entity: T;
+
+        if (eventData?.data) {
+          // Command response structure: { success: true, data: { collection, id, data, metadata } }
+          if (action === 'deleted') {
+            // For delete, create minimal entity with ID for removal
+            entity = { id: eventData.data.id } as T;
+          } else {
+            // For create/update, use the actual entity data
+            entity = { id: eventData.data.id, ...eventData.data.data } as T;
+          }
+        } else {
+          // Fallback: assume eventData is the entity directly (legacy support)
+          entity = eventData as unknown as T;
+        }
+
+        console.log(`🔧 DataEventUtils: Extracted entity for ${action}:`, entity);
+        handler(entity, action);
       } catch (error) {
         console.error(`❌ DataEventUtils: Error in CRUD handler for ${collection}.${action}:`, error);
       }

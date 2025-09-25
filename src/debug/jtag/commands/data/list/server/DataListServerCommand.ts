@@ -12,9 +12,6 @@ import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { UserEntity } from '../../../../system/data/entities/UserEntity';
-import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
-import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
 
 import type { StorageQuery, RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 
