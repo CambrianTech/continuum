@@ -902,10 +902,11 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         }
 
         // Put BaseEntity fields in metadata, others in data
-        if (['id', 'createdAt', 'updatedAt', 'version'].includes(fieldName)) {
-          // BaseEntity fields go to their proper locations
+        if (['createdAt', 'updatedAt', 'version'].includes(fieldName)) {
+          // BaseEntity metadata fields go to their proper locations
           continue; // We'll handle these separately
         } else {
+          // Include ALL entity fields (including id) in the data object
           entityData[fieldName] = value;
         }
       }

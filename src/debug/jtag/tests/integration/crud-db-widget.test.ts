@@ -114,11 +114,17 @@ async function testCRUDWithDBAndWidget() {
         );
 
         await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY));
-        // Check if entity still exists (by ID) or if update values appear in widget
-        const inWidget2 = checkWidgetContainsEntity(widget, entityId, WIDGET_TIMEOUT) ||
-          Object.values(updateData).flat().some(val =>
-            checkWidgetContainsEntity(widget, String(val), WIDGET_TIMEOUT)
-          );
+        // For UPDATE: Look for the actual changed values in the widget, not just entity ID
+        const updateValues = Object.values(updateData).flat();
+        const inWidget2 = updateValues.some(val => {
+          if (typeof val === 'object') {
+            // For nested objects like ChatMessage content, look for inner values
+            return Object.values(val).some(innerVal =>
+              checkWidgetContainsEntity(widget, String(innerVal), WIDGET_TIMEOUT)
+            );
+          }
+          return checkWidgetContainsEntity(widget, String(val), WIDGET_TIMEOUT);
+        });
 
         results.push({
           operation: 'UPDATE',
