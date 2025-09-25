@@ -18,14 +18,14 @@ import {
   EntityInstance,
   sleep
 } from '../test-utils/CRUDTestUtils';
-import { stringToUUID } from '../../system/core/types/CrossPlatformUUID';
+import { SchemaFactory } from '../test-utils/SchemaBasedFactory';
 
-// Test configurations for each Collection-Widget pair
+// Test configurations for each Collection-Widget pair (Schema-Driven)
 interface TestConfig {
   collection: string;
   widget: string;
-  testEntityData: Partial<EntityInstance>;
-  updateData: Partial<EntityInstance>;
+  createOverrides: Record<string, unknown>;
+  updateData: Record<string, unknown>;
   verifyField: string;
 }
 
@@ -33,88 +33,41 @@ const TEST_CONFIGS: TestConfig[] = [
   {
     collection: 'User',
     widget: 'user-list-widget',
-    testEntityData: {
-      id: stringToUUID('test-user-crud-001'),
-      displayName: 'Test User CRUD',
-      type: 'human',
-      status: 'online',
-      shortDescription: 'Test user for CRUD validation',
-      // NOTE: profile data removed - now in separate UserProfileEntity (relational architecture)
-      capabilities: {
-        canSendMessages: true,
-        canReceiveMessages: true,
-        canCreateRooms: true,
-        canInviteOthers: true,
-        canModerate: false,
-        autoResponds: false,
-        providesContext: false,
-        canTrain: false,
-        canAccessPersonas: false
-      },
-      preferences: {
-        theme: 'dark',
-        language: 'en',
-        timezone: 'UTC',
-        notifications: {
-          mentions: true,
-          directMessages: true,
-          roomUpdates: true
-        },
-        privacy: {
-          showOnlineStatus: true,
-          allowDirectMessages: true,
-          shareActivity: true
-        }
-      },
-      sessionsActive: [],
-      lastActiveAt: new Date().toISOString()
+    createOverrides: {
+      displayName: 'Schema CRUD Test User',
+      shortDescription: 'Test user created with schema validation'
     },
     updateData: {
-      displayName: 'Updated Test User',
-      shortDescription: 'Updated description'
+      displayName: 'Updated Schema Test User',
+      shortDescription: 'Updated with schema validation'
     },
     verifyField: 'displayName'
   },
   {
     collection: 'Room',
     widget: 'room-list-widget',
-    testEntityData: {
-      id: stringToUUID('test-room-crud-001'),
-      name: 'Test Room CRUD',
-      displayName: 'Test Room for CRUD',
-      description: 'Test room for CRUD validation',
-      type: 'public',
-      status: 'active',
-      ownerId: stringToUUID('Joel'),
-      members: [],
-      tags: []
+    createOverrides: {
+      name: 'Schema CRUD Test Room',
+      description: 'Test room created with schema validation'
     },
     updateData: {
-      description: 'Updated room description',
-      name: 'Updated Test Room'
+      name: 'Updated Schema Test Room',
+      description: 'Updated with schema validation'
     },
     verifyField: 'name'
   },
   {
     collection: 'ChatMessage',
     widget: 'chat-widget',
-    testEntityData: {
-      id: stringToUUID('test-message-crud-001'),
-      roomId: stringToUUID('General'),
-      senderId: stringToUUID('Joel'),
-      senderName: 'Joel',
+    createOverrides: {
       content: {
-        text: 'Test message for CRUD validation',
+        text: 'Schema CRUD Test Message',
         attachments: []
-      },
-      status: 'sent',
-      priority: 'normal',
-      timestamp: new Date(),
-      reactions: []
+      }
     },
     updateData: {
       content: {
-        text: 'Updated test message content',
+        text: 'Updated Schema Test Message',
         attachments: []
       }
     },
@@ -168,6 +121,7 @@ class CompleteCRUDEventChainTester {
   /**
    * Test complete CRUD chain for a single entity type
    * Generic: Works with any entity extending BaseEntity
+   * Uses SchemaBasedFactory for intelligent entity creation
    */
   private async testEntityCRUDChain(config: TestConfig): Promise<boolean> {
     const tester = new CRUDOperationTester(
@@ -182,20 +136,50 @@ class CompleteCRUDEventChainTester {
     const entityResults: TestResult[] = [];
 
     try {
-      // 1. TEST CREATE OPERATION CHAIN
-      console.log(`\n1️⃣ CREATE Chain: ${config.collection}`);
-      const createResults = await tester.testCreateOperation(config.testEntityData);
-      entityResults.push(...createResults);
+      // 1. CREATE ENTITY USING SCHEMA-BASED FACTORY
+      console.log(`\n🏗️ Creating ${config.collection} with SchemaFactory...`);
+      const factoryResult = await SchemaFactory.create(config.collection, config.createOverrides);
 
-      // Extract entity ID from create operation for subsequent tests
-      const createSuccess = createResults.find(r => r.step.includes('CREATE Operation'));
-      entityId = createSuccess?.details?.entityId as string;
-
-      if (!entityId) {
-        console.log(`❌ CREATE failed - cannot proceed with UPDATE/DELETE tests`);
+      if (!factoryResult.success || !factoryResult.id) {
+        console.log(`❌ SchemaFactory CREATE failed: ${factoryResult.error}`);
+        entityResults.push({
+          step: `${config.collection} SchemaFactory Creation`,
+          success: false,
+          error: factoryResult.error || 'Schema-based creation failed'
+        });
         this.allTestResults.push(...entityResults);
         return false;
       }
+
+      entityId = factoryResult.id;
+      console.log(`✅ SchemaFactory created ${config.collection}/${entityId}`);
+
+      // 1. TEST CREATE VERIFICATION CHAIN (entity already created via SchemaFactory)
+      console.log(`\n1️⃣ CREATE Verification Chain: ${config.collection}`);
+
+      // Verify the entity exists in database
+      const dbVerification = await this.dbVerifier.verifyEntityExists(config.collection, entityId);
+      entityResults.push({
+        step: `${config.collection} CREATE DB Persistence`,
+        success: dbVerification.exists,
+        details: { exists: dbVerification.exists, entityId }
+      });
+
+      // Verify event emission for creation
+      const createEventResult = await this.eventVerifier.verifyEventEmitted(config.collection, 'created', entityId);
+      entityResults.push({
+        step: `${config.collection} CREATE Event`,
+        success: createEventResult.eventEmitted,
+        details: createEventResult.eventData
+      });
+
+      // Verify UI update
+      const createUIResult = await this.uiVerifier.verifyEntityInWidget(config.widget, entityId);
+      entityResults.push({
+        step: `${config.widget} CREATE UI Update`,
+        success: createUIResult.inData,
+        details: createUIResult
+      });
 
       // Small delay to allow event propagation
       await sleep(300);
@@ -220,6 +204,16 @@ class CompleteCRUDEventChainTester {
         success: false,
         error: error instanceof Error ? error.message : String(error)
       });
+    } finally {
+      // Cleanup: Delete the test entity if it still exists
+      if (entityId) {
+        try {
+          await SchemaFactory.delete(config.collection, entityId);
+          console.log(`🧹 Cleaned up test entity ${config.collection}/${entityId}`);
+        } catch (cleanupError) {
+          console.log(`⚠️ Cleanup failed for ${entityId}:`, cleanupError);
+        }
+      }
     }
 
     this.allTestResults.push(...entityResults);
@@ -289,30 +283,71 @@ class CompleteCRUDEventChainTester {
       'data:ChatMessage:created', 'data:ChatMessage:updated', 'data:ChatMessage:deleted'
     ];
 
-    const eventLogs = await runJtagCommand('debug/logs --filterPattern="data:" --tailLines=50');
-    const logEntries = eventLogs.logEntries as Array<{ message?: string }> ?? [];
-    const foundPatterns: string[] = [];
+    // Use timeout-protected execution to prevent hanging
+    try {
+      const output = execSync(`./jtag debug/logs --filterPattern="data:" --tailLines=50`, {
+        encoding: 'utf8',
+        cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+        timeout: 10000 // 10 second timeout for comprehensive log search
+      });
 
-    for (const pattern of expectedPatterns) {
-      const patternFound = logEntries.some(entry =>
-        entry.message && entry.message.includes(pattern)
-      );
-      if (patternFound) {
-        foundPatterns.push(pattern);
+      // Parse JSON with brace counting
+      const jsonStart = output.lastIndexOf('{');
+      if (jsonStart < 0) {
+        console.log('   ⚠️ Event pattern validation skipped (no JSON found)');
+        return {
+          step: 'Generic Event Pattern Validation',
+          success: false,
+          details: { error: 'No JSON found in debug/logs output' }
+        };
       }
+
+      let braceCount = 0;
+      let jsonEnd = jsonStart;
+      for (let i = jsonStart; i < output.length; i++) {
+        if (output[i] === '{') braceCount++;
+        if (output[i] === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            jsonEnd = i + 1;
+            break;
+          }
+        }
+      }
+
+      const eventLogs = JSON.parse(output.substring(jsonStart, jsonEnd));
+      const logEntries = eventLogs.logEntries as Array<{ message?: string }> ?? [];
+      const foundPatterns: string[] = [];
+
+      for (const pattern of expectedPatterns) {
+        const patternFound = logEntries.some(entry =>
+          entry.message && entry.message.includes(pattern)
+        );
+        if (patternFound) {
+          foundPatterns.push(pattern);
+        }
+      }
+
+      const allPatternsFound = expectedPatterns.every(pattern => foundPatterns.includes(pattern));
+
+      return {
+        step: 'Generic Event Pattern Validation',
+        success: allPatternsFound,
+        details: {
+          expectedPatterns: expectedPatterns.length,
+          foundPatterns: foundPatterns.length,
+          missingPatterns: expectedPatterns.filter(p => !foundPatterns.includes(p))
+        }
+      };
+
+    } catch (error) {
+      console.log('   ⚠️ Event pattern validation skipped (timeout)');
+      return {
+        step: 'Generic Event Pattern Validation',
+        success: false,
+        details: { error: 'Timeout during event pattern validation' }
+      };
     }
-
-    const allPatternsFound = expectedPatterns.every(pattern => foundPatterns.includes(pattern));
-
-    return {
-      step: 'Generic Event Pattern Validation',
-      success: allPatternsFound,
-      details: {
-        expectedPatterns: expectedPatterns.length,
-        foundPatterns: foundPatterns.length,
-        missingPatterns: expectedPatterns.filter(p => !foundPatterns.includes(p))
-      }
-    };
   }
 
   /**
@@ -351,10 +386,35 @@ class CompleteCRUDEventChainTester {
 
     for (const { widget } of widgetTests) {
       try {
-        const widgetState = await runJtagCommand(`debug/widget-state --widgetSelector="${widget}"`);
-        // Widget should respond with some state, even if empty
-        syncResults[widget] = Boolean(widgetState.success !== false && widgetState.commandResult);
+        // Use timeout-protected execution to prevent hanging
+        const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}"`, {
+          encoding: 'utf8',
+          cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+          timeout: 5000 // 5 second timeout
+        });
+
+        const jsonStart = output.lastIndexOf('{');
+        if (jsonStart >= 0) {
+          let braceCount = 0;
+          let jsonEnd = jsonStart;
+          for (let i = jsonStart; i < output.length; i++) {
+            if (output[i] === '{') braceCount++;
+            if (output[i] === '}') {
+              braceCount--;
+              if (braceCount === 0) {
+                jsonEnd = i + 1;
+                break;
+              }
+            }
+          }
+
+          const widgetState = JSON.parse(output.substring(jsonStart, jsonEnd));
+          syncResults[widget] = Boolean(widgetState.success !== false && widgetState.commandResult);
+        } else {
+          syncResults[widget] = false;
+        }
       } catch {
+        console.log(`   ⚠️ Widget synchronization validation skipped (timeout): ${widget}`);
         syncResults[widget] = false;
       }
     }

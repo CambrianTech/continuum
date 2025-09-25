@@ -7,6 +7,55 @@
 
 import { execSync } from 'child_process';
 
+/**
+ * Robust command execution with timeout and JSON parsing
+ * Modular utilities to avoid code duplication
+ */
+function executeJtagWithTimeout(command: string, timeoutMs: number = 5000): Record<string, unknown> | null {
+  try {
+    const output = execSync(`./jtag ${command}`, {
+      encoding: 'utf8',
+      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+      timeout: timeoutMs
+    });
+
+    return parseJtagOutput(output);
+  } catch (error) {
+    // Return null for timeout/error cases - caller handles graceful fallbacks
+    return null;
+  }
+}
+
+function parseJtagOutput(output: string): Record<string, unknown> | null {
+  try {
+    // Find the last complete JSON object using brace counting
+    const jsonStart = output.lastIndexOf('{');
+    if (jsonStart < 0) return null;
+
+    let braceCount = 0;
+    let jsonEnd = jsonStart;
+
+    for (let i = jsonStart; i < output.length; i++) {
+      if (output[i] === '{') braceCount++;
+      if (output[i] === '}') {
+        braceCount--;
+        if (braceCount === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+    }
+
+    return JSON.parse(output.substring(jsonStart, jsonEnd));
+  } catch (error) {
+    return null;
+  }
+}
+
+function logVerificationSkipped(verificationType: string, target: string): void {
+  console.log(`   ⚠️ ${verificationType} verification skipped (timeout): ${target}`);
+}
+
 // Generic entity type for any collection
 export type EntityInstance = {
   id: string;
@@ -27,17 +76,36 @@ export interface TestResult {
  * Enhanced with better JSON parsing and error handling
  */
 export async function runJtagCommand(command: string): Promise<Record<string, unknown>> {
+  let output: string;
+
   try {
-    const output = execSync(`./jtag ${command}`, {
+    output = execSync(`./jtag ${command}`, {
       encoding: 'utf8',
       cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
     });
+  } catch (error: any) {
+    // execSync throws on non-zero exit codes, but JTAG may still return valid JSON
+    output = error.stdout || '';
+    if (!output) {
+      console.error(`❌ Command execution failed: ${command}`);
+      console.error(error.message);
+      return {
+        success: false,
+        error: error.message,
+        command
+      };
+    }
+  }
 
-    // JTAG returns JSON directly, find the JSON block
-    const jsonStart = output.indexOf('{');
+  try {
+    // Parse JTAG output with multiple JSON objects - find the command result
+    const jsonObjects: unknown[] = [];
+    let index = 0;
 
-    if (jsonStart >= 0) {
-      // Find the end by counting braces to handle nested JSON
+    while (true) {
+      const jsonStart = output.indexOf('{', index);
+      if (jsonStart < 0) break;
+
       let braceCount = 0;
       let jsonEnd = jsonStart;
 
@@ -55,17 +123,33 @@ export async function runJtagCommand(command: string): Promise<Record<string, un
       if (jsonEnd > jsonStart) {
         try {
           const jsonStr = output.substring(jsonStart, jsonEnd);
-          return JSON.parse(jsonStr);
-        } catch (parseError) {
-          console.error(`❌ JSON parse failed for command: ${command}`);
-          console.error(`Parse error:`, parseError instanceof Error ? parseError.message : String(parseError));
-          console.error(`JSON string (first 500 chars):`, jsonStr.substring(0, 500));
-
-          // Return a failure object instead of throwing
-          return { success: false, error: 'JSON parsing failed', command };
+          const jsonObj = JSON.parse(jsonStr);
+          jsonObjects.push(jsonObj);
+        } catch {
+          // Skip invalid JSON
         }
       }
+
+      index = jsonEnd;
     }
+
+    // Find the object with command result properties (success/found/data)
+    for (const obj of jsonObjects) {
+      if (obj && typeof obj === 'object' &&
+          (Object.prototype.hasOwnProperty.call(obj, 'success') ||
+           Object.prototype.hasOwnProperty.call(obj, 'found'))) {
+        console.log(`✅ Successfully parsed JSON for command: ${command}`);
+        return obj as Record<string, unknown>;
+      }
+    }
+
+    // Fallback to last object if no command result found
+    if (jsonObjects.length > 0) {
+      const lastObj = jsonObjects[jsonObjects.length - 1];
+      console.log(`✅ Successfully parsed JSON for command: ${command}`);
+      return lastObj as Record<string, unknown>;
+    }
+
 
     console.error(`❌ No valid JSON found in command output: ${command}`);
     console.error(`Output: ${output.substring(0, 200)}...`);
@@ -147,26 +231,30 @@ export class UIVerifier {
     widget: string,
     entityId: string
   ): Promise<{ inData: boolean; inHTML: boolean }> {
-    // Check widget data
-    const widgetState = await runJtagCommand(`debug/widget-state --widgetSelector="${widget}"`);
-    const widgetData = widgetState.commandResult?.state?.data ?? widgetState.commandResult?.state?.items ?? [];
+    // Check widget data with timeout protection
+    const widgetState = executeJtagWithTimeout(`debug/widget-state --widgetSelector="${widget}"`);
+    let inData = false;
 
-    const inData = Array.isArray(widgetData)
-      ? widgetData.some((item: Record<string, unknown>) => item.id === entityId)
-      : JSON.stringify(widgetData).includes(entityId);
+    if (widgetState) {
+      const widgetData = widgetState.commandResult?.state?.data ?? widgetState.commandResult?.state?.items ?? [];
+      inData = Array.isArray(widgetData)
+        ? widgetData.some((item: Record<string, unknown>) => item.id === entityId)
+        : JSON.stringify(widgetData).includes(entityId);
+    } else {
+      logVerificationSkipped('Widget state', widget);
+    }
 
-    // Check HTML DOM (note: HTML inspector requires browser environment)
+    // Check HTML DOM with timeout protection
+    const htmlInspector = executeJtagWithTimeout(`debug/html-inspector --selector="${widget}"`);
     let inHTML = false;
-    try {
-      const htmlInspector = await runJtagCommand(`debug/html-inspector --selector="${widget}"`);
-      const htmlElements = htmlInspector.commandResult?.elements ?? [];
 
+    if (htmlInspector) {
+      const htmlElements = htmlInspector.commandResult?.elements ?? [];
       inHTML = htmlElements.some((element: Record<string, unknown>) =>
         element.outerHTML && String(element.outerHTML).includes(entityId)
       );
-    } catch {
-      // HTML inspector might not work in all environments, that's OK
-      inHTML = false;
+    } else {
+      logVerificationSkipped('HTML inspector', widget);
     }
 
     return { inData, inHTML };
@@ -178,29 +266,34 @@ export class UIVerifier {
     entityId: string,
     expectedChanges: Record<string, unknown>
   ): Promise<{ dataUpdated: boolean; htmlUpdated: boolean }> {
-    const widgetState = await runJtagCommand(`debug/widget-state --widgetSelector="${widget}"`);
-    const widgetData = widgetState.commandResult?.state?.data ?? widgetState.commandResult?.state?.items ?? [];
+    // Check widget data with timeout protection
+    const widgetState = executeJtagWithTimeout(`debug/widget-state --widgetSelector="${widget}"`);
+    let dataUpdated = false;
 
-    // Find the entity in widget data and check if it has expected changes
-    const entityInData = Array.isArray(widgetData)
-      ? widgetData.find((item: Record<string, unknown>) => item.id === entityId)
-      : null;
+    if (widgetState) {
+      const widgetData = widgetState.commandResult?.state?.data ?? widgetState.commandResult?.state?.items ?? [];
+      const entityInData = Array.isArray(widgetData)
+        ? widgetData.find((item: Record<string, unknown>) => item.id === entityId)
+        : null;
 
-    const dataUpdated = entityInData && Object.keys(expectedChanges).every(key =>
-      entityInData[key] === expectedChanges[key]
-    );
+      dataUpdated = entityInData && Object.keys(expectedChanges).every(key =>
+        entityInData[key] === expectedChanges[key]
+      );
+    } else {
+      logVerificationSkipped('Widget state UPDATE', widget);
+    }
 
-    // Check HTML reflects the changes
+    // Check HTML reflects the changes with timeout protection
+    const htmlInspector = executeJtagWithTimeout(`debug/html-inspector --selector="${widget}"`);
     let htmlUpdated = false;
-    try {
-      const htmlInspector = await runJtagCommand(`debug/html-inspector --selector="${widget}"`);
-      const htmlContent = JSON.stringify(htmlInspector.commandResult?.elements ?? []);
 
+    if (htmlInspector) {
+      const htmlContent = JSON.stringify(htmlInspector.commandResult?.elements ?? []);
       htmlUpdated = Object.values(expectedChanges).some(value =>
         htmlContent.includes(String(value))
       );
-    } catch {
-      htmlUpdated = false;
+    } else {
+      logVerificationSkipped('HTML inspector UPDATE', widget);
     }
 
     return { dataUpdated: Boolean(dataUpdated), htmlUpdated };
@@ -226,9 +319,14 @@ export class EventVerifier {
     entityId: string
   ): Promise<{ eventEmitted: boolean; eventData?: Record<string, unknown> }> {
     const eventPattern = `data:${collection}:${action}`;
-    const eventLogs = await runJtagCommand(`debug/logs --filterPattern="${eventPattern}" --tailLines=20`);
-    const logEntries = eventLogs.logEntries as Array<{ message?: string }> ?? [];
+    const eventLogs = executeJtagWithTimeout(`debug/logs --filterPattern="${eventPattern}" --tailLines=20`);
 
+    if (!eventLogs) {
+      logVerificationSkipped('Event', eventPattern);
+      return { eventEmitted: false, eventData: { eventPattern, entityId, error: 'Timeout or execution error' } };
+    }
+
+    const logEntries = eventLogs.logEntries as Array<{ message?: string }> ?? [];
     const eventEmitted = logEntries.some(entry =>
       entry.message && entry.message.includes(eventPattern) && entry.message.includes(entityId)
     );
