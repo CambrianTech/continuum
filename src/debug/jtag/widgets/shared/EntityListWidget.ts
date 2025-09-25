@@ -22,6 +22,11 @@ export abstract class EntityListWidget<T extends BaseEntity> extends ChatWidgetB
     `;
   }
 
+  // Optional footer - empty by default, widgets can override if needed
+  protected renderFooter(): string {
+    return '';
+  }
+
   // Each widget defines its title based on entity context
   protected abstract getEntityTitle(entity?: T): string;
 
