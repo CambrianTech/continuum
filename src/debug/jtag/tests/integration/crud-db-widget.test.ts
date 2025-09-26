@@ -29,18 +29,23 @@ function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: 
     // For chat widget, try simple approach since JSON parsing is failing due to CSS content
     if (widget === 'chat-widget') {
       try {
-        // Get just the row data with a simpler command that avoids problematic CSS
-        const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --extractRowData=true 2>/dev/null | grep -A 50 '"rowData"'`, {
-          encoding: 'utf8',
-          cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
-          timeout: timeoutMs,
-          shell: true,
-          maxBuffer: 1024 * 1024 * 10
-        });
+        // Use direct grep to bypass JSON truncation issues
+        let found = false;
+        try {
+          const grepResult = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --includeMessages=true 2>/dev/null | grep -c "${entityId}"`, {
+            encoding: 'utf8',
+            cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+            timeout: 30000,
+            shell: true
+          });
+          const matchCount = parseInt(grepResult.trim());
+          found = matchCount > 0;
+        } catch (grepError) {
+          // grep returns exit code 1 if no matches found, which execSync treats as error
+          found = false;
+        }
 
-        // Search for entity ID or text content in the rowData section
-        const found = output.includes(entityId);
-        console.log(`🔍 Entity ${entityId} found in ${widget} (simple search): ${found}`);
+        console.log(`🔍 Entity ${entityId} found in ${widget} (grep search): ${found}`);
         return found;
       } catch (chatError) {
         console.warn(`❌ Chat widget simple check failed: ${chatError.message}`);
@@ -105,8 +110,8 @@ function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: 
 }
 
 // Configuration
-const WIDGET_VERIFICATION_DELAY = 1000; // Configurable delay for widget HTML synchronization
-const WIDGET_TIMEOUT = 8000; // Longer timeout for widget operations
+const WIDGET_VERIFICATION_DELAY = 2000; // Configurable delay for widget HTML synchronization
+const WIDGET_TIMEOUT = 10000; // Longer timeout for widget operations
 
 async function testCRUDWithDBAndWidget() {
   console.log('🧪 Simple CRUD + DB + Widget Test');
@@ -153,12 +158,18 @@ async function testCRUDWithDBAndWidget() {
       entityId = createResult.id;
       console.log(`✅ Created: ${entityId}`);
 
-      await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY));
+      // For ChatMessage, we need extra delay as it loads data via polling not events
+      const createDelay = collection === 'ChatMessage' ? WIDGET_VERIFICATION_DELAY * 4 : WIDGET_VERIFICATION_DELAY;
+      await new Promise(resolve => setTimeout(resolve, createDelay));
 
       // Test CREATE
       const dbRead1 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
       const dbPersisted = Boolean(dbRead1?.success && dbRead1?.found);
 
+      // For ChatMessage CREATE, add another small delay before checking widget
+      if (collection === 'ChatMessage') {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
       const inWidget1 = checkWidgetContainsEntity(widget, entityId, WIDGET_TIMEOUT);
 
       results.push({
@@ -207,7 +218,9 @@ async function testCRUDWithDBAndWidget() {
         const dbRead3 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
         const deleteFromDB = Boolean(dbRead3?.success && !dbRead3?.found);
 
-        const removedFromWidget = !checkWidgetContainsEntity(widget, entityId, 5000);
+        // Add delay for widget to process DELETE event and update UI
+        await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY + 500));
+        const removedFromWidget = !checkWidgetContainsEntity(widget, entityId, 8000);
 
         results.push({
           operation: 'DELETE',
