@@ -5,13 +5,13 @@
  * with built-in deduplication, state inspection, and clear mutation control.
  */
 
-import type { BaseEntity } from '../../system/data/entities/BaseEntity';
-
 export interface EntityManagerConfig {
   readonly name: string; // For debugging purposes
   readonly maxSize?: number; // Optional size limit
   readonly debugMode?: boolean; // Extra logging
 }
+
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 
 export class EntityManager<T extends BaseEntity> {
   private entities: T[] = [];
@@ -29,7 +29,7 @@ export class EntityManager<T extends BaseEntity> {
    * Get entity ID with fallback for different ID field names
    */
   private getEntityId(entity: T): string {
-    return entity.id || (entity as any).messageId || 'unknown';
+    return entity.id ?? (entity as unknown as { messageId?: string }).messageId ?? 'unknown';
   }
 
   /**

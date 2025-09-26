@@ -264,10 +264,19 @@ export class WidgetDOMAnalyzer {
   }
 
   /**
-   * Deep query selector - finds elements in nested shadow DOM
+   * Deep query selector - finds elements in nested shadow DOM with specific chat-widget handling
    */
   static deepQuerySelector(selector: string): HTMLElement | null {
     try {
+      // Special handling for chat-widget which is in main-widget, not sidebar-widget
+      if (selector === 'chat-widget') {
+        const continuumWidget = document.querySelector('continuum-widget');
+        const mainWidget = continuumWidget?.shadowRoot?.querySelector('main-widget');
+        const chatWidget = mainWidget?.shadowRoot?.querySelector('chat-widget');
+        return chatWidget as HTMLElement || null;
+      }
+
+      // Use normal container discovery for other widgets
       const containers = WidgetDiscovery.getWidgetContainers();
 
       for (const { shadowRoot } of containers) {
@@ -303,27 +312,101 @@ export class WidgetDOMAnalyzer {
   }
 
   /**
-   * Extract row data from widget (like room-list-widget rows)
+   * Extract row data from widget - explicit handling for each widget type
    */
-  static extractRowData(widgetSelector: string, rowSelector: string = '.room-item, .user-item, .message-item') {
+  static extractRowData(widgetSelector: string, rowSelector?: string) {
     try {
-      const widget = this.deepQuerySelector(widgetSelector);
+      let widget: HTMLElement | null = null;
+
+      // Explicit widget path handling
+      if (widgetSelector === 'chat-widget') {
+        const continuumWidget = document.querySelector('continuum-widget');
+        const mainWidget = continuumWidget?.shadowRoot?.querySelector('main-widget');
+        widget = mainWidget?.shadowRoot?.querySelector('chat-widget') as HTMLElement;
+      } else {
+        widget = this.deepQuerySelector(widgetSelector);
+      }
+
       if (!widget?.shadowRoot) return [];
 
-      const rows = Array.from(widget.shadowRoot.querySelectorAll(rowSelector));
+      // If specific selector provided, use it
+      if (rowSelector) {
+        const rows = Array.from(widget.shadowRoot.querySelectorAll(rowSelector));
+        return rows.map((row, index) => this.createRowData(row as HTMLElement, index));
+      }
 
-      return rows.map((row, index) => ({
-        index,
-        element: row,
-        id: row.getAttribute('data-entity-id') || row.getAttribute('data-room-id') || row.getAttribute('data-user-id') || row.id,
-        textContent: row.textContent?.trim() || '',
-        attributes: this.extractDataAttributes(row as HTMLElement),
-        classes: Array.from(row.classList)
-      }));
+      // Widget-specific selectors that we know work
+      let selectors: string[] = [];
+
+      if (widgetSelector === 'chat-widget') {
+        selectors = ['.message-row[data-message-id]', '.message-row', '#messages > div'];
+      } else if (widgetSelector === 'room-list-widget') {
+        selectors = ['.room-item[data-entity-id]', '.room-item', '.entity-list-body > *'];
+      } else if (widgetSelector === 'user-list-widget') {
+        selectors = ['.user-item[data-entity-id]', '.user-item', '.entity-list-body > *'];
+      } else {
+        // Generic fallback
+        selectors = ['[data-entity-id]', '[data-message-id]', '[data-room-id]', '[data-user-id]'];
+      }
+
+      for (const selector of selectors) {
+        const rows = Array.from(widget.shadowRoot.querySelectorAll(selector));
+        if (rows.length > 0) {
+          return rows.map((row, index) => this.createRowData(row as HTMLElement, index));
+        }
+      }
+
+      return [];
     } catch (error) {
       console.error(`Row data extraction failed for ${widgetSelector}:`, error);
       return [];
     }
+  }
+
+  /**
+   * Create standardized row data object
+   */
+  private static createRowData(row: HTMLElement, index: number) {
+    return {
+      index,
+      element: row,
+      id: row.getAttribute('data-entity-id') ||
+          row.getAttribute('data-message-id') ||
+          row.getAttribute('data-room-id') ||
+          row.getAttribute('data-user-id') ||
+          row.id,
+      textContent: row.textContent?.trim() || '',
+      attributes: this.extractDataAttributes(row),
+      classes: Array.from(row.classList)
+    };
+  }
+
+  /**
+   * Smart row selector detection - simplified and more robust
+   */
+  static detectRowSelector(shadowRoot: ShadowRoot, widgetSelector: string): string {
+    // Generic selectors that work for any widget structure
+    const genericSelectors = [
+      '[data-entity-id]',           // Any element with entity ID (most reliable)
+      '[data-message-id]',          // Chat messages
+      '[data-room-id]',             // Room items
+      '[data-user-id]',             // User items
+      '.entity-list-body > *',      // EntityScroller children
+      '.message-row',               // Chat message rows
+      '.room-item',                 // Room list items
+      '.user-item'                  // User list items
+    ];
+
+    // Test each selector to see which finds elements
+    for (const selector of genericSelectors) {
+      const elements = shadowRoot.querySelectorAll(selector);
+      if (elements.length > 0) {
+        return selector;
+      }
+    }
+
+    // Ultimate fallback - any div with some content
+    return 'div';
   }
 
   /**

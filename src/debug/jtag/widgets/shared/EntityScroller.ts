@@ -5,10 +5,10 @@
  * Clean interfaces, efficient data handling, no coupling to specific implementations.
  */
 
-import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 import { EntityManager } from './EntityManager';
+import { BaseEntity } from '../../system/data/entities/BaseEntity';
 
-// Pure render function - like React components, constrained to our BaseEntity
+// Pure render function - works with BaseEntity for proper typing
 export type RenderFn<T extends BaseEntity> = (entity: T, context: RenderContext<T>) => HTMLElement;
 
 // Context passed to render functions
@@ -259,7 +259,7 @@ export function createScroller<T extends BaseEntity>(
 
       // Check for duplicate using EntityManager
       if (entityManager.has(entityId)) {
-        console.warn(`⚠️ EntityScroller: Duplicate entity blocked: ${entityId}`);
+        console.log(`🔄 EntityScroller: Updating existing entity: ${entityId}`);
         // Update existing entity
         entityManager.update(entityId, entity);
 
@@ -294,7 +294,7 @@ export function createScroller<T extends BaseEntity>(
 
       // Check for duplicate using EntityManager
       if (entityManager.has(entityId)) {
-        console.warn(`⚠️ EntityScroller: Duplicate entity blocked: ${entityId}`);
+        console.log(`🔄 EntityScroller: Updating existing entity: ${entityId}`);
         // Update existing entity - no auto-scroll for updates
         entityManager.update(entityId, entity);
 

@@ -1,14 +1,13 @@
 /**
- * EntityListWidget - Pure extension of ChatWidgetBase
- * Just adds common entity list patterns, nothing fancy
+ * EntityListWidget - Pure extension of BaseWidget
+ * Domain-agnostic - works for any entity lists, not just chat-related
  */
 
-import { ChatWidgetBase } from '../chat/shared/ChatWidgetBase';
-import { BaseEntity } from '../../system/data/entities/BaseEntity';
+import { BaseWidget, type WidgetConfig } from './BaseWidget';
 
-export abstract class EntityListWidget<T extends BaseEntity> extends ChatWidgetBase {
+export abstract class EntityListWidget<T> extends BaseWidget {
 
-  constructor(config: any) {
+  constructor(config: WidgetConfig) {
     super(config);
   }
 
@@ -42,4 +41,50 @@ export abstract class EntityListWidget<T extends BaseEntity> extends ChatWidgetB
       countElement.textContent = this.getEntityCount().toString();
     }
   }
+
+  // Template rendering implementation - similar to ChatWidgetBase pattern
+  protected async renderWidget(): Promise<void> {
+    // Use external template and styles loaded by BaseWidget
+    const styles = this.templateCSS ?? '/* No styles loaded */';
+
+    // Check if widget uses template literals (renderTemplate method) or external template files
+    let dynamicContent: string;
+    if (!this.config.template && 'renderTemplate' in this) {
+      // Use template literal from renderTemplate() method
+      dynamicContent = (this as unknown as { renderTemplate(): string }).renderTemplate();
+    } else {
+      // Use external template file with placeholder replacements
+      const template = this.templateHTML ?? '<div>No template loaded</div>';
+      const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+
+      dynamicContent = Object.entries(this.getReplacements()).reduce(
+        (acc, [placeholder, value]) => acc.replace(placeholder, value),
+        templateString
+      );
+    }
+
+    this.shadowRoot.innerHTML = `
+      <style>${styles}</style>
+      ${dynamicContent}
+    `;
+
+    // Setup event listeners
+    this.cleanupEventListeners();
+    this.setupEventListeners();
+  }
+
+  protected setupEventListeners(): void {
+    // Default implementation - subclasses can override
+  }
+
+  protected cleanupEventListeners(): void {
+    // Default implementation - subclasses can override
+  }
+
+  protected getReplacements(): Record<string, string> {
+    return {};
+  }
+
+  // Subclasses must provide their own path resolution
+  protected abstract resolveResourcePath(filename: string): string;
 }
