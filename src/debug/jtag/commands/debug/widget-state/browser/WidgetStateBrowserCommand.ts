@@ -85,9 +85,11 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
       // Extract row data if requested
       let rowData;
       if (params.extractRowData) {
-        const rowSelector = params.rowSelector || '.room-item, .user-item, .message-item';
+        // Let WidgetDOMAnalyzer use widget-specific selectors unless explicitly overridden
+        const rowSelector = params.rowSelector; // undefined means use widget-specific logic
         rowData = WidgetDOMAnalyzer.extractRowData(params.widgetSelector || 'chat-widget', rowSelector);
-        logs.push(`📋 Rows: Found ${rowData.length} items with selector "${rowSelector}"`);
+        const selectorUsed = rowSelector || `widget-specific selectors for ${params.widgetSelector}`;
+        logs.push(`📋 Rows: Found ${rowData.length} items with selector "${selectorUsed}"`);
       }
 
       // Test data connectivity if requested
