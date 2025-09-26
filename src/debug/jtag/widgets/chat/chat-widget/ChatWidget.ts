@@ -12,7 +12,7 @@ import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatfor
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import { MessageRowWidgetFactory } from '../shared/BaseMessageRowWidget';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import { EntityListWidget } from '../../shared/EntityListWidget';
+import { ChatWidgetBase } from '../shared/ChatWidgetBase';
 import { CHAT_EVENTS, CHAT_EVENT_TYPES } from '../shared/ChatEventConstants';
 import type {
   ChatMessageEventData,
@@ -93,7 +93,7 @@ interface ScrollState {
   readonly visibleUUIDs: string[];
 }
 
-export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
+export class ChatWidget extends ChatWidgetBase {
   private messages: ChatMessageEntity[] = [];
   private currentRoomEntity?: RoomEntity;
   private messageInput?: HTMLInputElement;
@@ -181,6 +181,7 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
     console.log(`✅ ChatWidget: Initialized for room "${this.roomId}" with ${messageCount} messages`);
   }
 
+  // Entity list functionality for header rendering
   protected getEntityCount(): number {
     // Return count of loaded messages (EntityScroller approach)
     const count = this.chatScroller?.entities().length || 0;
@@ -189,6 +190,24 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
 
   protected getEntityTitle(entity?: ChatMessageEntity): string {
     return this.currentRoomEntity?.name || 'Chat';
+  }
+
+  // Shared count update logic from EntityListWidget
+  protected updateEntityCount(): void {
+    const countElement = this.shadowRoot.querySelector('.list-count');
+    if (countElement) {
+      countElement.textContent = this.getEntityCount().toString();
+    }
+  }
+
+  // Standardized header structure
+  protected renderHeader(entity?: ChatMessageEntity): string {
+    return `
+      <div class="entity-list-header">
+        <span class="header-title">${this.getEntityTitle(entity)}</span>
+        <span class="list-count">${this.getEntityCount()}</span>
+      </div>
+    `;
   }
 
 
@@ -571,10 +590,21 @@ export class ChatWidget extends EntityListWidget<ChatMessageEntity> {
       console.log(`✨ ChatWidget: Using ChatMessage entity directly:`, chatMessage);
 
       if (this.chatScroller) {
-        // Use EntityScroller's smart auto-scroll - it knows where new content goes
-        this.chatScroller.addWithAutoScroll(chatMessage); // No position needed, EntityScroller knows
+        // Check if message already exists - if so, update instead of add
+        const existingEntities = this.chatScroller.entities() as ChatMessageEntity[];
+        const existingMessage = existingEntities.find(msg => msg.id === chatMessage.id);
+
+        if (existingMessage) {
+          // Message exists, update it
+          console.log(`🔄 ChatWidget: Message already exists, updating: ${chatMessage.id}`);
+          this.chatScroller.update(chatMessage.id, chatMessage);
+        } else {
+          // New message, add with auto-scroll
+          console.log(`✨ ChatWidget: New message, adding: ${chatMessage.id}`);
+          this.chatScroller.addWithAutoScroll(chatMessage);
+        }
+
         this.messages = this.chatScroller.entities() as ChatMessageEntity[];
-        // Update header count (EntityScroller automatically has new message)
         this.updateEntityCount();
       } else {
         // Fallback to old method

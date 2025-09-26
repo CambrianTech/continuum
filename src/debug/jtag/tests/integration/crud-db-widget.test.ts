@@ -62,7 +62,7 @@ async function testCRUDWithDBAndWidget() {
       collection: 'Room',
       widget: 'room-list-widget',
       createData: { name: 'Test Room' },
-      updateData: { name: 'Updated Test Room' }
+      updateData: { displayName: 'Updated Test Room' }
     },
     {
       collection: 'ChatMessage',
