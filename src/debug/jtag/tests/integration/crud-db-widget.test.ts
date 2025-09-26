@@ -26,31 +26,76 @@ function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: 
   try {
     console.log(`🔍 Checking if ${widget} contains entity ${entityId}`);
 
-    // Use ping command instead of screenshot to avoid large JSON output
-    // Ping is much smaller and still validates the system is working
-    const output = execSync(`./jtag ping 2>/dev/null`, {
+    // For chat widget, try simple approach since JSON parsing is failing due to CSS content
+    if (widget === 'chat-widget') {
+      try {
+        // Get just the row data with a simpler command that avoids problematic CSS
+        const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --extractRowData=true 2>/dev/null | grep -A 50 '"rowData"'`, {
+          encoding: 'utf8',
+          cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+          timeout: timeoutMs,
+          shell: true,
+          maxBuffer: 1024 * 1024 * 10
+        });
+
+        // Search for entity ID or text content in the rowData section
+        const found = output.includes(entityId);
+        console.log(`🔍 Entity ${entityId} found in ${widget} (simple search): ${found}`);
+        return found;
+      } catch (chatError) {
+        console.warn(`❌ Chat widget simple check failed: ${chatError.message}`);
+        return false;
+      }
+    }
+
+    // Use full widget-state command for other widgets
+    const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --extractRowData=true 2>/dev/null`, {
       encoding: 'utf8',
       cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
-      timeout: 3000,
+      timeout: timeoutMs,
       shell: true,
-      maxBuffer: 1024 * 1024 * 10 // 10MB buffer to handle large JSON
+      maxBuffer: 1024 * 1024 * 50
     });
 
     let result;
     try {
       result = JSON.parse(output);
     } catch (parseError) {
-      console.warn(`❌ Could not parse JSON response from JTAG command`);
+      console.warn(`❌ Could not parse JSON response from widget-state command`);
       console.warn(`❌ For more detailed output, use --verbose flag`);
       console.warn(`❌ Parse error: ${parseError.message}`);
       return false;
     }
 
-    console.log(`📸 Screenshot result for ${widget}: success=${result.success}`);
+    console.log(`🔍 Widget state result for ${widget}: success=${result.success}`);
 
-    // If widget exists and screenshot succeeds, assume entity is present
-    // This is a temporary workaround until widget introspection is fixed
-    return result.success === true;
+    // Check if the entity ID or content appears in the extracted row data
+    if (result.success && result.rowData) {
+      const found = result.rowData.some((row: any) => {
+        if (!row) return false;
+
+        // Check entity IDs in attributes
+        if (row.attributes?.['entity-id'] === entityId ||
+            row.attributes?.['message-id'] === entityId ||
+            row.id === entityId) {
+          return true;
+        }
+
+        // Check display names and content in textContent
+        if (typeof entityId === 'string' && row.textContent) {
+          // Search for display names (like "Updated Test User") or message content
+          if (row.textContent.includes(entityId)) {
+            return true;
+          }
+        }
+
+        return false;
+      });
+      console.log(`🔍 Entity ${entityId} found in ${widget}: ${found}`);
+      return found;
+    }
+
+    return false;
 
   } catch (error) {
     console.warn(`❌ Widget check failed for ${widget}: ${error.message}`);
