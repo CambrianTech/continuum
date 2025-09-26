@@ -395,17 +395,26 @@ async function main() {
       
       const result = await Promise.race([commandExecution, commandTimeout]);
 
-      // Show command result based on verbosity level
-      if (behavior.logLevel === 'verbose') {
-        console.log('='.repeat(60));
-        console.log('COMMAND RESULT:');
-        console.log(JSON.stringify(result, null, 2));
-        console.log('='.repeat(60));
-      } else {
-        // Clean JSON output for non-verbose mode
-        console.log(JSON.stringify(result, null, 2));
+      // Extract just the essential result, removing wrapper layers
+      let cleanOutput = result;
+
+      // Navigate to the innermost commandResult (the actual result)
+      while (cleanOutput && typeof cleanOutput === 'object' && 'commandResult' in cleanOutput) {
+        cleanOutput = cleanOutput.commandResult;
       }
-      
+
+      // Remove context and other wrapper fields, keep only the actual result
+      if (cleanOutput && typeof cleanOutput === 'object') {
+        const { context, sessionId, ...actualResult } = cleanOutput;
+        // If no meaningful data remains after stripping context/sessionId, keep success field
+        const hasData = Object.keys(actualResult).filter(key => key !== 'success').length > 0;
+        if (!hasData && 'success' in cleanOutput) {
+          cleanOutput = { success: cleanOutput.success };
+        } else {
+          cleanOutput = actualResult;
+        }
+      }
+
       // Session persistence: only destroy session if explicitly requested
       if (params['new-session'] || command.startsWith('session/')) {
         // Explicit session management - disconnect fully
@@ -426,14 +435,14 @@ async function main() {
       process.stdout.write = originalStdoutWrite;
       process.stderr.write = originalStderrWrite;
 
-      // Output final result only
+      // Output final result only - choose between verbose and clean
       if (behavior.logLevel === 'verbose') {
         console.log('='.repeat(60));
         console.log('COMMAND RESULT:');
         console.log(JSON.stringify(result, null, 2));
         console.log('='.repeat(60));
       } else {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify(cleanOutput, null, 2));
       }
 
       process.exit(result?.success ? 0 : 1);
@@ -448,12 +457,10 @@ async function main() {
           console.error('🔍 Debug: Check system logs: npm run signal:errors');
         }
       } else {
-        // Clean JSON error output for non-verbose mode - send to stderr
+        // Clean JSON error output for non-verbose mode
         console.error(JSON.stringify({
-          success: false,
           error: cmdError.message,
-          timestamp: new Date().toISOString(),
-          hint: "Use --verbose for detailed output"
+          hint: "For more detailed output, use --verbose flag"
         }, null, 2));
       }
       
