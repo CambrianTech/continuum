@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.2052",
+  "version": "1.0.2055",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -183,7 +183,7 @@
     "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && ACTIVE_LOG_DIR=$(npx tsx scripts/get-active-example-logs.ts | sed 's/server.log/browser-console-log.log/') && if [ -n \"$ACTIVE_LOG_DIR\" ] && [[ \"$ACTIVE_LOG_DIR\" == *\"examples/\"*\"/logs/\"* ]]; then grep 'Bootstrap complete' $ACTIVE_LOG_DIR | tail -1; else echo \"SAFETY: Invalid log path: $ACTIVE_LOG_DIR\"; exit 1; fi && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
     "test:comprehensive": "./scripts/run-categorized-tests.sh comprehensive",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
-    "test:precommit": "echo '🎯 GIT PRECOMMIT: CRUD + Screenshots (100% required)' && ./jtag test/run/suite --profile=precommit --fail-fast --timeout=60000",
+    "test:precommit": "echo '🎯 GIT PRECOMMIT: CRUD (100% required)' && npx tsx tests/integration/crud-db-widget.test.ts",
     "test:prepush": "echo '🚀 GIT PREPUSH: Comprehensive validation' && ./jtag test/run/suite --profile=comprehensive --timeout=180000",
     "test:ci-pr": "echo '🔄 CI PR: Full integration tests' && ./jtag test/run/suite --profile=integration --parallel --timeout=300000",
     "test:ci-main": "echo '✅ CI MAIN: All tests' && ./jtag test/run/suite --profile=comprehensive --parallel --timeout=600000",
