@@ -188,25 +188,21 @@ done
 
 # Phase 6: Commit Message Enhancement
 echo ""
-echo "📝 Phase 6: Enhancing commit message"
-echo "------------------------------------"
+echo "📝 Phase 6: Preparing validation summary for commit message"
+echo "-----------------------------------------------------------"
 
 # Create validation summary matching existing commit format
 VALIDATION_SUMMARY=$(cat << EOF
-
 🔍 JTAG INTEGRATION TEST: ✅ $TEST_SUMMARY - All validation phases completed
-🛡️ Git Hook Validation: ✅ All 5 phases passed (TypeScript → Artifacts Collection)
+🛡️ Git Hook Validation: ✅ All 6 phases passed (TypeScript → Artifacts → Message Enhancement)
 EOF
 )
 
-# Append validation to commit message if we're in a git commit
-if [ -n "$GIT_COMMIT_MESSAGE_FILE" ] && [ -f "$GIT_COMMIT_MESSAGE_FILE" ]; then
-    echo "$VALIDATION_SUMMARY" >> "$GIT_COMMIT_MESSAGE_FILE"
-    echo "📝 Validation results appended to commit message"
-elif [ -f ".git/COMMIT_EDITMSG" ]; then
-    echo "$VALIDATION_SUMMARY" >> ".git/COMMIT_EDITMSG"
-    echo "📝 Validation results appended to commit message"
-fi
+# Save validation summary for prepare-commit-msg hook to use
+VALIDATION_SUMMARY_DIR=".continuum/sessions/validation"
+mkdir -p "$VALIDATION_SUMMARY_DIR"
+echo "$VALIDATION_SUMMARY" > "$VALIDATION_SUMMARY_DIR/latest-validation-summary.txt"
+echo "📝 Validation summary saved for commit message enhancement"
 
 echo ""
 echo "🎉 PRECOMMIT VALIDATION COMPLETE!"
