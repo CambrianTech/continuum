@@ -83,54 +83,43 @@ echo "📸 Capturing widget screenshots for proof..."
 
 echo "✅ Screenshot proof collection complete"
 
-# Phase 4: Test Results & Session Artifacts Collection
+# Phase 4: Session Artifacts Collection (Following Legacy Git Hook Pattern)
 echo ""
-echo "📦 Phase 4: Collecting test results and session artifacts"
-echo "--------------------------------------------------------"
+echo "📦 Phase 4: Collecting complete session artifacts for commit inclusion"
+echo "---------------------------------------------------------------------"
 
-# Generate unique run ID for this validation
-RUN_ID=$(date +%s)_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c8)
-VALIDATION_DIR=".continuum/test/validation/run_${RUN_ID}"
+# Get current commit hash for validation directory naming (following legacy pattern)
+COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "fallback-$(date +%s)")
+VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
 
-# Create validation directory structure
-mkdir -p "$VALIDATION_DIR"
+echo "🔍 Creating validation directory: $VALIDATION_RUN_DIR"
+mkdir -p "$VALIDATION_RUN_DIR"
 
-# Save the complete test output for commit inclusion
-echo "$TEST_OUTPUT" > "$VALIDATION_DIR/test-results.txt"
-echo "✅ Test results saved to validation directory"
+# Find the current active session directory (following our actual session structure)
+SESSION_DIR="examples/widget-ui/.continuum/jtag/sessions/user"
+if [ -d "$SESSION_DIR" ]; then
+    # Get the most recent session (current active session)
+    LATEST_SESSION=$(ls -1t "$SESSION_DIR" | head -1)
+    CURRENT_SESSION_DIR="$SESSION_DIR/$LATEST_SESSION"
 
-# Find and copy latest session artifacts if they exist
-LATEST_VALIDATION=".continuum/test-validation/latest"
-if [ -d "$LATEST_VALIDATION" ]; then
-    echo "🔍 Found existing validation artifacts at $LATEST_VALIDATION"
+    if [ -d "$CURRENT_SESSION_DIR" ]; then
+        echo "📁 Found current session: $LATEST_SESSION"
 
-    # Copy logs and screenshots from latest validation
-    if [ -d "$LATEST_VALIDATION/logs" ]; then
-        cp -r "$LATEST_VALIDATION/logs" "$VALIDATION_DIR/"
-        echo "✅ Copied validation logs"
-    fi
+        # Copy ENTIRE session directory to validation (following legacy pattern Line 210)
+        echo "📋 Copying complete session directory to validation..."
+        cp -r "$CURRENT_SESSION_DIR"/* "$VALIDATION_RUN_DIR/"
+        echo "✅ Complete session copied to validation directory"
 
-    if [ -d "$LATEST_VALIDATION/screenshots" ]; then
-        cp -r "$LATEST_VALIDATION/screenshots" "$VALIDATION_DIR/"
-        echo "✅ Copied validation screenshots"
-    fi
-else
-    echo "⚠️ No existing validation artifacts found - screenshots will be captured fresh"
-fi
+        # Add test results to the validation directory
+        echo "$TEST_OUTPUT" > "$VALIDATION_RUN_DIR/test-results.txt"
+        echo "✅ Test results added to session artifacts"
 
-# Also check system logs directory
-SYSTEM_LOGS=".continuum/jtag/system/logs"
-if [ -d "$SYSTEM_LOGS" ]; then
-    mkdir -p "$VALIDATION_DIR/system-logs"
-    cp "$SYSTEM_LOGS"/*.log "$VALIDATION_DIR/system-logs/" 2>/dev/null || true
-    echo "✅ Copied system logs"
-fi
-
-# Create comprehensive session-info.json with test results
-cat > "$VALIDATION_DIR/session-info.json" << EOF
+        # Create validation metadata (enhanced session-info.json)
+        cat > "$VALIDATION_RUN_DIR/validation-info.json" << EOF
 {
-  "runId": "$RUN_ID",
+  "runId": "${COMMIT_HASH:0:12}",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "sessionId": "$LATEST_SESSION",
   "validationType": "precommit",
   "status": "PASSED",
   "testSummary": "$TEST_SUMMARY",
@@ -144,28 +133,38 @@ cat > "$VALIDATION_DIR/session-info.json" << EOF
     "System Deployment",
     "CRUD + Chat Integration (100% Required)",
     "Screenshot Proof Collection",
-    "Test Results & Session Artifacts Collection"
-  ],
-  "artifacts": {
-    "testResults": "test-results.txt",
-    "logs": "logs/",
-    "screenshots": "screenshots/",
-    "systemLogs": "system-logs/"
-  }
+    "Complete Session Copy"
+  ]
 }
 EOF
 
-# Add ALL validation artifacts to git (force add to override .gitignore)
-git add -f "$VALIDATION_DIR/"
+        # CRITICAL: Force add validation files to git (following legacy pattern Line 258)
+        echo "📋 Adding validation files to git (force add to override .gitignore)..."
+        git add -f "$VALIDATION_RUN_DIR/"
 
-echo "✅ Test results and session artifacts collected for commit"
-echo "📋 Validation run: $VALIDATION_DIR"
-echo "📁 Artifacts included in commit:"
-echo "   - Complete test output: test-results.txt"
-echo "   - Session logs: logs/"
-echo "   - Screenshots: screenshots/"
-echo "   - System logs: system-logs/"
-echo "   - Validation metadata: session-info.json"
+        # Verify validation files are staged (following legacy pattern Lines 261-267)
+        echo "🔍 Verifying validation files are staged for commit..."
+        STAGED_FILES=$(git diff --cached --name-only)
+        STAGED_VALIDATION_FILES=$(echo "$STAGED_FILES" | grep "$VALIDATION_RUN_DIR" || true)
+
+        if [ -z "$STAGED_VALIDATION_FILES" ]; then
+            echo "❌ COMMIT REJECTED: No validation files staged - validation session is your KEY to get in!"
+            exit 1
+        fi
+
+        echo "✅ VALIDATION KEY ACCEPTED: Complete session artifacts staged for commit"
+        echo "📁 Validation session: $VALIDATION_RUN_DIR"
+        echo "🔑 Session artifacts included: logs, screenshots, session metadata"
+        echo "📝 Test results included: test-results.txt, validation-info.json"
+
+    else
+        echo "❌ Current session directory not found: $CURRENT_SESSION_DIR"
+        exit 1
+    fi
+else
+    echo "❌ Sessions directory not found: $SESSION_DIR"
+    exit 1
+fi
 
 # Phase 5: Final Validation
 echo ""
