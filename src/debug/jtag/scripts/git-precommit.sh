@@ -95,19 +95,18 @@ VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
 echo "🔍 Creating validation directory: $VALIDATION_RUN_DIR"
 mkdir -p "$VALIDATION_RUN_DIR"
 
-# Find the current active session directory (following our actual session structure)
-SESSION_DIR="examples/widget-ui/.continuum/jtag/sessions/user"
-if [ -d "$SESSION_DIR" ]; then
-    # Get the most recent session (current active session)
-    LATEST_SESSION=$(ls -1t "$SESSION_DIR" | head -1)
-    CURRENT_SESSION_DIR="$SESSION_DIR/$LATEST_SESSION"
+# Find the current active session using currentUser symlink (EXACT legacy pattern)
+CURRENT_SESSION_LINK="examples/widget-ui/.continuum/jtag/currentUser"
+if [ -L "$CURRENT_SESSION_LINK" ]; then
+    CURRENT_SESSION=$(readlink "$CURRENT_SESSION_LINK")
+    SESSION_PATH="examples/widget-ui/.continuum/jtag/$CURRENT_SESSION"
 
-    if [ -d "$CURRENT_SESSION_DIR" ]; then
-        echo "📁 Found current session: $LATEST_SESSION"
+    if [ -d "$SESSION_PATH" ]; then
+        echo "🔍 Current session: $CURRENT_SESSION"
 
         # Copy ENTIRE session directory to validation (following legacy pattern Line 210)
         echo "📋 Copying complete session directory to validation..."
-        cp -r "$CURRENT_SESSION_DIR"/* "$VALIDATION_RUN_DIR/"
+        cp -r "$SESSION_PATH"/* "$VALIDATION_RUN_DIR/"
         echo "✅ Complete session copied to validation directory"
 
         # Add test results to the validation directory
@@ -119,7 +118,7 @@ if [ -d "$SESSION_DIR" ]; then
 {
   "runId": "${COMMIT_HASH:0:12}",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "sessionId": "$LATEST_SESSION",
+  "sessionId": "$CURRENT_SESSION",
   "validationType": "precommit",
   "status": "PASSED",
   "testSummary": "$TEST_SUMMARY",
@@ -158,11 +157,11 @@ EOF
         echo "📝 Test results included: test-results.txt, validation-info.json"
 
     else
-        echo "❌ Current session directory not found: $CURRENT_SESSION_DIR"
+        echo "❌ Current session directory not found: $SESSION_PATH"
         exit 1
     fi
 else
-    echo "❌ Sessions directory not found: $SESSION_DIR"
+    echo "❌ Current session symlink not found: $CURRENT_SESSION_LINK"
     exit 1
 fi
 
