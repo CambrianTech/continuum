@@ -158,18 +158,10 @@ async function testCRUDWithDBAndWidget() {
       entityId = createResult.id;
       console.log(`✅ Created: ${entityId}`);
 
-      // For ChatMessage, we need extra delay as it loads data via polling not events
-      const createDelay = collection === 'ChatMessage' ? WIDGET_VERIFICATION_DELAY * 4 : WIDGET_VERIFICATION_DELAY;
-      await new Promise(resolve => setTimeout(resolve, createDelay));
-
-      // Test CREATE
+      // Test CREATE immediately - no delays needed
       const dbRead1 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
       const dbPersisted = Boolean(dbRead1?.success && dbRead1?.found);
 
-      // For ChatMessage CREATE, add another small delay before checking widget
-      if (collection === 'ChatMessage') {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
       const inWidget1 = checkWidgetContainsEntity(widget, entityId, WIDGET_TIMEOUT);
 
       results.push({
@@ -219,7 +211,8 @@ async function testCRUDWithDBAndWidget() {
         const deleteFromDB = Boolean(dbRead3?.success && !dbRead3?.found);
 
         // Add delay for widget to process DELETE event and update UI
-        await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY + 500));
+        const deleteDelay = collection === 'ChatMessage' ? WIDGET_VERIFICATION_DELAY + 1000 : WIDGET_VERIFICATION_DELAY + 500;
+        await new Promise(resolve => setTimeout(resolve, deleteDelay));
         const removedFromWidget = !checkWidgetContainsEntity(widget, entityId, 8000);
 
         results.push({
