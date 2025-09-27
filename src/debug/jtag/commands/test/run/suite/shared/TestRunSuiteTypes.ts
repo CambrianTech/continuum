@@ -164,9 +164,20 @@ export const DEFAULT_TEST_PROFILES: Record<string, TestProfile> = {
   },
   precommit: {
     name: 'precommit',
-    description: 'Fast precommit validation tests',
+    description: 'Git precommit hook - CRUD and Screenshots (100% required)',
     tests: [
       'tests/integration/crud-db-widget.test.ts',
+      'tests/screenshot-verification.test.ts',
+      'tests/bootstrap-detection.test.ts'
+    ],
+    deployBrowser: true, // Required for screenshots and CRUD widget validation
+    parallelism: 1, // Sequential to ensure stability
+    timeout: 60000 // Longer timeout for browser operations
+  },
+  precommitFast: {
+    name: 'precommitFast',
+    description: 'Fast precommit validation (basic checks only)',
+    tests: [
       'tests/bootstrap-detection.test.ts',
       'tests/compiler-error-detection.test.ts'
     ],
