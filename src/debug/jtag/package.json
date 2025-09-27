@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.2050",
+  "version": "1.0.2052",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -183,10 +183,10 @@
     "test:verify-and-run": "echo '🔍 WAITING FOR SYSTEM BOOTSTRAP...' && npm run signal:wait && echo '🔍 VERIFYING SYSTEM BOOTSTRAP...' && ACTIVE_LOG_DIR=$(npx tsx scripts/get-active-example-logs.ts | sed 's/server.log/browser-console-log.log/') && if [ -n \"$ACTIVE_LOG_DIR\" ] && [[ \"$ACTIVE_LOG_DIR\" == *\"examples/\"*\"/logs/\"* ]]; then grep 'Bootstrap complete' $ACTIVE_LOG_DIR | tail -1; else echo \"SAFETY: Invalid log path: $ACTIVE_LOG_DIR\"; exit 1; fi && echo '✅ BOOTSTRAP VERIFIED - RUNNING TESTS' && npm run test:comprehensive",
     "test:comprehensive": "./scripts/run-categorized-tests.sh comprehensive",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
-    "test:precommit": "npx tsx scripts/test-profiles.ts pre-commit",
-    "test:prepush": "npx tsx scripts/test-profiles.ts pre-push",
-    "test:ci-pr": "npx tsx scripts/test-profiles.ts ci-pr",
-    "test:ci-main": "npx tsx scripts/test-profiles.ts ci-main",
+    "test:precommit": "echo '🎯 GIT PRECOMMIT: CRUD + Screenshots (100% required)' && ./jtag test/run/suite --profile=precommit --fail-fast --timeout=60000",
+    "test:prepush": "echo '🚀 GIT PREPUSH: Comprehensive validation' && ./jtag test/run/suite --profile=comprehensive --timeout=180000",
+    "test:ci-pr": "echo '🔄 CI PR: Full integration tests' && ./jtag test/run/suite --profile=integration --parallel --timeout=300000",
+    "test:ci-main": "echo '✅ CI MAIN: All tests' && ./jtag test/run/suite --profile=comprehensive --parallel --timeout=600000",
     "test:experimental": "npx tsx scripts/test-profiles.ts experimental",
     "dev:multi-instance": "npx tsx dev-tools/grid-testing/multi-instance-runner.ts",
     "dev:grid-p2p": "npx tsx dev-tools/grid-testing/multi-instance-runner.ts --config=grid-p2p",
