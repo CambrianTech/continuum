@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { withHangBreaker } from '../utils/AggressiveHangBreaker';
+import { withHangBreaker } from '../utils/server/AggressiveHangBreaker';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 
 interface ScreenshotVerificationResult {
