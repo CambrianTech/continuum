@@ -12,6 +12,9 @@ import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 import { UserEntity } from '../system/data/entities/UserEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
+import { UserStateEntity } from '../system/data/entities/UserStateEntity';
+import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
+import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
 
 const execAsync = promisify(exec);
 
@@ -194,6 +197,190 @@ function createMessage(id: string, roomId: string, senderId: string, senderName:
   };
 }
 
+/**
+ * Create default content type registry
+ */
+function createDefaultContentTypes(): any[] {
+  return [
+    {
+      id: 'ct-chat',
+      type: 'chat',
+      displayName: 'Chat Room',
+      category: 'communication',
+      widgetSelector: 'chat-widget',
+      isActive: true,
+      isBuiltIn: true,
+      sortOrder: 10,
+      allowMultiple: true,
+      autoSave: true,
+      preloadData: true,
+      requiredPermissions: ['chat:read', 'chat:write'],
+      minUserType: 'human'
+    },
+    {
+      id: 'ct-academy',
+      type: 'academy-session',
+      displayName: 'Academy Training',
+      category: 'training',
+      widgetSelector: 'academy-session-widget',
+      isActive: true,
+      isBuiltIn: true,
+      sortOrder: 20,
+      allowMultiple: true,
+      autoSave: true,
+      preloadData: true,
+      requiredPermissions: ['academy:read', 'academy:participate'],
+      minUserType: 'human'
+    },
+    {
+      id: 'ct-user-list',
+      type: 'user-list',
+      displayName: 'User Directory',
+      category: 'social',
+      widgetSelector: 'user-list-widget',
+      isActive: true,
+      isBuiltIn: true,
+      sortOrder: 30,
+      allowMultiple: false,
+      autoSave: false,
+      preloadData: true,
+      requiredPermissions: ['users:read'],
+      minUserType: 'human'
+    }
+  ];
+}
+
+/**
+ * Create default user states
+ */
+function createDefaultUserStates(): any[] {
+  return [
+    {
+      id: 'us-joel-chat',
+      userId: USER_IDS.HUMAN,
+      contentType: 'chat',
+      contextId: ROOM_IDS.GENERAL,
+      personalContext: {
+        preferences: {
+          fontSize: 'medium',
+          theme: 'dark',
+          notifications: true
+        },
+        history: {
+          lastVisited: new Date().toISOString(),
+          visitCount: 1,
+          bookmarks: []
+        }
+      },
+      sharedState: {
+        position: { x: 0, y: 0 },
+        visibility: 'visible',
+        lastActivity: new Date().toISOString()
+      },
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    },
+    {
+      id: 'us-claude-chat',
+      userId: USER_IDS.CLAUDE_CODE,
+      contentType: 'chat',
+      contextId: ROOM_IDS.GENERAL,
+      personalContext: {
+        preferences: {
+          responseStyle: 'technical',
+          codeHighlighting: true,
+          autoSuggest: true
+        },
+        capabilities: {
+          canModerate: true,
+          canExecuteCommands: true,
+          canAccessFiles: true
+        }
+      },
+      sharedState: {
+        position: { x: 0, y: 0 },
+        visibility: 'visible',
+        lastActivity: new Date().toISOString()
+      },
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+  ];
+}
+
+/**
+ * Create default training sessions
+ */
+function createDefaultTrainingSessions(): any[] {
+  return [
+    {
+      id: 'ts-js-fundamentals',
+      roomId: ROOM_IDS.ACADEMY,
+      teacherUserId: USER_IDS.CLAUDE_CODE,
+      studentUserId: USER_IDS.HUMAN,
+      sessionName: 'JavaScript Fundamentals',
+      description: 'Learn core JavaScript concepts through interactive exercises',
+      sessionType: 'teacher-student',
+      status: 'active',
+      curriculum: 'javascript-basics',
+      startedAt: new Date().toISOString(),
+      plannedDuration: 90,
+      actualDuration: 15,
+      hyperparameters: {
+        learningRate: 0.15,
+        scoreThreshold: 80.0,
+        benchmarkInterval: 8,
+        maxSessionLength: 120,
+        adaptiveScoring: true,
+        contextWindow: 25
+      },
+      learningObjectives: [
+        {
+          id: 'obj-variables',
+          topic: 'variables-declarations',
+          description: 'Understand var, let, and const declarations',
+          targetScore: 85,
+          currentScore: 78,
+          completed: false,
+          evidence: []
+        },
+        {
+          id: 'obj-functions',
+          topic: 'function-basics',
+          description: 'Create and call functions effectively',
+          targetScore: 80,
+          completed: false,
+          evidence: []
+        }
+      ],
+      metrics: {
+        messagesExchanged: 24,
+        benchmarksPassed: 2,
+        benchmarksFailed: 1,
+        averageScore: 76.5,
+        timeSpent: 15,
+        objectivesCompleted: 0,
+        scoreHistory: [
+          {
+            timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+            score: 72,
+            objective: 'variables-declarations'
+          },
+          {
+            timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+            score: 81,
+            objective: 'function-basics'
+          }
+        ]
+      },
+      additionalParticipants: [],
+      isArchived: false
+    }
+  ];
+}
+
 // ===== SEEDING FUNCTIONS =====
 
 /**
@@ -355,6 +542,11 @@ async function seedViaJTAG() {
       )
     ];
 
+    // Create content type registry and user states
+    const contentTypes = createDefaultContentTypes();
+    const userStates = createDefaultUserStates();
+    const trainingSessions = createDefaultTrainingSessions();
+
     // Seed all data types using clean modular approach
     await seedRecords(UserEntity.collection, users, (user) => user.displayName);
     await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName);
@@ -362,6 +554,9 @@ async function seedViaJTAG() {
       msg.senderId === USER_IDS.HUMAN ? 'Joel' :
       msg.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown'
     );
+    await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);
+    await seedRecords(UserStateEntity.collection, userStates, (us) => `${us.userId.slice(0,8)}...`);
+    await seedRecords(TrainingSessionEntity.collection, trainingSessions, (ts) => ts.sessionName);
 
     // Verify seeded data
     console.log('\n📊 Verifying seeded data via JTAG...');
