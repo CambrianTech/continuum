@@ -27,6 +27,7 @@ import { createDataExecutor } from '../../shared/DataExecutorAdapter';
 import { COLLECTIONS } from '../../../system/data/core/FieldMapping';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
+import { createEntityCrudHandler } from '../../../commands/data/shared/DataEventUtils';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 // ChatRoomData removed - using RoomEntity directly
@@ -100,6 +101,7 @@ export class ChatWidget extends ChatWidgetBase {
   private eventSubscriptionId?: string;
   private messagesContainer?: HTMLElement;
   private chatScroller?: EntityScroller<ChatMessageEntity>;
+  private unsubscribeCrudEvents?: () => void;
 
   // Cached current user - avoids repeated database lookups
   private cachedCurrentUser?: UserEntity;
@@ -234,6 +236,12 @@ export class ChatWidget extends ChatWidgetBase {
     if (this.chatScroller) {
       this.chatScroller.destroy();
       this.chatScroller = undefined;
+    }
+
+    // Cleanup CRUD event subscriptions
+    if (this.unsubscribeCrudEvents) {
+      this.unsubscribeCrudEvents();
+      this.unsubscribeCrudEvents = undefined;
     }
 
     // Unsubscribe from room events using JTAG abstraction
@@ -495,36 +503,40 @@ export class ChatWidget extends ChatWidgetBase {
    * Set up type-safe event handlers for real-time room updates using BaseWidget
    */
   private setupRoomEventHandlers(): void {
-    console.log(`📡 ChatWidget: Setting up type-safe room event handlers for room ${this.roomId}`);
-    
-    // Type-safe event listeners using BaseWidget's executeEvent system
-    // These ONLY respond to genuine server-originated events
+    console.log(`📡 ChatWidget: Setting up CRUD event handlers for ChatMessage`);
 
-    // Listen for unified data events (ChatMessage creation via data/create)
-    this.addWidgetEventListener('data:ChatMessage:created' as any, (eventData: ChatMessageEntity) => {
-      console.log(`🔥 UNIFIED-DATA-EVENT: data:ChatMessage:created`, eventData);
-      this.onMessageReceived(eventData);
-    });
+    // Use the same pattern as User/Room widgets - createEntityCrudHandler
+    // Note: Don't check for chatScroller here - it might not be created yet
+    this.unsubscribeCrudEvents = createEntityCrudHandler<ChatMessageEntity>(
+      'ChatMessage',
+      {
+        add: (entity: ChatMessageEntity) => {
+          console.log(`🔥 CRUD-EVENT: ChatMessage created`, entity);
+          this.onMessageReceived(entity);
+        },
+        update: (id: string, entity: ChatMessageEntity) => {
+          console.log(`🔥 CRUD-EVENT: ChatMessage updated`, entity);
+          this.onMessageUpdated(entity);
+        },
+        remove: (id: string) => {
+          console.log(`🔥 CRUD-EVENT: ChatMessage deleted`, id);
+          this.onMessageDeletedById(id);
+        }
+      }
+    );
 
-    // Listen for unified data events (ChatMessage updates via data/update)
-    this.addWidgetEventListener('data:ChatMessage:updated' as any, (eventData: ChatMessageEntity) => {
-      console.log(`🔥 UNIFIED-DATA-EVENT: data:ChatMessage:updated`, eventData);
-      this.onMessageUpdated(eventData);
-    });
-    
+    // Keep participant events as they don't use CRUD pattern
     this.addWidgetEventListener(CHAT_EVENTS.PARTICIPANT_JOINED, (eventData: ChatParticipantEventData) => {
       console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.PARTICIPANT_JOINED}`, eventData);
       this.onUserJoined(eventData);
     });
-    
+
     this.addWidgetEventListener(CHAT_EVENTS.PARTICIPANT_LEFT, (eventData: ChatParticipantEventData) => {
       console.log(`🔥 SERVER-EVENT-RECEIVED: ${CHAT_EVENTS.PARTICIPANT_LEFT}`, eventData);
       this.onUserLeft(eventData);
     });
-    
-    // Server events are properly configured above - no fallback needed
-    
-    console.log(`✅ ChatWidget: Set up type-safe event listeners for chat events`);
+
+    console.log(`✅ ChatWidget: Set up CRUD event handlers for ChatMessage`);
   }
 
   
@@ -649,6 +661,58 @@ export class ChatWidget extends ChatWidgetBase {
 
       console.log(`✅ ChatWidget: Message updated successfully`);
     }
+  }
+
+  /**
+   * Handle deleted chat messages for this room - STRICT TYPING
+   * Supports unified data events (ChatMessageEntity from data/delete)
+   */
+  private async onMessageDeleted(eventData: ChatMessageEntity): Promise<void> {
+    console.log(`🗑️ ChatWidget: Received message deletion for room ${this.roomId}:`, eventData);
+
+    // ChatMessageEntity from unified data events
+    const chatMessage = eventData;
+    const roomId = chatMessage.roomId;
+
+    if (roomId === this.roomId) {
+      this.onMessageDeletedById(chatMessage.id);
+    }
+  }
+
+  /**
+   * Handle deleted chat messages by ID - used by CRUD event handler
+   */
+  private async onMessageDeletedById(messageId: string): Promise<void> {
+    console.log(`🗑️ ChatWidget: Deleting message with ID: ${messageId} from room ${this.roomId}`);
+
+    // Debug: Check if DOM element exists before deletion
+    const domElement = this.shadowRoot.querySelector(`[data-entity-id="${messageId}"]`);
+    console.log(`🔍 CLAUDE-DEBUG-DELETE: DOM element exists before deletion:`, !!domElement);
+
+    if (this.chatScroller) {
+      // Use EntityScroller to remove the message
+      const removed = this.chatScroller.remove(messageId);
+      console.log(`🔍 CLAUDE-DEBUG-DELETE: EntityScroller.remove() returned:`, removed);
+
+      // Debug: Check if DOM element still exists after deletion
+      const domElementAfter = this.shadowRoot.querySelector(`[data-entity-id="${messageId}"]`);
+      console.log(`🔍 CLAUDE-DEBUG-DELETE: DOM element exists after deletion:`, !!domElementAfter);
+
+      this.messages = this.chatScroller.entities() as ChatMessageEntity[];
+      this.updateEntityCount();
+    } else {
+      // Fallback: Remove from messages array
+      const messageIndex = this.messages.findIndex(msg => msg.id === messageId);
+      if (messageIndex !== -1) {
+        this.messages.splice(messageIndex, 1);
+        await this.renderWidget(); // Re-render without deleted message
+        this.updateEntityCount();
+      } else {
+        console.warn(`⚠️ ChatWidget: Could not find message to delete: ${messageId}`);
+      }
+    }
+
+    console.log(`✅ ChatWidget: Message ${messageId} deleted successfully`);
   }
 
   /**

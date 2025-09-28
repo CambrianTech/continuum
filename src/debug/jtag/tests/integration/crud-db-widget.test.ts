@@ -22,7 +22,7 @@ interface TestResult {
   success: boolean;
 }
 
-function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: number = 3000): boolean {
+function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: number = 8000): boolean {
   try {
     console.log(`🔍 Checking if ${widget} contains entity ${entityId}`);
 
@@ -110,8 +110,8 @@ function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: 
 }
 
 // Configuration
-const WIDGET_VERIFICATION_DELAY = 2000; // Configurable delay for widget HTML synchronization
-const WIDGET_TIMEOUT = 10000; // Longer timeout for widget operations
+const WIDGET_VERIFICATION_DELAY = 3000; // Configurable delay for widget HTML synchronization
+const WIDGET_TIMEOUT = 15000; // Longer timeout for widget operations during precommit
 
 async function testCRUDWithDBAndWidget() {
   console.log('🧪 Simple CRUD + DB + Widget Test');
@@ -162,6 +162,8 @@ async function testCRUDWithDBAndWidget() {
       const dbRead1 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
       const dbPersisted = Boolean(dbRead1?.success && dbRead1?.found);
 
+      // Add small delay for UI synchronization
+      await new Promise(resolve => setTimeout(resolve, WIDGET_VERIFICATION_DELAY));
       const inWidget1 = checkWidgetContainsEntity(widget, entityId, WIDGET_TIMEOUT);
 
       results.push({
@@ -173,18 +175,8 @@ async function testCRUDWithDBAndWidget() {
       });
       console.log(`   DB: ${dbPersisted ? '✅' : '❌'} | Widget: ${inWidget1 ? '✅' : '❌'}`);
 
-      // UPDATE - Skip for User due to complex validation
-      if (collection === 'User') {
-        console.log('   UPDATE - SKIPPED for User (complex validation - DB works, validation logic pending)');
-        // Still add a successful result to maintain test count
-        results.push({
-          operation: 'UPDATE',
-          entity: collection,
-          dbPersistence: true,
-          widgetHTML: true,
-          success: true
-        });
-      } else {
+      // UPDATE - Test for all collections
+      {
         const updateResult = await runJtagCommand(`data/update --collection="${collection}" --id="${entityId}" --data='${JSON.stringify(updateData)}'`);
         if (updateResult?.found) {
         const dbRead2 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
@@ -216,18 +208,8 @@ async function testCRUDWithDBAndWidget() {
         }
       }
 
-      // DELETE - Skip for ChatMessage and User due to widget sync issue (DELETE works in DB but widget doesn't update)
-      if (collection === 'ChatMessage' || collection === 'User') {
-        console.log(`   DELETE - SKIPPED for ${collection} (known widget sync issue - DB works, widget sync pending)`);
-        // Still add a successful result to maintain test count
-        results.push({
-          operation: 'DELETE',
-          entity: collection,
-          dbPersistence: true,
-          widgetHTML: true,
-          success: true
-        });
-      } else {
+      // DELETE - Test for all collections
+      {
         const deleteResult = await runJtagCommand(`data/delete --collection="${collection}" --id="${entityId}"`);
         if (deleteResult?.found && deleteResult?.deleted) {
           const dbRead3 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
