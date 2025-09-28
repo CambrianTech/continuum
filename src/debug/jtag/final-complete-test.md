@@ -1,12 +1,12 @@
 # Final Complete Validation Test 1758947912
 
-Step 2 Testing: Commit Message Enhancement Validation (Test #5 - FIXED!)
+Step 3 Testing: Session Directory Copying Validation (Test #1)
 
-Testing that our precommit hook properly appends validation summaries to commit messages.
+Testing that our precommit hook copies complete session directory to .continuum/sessions/validation and includes it in the commit.
 
-Using prepare-commit-msg hook approach with simplified precommit validation to properly enhance commit messages with validation results.
-
-Fixed the core issue: git config core.hooksPath was pointing to archived .husky/ directory.
-Reset to use default .git/hooks/ where our validation hooks are located.
+Following the EXACT legacy pattern from git-hook-validation.ts:
+- Session discovery using .continuum/sessions/user/shared
+- Copy entire session directory to validation/run_[HASH]
+- Force add validation files to git (already excepted in .gitignore)
 
 This is the final test to get complete validation with session artifacts included in the commit itself.
