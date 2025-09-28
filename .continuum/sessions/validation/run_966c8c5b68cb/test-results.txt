@@ -14,7 +14,7 @@ Widget timeout: 15000ms
     avatar: '🧪',
     bio: 'Test user for integration testing',
     location: 'Test Environment',
-    joinedAt: '2025-09-28T05:15:42.557Z'
+    joinedAt: '2025-09-28T05:52:02.491Z'
   },
   capabilities: {
     canSendMessages: true,
@@ -39,27 +39,27 @@ Widget timeout: 15000ms
     }
   },
   status: 'online',
-  lastActiveAt: '2025-09-28T05:15:42.557Z',
+  lastActiveAt: '2025-09-28T05:52:02.491Z',
   sessionsActive: []
 }
-✅ SchemaFactory: Created User/1759036543537-7pkbao7q8
-✅ Created: 1759036543537-7pkbao7q8
-✅ Successfully parsed JSON for command: data/read --collection="User" --id="1759036543537-7pkbao7q8"
-🔍 Checking if user-list-widget contains entity 1759036543537-7pkbao7q8
+✅ SchemaFactory: Created User/1759038723410-431rv07am
+✅ Created: 1759038723410-431rv07am
+✅ Successfully parsed JSON for command: data/read --collection="User" --id="1759038723410-431rv07am"
+🔍 Checking if user-list-widget contains entity 1759038723410-431rv07am
 🔍 Widget state result for user-list-widget: success=true
-🔍 Entity 1759036543537-7pkbao7q8 found in user-list-widget: true
+🔍 Entity 1759038723410-431rv07am found in user-list-widget: true
    DB: ✅ | Widget: ✅
-✅ Successfully parsed JSON for command: data/update --collection="User" --id="1759036543537-7pkbao7q8" --data='{"displayName":"Updated Test User"}'
-✅ Successfully parsed JSON for command: data/read --collection="User" --id="1759036543537-7pkbao7q8"
+✅ Successfully parsed JSON for command: data/update --collection="User" --id="1759038723410-431rv07am" --data='{"displayName":"Updated Test User"}'
+✅ Successfully parsed JSON for command: data/read --collection="User" --id="1759038723410-431rv07am"
 🔍 Checking if user-list-widget contains entity Updated Test User
 🔍 Widget state result for user-list-widget: success=true
 🔍 Entity Updated Test User found in user-list-widget: true
    UPDATE - DB: ✅ | Widget: ✅
-✅ Successfully parsed JSON for command: data/delete --collection="User" --id="1759036543537-7pkbao7q8"
-✅ Successfully parsed JSON for command: data/read --collection="User" --id="1759036543537-7pkbao7q8"
-🔍 Checking if user-list-widget contains entity 1759036543537-7pkbao7q8
+✅ Successfully parsed JSON for command: data/delete --collection="User" --id="1759038723410-431rv07am"
+✅ Successfully parsed JSON for command: data/read --collection="User" --id="1759038723410-431rv07am"
+🔍 Checking if user-list-widget contains entity 1759038723410-431rv07am
 🔍 Widget state result for user-list-widget: success=true
-🔍 Entity 1759036543537-7pkbao7q8 found in user-list-widget: false
+🔍 Entity 1759038723410-431rv07am found in user-list-widget: false
    DELETE - DB: ✅ | Widget: ✅
 
 📋 Testing Room...
@@ -72,7 +72,7 @@ Widget timeout: 15000ms
   type: 'public',
   status: 'active',
   ownerId: '002350cc-0031-408d-8040-004f000f',
-  lastMessageAt: '2025-09-28T05:16:00.456Z',
+  lastMessageAt: '2025-09-28T05:52:20.642Z',
   privacy: {
     isPublic: true,
     requiresInvite: false,
@@ -88,30 +88,30 @@ Widget timeout: 15000ms
   stats: {
     memberCount: 1,
     messageCount: 0,
-    createdAt: '2025-09-28T05:16:00.456Z',
-    lastActivityAt: '2025-09-28T05:16:00.456Z'
+    createdAt: '2025-09-28T05:52:20.642Z',
+    lastActivityAt: '2025-09-28T05:52:20.642Z'
   },
   members: [],
   tags: [ 'test', 'integration' ]
 }
-✅ SchemaFactory: Created Room/1759036561279-9q6asisol
-✅ Created: 1759036561279-9q6asisol
-✅ Successfully parsed JSON for command: data/read --collection="Room" --id="1759036561279-9q6asisol"
-🔍 Checking if room-list-widget contains entity 1759036561279-9q6asisol
+✅ SchemaFactory: Created Room/1759038741474-w6ou1adzj
+✅ Created: 1759038741474-w6ou1adzj
+✅ Successfully parsed JSON for command: data/read --collection="Room" --id="1759038741474-w6ou1adzj"
+🔍 Checking if room-list-widget contains entity 1759038741474-w6ou1adzj
 🔍 Widget state result for room-list-widget: success=true
-🔍 Entity 1759036561279-9q6asisol found in room-list-widget: true
+🔍 Entity 1759038741474-w6ou1adzj found in room-list-widget: true
    DB: ✅ | Widget: ✅
-✅ Successfully parsed JSON for command: data/update --collection="Room" --id="1759036561279-9q6asisol" --data='{"displayName":"Updated Test Room"}'
-✅ Successfully parsed JSON for command: data/read --collection="Room" --id="1759036561279-9q6asisol"
+✅ Successfully parsed JSON for command: data/update --collection="Room" --id="1759038741474-w6ou1adzj" --data='{"displayName":"Updated Test Room"}'
+✅ Successfully parsed JSON for command: data/read --collection="Room" --id="1759038741474-w6ou1adzj"
 🔍 Checking if room-list-widget contains entity Updated Test Room
 🔍 Widget state result for room-list-widget: success=true
 🔍 Entity Updated Test Room found in room-list-widget: true
    UPDATE - DB: ✅ | Widget: ✅
-✅ Successfully parsed JSON for command: data/delete --collection="Room" --id="1759036561279-9q6asisol"
-✅ Successfully parsed JSON for command: data/read --collection="Room" --id="1759036561279-9q6asisol"
-🔍 Checking if room-list-widget contains entity 1759036561279-9q6asisol
+✅ Successfully parsed JSON for command: data/delete --collection="Room" --id="1759038741474-w6ou1adzj"
+✅ Successfully parsed JSON for command: data/read --collection="Room" --id="1759038741474-w6ou1adzj"
+🔍 Checking if room-list-widget contains entity 1759038741474-w6ou1adzj
 🔍 Widget state result for room-list-widget: success=true
-🔍 Entity 1759036561279-9q6asisol found in room-list-widget: false
+🔍 Entity 1759038741474-w6ou1adzj found in room-list-widget: false
    DELETE - DB: ✅ | Widget: ✅
 
 📋 Testing ChatMessage...
@@ -123,24 +123,24 @@ Widget timeout: 15000ms
   content: { text: 'Test Message', attachments: [] },
   status: 'sent',
   priority: 'normal',
-  timestamp: '2025-09-28T05:16:18.050Z',
+  timestamp: '2025-09-28T05:52:38.097Z',
   reactions: []
 }
-✅ SchemaFactory: Created ChatMessage/1759036578868-m6bwncqip
-✅ Created: 1759036578868-m6bwncqip
-✅ Successfully parsed JSON for command: data/read --collection="ChatMessage" --id="1759036578868-m6bwncqip"
-🔍 Checking if chat-widget contains entity 1759036578868-m6bwncqip
-🔍 Entity 1759036578868-m6bwncqip found in chat-widget (grep search): true
+✅ SchemaFactory: Created ChatMessage/1759038758921-qizoplbks
+✅ Created: 1759038758921-qizoplbks
+✅ Successfully parsed JSON for command: data/read --collection="ChatMessage" --id="1759038758921-qizoplbks"
+🔍 Checking if chat-widget contains entity 1759038758921-qizoplbks
+🔍 Entity 1759038758921-qizoplbks found in chat-widget (grep search): true
    DB: ✅ | Widget: ✅
-✅ Successfully parsed JSON for command: data/update --collection="ChatMessage" --id="1759036578868-m6bwncqip" --data='{"content":{"text":"Updated Test Message","attachments":[]}}'
-✅ Successfully parsed JSON for command: data/read --collection="ChatMessage" --id="1759036578868-m6bwncqip"
+✅ Successfully parsed JSON for command: data/update --collection="ChatMessage" --id="1759038758921-qizoplbks" --data='{"content":{"text":"Updated Test Message","attachments":[]}}'
+✅ Successfully parsed JSON for command: data/read --collection="ChatMessage" --id="1759038758921-qizoplbks"
 🔍 Checking if chat-widget contains entity Updated Test Message
 🔍 Entity Updated Test Message found in chat-widget (grep search): true
    UPDATE - DB: ✅ | Widget: ✅
-✅ Successfully parsed JSON for command: data/delete --collection="ChatMessage" --id="1759036578868-m6bwncqip"
-✅ Successfully parsed JSON for command: data/read --collection="ChatMessage" --id="1759036578868-m6bwncqip"
-🔍 Checking if chat-widget contains entity 1759036578868-m6bwncqip
-🔍 Entity 1759036578868-m6bwncqip found in chat-widget (grep search): false
+✅ Successfully parsed JSON for command: data/delete --collection="ChatMessage" --id="1759038758921-qizoplbks"
+✅ Successfully parsed JSON for command: data/read --collection="ChatMessage" --id="1759038758921-qizoplbks"
+🔍 Checking if chat-widget contains entity 1759038758921-qizoplbks
+🔍 Entity 1759038758921-qizoplbks found in chat-widget (grep search): false
    DELETE - DB: ✅ | Widget: ✅
 
 📊 CRUD + DB + Widget Test Results:
