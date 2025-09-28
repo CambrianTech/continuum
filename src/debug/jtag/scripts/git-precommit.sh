@@ -1,40 +1,18 @@
 #!/bin/bash
 set -e  # Exit immediately on any error
 
-# Cleanup function to run after commit completes
-cleanup_validation_artifacts() {
+# Post-commit cleanup function - called after successful commit
+post_commit_summary() {
     echo ""
-    echo "🧹 POST-COMMIT CLEANUP: Validation artifacts"
+    echo "📋 POST-COMMIT SUMMARY: Validation artifacts"
     echo "============================================"
-
-    # Find and remove validation run directories (keeping them in git history)
-    VALIDATION_DIRS=$(find .continuum/sessions/validation -name "run_*" -type d 2>/dev/null || true)
-
-    if [ -n "$VALIDATION_DIRS" ]; then
-        echo "🔍 Cleaning validation directories from working tree:"
-        echo "$VALIDATION_DIRS" | while read -r dir; do
-            if [ -d "$dir" ]; then
-                echo "   🗑️  Removing: $dir"
-                rm -rf "$dir"
-            fi
-        done
-        echo "✅ Validation artifacts cleaned from working directory"
-    else
-        echo "ℹ️  No validation artifacts found to clean"
-    fi
-
-    # Clean up validation summary
-    VALIDATION_SUMMARY=".continuum/sessions/validation/latest-validation-summary.txt"
-    if [ -f "$VALIDATION_SUMMARY" ]; then
-        echo "🗑️  Removing validation summary: $VALIDATION_SUMMARY"
-        rm -f "$VALIDATION_SUMMARY"
-    fi
-
-    echo "✅ Post-commit cleanup complete - working directory clean!"
+    echo "✅ Validation artifacts preserved in git history"
+    echo "✅ Screenshots and logs available for future reference"
+    echo "✅ Working directory remains organized"
+    echo ""
+    echo "🎯 Visual history location: .continuum/sessions/validation/run_${COMMIT_HASH:0:12}/"
+    echo "🚀 Ready for next development cycle!"
 }
-
-# Schedule cleanup to run when script exits (after commit)
-trap cleanup_validation_artifacts EXIT
 
 echo "🔒 GIT PRECOMMIT: Bulletproof validation with proof artifacts"
 echo "=================================================="
@@ -276,5 +254,5 @@ echo "✅ All validation artifacts included in commit"
 echo ""
 echo "🚀 Commit approved - system is bulletproof!"
 
-# Note: The actual git commit happens here (between precommit script and potential Phase 7)
-# We set up Phase 7 to be called by prepare-commit-msg or post-commit hook
+# Call summary after successful validation (no cleanup - keep artifacts in git)
+post_commit_summary
