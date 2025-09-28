@@ -1,138 +1,8 @@
-2025-09-28T05:51:53.698Z [BROWSER_CONSOLE] 📋 JTAGClient: Discovering available commands...
-2025-09-28T05:51:53.702Z [BROWSER_CONSOLE] 📋 BROWSER: Listing available commands (category: all)
-2025-09-28T05:51:53.736Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/continuum/public/continuum-widget.html"
-2025-09-28T05:51:53.734Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.715Z [BROWSER_CONSOLE] 🔧 Widget UI: Initializing...
-2025-09-28T05:51:53.733Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.706Z [BROWSER_CONSOLE] 🔄 JTAGClient: Discovering available commands...
-2025-09-28T05:51:53.711Z [BROWSER_CONSOLE] ✅ JTAGClient: Bootstrap complete! Discovered 41 commands
-2025-09-28T05:51:53.763Z [BROWSER_CONSOLE] 🎨 ContinuumWidget: Loading styles from widgets/continuum/public/continuum-widget.css
-2025-09-28T05:51:53.716Z [BROWSER_CONSOLE] ✅ Widget UI: Initialized
-2025-09-28T05:51:53.710Z [BROWSER_CONSOLE] 📋 BROWSER: Listing available commands (category: all)
-2025-09-28T05:51:53.765Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/continuum/public/continuum-widget.css",
-  "encoding": "utf8"
-}
-2025-09-28T05:51:53.768Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.770Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/continuum/public/continuum-widget.css"
-2025-09-28T05:51:53.705Z [ScopedEventSystem] 🎯 ScopedEventSystem initialized for session b3b64e7b-92dd-4f40-bb09-098480fd1043
-2025-09-28T05:51:53.767Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.708Z [BROWSER_CONSOLE] Executing command 'list' with params: {
+2025-09-28T06:00:19.922Z [BROWSER_CONSOLE] ✅ Widget UI: JTAG Client connected successfully
+2025-09-28T06:00:19.918Z [BROWSER_CONSOLE] Executing command 'list' with params: {
   "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -246,14 +116,134 @@
   "includeDescription": true,
   "includeSignature": true
 }
-2025-09-28T05:51:53.779Z [BROWSER_CONSOLE] 🔗 ContinuumWidget: Connection status updated
-2025-09-28T05:51:53.798Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.796Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.791Z [BROWSER_CONSOLE] 📸 ContinuumWidget: html2canvas script loaded into shadow DOM
-2025-09-28T05:51:53.800Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/shared/themes/base/base.css"
-2025-09-28T05:51:53.731Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+2025-09-28T06:00:19.914Z [ScopedEventSystem] 🎯 ScopedEventSystem initialized for session b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:00:19.916Z [BROWSER_CONSOLE] 🔄 JTAGClient: Discovering available commands...
+2025-09-28T06:00:19.910Z [BROWSER_CONSOLE] Executing command 'list' with params: {
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "category": "all",
+  "includeDescription": true,
+  "includeSignature": true
+}
+2025-09-28T06:00:19.921Z [BROWSER_CONSOLE] ✅ JTAGClient: Bootstrap complete! Discovered 41 commands
+2025-09-28T06:00:19.909Z [BROWSER_CONSOLE] 📋 JTAGClient: Discovering available commands...
+2025-09-28T06:00:19.919Z [BROWSER_CONSOLE] 📋 BROWSER: Listing available commands (category: all)
+2025-09-28T06:00:19.924Z [BROWSER_CONSOLE] 🔧 Widget UI: Initializing...
+2025-09-28T06:00:19.912Z [BROWSER_CONSOLE] 📋 BROWSER: Listing available commands (category: all)
+2025-09-28T06:00:19.961Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/continuum/public/continuum-widget.css"
+2025-09-28T06:00:19.943Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -367,617 +357,13 @@
   "filepath": "widgets/continuum/public/continuum-widget.html",
   "encoding": "utf8"
 }
-2025-09-28T05:51:53.815Z [BROWSER_CONSOLE] 🎨 ContinuumWidget: Injecting theme CSS into document head for global access...
-2025-09-28T05:51:53.793Z [BROWSER_CONSOLE] ✅ ContinuumWidget: Desktop interface initialized
-2025-09-28T05:51:53.713Z [BROWSER_CONSOLE] ✅ Widget UI: JTAG Client connected successfully
-2025-09-28T05:51:53.795Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+2025-09-28T06:00:19.948Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/continuum/public/continuum-widget.html"
+2025-09-28T06:00:19.958Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:19.959Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:19.982Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/shared/themes/base/base.css"
+2025-09-28T06:00:19.983Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/shared/themes/base/base.css",
-  "encoding": "utf8"
-}
-2025-09-28T05:51:53.832Z [BROWSER_CONSOLE] 📄 MainWidget: Loading template from widgets/main/public/main-panel.html
-2025-09-28T05:51:53.813Z [BROWSER_CONSOLE] 🎨 ContinuumWidget: Loaded base theme CSS variables and layout for shadow DOM injection
-2025-09-28T05:51:53.777Z [BROWSER_CONSOLE] 🌐 ContinuumWidget: Initializing main desktop interface...
-2025-09-28T05:51:53.829Z [BROWSER_CONSOLE] 🔧 SidebarResizer: Applied width: 483 to sidebar container and grid template
-2025-09-28T05:51:53.836Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.835Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/sidebar/public/sidebar-panel.html",
-  "encoding": "utf8"
-}
-2025-09-28T05:51:53.816Z [BROWSER_CONSOLE] ✅ ContinuumWidget: Base theme CSS injected into document head (7670 chars)
-2025-09-28T05:51:53.805Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/shared/themes/base/theme.css"
-2025-09-28T05:51:53.852Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/sidebar/public/sidebar-panel.css",
-  "encoding": "utf8"
-}
-2025-09-28T05:51:53.838Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.827Z [BROWSER_CONSOLE] 📄 SidebarWidget: Loading template from widgets/sidebar/public/sidebar-panel.html
-2025-09-28T05:51:53.842Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.804Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.839Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/sidebar/public/sidebar-panel.html"
-2025-09-28T05:51:53.833Z [BROWSER_CONSOLE] ✅ ContinuumWidget: Desktop interface rendered with theme CSS injected into document head
-2025-09-28T05:51:53.853Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.856Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/sidebar/public/sidebar-panel.css"
-2025-09-28T05:51:53.847Z [BROWSER_CONSOLE] ✅ ContinuumWidget: BaseWidget initialization complete
-2025-09-28T05:51:53.850Z [BROWSER_CONSOLE] 🎨 SidebarWidget: Loading styles from widgets/sidebar/public/sidebar-panel.css
-2025-09-28T05:51:53.862Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/main/public/main-panel.css",
-  "encoding": "utf8"
-}
-2025-09-28T05:51:53.700Z [BROWSER_CONSOLE] Executing command 'list' with params: {
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "category": "all",
-  "includeDescription": true,
-  "includeSignature": true
-}
-2025-09-28T05:51:53.860Z [BROWSER_CONSOLE] 🎨 MainWidget: Loading styles from widgets/main/public/main-panel.css
-2025-09-28T05:51:53.803Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.831Z [BROWSER_CONSOLE] 🎨 MainWidget: BaseWidget initialization starting...
-2025-09-28T05:51:53.866Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.855Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.879Z [BROWSER_CONSOLE] 🎨 RoomListWidget: Loading styles from widgets/chat/room-list/room-list-widget.css
-2025-09-28T05:51:53.873Z [BROWSER_CONSOLE] 📋 SidebarPanel: Dynamic list updated
-2025-09-28T05:51:53.801Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1091,10 +477,9 @@
   "filepath": "widgets/shared/themes/base/theme.css",
   "encoding": "utf8"
 }
-2025-09-28T05:51:53.883Z [BROWSER_CONSOLE] 🔧 SidebarResizer: Applied width: 483 to sidebar container and grid template
-2025-09-28T05:51:53.893Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+2025-09-28T06:00:19.956Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1205,19 +590,17 @@
     }
   },
   "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/chat/user-list/user-list.css",
+  "filepath": "widgets/continuum/public/continuum-widget.css",
   "encoding": "utf8"
 }
-2025-09-28T05:51:53.872Z [BROWSER_CONSOLE] 🔗 SidebarPanel: Status view updated
-2025-09-28T05:51:53.880Z [BROWSER_CONSOLE] 🎨 UserListWidget: BaseWidget initialization starting...
-2025-09-28T05:51:53.882Z [BROWSER_CONSOLE] 🎨 UserListWidget: Loading styles from widgets/chat/user-list/user-list.css
-2025-09-28T05:51:53.889Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.894Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.877Z [BROWSER_CONSOLE] 🎨 RoomListWidget: BaseWidget initialization starting...
-2025-09-28T05:51:53.920Z [BROWSER_CONSOLE] 🔢 MainPanel: Version info updated
-2025-09-28T05:51:53.886Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+2025-09-28T06:00:19.969Z [BROWSER_CONSOLE] 🔗 ContinuumWidget: Connection status updated
+2025-09-28T06:00:19.976Z [BROWSER_CONSOLE] ✅ ContinuumWidget: Desktop interface initialized
+2025-09-28T06:00:19.945Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:19.980Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:19.947Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:19.978Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1328,18 +711,264 @@
     }
   },
   "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "filepath": "widgets/chat/room-list/room-list-widget.css",
+  "filepath": "widgets/shared/themes/base/base.css",
   "encoding": "utf8"
 }
-2025-09-28T05:51:53.896Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.867Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/main/public/main-panel.css"
-2025-09-28T05:51:53.899Z [BROWSER_CONSOLE] ✅ SidebarWidget: BaseWidget initialization complete
-2025-09-28T05:51:53.928Z [BROWSER_CONSOLE] 🎨 ChatWidget: Loading styles from widgets/chat/chat-widget/chat-widget.css
-2025-09-28T05:51:53.923Z [BROWSER_CONSOLE] ✅ MainPanel: Main panel initialized
-2025-09-28T05:51:53.887Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.841Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+2025-09-28T06:00:19.968Z [BROWSER_CONSOLE] 🌐 ContinuumWidget: Initializing main desktop interface...
+2025-09-28T06:00:19.975Z [BROWSER_CONSOLE] 📸 ContinuumWidget: html2canvas script loaded into shadow DOM
+2025-09-28T06:00:19.955Z [BROWSER_CONSOLE] 🎨 ContinuumWidget: Loading styles from widgets/continuum/public/continuum-widget.css
+2025-09-28T06:00:19.926Z [BROWSER_CONSOLE] ✅ Widget UI: Initialized
+2025-09-28T06:00:19.981Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:19.987Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:19.985Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:19.988Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/shared/themes/base/theme.css"
+2025-09-28T06:00:20.006Z [BROWSER_CONSOLE] 🎨 SidebarWidget: BaseWidget initialization starting...
+2025-09-28T06:00:20.010Z [BROWSER_CONSOLE] 🔧 SidebarResizer: Applied width: 483 to sidebar container and grid template
+2025-09-28T06:00:20.014Z [BROWSER_CONSOLE] ✅ ContinuumWidget: Desktop interface rendered with theme CSS injected into document head
+2025-09-28T06:00:20.022Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:20.016Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "filepath": "widgets/sidebar/public/sidebar-panel.html",
+  "encoding": "utf8"
+}
+2025-09-28T06:00:19.998Z [BROWSER_CONSOLE] ✅ ContinuumWidget: Base theme CSS injected into document head (7670 chars)
+2025-09-28T06:00:20.008Z [BROWSER_CONSOLE] 📄 SidebarWidget: Loading template from widgets/sidebar/public/sidebar-panel.html
+2025-09-28T06:00:20.043Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "filepath": "widgets/sidebar/public/sidebar-panel.css",
+  "encoding": "utf8"
+}
+2025-09-28T06:00:20.041Z [BROWSER_CONSOLE] 🎨 SidebarWidget: Loading styles from widgets/sidebar/public/sidebar-panel.css
+2025-09-28T06:00:20.024Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.011Z [BROWSER_CONSOLE] 🎨 MainWidget: BaseWidget initialization starting...
+2025-09-28T06:00:20.013Z [BROWSER_CONSOLE] 📄 MainWidget: Loading template from widgets/main/public/main-panel.html
+2025-09-28T06:00:20.046Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.025Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/main/public/main-panel.html"
+2025-09-28T06:00:20.021Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1453,11 +1082,388 @@
   "filepath": "widgets/main/public/main-panel.html",
   "encoding": "utf8"
 }
-2025-09-28T05:51:53.897Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/chat/user-list/user-list.css"
-2025-09-28T05:51:53.844Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.930Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+2025-09-28T06:00:20.052Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:20.054Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.044Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:20.055Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/main/public/main-panel.css"
+2025-09-28T06:00:20.027Z [BROWSER_CONSOLE] ✅ ContinuumWidget: BaseWidget initialization complete
+2025-09-28T06:00:20.050Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "filepath": "widgets/main/public/main-panel.css",
+  "encoding": "utf8"
+}
+2025-09-28T06:00:20.047Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/sidebar/public/sidebar-panel.css"
+2025-09-28T06:00:20.061Z [BROWSER_CONSOLE] 📋 SidebarPanel: Dynamic list updated
+2025-09-28T06:00:20.067Z [BROWSER_CONSOLE] 🎨 RoomListWidget: Loading styles from widgets/chat/room-list/room-list-widget.css
+2025-09-28T06:00:20.072Z [BROWSER_CONSOLE] 🔧 SidebarResizer: Applied width: 483 to sidebar container and grid template
+2025-09-28T06:00:20.049Z [BROWSER_CONSOLE] 🎨 MainWidget: Loading styles from widgets/main/public/main-panel.css
+2025-09-28T06:00:20.070Z [BROWSER_CONSOLE] 🎨 UserListWidget: Loading styles from widgets/chat/user-list/user-list.css
+2025-09-28T06:00:20.019Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/sidebar/public/sidebar-panel.html"
+2025-09-28T06:00:20.073Z [BROWSER_CONSOLE] ✅ SidebarPanel: Sidebar panel rendered
+2025-09-28T06:00:19.995Z [BROWSER_CONSOLE] 🎨 ContinuumWidget: Loaded base theme CSS variables and layout for shadow DOM injection
+2025-09-28T06:00:20.065Z [BROWSER_CONSOLE] 🎨 RoomListWidget: BaseWidget initialization starting...
+2025-09-28T06:00:20.017Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:20.063Z [BROWSER_CONSOLE] ✅ SidebarPanel: Sidebar panel initialized
+2025-09-28T06:00:20.079Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/chat/room-list/room-list-widget.css"
+2025-09-28T06:00:20.087Z [BROWSER_CONSOLE] ✅ SidebarWidget: BaseWidget initialization complete
+2025-09-28T06:00:20.078Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.084Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.111Z [BROWSER_CONSOLE] 🔢 MainPanel: Version info updated
+2025-09-28T06:00:20.081Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "filepath": "widgets/chat/user-list/user-list.css",
+  "encoding": "utf8"
+}
+2025-09-28T06:00:20.109Z [BROWSER_CONSOLE] 📋 MainPanel: Content tabs initialized
+2025-09-28T06:00:20.058Z [SidebarPanel] 🎯 SidebarPanel: Initializing sidebar panel...
+2025-09-28T06:00:20.086Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/chat/user-list/user-list.css"
+2025-09-28T06:00:20.083Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:20.018Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.115Z [BROWSER_CONSOLE] 📄 MainPanel: Loaded content info for /chat/general: General
+2025-09-28T06:00:20.075Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "filepath": "widgets/chat/room-list/room-list-widget.css",
+  "encoding": "utf8"
+}
+2025-09-28T06:00:20.125Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
+2025-09-28T06:00:20.114Z [BROWSER_CONSOLE] ✅ MainPanel: Main panel initialized
+2025-09-28T06:00:20.112Z [BROWSER_CONSOLE] 🔘 MainPanel: Status buttons initialized
+2025-09-28T06:00:20.121Z [BROWSER_CONSOLE] Executing command 'file/load' with params: {
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1571,24 +1577,24 @@
   "filepath": "widgets/chat/chat-widget/chat-widget.css",
   "encoding": "utf8"
 }
-2025-09-28T05:51:53.921Z [BROWSER_CONSOLE] 🔘 MainPanel: Status buttons initialized
-2025-09-28T05:51:53.933Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.939Z [BROWSER_CONSOLE] 🔧 EntityScrollerWidget: Initializing RoomListWidget...
-2025-09-28T05:51:53.918Z [BROWSER_CONSOLE] 📋 MainPanel: Content tabs initialized
-2025-09-28T05:51:53.934Z [BROWSER_CONSOLE] 🔀 BROWSER: Need filesystem access → delegating to server
-2025-09-28T05:51:53.864Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
-2025-09-28T05:51:53.891Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/chat/room-list/room-list-widget.css"
-2025-09-28T05:51:53.926Z [BROWSER_CONSOLE] 🎨 ChatWidget: BaseWidget initialization starting...
-2025-09-28T05:51:53.938Z [BROWSER_CONSOLE] ✅ MainWidget: BaseWidget initialization complete
-2025-09-28T05:51:53.929Z [BROWSER_CONSOLE] ✅ MainPanel: Main panel rendered
-2025-09-28T05:51:53.936Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/chat/chat-widget/chat-widget.css"
-2025-09-28T05:51:53.956Z [BROWSER_CONSOLE] 🏗️ EntityManager: Created "Scroller-oldest-first" with debug mode enabled
-2025-09-28T05:51:53.945Z [BROWSER_CONSOLE] 🎧 DataEventUtils: Setting up universal CRUD subscription for Room
-2025-09-28T05:51:53.952Z [BROWSER_CONSOLE] ✅ RoomListWidget: CRUD subscriptions active
-2025-09-28T05:51:53.957Z [BROWSER_CONSOLE] Executing command 'data/list' with params: {
+2025-09-28T06:00:20.127Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/chat/chat-widget/chat-widget.css"
+2025-09-28T06:00:20.118Z [BROWSER_CONSOLE] 🎨 ChatWidget: Loading styles from widgets/chat/chat-widget/chat-widget.css
+2025-09-28T06:00:20.130Z [BROWSER_CONSOLE] 🔧 EntityScrollerWidget: Initializing RoomListWidget...
+2025-09-28T06:00:20.117Z [BROWSER_CONSOLE] 🎨 ChatWidget: BaseWidget initialization starting...
+2025-09-28T06:00:20.128Z [BROWSER_CONSOLE] ✅ MainWidget: BaseWidget initialization complete
+2025-09-28T06:00:20.132Z [BROWSER_CONSOLE] 🔧 RoomListWidget: Setting up CRUD event subscriptions...
+2025-09-28T06:00:20.124Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:20.146Z [BROWSER_CONSOLE] 🏗️ EntityManager: Created "Scroller-oldest-first" with debug mode enabled
+2025-09-28T06:00:20.166Z [BROWSER_CONSOLE] 🔧 EntityScrollerWidget: Initializing UserListWidget...
+2025-09-28T06:00:20.134Z [BROWSER_CONSOLE] 🎧 RoomListWidget: Setting up unified CRUD subscriptions for Room
+2025-09-28T06:00:20.107Z [MainPanel] 🎯 MainPanel: Initializing main content panel...
+2025-09-28T06:00:20.068Z [BROWSER_CONSOLE] 🎨 UserListWidget: BaseWidget initialization starting...
+2025-09-28T06:00:20.142Z [BROWSER_CONSOLE] ✅ RoomListWidget: CRUD subscriptions active
+2025-09-28T06:00:20.137Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:Room:created
+2025-09-28T06:00:20.148Z [BROWSER_CONSOLE] Executing command 'data/list' with params: {
   "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1707,160 +1713,23 @@
   ],
   "limit": 50
 }
-2025-09-28T05:51:53.950Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:Room:deleted
-2025-09-28T05:51:53.948Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:Room:updated
-2025-09-28T05:51:53.916Z [MainPanel] 🎯 MainPanel: Initializing main content panel...
-2025-09-28T05:51:53.825Z [BROWSER_CONSOLE] 🎨 SidebarWidget: BaseWidget initialization starting...
-2025-09-28T05:51:53.976Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:User:created
-2025-09-28T05:51:53.941Z [BROWSER_CONSOLE] 🔧 RoomListWidget: Setting up CRUD event subscriptions...
-2025-09-28T05:51:53.981Z [BROWSER_CONSOLE] ✅ UserListWidget: CRUD subscriptions active
-2025-09-28T05:51:53.845Z [BROWSER_CONSOLE] 📂 BROWSER: Loading "widgets/main/public/main-panel.html"
-2025-09-28T05:51:53.943Z [BROWSER_CONSOLE] 🎧 RoomListWidget: Setting up unified CRUD subscriptions for Room
-2025-09-28T05:51:53.983Z [BROWSER_CONSOLE] ✅ EntityScrollerWidget: Initialized UserListWidget
-2025-09-28T05:51:53.971Z [BROWSER_CONSOLE] 🔧 UserListWidget: Setting up CRUD event subscriptions...
-2025-09-28T05:51:53.978Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:User:updated
-2025-09-28T05:51:53.954Z [BROWSER_CONSOLE] ✅ EntityScrollerWidget: Initialized RoomListWidget
-2025-09-28T05:51:53.985Z [BROWSER_CONSOLE] 🏗️ EntityManager: Created "Scroller-oldest-first" with debug mode enabled
-2025-09-28T05:51:53.993Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: Current room ID (property): undefined
-2025-09-28T05:51:53.973Z [BROWSER_CONSOLE] 🎧 UserListWidget: Setting up unified CRUD subscriptions for User
-2025-09-28T05:51:53.974Z [BROWSER_CONSOLE] 🎧 DataEventUtils: Setting up universal CRUD subscription for User
-2025-09-28T05:51:53.989Z [ChatWidget] 🎯 ChatWidget: Initializing for room "5e71a0c8-0303-4eb8-a478-3a121248"...
-2025-09-28T05:51:54.011Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 1ceab6cc-448a-48b4-9a00-0774d7b4, total: 1
-2025-09-28T05:51:53.996Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: Set room ID to: 5e71a0c8-0303-4eb8-a478-3a121248
-2025-09-28T05:51:53.947Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:Room:created
-2025-09-28T05:51:53.998Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: New room ID (property): undefined
-2025-09-28T05:51:53.870Z [SidebarPanel] 🎯 SidebarPanel: Initializing sidebar panel...
-2025-09-28T05:51:53.979Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:User:deleted
-2025-09-28T05:51:54.003Z [BROWSER_CONSOLE] 🗄️ BROWSER: Delegating data read to server
-2025-09-28T05:51:53.991Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST-1759038713991: Testing State system with properties...
-2025-09-28T05:51:54.019Z [BROWSER_CONSOLE] 🧹 EntityManager "Scroller-oldest-first": Cleared all entities
-2025-09-28T05:51:54.029Z [BROWSER_CONSOLE] ✅ UserListWidget: Initialized EntityScroller with automatic deduplication
-2025-09-28T05:51:53.969Z [BROWSER_CONSOLE] 🔧 EntityScrollerWidget: Initializing UserListWidget...
-2025-09-28T05:51:54.031Z [BROWSER_CONSOLE] ✅ UserListWidget: BaseWidget initialization complete
-2025-09-28T05:51:53.874Z [BROWSER_CONSOLE] ✅ SidebarPanel: Sidebar panel initialized
-2025-09-28T05:51:53.994Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: Current room entity (property): null
-2025-09-28T05:51:54.028Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 002350cc-0031-408d-8040-004f000f, total: 3
-2025-09-28T05:51:54.002Z [BROWSER_CONSOLE] Executing command 'data/read' with params: {
+2025-09-28T06:00:20.139Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:Room:updated
+2025-09-28T06:00:20.141Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:Room:deleted
+2025-09-28T06:00:20.178Z [BROWSER_CONSOLE] ✅ EntityScrollerWidget: Initialized UserListWidget
+2025-09-28T06:00:20.172Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:User:created
+2025-09-28T06:00:20.173Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:User:updated
+2025-09-28T06:00:20.120Z [BROWSER_CONSOLE] ✅ MainPanel: Main panel rendered
+2025-09-28T06:00:20.167Z [BROWSER_CONSOLE] 🔧 UserListWidget: Setting up CRUD event subscriptions...
+2025-09-28T06:00:20.176Z [BROWSER_CONSOLE] ✅ UserListWidget: CRUD subscriptions active
+2025-09-28T06:00:20.180Z [BROWSER_CONSOLE] 🏗️ EntityManager: Created "Scroller-oldest-first" with debug mode enabled
+2025-09-28T06:00:20.188Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: Current room entity (property): null
+2025-09-28T06:00:20.169Z [BROWSER_CONSOLE] 🎧 UserListWidget: Setting up unified CRUD subscriptions for User
+2025-09-28T06:00:20.136Z [BROWSER_CONSOLE] 🎧 DataEventUtils: Setting up universal CRUD subscription for Room
+2025-09-28T06:00:20.144Z [BROWSER_CONSOLE] ✅ EntityScrollerWidget: Initialized RoomListWidget
+2025-09-28T06:00:20.182Z [BROWSER_CONSOLE] Executing command 'data/list' with params: {
   "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "JTAG Widget Development UI",
-        "description": "Focused widget development environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "collection": "Room",
-  "id": "5e71a0c8-0303-4eb8-a478-3a121248"
-}
-2025-09-28T05:51:54.015Z [BROWSER_CONSOLE] ✅ RoomListWidget: Initialized EntityScroller with automatic deduplication
-2025-09-28T05:51:53.987Z [BROWSER_CONSOLE] Executing command 'data/list' with params: {
-  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
-  "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -1979,38 +1848,193 @@
   ],
   "limit": 50
 }
-2025-09-28T05:51:54.044Z [BROWSER_CONSOLE] ✅ ChatWidget: Using direct data event subscription for room "5e71a0c8-0303-4eb8-a478-3a121248"
-2025-09-28T05:51:54.048Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:ChatMessage:created
-2025-09-28T05:51:54.022Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 77736910-505a-4870-a942-02295730, total: 1
-2025-09-28T05:51:54.035Z [BROWSER_CONSOLE] 📋 ChatWidget: Loaded room entity "General"
-2025-09-28T05:51:54.040Z [BROWSER_CONSOLE] ✅ ChatWidget: Subscribed to room change events
-2025-09-28T05:51:54.038Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to chat:room-changed
-2025-09-28T05:51:53.925Z [BROWSER_CONSOLE] 📄 MainPanel: Loaded content info for /chat/general: General
-2025-09-28T05:51:54.037Z [BROWSER_CONSOLE] 🎧 ChatWidget: Subscribing to room change events
-2025-09-28T05:51:54.013Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 5e71a0c8-0303-4eb8-a478-3a121248, total: 2
-2025-09-28T05:51:54.053Z [BROWSER_CONSOLE] 🔗 BaseWidget: Setting up event dispatcher for chat:participant-joined
-2025-09-28T05:51:54.010Z [BROWSER_CONSOLE] 🧹 EntityManager "Scroller-oldest-first": Cleared all entities
-2025-09-28T05:51:54.047Z [BROWSER_CONSOLE] 🎧 DataEventUtils: Setting up universal CRUD subscription for ChatMessage
-2025-09-28T05:51:54.046Z [BROWSER_CONSOLE] 📡 ChatWidget: Setting up CRUD event handlers for ChatMessage
-2025-09-28T05:51:54.056Z [BROWSER_CONSOLE] 🔗 BaseWidget: Setting up event dispatcher for chat:participant-left
-2025-09-28T05:51:54.017Z [BROWSER_CONSOLE] ✅ RoomListWidget: BaseWidget initialization complete
-2025-09-28T05:51:54.000Z [BROWSER_CONSOLE] ✅ CLAUDE-STATE-TEST: State system properties work perfectly!
-2025-09-28T05:51:54.055Z [BROWSER_CONSOLE] ✅ BaseWidget: Event dispatcher ready for chat:participant-joined
-2025-09-28T05:51:54.060Z [BROWSER_CONSOLE] ✅ ChatWidget: Initialized for room "5e71a0c8-0303-4eb8-a478-3a121248" with 0 messages
-2025-09-28T05:51:54.087Z [BROWSER_CONSOLE] 🧹 EntityManager "Scroller-newest-first": Cleared all entities
-2025-09-28T05:51:54.080Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-1759038714080: EntityScroller sentinel created with improved positioning for oldest-first
-2025-09-28T05:51:54.059Z [BROWSER_CONSOLE] ✅ ChatWidget: Set up CRUD event handlers for ChatMessage
-2025-09-28T05:51:54.068Z [BROWSER_CONSOLE] ✅ ChatWidget: BaseWidget initialization complete
-2025-09-28T05:51:54.063Z [BROWSER_CONSOLE] ✅ ChatWidget: Message input handlers set up for room 5e71a0c8-0303-4eb8-a478-3a121248
-2025-09-28T05:51:54.058Z [BROWSER_CONSOLE] ✅ BaseWidget: Event dispatcher ready for chat:participant-left
-2025-09-28T05:51:54.094Z [BROWSER_CONSOLE] 📍 ChatWidget: No saved scroll state for key "chat_scroll_5e71a0c8-0303-4eb8-a478-3a121248", scrolling to bottom
-2025-09-28T05:51:54.095Z [BROWSER_CONSOLE] 📊 ChatWidget: getData returned: null object
-2025-09-28T05:51:54.042Z [BROWSER_CONSOLE] 🔗 ChatWidget: Subscribing to room events for "5e71a0c8-0303-4eb8-a478-3a121248"
-2025-09-28T05:51:54.064Z [BROWSER_CONSOLE] 🏗️ EntityManager: Created "Scroller-newest-first" with debug mode enabled
-2025-09-28T05:51:54.066Z [BROWSER_CONSOLE] Executing command 'data/list' with params: {
+2025-09-28T06:00:20.175Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:User:deleted
+2025-09-28T06:00:20.190Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: Set room ID to: 5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:00:20.195Z [BROWSER_CONSOLE] Executing command 'data/read' with params: {
   "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
+    "environment": "server",
+    "config": {
+      "instance": {
+        "name": "JTAG Widget Development UI",
+        "description": "Focused widget development environment",
+        "ports": {
+          "http_server": 9003,
+          "websocket_server": 9002
+        },
+        "paths": {
+          "directory": "examples/widget-ui",
+          "html_file": "index.html",
+          "build_output": "dist"
+        },
+        "capabilities": {}
+      },
+      "server": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws",
+          "bind_interface": "127.0.0.1",
+          "max_connections": 100,
+          "enable_cors": false
+        },
+        "paths": {
+          "logs": ".continuum/jtag/logs",
+          "screenshots": ".continuum/jtag/screenshots",
+          "data_directory": ".continuum/jtag/data",
+          "pid_file": ".continuum/jtag/server.pid"
+        },
+        "security": {
+          "enable_authentication": false,
+          "session_timeout_ms": 3600000,
+          "rate_limiting": {
+            "enabled": false,
+            "requests_per_minute": 60
+          }
+        },
+        "environment": {
+          "log_level": "info",
+          "debug_mode": false
+        },
+        "storage": {
+          "strategy": "sql",
+          "backend": "sqlite",
+          "paths": {
+            "data": ".continuum/jtag/data",
+            "backups": ".continuum/jtag/backups"
+          },
+          "options": {
+            "basePath": ".continuum/jtag/data",
+            "dbPath": ".continuum/jtag/data/database.sqlite"
+          },
+          "features": {
+            "enableTransactions": true,
+            "enableIndexing": true,
+            "enableReplication": false,
+            "enableSharding": false,
+            "enableCaching": true
+          }
+        }
+      },
+      "client": {
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http",
+          "auto_connect": true,
+          "reconnect_attempts": 3
+        },
+        "browser": {
+          "headless": false,
+          "devtools": true,
+          "width": 1200,
+          "height": 800,
+          "user_agent": "JTAG-TestBrowser/1.0"
+        },
+        "ui": {
+          "theme": "dark",
+          "enable_animations": true,
+          "show_debug_panel": false
+        }
+      },
+      "test": {
+        "server": {
+          "port": 9002,
+          "host": "localhost",
+          "protocol": "ws"
+        },
+        "client": {
+          "ui_port": 9003,
+          "host": "localhost",
+          "protocol": "http"
+        },
+        "test_settings": {
+          "timeout_ms": 30000,
+          "retry_attempts": 3,
+          "screenshot_on_failure": true,
+          "cleanup_after_test": true
+        },
+        "environment": {
+          "test_mode": true,
+          "verbose_logging": true,
+          "isolated_sessions": true
+        }
+      }
+    }
+  },
+  "collection": "Room",
+  "id": "5e71a0c8-0303-4eb8-a478-3a121248"
+}
+2025-09-28T06:00:20.224Z [BROWSER_CONSOLE] ✅ RoomListWidget: Initialized EntityScroller with automatic deduplication
+2025-09-28T06:00:20.185Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST-1759039220185: Testing State system with properties...
+2025-09-28T06:00:20.170Z [BROWSER_CONSOLE] 🎧 DataEventUtils: Setting up universal CRUD subscription for User
+2025-09-28T06:00:20.218Z [BROWSER_CONSOLE] 🧹 EntityManager "Scroller-oldest-first": Cleared all entities
+2025-09-28T06:00:20.197Z [BROWSER_CONSOLE] 🗄️ BROWSER: Delegating data read to server
+2025-09-28T06:00:20.187Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: Current room ID (property): undefined
+2025-09-28T06:00:20.231Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 77736910-505a-4870-a942-02295730, total: 1
+2025-09-28T06:00:20.254Z [BROWSER_CONSOLE] 📋 ChatWidget: Loaded room entity "General"
+2025-09-28T06:00:20.184Z [ChatWidget] 🎯 ChatWidget: Initializing for room "5e71a0c8-0303-4eb8-a478-3a121248"...
+2025-09-28T06:00:20.193Z [BROWSER_CONSOLE] ✅ CLAUDE-STATE-TEST: State system properties work perfectly!
+2025-09-28T06:00:20.222Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 5e71a0c8-0303-4eb8-a478-3a121248, total: 2
+2025-09-28T06:00:20.234Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 002350cc-0031-408d-8040-004f000f, total: 3
+2025-09-28T06:00:20.227Z [BROWSER_CONSOLE] 🧹 EntityManager "Scroller-oldest-first": Cleared all entities
+2025-09-28T06:00:20.257Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to chat:room-changed
+2025-09-28T06:00:20.060Z [BROWSER_CONSOLE] 🔗 SidebarPanel: Status view updated
+2025-09-28T06:00:20.256Z [BROWSER_CONSOLE] 🎧 ChatWidget: Subscribing to room change events
+2025-09-28T06:00:20.267Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:ChatMessage:created
+2025-09-28T06:00:20.236Z [BROWSER_CONSOLE] ✅ UserListWidget: Initialized EntityScroller with automatic deduplication
+2025-09-28T06:00:20.262Z [BROWSER_CONSOLE] ✅ ChatWidget: Using direct data event subscription for room "5e71a0c8-0303-4eb8-a478-3a121248"
+2025-09-28T06:00:20.192Z [BROWSER_CONSOLE] 🔧 CLAUDE-STATE-TEST: New room ID (property): undefined
+2025-09-28T06:00:20.232Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 06d9c12f-3577-4611-b1c8-51e6db6f, total: 2
+2025-09-28T06:00:20.268Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:ChatMessage:updated
+2025-09-28T06:00:20.237Z [BROWSER_CONSOLE] ✅ UserListWidget: BaseWidget initialization complete
+2025-09-28T06:00:20.276Z [BROWSER_CONSOLE] ✅ BaseWidget: Event dispatcher ready for chat:participant-left
+2025-09-28T06:00:20.277Z [BROWSER_CONSOLE] ✅ ChatWidget: Set up CRUD event handlers for ChatMessage
+2025-09-28T06:00:20.261Z [BROWSER_CONSOLE] 🔗 ChatWidget: Subscribing to room events for "5e71a0c8-0303-4eb8-a478-3a121248"
+2025-09-28T06:00:20.271Z [BROWSER_CONSOLE] 🔗 BaseWidget: Setting up event dispatcher for chat:participant-joined
+2025-09-28T06:00:20.264Z [BROWSER_CONSOLE] 📡 ChatWidget: Setting up CRUD event handlers for ChatMessage
+2025-09-28T06:00:20.269Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:ChatMessage:deleted
+2025-09-28T06:00:20.226Z [BROWSER_CONSOLE] ✅ RoomListWidget: BaseWidget initialization complete
+2025-09-28T06:00:20.325Z [BROWSER_CONSOLE] 🧹 EntityManager "Scroller-newest-first": Cleared all entities
+2025-09-28T06:00:20.220Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 1ceab6cc-448a-48b4-9a00-0774d7b4, total: 1
+2025-09-28T06:00:20.278Z [BROWSER_CONSOLE] ✅ ChatWidget: Initialized for room "5e71a0c8-0303-4eb8-a478-3a121248" with 0 messages
+2025-09-28T06:00:20.265Z [BROWSER_CONSOLE] 🎧 DataEventUtils: Setting up universal CRUD subscription for ChatMessage
+2025-09-28T06:00:20.294Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-1759039220294: EntityScroller sentinel created with improved positioning for oldest-first
+2025-09-28T06:00:20.327Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-newest-first": Added entity ID: 3d192123-609b-4ae3-bbe1-585ee19d, total: 1
+2025-09-28T06:00:20.330Z [BROWSER_CONSOLE] ✅ EntityScroller: Loaded 2 messages
+2025-09-28T06:00:20.281Z [BROWSER_CONSOLE] ✅ ChatWidget: Message input handlers set up for room 5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:00:20.259Z [BROWSER_CONSOLE] ✅ ChatWidget: Subscribed to room change events
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔥 Context: browser/6aa4bbef-dd5f-41fb-b91d-81f18f75e6f0
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-DAEMON-DEBUG-1759039219905: EventsDaemonBrowser constructor called!
+2025-09-28T06:00:20.285Z [BROWSER_CONSOLE] ✅ ChatWidget: BaseWidget initialization complete
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-message-sent' → 'chat:message-received'
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-participant-joined' → 'chat:participant-joined'
+2025-09-28T06:00:20.282Z [BROWSER_CONSOLE] 🏗️ EntityManager: Created "Scroller-newest-first" with debug mode enabled
+2025-09-28T06:00:20.273Z [BROWSER_CONSOLE] ✅ BaseWidget: Event dispatcher ready for chat:participant-joined
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🗄️ DataDaemonBrowser[data-daemon@browser:6aa4bbef]: Browser data daemon initialized - forwarding to server
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-participant-left' → 'chat:participant-left'
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-room-updated' → 'chat:room-updated'
+2025-09-28T06:00:20.274Z [BROWSER_CONSOLE] 🔗 BaseWidget: Setting up event dispatcher for chat:participant-left
+2025-09-28T06:00:20.331Z [BROWSER_CONSOLE] 📍 ChatWidget: No saved scroll state for key "chat_scroll_5e71a0c8-0303-4eb8-a478-3a121248", scrolling to bottom
+2025-09-28T06:00:20.338Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-1759039220338: EntityScroller sentinel created with improved positioning for newest-first
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'ArtifactsDaemonBrowser'
+2025-09-28T06:00:20.328Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-newest-first": Added entity ID: 5d75484f-15e1-4931-b6c7-037073cf, total: 2
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 💓 HealthDaemonBrowser[health-daemon@browser:6aa4bbef]: Browser health daemon ready
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: ArtifactsDaemonBrowser
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔥 ENDPOINT-DEBUG: EventsDaemonBrowser.subpath = "event-bridge"
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🌉 EventsDaemon: Initialized for cross-context event bridging
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🔥 ENDPOINT-DEBUG: Expected browser endpoint should be "browser/event-bridge"
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: CommandDaemonBrowser
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: DataDaemonBrowser
+2025-09-28T06:00:20.293Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-1759039220293: EntityScroller sentinel created with improved positioning for oldest-first
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🌉 EventsDaemonBrowser: DOM event bridge initialized
+2025-09-28T06:00:20.333Z [BROWSER_CONSOLE] 📊 ChatWidget: getData returned: null object
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🏷️ SessionDaemonBrowser[session-daemon@browser:6aa4bbef]: Browser session daemon ready
+2025-09-28T06:00:20.283Z [BROWSER_CONSOLE] Executing command 'data/list' with params: {
+  "sessionId": "b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "context": {
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -2132,58 +2156,38 @@
   ],
   "limit": 20
 }
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🗄️ DataDaemonBrowser[data-daemon@browser:addd9597]: Browser data daemon initialized - forwarding to server
-2025-09-28T05:51:54.089Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-newest-first": Added entity ID: 3d192123-609b-4ae3-bbe1-585ee19d, total: 1
-2025-09-28T05:51:54.092Z [BROWSER_CONSOLE] ✅ EntityScroller: Loaded 2 messages
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔥 ENDPOINT-DEBUG: EventsDaemonBrowser.subpath = "event-bridge"
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🌉 DOMEventBridge: Registered event mappings
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔥 Context: browser/addd9597-c800-4ffd-8137-71f0a7562787
-2025-09-28T05:51:54.051Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:ChatMessage:deleted
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔥 ENDPOINT-DEBUG: Expected browser endpoint should be "browser/event-bridge"
-2025-09-28T05:51:54.091Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-newest-first": Added entity ID: 5d75484f-15e1-4931-b6c7-037073cf, total: 2
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-participant-joined' → 'chat:participant-joined'
-2025-09-28T05:51:54.098Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-1759038714098: EntityScroller sentinel created with improved positioning for newest-first
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🌉 EventsDaemonBrowser: DOM event bridge initialized
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'CommandDaemonBrowser'
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 🏷️ SessionDaemonBrowser[session-daemon@browser:addd9597]: Browser session daemon ready
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-DAEMON-DEBUG-1759038713694: EventsDaemonBrowser constructor called!
-2025-09-28T05:51:54.078Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-1759038714078: EntityScroller sentinel created with improved positioning for oldest-first
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-participant-left' → 'chat:participant-left'
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'ArtifactsDaemonBrowser'
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 💓 HealthDaemonBrowser[health-daemon@browser:addd9597]: Browser health daemon ready
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-room-updated' → 'chat:room-updated'
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🏷️ SessionDaemonBrowser[session-daemon@browser:addd9597]: Session daemon initialized - identity service ready
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'DataDaemonBrowser'
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: DataDaemonBrowser
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🌉 EventsDaemon: Initialized for cross-context event bridging
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: ArtifactsDaemonBrowser
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] ✅ WidgetDaemonBrowser: Connected to JTAG system via router
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: CommandDaemonBrowser
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: WidgetDaemonBrowser
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'HealthDaemonBrowser'
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'SessionDaemonBrowser'
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'WidgetDaemonBrowser'
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: HealthDaemonBrowser
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 💓 HealthDaemonBrowser[health-daemon@browser:addd9597]: Health daemon initialized
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: EventsDaemonBrowser
-2025-09-28T05:51:53.694Z [BROWSER_CONSOLE] 🔗 DOMEventBridge: Listening for 'chat-message-sent' → 'chat:message-received'
-2025-09-28T05:51:53.695Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'EventsDaemonBrowser'
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 🔗 JTAG System: Transport ready event emitted
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] ✅ _JTAGSystemBrowser[jtag-system@browser:addd9597]: Session connected - 00000000-0000-0000-0000-000000000000 (context: addd9597-c800-4ffd-8137-71f0a7562787)
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 🔌 JTAG Server System: Registered 8 daemons statically
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 🏷️ JTAGClient: Requesting session from SessionDaemon...
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 🏠 JTAGClient: Using local system connection
-2025-09-28T05:51:53.884Z [BROWSER_CONSOLE] ✅ SidebarPanel: Sidebar panel rendered
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] ✅ JTAG System: Connected browser successfully
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 📦 Registered server daemon: SessionDaemonBrowser
-2025-09-28T05:51:54.050Z [BROWSER_CONSOLE] 🎧 Events: Subscribing to data:ChatMessage:updated
-2025-09-28T05:51:53.695Z [ScopedEventSystem] 🎯 ScopedEventSystem initialized for session 00000000-0000-0000-0000-000000000000
-2025-09-28T05:51:53.698Z [BROWSER_CONSOLE] 🏷️ JTAGClientBrowser: Updated session and stored in sessionStorage: b3b64e7b-92dd-4f40-bb09-098480fd1043
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] 🎉 JTAG System: System ready event emitted
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE] Executing command 'session/create' with params: {
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: EventsDaemonBrowser
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'HealthDaemonBrowser'
+2025-09-28T06:00:19.905Z [BROWSER_CONSOLE] 🌉 DOMEventBridge: Registered event mappings
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'SessionDaemonBrowser'
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'CommandDaemonBrowser'
+2025-09-28T06:00:19.906Z [ScopedEventSystem] 🎯 ScopedEventSystem initialized for session 00000000-0000-0000-0000-000000000000
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] ✅ WidgetDaemonBrowser: Connected to JTAG system via router
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: HealthDaemonBrowser
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🔗 JTAG System: Transport ready event emitted
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🏷️ SessionDaemonBrowser[session-daemon@browser:6aa4bbef]: Session daemon initialized - identity service ready
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🔌 JTAG Server System: Registered 8 daemons statically
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'DataDaemonBrowser'
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🎉 JTAG System: System ready event emitted
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: WidgetDaemonBrowser
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'EventsDaemonBrowser'
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 💓 HealthDaemonBrowser[health-daemon@browser:6aa4bbef]: Health daemon initialized
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE]    Context UUID: 6aa4bbef-dd5f-41fb-b91d-81f18f75e6f0
+2025-09-28T06:00:19.906Z [JTAGClient] 🎯 JTAGClient: Requesting shared session assignment from SessionDaemon
+2025-09-28T06:00:19.906Z [JTAG] 🎯 JTAG System v{VERSION_STRING}-browser: Registered daemon 'WidgetDaemonBrowser'
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE]    Daemons: artifacts-daemon, command-daemon, console-daemon, data-daemon, EventsDaemon, widget-daemon, health-daemon, session-daemon
+2025-09-28T06:00:20.076Z [BROWSER_CONSOLE] 📖 BROWSER: File load → delegating to server
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] ✅ _JTAGSystemBrowser[jtag-system@browser:6aa4bbef]: Session connected - 00000000-0000-0000-0000-000000000000 (context: 6aa4bbef-dd5f-41fb-b91d-81f18f75e6f0)
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 📦 Registered server daemon: SessionDaemonBrowser
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] ✅ JTAG System: Connected browser successfully
+2025-09-28T06:00:19.996Z [BROWSER_CONSOLE] 🎨 ContinuumWidget: Injecting theme CSS into document head for global access...
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🏷️ JTAGClient: Requesting session from SessionDaemon...
+2025-09-28T06:00:19.909Z [BROWSER_CONSOLE] 🏷️ JTAGClientBrowser: Updated session and stored in sessionStorage: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🏷️ BROWSER: Session creation needs server → delegating to server
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] Executing command 'session/create' with params: {
   "sessionId": "deadbeef-cafe-4bad-8ace-5e551000c0de",
   "context": {
-    "uuid": "b5bf68fe-b824-4ddf-8d38-fe6f67da8096",
+    "uuid": "5819034b-6bd8-4c7e-871a-d8a53b794302",
     "environment": "server",
     "config": {
       "instance": {
@@ -2297,14 +2301,11 @@
   "displayName": "CLI Client",
   "isShared": true
 }
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE]    Context UUID: addd9597-c800-4ffd-8137-71f0a7562787
-2025-09-28T05:51:53.695Z [BROWSER_CONSOLE]    Daemons: artifacts-daemon, command-daemon, console-daemon, data-daemon, EventsDaemon, widget-daemon, health-daemon, session-daemon
-2025-09-28T05:51:53.695Z [JTAGClient] 🎯 JTAGClient: Requesting shared session assignment from SessionDaemon
-2025-09-28T05:51:54.026Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 06d9c12f-3577-4611-b1c8-51e6db6f, total: 2
-2025-09-28T05:51:53.696Z [BROWSER_CONSOLE] 🏷️ BROWSER: Session creation needs server → delegating to server
-2025-09-28T05:52:00.281Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038720280: handleLocalEventBridge called with eventName='data:User:created'
-2025-09-28T05:52:00.285Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/002350cc-0031-408d-8040-004f000f
-2025-09-28T05:52:00.283Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:19.906Z [BROWSER_CONSOLE] 🏠 JTAGClient: Using local system connection
+2025-09-28T06:00:26.696Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 002350cc-0031-408d-8040-004f000f
+2025-09-28T06:00:26.687Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039226687: handleLocalEventBridge called with eventName='data:User:created'
+2025-09-28T06:00:26.699Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 002350cc-0031-408d-8040-004f000f
+2025-09-28T06:00:26.691Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
   "id": "002350cc-0031-408d-8040-004f000f",
   "displayName": "Joel",
   "shortDescription": "System architect & dev lead",
@@ -2314,7 +2315,7 @@
     "avatar": "👤",
     "bio": "System architect and lead developer",
     "location": "San Francisco, CA",
-    "joinedAt": "2025-09-28T05:51:59.140Z"
+    "joinedAt": "2025-09-28T06:00:25.798Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2343,14 +2344,16 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:51:59.142Z",
+  "lastActiveAt": "2025-09-28T06:00:25.799Z",
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:00.279Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:26.684Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:00.282Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
+2025-09-28T06:00:26.702Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039226701: Checked wildcard subscriptions for 'data:User:created'
+2025-09-28T06:00:26.697Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 002350cc-0031-408d-8040-004f000f at index 2
+2025-09-28T06:00:26.693Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "002350cc-0031-408d-8040-004f000f",
   "displayName": "Joel",
   "shortDescription": "System architect & dev lead",
@@ -2360,7 +2363,7 @@
     "avatar": "👤",
     "bio": "System architect and lead developer",
     "location": "San Francisco, CA",
-    "joinedAt": "2025-09-28T05:51:59.140Z"
+    "joinedAt": "2025-09-28T06:00:25.798Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2389,20 +2392,16 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:51:59.142Z",
+  "lastActiveAt": "2025-09-28T06:00:25.799Z",
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:00.279Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:26.684Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:00.287Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 002350cc-0031-408d-8040-004f000f
-2025-09-28T05:52:00.288Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 002350cc-0031-408d-8040-004f000f at index 2
-2025-09-28T05:52:00.291Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038720291: Dispatched DOM event 'data:User:created' for BaseWidget
-2025-09-28T05:52:00.290Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 002350cc-0031-408d-8040-004f000f
-2025-09-28T05:52:00.293Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038720293: Checked wildcard subscriptions for 'data:User:created'
-2025-09-28T05:52:01.301Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/06d9c12f-3577-4611-b1c8-51e6db6f
-2025-09-28T05:52:01.300Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:26.700Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039226700: Dispatched DOM event 'data:User:created' for BaseWidget
+2025-09-28T06:00:26.694Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/002350cc-0031-408d-8040-004f000f
+2025-09-28T06:00:27.602Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
   "id": "06d9c12f-3577-4611-b1c8-51e6db6f",
   "displayName": "Claude Code",
   "shortDescription": "Code architect & debugger ⚡",
@@ -2412,7 +2411,7 @@
     "avatar": "🤖",
     "bio": "AI assistant specialized in coding, architecture, and system design",
     "location": "Anthropic Cloud",
-    "joinedAt": "2025-09-28T05:51:59.142Z"
+    "joinedAt": "2025-09-28T06:00:25.799Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2441,17 +2440,19 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:51:59.142Z",
+  "lastActiveAt": "2025-09-28T06:00:25.799Z",
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:01.296Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:27.596Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:01.297Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038721297: handleLocalEventBridge called with eventName='data:User:created'
-2025-09-28T05:52:01.303Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 06d9c12f-3577-4611-b1c8-51e6db6f
-2025-09-28T05:52:01.309Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038721309: Checked wildcard subscriptions for 'data:User:created'
-2025-09-28T05:52:01.299Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
+2025-09-28T06:00:27.598Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039227598: handleLocalEventBridge called with eventName='data:User:created'
+2025-09-28T06:00:27.605Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/06d9c12f-3577-4611-b1c8-51e6db6f
+2025-09-28T06:00:27.610Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039227610: Dispatched DOM event 'data:User:created' for BaseWidget
+2025-09-28T06:00:27.606Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 06d9c12f-3577-4611-b1c8-51e6db6f
+2025-09-28T06:00:27.607Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 06d9c12f-3577-4611-b1c8-51e6db6f at index 1
+2025-09-28T06:00:27.603Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "06d9c12f-3577-4611-b1c8-51e6db6f",
   "displayName": "Claude Code",
   "shortDescription": "Code architect & debugger ⚡",
@@ -2461,7 +2462,7 @@
     "avatar": "🤖",
     "bio": "AI assistant specialized in coding, architecture, and system design",
     "location": "Anthropic Cloud",
-    "joinedAt": "2025-09-28T05:51:59.142Z"
+    "joinedAt": "2025-09-28T06:00:25.799Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2490,19 +2491,16 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:51:59.142Z",
+  "lastActiveAt": "2025-09-28T06:00:25.799Z",
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:01.296Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:27.596Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:01.307Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038721307: Dispatched DOM event 'data:User:created' for BaseWidget
-2025-09-28T05:52:01.304Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 06d9c12f-3577-4611-b1c8-51e6db6f at index 1
-2025-09-28T05:52:01.306Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 06d9c12f-3577-4611-b1c8-51e6db6f
-2025-09-28T05:52:02.320Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 77736910-505a-4870-a942-02295730 at index 0
-2025-09-28T05:52:02.317Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/77736910-505a-4870-a942-02295730
-2025-09-28T05:52:02.314Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
+2025-09-28T06:00:27.609Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 06d9c12f-3577-4611-b1c8-51e6db6f
+2025-09-28T06:00:27.612Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039227612: Checked wildcard subscriptions for 'data:User:created'
+2025-09-28T06:00:28.519Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
   "id": "77736910-505a-4870-a942-02295730",
   "displayName": "GeneralAI",
   "shortDescription": "General purpose assistant",
@@ -2512,7 +2510,7 @@
     "avatar": "⚡",
     "bio": "General AI assistant for various tasks and conversations",
     "location": "Anthropic Cloud",
-    "joinedAt": "2025-09-28T05:51:59.142Z"
+    "joinedAt": "2025-09-28T06:00:25.799Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2541,14 +2539,15 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:51:59.142Z",
+  "lastActiveAt": "2025-09-28T06:00:25.799Z",
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:02.312Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:28.517Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:02.315Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:28.517Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039228517: handleLocalEventBridge called with eventName='data:User:created'
+2025-09-28T06:00:28.520Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "77736910-505a-4870-a942-02295730",
   "displayName": "GeneralAI",
   "shortDescription": "General purpose assistant",
@@ -2558,7 +2557,7 @@
     "avatar": "⚡",
     "bio": "General AI assistant for various tasks and conversations",
     "location": "Anthropic Cloud",
-    "joinedAt": "2025-09-28T05:51:59.142Z"
+    "joinedAt": "2025-09-28T06:00:25.799Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2587,19 +2586,71 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:51:59.142Z",
+  "lastActiveAt": "2025-09-28T06:00:25.799Z",
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:02.312Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:28.517Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:02.312Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038722312: handleLocalEventBridge called with eventName='data:User:created'
-2025-09-28T05:52:02.318Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 77736910-505a-4870-a942-02295730
-2025-09-28T05:52:02.321Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 77736910-505a-4870-a942-02295730
-2025-09-28T05:52:02.325Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038722325: Checked wildcard subscriptions for 'data:User:created'
-2025-09-28T05:52:02.324Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038722324: Dispatched DOM event 'data:User:created' for BaseWidget
-2025-09-28T05:52:03.321Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.created {
+2025-09-28T06:00:28.529Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039228529: Checked wildcard subscriptions for 'data:User:created'
+2025-09-28T06:00:28.523Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 77736910-505a-4870-a942-02295730
+2025-09-28T06:00:28.524Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 77736910-505a-4870-a942-02295730 at index 0
+2025-09-28T06:00:28.521Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/77736910-505a-4870-a942-02295730
+2025-09-28T06:00:28.526Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 77736910-505a-4870-a942-02295730
+2025-09-28T06:00:28.527Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039228527: Dispatched DOM event 'data:User:created' for BaseWidget
+2025-09-28T06:00:29.461Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039229461: Dispatched DOM event 'data:Room:created' for BaseWidget
+2025-09-28T06:00:29.456Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:00:29.455Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for Room/5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:00:29.894Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
+  "displayName": "Test User",
+  "shortDescription": "Test user entity",
+  "type": "human",
+  "profile": {
+    "displayName": "Test User",
+    "avatar": "🧪",
+    "bio": "Test user for integration testing",
+    "location": "Test Environment",
+    "joinedAt": "2025-09-28T06:00:28.981Z"
+  },
+  "capabilities": {
+    "canSendMessages": true,
+    "canReceiveMessages": true,
+    "canTrain": false,
+    "canCreateRooms": true,
+    "canInviteOthers": true,
+    "canModerate": true,
+    "autoResponds": false,
+    "providesContext": false,
+    "canAccessPersonas": true
+  },
+  "preferences": {
+    "theme": "dark",
+    "language": "en",
+    "timezone": "UTC",
+    "notifications": {
+      "mentions": true,
+      "directMessages": true,
+      "roomUpdates": false
+    },
+    "privacy": {
+      "showOnlineStatus": true,
+      "allowDirectMessages": true,
+      "shareActivity": false
+    }
+  },
+  "status": "online",
+  "lastActiveAt": "2025-09-28T06:00:28.981Z",
+  "sessionsActive": [],
+  "id": "1759039229867-rg649isxl",
+  "_bridged": true,
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:29.887Z",
+  "_bridgeHopCount": 1
+}
+2025-09-28T06:00:29.462Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039229462: Checked wildcard subscriptions for 'data:Room:created'
+2025-09-28T06:00:29.888Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039229888: handleLocalEventBridge called with eventName='data:User:created'
+2025-09-28T06:00:29.454Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "5e71a0c8-0303-4eb8-a478-3a121248",
   "name": "general",
   "displayName": "General",
@@ -2608,7 +2659,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:51:59.142Z",
+  "lastMessageAt": "2025-09-28T06:00:25.799Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -2624,8 +2675,8 @@
   "stats": {
     "memberCount": 3,
     "messageCount": 0,
-    "createdAt": "2025-09-28T05:51:59.142Z",
-    "lastActivityAt": "2025-09-28T05:51:59.142Z"
+    "createdAt": "2025-09-28T06:00:25.799Z",
+    "lastActivityAt": "2025-09-28T06:00:25.799Z"
   },
   "members": [],
   "tags": [
@@ -2634,12 +2685,17 @@
     "discussion"
   ],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:03.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:29.447Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:03.319Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038723319: handleLocalEventBridge called with eventName='data:Room:created'
-2025-09-28T05:52:03.322Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:29.458Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 5e71a0c8-0303-4eb8-a478-3a121248 at index 1
+2025-09-28T06:00:29.448Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039229448: handleLocalEventBridge called with eventName='data:Room:created'
+2025-09-28T06:00:29.898Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 1759039229867-rg649isxl, total: 4
+2025-09-28T06:00:29.459Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:00:29.902Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039229902: Checked wildcard subscriptions for 'data:User:created'
+2025-09-28T06:00:29.896Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/1759039229867-rg649isxl
+2025-09-28T06:00:29.452Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.created {
   "id": "5e71a0c8-0303-4eb8-a478-3a121248",
   "name": "general",
   "displayName": "General",
@@ -2648,7 +2704,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:51:59.142Z",
+  "lastMessageAt": "2025-09-28T06:00:25.799Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -2664,8 +2720,8 @@
   "stats": {
     "memberCount": 3,
     "messageCount": 0,
-    "createdAt": "2025-09-28T05:51:59.142Z",
-    "lastActivityAt": "2025-09-28T05:51:59.142Z"
+    "createdAt": "2025-09-28T06:00:25.799Z",
+    "lastActivityAt": "2025-09-28T06:00:25.799Z"
   },
   "members": [],
   "tags": [
@@ -2674,17 +2730,11 @@
     "discussion"
   ],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:03.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:29.447Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:03.330Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038723330: Dispatched DOM event 'data:Room:created' for BaseWidget
-2025-09-28T05:52:03.324Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for Room/5e71a0c8-0303-4eb8-a478-3a121248
-2025-09-28T05:52:03.328Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 5e71a0c8-0303-4eb8-a478-3a121248
-2025-09-28T05:52:03.325Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 5e71a0c8-0303-4eb8-a478-3a121248
-2025-09-28T05:52:03.327Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 5e71a0c8-0303-4eb8-a478-3a121248 at index 1
-2025-09-28T05:52:03.331Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038723331: Checked wildcard subscriptions for 'data:Room:created'
-2025-09-28T05:52:03.437Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.created {
+2025-09-28T06:00:29.895Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "displayName": "Test User",
   "shortDescription": "Test user entity",
   "type": "human",
@@ -2693,7 +2743,7 @@
     "avatar": "🧪",
     "bio": "Test user for integration testing",
     "location": "Test Environment",
-    "joinedAt": "2025-09-28T05:52:02.491Z"
+    "joinedAt": "2025-09-28T06:00:28.981Z"
   },
   "capabilities": {
     "canSendMessages": true,
@@ -2722,72 +2772,18 @@
     }
   },
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:52:02.491Z",
+  "lastActiveAt": "2025-09-28T06:00:28.981Z",
   "sessionsActive": [],
-  "id": "1759038723410-431rv07am",
+  "id": "1759039229867-rg649isxl",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:03.431Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:29.887Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:03.438Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
-  "displayName": "Test User",
-  "shortDescription": "Test user entity",
-  "type": "human",
-  "profile": {
-    "displayName": "Test User",
-    "avatar": "🧪",
-    "bio": "Test user for integration testing",
-    "location": "Test Environment",
-    "joinedAt": "2025-09-28T05:52:02.491Z"
-  },
-  "capabilities": {
-    "canSendMessages": true,
-    "canReceiveMessages": true,
-    "canTrain": false,
-    "canCreateRooms": true,
-    "canInviteOthers": true,
-    "canModerate": true,
-    "autoResponds": false,
-    "providesContext": false,
-    "canAccessPersonas": true
-  },
-  "preferences": {
-    "theme": "dark",
-    "language": "en",
-    "timezone": "UTC",
-    "notifications": {
-      "mentions": true,
-      "directMessages": true,
-      "roomUpdates": false
-    },
-    "privacy": {
-      "showOnlineStatus": true,
-      "allowDirectMessages": true,
-      "shareActivity": false
-    }
-  },
-  "status": "online",
-  "lastActiveAt": "2025-09-28T05:52:02.491Z",
-  "sessionsActive": [],
-  "id": "1759038723410-431rv07am",
-  "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:03.431Z",
-  "_bridgeHopCount": 1
-}
-2025-09-28T05:52:03.444Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038723444: Dispatched DOM event 'data:User:created' for BaseWidget
-2025-09-28T05:52:03.446Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038723446: Checked wildcard subscriptions for 'data:User:created'
-2025-09-28T05:52:03.441Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 1759038723410-431rv07am, total: 4
-2025-09-28T05:52:03.443Z [BROWSER_CONSOLE] 🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: 1759038723410-431rv07am, total entities now: 4
-2025-09-28T05:52:03.433Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038723433: handleLocalEventBridge called with eventName='data:User:created'
-2025-09-28T05:52:03.439Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for User/1759038723410-431rv07am
-2025-09-28T05:52:04.336Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 1ceab6cc-448a-48b4-9a00-0774d7b4
-2025-09-28T05:52:04.339Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038724339: Checked wildcard subscriptions for 'data:Room:created'
-2025-09-28T05:52:04.335Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 1ceab6cc-448a-48b4-9a00-0774d7b4 at index 0
-2025-09-28T05:52:04.327Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038724327: handleLocalEventBridge called with eventName='data:Room:created'
-2025-09-28T05:52:04.333Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 1ceab6cc-448a-48b4-9a00-0774d7b4
-2025-09-28T05:52:04.330Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:29.899Z [BROWSER_CONSOLE] 🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: 1759039229867-rg649isxl, total entities now: 4
+2025-09-28T06:00:29.901Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039229901: Dispatched DOM event 'data:User:created' for BaseWidget
+2025-09-28T06:00:30.397Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 1ceab6cc-448a-48b4-9a00-0774d7b4 at index 0
+2025-09-28T06:00:30.392Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "1ceab6cc-448a-48b4-9a00-0774d7b4",
   "name": "academy",
   "displayName": "Academy",
@@ -2796,7 +2792,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:51:59.142Z",
+  "lastMessageAt": "2025-09-28T06:00:25.799Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -2812,8 +2808,8 @@
   "stats": {
     "memberCount": 2,
     "messageCount": 0,
-    "createdAt": "2025-09-28T05:51:59.142Z",
-    "lastActivityAt": "2025-09-28T05:51:59.142Z"
+    "createdAt": "2025-09-28T06:00:25.799Z",
+    "lastActivityAt": "2025-09-28T06:00:25.799Z"
   },
   "members": [],
   "tags": [
@@ -2822,12 +2818,15 @@
     "education"
   ],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:04.323Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:30.386Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:04.337Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038724337: Dispatched DOM event 'data:Room:created' for BaseWidget
-2025-09-28T05:52:04.329Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.created {
+2025-09-28T06:00:30.395Z [BROWSER_CONSOLE] 🔄 EntityScroller: Updating existing entity: 1ceab6cc-448a-48b4-9a00-0774d7b4
+2025-09-28T06:00:30.387Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039230387: handleLocalEventBridge called with eventName='data:Room:created'
+2025-09-28T06:00:30.398Z [BROWSER_CONSOLE] 🔧 EntityScroller: Updated existing entity with ID: 1ceab6cc-448a-48b4-9a00-0774d7b4
+2025-09-28T06:00:30.394Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for Room/1ceab6cc-448a-48b4-9a00-0774d7b4
+2025-09-28T06:00:30.391Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.created {
   "id": "1ceab6cc-448a-48b4-9a00-0774d7b4",
   "name": "academy",
   "displayName": "Academy",
@@ -2836,7 +2835,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:51:59.142Z",
+  "lastMessageAt": "2025-09-28T06:00:25.799Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -2852,8 +2851,8 @@
   "stats": {
     "memberCount": 2,
     "messageCount": 0,
-    "createdAt": "2025-09-28T05:51:59.142Z",
-    "lastActivityAt": "2025-09-28T05:51:59.142Z"
+    "createdAt": "2025-09-28T06:00:25.799Z",
+    "lastActivityAt": "2025-09-28T06:00:25.799Z"
   },
   "members": [],
   "tags": [
@@ -2862,12 +2861,14 @@
     "education"
   ],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:04.323Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:30.386Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:04.331Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for Room/1ceab6cc-448a-48b4-9a00-0774d7b4
-2025-09-28T05:52:05.322Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
+2025-09-28T06:00:30.400Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039230400: Dispatched DOM event 'data:Room:created' for BaseWidget
+2025-09-28T06:00:30.401Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039230401: Checked wildcard subscriptions for 'data:Room:created'
+2025-09-28T06:00:31.305Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/5d75484f-15e1-4931-b6c7-037073cf
+2025-09-28T06:00:31.302Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
   "id": "5d75484f-15e1-4931-b6c7-037073cf",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "system",
@@ -2885,14 +2886,15 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:05.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:31.297Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:05.327Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
+2025-09-28T06:00:31.313Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039231313: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
+2025-09-28T06:00:31.303Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "5d75484f-15e1-4931-b6c7-037073cf",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "system",
@@ -2910,16 +2912,14 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:05.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:31.297Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:05.325Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/5d75484f-15e1-4931-b6c7-037073cf
-2025-09-28T05:52:05.333Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-newest-first": Updated entity ID: 5d75484f-15e1-4931-b6c7-037073cf at index 1
-2025-09-28T05:52:05.329Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 1): {
+2025-09-28T06:00:31.308Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 1): {
   "id": "5d75484f-15e1-4931-b6c7-037073cf",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "system",
@@ -2937,17 +2937,18 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:05.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:31.297Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:05.320Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038725320: handleLocalEventBridge called with eventName='data:ChatMessage:created'
-2025-09-28T05:52:05.332Z [BROWSER_CONSOLE] 🔄 ChatWidget: Message already exists, updating: 5d75484f-15e1-4931-b6c7-037073cf
-2025-09-28T05:52:05.337Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038725337: Checked wildcard subscriptions for 'data:ChatMessage:created'
-2025-09-28T05:52:05.330Z [BROWSER_CONSOLE] ✨ ChatWidget: Using ChatMessage entity directly: {
+2025-09-28T06:00:31.315Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039231315: Checked wildcard subscriptions for 'data:ChatMessage:created'
+2025-09-28T06:00:31.312Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-newest-first": Updated entity ID: 5d75484f-15e1-4931-b6c7-037073cf at index 1
+2025-09-28T06:00:31.299Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039231298: handleLocalEventBridge called with eventName='data:ChatMessage:created'
+2025-09-28T06:00:31.311Z [BROWSER_CONSOLE] 🔄 ChatWidget: Message already exists, updating: 5d75484f-15e1-4931-b6c7-037073cf
+2025-09-28T06:00:31.306Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
   "id": "5d75484f-15e1-4931-b6c7-037073cf",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "system",
@@ -2965,15 +2966,14 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:05.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:31.297Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:05.336Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038725335: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
-2025-09-28T05:52:05.323Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:31.309Z [BROWSER_CONSOLE] ✨ ChatWidget: Using ChatMessage entity directly: {
   "id": "5d75484f-15e1-4931-b6c7-037073cf",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "system",
@@ -2991,14 +2991,14 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:05.319Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:31.297Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:06.450Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:32.166Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "3d192123-609b-4ae3-bbe1-585ee19d",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "06d9c12f-3577-4611-b1c8-51e6db6f",
@@ -3016,15 +3016,14 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:06.446Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:32.160Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:06.458Z [BROWSER_CONSOLE] 🔄 ChatWidget: Message already exists, updating: 3d192123-609b-4ae3-bbe1-585ee19d
-2025-09-28T05:52:06.449Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
+2025-09-28T06:00:32.170Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 2): {
   "id": "3d192123-609b-4ae3-bbe1-585ee19d",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "06d9c12f-3577-4611-b1c8-51e6db6f",
@@ -3042,16 +3041,15 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:06.446Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:32.160Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:06.452Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/3d192123-609b-4ae3-bbe1-585ee19d
-2025-09-28T05:52:06.447Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038726447: handleLocalEventBridge called with eventName='data:ChatMessage:created'
-2025-09-28T05:52:06.454Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 2): {
+2025-09-28T06:00:32.173Z [BROWSER_CONSOLE] 🔄 ChatWidget: Message already exists, updating: 3d192123-609b-4ae3-bbe1-585ee19d
+2025-09-28T06:00:32.165Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
   "id": "3d192123-609b-4ae3-bbe1-585ee19d",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "06d9c12f-3577-4611-b1c8-51e6db6f",
@@ -3069,14 +3067,15 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:06.446Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:32.160Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:06.456Z [BROWSER_CONSOLE] ✨ ChatWidget: Using ChatMessage entity directly: {
+2025-09-28T06:00:32.162Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039232161: handleLocalEventBridge called with eventName='data:ChatMessage:created'
+2025-09-28T06:00:32.169Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
   "id": "3d192123-609b-4ae3-bbe1-585ee19d",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "06d9c12f-3577-4611-b1c8-51e6db6f",
@@ -3094,15 +3093,18 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:06.446Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:32.160Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:06.459Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-newest-first": Updated entity ID: 3d192123-609b-4ae3-bbe1-585ee19d at index 0
-2025-09-28T05:52:06.453Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
+2025-09-28T06:00:32.168Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/3d192123-609b-4ae3-bbe1-585ee19d
+2025-09-28T06:00:32.176Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039232176: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
+2025-09-28T06:00:32.175Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-newest-first": Updated entity ID: 3d192123-609b-4ae3-bbe1-585ee19d at index 0
+2025-09-28T06:00:32.178Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039232178: Checked wildcard subscriptions for 'data:ChatMessage:created'
+2025-09-28T06:00:32.172Z [BROWSER_CONSOLE] ✨ ChatWidget: Using ChatMessage entity directly: {
   "id": "3d192123-609b-4ae3-bbe1-585ee19d",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "06d9c12f-3577-4611-b1c8-51e6db6f",
@@ -3120,18 +3122,15 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:06.446Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:32.160Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:06.461Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038726461: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
-2025-09-28T05:52:06.463Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038726463: Checked wildcard subscriptions for 'data:ChatMessage:created'
-2025-09-28T05:52:07.476Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038727476: handleLocalEventBridge called with eventName='data:ChatMessage:created'
-2025-09-28T05:52:07.481Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/0a9f89b5-7df6-4b35-8eb2-64a45e35
-2025-09-28T05:52:07.478Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
+2025-09-28T06:00:33.027Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039233027: handleLocalEventBridge called with eventName='data:ChatMessage:created'
+2025-09-28T06:00:33.034Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "id": "0a9f89b5-7df6-4b35-8eb2-64a45e35",
   "roomId": "1ceab6cc-448a-48b4-9a00-0774d7b4",
   "senderId": "system",
@@ -3149,14 +3148,14 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:07.476Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:33.026Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:07.485Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 3): {
+2025-09-28T06:00:33.032Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
   "id": "0a9f89b5-7df6-4b35-8eb2-64a45e35",
   "roomId": "1ceab6cc-448a-48b4-9a00-0774d7b4",
   "senderId": "system",
@@ -3174,14 +3173,16 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:07.476Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:33.026Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:07.483Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
+2025-09-28T06:00:33.041Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039233041: Checked wildcard subscriptions for 'data:ChatMessage:created'
+2025-09-28T06:00:33.040Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039233040: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
+2025-09-28T06:00:33.038Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 3): {
   "id": "0a9f89b5-7df6-4b35-8eb2-64a45e35",
   "roomId": "1ceab6cc-448a-48b4-9a00-0774d7b4",
   "senderId": "system",
@@ -3199,15 +3200,15 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:07.476Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:33.026Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:07.488Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038727488: Checked wildcard subscriptions for 'data:ChatMessage:created'
-2025-09-28T05:52:07.480Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:33.035Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/0a9f89b5-7df6-4b35-8eb2-64a45e35
+2025-09-28T06:00:33.036Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
   "id": "0a9f89b5-7df6-4b35-8eb2-64a45e35",
   "roomId": "1ceab6cc-448a-48b4-9a00-0774d7b4",
   "senderId": "system",
@@ -3225,23 +3226,25 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:51:59.142Z",
+  "timestamp": "2025-09-28T06:00:25.799Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:07.476Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:33.026Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:07.486Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038727486: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
-2025-09-28T05:52:08.298Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:09.377Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038729377: handleLocalEventBridge called with eventName='data:User:updated'
-2025-09-28T05:52:09.382Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.updated {
-  "id": "1759038723410-431rv07am",
+2025-09-28T06:00:34.773Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:00:35.716Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039235716: Checked wildcard subscriptions for 'data:User:updated'
+2025-09-28T06:00:35.702Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039235701: handleLocalEventBridge called with eventName='data:User:updated'
+2025-09-28T06:00:35.711Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller updated for User/1759039229867-rg649isxl
+2025-09-28T06:00:35.713Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 1759039229867-rg649isxl at index 3
+2025-09-28T06:00:35.708Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.updated {
+  "id": "1759039229867-rg649isxl",
   "type": "human",
   "displayName": "Updated Test User",
   "shortDescription": "Test user entity",
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:52:02.491Z",
+  "lastActiveAt": "2025-09-28T06:00:28.981Z",
   "capabilities": {
     "canSendMessages": true,
     "canReceiveMessages": true,
@@ -3255,18 +3258,18 @@
   },
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:09.376Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:35.700Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:09.386Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller updated for User/1759038723410-431rv07am
-2025-09-28T05:52:09.384Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for updated: {
-  "id": "1759038723410-431rv07am",
+2025-09-28T06:00:35.714Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039235714: Dispatched DOM event 'data:User:updated' for BaseWidget
+2025-09-28T06:00:35.709Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for updated: {
+  "id": "1759039229867-rg649isxl",
   "type": "human",
   "displayName": "Updated Test User",
   "shortDescription": "Test user entity",
   "status": "online",
-  "lastActiveAt": "2025-09-28T05:52:02.491Z",
+  "lastActiveAt": "2025-09-28T06:00:28.981Z",
   "capabilities": {
     "canSendMessages": true,
     "canReceiveMessages": true,
@@ -3280,30 +3283,25 @@
   },
   "sessionsActive": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:09.376Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:35.700Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:09.389Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038729389: Dispatched DOM event 'data:User:updated' for BaseWidget
-2025-09-28T05:52:09.387Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 1759038723410-431rv07am at index 3
-2025-09-28T05:52:09.391Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038729391: Checked wildcard subscriptions for 'data:User:updated'
-2025-09-28T05:52:14.338Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:15.275Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038735274: handleLocalEventBridge called with eventName='data:User:deleted'
-2025-09-28T05:52:15.281Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for deleted: {
-  "id": "1759038723410-431rv07am"
-}
-2025-09-28T05:52:15.279Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.deleted {
+2025-09-28T06:00:40.440Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:00:41.334Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039241334: handleLocalEventBridge called with eventName='data:User:deleted'
+2025-09-28T06:00:41.343Z [BROWSER_CONSOLE] 🗑️ EntityManager "Scroller-oldest-first": Removed entity ID: 1759039229867-rg649isxl, total: 3
+2025-09-28T06:00:41.338Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - User.deleted {
   "success": true,
   "data": {
-    "id": "1759038723410-431rv07am",
+    "id": "1759039229867-rg649isxl",
     "collection": "User",
     "data": {
-      "id": "1759038723410-431rv07am",
+      "id": "1759039229867-rg649isxl",
       "type": "human",
       "displayName": "Updated Test User",
       "shortDescription": "Test user entity",
       "status": "online",
-      "lastActiveAt": "2025-09-28T05:52:02.491Z",
+      "lastActiveAt": "2025-09-28T06:00:28.981Z",
       "capabilities": {
         "canSendMessages": true,
         "canReceiveMessages": true,
@@ -3318,23 +3316,24 @@
       "sessionsActive": []
     },
     "metadata": {
-      "createdAt": "2025-09-28T05:51:49.847Z",
-      "updatedAt": "2025-09-28T05:52:09.358Z",
+      "createdAt": "2025-09-28T06:00:16.104Z",
+      "updatedAt": "2025-09-28T06:00:35.680Z",
       "version": 2
     }
   },
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:15.273Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:41.333Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:15.288Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038735288: Checked wildcard subscriptions for 'data:User:deleted'
-2025-09-28T05:52:15.283Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller deleted for User/1759038723410-431rv07am
-2025-09-28T05:52:15.285Z [BROWSER_CONSOLE] 🗑️ EntityManager "Scroller-oldest-first": Removed entity ID: 1759038723410-431rv07am, total: 3
-2025-09-28T05:52:15.286Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038735286: Dispatched DOM event 'data:User:deleted' for BaseWidget
-2025-09-28T05:52:20.623Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:21.497Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038741497: handleLocalEventBridge called with eventName='data:Room:created'
-2025-09-28T05:52:21.503Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:00:41.346Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039241346: Checked wildcard subscriptions for 'data:User:deleted'
+2025-09-28T06:00:41.340Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for deleted: {
+  "id": "1759039229867-rg649isxl"
+}
+2025-09-28T06:00:41.345Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039241345: Dispatched DOM event 'data:User:deleted' for BaseWidget
+2025-09-28T06:00:41.341Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller deleted for User/1759039229867-rg649isxl
+2025-09-28T06:00:46.659Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:00:47.497Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.created {
   "name": "Test Room",
   "displayName": "Test Room",
   "description": "Test room for integration testing",
@@ -3342,7 +3341,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:52:20.642Z",
+  "lastMessageAt": "2025-09-28T06:00:46.679Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -3358,23 +3357,23 @@
   "stats": {
     "memberCount": 1,
     "messageCount": 0,
-    "createdAt": "2025-09-28T05:52:20.642Z",
-    "lastActivityAt": "2025-09-28T05:52:20.642Z"
+    "createdAt": "2025-09-28T06:00:46.679Z",
+    "lastActivityAt": "2025-09-28T06:00:46.679Z"
   },
   "members": [],
   "tags": [
     "test",
     "integration"
   ],
-  "id": "1759038741474-w6ou1adzj",
+  "id": "1759039247472-vrnpftnts",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:21.495Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:47.491Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:21.505Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for Room/1759038741474-w6ou1adzj
-2025-09-28T05:52:21.506Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 1759038741474-w6ou1adzj, total: 3
-2025-09-28T05:52:21.501Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.created {
+2025-09-28T06:00:47.493Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039247493: handleLocalEventBridge called with eventName='data:Room:created'
+2025-09-28T06:00:47.501Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-oldest-first": Added entity ID: 1759039247472-vrnpftnts, total: 3
+2025-09-28T06:00:47.498Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "name": "Test Room",
   "displayName": "Test Room",
   "description": "Test room for integration testing",
@@ -3382,7 +3381,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:52:20.642Z",
+  "lastMessageAt": "2025-09-28T06:00:46.679Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -3398,26 +3397,29 @@
   "stats": {
     "memberCount": 1,
     "messageCount": 0,
-    "createdAt": "2025-09-28T05:52:20.642Z",
-    "lastActivityAt": "2025-09-28T05:52:20.642Z"
+    "createdAt": "2025-09-28T06:00:46.679Z",
+    "lastActivityAt": "2025-09-28T06:00:46.679Z"
   },
   "members": [],
   "tags": [
     "test",
     "integration"
   ],
-  "id": "1759038741474-w6ou1adzj",
+  "id": "1759039247472-vrnpftnts",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:21.495Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:47.491Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:21.510Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038741510: Dispatched DOM event 'data:Room:created' for BaseWidget
-2025-09-28T05:52:21.512Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038741512: Checked wildcard subscriptions for 'data:Room:created'
-2025-09-28T05:52:21.508Z [BROWSER_CONSOLE] 🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: 1759038741474-w6ou1adzj, total entities now: 3
-2025-09-28T05:52:26.253Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:27.131Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for updated: {
-  "id": "1759038741474-w6ou1adzj",
+2025-09-28T06:00:47.500Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for Room/1759039247472-vrnpftnts
+2025-09-28T06:00:47.503Z [BROWSER_CONSOLE] 🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: 1759039247472-vrnpftnts, total entities now: 3
+2025-09-28T06:00:47.506Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039247506: Checked wildcard subscriptions for 'data:Room:created'
+2025-09-28T06:00:47.504Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039247504: Dispatched DOM event 'data:Room:created' for BaseWidget
+2025-09-28T06:00:52.184Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:00:53.105Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039253105: Dispatched DOM event 'data:Room:updated' for BaseWidget
+2025-09-28T06:00:53.104Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 1759039247472-vrnpftnts at index 2
+2025-09-28T06:00:53.101Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for updated: {
+  "id": "1759039247472-vrnpftnts",
   "name": "Test Room",
   "displayName": "Updated Test Room",
   "description": "Test room for integration testing",
@@ -3425,7 +3427,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:52:20.642Z",
+  "lastMessageAt": "2025-09-28T06:00:46.679Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -3444,15 +3446,14 @@
     "integration"
   ],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:27.123Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:53.094Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:27.138Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038747138: Checked wildcard subscriptions for 'data:Room:updated'
-2025-09-28T05:52:27.125Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038747124: handleLocalEventBridge called with eventName='data:Room:updated'
-2025-09-28T05:52:27.135Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-oldest-first": Updated entity ID: 1759038741474-w6ou1adzj at index 2
-2025-09-28T05:52:27.130Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.updated {
-  "id": "1759038741474-w6ou1adzj",
+2025-09-28T06:00:53.095Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039253095: handleLocalEventBridge called with eventName='data:Room:updated'
+2025-09-28T06:00:53.107Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039253107: Checked wildcard subscriptions for 'data:Room:updated'
+2025-09-28T06:00:53.099Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.updated {
+  "id": "1759039247472-vrnpftnts",
   "name": "Test Room",
   "displayName": "Updated Test Room",
   "description": "Test room for integration testing",
@@ -3460,7 +3461,7 @@
   "type": "public",
   "status": "active",
   "ownerId": "002350cc-0031-408d-8040-004f000f",
-  "lastMessageAt": "2025-09-28T05:52:20.642Z",
+  "lastMessageAt": "2025-09-28T06:00:46.679Z",
   "privacy": {
     "isPublic": true,
     "requiresInvite": false,
@@ -3479,20 +3480,21 @@
     "integration"
   ],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:27.123Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:53.094Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:27.136Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038747136: Dispatched DOM event 'data:Room:updated' for BaseWidget
-2025-09-28T05:52:27.133Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller updated for Room/1759038741474-w6ou1adzj
-2025-09-28T05:52:31.986Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:32.879Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.deleted {
+2025-09-28T06:00:53.103Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller updated for Room/1759039247472-vrnpftnts
+2025-09-28T06:00:57.968Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:00:58.837Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039258837: Checked wildcard subscriptions for 'data:Room:deleted'
+2025-09-28T06:00:58.833Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller deleted for Room/1759039247472-vrnpftnts
+2025-09-28T06:00:58.830Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - Room.deleted {
   "success": true,
   "data": {
-    "id": "1759038741474-w6ou1adzj",
+    "id": "1759039247472-vrnpftnts",
     "collection": "Room",
     "data": {
-      "id": "1759038741474-w6ou1adzj",
+      "id": "1759039247472-vrnpftnts",
       "name": "Test Room",
       "displayName": "Updated Test Room",
       "description": "Test room for integration testing",
@@ -3500,7 +3502,7 @@
       "type": "public",
       "status": "active",
       "ownerId": "002350cc-0031-408d-8040-004f000f",
-      "lastMessageAt": "2025-09-28T05:52:20.642Z",
+      "lastMessageAt": "2025-09-28T06:00:46.679Z",
       "privacy": {
         "isPublic": true,
         "requiresInvite": false,
@@ -3520,27 +3522,24 @@
       ]
     },
     "metadata": {
-      "createdAt": "2025-09-28T05:51:49.847Z",
-      "updatedAt": "2025-09-28T05:52:27.100Z",
+      "createdAt": "2025-09-28T06:00:16.104Z",
+      "updatedAt": "2025-09-28T06:00:53.072Z",
       "version": 2
     }
   },
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:32.873Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:00:58.823Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:32.875Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038752874: handleLocalEventBridge called with eventName='data:Room:deleted'
-2025-09-28T05:52:32.881Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for deleted: {
-  "id": "1759038741474-w6ou1adzj"
+2025-09-28T06:00:58.834Z [BROWSER_CONSOLE] 🗑️ EntityManager "Scroller-oldest-first": Removed entity ID: 1759039247472-vrnpftnts, total: 2
+2025-09-28T06:00:58.831Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for deleted: {
+  "id": "1759039247472-vrnpftnts"
 }
-2025-09-28T05:52:32.886Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038752886: Dispatched DOM event 'data:Room:deleted' for BaseWidget
-2025-09-28T05:52:32.882Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller deleted for Room/1759038741474-w6ou1adzj
-2025-09-28T05:52:32.888Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038752888: Checked wildcard subscriptions for 'data:Room:deleted'
-2025-09-28T05:52:32.884Z [BROWSER_CONSOLE] 🗑️ EntityManager "Scroller-oldest-first": Removed entity ID: 1759038741474-w6ou1adzj, total: 2
-2025-09-28T05:52:38.077Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:38.943Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038758943: handleLocalEventBridge called with eventName='data:ChatMessage:created'
-2025-09-28T05:52:38.947Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
+2025-09-28T06:00:58.825Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039258824: handleLocalEventBridge called with eventName='data:Room:deleted'
+2025-09-28T06:00:58.836Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039258836: Dispatched DOM event 'data:Room:deleted' for BaseWidget
+2025-09-28T06:01:04.030Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:01:04.905Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 1): {
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3550,17 +3549,20 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
-  "id": "1759038758921-qizoplbks",
+  "id": "1759039264872-gjzxxa56t",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:38.941Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:04.894Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:38.958Z [BROWSER_CONSOLE] ✨ ChatWidget: New message, adding: 1759038758921-qizoplbks
-2025-09-28T05:52:38.951Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/1759038758921-qizoplbks
-2025-09-28T05:52:38.954Z [BROWSER_CONSOLE] 📨 ChatWidget: Received message for room 5e71a0c8-0303-4eb8-a478-3a121248 (count: 1): {
+2025-09-28T06:01:04.911Z [BROWSER_CONSOLE] 🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() processed entity with ID: 1759039264872-gjzxxa56t, total entities now: 3
+2025-09-28T06:01:04.912Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039264912: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
+2025-09-28T06:01:04.895Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039264895: handleLocalEventBridge called with eventName='data:ChatMessage:created'
+2025-09-28T06:01:04.913Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039264913: Checked wildcard subscriptions for 'data:ChatMessage:created'
+2025-09-28T06:01:04.908Z [BROWSER_CONSOLE] ✨ ChatWidget: New message, adding: 1759039264872-gjzxxa56t
+2025-09-28T06:01:04.906Z [BROWSER_CONSOLE] ✨ ChatWidget: Using ChatMessage entity directly: {
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3570,16 +3572,16 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
-  "id": "1759038758921-qizoplbks",
+  "id": "1759039264872-gjzxxa56t",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:38.941Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:04.894Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:38.961Z [BROWSER_CONSOLE] 🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() processed entity with ID: 1759038758921-qizoplbks, total entities now: 3
-2025-09-28T05:52:38.953Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
+2025-09-28T06:01:04.909Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-newest-first": Added entity ID: 1759039264872-gjzxxa56t, total: 3
+2025-09-28T06:01:04.904Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage created {
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3589,15 +3591,16 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
-  "id": "1759038758921-qizoplbks",
+  "id": "1759039264872-gjzxxa56t",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:38.941Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:04.894Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:38.949Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
+2025-09-28T06:01:04.902Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller created for ChatMessage/1759039264872-gjzxxa56t
+2025-09-28T06:01:04.899Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.created {
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3607,19 +3610,16 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
-  "id": "1759038758921-qizoplbks",
+  "id": "1759039264872-gjzxxa56t",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:38.941Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:04.894Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:38.965Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038758965: Checked wildcard subscriptions for 'data:ChatMessage:created'
-2025-09-28T05:52:38.968Z [BROWSER_CONSOLE] 📍 EntityScroller: User near new content area, auto-scrolling
-2025-09-28T05:52:38.963Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038758963: Dispatched DOM event 'data:ChatMessage:created' for BaseWidget
-2025-09-28T05:52:38.959Z [BROWSER_CONSOLE] ✅ EntityManager "Scroller-newest-first": Added entity ID: 1759038758921-qizoplbks, total: 3
-2025-09-28T05:52:38.956Z [BROWSER_CONSOLE] ✨ ChatWidget: Using ChatMessage entity directly: {
+2025-09-28T06:01:04.916Z [BROWSER_CONSOLE] 📍 EntityScroller: User near new content area, auto-scrolling
+2025-09-28T06:01:04.901Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for created: {
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3629,17 +3629,17 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
-  "id": "1759038758921-qizoplbks",
+  "id": "1759039264872-gjzxxa56t",
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:38.941Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:04.894Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:43.807Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:44.706Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.updated {
-  "id": "1759038758921-qizoplbks",
+2025-09-28T06:01:09.702Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:01:10.575Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.updated {
+  "id": "1759039264872-gjzxxa56t",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3649,16 +3649,16 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:44.699Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:10.569Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:44.701Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038764701: handleLocalEventBridge called with eventName='data:ChatMessage:updated'
-2025-09-28T05:52:44.707Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for updated: {
-  "id": "1759038758921-qizoplbks",
+2025-09-28T06:01:10.570Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039270570: handleLocalEventBridge called with eventName='data:ChatMessage:updated'
+2025-09-28T06:01:10.576Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for updated: {
+  "id": "1759039264872-gjzxxa56t",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3668,16 +3668,16 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:44.699Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:10.569Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:44.719Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038764719: Dispatched DOM event 'data:ChatMessage:updated' for BaseWidget
-2025-09-28T05:52:44.712Z [BROWSER_CONSOLE] 🔄 ChatWidget: Received message update for room 5e71a0c8-0303-4eb8-a478-3a121248: {
-  "id": "1759038758921-qizoplbks",
+2025-09-28T06:01:10.578Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller updated for ChatMessage/1759039264872-gjzxxa56t
+2025-09-28T06:01:10.579Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage updated {
+  "id": "1759039264872-gjzxxa56t",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3687,16 +3687,15 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:44.699Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:10.569Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:44.715Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-newest-first": Updated entity ID: 1759038758921-qizoplbks at index 2
-2025-09-28T05:52:44.711Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage updated {
-  "id": "1759038758921-qizoplbks",
+2025-09-28T06:01:10.582Z [BROWSER_CONSOLE] ✨ ChatWidget: Updating ChatMessage entity: {
+  "id": "1759039264872-gjzxxa56t",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3706,18 +3705,17 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:44.699Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:10.569Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:44.709Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller updated for ChatMessage/1759038758921-qizoplbks
-2025-09-28T05:52:44.717Z [BROWSER_CONSOLE] ✅ ChatWidget: Message updated successfully
-2025-09-28T05:52:44.720Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038764720: Checked wildcard subscriptions for 'data:ChatMessage:updated'
-2025-09-28T05:52:44.714Z [BROWSER_CONSOLE] ✨ ChatWidget: Updating ChatMessage entity: {
-  "id": "1759038758921-qizoplbks",
+2025-09-28T06:01:10.588Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039270588: Checked wildcard subscriptions for 'data:ChatMessage:updated'
+2025-09-28T06:01:10.586Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039270586: Dispatched DOM event 'data:ChatMessage:updated' for BaseWidget
+2025-09-28T06:01:10.581Z [BROWSER_CONSOLE] 🔄 ChatWidget: Received message update for room 5e71a0c8-0303-4eb8-a478-3a121248: {
+  "id": "1759039264872-gjzxxa56t",
   "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
   "senderId": "002350cc-0031-408d-8040-004f000f",
   "senderName": "Test Sender",
@@ -3727,22 +3725,24 @@
   },
   "status": "sent",
   "priority": "normal",
-  "timestamp": "2025-09-28T05:52:38.097Z",
+  "timestamp": "2025-09-28T06:01:04.048Z",
   "reactions": [],
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:44.699Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:10.569Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:49.470Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:50.391Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759038770390: handleLocalEventBridge called with eventName='data:ChatMessage:deleted'
-2025-09-28T05:52:50.395Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.deleted {
+2025-09-28T06:01:10.583Z [BROWSER_CONSOLE] 🔄 EntityManager "Scroller-newest-first": Updated entity ID: 1759039264872-gjzxxa56t at index 2
+2025-09-28T06:01:10.585Z [BROWSER_CONSOLE] ✅ ChatWidget: Message updated successfully
+2025-09-28T06:01:15.293Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:01:16.161Z [BROWSER_CONSOLE] 🔥 CLAUDE-BROWSER-EVENT-1759039276161: handleLocalEventBridge called with eventName='data:ChatMessage:deleted'
+2025-09-28T06:01:16.167Z [BROWSER_CONSOLE] 🔥 DataEventUtils: CRUD event received - ChatMessage.deleted {
   "success": true,
   "data": {
-    "id": "1759038758921-qizoplbks",
+    "id": "1759039264872-gjzxxa56t",
     "collection": "ChatMessage",
     "data": {
-      "id": "1759038758921-qizoplbks",
+      "id": "1759039264872-gjzxxa56t",
       "roomId": "5e71a0c8-0303-4eb8-a478-3a121248",
       "senderId": "002350cc-0031-408d-8040-004f000f",
       "senderName": "Test Sender",
@@ -3752,61 +3752,61 @@
       },
       "status": "sent",
       "priority": "normal",
-      "timestamp": "2025-09-28T05:52:38.097Z",
+      "timestamp": "2025-09-28T06:01:04.048Z",
       "reactions": []
     },
     "metadata": {
-      "createdAt": "2025-09-28T05:51:49.847Z",
-      "updatedAt": "2025-09-28T05:52:44.676Z",
+      "createdAt": "2025-09-28T06:00:16.104Z",
+      "updatedAt": "2025-09-28T06:01:10.548Z",
       "version": 2
     }
   },
   "_bridged": true,
-  "_originalContext": "f66efe33-0b83-4e3b-8d34-9c3c28275a72",
-  "_bridgeTimestamp": "2025-09-28T05:52:50.389Z",
+  "_originalContext": "140eb96b-ae99-4f08-8219-e3ff2adb5962",
+  "_bridgeTimestamp": "2025-09-28T06:01:16.160Z",
   "_bridgeHopCount": 1
 }
-2025-09-28T05:52:50.396Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for deleted: {
-  "id": "1759038758921-qizoplbks"
+2025-09-28T06:01:16.171Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage deleted 1759039264872-gjzxxa56t
+2025-09-28T06:01:16.179Z [BROWSER_CONSOLE] 🔍 CLAUDE-DEBUG-DELETE: DOM element exists after deletion: false
+2025-09-28T06:01:16.170Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller deleted for ChatMessage/1759039264872-gjzxxa56t
+2025-09-28T06:01:16.178Z [BROWSER_CONSOLE] 🔍 CLAUDE-DEBUG-DELETE: EntityScroller.remove() returned: true
+2025-09-28T06:01:16.174Z [BROWSER_CONSOLE] 🔍 CLAUDE-DEBUG-DELETE: DOM element exists before deletion: true
+2025-09-28T06:01:16.168Z [BROWSER_CONSOLE] 🔧 DataEventUtils: Extracted entity for deleted: {
+  "id": "1759039264872-gjzxxa56t"
 }
-2025-09-28T05:52:50.398Z [BROWSER_CONSOLE] 🔧 DataEventUtils: EntityScroller deleted for ChatMessage/1759038758921-qizoplbks
-2025-09-28T05:52:50.399Z [BROWSER_CONSOLE] 🔥 CRUD-EVENT: ChatMessage deleted 1759038758921-qizoplbks
-2025-09-28T05:52:50.409Z [BROWSER_CONSOLE] ✅ ChatWidget: Message 1759038758921-qizoplbks deleted successfully
-2025-09-28T05:52:50.407Z [BROWSER_CONSOLE] 🔍 CLAUDE-DEBUG-DELETE: DOM element exists after deletion: false
-2025-09-28T05:52:50.404Z [BROWSER_CONSOLE] 🗑️ EntityManager "Scroller-newest-first": Removed entity ID: 1759038758921-qizoplbks, total: 2
-2025-09-28T05:52:50.403Z [BROWSER_CONSOLE] 🔍 CLAUDE-DEBUG-DELETE: DOM element exists before deletion: true
-2025-09-28T05:52:50.406Z [BROWSER_CONSOLE] 🔍 CLAUDE-DEBUG-DELETE: EntityScroller.remove() returned: true
-2025-09-28T05:52:50.401Z [BROWSER_CONSOLE] 🗑️ ChatWidget: Deleting message with ID: 1759038758921-qizoplbks from room 5e71a0c8-0303-4eb8-a478-3a121248
-2025-09-28T05:52:50.412Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759038770412: Checked wildcard subscriptions for 'data:ChatMessage:deleted'
-2025-09-28T05:52:50.410Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759038770410: Dispatched DOM event 'data:ChatMessage:deleted' for BaseWidget
-2025-09-28T05:52:55.758Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/debug/widget-state
-2025-09-28T05:52:56.605Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/screenshot
-2025-09-28T05:52:56.611Z [BROWSER_CONSOLE] 📐 ElementUtils: Element bounds - rect: 451.8750305175781x295.451416015625, scroll: 451.8750305175781x295.451416015625, effective: 451.8750305175781x295.451416015625
-2025-09-28T05:52:56.197Z [BROWSER_CONSOLE] 🧹 DeduplicationService: Cleaned 210 old entries
-2025-09-28T05:52:56.613Z [ElementUtils] 🎯 ElementUtils: Found user-list-widget (in shadow DOM) - bounds: 451.8750305175781x295.451416015625
-2025-09-28T05:52:56.610Z [BROWSER_CONSOLE] 🔍 ElementUtils: Standard querySelector failed for "user-list-widget", trying shadow DOM traversal...
-2025-09-28T05:52:56.778Z [BROWSER_CONSOLE] 📐 ElementUtils: Viewport: 15.000000953674316, 346.44097900390625, 451.8750305175781x295.451416015625
-2025-09-28T05:52:56.782Z [BROWSER_CONSOLE] 📐 ElementUtils: Document: 15.000000953674316, 346.44097900390625
-2025-09-28T05:52:56.776Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
-2025-09-28T05:52:56.780Z [BROWSER_CONSOLE] 📐 ElementUtils: Scroll: 0, 0
-2025-09-28T05:52:56.783Z [BROWSER_CONSOLE] 📐 ElementUtils: Final crop: 17, 385, 502x328
-2025-09-28T05:52:57.722Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/screenshot
-2025-09-28T05:52:57.726Z [BROWSER_CONSOLE] 🔍 ElementUtils: Standard querySelector failed for "room-list-widget", trying shadow DOM traversal...
-2025-09-28T05:52:57.727Z [BROWSER_CONSOLE] 📐 ElementUtils: Element bounds - rect: 451.8750305175781x170.34722900390625, scroll: 452x170, effective: 451.8750305175781x170.34722900390625
-2025-09-28T05:52:57.729Z [ElementUtils] 🎯 ElementUtils: Found room-list-widget (in shadow DOM) - bounds: 451.8750305175781x170.34722900390625
-2025-09-28T05:52:57.883Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
-2025-09-28T05:52:57.889Z [BROWSER_CONSOLE] 📐 ElementUtils: Final crop: 17, 178, 502x189
-2025-09-28T05:52:57.888Z [BROWSER_CONSOLE] 📐 ElementUtils: Document: 15.000000953674316, 160.1041717529297
-2025-09-28T05:52:57.885Z [BROWSER_CONSOLE] 📐 ElementUtils: Viewport: 15.000000953674316, 160.1041717529297, 451.8750305175781x170.34722900390625
-2025-09-28T05:52:57.886Z [BROWSER_CONSOLE] 📐 ElementUtils: Scroll: 0, 0
-2025-09-28T05:52:58.771Z [BROWSER_CONSOLE] 🔍 ElementUtils: Standard querySelector failed for "chat-widget", trying shadow DOM traversal...
-2025-09-28T05:52:58.766Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/screenshot
-2025-09-28T05:52:58.772Z [BROWSER_CONSOLE] 📐 ElementUtils: Element bounds - rect: 1031.4583740234375x1297.8126220703125, scroll: 1029x1296, effective: 1031.4583740234375x1297.8126220703125
-2025-09-28T05:52:58.940Z [BROWSER_CONSOLE] ⚠️ ElementUtils: Constrained crop from (537,67,1146x1442) to (537,67,1145x1442) to fit canvas
-2025-09-28T05:52:58.774Z [ElementUtils] 🎯 ElementUtils: Found chat-widget (in shadow DOM) - bounds: 1031.4583740234375x1297.8126220703125
-2025-09-28T05:52:58.935Z [BROWSER_CONSOLE] 📐 ElementUtils: Viewport: 482.98614501953125, 59.96528244018555, 1031.4583740234375x1297.8126220703125
-2025-09-28T05:52:58.936Z [BROWSER_CONSOLE] 📐 ElementUtils: Scroll: 0, 0
-2025-09-28T05:52:58.939Z [BROWSER_CONSOLE] 📐 ElementUtils: Final crop: 537, 67, 1146x1442
-2025-09-28T05:52:58.933Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
-2025-09-28T05:52:58.938Z [BROWSER_CONSOLE] 📐 ElementUtils: Document: 482.98614501953125, 59.96528244018555
-2025-09-28T05:52:59.842Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:addd9597]: Handling message to browser/commands/screenshot
+2025-09-28T06:01:16.180Z [BROWSER_CONSOLE] ✅ ChatWidget: Message 1759039264872-gjzxxa56t deleted successfully
+2025-09-28T06:01:16.183Z [CLAUDE] 🎯 CLAUDE-WILDCARD-1759039276183: Checked wildcard subscriptions for 'data:ChatMessage:deleted'
+2025-09-28T06:01:16.176Z [BROWSER_CONSOLE] 🗑️ EntityManager "Scroller-newest-first": Removed entity ID: 1759039264872-gjzxxa56t, total: 2
+2025-09-28T06:01:16.173Z [BROWSER_CONSOLE] 🗑️ ChatWidget: Deleting message with ID: 1759039264872-gjzxxa56t from room 5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:01:16.181Z [BROWSER_CONSOLE] 🔥 CLAUDE-DOM-EVENT-1759039276181: Dispatched DOM event 'data:ChatMessage:deleted' for BaseWidget
+2025-09-28T06:01:21.502Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/debug/widget-state
+2025-09-28T06:01:21.909Z [BROWSER_CONSOLE] 🧹 DeduplicationService: Cleaned 210 old entries
+2025-09-28T06:01:22.360Z [BROWSER_CONSOLE] 📐 ElementUtils: Element bounds - rect: 451.8750305175781x295.451416015625, scroll: 451.8750305175781x295.451416015625, effective: 451.8750305175781x295.451416015625
+2025-09-28T06:01:22.353Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/screenshot
+2025-09-28T06:01:22.361Z [ElementUtils] 🎯 ElementUtils: Found user-list-widget (in shadow DOM) - bounds: 451.8750305175781x295.451416015625
+2025-09-28T06:01:22.358Z [BROWSER_CONSOLE] 🔍 ElementUtils: Standard querySelector failed for "user-list-widget", trying shadow DOM traversal...
+2025-09-28T06:01:22.516Z [BROWSER_CONSOLE] 📐 ElementUtils: Viewport: 15.000000953674316, 346.44097900390625, 451.8750305175781x295.451416015625
+2025-09-28T06:01:22.515Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
+2025-09-28T06:01:22.517Z [BROWSER_CONSOLE] 📐 ElementUtils: Scroll: 0, 0
+2025-09-28T06:01:22.519Z [BROWSER_CONSOLE] 📐 ElementUtils: Document: 15.000000953674316, 346.44097900390625
+2025-09-28T06:01:22.520Z [BROWSER_CONSOLE] 📐 ElementUtils: Final crop: 17, 385, 502x328
+2025-09-28T06:01:23.457Z [BROWSER_CONSOLE] 📐 ElementUtils: Element bounds - rect: 451.8750305175781x170.34722900390625, scroll: 452x170, effective: 451.8750305175781x170.34722900390625
+2025-09-28T06:01:23.456Z [BROWSER_CONSOLE] 🔍 ElementUtils: Standard querySelector failed for "room-list-widget", trying shadow DOM traversal...
+2025-09-28T06:01:23.451Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/screenshot
+2025-09-28T06:01:23.590Z [BROWSER_CONSOLE] 📐 ElementUtils: Final crop: 17, 178, 502x189
+2025-09-28T06:01:23.587Z [BROWSER_CONSOLE] 📐 ElementUtils: Scroll: 0, 0
+2025-09-28T06:01:23.459Z [ElementUtils] 🎯 ElementUtils: Found room-list-widget (in shadow DOM) - bounds: 451.8750305175781x170.34722900390625
+2025-09-28T06:01:23.586Z [BROWSER_CONSOLE] 📐 ElementUtils: Viewport: 15.000000953674316, 160.1041717529297, 451.8750305175781x170.34722900390625
+2025-09-28T06:01:23.589Z [BROWSER_CONSOLE] 📐 ElementUtils: Document: 15.000000953674316, 160.1041717529297
+2025-09-28T06:01:23.585Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
+2025-09-28T06:01:24.460Z [BROWSER_CONSOLE] 🔍 ElementUtils: Standard querySelector failed for "chat-widget", trying shadow DOM traversal...
+2025-09-28T06:01:24.462Z [ElementUtils] 🎯 ElementUtils: Found chat-widget (in shadow DOM) - bounds: 1833.6806640625x1297.8126220703125
+2025-09-28T06:01:24.461Z [BROWSER_CONSOLE] 📐 ElementUtils: Element bounds - rect: 1833.6806640625x1297.8126220703125, scroll: 1831x1296, effective: 1833.6806640625x1297.8126220703125
+2025-09-28T06:01:24.602Z [BROWSER_CONSOLE] 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
+2025-09-28T06:01:24.456Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/screenshot
+2025-09-28T06:01:24.604Z [BROWSER_CONSOLE] 📐 ElementUtils: Viewport: 482.98614501953125, 59.96528244018555, 1833.6806640625x1297.8126220703125
+2025-09-28T06:01:24.608Z [BROWSER_CONSOLE] 📐 ElementUtils: Final crop: 537, 67, 2038x1442
+2025-09-28T06:01:24.609Z [BROWSER_CONSOLE] ⚠️ ElementUtils: Constrained crop from (537,67,2038x1442) to (537,67,2037x1442) to fit canvas
+2025-09-28T06:01:24.605Z [BROWSER_CONSOLE] 📐 ElementUtils: Scroll: 0, 0
+2025-09-28T06:01:24.607Z [BROWSER_CONSOLE] 📐 ElementUtils: Document: 482.98614501953125, 59.96528244018555
+2025-09-28T06:01:25.518Z [BROWSER_CONSOLE] 📨 CommandDaemonBrowser[command-daemon@browser:6aa4bbef]: Handling message to browser/commands/screenshot
