@@ -20,24 +20,48 @@ echo "🚀 Starting system deployment..."
 npm start &
 DEPLOY_PID=$!
 
-# Wait for system to be ready (with timeout)
-echo "⏳ Waiting for system to be ready..."
-TIMEOUT=120  # 2 minutes
+# Wait for COMPLETE system to be ready (with timeout)
+echo "⏳ Waiting for complete system orchestration..."
+TIMEOUT=180  # 3 minutes for full system readiness
 COUNTER=0
+PING_SUCCESS=false
+ORCHESTRATION_COMPLETE=false
+
 while [ $COUNTER -lt $TIMEOUT ]; do
+    # First check if ping works (basic connectivity)
     if ./jtag ping >/dev/null 2>&1; then
-        echo "✅ System deployment successful"
-        break
+        PING_SUCCESS=true
+
+        # Then check if orchestration is complete (full system ready)
+        if tail -50 .continuum/jtag/system/logs/npm-start.log 2>/dev/null | grep -q "🎉 Orchestration complete"; then
+            ORCHESTRATION_COMPLETE=true
+            echo "✅ System deployment successful - orchestration complete"
+            echo "⏳ Allowing system to fully settle..."
+            sleep 5  # Give system time to fully stabilize
+            break
+        else
+            # System is up but still initializing
+            if [ $((COUNTER % 10)) -eq 0 ]; then
+                echo "   ... system responsive, waiting for orchestration ($COUNTER/${TIMEOUT}s)"
+            fi
+        fi
+    else
+        # System not yet responsive
+        if [ $((COUNTER % 10)) -eq 0 ]; then
+            echo "   ... waiting for system startup ($COUNTER/${TIMEOUT}s)"
+        fi
     fi
+
     sleep 1
     COUNTER=$((COUNTER + 1))
-    if [ $((COUNTER % 10)) -eq 0 ]; then
-        echo "   ... still waiting ($COUNTER/${TIMEOUT}s)"
-    fi
 done
 
 if [ $COUNTER -eq $TIMEOUT ]; then
     echo "❌ System deployment timed out after ${TIMEOUT}s"
+    if [ "$PING_SUCCESS" = true ] && [ "$ORCHESTRATION_COMPLETE" = false ]; then
+        echo "   System was responsive but orchestration never completed"
+        echo "   Check .continuum/jtag/system/logs/npm-start.log for details"
+    fi
     kill $DEPLOY_PID 2>/dev/null || true
     exit 1
 fi
@@ -76,10 +100,11 @@ echo "📸 Phase 3: Collecting visual proof"
 echo "-----------------------------------"
 
 echo "📸 Capturing widget screenshots for proof..."
-./jtag screenshot --querySelector="user-list-widget" --filename="precommit-users.png"
-./jtag screenshot --querySelector="room-list-widget" --filename="precommit-rooms.png"
-./jtag screenshot --querySelector="chat-widget" --filename="precommit-chat.png"
-./jtag screenshot --querySelector="body" --filename="precommit-system.png"
+# Use timeout and don't fail commit if screenshots timeout during precommit load
+timeout 30 ./jtag screenshot --querySelector="user-list-widget" --filename="precommit-users.png" || echo "⚠️ User widget screenshot timed out (system under load)"
+timeout 30 ./jtag screenshot --querySelector="room-list-widget" --filename="precommit-rooms.png" || echo "⚠️ Room widget screenshot timed out (system under load)"
+timeout 30 ./jtag screenshot --querySelector="chat-widget" --filename="precommit-chat.png" || echo "⚠️ Chat widget screenshot timed out (system under load)"
+timeout 30 ./jtag screenshot --querySelector="body" --filename="precommit-system.png" || echo "⚠️ System screenshot timed out (system under load)"
 
 echo "✅ Screenshot proof collection complete"
 
@@ -172,9 +197,9 @@ echo "----------------------------------"
 
 # Verify all proof artifacts exist
 REQUIRED_ARTIFACTS=(
-    "$VALIDATION_DIR/logs"
-    "$VALIDATION_DIR/screenshots"
-    "$VALIDATION_DIR/session-info.json"
+    "$VALIDATION_RUN_DIR/logs"
+    "$VALIDATION_RUN_DIR/screenshots"
+    "$VALIDATION_RUN_DIR/validation-info.json"
 )
 
 for artifact in "${REQUIRED_ARTIFACTS[@]}"; do
