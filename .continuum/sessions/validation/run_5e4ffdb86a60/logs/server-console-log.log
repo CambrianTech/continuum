@@ -1,0 +1,3176 @@
+2025-09-28T06:21:08.694Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:08.966Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:08.823Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:08.693Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:11.902Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:11.907Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:11.905Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:11.909Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:11.973Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:17.876Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:17.882Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:17.892Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:17.899Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:17.962Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:26.000Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:26.011Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:26.014Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:26.017Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:26.018Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:30.768Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:30.771Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:30.773Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:30.772Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:30.775Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:37.350Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:37.352Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:37.355Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:37.358Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:37.366Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:39.580Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:39.583Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:39.585Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:39.587Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:39.593Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:57.599Z [SERVER_CONSOLE] 🆕 SessionDaemon: No existing valid shared session found, creating new one
+2025-09-28T06:21:57.609Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:57.610Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:57.611Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:57.613Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:21:58.651Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/continuum/public/continuum-widget.html → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/continuum/public/continuum-widget.html
+2025-09-28T06:21:58.650Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/continuum/public/continuum-widget.html
+2025-09-28T06:21:58.653Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 444 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/continuum/public/continuum-widget.html
+2025-09-28T06:21:58.664Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/continuum/public/continuum-widget.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/continuum/public/continuum-widget.css
+2025-09-28T06:21:58.662Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/continuum/public/continuum-widget.css
+2025-09-28T06:21:58.666Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 1993 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/continuum/public/continuum-widget.css
+2025-09-28T06:21:58.685Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/shared/themes/base/base.css
+2025-09-28T06:21:58.686Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/shared/themes/base/base.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/shared/themes/base/base.css
+2025-09-28T06:21:58.688Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 3978 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/shared/themes/base/base.css
+2025-09-28T06:21:58.691Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/shared/themes/base/theme.css
+2025-09-28T06:21:58.692Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/shared/themes/base/theme.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/shared/themes/base/theme.css
+2025-09-28T06:21:58.697Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 3691 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/shared/themes/base/theme.css
+2025-09-28T06:21:58.729Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/sidebar/public/sidebar-panel.html → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/sidebar/public/sidebar-panel.html
+2025-09-28T06:21:58.727Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/sidebar/public/sidebar-panel.html
+2025-09-28T06:21:58.731Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 471 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/sidebar/public/sidebar-panel.html
+2025-09-28T06:21:58.733Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/main/public/main-panel.html
+2025-09-28T06:21:58.735Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/main/public/main-panel.html → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/main/public/main-panel.html
+2025-09-28T06:21:58.737Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 955 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/main/public/main-panel.html
+2025-09-28T06:21:58.745Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/sidebar/public/sidebar-panel.css
+2025-09-28T06:21:58.746Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/sidebar/public/sidebar-panel.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/sidebar/public/sidebar-panel.css
+2025-09-28T06:21:58.762Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 1814 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/sidebar/public/sidebar-panel.css
+2025-09-28T06:21:58.763Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/main/public/main-panel.css
+2025-09-28T06:21:58.764Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/main/public/main-panel.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/main/public/main-panel.css
+2025-09-28T06:21:58.767Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 3049 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/main/public/main-panel.css
+2025-09-28T06:21:58.790Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/chat/room-list/room-list-widget.css
+2025-09-28T06:21:58.791Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/chat/room-list/room-list-widget.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/chat/room-list/room-list-widget.css
+2025-09-28T06:21:58.792Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 3029 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/chat/room-list/room-list-widget.css
+2025-09-28T06:21:58.796Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/chat/user-list/user-list.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/chat/user-list/user-list.css
+2025-09-28T06:21:58.795Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/chat/user-list/user-list.css
+2025-09-28T06:21:58.800Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 3572 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/chat/user-list/user-list.css
+2025-09-28T06:21:58.837Z [SERVER_CONSOLE] 📂 FileDaemon: Loading widgets/chat/chat-widget/chat-widget.css → /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/chat/chat-widget/chat-widget.css
+2025-09-28T06:21:58.835Z [SERVER_CONSOLE] 📖 SERVER: Loading file: widgets/chat/chat-widget/chat-widget.css
+2025-09-28T06:21:58.856Z [SERVER_CONSOLE] 🔗 WebSocketResponseRouter: Mapped corr_1759040518855_amogz7by → ws_1759040518596_zpek2i
+2025-09-28T06:21:58.856Z [SERVER_CONSOLE] 🔗 WebSocketTransportServer: Registered correlation corr_1759040518855_amogz7by for client ws_1759040518596_zpek2i
+2025-09-28T06:21:58.857Z [SERVER_CONSOLE] 🔍 SQLite: Querying Room from entity-specific table {
+  "collection": "Room",
+  "sort": [
+    {
+      "field": "name",
+      "direction": "asc"
+    }
+  ],
+  "limit": 50
+}
+2025-09-28T06:21:58.860Z [SERVER_CONSOLE] 📤 WebSocketResponseRouter: Sent response corr_1759040518855_amogz7by → ws_1759040518596_zpek2i
+2025-09-28T06:21:58.859Z [SERVER_CONSOLE] ✅ SQLite: Entity query returned 2 records
+2025-09-28T06:21:58.860Z [WebSocket] 🎯 WebSocket Server: Routing response corr_1759040518855_amogz7by to specific client
+2025-09-28T06:21:58.860Z [SERVER_CONSOLE] ✅ FileDaemon: Loaded 6019 bytes from /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/widgets/chat/chat-widget/chat-widget.css
+2025-09-28T06:21:58.893Z [SERVER_CONSOLE] 🔍 SQLite: Querying User from entity-specific table {
+  "collection": "User",
+  "sort": [
+    {
+      "field": "lastActiveAt",
+      "direction": "desc"
+    }
+  ],
+  "limit": 50
+}
+2025-09-28T06:21:58.894Z [SERVER_CONSOLE] ✅ SQLite: Entity query returned 3 records
+2025-09-28T06:21:58.936Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading Room/5e71a0c8-0303-4eb8-a478-3a121248 via DataDaemon
+2025-09-28T06:21:58.936Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040518936: Reading Room/5e71a0c8-0303-4eb8-a478-3a121248 from entity-specific table
+2025-09-28T06:21:58.936Z [SERVER_CONSOLE] ✅ DATA SERVER: Read Room/5e71a0c8-0303-4eb8-a478-3a121248
+2025-09-28T06:21:59.004Z [SERVER_CONSOLE] 🔍 SQLite: Querying ChatMessage from entity-specific table {
+  "collection": "ChatMessage",
+  "filters": {
+    "roomId": "5e71a0c8-0303-4eb8-a478-3a121248"
+  },
+  "sort": [
+    {
+      "field": "timestamp",
+      "direction": "desc"
+    }
+  ],
+  "limit": 20
+}
+2025-09-28T06:21:59.005Z [SERVER_CONSOLE] ✅ SQLite: Entity query returned 2 records
+2025-09-28T06:21:59.675Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:21:59.677Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:59.678Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:21:59.676Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:21:59.680Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:22:01.598Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:01.601Z [SERVER_CONSOLE] 🏓 SERVER: Ping received - "ping"
+2025-09-28T06:22:01.599Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:01.600Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:01.603Z [SERVER_CONSOLE] ✅ SERVER: Pong! Round-trip: not measured
+2025-09-28T06:22:04.590Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:04.595Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "User"
+2025-09-28T06:22:04.595Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040524595: Creating User/002350cc-0031-408d-8040-004f000f in entity-specific table
+2025-09-28T06:22:04.593Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:04.592Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:04.595Z [SERVER_CONSOLE] 🏗️ Creating table for entity: User -> users
+2025-09-28T06:22:04.607Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:04.607Z [SERVER_CONSOLE] ✅ Table created: users with 7 indexes
+2025-09-28T06:22:04.610Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO users (id, created_at, updated_at, version, type, display_name, short_description, status, last_active_at, capabilities, sessions_active)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "002350cc-0031-408d-8040-004f000f",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "human",
+    "Joel",
+    "System architect & dev lead",
+    "online",
+    "2025-09-28T06:22:03.776Z",
+    "{\"canSendMessages\":true,\"canReceiveMessages\":true,\"canTrain\":false,\"canCreateRooms\":true,\"canInviteOthers\":true,\"canModerate\":true,\"autoResponds\":false,\"providesContext\":false,\"canAccessPersonas\":true}",
+    "[]"
+  ]
+}
+2025-09-28T06:22:04.609Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:04.612Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table users with 11 columns
+2025-09-28T06:22:04.612Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:04.612Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:04.629Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:User:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:04.629Z",
+    "bridged": true,
+    "eventName": "data:User:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:04.628Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040524628: Transaction committed successfully
+2025-09-28T06:22:04.628Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:04.628Z [SERVER_CONSOLE] ✅ SQLite: Created record 002350cc-0031-408d-8040-004f000f in entity table for User
+2025-09-28T06:22:04.629Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:User:created
+2025-09-28T06:22:05.517Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:05.518Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:05.519Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:05.521Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "User"
+2025-09-28T06:22:05.521Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040525521: Creating User/06d9c12f-3577-4611-b1c8-51e6db6f in entity-specific table
+2025-09-28T06:22:05.522Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:05.523Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:05.524Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO users (id, created_at, updated_at, version, type, display_name, short_description, status, last_active_at, capabilities, sessions_active)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "06d9c12f-3577-4611-b1c8-51e6db6f",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "agent",
+    "Claude Code",
+    "Code architect & debugger ⚡",
+    "online",
+    "2025-09-28T06:22:03.776Z",
+    "{\"canSendMessages\":true,\"canReceiveMessages\":true,\"canTrain\":false,\"canCreateRooms\":true,\"canInviteOthers\":true,\"canModerate\":true,\"autoResponds\":true,\"providesContext\":true,\"canAccessPersonas\":false}",
+    "[]"
+  ]
+}
+2025-09-28T06:22:05.528Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:05.528Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:05.528Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table users with 11 columns
+2025-09-28T06:22:05.542Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:User:created
+2025-09-28T06:22:05.542Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:User:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:05.542Z",
+    "bridged": true,
+    "eventName": "data:User:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:05.542Z [SERVER_CONSOLE] ✅ SQLite: Created record 06d9c12f-3577-4611-b1c8-51e6db6f in entity table for User
+2025-09-28T06:22:05.542Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040525542: Transaction committed successfully
+2025-09-28T06:22:05.542Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:06.363Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:06.365Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:06.364Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:06.367Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:06.367Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "User"
+2025-09-28T06:22:06.367Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040526367: Creating User/77736910-505a-4870-a942-02295730 in entity-specific table
+2025-09-28T06:22:06.369Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO users (id, created_at, updated_at, version, type, display_name, short_description, status, last_active_at, capabilities, sessions_active)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "77736910-505a-4870-a942-02295730",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "agent",
+    "GeneralAI",
+    "General purpose assistant",
+    "online",
+    "2025-09-28T06:22:03.776Z",
+    "{\"canSendMessages\":true,\"canReceiveMessages\":true,\"canTrain\":false,\"canCreateRooms\":true,\"canInviteOthers\":true,\"canModerate\":true,\"autoResponds\":true,\"providesContext\":true,\"canAccessPersonas\":false}",
+    "[]"
+  ]
+}
+2025-09-28T06:22:06.369Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:06.371Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:06.371Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table users with 11 columns
+2025-09-28T06:22:06.371Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:06.389Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:User:created
+2025-09-28T06:22:06.389Z [SERVER_CONSOLE] ✅ SQLite: Created record 77736910-505a-4870-a942-02295730 in entity table for User
+2025-09-28T06:22:06.389Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:User:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:06.389Z",
+    "bridged": true,
+    "eventName": "data:User:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:06.389Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040526389: Transaction committed successfully
+2025-09-28T06:22:06.389Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:07.295Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:07.297Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:07.298Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:07.299Z [SERVER_CONSOLE] 🏗️ Creating table for entity: Room -> rooms
+2025-09-28T06:22:07.299Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "Room"
+2025-09-28T06:22:07.299Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040527299: Creating Room/5e71a0c8-0303-4eb8-a478-3a121248 in entity-specific table
+2025-09-28T06:22:07.313Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:07.313Z [SERVER_CONSOLE] ✅ Table created: rooms with 7 indexes
+2025-09-28T06:22:07.313Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:07.314Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO rooms (id, created_at, updated_at, version, name, display_name, description, topic, type, status, owner_id, last_message_at, privacy, settings, members, tags)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "5e71a0c8-0303-4eb8-a478-3a121248",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "general",
+    "General",
+    "Main discussion room for all users",
+    "Welcome to general discussion! Introduce yourself and chat about anything.",
+    "public",
+    "active",
+    "002350cc-0031-408d-8040-004f000f",
+    "2025-09-28T06:22:03.776Z",
+    "{\"isPublic\":true,\"requiresInvite\":false,\"allowGuestAccess\":true,\"searchable\":true}",
+    "{\"allowReactions\":true,\"allowThreads\":true,\"allowFileSharing\":true,\"messageRetentionDays\":365}",
+    "[]",
+    "[\"general\",\"welcome\",\"discussion\"]"
+  ]
+}
+2025-09-28T06:22:07.316Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:07.316Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:07.316Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table rooms with 16 columns
+2025-09-28T06:22:07.330Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:Room:created
+2025-09-28T06:22:07.329Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:07.329Z [SERVER_CONSOLE] ✅ SQLite: Created record 5e71a0c8-0303-4eb8-a478-3a121248 in entity table for Room
+2025-09-28T06:22:07.330Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:Room:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:07.330Z",
+    "bridged": true,
+    "eventName": "data:Room:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:07.329Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040527329: Transaction committed successfully
+2025-09-28T06:22:08.040Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:08.042Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:08.044Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:08.041Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:08.044Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040528044: Creating User/1759040528043-x5sv078mv in entity-specific table
+2025-09-28T06:22:08.044Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "User"
+2025-09-28T06:22:08.047Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO users (id, created_at, updated_at, version, type, display_name, short_description, status, last_active_at, capabilities, sessions_active)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "1759040528043-x5sv078mv",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "human",
+    "Test User",
+    "Test user entity",
+    "online",
+    "2025-09-28T06:22:07.178Z",
+    "{\"canSendMessages\":true,\"canReceiveMessages\":true,\"canTrain\":false,\"canCreateRooms\":true,\"canInviteOthers\":true,\"canModerate\":true,\"autoResponds\":false,\"providesContext\":false,\"canAccessPersonas\":true}",
+    "[]"
+  ]
+}
+2025-09-28T06:22:08.046Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:08.049Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:08.049Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table users with 11 columns
+2025-09-28T06:22:08.049Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:08.067Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:User:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:08.067Z",
+    "bridged": true,
+    "eventName": "data:User:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:08.066Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:08.067Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:User:created
+2025-09-28T06:22:08.066Z [SERVER_CONSOLE] ✅ SQLite: Created record 1759040528043-x5sv078mv in entity table for User
+2025-09-28T06:22:08.066Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040528066: Transaction committed successfully
+2025-09-28T06:22:08.179Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:08.180Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:08.181Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:08.183Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:08.183Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040528183: Creating Room/1ceab6cc-448a-48b4-9a00-0774d7b4 in entity-specific table
+2025-09-28T06:22:08.183Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "Room"
+2025-09-28T06:22:08.195Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO rooms (id, created_at, updated_at, version, name, display_name, description, topic, type, status, owner_id, last_message_at, privacy, settings, members, tags)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "1ceab6cc-448a-48b4-9a00-0774d7b4",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "academy",
+    "Academy",
+    "Learning and educational discussions",
+    "Share knowledge, tutorials, and collaborate on learning",
+    "public",
+    "active",
+    "002350cc-0031-408d-8040-004f000f",
+    "2025-09-28T06:22:03.776Z",
+    "{\"isPublic\":true,\"requiresInvite\":false,\"allowGuestAccess\":true,\"searchable\":true}",
+    "{\"allowReactions\":true,\"allowThreads\":true,\"allowFileSharing\":true,\"messageRetentionDays\":365}",
+    "[]",
+    "[\"academy\",\"learning\",\"education\"]"
+  ]
+}
+2025-09-28T06:22:08.195Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:08.197Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:08.197Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table rooms with 16 columns
+2025-09-28T06:22:08.197Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:08.213Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:Room:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:08.213Z",
+    "bridged": true,
+    "eventName": "data:Room:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:08.213Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:Room:created
+2025-09-28T06:22:08.212Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:08.212Z [SERVER_CONSOLE] ✅ SQLite: Created record 1ceab6cc-448a-48b4-9a00-0774d7b4 in entity table for Room
+2025-09-28T06:22:08.212Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040528212: Transaction committed successfully
+2025-09-28T06:22:08.978Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:08.980Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:08.981Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040528981: Reading User/1759040528043-x5sv078mv from entity-specific table
+2025-09-28T06:22:08.981Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading User/1759040528043-x5sv078mv via DataDaemon
+2025-09-28T06:22:08.981Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:08.985Z [SERVER_CONSOLE] ✅ DATA SERVER: Read User/1759040528043-x5sv078mv
+2025-09-28T06:22:09.081Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:09.083Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:09.083Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:09.086Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040529086: Creating ChatMessage/5d75484f-15e1-4931-b6c7-037073cf in entity-specific table
+2025-09-28T06:22:09.085Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "ChatMessage"
+2025-09-28T06:22:09.086Z [SERVER_CONSOLE] 🏗️ Creating table for entity: ChatMessage -> chat_messages
+2025-09-28T06:22:09.096Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:09.097Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO chat_messages (id, created_at, updated_at, version, room_id, sender_id, sender_name, content, status, priority, timestamp, reactions)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "5d75484f-15e1-4931-b6c7-037073cf",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "5e71a0c8-0303-4eb8-a478-3a121248",
+    "system",
+    "System",
+    "{\"text\":\"Welcome to the General room! This is where we discuss development, collaborate, and share ideas.\",\"attachments\":[],\"formatting\":{\"markdown\":false,\"mentions\":[],\"hashtags\":[],\"links\":[],\"codeBlocks\":[]}}",
+    "sent",
+    "normal",
+    "2025-09-28T06:22:03.776Z",
+    "[]"
+  ]
+}
+2025-09-28T06:22:09.095Z [SERVER_CONSOLE] ✅ Table created: chat_messages with 5 indexes
+2025-09-28T06:22:09.097Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:09.099Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:09.099Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table chat_messages with 12 columns
+2025-09-28T06:22:09.099Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:09.118Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:09.118Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:ChatMessage:created
+2025-09-28T06:22:09.118Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:ChatMessage:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:09.118Z",
+    "bridged": true,
+    "eventName": "data:ChatMessage:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:09.118Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040529118: Transaction committed successfully
+2025-09-28T06:22:09.118Z [SERVER_CONSOLE] ✅ SQLite: Created record 5d75484f-15e1-4931-b6c7-037073cf in entity table for ChatMessage
+2025-09-28T06:22:09.955Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:09.956Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:09.957Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:09.959Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "ChatMessage"
+2025-09-28T06:22:09.959Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040529959: Creating ChatMessage/3d192123-609b-4ae3-bbe1-585ee19d in entity-specific table
+2025-09-28T06:22:09.959Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:09.961Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO chat_messages (id, created_at, updated_at, version, room_id, sender_id, sender_name, content, status, priority, timestamp, reactions)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "3d192123-609b-4ae3-bbe1-585ee19d",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "5e71a0c8-0303-4eb8-a478-3a121248",
+    "06d9c12f-3577-4611-b1c8-51e6db6f",
+    "Claude Code",
+    "{\"text\":\"Hello! I'm Claude Code, your AI development assistant. I can help with TypeScript, React, debugging, and system architecture. Feel free to ask me anything!\",\"attachments\":[],\"formatting\":{\"markdown\":false,\"mentions\":[],\"hashtags\":[],\"links\":[],\"codeBlocks\":[]}}",
+    "sent",
+    "normal",
+    "2025-09-28T06:22:03.776Z",
+    "[]"
+  ]
+}
+2025-09-28T06:22:09.961Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 1,
+  "changes": 1
+}
+2025-09-28T06:22:09.963Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:09.963Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table chat_messages with 12 columns
+2025-09-28T06:22:09.963Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:09.976Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:ChatMessage:created
+2025-09-28T06:22:09.976Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:09.976Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:ChatMessage:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:09.976Z",
+    "bridged": true,
+    "eventName": "data:ChatMessage:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:09.976Z [SERVER_CONSOLE] ✅ SQLite: Created record 3d192123-609b-4ae3-bbe1-585ee19d in entity table for ChatMessage
+2025-09-28T06:22:09.976Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040529976: Transaction committed successfully
+2025-09-28T06:22:10.829Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:10.832Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "ChatMessage"
+2025-09-28T06:22:10.830Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:10.831Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:10.832Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040530832: Creating ChatMessage/0a9f89b5-7df6-4b35-8eb2-64a45e35 in entity-specific table
+2025-09-28T06:22:10.832Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:10.835Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 2,
+  "changes": 1
+}
+2025-09-28T06:22:10.835Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO chat_messages (id, created_at, updated_at, version, room_id, sender_id, sender_name, content, status, priority, timestamp, reactions)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "0a9f89b5-7df6-4b35-8eb2-64a45e35",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "1ceab6cc-448a-48b4-9a00-0774d7b4",
+    "system",
+    "System",
+    "{\"text\":\"Welcome to the Academy! This room is for learning, tutorials, and educational discussions.\",\"attachments\":[],\"formatting\":{\"markdown\":false,\"mentions\":[],\"hashtags\":[],\"links\":[],\"codeBlocks\":[]}}",
+    "sent",
+    "normal",
+    "2025-09-28T06:22:03.776Z",
+    "[]"
+  ]
+}
+2025-09-28T06:22:10.839Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table chat_messages with 12 columns
+2025-09-28T06:22:10.839Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:10.839Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:10.852Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:ChatMessage:created
+2025-09-28T06:22:10.852Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040530852: Transaction committed successfully
+2025-09-28T06:22:10.852Z [SERVER_CONSOLE] ✅ SQLite: Created record 0a9f89b5-7df6-4b35-8eb2-64a45e35 in entity table for ChatMessage
+2025-09-28T06:22:10.852Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:ChatMessage:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:10.852Z",
+    "bridged": true,
+    "eventName": "data:ChatMessage:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:10.852Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:11.799Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:11.801Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:11.801Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:11.802Z [SERVER_CONSOLE] 🔍 SQLite: Querying User from entity-specific table {
+  "collection": "User",
+  "limit": 100
+}
+2025-09-28T06:22:11.809Z [SERVER_CONSOLE] ✅ SQLite: Entity query returned 4 records
+2025-09-28T06:22:12.690Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:12.692Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:12.691Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:12.693Z [SERVER_CONSOLE] 🔍 SQLite: Querying Room from entity-specific table {
+  "collection": "Room",
+  "limit": 100
+}
+2025-09-28T06:22:12.696Z [SERVER_CONSOLE] ✅ SQLite: Entity query returned 2 records
+2025-09-28T06:22:12.835Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:12.836Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:12.837Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:12.838Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: user-list-widget
+2025-09-28T06:22:12.843Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected user-list-widget
+2025-09-28T06:22:13.632Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:13.634Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:13.633Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:13.635Z [SERVER_CONSOLE] 🔍 SQLite: Querying ChatMessage from entity-specific table {
+  "collection": "ChatMessage",
+  "limit": 100
+}
+2025-09-28T06:22:13.638Z [SERVER_CONSOLE] ✅ SQLite: Entity query returned 3 records
+2025-09-28T06:22:13.717Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:13.718Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:13.719Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:13.720Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040533720: Reading User/1759040528043-x5sv078mv from entity-specific table
+2025-09-28T06:22:13.720Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Starting update for User/1759040528043-x5sv078mv
+2025-09-28T06:22:13.722Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Found existing record, merging data
+2025-09-28T06:22:13.722Z [SERVER_CONSOLE] 🔧 SQLite UPDATE ENTITY: SQL: {
+  "sql": "UPDATE users SET updated_at = ?, version = ?, type = ?, display_name = ?, short_description = ?, status = ?, last_active_at = ?, capabilities = ?, sessions_active = ? WHERE id = ?",
+  "paramCount": 10
+}
+2025-09-28T06:22:13.722Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE users SET updated_at = ?, version = ?, type = ?, display_name = ?, short_description = ?, status = ?, last_active_at = ?, capabilities = ?, sessions_active = ? WHERE id = ?",
+  "params": [
+    "2025-09-28T06:22:13.722Z",
+    2,
+    "human",
+    "Updated Test User",
+    "Test user entity",
+    "online",
+    "2025-09-28T06:22:07.178Z",
+    "{\"canSendMessages\":true,\"canReceiveMessages\":true,\"canTrain\":false,\"canCreateRooms\":true,\"canInviteOthers\":true,\"canModerate\":true,\"autoResponds\":false,\"providesContext\":false,\"canAccessPersonas\":true}",
+    "[]",
+    "1759040528043-x5sv078mv"
+  ]
+}
+2025-09-28T06:22:13.722Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Using entity-specific table for User
+2025-09-28T06:22:13.739Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:13.739Z [SERVER_CONSOLE] 🔧 SQLite UPDATE ENTITY: Result: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:13.743Z [SERVER_CONSOLE] ✅ DataUpdateServerCommand: Emitted data:User:updated
+2025-09-28T06:22:13.742Z [SERVER_CONSOLE] ✅ SQLite: Updated record 1759040528043-x5sv078mv in entity table users - ID preserved in event data
+2025-09-28T06:22:13.742Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE _collections\n        SET record_count = ?, total_size = ?, updated_at = ?\n        WHERE name = ?",
+  "params": [
+    0,
+    0,
+    "2025-09-28T06:22:13.742Z",
+    "User"
+  ]
+}
+2025-09-28T06:22:13.743Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:User:updated via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:13.743Z",
+    "bridged": true,
+    "eventName": "data:User:updated",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:13.742Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:14.577Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:14.579Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:14.579Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:14.580Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading User/1759040528043-x5sv078mv via DataDaemon
+2025-09-28T06:22:14.580Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040534580: Reading User/1759040528043-x5sv078mv from entity-specific table
+2025-09-28T06:22:14.583Z [SERVER_CONSOLE] ✅ DATA SERVER: Read User/1759040528043-x5sv078mv
+2025-09-28T06:22:18.507Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:18.508Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:18.510Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: user-list-widget
+2025-09-28T06:22:18.509Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:18.517Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected user-list-widget
+2025-09-28T06:22:19.324Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:19.325Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:19.326Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:19.327Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040539327: Reading User/1759040528043-x5sv078mv from entity-specific table
+2025-09-28T06:22:19.333Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:19.330Z [SERVER_CONSOLE] 🗑️ CLAUDE-FIX-1759040539330: Deleting User/1759040528043-x5sv078mv with atomic transaction
+2025-09-28T06:22:19.331Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:19.338Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:19.333Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "DELETE FROM users WHERE id = ?",
+  "params": [
+    "1759040528043-x5sv078mv"
+  ]
+}
+2025-09-28T06:22:19.338Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:19.362Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE _collections\n        SET record_count = ?, total_size = ?, updated_at = ?\n        WHERE name = ?",
+  "params": [
+    0,
+    0,
+    "2025-09-28T06:22:19.362Z",
+    "User"
+  ]
+}
+2025-09-28T06:22:19.355Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:19.355Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040539355: Transaction committed successfully
+2025-09-28T06:22:19.365Z [SERVER_CONSOLE] ✅ DataDeleteServerCommand: Emitted data:User:deleted
+2025-09-28T06:22:19.364Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:19.365Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:User:deleted via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:19.364Z",
+    "bridged": true,
+    "eventName": "data:User:deleted",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:19.364Z [SERVER_CONSOLE] ✅ SQLite: Deleted record 1759040528043-x5sv078mv from User with full cleanup
+2025-09-28T06:22:20.184Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:20.187Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:20.188Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading User/1759040528043-x5sv078mv via DataDaemon
+2025-09-28T06:22:20.188Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040540188: Reading User/1759040528043-x5sv078mv from entity-specific table
+2025-09-28T06:22:20.186Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:20.191Z [SERVER_CONSOLE] ℹ️ DATA SERVER: Record not found User/1759040528043-x5sv078mv
+2025-09-28T06:22:24.587Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:24.589Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:24.591Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: user-list-widget
+2025-09-28T06:22:24.590Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:24.601Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected user-list-widget
+2025-09-28T06:22:25.425Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:25.430Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "Room"
+2025-09-28T06:22:25.428Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:25.427Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:25.430Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:25.430Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040545430: Creating Room/1759040545429-t2gvly8ra in entity-specific table
+2025-09-28T06:22:25.431Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:25.431Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO rooms (id, created_at, updated_at, version, name, display_name, description, topic, type, status, owner_id, last_message_at, privacy, settings, members, tags)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "1759040545429-t2gvly8ra",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "Test Room",
+    "Test Room",
+    "Test room for integration testing",
+    "Test room topic for development",
+    "public",
+    "active",
+    "002350cc-0031-408d-8040-004f000f",
+    "2025-09-28T06:22:24.612Z",
+    "{\"isPublic\":true,\"requiresInvite\":false,\"allowGuestAccess\":true,\"searchable\":true}",
+    "{\"allowReactions\":true,\"allowThreads\":true,\"allowFileSharing\":true,\"messageRetentionDays\":365}",
+    "[]",
+    "[\"test\",\"integration\"]"
+  ]
+}
+2025-09-28T06:22:25.434Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:25.434Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:25.434Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table rooms with 16 columns
+2025-09-28T06:22:25.449Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:25.449Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:Room:created
+2025-09-28T06:22:25.449Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:Room:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:25.449Z",
+    "bridged": true,
+    "eventName": "data:Room:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:25.449Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040545449: Transaction committed successfully
+2025-09-28T06:22:25.449Z [SERVER_CONSOLE] ✅ SQLite: Created record 1759040545429-t2gvly8ra in entity table for Room
+2025-09-28T06:22:26.260Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:26.263Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040546263: Reading Room/1759040545429-t2gvly8ra from entity-specific table
+2025-09-28T06:22:26.261Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:26.263Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading Room/1759040545429-t2gvly8ra via DataDaemon
+2025-09-28T06:22:26.262Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:26.266Z [SERVER_CONSOLE] ✅ DATA SERVER: Read Room/1759040545429-t2gvly8ra
+2025-09-28T06:22:30.193Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:30.195Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:30.194Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:30.196Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: room-list-widget
+2025-09-28T06:22:30.204Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected room-list-widget
+2025-09-28T06:22:31.018Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:31.019Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:31.020Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:31.021Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Starting update for Room/1759040545429-t2gvly8ra
+2025-09-28T06:22:31.021Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040551021: Reading Room/1759040545429-t2gvly8ra from entity-specific table
+2025-09-28T06:22:31.025Z [SERVER_CONSOLE] 🔧 SQLite UPDATE ENTITY: SQL: {
+  "sql": "UPDATE rooms SET updated_at = ?, version = ?, name = ?, display_name = ?, description = ?, topic = ?, type = ?, status = ?, owner_id = ?, last_message_at = ?, privacy = ?, settings = ?, members = ?, tags = ? WHERE id = ?",
+  "paramCount": 15
+}
+2025-09-28T06:22:31.024Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Using entity-specific table for Room
+2025-09-28T06:22:31.024Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Found existing record, merging data
+2025-09-28T06:22:31.025Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE rooms SET updated_at = ?, version = ?, name = ?, display_name = ?, description = ?, topic = ?, type = ?, status = ?, owner_id = ?, last_message_at = ?, privacy = ?, settings = ?, members = ?, tags = ? WHERE id = ?",
+  "params": [
+    "2025-09-28T06:22:31.024Z",
+    2,
+    "Test Room",
+    "Updated Test Room",
+    "Test room for integration testing",
+    "Test room topic for development",
+    "public",
+    "active",
+    "002350cc-0031-408d-8040-004f000f",
+    "2025-09-28T06:22:24.612Z",
+    "{\"isPublic\":true,\"requiresInvite\":false,\"allowGuestAccess\":true,\"searchable\":true}",
+    "{\"allowReactions\":true,\"allowThreads\":true,\"allowFileSharing\":true,\"messageRetentionDays\":365}",
+    "[]",
+    "[\"test\",\"integration\"]",
+    "1759040545429-t2gvly8ra"
+  ]
+}
+2025-09-28T06:22:31.037Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:31.037Z [SERVER_CONSOLE] 🔧 SQLite UPDATE ENTITY: Result: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:31.041Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE _collections\n        SET record_count = ?, total_size = ?, updated_at = ?\n        WHERE name = ?",
+  "params": [
+    0,
+    0,
+    "2025-09-28T06:22:31.040Z",
+    "Room"
+  ]
+}
+2025-09-28T06:22:31.042Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:Room:updated via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:31.042Z",
+    "bridged": true,
+    "eventName": "data:Room:updated",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:31.042Z [SERVER_CONSOLE] ✅ DataUpdateServerCommand: Emitted data:Room:updated
+2025-09-28T06:22:31.042Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:31.042Z [SERVER_CONSOLE] ✅ SQLite: Updated record 1759040545429-t2gvly8ra in entity table rooms - ID preserved in event data
+2025-09-28T06:22:31.871Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:31.874Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040551874: Reading Room/1759040545429-t2gvly8ra from entity-specific table
+2025-09-28T06:22:31.873Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:31.872Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:31.874Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading Room/1759040545429-t2gvly8ra via DataDaemon
+2025-09-28T06:22:31.878Z [SERVER_CONSOLE] ✅ DATA SERVER: Read Room/1759040545429-t2gvly8ra
+2025-09-28T06:22:35.846Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:35.847Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:35.849Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: room-list-widget
+2025-09-28T06:22:35.848Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:35.856Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected room-list-widget
+2025-09-28T06:22:36.645Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:36.646Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:36.647Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:36.647Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040556647: Reading Room/1759040545429-t2gvly8ra from entity-specific table
+2025-09-28T06:22:36.651Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:36.651Z [SERVER_CONSOLE] 🗑️ CLAUDE-FIX-1759040556651: Deleting Room/1759040545429-t2gvly8ra with atomic transaction
+2025-09-28T06:22:36.653Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "DELETE FROM rooms WHERE id = ?",
+  "params": [
+    "1759040545429-t2gvly8ra"
+  ]
+}
+2025-09-28T06:22:36.653Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:36.657Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:36.657Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:36.673Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 1
+}
+2025-09-28T06:22:36.673Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040556673: Transaction committed successfully
+2025-09-28T06:22:36.676Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE _collections\n        SET record_count = ?, total_size = ?, updated_at = ?\n        WHERE name = ?",
+  "params": [
+    0,
+    0,
+    "2025-09-28T06:22:36.676Z",
+    "Room"
+  ]
+}
+2025-09-28T06:22:36.677Z [SERVER_CONSOLE] ✅ SQLite: Deleted record 1759040545429-t2gvly8ra from Room with full cleanup
+2025-09-28T06:22:36.677Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:36.678Z [SERVER_CONSOLE] ✅ DataDeleteServerCommand: Emitted data:Room:deleted
+2025-09-28T06:22:36.678Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:Room:deleted via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:36.678Z",
+    "bridged": true,
+    "eventName": "data:Room:deleted",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:37.485Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:37.489Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040557489: Reading Room/1759040545429-t2gvly8ra from entity-specific table
+2025-09-28T06:22:37.487Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:37.489Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading Room/1759040545429-t2gvly8ra via DataDaemon
+2025-09-28T06:22:37.488Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:37.491Z [SERVER_CONSOLE] ℹ️ DATA SERVER: Record not found Room/1759040545429-t2gvly8ra
+2025-09-28T06:22:41.936Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:41.938Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:41.938Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:41.939Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: room-list-widget
+2025-09-28T06:22:41.947Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected room-list-widget
+2025-09-28T06:22:42.728Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:42.730Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:42.729Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:42.732Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:42.732Z [SERVER_CONSOLE] ✅ DataDaemon: Entity validation passed for "ChatMessage"
+2025-09-28T06:22:42.732Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040562732: Creating ChatMessage/1759040562731-fi161ta38 in entity-specific table
+2025-09-28T06:22:42.734Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 3,
+  "changes": 0
+}
+2025-09-28T06:22:42.734Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "INSERT OR REPLACE INTO chat_messages (id, created_at, updated_at, version, room_id, sender_id, sender_name, content, status, priority, timestamp, reactions)\n          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "params": [
+    "1759040562731-fi161ta38",
+    "2025-09-28T06:21:54.844Z",
+    "2025-09-28T06:21:54.844Z",
+    1,
+    "5e71a0c8-0303-4eb8-a478-3a121248",
+    "002350cc-0031-408d-8040-004f000f",
+    "Test Sender",
+    "{\"text\":\"Test Message\",\"attachments\":[]}",
+    "sent",
+    "normal",
+    "2025-09-28T06:22:41.958Z",
+    "[]"
+  ]
+}
+2025-09-28T06:22:42.736Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:42.736Z [SERVER_CONSOLE] ✅ SQLite: Inserted into entity table chat_messages with 12 columns
+2025-09-28T06:22:42.736Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:42.749Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:42.749Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040562749: Transaction committed successfully
+2025-09-28T06:22:42.749Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:ChatMessage:created via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:42.749Z",
+    "bridged": true,
+    "eventName": "data:ChatMessage:created",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:42.749Z [SERVER_CONSOLE] ✅ DataCreateServerCommand: Emitted data:ChatMessage:created
+2025-09-28T06:22:42.749Z [SERVER_CONSOLE] ✅ SQLite: Created record 1759040562731-fi161ta38 in entity table for ChatMessage
+2025-09-28T06:22:43.560Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:43.562Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:43.561Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:43.563Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading ChatMessage/1759040562731-fi161ta38 via DataDaemon
+2025-09-28T06:22:43.563Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040563563: Reading ChatMessage/1759040562731-fi161ta38 from entity-specific table
+2025-09-28T06:22:43.566Z [SERVER_CONSOLE] ✅ DATA SERVER: Read ChatMessage/1759040562731-fi161ta38
+2025-09-28T06:22:47.529Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:47.531Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:47.530Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:47.532Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: chat-widget
+2025-09-28T06:22:47.540Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected chat-widget
+2025-09-28T06:22:48.366Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:48.368Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:48.367Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:48.369Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Starting update for ChatMessage/1759040562731-fi161ta38
+2025-09-28T06:22:48.369Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040568369: Reading ChatMessage/1759040562731-fi161ta38 from entity-specific table
+2025-09-28T06:22:48.373Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Using entity-specific table for ChatMessage
+2025-09-28T06:22:48.373Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE chat_messages SET updated_at = ?, version = ?, room_id = ?, sender_id = ?, sender_name = ?, content = ?, status = ?, priority = ?, timestamp = ?, reactions = ? WHERE id = ?",
+  "params": [
+    "2025-09-28T06:22:48.373Z",
+    2,
+    "5e71a0c8-0303-4eb8-a478-3a121248",
+    "002350cc-0031-408d-8040-004f000f",
+    "Test Sender",
+    "{\"text\":\"Updated Test Message\",\"attachments\":[]}",
+    "sent",
+    "normal",
+    "2025-09-28T06:22:41.958Z",
+    "[]",
+    "1759040562731-fi161ta38"
+  ]
+}
+2025-09-28T06:22:48.373Z [SERVER_CONSOLE] 🔧 SQLite UPDATE ENTITY: SQL: {
+  "sql": "UPDATE chat_messages SET updated_at = ?, version = ?, room_id = ?, sender_id = ?, sender_name = ?, content = ?, status = ?, priority = ?, timestamp = ?, reactions = ? WHERE id = ?",
+  "paramCount": 11
+}
+2025-09-28T06:22:48.373Z [SERVER_CONSOLE] 🔧 SQLite UPDATE: Found existing record, merging data
+2025-09-28T06:22:48.385Z [SERVER_CONSOLE] 🔧 SQLite UPDATE ENTITY: Result: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:48.385Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:48.389Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE _collections\n        SET record_count = ?, total_size = ?, updated_at = ?\n        WHERE name = ?",
+  "params": [
+    0,
+    0,
+    "2025-09-28T06:22:48.389Z",
+    "ChatMessage"
+  ]
+}
+2025-09-28T06:22:48.389Z [SERVER_CONSOLE] ✅ DataUpdateServerCommand: Emitted data:ChatMessage:updated
+2025-09-28T06:22:48.389Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:ChatMessage:updated via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:48.389Z",
+    "bridged": true,
+    "eventName": "data:ChatMessage:updated",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:48.389Z [SERVER_CONSOLE] ✅ SQLite: Updated record 1759040562731-fi161ta38 in entity table chat_messages - ID preserved in event data
+2025-09-28T06:22:48.389Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 0
+}
+2025-09-28T06:22:49.227Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:49.228Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:49.229Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:49.230Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading ChatMessage/1759040562731-fi161ta38 via DataDaemon
+2025-09-28T06:22:49.230Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040569230: Reading ChatMessage/1759040562731-fi161ta38 from entity-specific table
+2025-09-28T06:22:49.233Z [SERVER_CONSOLE] ✅ DATA SERVER: Read ChatMessage/1759040562731-fi161ta38
+2025-09-28T06:22:53.170Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:53.172Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:53.173Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: chat-widget
+2025-09-28T06:22:53.171Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:53.181Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected chat-widget
+2025-09-28T06:22:54.014Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:54.016Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:54.016Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040574016: Reading ChatMessage/1759040562731-fi161ta38 from entity-specific table
+2025-09-28T06:22:54.015Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:54.020Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "BEGIN TRANSACTION",
+  "params": []
+}
+2025-09-28T06:22:54.020Z [SERVER_CONSOLE] 🗑️ CLAUDE-FIX-1759040574020: Deleting ChatMessage/1759040562731-fi161ta38 with atomic transaction
+2025-09-28T06:22:54.021Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 0
+}
+2025-09-28T06:22:54.021Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "DELETE FROM chat_messages WHERE id = ?",
+  "params": [
+    "1759040562731-fi161ta38"
+  ]
+}
+2025-09-28T06:22:54.024Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "COMMIT",
+  "params": []
+}
+2025-09-28T06:22:54.024Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:54.040Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040574040: Transaction committed successfully
+2025-09-28T06:22:54.040Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 1
+}
+2025-09-28T06:22:54.044Z [SERVER_CONSOLE] ✅ SQLite: Deleted record 1759040562731-fi161ta38 from ChatMessage with full cleanup
+2025-09-28T06:22:54.044Z [SERVER_CONSOLE] 📨 SERVER-EVENT: Emitted data:ChatMessage:deleted via EventBridge {
+  "success": true,
+  "handlerResult": {
+    "context": {
+      "uuid": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+      "environment": "server",
+      "config": {
+        "instance": {
+          "name": "@continuum/jtag-widget-ui",
+          "description": "JTAG Widget UI - Standalone Widget Development Environment",
+          "ports": {
+            "http_server": 9003,
+            "websocket_server": 9002
+          },
+          "paths": {
+            "directory": "examples/widget-ui",
+            "html_file": "index.html",
+            "build_output": "dist"
+          },
+          "capabilities": {}
+        },
+        "server": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws",
+            "bind_interface": "127.0.0.1",
+            "max_connections": 100,
+            "enable_cors": false
+          },
+          "paths": {
+            "logs": ".continuum/jtag/logs",
+            "screenshots": ".continuum/jtag/screenshots",
+            "data_directory": ".continuum/jtag/data",
+            "pid_file": ".continuum/jtag/server.pid"
+          },
+          "security": {
+            "enable_authentication": false,
+            "session_timeout_ms": 3600000,
+            "rate_limiting": {
+              "enabled": false,
+              "requests_per_minute": 60
+            }
+          },
+          "environment": {
+            "log_level": "info",
+            "debug_mode": false
+          },
+          "storage": {
+            "strategy": "sql",
+            "backend": "sqlite",
+            "paths": {
+              "data": ".continuum/jtag/data",
+              "backups": ".continuum/jtag/backups"
+            },
+            "options": {
+              "basePath": ".continuum/jtag/data",
+              "dbPath": ".continuum/jtag/data/database.sqlite"
+            },
+            "features": {
+              "enableTransactions": true,
+              "enableIndexing": true,
+              "enableReplication": false,
+              "enableSharding": false,
+              "enableCaching": true
+            }
+          }
+        },
+        "client": {
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http",
+            "auto_connect": true,
+            "reconnect_attempts": 3
+          },
+          "browser": {
+            "headless": false,
+            "devtools": true,
+            "width": 1200,
+            "height": 800,
+            "user_agent": "JTAG-TestBrowser/1.0"
+          },
+          "ui": {
+            "theme": "dark",
+            "enable_animations": true,
+            "show_debug_panel": false
+          }
+        },
+        "test": {
+          "server": {
+            "port": 9002,
+            "host": "localhost",
+            "protocol": "ws"
+          },
+          "client": {
+            "ui_port": 9003,
+            "host": "localhost",
+            "protocol": "http"
+          },
+          "test_settings": {
+            "timeout_ms": 30000,
+            "retry_attempts": 3,
+            "screenshot_on_failure": true,
+            "cleanup_after_test": true
+          },
+          "environment": {
+            "test_mode": true,
+            "verbose_logging": true,
+            "isolated_sessions": true
+          }
+        }
+      }
+    },
+    "sessionId": "c76ee5c6-0405-462a-b8a0-530fb2eed6ca",
+    "success": true,
+    "timestamp": "2025-09-28T06:22:54.044Z",
+    "bridged": true,
+    "eventName": "data:ChatMessage:deleted",
+    "scope": "global"
+  }
+}
+2025-09-28T06:22:54.044Z [SERVER_CONSOLE] ✅ SQLite RUNSTATEMENT DEBUG: Success: {
+  "lastID": 4,
+  "changes": 0
+}
+2025-09-28T06:22:54.043Z [SERVER_CONSOLE] 🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL: {
+  "sql": "UPDATE _collections\n        SET record_count = ?, total_size = ?, updated_at = ?\n        WHERE name = ?",
+  "params": [
+    0,
+    0,
+    "2025-09-28T06:22:54.043Z",
+    "ChatMessage"
+  ]
+}
+2025-09-28T06:22:54.044Z [SERVER_CONSOLE] ✅ DataDeleteServerCommand: Emitted data:ChatMessage:deleted
+2025-09-28T06:22:54.855Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:54.856Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:54.858Z [SERVER_CONSOLE] 🔧 CLAUDE-FIX-1759040574858: Reading ChatMessage/1759040562731-fi161ta38 from entity-specific table
+2025-09-28T06:22:54.857Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:54.858Z [SERVER_CONSOLE] 🗄️ DATA SERVER: Reading ChatMessage/1759040562731-fi161ta38 via DataDaemon
+2025-09-28T06:22:54.861Z [SERVER_CONSOLE] ℹ️ DATA SERVER: Record not found ChatMessage/1759040562731-fi161ta38
+2025-09-28T06:22:59.277Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:22:59.279Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:59.279Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:22:59.280Z [SERVER_CONSOLE] 🔍 WidgetStateDebug: Routing to browser for widget inspection: chat-widget
+2025-09-28T06:22:59.288Z [SERVER_CONSOLE] ✅ WidgetStateDebug: Successfully inspected chat-widget
+2025-09-28T06:23:00.102Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:23:00.103Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:00.104Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:00.299Z [SERVER_CONSOLE] 🔗 WebSocketTransportServer: Registered correlation corr_1759040580296_dhoi4gki for client ws_1759040518596_zpek2i
+2025-09-28T06:23:00.299Z [SERVER_CONSOLE] 💾 SERVER: FileSave (session-based filesystem access)
+2025-09-28T06:23:00.300Z [SERVER] 📝 SERVER: Saving to session path: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-users.png
+2025-09-28T06:23:00.299Z [SERVER_CONSOLE] 🔗 WebSocketResponseRouter: Mapped corr_1759040580296_dhoi4gki → ws_1759040518596_zpek2i
+2025-09-28T06:23:00.380Z [WebSocket] 🎯 WebSocket Server: Routing response corr_1759040580296_dhoi4gki to specific client
+2025-09-28T06:23:00.379Z [SERVER_CONSOLE] ✅ SERVER: Saved 22820 bytes to /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-users.png
+2025-09-28T06:23:00.381Z [SERVER_CONSOLE] 📤 WebSocketResponseRouter: Sent response corr_1759040580296_dhoi4gki → ws_1759040518596_zpek2i
+2025-09-28T06:23:01.205Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:23:01.206Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:01.206Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:01.370Z [SERVER_CONSOLE] 🔗 WebSocketTransportServer: Registered correlation corr_1759040581369_pd027d0x for client ws_1759040518596_zpek2i
+2025-09-28T06:23:01.370Z [SERVER_CONSOLE] 💾 SERVER: FileSave (session-based filesystem access)
+2025-09-28T06:23:01.370Z [SERVER_CONSOLE] 🔗 WebSocketResponseRouter: Mapped corr_1759040581369_pd027d0x → ws_1759040518596_zpek2i
+2025-09-28T06:23:01.370Z [SERVER] 📝 SERVER: Saving to session path: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-rooms.png
+2025-09-28T06:23:01.382Z [WebSocket] 🎯 WebSocket Server: Routing response corr_1759040581369_pd027d0x to specific client
+2025-09-28T06:23:01.382Z [SERVER_CONSOLE] ✅ SERVER: Saved 29127 bytes to /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-rooms.png
+2025-09-28T06:23:01.383Z [SERVER_CONSOLE] 📤 WebSocketResponseRouter: Sent response corr_1759040581369_pd027d0x → ws_1759040518596_zpek2i
+2025-09-28T06:23:02.180Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:23:02.182Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:02.181Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:02.363Z [SERVER] 📝 SERVER: Saving to session path: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-chat.png
+2025-09-28T06:23:02.363Z [SERVER_CONSOLE] 💾 SERVER: FileSave (session-based filesystem access)
+2025-09-28T06:23:02.363Z [SERVER_CONSOLE] 🔗 WebSocketTransportServer: Registered correlation corr_1759040582360_8rpaxmja for client ws_1759040518596_zpek2i
+2025-09-28T06:23:02.363Z [SERVER_CONSOLE] 🔗 WebSocketResponseRouter: Mapped corr_1759040582360_8rpaxmja → ws_1759040518596_zpek2i
+2025-09-28T06:23:02.378Z [SERVER_CONSOLE] 📤 WebSocketResponseRouter: Sent response corr_1759040582360_8rpaxmja → ws_1759040518596_zpek2i
+2025-09-28T06:23:02.376Z [SERVER_CONSOLE] ✅ SERVER: Saved 107039 bytes to /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-chat.png
+2025-09-28T06:23:02.376Z [WebSocket] 🎯 WebSocket Server: Routing response corr_1759040582360_8rpaxmja to specific client
+2025-09-28T06:23:03.287Z [SERVER_CONSOLE] ✅ SessionDaemon: Reusing existing valid shared session: b3b64e7b-92dd-4f40-bb09-098480fd1043
+2025-09-28T06:23:03.289Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:03.288Z [SERVER_CONSOLE] 📋 SERVER: Listing available commands (category: all)
+2025-09-28T06:23:03.451Z [SERVER_CONSOLE] 💾 SERVER: FileSave (session-based filesystem access)
+2025-09-28T06:23:03.450Z [SERVER_CONSOLE] 🔗 WebSocketResponseRouter: Mapped corr_1759040583448_bwtpx4e3 → ws_1759040518596_zpek2i
+2025-09-28T06:23:03.451Z [SERVER] 📝 SERVER: Saving to session path: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-system.png
+2025-09-28T06:23:03.450Z [SERVER_CONSOLE] 🔗 WebSocketTransportServer: Registered correlation corr_1759040583448_bwtpx4e3 for client ws_1759040518596_zpek2i
+2025-09-28T06:23:03.467Z [SERVER_CONSOLE] ✅ SERVER: Saved 231893 bytes to /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/widget-ui/.continuum/jtag/sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043/screenshots/precommit-system.png
+2025-09-28T06:23:03.467Z [WebSocket] 🎯 WebSocket Server: Routing response corr_1759040583448_bwtpx4e3 to specific client
+2025-09-28T06:23:03.469Z [SERVER_CONSOLE] 📤 WebSocketResponseRouter: Sent response corr_1759040583448_bwtpx4e3 → ws_1759040518596_zpek2i
