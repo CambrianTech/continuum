@@ -26,37 +26,9 @@ function checkWidgetContainsEntity(widget: string, entityId: string, timeoutMs: 
   try {
     console.log(`🔍 Checking if ${widget} contains entity ${entityId}`);
 
-    // For chat widget, try simple approach since JSON parsing is failing due to CSS content
-    if (widget === 'chat-widget') {
-      try {
-        // Use direct grep to bypass JSON truncation issues
-        let found = false;
-        try {
-          const grepResult = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --includeMessages=true 2>/dev/null | grep -c "${entityId}"`, {
-            encoding: 'utf8',
-            cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
-            timeout: 30000,
-            shell: true
-          });
-          const matchCount = parseInt(grepResult.trim());
-          found = matchCount > 0;
-        } catch (grepError) {
-          // grep returns exit code 1 if no matches found, which execSync treats as error
-          found = false;
-        }
-
-        console.log(`🔍 Entity ${entityId} found in ${widget} (grep search): ${found}`);
-        return found;
-      } catch (chatError) {
-        console.warn(`❌ Chat widget simple check failed: ${chatError.message}`);
-        return false;
-      }
-    }
-
-    // Use full widget-state command for other widgets
+    // Use widget-state for all widgets (unified approach)
     const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}" --extractRowData=true 2>/dev/null`, {
       encoding: 'utf8',
-      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
       timeout: timeoutMs,
       shell: true,
       maxBuffer: 1024 * 1024 * 50

@@ -101,6 +101,20 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     return `widgets/chat/room-list/${filename}`;
   }
 
+  // Override to add click event listeners after widget initialization
+  protected override async onWidgetInitialize(): Promise<void> {
+    await super.onWidgetInitialize();
+    this.setupEventListeners();
+
+    // Auto-select General room on startup
+    setTimeout(() => {
+      const generalRoom = this.scroller?.entities().find(room => room.id === DEFAULT_ROOMS.GENERAL);
+      if (generalRoom) {
+        this.selectRoom(DEFAULT_ROOMS.GENERAL as UUID);
+      }
+    }, 100); // Small delay to ensure room list is loaded
+  }
+
   // Event subscriptions now handled automatically by EntityScrollerWidget base class
 
   // Room count updates now handled automatically by EntityScrollerWidget base class
@@ -161,16 +175,24 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     // Find room entity for the selected room by id
     const roomEntity = this.scroller?.entities().find(room => room.id === roomId);
 
+    if (!roomEntity) {
+      console.error(`❌ RoomListWidget: Room not found: "${roomId}"`);
+      return;
+    }
+
     // Update visual highlighting with CSS only (no redraw needed)
     this.updateRoomHighlighting(this.currentRoomId, roomId);
 
     // Update local state
     this.currentRoomId = roomId;
 
-    // Emit room change event for other widgets (like ChatWidget) to respond to
-    Events.emit('chat:room-changed', { roomId, roomEntity: roomEntity as RoomEntity });
+    // Emit room selection event for ChatWidget to listen to
+    Events.emit('room:selected', {
+      roomId: roomId,
+      roomName: roomEntity.displayName || roomEntity.name
+    });
 
-    console.log(`✅ RoomListWidget: Room changed to "${roomId}"`);
+    console.log(`✅ RoomListWidget: Room changed to "${roomEntity.displayName || roomEntity.name}" (${roomId})`);
   }
 
   /**

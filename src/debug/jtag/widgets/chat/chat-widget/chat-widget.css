@@ -87,6 +87,18 @@
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
 }
 
+/* EntityScrollerWidget template structure requires additional container styling */
+.entity-list-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.entity-list-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
 .input-container {
   padding: var(--spacing-lg, 16px);
   border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
@@ -94,6 +106,7 @@
   gap: var(--spacing-sm, 8px);
   background: var(--surface-secondary, rgba(10, 15, 20, 0.8));
   border-radius: 0 0 var(--radius-md, 8px) var(--radius-md, 8px);
+  flex-shrink: 0; /* Prevent input from shrinking */
 }
 
 .message-input {
