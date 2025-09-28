@@ -88,10 +88,16 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
     }
 
     // Create scroller with widget-specific functions and preset
+    // For dynamic widgets (like ChatWidget), we need to call getLoadFunction() fresh each time
+    const dynamicLoadFn = (cursor?: string, limit?: number) => {
+      const loadFn = this.getLoadFunction();
+      return loadFn(cursor, limit);
+    };
+
     this.scroller = createScroller(
       container,
       this.getRenderFunction(),
-      this.getLoadFunction(),
+      dynamicLoadFn, // Dynamic wrapper - gets fresh roomId each time
       this.getScrollerPreset()
     );
 
@@ -104,7 +110,25 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
   }
 
   /**
-   * Unified CRUD event subscriptions - eliminates duplicate patterns across widgets
+   * Abstract filtering hooks - subclasses override to control CRUD event processing
+   */
+  protected shouldAddEntity(entity: T): boolean {
+    // Default: accept all entities (maintains backward compatibility)
+    return true;
+  }
+
+  protected shouldUpdateEntity(id: string, entity: T): boolean {
+    // Default: accept all updates (maintains backward compatibility)
+    return true;
+  }
+
+  protected shouldRemoveEntity(id: string): boolean {
+    // Default: accept all removals (maintains backward compatibility)
+    return true;
+  }
+
+  /**
+   * Unified CRUD event subscriptions with filtering hooks for subclass control
    */
   private async setupEntityEventSubscriptions(): Promise<void> {
     console.log(`🔧 ${this.constructor.name}: Setting up CRUD event subscriptions...`);
@@ -114,25 +138,44 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
       console.log(`🎧 ${this.constructor.name}: Setting up unified CRUD subscriptions for ${collection}`);
 
       // Single subscription for ALL CRUD operations (create, update, delete)
+      // Now with filtering hooks for subclass control
       this.unsubscribeEvents = createEntityCrudHandler<T>(
         collection,
         {
           add: (entity: T) => {
-            this.scroller?.add(entity);
-            this.updateEntityCount();
+            // CRITICAL: Allow subclass to filter which entities should be added
+            if (this.shouldAddEntity(entity)) {
+              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} adding entity:`, entity.id);
+              this.scroller?.add(entity);
+              this.updateEntityCount();
+            } else {
+              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out entity:`, entity.id);
+            }
           },
           update: (id: string, entity: T) => {
-            this.scroller?.update(id, entity);
-            this.updateEntityCount();
+            // CRITICAL: Allow subclass to filter which entities should be updated
+            if (this.shouldUpdateEntity(id, entity)) {
+              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} updating entity:`, id);
+              this.scroller?.update(id, entity);
+              this.updateEntityCount();
+            } else {
+              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out update:`, id);
+            }
           },
           remove: (id: string) => {
-            this.scroller?.remove(id);
-            this.updateEntityCount();
+            // CRITICAL: Allow subclass to filter which entities should be removed
+            if (this.shouldRemoveEntity(id)) {
+              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} removing entity:`, id);
+              this.scroller?.remove(id);
+              this.updateEntityCount();
+            } else {
+              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out removal:`, id);
+            }
           }
         }
       );
 
-      console.log(`✅ ${this.constructor.name}: CRUD subscriptions active`);
+      console.log(`✅ ${this.constructor.name}: CRUD subscriptions active with filtering hooks`);
     } catch (error) {
       console.error(`❌ ${this.constructor.name}: Failed to set up event subscriptions:`, error);
     }

@@ -51,6 +51,13 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
       const widgetState = WidgetAnalyzer.analyzeState(widgetRef.element);
       logs.push(`📊 Analyzed ${widgetState.methods.length} methods, ${Object.keys(widgetState.properties).length} properties`);
 
+      // Filter out heavy properties when extracting row data to prevent JSON truncation
+      if (params.extractRowData && widgetState.properties.templateCSS) {
+        widgetState.properties = { ...widgetState.properties };
+        widgetState.properties.templateCSS = '[CSS EXCLUDED FOR ROW EXTRACTION]';
+        logs.push(`🎨 CSS excluded to prevent JSON truncation during row extraction`);
+      }
+
       // Extract messages if requested
       let messages: Array<{ id: string; content?: Record<string, unknown>; [key: string]: unknown }> = [];
       if (params.includeMessages) {
