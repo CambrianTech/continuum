@@ -284,7 +284,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     try {
       await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
         collection: ChatMessageEntity.collection,
-        data: messageEntity
+        data: messageEntity,
+        backend: 'server'
       });
       console.log('✅ Message sent successfully');
     } catch (error) {

@@ -4,21 +4,21 @@
  * Updated to use DataDaemon for consistent storage access
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { DataReadCommand } from '../shared/DataReadCommand';
 
-export class DataReadServerCommand extends CommandBase<DataReadParams, DataReadResult> {
-  
+export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-read', context, subpath, commander);
   }
 
-  async execute(params: DataReadParams): Promise<DataReadResult> {
+  protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult> {
     console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id} via DataDaemon`);
 
     try {
@@ -38,7 +38,7 @@ export class DataReadServerCommand extends CommandBase<DataReadParams, DataReadR
 
         return createDataReadResultFromParams(params, {
           success: true,
-          data: null,
+          data: undefined,
           found: false
         });
       }

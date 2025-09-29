@@ -1,20 +1,50 @@
 /**
  * Data Read Command - Browser Implementation
+ *
+ * Handles localStorage reads when backend=browser, delegates to server otherwise
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
+import { createDataReadResultFromParams } from '../shared/DataReadTypes';
+import { DataReadCommand } from '../shared/DataReadCommand';
+import { LocalStorageDataBackend } from '../../../../daemons/data-daemon/browser/LocalStorageDataBackend';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
-export class DataReadBrowserCommand extends CommandBase<DataReadParams, DataReadResult> {
-  
+export class DataReadBrowserCommand extends DataReadCommand<BaseEntity> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-read', context, subpath, commander);
   }
 
-  async execute(params: DataReadParams): Promise<DataReadResult> {
-    console.log(`🗄️ BROWSER: Delegating data read to server`);
-    return await this.remoteExecute(params);
+  protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult> {
+    console.log(`🗄️ BROWSER: Reading ${params.collection}/${params.id} from localStorage`);
+
+    try {
+      const result = await LocalStorageDataBackend.read(params.collection, params.id);
+
+      if (result.success && result.entity) {
+        return createDataReadResultFromParams(params, {
+          success: true,
+          data: result.entity,
+          found: true
+        });
+      } else {
+        return createDataReadResultFromParams(params, {
+          success: true,
+          data: undefined,
+          found: false
+        });
+      }
+    } catch (error) {
+      console.error(`❌ BROWSER: Failed to read ${params.collection}/${params.id}:`, error);
+
+      return createDataReadResultFromParams(params, {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        found: false
+      });
+    }
   }
 }

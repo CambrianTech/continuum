@@ -65,7 +65,7 @@ class SidebarResizer extends HTMLElement {
     private saveWidth(width: number): void {
         try {
             localStorage.setItem(this.storageKey, width.toString());
-            console.log('🔧 SidebarResizer: Saved width:', width);
+            //console.log('🔧 SidebarResizer: Saved width:', width);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             console.warn('SidebarResizer: Failed to save width:', errorMessage);
@@ -111,19 +111,9 @@ class SidebarResizer extends HTMLElement {
                 detail: { width },
                 bubbles: true
             });
-            this.dispatchEvent(event);
-            
-            console.log('🔧 SidebarResizer: Applied width:', width, 'to sidebar container and grid template');
+            this.dispatchEvent(event);            
         } else {
             console.warn('SidebarResizer: Could not find .sidebar-container or .desktop-container');
-            console.log('SidebarResizer: Debug - available elements:', {
-                continuumWidgetExists: !!document.querySelector('continuum-widget'),
-                continuumWidgetHasShadowRoot: !!(document.querySelector('continuum-widget') as any)?.shadowRoot,
-                sidebarContainerFound: !!sidebarContainer,
-                desktopContainerFound: !!desktopContainer,
-                thisParent: this.parentElement?.tagName,
-                thisClosest: this.closest('.sidebar-container')?.tagName
-            });
         }
     }
 

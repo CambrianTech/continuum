@@ -1,25 +1,47 @@
 /**
  * Data Create Command - Browser Implementation
- * 
- * Browser always delegates to server for data operations
+ *
+ * Handles localStorage operations locally, delegates server operations
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { DataCreateCommand } from '../shared/DataCreateCommand';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
+import { LocalStorageDataBackend } from '../../../../daemons/data-daemon/browser/LocalStorageDataBackend';
 
-export class DataCreateBrowserCommand extends CommandBase<DataCreateParams, DataCreateResult> {
-  
+export class DataCreateBrowserCommand extends DataCreateCommand {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('data-create', context, subpath, commander);
+    super(context, subpath, commander);
   }
 
   /**
-   * Browser ALWAYS delegates data operations to server
+   * Browser implementation: handles localStorage backend only
    */
-  async execute(params: DataCreateParams): Promise<DataCreateResult> {
-    console.log(`🗄️ BROWSER: Delegating data create to server`);
-    return await this.remoteExecute(params);
+  protected async executeDataCommand(params: DataCreateParams): Promise<DataCreateResult> {
+    // Browser only handles browser environment
+    // Server environment requests are delegated by base class
+
+    console.log(`🗄️ DataCreateBrowser: Handling localStorage create`);
+    try {
+      const result = await LocalStorageDataBackend.create(params.collection, params.data);
+      return {
+        context: params.context,
+        sessionId: params.sessionId,
+        success: result.success,
+        data: result.success ? params.data : undefined,
+        error: result.error,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      return {
+        context: params.context,
+        sessionId: params.sessionId,
+        success: false,
+        error: String(error),
+        timestamp: new Date().toISOString()
+      };
+    }
   }
 }
