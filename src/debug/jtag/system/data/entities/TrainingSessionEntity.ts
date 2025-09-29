@@ -46,7 +46,6 @@ export interface SessionMetrics {
 }
 
 import {
-  PrimaryField,
   TextField,
   DateField,
   EnumField,

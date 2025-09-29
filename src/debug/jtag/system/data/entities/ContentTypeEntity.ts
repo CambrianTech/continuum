@@ -6,7 +6,6 @@
  * Enables dynamic content type registration and configuration
  */
 
-import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // Widget selector types for content rendering
 export type WidgetSelector = 'chat-widget' | 'user-list-widget' | 'room-list-widget' | 'user-profile-widget' | 'debug-widget' | 'data-explorer-widget';
@@ -40,7 +39,6 @@ export interface ContentTypeConfig {
 }
 
 import {
-  PrimaryField,
   TextField,
   EnumField,
   JsonField,

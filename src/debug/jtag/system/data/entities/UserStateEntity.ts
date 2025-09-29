@@ -30,9 +30,7 @@ export interface ContentState {
 }
 
 import {
-  PrimaryField,
   TextField,
-  DateField,
   JsonField,
   ForeignKeyField
 } from '../decorators/FieldDecorators';
