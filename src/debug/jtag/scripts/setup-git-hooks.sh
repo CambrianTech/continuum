@@ -1,59 +1,54 @@
 #!/bin/bash
-set -e
+# Git Hook Setup Script - Makes hidden .git/hooks/ visible and manageable
 
-echo "🔧 Setting up Git hooks for bulletproof precommit validation"
-echo "==========================================================="
+echo "🔗 GIT HOOKS: Setting up repository validation hooks"
+echo "=================================================="
 
-# Navigate to project root
-cd "$(dirname "$0")/.."
-
-# Method 1: Direct git hook (fallback if no husky)
-echo "📋 Option 1: Direct git hook setup"
+# Ensure hooks directory exists
 mkdir -p .git/hooks
 
+# Setup pre-commit hook
+echo "📋 Installing pre-commit hook → scripts/git-precommit.sh"
 cat > .git/hooks/pre-commit << 'EOF'
-#!/bin/sh
-# Git pre-commit hook - Bulletproof validation with proof artifacts
-cd "$(dirname "$0")/../.."
+#!/bin/bash
+# Git pre-commit hook - Delegates to main script
 exec ./scripts/git-precommit.sh
 EOF
-
 chmod +x .git/hooks/pre-commit
-echo "✅ Direct git hook installed at .git/hooks/pre-commit"
 
-# Method 2: Husky integration (if husky is available)
-if command -v npx >/dev/null 2>&1 && npm list husky >/dev/null 2>&1; then
-    echo ""
-    echo "📋 Option 2: Husky integration detected"
+# Setup post-commit hook
+echo "📋 Installing post-commit hook → scripts/git-postcommit.sh"
+cat > .git/hooks/post-commit << 'EOF'
+#!/bin/bash
+# Git post-commit hook - Clean up validation artifacts after successful commits
+exec ./scripts/git-postcommit.sh
+EOF
+chmod +x .git/hooks/post-commit
 
-    # Initialize husky if not already done
-    if [ ! -d ".husky" ]; then
-        npx husky init
-        echo "✅ Husky initialized"
-    fi
-
-    # Create husky pre-commit hook
-    npx husky add .husky/pre-commit "./scripts/git-precommit.sh"
-    echo "✅ Husky pre-commit hook configured"
-else
-    echo ""
-    echo "📋 Option 2: Husky not detected - using direct git hook only"
-fi
-
-# Method 3: npm script integration
-echo ""
-echo "📋 Option 3: npm script integration"
-echo "   Run manually: npm run test:precommit"
-echo "   Run in CI/CD: npm run test:precommit"
+# Setup pre-push hook
+echo "📋 Installing pre-push hook → scripts/git-prepush.sh"
+cat > .git/hooks/pre-push << 'EOF'
+#!/bin/bash
+# Git pre-push hook - Delegates to main script
+exec ./scripts/git-prepush.sh
+EOF
+chmod +x .git/hooks/pre-push
 
 echo ""
-echo "🎉 Git hooks setup complete!"
-echo "================================"
-echo "✅ Pre-commit validation will now run automatically"
-echo "✅ Commits will be blocked if any validation fails"
-echo "✅ Successful sessions will be archived as proof"
+echo "✅ Git hooks installed successfully!"
+echo "=================================================="
+echo "📁 Hook scripts (visible and editable):"
+echo "   • scripts/git-precommit.sh   - Comprehensive CRUD + State validation"
+echo "   • scripts/git-postcommit.sh  - Cleanup after successful commit"
+echo "   • scripts/git-prepush.sh     - Lightweight pre-push checks"
 echo ""
-echo "🔧 Test the setup:"
-echo "   ./scripts/git-precommit.sh"
-echo "   # or"
-echo "   npm run test:precommit"
+echo "🔗 Git integration (hidden but managed):"
+echo "   • .git/hooks/pre-commit   → scripts/git-precommit.sh"
+echo "   • .git/hooks/post-commit  → scripts/git-postcommit.sh"
+echo "   • .git/hooks/pre-push     → scripts/git-prepush.sh"
+echo ""
+echo "🛠️ Management commands:"
+echo "   npm run hooks:setup     - Run this script"
+echo "   npm run hooks:test      - Test all hooks"
+echo "   npm run hooks:status    - Show hook status"
+echo "   npm run hooks:remove    - Remove all hooks"
