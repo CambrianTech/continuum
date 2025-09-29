@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.2138",
+  "version": "1.0.2141",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -184,7 +184,11 @@
     "test:comprehensive": "./scripts/run-categorized-tests.sh comprehensive",
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
     "test:precommit": "./scripts/git-precommit.sh",
-    "test:prepush": "echo '🚀 GIT PREPUSH: Comprehensive validation' && ./jtag test/run/suite --profile=comprehensive --timeout=180000",
+    "test:prepush": "./scripts/git-prepush.sh",
+    "hooks:setup": "./scripts/setup-git-hooks.sh",
+    "hooks:test": "echo '🧪 Testing all git hooks...' && echo '📋 Pre-commit:' && ./scripts/git-precommit.sh && echo '📋 Pre-push:' && ./scripts/git-prepush.sh && echo '✅ All hooks tested successfully'",
+    "hooks:status": "echo '📋 Git Hook Status:' && ls -la .git/hooks/ | grep -E '(pre-commit|post-commit|pre-push)' && echo '' && echo '📁 Hook Scripts:' && ls -la scripts/git-*.sh",
+    "hooks:remove": "echo '🗑️ Removing git hooks...' && rm -f .git/hooks/pre-commit .git/hooks/post-commit .git/hooks/pre-push && echo '✅ Git hooks removed'",
     "test:ci-pr": "echo '🔄 CI PR: Full integration tests' && ./jtag test/run/suite --profile=integration --parallel --timeout=300000",
     "test:ci-main": "echo '✅ CI MAIN: All tests' && ./jtag test/run/suite --profile=comprehensive --parallel --timeout=600000",
     "test:experimental": "npx tsx scripts/test-profiles.ts experimental",
