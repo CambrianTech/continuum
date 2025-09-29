@@ -40,7 +40,6 @@ import { TransportFactoryBrowser } from '../../../transports/browser/TransportFa
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
 import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
-import { StateBrowser } from '../../state/browser/StateBrowser';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -71,9 +70,6 @@ export class JTAGClientBrowser extends JTAGClient {
     super(context);
     // Initialize session ID from sessionStorage or fallback to system session
     this._sessionId = this.initializeSessionId();
-
-    // Initialize browser-specific state management
-    this.stateManager = new StateBrowser();
   }
 
   /**

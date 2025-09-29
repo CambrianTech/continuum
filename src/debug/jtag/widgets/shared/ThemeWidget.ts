@@ -10,7 +10,9 @@ import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import { Commands } from '../../system/core/client/shared/Commands';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
-import { ThemeRegistry, ThemeManifest } from './themes/ThemeTypes';
+import { ThemeRegistry } from './themes/ThemeTypes';
+import type { DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
@@ -69,13 +71,17 @@ export class ThemeWidget extends BaseWidget {
   protected async renderWidget(): Promise<void> {
     console.log('🎨 ThemeWidget: renderWidget() called - using BaseWidget template system');
 
-    // FORCE load base theme immediately if not already loaded
+    // Load saved theme from UserState or fallback to base theme
     if (!this.themeStyleElement) {
-      console.log('🎨 ThemeWidget: FORCING base theme load since no theme element exists');
+      console.log('🎨 ThemeWidget: Loading theme on initial render');
       try {
-        await this.setTheme('base');
+        const savedTheme = await this.loadThemeFromUserState();
+        const themeToLoad = savedTheme || 'base';
+        console.log(`🎨 ThemeWidget: Loading theme '${themeToLoad}' (saved: ${savedTheme})`);
+        await this.setTheme(themeToLoad);
       } catch (error) {
-        console.error('❌ ThemeWidget: Failed to force load base theme:', error);
+        console.error('❌ ThemeWidget: Failed to load theme, falling back to base:', error);
+        await this.setTheme('base');
       }
     }
     
@@ -118,19 +124,22 @@ export class ThemeWidget extends BaseWidget {
   async setTheme(themeName: string): Promise<void> {
     console.log(`🎨 ThemeWidget: Switching to theme '${themeName}'`);
     this.currentTheme = themeName;
-    
+
     // Reload all theme CSS and inject into document head
     try {
       const combinedCSS = await this.loadAllThemeCSS();
-      
+
       // Inject updated theme CSS into document head
       await this.injectThemeIntoDocumentHead(combinedCSS);
-      
+
+      // Save theme preference to UserState for persistence
+      await this.saveThemeToUserState(themeName);
+
       // Re-render widget to show updated theme name
       await this.renderWidget();
-      
-      console.log('✅ ThemeWidget: Theme switched and injected globally');
-      
+
+      console.log('✅ ThemeWidget: Theme switched, injected globally, and saved to UserState');
+
     } catch (error) {
       console.error('❌ ThemeWidget: Failed to switch theme:', error);
     }
@@ -253,7 +262,7 @@ export class ThemeWidget extends BaseWidget {
           });
           
           // Handle nested JTAG response structure (same as BaseWidget loadResource)
-          const fileData = (result as any).commandResult || result;
+          const fileData = (result as FileLoadResult & { commandResult?: FileLoadResult }).commandResult ?? result;
           if (result.success && fileData.success && fileData.content) {
             combinedStyles += `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
             console.log(`✅ ThemeWidget: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
@@ -412,6 +421,106 @@ export class ThemeWidget extends BaseWidget {
       fallbackOption.value = 'base';
       fallbackOption.textContent = 'Base Theme';
       themeSelector.appendChild(fallbackOption);
+    }
+  }
+
+  /**
+   * Save theme preference to UserState for persistence across sessions
+   */
+  private async saveThemeToUserState(themeName: string): Promise<void> {
+    try {
+      console.log(`🔧 ThemeWidget: Saving theme '${themeName}' to UserState`);
+
+      // Get current user ID from session context
+      const sessionInfo = await Commands.execute('session/create', {});
+      const userId = (sessionInfo as { userId?: string })?.userId;
+
+      if (!userId) {
+        console.warn('⚠️ ThemeWidget: No user ID available, cannot save theme preference');
+        return;
+      }
+
+      // Find the user's chat UserState to update theme preference
+      const userStates = await Commands.execute('data/list', {
+        collection: 'UserState',
+        filter: {
+          userId: userId,
+          contentType: 'chat'
+        }
+      }) as DataListResult<UserStateEntity>;
+
+      if (userStates.success && userStates.items && userStates.items.length > 0) {
+        const userState = userStates.items[0];
+
+        // Update the theme in preferences field using proper typing
+        const updatedPreferences = {
+          ...userState.preferences,
+          theme: themeName
+        };
+
+        await Commands.execute('data/update', {
+          collection: 'UserState',
+          id: userState.id,
+          data: {
+            preferences: updatedPreferences,
+            updatedAt: new Date().toISOString()
+          }
+        });
+
+        console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState`);
+      } else {
+        console.warn('⚠️ ThemeWidget: No UserState found for theme persistence');
+      }
+
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to save theme to UserState:', error);
+    }
+  }
+
+  /**
+   * Load theme preference from UserState on page load/refresh
+   */
+  private async loadThemeFromUserState(): Promise<string | null> {
+    try {
+      console.log('🔧 ThemeWidget: Loading theme from UserState');
+
+      // Get current user ID from session context
+      const sessionInfo = await Commands.execute('session/create', {});
+      const userId = (sessionInfo as { userId?: string })?.userId;
+
+      if (!userId) {
+        console.warn('⚠️ ThemeWidget: No user ID available, cannot load theme preference');
+        return null;
+      }
+
+      // Find the user's chat UserState to get theme preference
+      const userStates = await Commands.execute('data/list', {
+        collection: 'UserState',
+        filter: {
+          userId: userId,
+          contentType: 'chat'
+        }
+      }) as DataListResult<UserStateEntity>;
+
+      if (userStates.success && userStates.items && userStates.items.length > 0) {
+        const userState = userStates.items[0];
+
+        // Use index signature to access theme field with proper type guards
+        const preferences = userState.preferences as Record<string, unknown>;
+        const savedTheme = preferences.theme;
+
+        if (typeof savedTheme === 'string') {
+          console.log(`✅ ThemeWidget: Loaded saved theme '${savedTheme}' from UserState`);
+          return savedTheme;
+        }
+      }
+
+      console.log('ℹ️ ThemeWidget: No saved theme found in UserState');
+      return null;
+
+    } catch (error) {
+      console.error('❌ ThemeWidget: Failed to load theme from UserState:', error);
+      return null;
     }
   }
 }

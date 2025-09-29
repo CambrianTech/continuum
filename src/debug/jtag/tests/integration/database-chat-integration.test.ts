@@ -12,6 +12,9 @@
  */
 
 import { jtag } from '../../server-index';
+import { UserEntity } from '../../system/data/entities/UserEntity';
+import { RoomEntity } from '../../system/data/entities/RoomEntity';
+import { ChatMessageEntity } from '../../system/data/entities/ChatMessageEntity';
 
 async function testDatabaseChatIntegration(): Promise<void> {
   console.log('🗄️ DATABASE CHAT INTEGRATION TEST');
@@ -30,12 +33,12 @@ async function testDatabaseChatIntegration(): Promise<void> {
     console.log('👤 1. Testing user creation...');
     const userId = `test-user-${testTimestamp}`;
     const userResult = await client.commands['data/create']({
-      collection: 'users',
+      collection: UserEntity.collection,
       data: {
-        userId,
-        name: 'Database Test User',
+        displayName: 'Database Test User',
         type: 'human',
-        created: new Date().toISOString()
+        status: 'online',
+        lastActiveAt: new Date()
       },
       id: userId
     });
@@ -49,7 +52,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
     console.log('🏠 2. Testing room creation...');
     const roomId = `test-room-${testTimestamp}`;
     const roomResult = await client.commands['data/create']({
-      collection: 'chat-rooms',
+      collection: RoomEntity.collection,
       data: {
         roomId,
         name: 'Database Test Room',
@@ -73,7 +76,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
     for (let i = 1; i <= 3; i++) {
       const messageId = `test-msg-${testTimestamp}-${i}`;
       const messageResult = await client.commands['data/create']({
-        collection: 'messages',
+        collection: ChatMessageEntity.collection,
         data: {
           messageId,
           roomId,
@@ -95,7 +98,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
     // Test 4: Retrieve user data
     console.log('👤 4. Testing user data retrieval...');
     const userListResult = await client.commands['data/list']({
-      collection: 'users',
+      collection: UserEntity.collection,
       filter: { userId }
     });
 
@@ -107,7 +110,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
     // Test 5: Retrieve messages for room
     console.log('💬 5. Testing room message retrieval...');
     const messagesResult = await client.commands['data/list']({
-      collection: 'messages',
+      collection: ChatMessageEntity.collection,
       filter: { roomId }
     });
 
@@ -123,7 +126,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
     // Test 6: Retrieve messages by user
     console.log('👤 6. Testing user message retrieval...');
     const userMessagesResult = await client.commands['data/list']({
-      collection: 'messages',
+      collection: ChatMessageEntity.collection,
       filter: { senderId: userId }
     });
 

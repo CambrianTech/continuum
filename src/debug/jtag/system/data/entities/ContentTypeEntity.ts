@@ -11,7 +11,7 @@
 export type WidgetSelector = 'chat-widget' | 'user-list-widget' | 'room-list-widget' | 'user-profile-widget' | 'debug-widget' | 'data-explorer-widget';
 
 // Content category for organization
-export type ContentCategory = 'communication' | 'management' | 'development' | 'configuration' | 'system';
+export type ContentCategory = 'communication' | 'management' | 'development' | 'configuration' | 'system' | 'training' | 'social';
 
 export interface ContentTypeConfig {
   // Widget rendering configuration

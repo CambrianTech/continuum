@@ -206,106 +206,95 @@ function createDefaultContentTypes(): any[] {
       id: 'ct-chat',
       type: 'chat',
       displayName: 'Chat Room',
+      description: 'Real-time chat communication',
       category: 'communication',
-      widgetSelector: 'chat-widget',
+      config: {
+        widgetSelector: 'chat-widget',
+        allowMultiple: true,
+        autoSave: true,
+        preloadData: true,
+        requiredPermissions: ['chat:read', 'chat:write'],
+        minUserType: 'human'
+      },
       isActive: true,
       isBuiltIn: true,
-      sortOrder: 10,
-      allowMultiple: true,
-      autoSave: true,
-      preloadData: true,
-      requiredPermissions: ['chat:read', 'chat:write'],
-      minUserType: 'human'
+      sortOrder: 10
     },
     {
       id: 'ct-academy',
       type: 'academy-session',
       displayName: 'Academy Training',
-      category: 'training',
-      widgetSelector: 'academy-session-widget',
+      description: 'AI training sessions with hyperparameters',
+      category: 'development',
+      config: {
+        widgetSelector: 'chat-widget',
+        allowMultiple: true,
+        autoSave: true,
+        preloadData: true,
+        requiredPermissions: ['academy:read', 'academy:participate'],
+        minUserType: 'human'
+      },
       isActive: true,
       isBuiltIn: true,
-      sortOrder: 20,
-      allowMultiple: true,
-      autoSave: true,
-      preloadData: true,
-      requiredPermissions: ['academy:read', 'academy:participate'],
-      minUserType: 'human'
+      sortOrder: 20
     },
     {
       id: 'ct-user-list',
       type: 'user-list',
       displayName: 'User Directory',
-      category: 'social',
-      widgetSelector: 'user-list-widget',
+      description: 'User management and directory',
+      category: 'management',
+      config: {
+        widgetSelector: 'user-list-widget',
+        allowMultiple: false,
+        autoSave: false,
+        preloadData: true,
+        requiredPermissions: ['users:read'],
+        minUserType: 'human'
+      },
       isActive: true,
       isBuiltIn: true,
-      sortOrder: 30,
-      allowMultiple: false,
-      autoSave: false,
-      preloadData: true,
-      requiredPermissions: ['users:read'],
-      minUserType: 'human'
+      sortOrder: 30
     }
   ];
 }
 
 /**
- * Create default user states
+ * Create default user states - Fixed to match UserStateEntity schema
  */
 function createDefaultUserStates(): any[] {
   return [
     {
       id: 'us-joel-chat',
       userId: USER_IDS.HUMAN,
-      contentType: 'chat',
-      contextId: ROOM_IDS.GENERAL,
-      personalContext: {
-        preferences: {
-          fontSize: 'medium',
-          theme: 'dark',
-          notifications: true
-        },
-        history: {
-          lastVisited: new Date().toISOString(),
-          visitCount: 1,
-          bookmarks: []
-        }
+      deviceId: 'browser-main',
+      contentState: {
+        openItems: [],
+        lastUpdatedAt: new Date().toISOString()
       },
-      sharedState: {
-        position: { x: 0, y: 0 },
-        visibility: 'visible',
-        lastActivity: new Date().toISOString()
-      },
-      isActive: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      preferences: {
+        maxOpenTabs: 10,
+        autoCloseAfterDays: 30,
+        rememberScrollPosition: true,
+        syncAcrossDevices: true,
+        theme: 'dark'  // Custom preference for theme persistence
+      }
     },
     {
       id: 'us-claude-chat',
       userId: USER_IDS.CLAUDE_CODE,
-      contentType: 'chat',
-      contextId: ROOM_IDS.GENERAL,
-      personalContext: {
-        preferences: {
-          responseStyle: 'technical',
-          codeHighlighting: true,
-          autoSuggest: true
-        },
-        capabilities: {
-          canModerate: true,
-          canExecuteCommands: true,
-          canAccessFiles: true
-        }
+      deviceId: 'server-instance',
+      contentState: {
+        openItems: [],
+        lastUpdatedAt: new Date().toISOString()
       },
-      sharedState: {
-        position: { x: 0, y: 0 },
-        visibility: 'visible',
-        lastActivity: new Date().toISOString()
-      },
-      isActive: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      preferences: {
+        maxOpenTabs: 15,
+        autoCloseAfterDays: 60,
+        rememberScrollPosition: true,
+        syncAcrossDevices: true,
+        theme: 'matrix'  // Custom preference for theme persistence
+      }
     }
   ];
 }
@@ -384,11 +373,48 @@ function createDefaultTrainingSessions(): any[] {
 // ===== SEEDING FUNCTIONS =====
 
 /**
+ * Create a record via state/create command (user-scoped) with proper shell escaping
+ */
+async function createStateRecord(collection: string, data: any, id: string, userId?: string, displayName?: string): Promise<boolean> {
+  const dataArg = JSON.stringify(data).replace(/'/g, `'\"'\"'`);
+  const userIdArg = userId ? ` --userId=${userId}` : '';
+  const cmd = `./jtag state/create --collection=${collection} --data='${dataArg}' --id=${id}${userIdArg}`;
+
+  try {
+    const result = await execAsync(cmd);
+    const success = result.stdout.includes('\"success\": true');
+
+    if (success) {
+      console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
+      return true;
+    } else {
+      console.error(`❌ Failed to create ${collection} ${displayName || id}: Command returned unsuccessful result`);
+      console.error(`Response: ${result.stdout}`);
+      return false;
+    }
+  } catch (error: any) {
+    const hasSuccess = error.stdout && error.stdout.includes('\"success\": true');
+
+    if (hasSuccess) {
+      console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
+      return true;
+    } else {
+      console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
+      console.error(`   Error: ${error.message}`);
+      if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
+      if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}...`);
+      return false;
+    }
+  }
+}
+
+/**
  * Create a record via JTAG command with proper shell escaping
  */
-async function createRecord(collection: string, data: any, id: string, displayName?: string): Promise<boolean> {
+async function createRecord(collection: string, data: any, id: string, displayName?: string, userId?: string): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}' --id=${id}`;
+  const userIdArg = userId ? ` --userId=${userId}` : '';
+  const cmd = `./jtag state/create --collection=${collection} --data='${dataArg}' --id=${id}${userIdArg}`;
 
   try {
     const result = await execAsync(cmd);
@@ -421,13 +447,14 @@ async function createRecord(collection: string, data: any, id: string, displayNa
 /**
  * Seed multiple records of the same type
  */
-async function seedRecords<T extends { id: string; displayName?: string }>(collection: string, records: T[], getDisplayName?: (record: T) => string): Promise<void> {
-  console.log(`📝 Creating ${records.length} ${collection} records via JTAG...`);
+async function seedRecords<T extends { id: string; displayName?: string }>(collection: string, records: T[], getDisplayName?: (record: T) => string, getUserId?: (record: T) => string): Promise<void> {
+  console.log(`📝 Creating ${records.length} ${collection} records via state/create...`);
 
   let successCount = 0;
   for (const record of records) {
     const displayName = getDisplayName ? getDisplayName(record) : record.displayName || record.id;
-    const success = await createRecord(collection, record, record.id, displayName);
+    const userId = getUserId ? getUserId(record) : undefined;
+    const success = await createRecord(collection, record, record.id, displayName, userId);
     if (success) successCount++;
   }
 
@@ -547,15 +574,29 @@ async function seedViaJTAG() {
     const userStates = createDefaultUserStates();
     const trainingSessions = createDefaultTrainingSessions();
 
-    // Seed all data types using clean modular approach
+    // Seed all data types using clean modular approach with user context
     await seedRecords(UserEntity.collection, users, (user) => user.displayName);
-    await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName);
-    await seedRecords(ChatMessageEntity.collection, messages, (msg) =>
-      msg.senderId === USER_IDS.HUMAN ? 'Joel' :
-      msg.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown'
+    await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
+    await seedRecords(ChatMessageEntity.collection, messages,
+      (msg) => msg.senderId === USER_IDS.HUMAN ? 'Joel' : msg.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown',
+      (msg) => msg.senderId
     );
     await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);
-    await seedRecords(UserStateEntity.collection, userStates, (us) => `${us.userId.slice(0,8)}...`);
+    // Use state commands for UserState seeding (user-scoped collection)
+    console.log(`📝 Creating ${userStates.length} ${UserStateEntity.collection} records via state/create...`);
+    let userStateSuccessCount = 0;
+    for (const userState of userStates) {
+      const displayName = `${userState.userId.slice(0,8)}...`;
+      const success = await createStateRecord(
+        UserStateEntity.collection,
+        userState,
+        userState.id,
+        userState.userId,
+        displayName
+      );
+      if (success) userStateSuccessCount++;
+    }
+    console.log(`📊 Created ${userStateSuccessCount}/${userStates.length} ${UserStateEntity.collection} records`);
     await seedRecords(TrainingSessionEntity.collection, trainingSessions, (ts) => ts.sessionName);
 
     // Verify seeded data
