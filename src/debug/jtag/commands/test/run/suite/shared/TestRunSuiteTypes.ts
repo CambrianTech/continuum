@@ -164,13 +164,14 @@ export const DEFAULT_TEST_PROFILES: Record<string, TestProfile> = {
   },
   precommit: {
     name: 'precommit',
-    description: 'Git precommit hook - CRUD (100% required)',
+    description: 'Git precommit hook - CRUD + State Management (100% required)',
     tests: [
-      'tests/integration/crud-db-widget.test.ts'
+      'tests/integration/database-chat-integration.test.ts',
+      'tests/integration/state-system-integration.test.ts'
     ],
     deployBrowser: true, // Required for CRUD widget validation
     parallelism: 1, // Sequential to ensure stability
-    timeout: 60000 // Longer timeout for browser operations
+    timeout: 90000 // Extended timeout for both CRUD and state tests
   },
   precommitFast: {
     name: 'precommitFast',
