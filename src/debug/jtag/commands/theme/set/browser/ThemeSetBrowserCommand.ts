@@ -185,7 +185,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
       }
 
       // Find the user's UserState to update theme preference
-      const userStates = await Commands.execute('data/list', {
+      const userStates = await Commands.execute('state/get', {
         collection: 'UserState',
         filter: {
           userId: userId
@@ -201,13 +201,14 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
           theme: themeName
         };
 
-        await Commands.execute('data/update', {
+        await Commands.execute('state/update', {
           collection: 'UserState',
           id: userState.id,
           data: {
             preferences: updatedPreferences,
             updatedAt: new Date().toISOString()
-          }
+          },
+          userId: userId
         });
 
         console.log(`✅ ThemeSetBrowser: Theme '${themeName}' saved to UserState`);

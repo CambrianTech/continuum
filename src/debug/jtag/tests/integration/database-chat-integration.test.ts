@@ -29,81 +29,136 @@ async function testDatabaseChatIntegration(): Promise<void> {
     client = await jtag.connect();
     console.log('✅ Connected');
 
-    // Test 1: Create a test user
-    console.log('👤 1. Testing user creation...');
-    const userId = `test-user-${testTimestamp}`;
+    // Test 1: Create a test user via data/create (state/create has timeout issue)
+    console.log('👤 1. Testing user creation via data/create...');
     const userResult = await client.commands['data/create']({
       collection: UserEntity.collection,
       data: {
         displayName: 'Database Test User',
         type: 'human',
         status: 'online',
-        lastActiveAt: new Date()
-      },
-      id: userId
+        lastActiveAt: new Date().toISOString(),
+        capabilities: {
+          canSendMessages: true,
+          canReceiveMessages: true,
+          canCreateRooms: false,
+          canInviteOthers: false,
+          canModerate: false,
+          autoResponds: false,
+          providesContext: false,
+          canTrain: false,
+          canAccessPersonas: false
+        },
+        sessionsActive: []
+      }
     });
 
     if (!userResult.success) {
       throw new Error(`User creation failed: ${userResult.error ?? 'Unknown error'}`);
     }
+
+    // Use the actual generated ID from the result
+    const userId = userResult.data?.id || userResult.id;
+    console.log(`👤 Created user with ID: ${userId}`);
     console.log('✅ User created successfully');
 
-    // Test 2: Create a test room
-    console.log('🏠 2. Testing room creation...');
-    const roomId = `test-room-${testTimestamp}`;
+    // Test 2: Create a test room via data/create (state/create has timeout issue)
+    console.log('🏠 2. Testing room creation via data/create...');
     const roomResult = await client.commands['data/create']({
       collection: RoomEntity.collection,
       data: {
-        roomId,
-        name: 'Database Test Room',
+        name: 'database-test-room',
+        displayName: 'Database Test Room',
         description: 'Test room for database integration',
-        category: 'test',
-        allowAI: true,
-        isPrivate: false,
-        createdAt: new Date().toISOString()
-      },
-      id: roomId
+        topic: 'Integration testing room',
+        type: 'public',
+        status: 'active',
+        ownerId: userId,
+        lastMessageAt: new Date().toISOString(),
+        privacy: {
+          isPublic: true,
+          requiresInvite: false,
+          allowGuestAccess: true,
+          searchable: true
+        },
+        settings: {
+          allowReactions: true,
+          allowThreads: true,
+          allowFileSharing: true,
+          messageRetentionDays: 365
+        },
+        stats: {
+          memberCount: 1,
+          messageCount: 0,
+          createdAt: new Date().toISOString(),
+          lastActivityAt: new Date().toISOString()
+        },
+        members: [],
+        tags: ['test', 'integration']
+      }
     });
 
     if (!roomResult.success) {
       throw new Error(`Room creation failed: ${roomResult.error ?? 'Unknown error'}`);
     }
+
+    // Use the actual generated ID from the result
+    const roomId = roomResult.data?.id || roomResult.id;
+    console.log(`🏠 Created room with ID: ${roomId}`);
     console.log('✅ Room created successfully');
 
-    // Test 3: Store test messages
-    console.log('💬 3. Testing message storage...');
+    // Test 3: Store test messages via data/create (state/create has timeout issue)
+    console.log('💬 3. Testing message storage via data/create...');
     const messageIds = [];
     for (let i = 1; i <= 3; i++) {
-      const messageId = `test-msg-${testTimestamp}-${i}`;
       const messageResult = await client.commands['data/create']({
         collection: ChatMessageEntity.collection,
         data: {
-          messageId,
           roomId,
           senderId: userId,
-          content: `Test message ${i} for database integration`,
+          senderName: 'Database Test User',
+          content: {
+            text: `Test message ${i} for database integration`,
+            attachments: [],
+            formatting: {
+              markdown: false,
+              mentions: [],
+              hashtags: [],
+              links: [],
+              codeBlocks: []
+            }
+          },
+          status: 'sent',
+          priority: 'normal',
           timestamp: new Date().toISOString(),
-          category: 'chat'
-        },
-        id: messageId
+          reactions: []
+        }
       });
 
       if (!messageResult.success) {
         throw new Error(`Message ${i} creation failed: ${messageResult.error ?? 'Unknown error'}`);
       }
+
+      // Use the actual generated ID from the result
+      const messageId = messageResult.data?.id || messageResult.id;
       messageIds.push(messageId);
+      console.log(`💬 Created message ${i} with ID: ${messageId}`);
     }
     console.log('✅ All messages stored successfully');
 
     // Test 4: Retrieve user data
-    console.log('👤 4. Testing user data retrieval...');
+    console.log(`👤 4. Testing user data retrieval for userId: ${userId}...`);
     const userListResult = await client.commands['data/list']({
       collection: UserEntity.collection,
-      filter: { userId }
+      filter: { id: userId }
     });
 
-    if (!userListResult.success || !userListResult.items?.length) {
-      throw new Error('User retrieval failed');
+    console.log(`📊 User list result: success=${userListResult.success}, count=${userListResult.items?.length || 0}`);
+    if (!userListResult.success) {
+      throw new Error(`User list query failed: ${userListResult.error || 'Unknown error'}`);
+    }
+    if (!userListResult.items?.length) {
+      throw new Error(`No user found with id ${userId}. Total users: ${userListResult.count || 0}`);
     }
     console.log('✅ User data retrieved successfully');
 
