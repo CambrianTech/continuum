@@ -7,6 +7,9 @@ import { createThemeSetResult } from '../shared/ThemeSetTypes';
 import { EnhancementError } from '../../../../system/core/types/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/client/shared/Commands';
+import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
+import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
 
 export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSetResult> {
   private themeStyleElement: HTMLStyleElement | null = null;
@@ -55,31 +58,36 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
   }
 
   /**
-   * Simple theme switching - delegate to ThemeWidget if available
+   * Theme switching with persistence - delegate to ThemeWidget if available, otherwise use persistence logic
    */
   private async setThemeDirectly(themeName: string, params: ThemeSetParams): Promise<void> {
-    console.log(`🎨 ThemeSetBrowser: Setting theme '${themeName}'`);
-    
+    console.log(`🎨 ThemeSetBrowser: Setting theme '${themeName}' with persistence`);
+
     try {
       // Try to delegate to existing ThemeWidget
       const themeWidget = document.querySelector('theme-widget') as any;
       if (themeWidget && typeof themeWidget.setTheme === 'function') {
-        console.log('🎨 ThemeSetBrowser: Delegating to ThemeWidget');
+        console.log('🎨 ThemeSetBrowser: Delegating to ThemeWidget (includes persistence)');
         await themeWidget.setTheme(themeName);
         console.log('✅ ThemeSetBrowser: Theme set via ThemeWidget delegation');
         return;
       }
-      
-      // Fallback - simple CSS loading
-      console.log('🎨 ThemeSetBrowser: No ThemeWidget found, using fallback');
+
+      // Fallback - apply theme AND save to UserState for persistence
+      console.log('🎨 ThemeSetBrowser: No ThemeWidget found, applying theme with persistence');
+
+      // 1. Load and apply CSS
       const baseCSS = await this.loadThemeFile('base/theme.css');
       const themeCSS = themeName !== 'base' ? await this.loadThemeFile(`${themeName}/theme.css`) : '';
-      
+
       const combinedCSS = baseCSS + '\n' + themeCSS;
       this.injectCSS(combinedCSS, themeName);
-      
-      console.log(`✅ ThemeSetBrowser: Theme '${themeName}' applied`);
-      
+
+      // 2. Save theme preference to UserState for persistence (same logic as ThemeWidget)
+      await this.saveThemeToUserState(themeName);
+
+      console.log(`✅ ThemeSetBrowser: Theme '${themeName}' applied and saved to UserState`);
+
     } catch (error) {
       console.error('❌ ThemeSetBrowser: Failed to switch theme:', error);
       throw error;
@@ -156,6 +164,59 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
     } catch (error) {
       console.warn('⚠️ ThemeSetBrowser: Could not determine current theme:', error);
       return undefined;
+    }
+  }
+
+  /**
+   * Save theme preference to UserState for persistence
+   * (Same logic as ThemeWidget - prototype for future State.save<EntityType>())
+   */
+  private async saveThemeToUserState(themeName: string): Promise<void> {
+    try {
+      console.log(`🔧 ThemeSetBrowser: Saving theme '${themeName}' to UserState`);
+
+      // Get current user ID from session context
+      const sessionInfo = await Commands.execute('session/create', {});
+      const userId = (sessionInfo as { userId?: string })?.userId;
+
+      if (!userId) {
+        console.warn('⚠️ ThemeSetBrowser: No user ID available, cannot save theme preference');
+        return;
+      }
+
+      // Find the user's UserState to update theme preference
+      const userStates = await Commands.execute('data/list', {
+        collection: 'UserState',
+        filter: {
+          userId: userId
+        }
+      }) as DataListResult<UserStateEntity>;
+
+      if (userStates.success && userStates.items && userStates.items.length > 0) {
+        const userState = userStates.items[0];
+
+        // Update the theme in preferences field using proper typing
+        const updatedPreferences = {
+          ...userState.preferences,
+          theme: themeName
+        };
+
+        await Commands.execute('data/update', {
+          collection: 'UserState',
+          id: userState.id,
+          data: {
+            preferences: updatedPreferences,
+            updatedAt: new Date().toISOString()
+          }
+        });
+
+        console.log(`✅ ThemeSetBrowser: Theme '${themeName}' saved to UserState`);
+      } else {
+        console.warn('⚠️ ThemeSetBrowser: No UserState found for theme persistence');
+      }
+
+    } catch (error) {
+      console.error('❌ ThemeSetBrowser: Failed to save theme to UserState:', error);
     }
   }
 }

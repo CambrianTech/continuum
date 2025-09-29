@@ -10,7 +10,6 @@ import type { UUID } from '../types/CrossPlatformUUID';
 import type { CommandBase } from '../../../daemons/command-daemon/shared/CommandBase';
 import { EventManager, type EventsInterface } from '../../events';
 import { ScopedEventSystem, type ScopedEventsInterface } from '../../events/shared/ScopedEventSystem';
-import type { State } from '../state/shared/State';
 
 /**
  * Strongly-typed command function signature
@@ -29,7 +28,6 @@ export abstract class JTAGBase extends JTAGModule {
 
   public readonly eventManager = new EventManager();
   protected scopedEventSystem?: ScopedEventSystem;
-  protected stateManager?: State;
 
 
   // Abstract method for subclasses to provide their command source
@@ -79,21 +77,6 @@ export abstract class JTAGBase extends JTAGModule {
     return this.eventManager.events;
   }
 
-  /**
-   * State interface - type-safe state management access
-   * Provides jtag.state.room for room state management
-   *
-   * Example usage:
-   * - await jtag.state.room.setCurrentRoom(roomId)
-   * - const room = jtag.state.room.getCurrentRoom()
-   * - const unsubscribe = jtag.state.room.subscribe(() => updateUI())
-   */
-  get state(): State {
-    if (!this.stateManager) {
-      throw new Error('State system not initialized. Call initializeState() first.');
-    }
-    return this.stateManager;
-  }
 
   /**
    * Commands interface - migrated from JTAGSystem
