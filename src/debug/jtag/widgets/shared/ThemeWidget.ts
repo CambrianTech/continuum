@@ -13,6 +13,8 @@ import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry } from './themes/ThemeTypes';
 import type { DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
+import { stringToUUID } from '../../system/core/types/CrossPlatformUUID';
+import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
 
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
@@ -425,27 +427,31 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Save theme preference to UserState for persistence across sessions
+   * Save theme preference using hybrid persistence (localStorage + UserState)
    */
   private async saveThemeToUserState(themeName: string): Promise<void> {
     try {
-      console.log(`🔧 ThemeWidget: Saving theme '${themeName}' to UserState`);
+      console.log(`🔧 ThemeWidget: Saving theme '${themeName}' using hybrid persistence`);
 
-      // Get current user ID from session context
-      const sessionInfo = await Commands.execute('session/create', {});
-      const userId = (sessionInfo as { userId?: string })?.userId;
-
-      if (!userId) {
-        console.warn('⚠️ ThemeWidget: No user ID available, cannot save theme preference');
-        return;
+      // 1. Save to localStorage immediately for instant persistence
+      if (LocalStorageStateManager.isAvailable()) {
+        const success = LocalStorageStateManager.setTheme(themeName);
+        if (success) {
+          console.log(`✅ ThemeWidget: Theme '${themeName}' saved to localStorage`);
+        } else {
+          console.warn('⚠️ ThemeWidget: Failed to save theme to localStorage');
+        }
       }
 
-      // Find the user's chat UserState to update theme preference
+      // 2. Save to UserState for database persistence and cross-device sync
+      // Get current user ID using the same approach as ThemeSetBrowserCommand
+      const userId = stringToUUID('anonymous');
+
+      // Find the user's UserState to update theme preference
       const userStates = await Commands.execute('data/list', {
         collection: 'UserState',
         filter: {
-          userId: userId,
-          contentType: 'chat'
+          userId: userId
         }
       }) as DataListResult<UserStateEntity>;
 
@@ -467,38 +473,42 @@ export class ThemeWidget extends BaseWidget {
           }
         });
 
-        console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState`);
+        console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState database`);
       } else {
-        console.warn('⚠️ ThemeWidget: No UserState found for theme persistence');
+        console.warn('⚠️ ThemeWidget: No UserState found for database persistence');
       }
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to save theme to UserState:', error);
+      console.error('❌ ThemeWidget: Failed to save theme using hybrid persistence:', error);
     }
   }
 
   /**
-   * Load theme preference from UserState on page load/refresh
+   * Load theme preference using hybrid persistence (localStorage first, then UserState)
    */
   private async loadThemeFromUserState(): Promise<string | null> {
     try {
-      console.log('🔧 ThemeWidget: Loading theme from UserState');
+      console.log('🔧 ThemeWidget: Loading theme using hybrid persistence');
 
-      // Get current user ID from session context
-      const sessionInfo = await Commands.execute('session/create', {});
-      const userId = (sessionInfo as { userId?: string })?.userId;
-
-      if (!userId) {
-        console.warn('⚠️ ThemeWidget: No user ID available, cannot load theme preference');
-        return null;
+      // 1. Try localStorage first for instant response
+      if (LocalStorageStateManager.isAvailable()) {
+        const localTheme = LocalStorageStateManager.getTheme();
+        if (localTheme) {
+          console.log(`✅ ThemeWidget: Loaded theme '${localTheme}' from localStorage`);
+          return localTheme;
+        }
+        console.log('ℹ️ ThemeWidget: No theme found in localStorage, trying UserState');
       }
 
-      // Find the user's chat UserState to get theme preference
+      // 2. Fall back to UserState for database persistence
+      // Get current user ID using the same approach as ThemeSetBrowserCommand
+      const userId = stringToUUID('anonymous');
+
+      // Find the user's UserState to get theme preference
       const userStates = await Commands.execute('data/list', {
         collection: 'UserState',
         filter: {
-          userId: userId,
-          contentType: 'chat'
+          userId: userId
         }
       }) as DataListResult<UserStateEntity>;
 
@@ -510,12 +520,19 @@ export class ThemeWidget extends BaseWidget {
         const savedTheme = preferences.theme;
 
         if (typeof savedTheme === 'string') {
-          console.log(`✅ ThemeWidget: Loaded saved theme '${savedTheme}' from UserState`);
+          console.log(`✅ ThemeWidget: Loaded theme '${savedTheme}' from UserState database`);
+
+          // Sync back to localStorage for faster future access
+          if (LocalStorageStateManager.isAvailable()) {
+            LocalStorageStateManager.setTheme(savedTheme);
+            console.log(`🔄 ThemeWidget: Synced theme '${savedTheme}' to localStorage`);
+          }
+
           return savedTheme;
         }
       }
 
-      console.log('ℹ️ ThemeWidget: No saved theme found in UserState');
+      console.log('ℹ️ ThemeWidget: No saved theme found in either localStorage or UserState');
       return null;
 
     } catch (error) {

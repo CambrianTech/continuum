@@ -4,24 +4,27 @@
  * Uses DataDaemon for proper storage abstraction (SQLite backend)
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { DataCreateCommand } from '../shared/DataCreateCommand';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { Events } from '../../../../system/core/server/shared/Events';
 
-
-export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataCreateResult> {
+export class DataCreateServerCommand extends DataCreateCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('data-create', context, subpath, commander);
+    super(context, subpath, commander);
   }
 
-
-  async execute(params: DataCreateParams): Promise<DataCreateResult> {
+  /**
+   * Server implementation: handles both server (SQLite) and localStorage (delegate) backends
+   */
+  protected async executeDataCommand(params: DataCreateParams): Promise<DataCreateResult> {
+    // Server only handles server environment
+    // Browser environment requests are delegated by base class
     const collection = params.collection;
     console.debug(`🗄️ DATA SERVER: Creating ${collection} entity`);
 
@@ -37,8 +40,7 @@ export class DataCreateServerCommand extends CommandBase<DataCreateParams, DataC
 
     return createDataCreateResultFromParams(params, {
       success: true,
-      data: entity,
+      data: entity
     });
   }
-
 }
