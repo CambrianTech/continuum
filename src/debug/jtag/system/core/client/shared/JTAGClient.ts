@@ -753,14 +753,66 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         }
       },
       events: {
-        broadcast: async <T extends JTAGPayload>(eventData: T): Promise<void> => {
+        /**
+         * Emit an event - works in browser and server
+         * Delegates to Events.emit() for cross-environment event bridging
+         */
+        emit: async <T>(
+          eventName: string,
+          data: T,
+          options?: { scope?: any; scopeId?: string; sessionId?: string }
+        ): Promise<{ success: boolean; error?: string }> => {
+          const { Events } = await import('./Events');
+          return await Events.emit(eventName, data, options as any || {});
+        },
+
+        /**
+         * Subscribe to events - works in browser and server
+         * Uses unified EventSubscriptionManager from EventsDaemon
+         */
+        on: <T>(
+          patternOrEventName: string,
+          handler: (data: T) => void
+        ): (() => void) => {
           try {
-            // TODO: Implement event broadcasting through EventsDaemon
-            console.log(`📢 JTAG daemon events.broadcast:`, eventData);
-            throw new Error('Event broadcasting not yet implemented');
+            // Get EventsDaemon from local system
+            const localConnection = this.connection as LocalConnection;
+            if (!localConnection || !localConnection.localSystem) {
+              throw new Error('Events subscriptions only available in local connections');
+            }
+
+            const eventsDaemon = localConnection.localSystem.getEventsDaemon();
+            if (!eventsDaemon) {
+              throw new Error('EventsDaemon not available');
+            }
+
+            const subscriptionManager = eventsDaemon.getSubscriptionManager();
+            return subscriptionManager.on(patternOrEventName, handler);
           } catch (error) {
-            console.error(`❌ JTAG daemon events.broadcast failed:`, error);
-            throw error;
+            console.error(`❌ JTAGClient.daemons.events.on failed:`, error);
+            return () => {}; // No-op unsubscribe
+          }
+        },
+
+        /**
+         * Unsubscribe from events
+         */
+        off: <T>(eventName: string, handler?: (data: T) => void): void => {
+          try {
+            const localConnection = this.connection as LocalConnection;
+            if (!localConnection || !localConnection.localSystem) {
+              throw new Error('Events subscriptions only available in local connections');
+            }
+
+            const eventsDaemon = localConnection.localSystem.getEventsDaemon();
+            if (!eventsDaemon) {
+              throw new Error('EventsDaemon not available');
+            }
+
+            const subscriptionManager = eventsDaemon.getSubscriptionManager();
+            subscriptionManager.off(eventName, handler);
+          } catch (error) {
+            console.error(`❌ JTAGClient.daemons.events.off failed:`, error);
           }
         }
       },
