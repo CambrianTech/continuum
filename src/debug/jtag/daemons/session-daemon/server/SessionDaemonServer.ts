@@ -358,40 +358,70 @@ export class SessionDaemonServer extends SessionDaemon {
       const userId = params.userId ?? generateUUID();
       const deviceId = `device-${generateUUID()}`;
 
+      // Enhanced agent detection using connectionContext
+      const agentInfo = params.connectionContext?.agentInfo;
+      const isDetectedAgent = agentInfo?.detected && agentInfo.confidence > 0.5;
+
+      // Determine actual user type (may override category if agent detected)
+      let userType: 'human' | 'agent' | 'persona';
+      if (params.category === 'persona') {
+        userType = 'persona';
+      } else if (params.category === 'agent' || isDetectedAgent) {
+        userType = 'agent';
+        console.log(`🤖 SessionDaemon: Detected AI agent: ${agentInfo?.name ?? 'Unknown'} (confidence: ${agentInfo?.confidence ?? 0})`);
+      } else {
+        userType = 'human';
+      }
+
       // Create UserEntity
       const userEntity = new UserEntity();
       userEntity.id = userId;
       userEntity.displayName = params.displayName;
-      userEntity.type = params.category === 'persona' ? 'persona' :
-                        params.category === 'agent' ? 'agent' : 'human';
+      userEntity.type = userType;
 
-      // Create UserStateEntity with defaults
+      // Create UserStateEntity with defaults appropriate for user type
       const userState = new UserStateEntity();
       userState.id = generateUUID();
       userState.userId = userId;
       userState.deviceId = deviceId;
-      userState.preferences = {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: false
-      };
+
+      // Agent-specific preferences (lighter state, no persistence assumptions)
+      if (userType === 'agent') {
+        userState.preferences = {
+          maxOpenTabs: 5, // Agents typically work with fewer contexts
+          autoCloseAfterDays: 1, // Short retention for agent state
+          rememberScrollPosition: false, // Agents don't need scroll positions
+          syncAcrossDevices: false // Agents are ephemeral
+        };
+      } else {
+        userState.preferences = {
+          maxOpenTabs: 10,
+          autoCloseAfterDays: 30,
+          rememberScrollPosition: true,
+          syncAcrossDevices: false
+        };
+      }
+
       userState.contentState = {
         openItems: [],
         lastUpdatedAt: new Date()
       };
 
-      // Select storage backend based on category
-      // TODO: Browser clients will use LocalStorageStateBackend (initialized by browser)
-      // TODO: Personas will use SQLiteStateBackend with dedicated database
-      // For now: use MemoryStateBackend for all (ephemeral)
+      // Select storage backend based on user type
+      // Agents: Always use MemoryStateBackend (ephemeral, no persistence)
+      // Personas: TODO - Use SQLiteStateBackend with dedicated database
+      // Humans: TODO - Browser clients use LocalStorageStateBackend
       const storage = new MemoryStateBackend();
+
+      if (userType === 'agent') {
+        console.log(`🧠 SessionDaemon: Using MemoryStateBackend for agent ${params.displayName}`);
+      }
 
       // Create appropriate User subclass
       let user: BaseUser;
-      if (params.category === 'persona') {
+      if (userType === 'persona') {
         user = new PersonaUser(userEntity, userState, storage, userId);
-      } else if (params.category === 'agent') {
+      } else if (userType === 'agent') {
         user = new AgentUser(userEntity, userState, storage);
       } else {
         user = new HumanUser(userEntity, userState, storage);

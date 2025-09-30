@@ -201,6 +201,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     localSystemAvailable: false
   };
 
+  // Connection options for agent detection and context
+  protected connectionContext?: JTAGConnectionContextInput;
+
   public get sessionId(): UUID {
     return this._session?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION;
   }
@@ -342,7 +345,10 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     if (providedSessionId) {
       console.log(`🎯 JTAGClient: Provided sessionId: ${providedSessionId}`);
     }
-    
+
+    // Store connection context for agent detection
+    this.connectionContext = options?.context;
+
     // Try local system first if available
     const localSystem = await this.getLocalSystem();
     this.connectionMetadata.localSystemAvailable = !!localSystem;
@@ -408,7 +414,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
     // SECURITY: CLI clients use ephemeral sessions, browser clients use shared sessions
     const isEphemeralClient = this.context.environment === 'server'; // Server-side JTAGClient = CLI client
-    
+
     // Use provided sessionId if available, otherwise let SessionDaemon assign shared session
     let targetSessionId: UUID;
     if (providedSessionId) {
@@ -419,13 +425,26 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       targetSessionId = SYSTEM_SCOPES.UNKNOWN_SESSION;
       console.log(`🎯 JTAGClient: Requesting shared session assignment from SessionDaemon`);
     }
-    
+
+    // Detect if this is an AI agent based on connection context
+    const agentInfo = this.connectionContext?.agentInfo;
+    const isAgent = agentInfo?.detected && agentInfo.confidence > 0.5;
+
+    // Determine category and displayName
+    const category = isAgent ? 'agent' : 'user';
+    const displayName = isAgent && agentInfo?.name
+      ? agentInfo.name
+      : (isEphemeralClient ? 'CLI Client' : 'Anonymous User');
+
+    console.log(`🔍 JTAGClient: Detected category=${category}, displayName=${displayName}, isAgent=${isAgent}`);
+
     const sessionParams = {
       context: this.context,
       sessionId: targetSessionId,
-      category: 'user' as const,
-      displayName: isEphemeralClient ? 'CLI Client' : 'Anonymous User',
-      isShared: true // All clients use shared sessions by default
+      category: category as 'user' | 'agent',
+      displayName: displayName,
+      isShared: true, // All clients use shared sessions by default
+      connectionContext: this.connectionContext // Pass full context for agent detection
     };
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;
