@@ -18,7 +18,7 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
     super('data-read', context, subpath, commander);
   }
 
-  protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult> {
+  protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult<BaseEntity>> {
     console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id} via DataDaemon`);
 
     try {

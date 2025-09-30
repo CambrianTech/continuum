@@ -726,25 +726,21 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   get daemons() {
     return {
       commands: {
-        execute: async <P extends CommandParams, R extends CommandResult>(
-          command: string, 
-          params?: P
-        ): Promise<R> => {
-          try {
-            // Execute command through the global JTAG system - gets wrapped response
-            const wrappedResult = await this.commands[command](params) as CommandResponse;
+        execute: async <T extends CommandParams = CommandParams, U extends CommandResult = CommandResult>(
+          command: string,
+          params?: T
+        ): Promise<U> => {
+          // Execute command and get response (may be wrapped or unwrapped depending on connection type)
+          const response = await this.commands[command](params);
 
-            if (!wrappedResult.success) {
-              const commandError = wrappedResult as CommandErrorResponse;
-              throw new Error(commandError.error || `Command ${command} failed without error message`);
-            }
-            
-            // Extract the actual command result from the wrapped response
-            return (wrappedResult as CommandSuccessResponse).commandResult as R;
-          } catch (error) {
-            console.error(`❌ JTAG daemon commands.execute ${command} failed:`, error);
-            throw error;
+          // Check if wrapped in CommandResponse (has commandResult field)
+          if (response && typeof response === 'object' && 'commandResult' in response) {
+            const wrapped = response as CommandSuccessResponse;
+            return wrapped.commandResult as U;
           }
+
+          // Already unwrapped - return as-is
+          return response as U;
         }
       },
       events: {

@@ -41,7 +41,6 @@ export const createDataReadResultFromParams = (
 ): DataReadResult => transformPayload(params, {
   success: false,
   found: false,
-  collection: params.collection,
   id: params.id,
   timestamp: new Date().toISOString(),
   ...differences
