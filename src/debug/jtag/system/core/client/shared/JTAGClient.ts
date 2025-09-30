@@ -85,6 +85,7 @@ import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
 import type { SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import type { BaseUser } from '../../../user/shared/BaseUser';
 import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
 import type { IConnectionBroker, ConnectionParams } from '../../connection-broker/shared/ConnectionBrokerTypes';
 import { ConnectionBroker } from '../../connection-broker/shared/ConnectionBroker';
@@ -211,6 +212,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   public get userId(): UUID {
     // userId comes from session - session ties user and sessionId together
     return this._session?.userId ?? SYSTEM_SCOPES.ANONYMOUS_USER;
+  }
+
+  /**
+   * Get User object with entity and state
+   * Provides access to user preferences and content state
+   * Returns undefined if session not yet established or user not initialized
+   */
+  public get user(): BaseUser | undefined {
+    return this._session?.user;
   }
 
   /**
