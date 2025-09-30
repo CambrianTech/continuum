@@ -459,6 +459,10 @@ async function seedRecords<T extends { id: string; displayName?: string }>(colle
   }
 
   console.log(`📊 Created ${successCount}/${records.length} ${collection} records`);
+
+  if (successCount !== records.length) {
+    throw new Error(`❌ Seeding failed for ${collection}: only ${successCount}/${records.length} records created successfully`);
+  }
 }
 
 /**
