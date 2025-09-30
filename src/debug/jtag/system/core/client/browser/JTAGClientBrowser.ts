@@ -212,11 +212,4 @@ export class JTAGClientBrowser extends JTAGClient {
   }
 
 
-  /**
-   * Browser-specific connection metadata
-   */
-  get isLocal(): boolean {
-    return this.connection instanceof LocalConnection;
-  }
-
 }

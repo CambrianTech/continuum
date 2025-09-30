@@ -59,7 +59,7 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
 
     const saveResult: FileSaveResult = await this.remoteExecute(saveParams, 'file/save', this.context.environment);
 
-    // console.debug(`🔍 SERVER: File save router result:`, JSON.stringify(saveResult, null, 2));
+    // console.debug(`🔍 SERVER: File save result:`, JSON.stringify(saveResult, null, 2));
 
     if (!saveResult.success) {
       throw new PersistenceError(filename, 'write', `File save command failed: ${JSON.stringify(saveResult)}`);

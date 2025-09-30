@@ -202,6 +202,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   public get sessionId(): UUID {
     return this._session?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION;
   }
+
+  /**
+   * Check if using local connection (same process) or remote (transport)
+   * Works identically in browser and server environments
+   */
+  public get isLocal(): boolean {
+    return this.connection instanceof LocalConnection;
+  }
+
   private _session: SessionMetadata | undefined;
 
   constructor(context: JTAGContext) {

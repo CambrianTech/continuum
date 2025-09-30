@@ -1,25 +1,50 @@
 /**
- * Commands - Clean Client Interface
+ * Commands - Clean Client Interface with Type-Safe Command Registry
  *
- * Provides simple static interface for command execution.
- * Replaces CommandDaemon.execute() with cleaner naming.
+ * Provides elegant static interface for command execution with full type inference.
+ * No more manual generic parameters - types are inferred from command name!
+ *
+ * Usage:
+ *   // Type-safe! params and result types inferred automatically
+ *   const result = await Commands.execute('screenshot', { querySelector: 'body' });
+ *
+ *   // IntelliSense shows all available commands
+ *   await Commands.execute('file/save', { filepath: 'test.txt', content: 'hello' });
  */
 
 import { JTAGClient } from './JTAGClient';
 import type { CommandParams, CommandResult } from '../../types/JTAGTypes';
+import type {
+  CommandName,
+  CommandInputFor,
+  CommandResultFor,
+  CommandParamsFor
+} from './CommandRegistry';
 
 export class Commands {
   /**
-   * Execute a command with clean interface - unwraps CommandResponse metadata
-   *
-   * Generic pattern: <T extends CommandParams, U extends CommandResult>
-   * - T: Input params type (unused, kept for compatibility)
-   * - U: Output result type (what you get back)
+   * Execute a command - automatic type inference from registry
+   * Usage: await Commands.execute('screenshot', { querySelector: 'body' });
    */
-  static async execute<T extends CommandParams, U extends CommandResult>(
+  static execute<TCommand extends CommandName>(
+    command: TCommand,
+    params?: CommandInputFor<TCommand>
+  ): Promise<CommandResultFor<TCommand>>;
+
+  /**
+   * Execute a command - manual typing for commands not in registry
+   * Usage: await Commands.execute<StateCreateParams, StateCreateResult>('state/create', params);
+   */
+  static execute<T extends CommandParams, U extends CommandResult>(
     command: string,
     params?: Omit<T, 'context' | 'sessionId'>
-  ): Promise<U> {
+  ): Promise<U>;
+
+  // Implementation
+  static async execute(
+    command: string,
+    params?: any
+  ): Promise<any> {
     // Get the shared JTAG client instance (works in both browser and server)
     const jtagClient = await JTAGClient.sharedInstance;
 
@@ -28,9 +53,9 @@ export class Commands {
       context: jtagClient.context,
       sessionId: jtagClient.sessionId,
       ...(params || {})
-    } as T;
+    } as any;
 
     // Execute and get typed result (unwrapped by daemons.commands.execute)
-    return await jtagClient.daemons.commands.execute<T, U>(command, finalParams);
+    return await jtagClient.daemons.commands.execute<any, any>(command, finalParams);
   }
 }
