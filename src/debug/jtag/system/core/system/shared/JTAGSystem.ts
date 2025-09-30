@@ -18,6 +18,7 @@ import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/Console
 import type { JTAGRouterConfig } from '../../router/shared/JTAGRouterTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 import type { SessionCategory } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import { isEventSubscriptionProvider, type IEventSubscriptionProvider } from '../../../events/shared/IEventSubscriptionProvider';
 
 
 /**
@@ -79,6 +80,18 @@ export abstract class JTAGSystem extends JTAGBase {
    */
   public get systemDaemons(): DaemonBase[] {
     return this.daemons;
+  }
+
+  /**
+   * Get EventsDaemon for event subscription management
+   * Returns null if EventsDaemon is not available
+   */
+  public getEventsDaemon(): IEventSubscriptionProvider | null {
+    const eventsDaemon = this.daemons.find(daemon => daemon.subpath === 'events');
+    if (!eventsDaemon) {
+      return null;
+    }
+    return isEventSubscriptionProvider(eventsDaemon) ? eventsDaemon : null;
   }
 
   constructor(context: JTAGContext, router: JTAGRouter, config: JTAGSystemConfig = {}) {

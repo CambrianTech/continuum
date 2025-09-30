@@ -75,10 +75,12 @@ export class LocalStorageDataBackend {
         return { success: false, error: 'Entity ID is required for localStorage create' };
       }
 
-      // Validate entity using its built-in validation
-      const validation = entity.validate();
-      if (!validation.success) {
-        return { success: false, error: validation.error };
+      // Validate entity using its built-in validation if available
+      if (typeof entity.validate === 'function') {
+        const validation = entity.validate();
+        if (!validation.success) {
+          return { success: false, error: validation.error };
+        }
       }
 
       const key = this.getEntityKey(collection, entity.id);

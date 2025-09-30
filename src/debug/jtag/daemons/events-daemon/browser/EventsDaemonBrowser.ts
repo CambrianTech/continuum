@@ -12,6 +12,8 @@ import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { DOMEventBridge } from '../../../system/events/browser/DOMEventBridge';
 import { Events } from '../../../system/core/client/shared/Events';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import { EventSubscriptionManager } from '../../../system/events/shared/EventSubscriptionManager';
+import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
 
 // EventBridge metadata structure for better type safety
 interface EventBridgeMetadata {
@@ -22,9 +24,10 @@ interface EventBridgeMetadata {
   message?: unknown;
 }
 
-export class EventsDaemonBrowser extends EventsDaemon {
+export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscriptionProvider {
   protected eventManager = new EventManager();
   private domEventBridge: DOMEventBridge;
+  private subscriptionManager = new EventSubscriptionManager();
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -37,6 +40,15 @@ export class EventsDaemonBrowser extends EventsDaemon {
     // Setup DOM event bridge for widget communication
     this.domEventBridge = new DOMEventBridge(this.eventManager);
     console.log('🌉 EventsDaemonBrowser: DOM event bridge initialized');
+    console.log('🎧 EventsDaemonBrowser: Unified subscription manager initialized');
+  }
+
+  /**
+   * Get subscription manager for unified event subscriptions
+   * Exposed to JTAGClient.daemons.events interface
+   */
+  public getSubscriptionManager(): EventSubscriptionManager {
+    return this.subscriptionManager;
   }
 
   /**
@@ -45,10 +57,10 @@ export class EventsDaemonBrowser extends EventsDaemon {
   protected handleLocalEventBridge(eventName: string, eventData: unknown): void {
     console.log(`🔥 CLAUDE-BROWSER-EVENT-${Date.now()}: handleLocalEventBridge called with eventName='${eventName}'`);
 
-    // Emit to local event system - DOMEventBridge will automatically handle DOM dispatch
+    // 1. Emit to local event system - DOMEventBridge will automatically handle DOM dispatch
     this.eventManager.events.emit(eventName, eventData);
 
-    // CRITICAL: Also dispatch DOM event for BaseWidget integration
+    // 2. Dispatch DOM event for BaseWidget integration (backward compatibility)
     const domEvent = new CustomEvent(eventName, {
       detail: eventData
     });
@@ -59,8 +71,12 @@ export class EventsDaemonBrowser extends EventsDaemon {
     }
     console.log(`🔥 CLAUDE-DOM-EVENT-${Date.now()}: Dispatched DOM event '${eventName}' for BaseWidget`);
 
-    // CRITICAL FIX: Also check wildcard subscriptions from Events.subscribe()
-    // This ensures server events trigger browser widget handlers properly
+    // 3. Trigger unified subscription manager (NEW!)
+    // This handles exact, wildcard, and elegant pattern subscriptions
+    this.subscriptionManager.trigger(eventName, eventData);
+
+    // 4. Legacy: Also check wildcard subscriptions from Events.subscribe()
+    // TODO: Migrate to unified subscription manager
     try {
       Events.checkWildcardSubscriptions(eventName, eventData);
       console.log(`🎯 CLAUDE-WILDCARD-${Date.now()}: Checked wildcard subscriptions for '${eventName}'`);
