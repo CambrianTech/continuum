@@ -30,18 +30,30 @@ echo "🔨 Running TypeScript compilation..."
 npm run build:ts
 echo "✅ TypeScript compilation passed"
 
-echo "🚀 Starting system deployment..."
-npm start &
-DEPLOY_PID=$!
+# Check if system is already running and healthy
+echo "🔍 Checking if system is already running..."
+SYSTEM_ALREADY_RUNNING=false
+if ./jtag ping >/dev/null 2>&1; then
+    echo "✅ System already running - skipping restart (massive time savings!)"
+    SYSTEM_ALREADY_RUNNING=true
+else
+    echo "🚀 System not running - starting deployment..."
+    npm start &
+    DEPLOY_PID=$!
+fi
 
-# Wait for COMPLETE system to be ready (with timeout)
-echo "⏳ Waiting for complete system orchestration..."
-TIMEOUT=180  # 3 minutes for full system readiness
-COUNTER=0
-PING_SUCCESS=false
-ORCHESTRATION_COMPLETE=false
+# Wait for COMPLETE system to be ready (with timeout) - skip if already running
+if [ "$SYSTEM_ALREADY_RUNNING" = true ]; then
+    echo "⚡ Skipping orchestration wait - system already healthy"
+    ORCHESTRATION_COMPLETE=true
+else
+    echo "⏳ Waiting for complete system orchestration..."
+    TIMEOUT=180  # 3 minutes for full system readiness
+    COUNTER=0
+    PING_SUCCESS=false
+    ORCHESTRATION_COMPLETE=false
 
-while [ $COUNTER -lt $TIMEOUT ]; do
+    while [ $COUNTER -lt $TIMEOUT ]; do
     # First check if ping works (basic connectivity)
     if ./jtag ping >/dev/null 2>&1; then
         PING_SUCCESS=true
@@ -66,18 +78,19 @@ while [ $COUNTER -lt $TIMEOUT ]; do
         fi
     fi
 
-    sleep 1
-    COUNTER=$((COUNTER + 1))
-done
+        sleep 1
+        COUNTER=$((COUNTER + 1))
+    done
 
-if [ $COUNTER -eq $TIMEOUT ]; then
-    echo "❌ System deployment timed out after ${TIMEOUT}s"
-    if [ "$PING_SUCCESS" = true ] && [ "$ORCHESTRATION_COMPLETE" = false ]; then
-        echo "   System was responsive but orchestration never completed"
-        echo "   Check .continuum/jtag/system/logs/npm-start.log for details"
+    if [ $COUNTER -eq $TIMEOUT ]; then
+        echo "❌ System deployment timed out after ${TIMEOUT}s"
+        if [ "$PING_SUCCESS" = true ] && [ "$ORCHESTRATION_COMPLETE" = false ]; then
+            echo "   System was responsive but orchestration never completed"
+            echo "   Check .continuum/jtag/system/logs/npm-start.log for details"
+        fi
+        kill $DEPLOY_PID 2>/dev/null || true
+        exit 1
     fi
-    kill $DEPLOY_PID 2>/dev/null || true
-    exit 1
 fi
 
 # Phase 2: Integration Testing
