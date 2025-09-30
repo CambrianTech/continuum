@@ -23,9 +23,17 @@ export class DataCreateBrowserCommand extends DataCreateCommand {
     // Browser only handles browser environment
     // Server environment requests are delegated by base class
 
-    console.log(`🗄️ DataCreateBrowser: Handling localStorage create`);
+    console.log(`🗄️ DataCreateBrowser: Handling localStorage create`, {
+      collection: params.collection,
+      dataType: typeof params.data,
+      hasId: !!params.data?.id
+    });
+
     try {
+      console.log(`🗄️ DataCreateBrowser: Calling LocalStorageDataBackend.create()...`);
       const result = await LocalStorageDataBackend.create(params.collection, params.data);
+      console.log(`🗄️ DataCreateBrowser: LocalStorageDataBackend.create() returned:`, result);
+
       return {
         context: params.context,
         sessionId: params.sessionId,
@@ -35,6 +43,7 @@ export class DataCreateBrowserCommand extends DataCreateCommand {
         timestamp: new Date().toISOString()
       };
     } catch (error) {
+      console.error(`❌ DataCreateBrowser: Exception in executeDataCommand:`, error);
       return {
         context: params.context,
         sessionId: params.sessionId,

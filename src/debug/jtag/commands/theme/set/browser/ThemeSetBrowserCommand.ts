@@ -175,41 +175,30 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
     try {
       console.log(`🔧 ThemeSetBrowser: Saving theme '${themeName}' to UserState`);
 
-      // Get userId from window.jtag client - falls back to ANONYMOUS_USER if not available
-      const jtagClient = (window as any).jtag;
-      const userId = jtagClient?.userId ?? (await import('../../../../system/core/types/SystemScopes')).SYSTEM_SCOPES.ANONYMOUS_USER;
-      console.log(`🔧 ThemeSetBrowser: Using userId: ${userId}`);
+      // Get UserState ID from JTAGClient (initialized during connection)
+      const { JTAGClient } = await import('../../../../system/core/client/shared/JTAGClient');
+      const jtagClient = await JTAGClient.sharedInstance;
+      const userStateId = jtagClient.getUserStateId();
 
-      // Find the user's UserState to update theme preference
-      const userStates = await Commands.execute('data/list', {
-        collection: 'UserState',
-        filter: {
-          userId: userId
-        }
-      }) as DataListResult<UserStateEntity>;
-
-      if (userStates.success && userStates.items && userStates.items.length > 0) {
-        const userState = userStates.items[0];
-
-        // Update the theme in preferences field using proper typing
-        const updatedPreferences = {
-          ...userState.preferences,
-          theme: themeName
-        };
-
-        await Commands.execute('data/update', {
-          collection: 'UserState',
-          id: userState.id,
-          data: {
-            preferences: updatedPreferences,
-            updatedAt: new Date().toISOString()
-          }
-        });
-
-        console.log(`✅ ThemeSetBrowser: Theme '${themeName}' saved to UserState`);
-      } else {
-        console.warn('⚠️ ThemeSetBrowser: No UserState found for theme persistence');
+      if (!userStateId) {
+        console.warn('⚠️ ThemeSetBrowser: No UserState available - theme will not persist');
+        return;
       }
+
+      // Update existing UserState's preferences
+      await Commands.execute('data/update', {
+        collection: 'UserState',
+        id: userStateId,
+        backend: 'browser',
+        data: {
+          preferences: {
+            theme: themeName
+          },
+          updatedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ ThemeSetBrowser: Theme '${themeName}' saved to UserState ${userStateId.substring(0, 8)}...`);
 
     } catch (error) {
       console.error('❌ ThemeSetBrowser: Failed to save theme to UserState:', error);
