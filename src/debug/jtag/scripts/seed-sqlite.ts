@@ -295,6 +295,22 @@ function createDefaultUserStates(): any[] {
         syncAcrossDevices: true,
         theme: 'matrix'  // Custom preference for theme persistence
       }
+    },
+    {
+      id: 'us-anonymous-browser',
+      userId: '9959e413-31b5-4915-ba0a-884dc3015f4b',  // Anonymous user from session
+      deviceId: 'browser-anonymous',
+      contentState: {
+        openItems: [],
+        lastUpdatedAt: new Date().toISOString()
+      },
+      preferences: {
+        maxOpenTabs: 10,
+        autoCloseAfterDays: 30,
+        rememberScrollPosition: true,
+        syncAcrossDevices: true,
+        theme: 'base'  // Default theme for anonymous users
+      }
     }
   ];
 }
