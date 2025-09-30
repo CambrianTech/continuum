@@ -2,6 +2,7 @@ import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTy
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import type { BaseUser } from '../../../system/user/shared/BaseUser';
+import type { JTAGConnectionContextInput } from '../../../system/core/client/shared/JTAGClient';
 
 /**
  * Entity type and directory categories - passed in from connect() or caller
@@ -49,6 +50,7 @@ export interface SessionErrorResponse extends BaseResponsePayload {
 export interface CreateSessionParams extends SessionParams, SessionIdentity {
   readonly operation: 'create';
   readonly isShared: boolean; // Whether session is shared across users
+  readonly connectionContext?: JTAGConnectionContextInput; // Connection context with agentInfo for detection
 }
 
 export interface CreateSessionResult extends SessionResult {
