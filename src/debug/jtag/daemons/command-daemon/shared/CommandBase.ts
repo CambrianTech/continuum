@@ -37,16 +37,110 @@ export interface ICommandDaemon {
 }
 
 /**
+ * Interface that enforces static commandName property
+ * This ensures all command classes declare their command name
+ */
+export interface CommandConstructor {
+  readonly commandName: string;
+  executeIn<TParams extends CommandParams, TResult extends CommandResult>(
+    environment: 'browser' | 'server',
+    params: Omit<TParams, 'context' | 'sessionId'>
+  ): Promise<TResult>;
+}
+
+/**
  * Base class for all commands with type-safe parameters and results
+ *
+ * REQUIRED: Subclasses MUST declare:
+ *   static readonly commandName = 'command-name';
+ *
+ * This enables the elegant static execute() API
  */
 export abstract class CommandBase<TParams extends CommandParams = CommandParams, TResult extends CommandResult = CommandResult> extends JTAGModule {
   protected commander: ICommandDaemon;
   protected subpath: string; // Command subpath (e.g., "screenshot")
 
+  // Enforce that subclasses have static commandName
+  static readonly commandName: string;
+
   constructor(name: string, context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super(name, context);
     this.subpath = subpath;
     this.commander = commander;
+  }
+
+  /**
+   * Protected: Subclasses can override to declare their natural environment
+   *
+   * Examples:
+   *   - ScreenshotCommand: 'browser' (needs DOM)
+   *   - FileSaveCommand: 'server' (needs filesystem)
+   *   - DataReadCommand: 'auto' (works anywhere)
+   */
+  protected static get naturalEnvironment(): 'browser' | 'server' | 'auto' {
+    return 'auto';
+  }
+
+  /**
+   * Static execute - Universal command execution from anywhere
+   *
+   * Works in both browser and server with zero boilerplate:
+   * ```typescript
+   * const result = await ScreenshotCommand.execute({ querySelector: 'body' });
+   * ```
+   *
+   * Subclasses inherit this automatically - just declare commandName
+   */
+  static async execute<TParams extends CommandParams, TResult extends CommandResult>(
+    this: CommandConstructor,
+    params: Omit<TParams, 'context' | 'sessionId'>
+  ): Promise<TResult> {
+    const { Commands } = await import('../../../system/core/client/shared/Commands');
+    return await Commands.execute<TParams, TResult>(
+      this.commandName,
+      params
+    );
+  }
+
+  /**
+   * Static executeIn - Force execution in specific environment
+   *
+   * For cross-environment calls from within commands:
+   * ```typescript
+   * // From browser, call server version explicitly
+   * const result = await FileSaveCommand.executeIn('server', { filepath, content });
+   * ```
+   */
+  static async executeIn<TParams extends CommandParams, TResult extends CommandResult>(
+    this: CommandConstructor,
+    environment: 'browser' | 'server',
+    params: Omit<TParams, 'context' | 'sessionId'>
+  ): Promise<TResult> {
+    const { Commands } = await import('../../../system/core/client/shared/Commands');
+    return await Commands.execute<TParams, TResult>(
+      this.commandName,
+      { ...params, targetEnvironment: environment } as any
+    );
+  }
+
+  /**
+   * Static executeOnServer - Shorthand for server execution
+   */
+  static async executeOnServer<TParams extends CommandParams, TResult extends CommandResult>(
+    this: CommandConstructor,
+    params: Omit<TParams, 'context' | 'sessionId'>
+  ): Promise<TResult> {
+    return this.executeIn<TParams, TResult>('server', params);
+  }
+
+  /**
+   * Static executeOnBrowser - Shorthand for browser execution
+   */
+  static async executeOnBrowser<TParams extends CommandParams, TResult extends CommandResult>(
+    this: CommandConstructor,
+    params: Omit<TParams, 'context' | 'sessionId'>
+  ): Promise<TResult> {
+    return this.executeIn<TParams, TResult>('browser', params);
   }
 
   /**

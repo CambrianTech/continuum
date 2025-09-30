@@ -16,7 +16,8 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import { WorkingDirConfig } from '../../../../system/core/config/WorkingDirConfig';
 
 export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveResult> {
-  
+  static readonly commandName = 'file/save';
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('file-save', context, subpath, commander);
   }

@@ -21,7 +21,8 @@ const DEFAULT_FORMAT = 'png';
 const DEFAULT_QUALITY = 0.9;
 
 export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
-  
+  static readonly commandName = 'screenshot';
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('screenshot', context, subpath, commander);
   }
