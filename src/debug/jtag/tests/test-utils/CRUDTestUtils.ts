@@ -15,7 +15,7 @@ function executeJtagWithTimeout(command: string, timeoutMs: number = 5000): Reco
   try {
     const output = execSync(`./jtag ${command}`, {
       encoding: 'utf8',
-      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+      cwd: process.cwd(),
       timeout: timeoutMs
     });
 
@@ -81,7 +81,7 @@ export async function runJtagCommand(command: string): Promise<Record<string, un
   try {
     output = execSync(`./jtag ${command}`, {
       encoding: 'utf8',
-      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
+      cwd: process.cwd()
     });
   } catch (error: any) {
     // execSync throws on non-zero exit codes, but JTAG may still return valid JSON

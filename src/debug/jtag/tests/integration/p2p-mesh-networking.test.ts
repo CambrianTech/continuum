@@ -57,7 +57,7 @@ export class P2PIntegrationTestSuite {
 
     return new Promise((resolve, reject) => {
       const process = spawn('npm', ['run', 'system:start'], {
-        cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+        cwd: process.cwd(),
         env,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe']

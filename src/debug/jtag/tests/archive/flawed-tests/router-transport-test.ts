@@ -158,7 +158,7 @@ async function testRouterTransports() {
     // Test 7: Verify file system logging worked
     console.log('\n📋 Test 3.7: Verify messages reached file system');
     
-    const logDir = '/Volumes/FlashGordon/cambrian/continuum/.continuum/jtag/logs';
+    const logDir = process.cwd() + '/../.continuum/jtag/logs';
     const serverLogPath = join(logDir, 'server.log.txt');
     
     if (existsSync(serverLogPath)) {

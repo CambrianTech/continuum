@@ -221,7 +221,7 @@ export class ComprehensiveGridDistributedTester {
     return new Promise((resolve, reject) => {
       const startTime = performance.now();
       const process = spawn('npm', ['run', 'system:start:test'], {
-        cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+        cwd: process.cwd(),
         env,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe']

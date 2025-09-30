@@ -99,7 +99,7 @@ async function testSimpleWebSocket() {
     // Test 4: Check if message was logged to files
     console.log('\n📋 Test 2C.4: Verify message was logged');
     
-    const logDir = '/Volumes/FlashGordon/cambrian/continuum/.continuum/jtag/logs';
+    const logDir = process.cwd() + '/../.continuum/jtag/logs';
     const serverLogPath = join(logDir, 'server.log.txt');
     
     if (existsSync(serverLogPath)) {
