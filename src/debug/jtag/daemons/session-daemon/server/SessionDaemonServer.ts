@@ -54,10 +54,10 @@ const createSessionErrorResponse = (
 
 export class SessionDaemonServer extends SessionDaemon {
   private sessions: SessionMetadata[] = []; // In-memory active sessions for server
-  private sessionTimeouts: Map<UUID, NodeJS.Timeout> = new Map(); // Timeout tracking
+  private sessionTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map(); // Timeout tracking
   private readonly SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes for ephemeral sessions
   private readonly BROWSER_SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours for browser sessions
-  private cleanupInterval?: NodeJS.Timeout;
+  private cleanupInterval?: ReturnType<typeof setInterval>;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -123,7 +123,7 @@ export class SessionDaemonServer extends SessionDaemon {
         
         // console.debug(`📖 ${this.toString()}: Loaded ${this.sessions.length} sessions from ${metadataPath} with timeout restoration`);
       }
-    } catch (error) {
+    } catch {
       // File doesn't exist or is invalid, start with empty sessions
       // console.debug(`📝 ${this.toString()}: No existing session metadata found, starting fresh`);
       this.sessions = [];
@@ -194,11 +194,10 @@ export class SessionDaemonServer extends SessionDaemon {
   /**
    * Expire a session due to timeout or abandonment
    */
-  private async expireSession(sessionId: UUID, reason: string): Promise<void> {
+  private async expireSession(sessionId: UUID, _reason: string): Promise<void> {
     try {
       const sessionIndex = this.sessions.findIndex(s => s.sessionId === sessionId);
       if (sessionIndex !== -1) {
-        const session = this.sessions[sessionIndex];
         // console.debug(`💀 ${this.toString()}: Expiring ${session.isShared ? 'shared' : 'ephemeral'} session ${sessionId} (${reason})`);
         
         // Mark as inactive and remove from memory
@@ -278,9 +277,8 @@ export class SessionDaemonServer extends SessionDaemon {
     }
     
     // Clear all session timeouts
-    for (const [sessionId, timeout] of this.sessionTimeouts) {
+    for (const timeout of this.sessionTimeouts.values()) {
       clearTimeout(timeout);
-      // console.debug(`⏲️ ${this.toString()}: Cleared timeout for session ${sessionId}`);
     }
     this.sessionTimeouts.clear();
     
