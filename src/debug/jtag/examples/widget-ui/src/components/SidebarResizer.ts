@@ -1,7 +1,12 @@
 /**
  * SidebarResizer - Draggable resizer for desktop layout
- * Handles sidebar width with localStorage persistence
+ * Handles sidebar width with UIPreferencesEntity persistence
  */
+import { Commands } from '../../../../system/core/client/shared/Commands';
+import type { UIPreferencesEntity } from '../../../../system/data/entities/UIPreferencesEntity';
+import type { DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
+import type { DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
+
 interface SidebarResizedDetail {
     width: number;
 }
@@ -17,10 +22,10 @@ class SidebarResizer extends HTMLElement {
     private startX: number = 0;
     private startWidth: number = 0;
     private currentWidth?: number;
-    private readonly minWidth: number = 150;
-    private readonly maxWidth: number = 500;
-    private readonly defaultWidth: number = 250;
-    private readonly storageKey: string = 'continuum-sidebar-width';
+    private readonly minWidth: number = 100;
+    private readonly maxWidth: number = 800;
+    private readonly defaultWidth: number = 400;
+    private readonly uiPrefsId: string = 'browser-ui-preferences';
     
     // Event handler references for proper cleanup
     private boundMouseMove?: (e: MouseEvent) => void;
@@ -43,11 +48,17 @@ class SidebarResizer extends HTMLElement {
         this.removeEventListeners();
     }
 
-    private loadSavedWidth(): void {
+    private async loadSavedWidth(): Promise<void> {
         try {
-            const savedWidth = localStorage.getItem(this.storageKey);
-            if (savedWidth) {
-                const width = parseInt(savedWidth, 10);
+            // Try to load UIPreferencesEntity from localStorage
+            const result = await Commands.execute<DataReadResult<UIPreferencesEntity>>('data/read', {
+                collection: 'UIPreferences',
+                id: this.uiPrefsId,
+                backend: 'browser'
+            });
+
+            if (result.success && result.found && result.data) {
+                const width = result.data.layout?.sidebarWidth ?? this.defaultWidth;
                 if (width >= this.minWidth && width <= this.maxWidth) {
                     this.applySidebarWidth(width);
                     return;
@@ -57,15 +68,71 @@ class SidebarResizer extends HTMLElement {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             console.warn('SidebarResizer: Failed to load saved width:', errorMessage);
         }
-        
+
+        // Fallback: check old localStorage key for migration
+        try {
+            const oldWidth = localStorage.getItem('continuum-sidebar-width');
+            if (oldWidth) {
+                const width = parseInt(oldWidth, 10);
+                if (!isNaN(width) && width >= this.minWidth && width <= this.maxWidth) {
+                    console.log('🔄 SidebarResizer: Migrating from old localStorage');
+                    this.applySidebarWidth(width);
+                    await this.saveWidth(width); // Save to new format
+                    return;
+                }
+            }
+        } catch {
+            // Ignore migration errors
+        }
+
         // Use default width if no valid saved width
         this.applySidebarWidth(this.defaultWidth);
     }
 
-    private saveWidth(width: number): void {
+    private async saveWidth(width: number): Promise<void> {
         try {
-            localStorage.setItem(this.storageKey, width.toString());
-            //console.log('🔧 SidebarResizer: Saved width:', width);
+            // Try to read first to see if entity exists
+            const readResult = await Commands.execute<DataReadResult<UIPreferencesEntity>>('data/read', {
+                collection: 'UIPreferences',
+                id: this.uiPrefsId,
+                backend: 'browser'
+            });
+
+            if (readResult.success && readResult.found) {
+                // Entity exists, update it
+                await Commands.execute<DataUpdateResult<UIPreferencesEntity>>('data/update', {
+                    collection: 'UIPreferences',
+                    id: this.uiPrefsId,
+                    data: {
+                        layout: {
+                            sidebarWidth: width
+                        }
+                    },
+                    backend: 'browser'
+                });
+            } else {
+                // Entity doesn't exist, create it
+                await Commands.execute('data/create', {
+                    collection: 'UIPreferences',
+                    data: {
+                        id: this.uiPrefsId,
+                        deviceId: 'default',
+                        layout: {
+                            sidebarWidth: width
+                        },
+                        theme: {
+                            name: 'dark'
+                        },
+                        behavior: {
+                            enableAnimations: true,
+                            enableSounds: false,
+                            autoSave: true,
+                            autoSaveIntervalMs: 5000
+                        }
+                    },
+                    backend: 'browser'
+                });
+            }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             console.warn('SidebarResizer: Failed to save width:', errorMessage);
@@ -209,21 +276,23 @@ class SidebarResizer extends HTMLElement {
     private endDrag(): void {
         if (this.isDragging) {
             this.isDragging = false;
-            
+
             // Remove dragging feedback
             document.body.style.cursor = '';
-            
+
             // Remove dragging class from root
             document.documentElement.classList.remove('sidebar-dragging');
-            
+
             // Remove visual feedback on resizer
             this.shadowRoot?.host.classList.remove('dragging');
-            
-            // Save the final width
+
+            // Save the final width (async, fire and forget)
             if (this.currentWidth !== undefined) {
-                this.saveWidth(this.currentWidth);
+                this.saveWidth(this.currentWidth).catch(err => {
+                    console.error('SidebarResizer: Failed to save width:', err);
+                });
             }
-            
+
             console.log('🔧 SidebarResizer: Ended drag, final width:', this.currentWidth);
         }
     }
@@ -277,14 +346,16 @@ class SidebarResizer extends HTMLElement {
         return this.currentWidth || this.defaultWidth;
     }
 
-    setWidth(width: number): void {
+    async setWidth(width: number): Promise<void> {
         const clampedWidth = Math.max(this.minWidth, Math.min(this.maxWidth, width));
         this.applySidebarWidth(clampedWidth);
-        this.saveWidth(clampedWidth);
+        await this.saveWidth(clampedWidth);
     }
 
     resetToDefault(): void {
-        this.setWidth(this.defaultWidth);
+        this.setWidth(this.defaultWidth).catch(err => {
+            console.error('SidebarResizer: Failed to reset width:', err);
+        });
     }
 
     getWidthLimits(): WidthLimits {

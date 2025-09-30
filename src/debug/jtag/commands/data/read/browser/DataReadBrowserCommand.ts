@@ -6,11 +6,11 @@
 
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
-import { createDataReadResultFromParams } from '../shared/DataReadTypes';
 import { DataReadCommand } from '../shared/DataReadCommand';
 import { LocalStorageDataBackend } from '../../../../daemons/data-daemon/browser/LocalStorageDataBackend';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
+import { createDataReadResultFromParams } from '../shared/DataReadTypes';
 
 export class DataReadBrowserCommand extends DataReadCommand<BaseEntity> {
 
@@ -18,7 +18,7 @@ export class DataReadBrowserCommand extends DataReadCommand<BaseEntity> {
     super('data-read', context, subpath, commander);
   }
 
-  protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult> {
+  protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult<BaseEntity>> {
     console.log(`🗄️ BROWSER: Reading ${params.collection}/${params.id} from localStorage`);
 
     try {

@@ -36,11 +36,8 @@ export abstract class BaseDataCommand<
       backend: params.backend ?? 'server'
     } as P;
 
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: BaseDataCommand.execute - context.environment="${this.context.environment}", params.backend="${effectiveParams.backend}"`);
-
     // If we're not in the requested environment, delegate
     if (this.context.environment !== effectiveParams.backend) {
-      console.log(`🗄️ ${this.constructor.name}: Delegating to ${effectiveParams.backend}`);
       return await this.remoteExecute(effectiveParams);
     }
 

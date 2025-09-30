@@ -19,7 +19,7 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
     super('data-update', context, subpath, commander);
   }
 
-  protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult> {
+  protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     const collection = params.collection;
     console.debug(`🔄 DATA UPDATE: Updating ${collection}/${params.id} entity`);
 

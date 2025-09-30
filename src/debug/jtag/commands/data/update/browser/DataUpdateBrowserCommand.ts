@@ -18,7 +18,7 @@ export class DataUpdateBrowserCommand extends DataUpdateCommand<BaseEntity> {
     super('data-update', context, subpath, commander);
   }
 
-  protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult> {
+  protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     console.log(`🔄 BROWSER: Updating ${params.collection}/${params.id} in localStorage`);
 
     try {

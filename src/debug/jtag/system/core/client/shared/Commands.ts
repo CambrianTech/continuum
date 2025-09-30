@@ -10,30 +10,27 @@ import type { CommandParams, CommandResult } from '../../types/JTAGTypes';
 
 export class Commands {
   /**
-   * Execute a command with clean interface
+   * Execute a command with clean interface - unwraps CommandResponse metadata
+   *
+   * Generic pattern: <T extends CommandParams, U extends CommandResult>
+   * - T: Input params type (unused, kept for compatibility)
+   * - U: Output result type (what you get back)
    */
-  static async execute<P extends CommandParams, R extends CommandResult>(
+  static async execute<T extends CommandParams, U extends CommandResult>(
     command: string,
-    params?: Omit<P, 'context' | 'sessionId'> | P
-  ): Promise<R> {
-    try {
-      // Get the shared JTAG client instance (works in both browser and server)
-      const jtagClient = await JTAGClient.sharedInstance;
+    params?: Omit<T, 'context' | 'sessionId'>
+  ): Promise<U> {
+    // Get the shared JTAG client instance (works in both browser and server)
+    const jtagClient = await JTAGClient.sharedInstance;
 
-      // Auto-inject context and sessionId if not already provided
-      const finalParams: CommandParams = {
-        context: jtagClient.context,
-        sessionId: jtagClient.sessionId,
-        ...(params || {})
-      };
+    // Auto-inject context and sessionId
+    const finalParams = {
+      context: jtagClient.context,
+      sessionId: jtagClient.sessionId,
+      ...(params || {})
+    } as T;
 
-      // Use the JTAG client's elegant daemon interface for command execution
-      const result = await jtagClient.daemons.commands.execute<CommandParams, R>(command, finalParams);
-
-      return result;
-    } catch (error) {
-      console.error(`❌ Commands: Command ${command} failed:`, error);
-      throw error;
-    }
+    // Execute and get typed result (unwrapped by daemons.commands.execute)
+    return await jtagClient.daemons.commands.execute<T, U>(command, finalParams);
   }
 }
