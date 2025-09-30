@@ -181,10 +181,113 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   protected updateClientSessionStorage(sessionId: UUID): void {
     this.setSessionId(sessionId);
-    
+
     // If using local connection, update the local system's ConsoleDaemon to use client session
     if (this.connection instanceof LocalConnection) {
       this.updateSystemConsoleDaemon();
+    }
+
+    // Initialize UserState for browser clients (persistence for theme, preferences, etc.)
+    this.initializeUserState().catch(error => {
+      console.error('❌ JTAGClientBrowser: Failed to initialize UserState:', error);
+    });
+  }
+
+  private userStateId: UUID | null = null;
+
+  /**
+   * Get UserState ID for this browser client
+   * Used by widgets to update preferences without creating entities
+   */
+  public getUserStateId(): UUID | null {
+    return this.userStateId;
+  }
+
+  /**
+   * Initialize or load UserState for browser persistence
+   * Called during connection after session is established
+   */
+  private async initializeUserState(): Promise<void> {
+    try {
+      console.log('🔧 JTAGClientBrowser: Initializing UserState...');
+
+      // Get persistent device identity (encrypted in localStorage)
+      const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
+      const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
+
+      console.log(`🔧 JTAGClientBrowser: Using device ${identity.deviceId.substring(0, 12)}... user ${identity.userId.substring(0, 8)}...`);
+
+      // Try to load existing UserState from localStorage
+      const { LocalStorageDataBackend } = await import('../../../../daemons/data-daemon/browser/LocalStorageDataBackend');
+
+      // Get all UserState entities for this device
+      const allKeys = Object.keys(localStorage).filter(key =>
+        key.startsWith('continuum-entity-UserState:')
+      );
+
+      console.log(`🔧 JTAGClientBrowser: Found ${allKeys.length} UserState entities in localStorage`);
+
+      // Try to find matching UserState for this deviceId
+      let foundUserState = null;
+      for (const key of allKeys) {
+        try {
+          const data = localStorage.getItem(key);
+          if (data) {
+            const parsed = JSON.parse(data);
+            if (parsed.entity?.deviceId === identity.deviceId) {
+              foundUserState = parsed.entity;
+              console.log(`✅ JTAGClientBrowser: Found existing UserState ${foundUserState.id.substring(0, 8)}...`);
+              break;
+            }
+          }
+        } catch (e) {
+          // Skip malformed entries
+        }
+      }
+
+      if (foundUserState) {
+        // Use existing UserState
+        this.userStateId = foundUserState.id;
+        const themeInfo = foundUserState.preferences?.theme || 'unknown';
+        console.log(`✅ JTAGClientBrowser: Loaded UserState ${foundUserState.id.substring(0, 8)}... (theme: ${themeInfo})`);
+      } else {
+        // Create new UserState with defaults
+        console.log('🔧 JTAGClientBrowser: No existing UserState found, creating new one');
+
+        const { generateUUID } = await import('../../types/CrossPlatformUUID');
+        this.userStateId = generateUUID();
+
+        // Import UserStateEntity to create proper entity instance
+        const { UserStateEntity } = await import('../../../data/entities/UserStateEntity');
+        const newUserState = new UserStateEntity();
+        newUserState.id = this.userStateId;
+        newUserState.userId = identity.userId;
+        newUserState.deviceId = identity.deviceId;
+        newUserState.preferences = {
+          maxOpenTabs: 10,
+          autoCloseAfterDays: 30,
+          rememberScrollPosition: true,
+          syncAcrossDevices: false
+        };
+        newUserState.contentState = {
+          openItems: [],
+          lastUpdatedAt: new Date()
+        };
+        newUserState.createdAt = new Date();
+        newUserState.updatedAt = new Date();
+
+        const result = await LocalStorageDataBackend.create('UserState', newUserState);
+
+        if (result.success) {
+          console.log(`✅ JTAGClientBrowser: Created new UserState ${this.userStateId.substring(0, 8)}...`);
+        } else {
+          console.error(`❌ JTAGClientBrowser: Failed to create UserState:`, result.error);
+          this.userStateId = null;
+        }
+      }
+    } catch (error) {
+      console.error('❌ JTAGClientBrowser: UserState initialization failed:', error);
+      this.userStateId = null;
     }
   }
 

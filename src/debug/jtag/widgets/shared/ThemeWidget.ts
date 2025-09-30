@@ -427,11 +427,11 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Save theme preference using hybrid persistence (localStorage + UserState)
+   * Save theme preference to UserState (initialized by JTAGClient during connection)
    */
   private async saveThemeToUserState(themeName: string): Promise<void> {
     try {
-      console.log(`🔧 ThemeWidget: Saving theme '${themeName}' using hybrid persistence`);
+      console.log(`🔧 ThemeWidget: Saving theme '${themeName}' to UserState`);
 
       // 1. Save to localStorage immediately for instant persistence
       if (LocalStorageStateManager.isAvailable()) {
@@ -443,40 +443,33 @@ export class ThemeWidget extends BaseWidget {
         }
       }
 
-      // 2. Save to UserState for database persistence and cross-device sync
-      // Get current user ID using the same approach as ThemeSetBrowserCommand
-      const userId = stringToUUID('anonymous');
+      // 2. Update UserState (initialized by JTAGClient during connection)
+      const { JTAGClient } = await import('../../system/core/client/shared/JTAGClient');
+      const jtagClient = await JTAGClient.sharedInstance;
+      const userStateId = jtagClient.getUserStateId();
 
-      // Find the user's UserState to update theme preference
-      const userStates = await Commands.execute('data/list', {
-        collection: 'UserState',
-        filter: {
-          userId: userId
-        }
-      }) as DataListResult<UserStateEntity>;
-
-      if (userStates.success && userStates.items && userStates.items.length > 0) {
-        const userState = userStates.items[0];
-
-        // Update the theme in preferences field using proper typing
-        const updatedPreferences = {
-          ...userState.preferences,
-          theme: themeName
-        };
-
-        await Commands.execute('data/update', {
-          collection: 'UserState',
-          id: userState.id,
-          data: {
-            preferences: updatedPreferences,
-            updatedAt: new Date().toISOString()
-          }
-        });
-
-        console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState database`);
-      } else {
-        console.warn('⚠️ ThemeWidget: No UserState found for database persistence');
+      if (!userStateId) {
+        console.warn('⚠️ ThemeWidget: No UserState available - theme saved to localStorage only');
+        return;
       }
+
+      console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
+
+      // Update existing UserState's preferences
+      await Commands.execute('data/update', {
+        collection: 'UserState',
+        id: userStateId,
+        backend: 'browser',
+        data: {
+          preferences: {
+            theme: themeName
+          },
+          updatedAt: new Date().toISOString()
+        }
+      });
+
+      console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState`);
+
 
     } catch (error) {
       console.error('❌ ThemeWidget: Failed to save theme using hybrid persistence:', error);
@@ -500,18 +493,23 @@ export class ThemeWidget extends BaseWidget {
         console.log('ℹ️ ThemeWidget: No theme found in localStorage, trying UserState');
       }
 
-      // 2. Fall back to UserState for database persistence
-      // Get userId from window.jtag client - falls back to ANONYMOUS_USER
-      const jtagClient = (window as any).jtag;
-      const { SYSTEM_SCOPES } = await import('../../system/core/types/SystemScopes');
-      const userId = jtagClient?.userId ?? SYSTEM_SCOPES.ANONYMOUS_USER;
+      // 2. Fall back to UserState from localStorage for persistence
+      // Get persistent device identity (encrypted in localStorage)
+      const { BrowserDeviceIdentity } = await import('../../system/core/browser/BrowserDeviceIdentity');
+      const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
 
-      // Find the user's UserState to get theme preference
+      console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
+
+      // Find the user's UserState in localStorage (get most recent first)
       const userStates = await Commands.execute('data/list', {
         collection: 'UserState',
         filter: {
-          userId: userId
-        }
+          userId: identity.userId,
+          deviceId: identity.deviceId
+        },
+        backend: 'browser', // Use localStorage backend
+        orderBy: [{ field: 'updatedAt', direction: 'desc' }],
+        limit: 1
       }) as DataListResult<UserStateEntity>;
 
       if (userStates.success && userStates.items && userStates.items.length > 0) {

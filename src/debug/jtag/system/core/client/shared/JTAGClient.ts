@@ -474,6 +474,14 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
 
   /**
+   * Get UserState ID for this client (browser clients only)
+   * Returns null for server clients that don't have UserState
+   */
+  public getUserStateId(): UUID | null {
+    return null; // Default: server clients don't have UserState
+  }
+
+  /**
    * Update client-specific session storage - overridden by JTAGClientBrowser for sessionStorage
    */
   protected updateClientSessionStorage(sessionId: UUID): void {
