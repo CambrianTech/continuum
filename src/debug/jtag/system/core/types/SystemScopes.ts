@@ -5,7 +5,7 @@
  * where some operations need to work at both system level and session level.
  */
 
-import { type UUID } from './CrossPlatformUUID';
+import { stringToUUID, type UUID } from './CrossPlatformUUID';
 
 /**
  * Default display names for bootstrapping
@@ -25,7 +25,7 @@ export const SYSTEM_SCOPES = {
    * Logs stored in: .continuum/jtag/sessions/system/{SYSTEM_UUID}/logs/
    */
   SYSTEM: '00000000-0000-0000-0000-000000000000' as UUID,
-  
+
   /**
    * Bootstrap session for clients before SessionDaemon assigns real session
    * Used for: client initialization, session requests, temporary operations
@@ -33,7 +33,15 @@ export const SYSTEM_SCOPES = {
    * Format: DEADBEEF-style hex that spells "UNKNOWN SESSION" using hex digits
    * Uses only valid hex digits: 0-9, A-F (case insensitive)
    */
-  UNKNOWN_SESSION: 'deadbeef-cafe-4bad-8ace-5e551000c0de' as UUID
+  UNKNOWN_SESSION: 'deadbeef-cafe-4bad-8ace-5e551000c0de' as UUID,
+
+  /**
+   * Anonymous user for clients before user identification
+   * Used for: first-time connections, theme preferences, temporary state
+   * This user should be replaced when user logs in or creates profile
+   * Generated deterministically from 'anonymous' string for consistency
+   */
+  ANONYMOUS_USER: stringToUUID('anonymous')
 } as const;
 
 /**
@@ -49,6 +57,14 @@ export function isUnknownSession(sessionId: UUID): boolean {
 
 export function isBootstrapSession(sessionId: UUID): boolean {
   return isSystemUUID(sessionId) || isUnknownSession(sessionId);
+}
+
+export function isAnonymousUser(userId: UUID): boolean {
+  return userId === SYSTEM_SCOPES.ANONYMOUS_USER;
+}
+
+export function isBootstrapUser(userId: UUID): boolean {
+  return isAnonymousUser(userId);
 }
 
 /**
