@@ -8,6 +8,13 @@
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { SessionDaemon} from '../shared/SessionDaemon';
+import { HumanUser } from '../../../system/user/shared/HumanUser';
+import { AgentUser } from '../../../system/user/shared/AgentUser';
+import { PersonaUser } from '../../../system/user/shared/PersonaUser';
+import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
+import { UserEntity } from '../../../system/data/entities/UserEntity';
+import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
+import type { BaseUser } from '../../../system/user/shared/BaseUser';
 import {  
   type SessionMetadata, 
   type CreateSessionParams, 
@@ -345,6 +352,59 @@ export class SessionDaemonServer extends SessionDaemon {
       }
     }
 
+    /**
+     * Create User object with entity and state
+     * Uses appropriate storage backend based on category
+     */
+    private async createUser(params: CreateSessionParams): Promise<BaseUser> {
+      const userId = params.userId ?? generateUUID();
+      const deviceId = `device-${generateUUID()}`;
+
+      // Create UserEntity
+      const userEntity = new UserEntity();
+      userEntity.id = userId;
+      userEntity.displayName = params.displayName;
+      userEntity.type = params.category === 'persona' ? 'persona' :
+                        params.category === 'agent' ? 'agent' : 'human';
+
+      // Create UserStateEntity with defaults
+      const userState = new UserStateEntity();
+      userState.id = generateUUID();
+      userState.userId = userId;
+      userState.deviceId = deviceId;
+      userState.preferences = {
+        maxOpenTabs: 10,
+        autoCloseAfterDays: 30,
+        rememberScrollPosition: true,
+        syncAcrossDevices: false
+      };
+      userState.contentState = {
+        openItems: [],
+        lastUpdatedAt: new Date()
+      };
+
+      // Select storage backend based on category
+      // TODO: Browser clients will use LocalStorageStateBackend (initialized by browser)
+      // TODO: Personas will use SQLiteStateBackend with dedicated database
+      // For now: use MemoryStateBackend for all (ephemeral)
+      const storage = new MemoryStateBackend();
+
+      // Create appropriate User subclass
+      let user: BaseUser;
+      if (params.category === 'persona') {
+        user = new PersonaUser(userEntity, userState, storage, userId);
+      } else if (params.category === 'agent') {
+        user = new AgentUser(userEntity, userState, storage);
+      } else {
+        user = new HumanUser(userEntity, userState, storage);
+      }
+
+      // Load state from storage (will be empty for new users)
+      await user.loadState();
+
+      return user;
+    }
+
     public async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
         if (params.isShared) {
           // Check for existing shared session
@@ -365,29 +425,33 @@ export class SessionDaemonServer extends SessionDaemon {
 
     private async createSession(params: CreateSessionParams): Promise<CreateSessionResult> {
       // console.debug(`⚡ ${this.toString()}: Creating new session:`, params);
-      
+
       // Always generate a new UUID for actual sessions - never use bootstrap IDs
       const actualSessionId = isBootstrapSession(params.sessionId) ? generateUUID() : params.sessionId;
-      
-      const newSession = {
+
+      // Create User object with entity and state
+      const user = await this.createUser(params);
+
+      const newSession: SessionMetadata = {
         sourceContext: params.context,
         sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,
         displayName: params.displayName,
-        userId: params.userId ?? generateUUID(),
+        userId: user.id, // Use userId from User object
         created: new Date(),
         lastActive: new Date(),
         isActive: true,
-        isShared: params.isShared // Use original isShared request
+        isShared: params.isShared, // Use original isShared request
+        user: user // Add User object to session
       };
 
       // console.debug(`✅ ${this.toString()}: New session created:`, newSession);
 
       this.sessions.push(newSession);
-      
+
       // Schedule expiry timeout for the new session
       this.scheduleSessionExpiry(newSession.sessionId, newSession.isShared);
-      
+
       // Persist session to per-project metadata file
       await this.saveSessionsToFile();
 
