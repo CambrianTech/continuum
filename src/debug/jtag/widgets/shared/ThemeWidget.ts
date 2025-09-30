@@ -501,8 +501,10 @@ export class ThemeWidget extends BaseWidget {
       }
 
       // 2. Fall back to UserState for database persistence
-      // Get current user ID using the same approach as ThemeSetBrowserCommand
-      const userId = stringToUUID('anonymous');
+      // Get userId from window.jtag client - falls back to ANONYMOUS_USER
+      const jtagClient = (window as any).jtag;
+      const { SYSTEM_SCOPES } = await import('../../system/core/types/SystemScopes');
+      const userId = jtagClient?.userId ?? SYSTEM_SCOPES.ANONYMOUS_USER;
 
       // Find the user's UserState to get theme preference
       const userStates = await Commands.execute('data/list', {

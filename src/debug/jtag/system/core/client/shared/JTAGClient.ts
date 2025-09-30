@@ -100,7 +100,8 @@ export interface JTAGClientConnectOptions {
   readonly enableFallback?: boolean;
   readonly maxRetries?: number;
   readonly retryDelay?: number;
-  readonly sessionId?: UUID; // Required session ID - client is authority
+  readonly sessionId?: UUID; // Optional session ID - defaults to UNKNOWN_SESSION
+  readonly userId?: UUID; // Optional user ID - defaults to ANONYMOUS_USER
   readonly context?: JTAGConnectionContextInput; // Agent detection context and other metadata
 }
 
@@ -145,6 +146,7 @@ export interface JTAGClientConnectionResult {
   client: JTAGClient;
   connectionType: 'local' | 'remote';
   sessionId: UUID;
+  userId: UUID;
   reason: string;
   localSystemAvailable: boolean;
   listResult: ListResult;
@@ -201,6 +203,11 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
   public get sessionId(): UUID {
     return this._session?.sessionId ?? SYSTEM_SCOPES.UNKNOWN_SESSION;
+  }
+
+  public get userId(): UUID {
+    // userId comes from session - session ties user and sessionId together
+    return this._session?.userId ?? SYSTEM_SCOPES.ANONYMOUS_USER;
   }
 
   /**
@@ -645,11 +652,12 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     
     console.log(`✅ JTAGClient: ${JTAG_BOOTSTRAP_MESSAGES.BOOTSTRAP_COMPLETE_PREFIX} ${listResult.totalCount} commands`);
     
-    return { 
-      client, 
+    return {
+      client,
       listResult,
       connectionType: client.connectionMetadata.connectionType,
       sessionId: client.sessionId,
+      userId: client.userId,
       reason: client.connectionMetadata.reason,
       localSystemAvailable: client.connectionMetadata.localSystemAvailable
     };

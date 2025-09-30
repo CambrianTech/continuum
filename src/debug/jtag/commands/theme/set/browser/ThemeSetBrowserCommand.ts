@@ -10,8 +10,6 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/client/shared/Commands';
 import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
-import type { UserEntity } from '../../../../system/data/entities/UserEntity';
-import { stringToUUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSetResult> {
   private themeStyleElement: HTMLStyleElement | null = null;
@@ -177,15 +175,10 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
     try {
       console.log(`🔧 ThemeSetBrowser: Saving theme '${themeName}' to UserState`);
 
-      // TODO: Implement proper user/get-current command
-      // For now, use hardcoded anonymous user ID (same for all fresh installs)
-      // This will be replaced with proper user identity management
-
-      const userId = stringToUUID('anonymous');
-      console.log(`🔧 ThemeSetBrowser: Using anonymous userId: ${userId}`);
-
-      // Create anonymous user record if it doesn't exist
-      await this.ensureAnonymousUserExists(userId);
+      // Get userId from window.jtag client - falls back to ANONYMOUS_USER if not available
+      const jtagClient = (window as any).jtag;
+      const userId = jtagClient?.userId ?? (await import('../../../../system/core/types/SystemScopes')).SYSTEM_SCOPES.ANONYMOUS_USER;
+      console.log(`🔧 ThemeSetBrowser: Using userId: ${userId}`);
 
       // Find the user's UserState to update theme preference
       const userStates = await Commands.execute('data/list', {
@@ -223,67 +216,4 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
     }
   }
 
-  /**
-   * Ensure anonymous user and UserState records exist for fresh installs
-   */
-  private async ensureAnonymousUserExists(userId: string): Promise<void> {
-    try {
-      // Check if anonymous user exists
-      const existingUsers = await Commands.execute('data/list', {
-        collection: 'User',
-        filter: { id: userId }
-      }) as DataListResult<UserEntity>;
-
-      if (!existingUsers.success || !existingUsers.items || existingUsers.items.length === 0) {
-        // Create anonymous user
-        await Commands.execute('data/create', {
-          collection: 'User',
-          data: {
-            id: userId,
-            type: 'human',
-            displayName: 'Anonymous User',
-            status: 'online',
-            lastActiveAt: new Date(),
-            capabilities: {
-              canSendMessages: true,
-              canReceiveMessages: true,
-              canCreateRooms: false,
-              canInviteOthers: false,
-              canModerate: false,
-              autoResponds: false,
-              providesContext: false,
-              canTrain: false,
-              canAccessPersonas: false
-            },
-            sessionsActive: []
-          }
-        });
-
-        // Create corresponding UserState with proper validation structure
-        await Commands.execute('state/create', {
-          collection: 'UserState',
-          data: {
-            userId: userId,
-            deviceId: 'browser-default',
-            contentState: {
-              openItems: [],
-              lastUpdatedAt: new Date()
-            },
-            preferences: {
-              maxOpenTabs: 10,
-              autoCloseAfterDays: 30,
-              rememberScrollPosition: true,
-              syncAcrossDevices: true,
-              theme: 'base'
-            }
-          },
-          userId: userId
-        });
-
-        console.log(`✅ ThemeSetBrowser: Created anonymous user and UserState: ${userId}`);
-      }
-    } catch (error) {
-      console.warn('⚠️ ThemeSetBrowser: Could not ensure anonymous user exists:', error);
-    }
-  }
 }
