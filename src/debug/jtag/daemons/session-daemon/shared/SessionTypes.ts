@@ -1,6 +1,7 @@
 import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
+import type { BaseUser } from '../../../system/user/shared/BaseUser';
 
 /**
  * Entity type and directory categories - passed in from connect() or caller
@@ -25,6 +26,7 @@ export interface SessionMetadata extends SessionIdentity {
   lastActive: Date; // Last time session was active
   sourceContext: JTAGContext;
   isShared: boolean;
+  user?: BaseUser; // User object with entity and state (optional for backwards compatibility)
 }
 
  /**

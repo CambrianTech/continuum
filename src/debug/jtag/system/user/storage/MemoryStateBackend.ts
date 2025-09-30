@@ -33,9 +33,8 @@ export class MemoryStateBackend implements IUserStateStorage {
     try {
       const key = this.createKey(state.userId, state.deviceId);
 
-      // Clone state to prevent external mutations
-      const cloned = { ...state };
-      this.states.set(key, cloned);
+      // Store reference (in-memory is isolated, no need to clone)
+      this.states.set(key, state);
 
       return { success: true };
     } catch (error) {
@@ -57,8 +56,8 @@ export class MemoryStateBackend implements IUserStateStorage {
       return null;
     }
 
-    // Clone state to prevent external mutations
-    return { ...state };
+    // Return reference (in-memory is isolated)
+    return state;
   }
 
   /**
