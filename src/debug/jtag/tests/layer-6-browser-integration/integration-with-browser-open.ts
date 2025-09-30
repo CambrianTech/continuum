@@ -26,7 +26,7 @@ interface IntegrationTestResults {
 
 const TEST_CONFIG = {
   testTimeout: 10000,
-  screenshotDirectory: '/Volumes/FlashGordon/cambrian/continuum/.continuum/jtag/screenshots',
+  screenshotDirectory: process.cwd() + '/../.continuum/jtag/screenshots',
   expectedScreenshots: ['integration-test-1.png', 'integration-test-widget.png']
 };
 

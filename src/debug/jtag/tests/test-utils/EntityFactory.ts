@@ -106,7 +106,7 @@ export async function createTestEntity(
     try {
       output = execSync(command, {
         encoding: 'utf8',
-        cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+        cwd: process.cwd(),
         stdio: 'pipe'
       });
     } catch (error: any) {
@@ -205,7 +205,7 @@ export const EntityFactory = {
       try {
         output = execSync(command, {
           encoding: 'utf8',
-          cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+          cwd: process.cwd(),
           stdio: 'pipe'
         });
       } catch (error: any) {

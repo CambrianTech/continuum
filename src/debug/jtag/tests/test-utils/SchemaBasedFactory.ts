@@ -77,7 +77,7 @@ function runJtagCommand(command: string): Record<string, unknown> {
   try {
     output = execSync(`./jtag ${command}`, {
       encoding: 'utf8',
-      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+      cwd: process.cwd(),
       stdio: 'pipe'
     });
   } catch (error: unknown) {

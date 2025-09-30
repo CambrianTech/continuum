@@ -48,7 +48,7 @@ async function testLogFileVerification() {
     // Test 3: Check log directory and files
     console.log('\n📋 Test 6.3: Check log directory and files');
     
-    const logDir = '/Volumes/FlashGordon/cambrian/continuum/.continuum/jtag/logs';
+    const logDir = process.cwd() + '/../.continuum/jtag/logs';
     
     if (!existsSync(logDir)) {
       throw new Error(`Log directory does not exist: ${logDir}`);

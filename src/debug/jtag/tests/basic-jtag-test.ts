@@ -47,7 +47,7 @@ async function testBasicJTAG() {
 
     // Test 4: Check log files were created
     console.log('\n📋 Test 1.4: Verify log files are created');
-    const logDir = '/Volumes/FlashGordon/cambrian/continuum/.continuum/jtag/logs';
+    const logDir = process.cwd() + '/../.continuum/jtag/logs';
     
     // Check for server.log.txt (basic logs)
     const serverLogPath = join(logDir, 'server.log.txt');

@@ -39,19 +39,8 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
 
         console.log(`✅ BROWSER EXEC: Success - result:`, result);
 
-        // FOLLOW SCREENSHOT PATTERN: Enrich params with result data before delegation
-        params.result = result;
-        params.executedAt = Date.now();
-        params.executedIn = 'browser';
-
-        // For cross-context execution, delegate to server with enriched params (like screenshot)
-        if (params.context.uuid !== this.context.uuid) {
-          console.log(`🔀 BROWSER EXEC: Cross-context detected - delegating to server with result`);
-          return await this.remoteExecute(params);
-        }
-
-        // Same context - return directly
-        console.log(`✅ BROWSER EXEC: Same context - returning result directly`);
+        // Browser exec always returns result directly - no cross-context delegation
+        // (unlike screenshot which needs to send data back to requester)
         return createExecSuccessResult(result, 'browser', params, Date.now());
 
       } catch (error) {

@@ -29,7 +29,7 @@ async function runTests() {
     // Start the minimal server with real JTAG routing
     const { spawn } = require('child_process');
     const serverProcess = spawn('npx', ['tsx', 'minimal-server.ts'], {
-      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples',
+      cwd: process.cwd() + '/examples',
       stdio: 'pipe'
     });
     

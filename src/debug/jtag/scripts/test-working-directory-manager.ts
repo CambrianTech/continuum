@@ -26,7 +26,7 @@ async function testWorkingDirectoryManager(): Promise<void> {
     // Test 2: Explicit example configuration
     console.log('🎯 Test 2: Explicit example configuration');
     const exampleManager = WorkingDirectoryManager.createForProject(
-      '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+      process.cwd(),
       'widget-ui'
     );
     const exampleStructure = await exampleManager.getDirectoryStructure();
@@ -40,7 +40,7 @@ async function testWorkingDirectoryManager(): Promise<void> {
     console.log('🎪 Test 3: Session-aware configuration');
     const sessionId = uuidv4();
     const sessionManager = WorkingDirectoryManager.createForSession(
-      '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+      process.cwd(),
       sessionId,
       'test-bench'
     );
