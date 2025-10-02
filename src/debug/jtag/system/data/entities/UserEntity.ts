@@ -44,8 +44,8 @@ import type { DataListResult } from '../../../commands/data/list/shared/DataList
  * Supports three-tier citizen architecture through proper relational design
  */
 export class UserEntity extends BaseEntity {
-  // Single source of truth for collection name - used by both decorators and commands
-  static readonly collection = 'User';
+  // Single source of truth for collection name - must match COLLECTIONS.USERS
+  static readonly collection = 'users';
 
   @ForeignKeyField({ references: 'personas.id', nullable: true })
   personaId?: UUID;

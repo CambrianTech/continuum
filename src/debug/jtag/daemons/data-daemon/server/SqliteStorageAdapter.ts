@@ -81,14 +81,15 @@ export class SqlNamingConverter {
   }
 
   /**
-   * Convert collection name to table name (pluralized, snake_case)
+   * Convert collection name to table name (snake_case)
+   *
+   * ARCHITECTURE-RULES.md compliance:
+   * - Collection name IS the table name (no pluralization)
+   * - Entities define .collection property with correct name
+   * - No English grammar rules - use what's given
    */
   static toTableName(collectionName: string): string {
-    const snakeCase = this.toSnakeCase(collectionName);
-    // Simple pluralization - add 's' or 'es'
-    return snakeCase.endsWith('s') || snakeCase.endsWith('x') || snakeCase.endsWith('ch') || snakeCase.endsWith('sh')
-      ? `${snakeCase}es`
-      : `${snakeCase}s`;
+    return this.toSnakeCase(collectionName);
   }
 }
 

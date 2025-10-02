@@ -16,34 +16,23 @@
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { UserEntity } from '../../data/entities/UserEntity';
-import type { UserStateEntity } from '../../data/entities/UserStateEntity';
+import { UserStateEntity } from '../../data/entities/UserStateEntity';
 import type { IUserStateStorage } from '../storage/IUserStateStorage';
+import type { JTAGContext } from '../../core/types/JTAGTypes';
+import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
+import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
+import type { UserCapabilities } from '../../data/entities/UserEntity';
 
 /**
  * BaseUser abstract class
  * Every connected client has a User object with entity and state
  */
 export abstract class BaseUser {
-  /**
-   * User database entity (id, displayName, type, etc.)
-   */
-  public readonly entity: UserEntity;
-
-  /**
-   * User state (preferences, open tabs, UI state)
-   */
-  public readonly state: UserStateEntity;
-
-  /**
-   * Storage backend for persisting state
-   */
-  protected readonly storage: IUserStateStorage;
-
-  constructor(entity: UserEntity, state: UserStateEntity, storage: IUserStateStorage) {
-    this.entity = entity;
-    this.state = state;
-    this.storage = storage;
-  }
+  constructor(
+    public readonly entity: UserEntity,
+    public readonly state: UserStateEntity,
+    protected readonly storage: IUserStateStorage
+  ) {}
 
   /**
    * Get user ID
@@ -96,5 +85,17 @@ export abstract class BaseUser {
    */
   toString(): string {
     return `${this.constructor.name}(${this.displayName}, ${this.id.substring(0, 8)}...)`;
+  }
+
+
+  /**
+   * Get default state for new user
+   */
+  protected static getDefaultState(userId: UUID): UserStateEntity {
+    const state = new UserStateEntity();
+    state.id = userId;
+    state.userId = userId;
+    state.deviceId = 'server-device';
+    return state;
   }
 }

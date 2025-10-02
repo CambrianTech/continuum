@@ -51,7 +51,7 @@ import { BaseEntity } from './BaseEntity';
  */
 export class RoomEntity extends BaseEntity {
   // Single source of truth for collection name - used by both decorators and commands
-  static readonly collection = 'Room';
+  static readonly collection = 'rooms';
 
   @TextField({ index: true })
   name: string;
