@@ -51,6 +51,7 @@ export const DATABASE_CONFIG = {
  */
 export const COLLECTIONS = {
   USERS: 'users',
+  USER_STATES: 'user_states',
   ROOMS: 'rooms',
   CHAT_MESSAGES: 'chat_messages',
   ARTIFACTS: 'artifacts',

@@ -12,6 +12,7 @@ import { HumanUser } from '../../../system/user/shared/HumanUser';
 import { AgentUser } from '../../../system/user/shared/AgentUser';
 import { PersonaUser } from '../../../system/user/shared/PersonaUser';
 import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
+import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import type { BaseUser } from '../../../system/user/shared/BaseUser';
@@ -408,19 +409,26 @@ export class SessionDaemonServer extends SessionDaemon {
       };
 
       // Select storage backend based on user type
-      // Agents: Always use MemoryStateBackend (ephemeral, no persistence)
-      // Personas: TODO - Use SQLiteStateBackend with dedicated database
-      // Humans: TODO - Browser clients use LocalStorageStateBackend
-      const storage = new MemoryStateBackend();
-
-      if (userType === 'agent') {
+      let storage;
+      if (userType === 'persona') {
+        // Personas get dedicated SQLite database per persona
+        const personaDatabasePath = `.continuum/personas/${userId}/state.sqlite`;
+        storage = new SQLiteStateBackend(personaDatabasePath);
+        console.log(`🧬 SessionDaemon: Using SQLiteStateBackend for persona ${params.displayName} at ${personaDatabasePath}`);
+      } else if (userType === 'agent') {
+        // Agents use ephemeral memory storage
+        storage = new MemoryStateBackend();
         console.log(`🧠 SessionDaemon: Using MemoryStateBackend for agent ${params.displayName}`);
+      } else {
+        // Humans: TODO - Browser clients should use LocalStorageStateBackend
+        storage = new MemoryStateBackend();
+        console.log(`👤 SessionDaemon: Using MemoryStateBackend for human ${params.displayName}`);
       }
 
       // Create appropriate User subclass
       let user: BaseUser;
       if (userType === 'persona') {
-        user = new PersonaUser(userEntity, userState, storage, userId);
+        user = new PersonaUser(userEntity, userState, storage);
       } else if (userType === 'agent') {
         user = new AgentUser(userEntity, userState, storage);
       } else {

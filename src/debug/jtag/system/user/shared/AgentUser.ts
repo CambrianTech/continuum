@@ -7,28 +7,78 @@
  */
 
 import { AIUser } from './AIUser';
-import type { UserEntity } from '../../data/entities/UserEntity';
-import type { UserStateEntity } from '../../data/entities/UserStateEntity';
+import { UserEntity } from '../../data/entities/UserEntity';
+import { UserStateEntity } from '../../data/entities/UserStateEntity';
 import type { IUserStateStorage } from '../storage/IUserStateStorage';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { JTAGContext } from '../../core/types/JTAGTypes';
+import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
+import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
+import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import { MemoryStateBackend } from '../storage/MemoryStateBackend';
+import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 
 /**
  * AgentUser class for external AI agents
  * Used for Claude, GPT, and other external AI portal connections
  */
 export class AgentUser extends AIUser {
-  constructor(entity: UserEntity, state: UserStateEntity, storage: IUserStateStorage) {
-    super(entity, state, storage);
-
-    // Validate that entity type is 'agent'
-    if (entity.type !== 'agent') {
-      throw new Error(`AgentUser requires entity.type='agent', got '${entity.type}'`);
-    }
-  }
-
-  /**
-   * Agent-specific identification
-   */
   get isAgent(): boolean {
     return true;
   }
+
+  /**
+   * AgentUser creation recipe
+   *
+   * Simpler than PersonaUser - agents connect externally via WebSocket
+   * They don't need persistent server-side instances
+   */
+  static async create(
+    params: UserCreateParams,
+    context: JTAGContext,
+    router: JTAGRouter
+  ): Promise<AgentUser> {
+    console.log(`🤖 AgentUser.create: Creating agent "${params.displayName}"`);
+
+    // STEP 1: Create UserEntity in database
+    const userEntity = new UserEntity();
+    userEntity.type = 'agent';
+    userEntity.displayName = params.displayName;
+    userEntity.status = params.status ?? 'offline';  // Agents start offline until they connect
+    userEntity.lastActiveAt = new Date();
+    userEntity.capabilities = params.capabilities ?? getDefaultCapabilitiesForType('agent');
+    userEntity.sessionsActive = [];
+    // Optional extended fields for agents
+    if (params.provider) {
+      Object.assign(userEntity, { provider: params.provider });
+    }
+    if (params.modelConfig) {
+      Object.assign(userEntity, { modelConfig: params.modelConfig });
+    }
+    // createdAt, updatedAt, version, id handled by constructor
+
+    const storedEntity = await DataDaemon.store<UserEntity>(
+      COLLECTIONS.USERS,
+      userEntity
+    );
+
+    console.log(`✅ AgentUser.create: UserEntity stored with ID ${storedEntity.id}`);
+
+    // STEP 2: Create UserStateEntity (agent-specific defaults - ephemeral)
+    const userState = this.getDefaultState(storedEntity.id);
+    userState.preferences = getDefaultPreferencesForType('agent');
+
+    const storedState = await DataDaemon.store<UserStateEntity>(
+      COLLECTIONS.USER_STATES,
+      userState
+    );
+
+    console.log(`✅ AgentUser.create: UserStateEntity stored`);
+
+    // STEP 3: Create AgentUser instance (ephemeral, in-memory)
+    const storage = new MemoryStateBackend();
+    return new AgentUser(storedEntity, storedState, storage);
+  }
+
 }

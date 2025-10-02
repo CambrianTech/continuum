@@ -69,7 +69,7 @@ import { BaseEntity } from './BaseEntity';
  */
 export class ChatMessageEntity extends BaseEntity {
   // Single source of truth for collection name - used by both decorators and commands
-  static readonly collection = 'ChatMessage';
+  static readonly collection = 'chat_messages';
 
   @TextField({ index: true })
   roomId: UUID;

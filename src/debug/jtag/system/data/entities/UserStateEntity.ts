@@ -44,7 +44,7 @@ import { BaseEntity } from './BaseEntity';
  */
 export class UserStateEntity extends BaseEntity {
   // Single source of truth for collection name
-  static readonly collection = 'UserState';
+  static readonly collection = 'user_states';
 
   @ForeignKeyField({ references: 'User.id' })
   userId: UUID;

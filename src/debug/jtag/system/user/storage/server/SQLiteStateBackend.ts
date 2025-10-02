@@ -15,8 +15,10 @@
  */
 
 import type { IUserStateStorage } from '../IUserStateStorage';
-import type { UserStateEntity } from '../../../data/entities/UserStateEntity';
+import { UserStateEntity } from '../../../data/entities/UserStateEntity';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import type { DataRecord } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 
 /**
  * SQLite storage backend for UserState
@@ -41,9 +43,17 @@ export class SQLiteStateBackend implements IUserStateStorage {
    */
   async save(state: UserStateEntity): Promise<{ success: boolean; error?: string }> {
     try {
-      // TODO: Implement using data commands
-      // For now, return success (implementation pending)
-      console.log('SQLiteStateBackend.save() - TODO: Implement with data commands');
+      // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
+      const existing = await DataDaemon.read<UserStateEntity>(UserStateEntity.collection, state.id);
+
+      if (existing.success && existing.data) {
+        // Update existing state
+        await DataDaemon.update<UserStateEntity>(UserStateEntity.collection, state.id, state);
+      } else {
+        // Create new state
+        await DataDaemon.store<UserStateEntity>(UserStateEntity.collection, state);
+      }
+
       return { success: true };
     } catch (error) {
       return {
@@ -59,9 +69,17 @@ export class SQLiteStateBackend implements IUserStateStorage {
    */
   async load(userId: UUID, deviceId: string): Promise<UserStateEntity | null> {
     try {
-      // TODO: Implement using data commands
-      // For now, return null (implementation pending)
-      console.log('SQLiteStateBackend.load() - TODO: Implement with data commands');
+      // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
+      const result = await DataDaemon.query<UserStateEntity>({
+        collection: UserStateEntity.collection,
+        filters: { userId, deviceId },
+        limit: 1
+      });
+
+      if (result.success && result.data && result.data.length > 0) {
+        return result.data[0].data;
+      }
+
       return null;
     } catch (error) {
       console.error('SQLiteStateBackend: Failed to load state:', error);
@@ -75,9 +93,18 @@ export class SQLiteStateBackend implements IUserStateStorage {
    */
   async delete(userId: UUID, deviceId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      // TODO: Implement using data commands
-      // For now, return success (implementation pending)
-      console.log('SQLiteStateBackend.delete() - TODO: Implement with data commands');
+      // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
+      const result = await DataDaemon.query<UserStateEntity>({
+        collection: UserStateEntity.collection,
+        filters: { userId, deviceId },
+        limit: 1
+      });
+
+      if (result.success && result.data && result.data.length > 0) {
+        const stateId = result.data[0].id;
+        await DataDaemon.remove(UserStateEntity.collection, stateId);
+      }
+
       return { success: true };
     } catch (error) {
       return {

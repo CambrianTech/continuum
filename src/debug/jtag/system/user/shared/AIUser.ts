@@ -16,25 +16,10 @@ import type { IUserStateStorage } from '../storage/IUserStateStorage';
  * Base for AgentUser and PersonaUser
  */
 export abstract class AIUser extends BaseUser {
-  constructor(entity: UserEntity, state: UserStateEntity, storage: IUserStateStorage) {
-    super(entity, state, storage);
-
-    // Validate that entity type is AI-related
-    if (entity.type !== 'agent' && entity.type !== 'persona') {
-      throw new Error(`AIUser requires entity.type='agent' or 'persona', got '${entity.type}'`);
-    }
-  }
-
-  /**
-   * AI-specific capabilities
-   */
   get isAI(): boolean {
     return true;
   }
 
-  /**
-   * Check if AI can auto-respond
-   */
   get canAutoRespond(): boolean {
     return this.entity.capabilities?.autoResponds ?? false;
   }

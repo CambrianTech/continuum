@@ -43,11 +43,16 @@ When you see a pattern, something similar, especially in more than one file, tur
 ### 🏛️ USER CITIZEN ARCHITECTURE
 Clean inheritance following Rust-like typing principles:
 ```
+
 BaseUser (abstract)
 ├── HumanUser extends BaseUser
 └── AIUser extends BaseUser (abstract)
     ├── AgentUser extends AIUser (external portals: Claude, GPT, etc.)
-    └── PersonaUser extends AIUser (prompt + RAG → LoRA genome adapter)
+    └── PersonaUser extends AIUser (our internal AI citizens, could be RAG-based OR lora adaption layers/genome. I consider rag the base state, inception, then LoRA genome stacks onto it) 
+
+  BaseUser.entity:UserEntity (all user specific attributes, mostly for UX and identification)
+  BaseUser.state:UserStateEntity (current tab, open content, theme)
+
 ```
 
 **PersonaUser Evolution Path**: Simple prompt + RAG → Enhanced with LoRA Adapter → Academy Training → Genomic Sophistication
