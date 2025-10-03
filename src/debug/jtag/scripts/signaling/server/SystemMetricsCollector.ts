@@ -83,39 +83,28 @@ export class SystemMetricsCollector {
 
   private async checkBootstrap(): Promise<boolean> {
     try {
-      // BOOTSTRAP COMPLETION REQUIRES ALL CRITICAL SYSTEMS READY:
-      // 1. WebSocket server - checked via bootstrap logs (dynamic port from config)
-      // 2. HTTP server - checked via actual HTTP request (dynamic port from config)
-      // 3. System services running - checked via process registry
-      // 4. Session management active - checked via session metadata
-      
-      // Silently check bootstrap readiness
-      
-      // Step 1: Check WebSocket server bootstrap completion via logs
-      const webSocketReady = await this.checkWebSocketBootstrap();
-      if (!webSocketReady) {
-        return false;
+      // ROBUST FIX: Use ./jtag ping as single source of truth
+      // All the fragile log parsing, port checking, and file system searching
+      // is replaced by the command that already works: ./jtag ping
+
+      const jtagPath = path.join(process.cwd(), 'jtag');
+      const { stdout, stderr } = await execAsync(`${jtagPath} ping`, {
+        timeout: 5000,
+        cwd: process.cwd()
+      });
+
+      // Parse JSON response from ping command
+      const response = JSON.parse(stdout.trim());
+
+      if (response.success === true) {
+        console.log('✅ Bootstrap complete: ./jtag ping succeeded');
+        return true;
       }
-      
-      // Step 2: Check HTTP server readiness via actual request
-      const httpReady = await this.checkHTTPServerReady();
-      if (!httpReady) {
-        return false;
-      }
-      
-      // Step 3: Verify system services are running
-      const servicesReady = await this.checkSystemServices();
-      if (!servicesReady) {
-        return false;
-      }
-      
-      // Step 4: Session management is ready if other systems are working
-      // All systems ready
-      
-      console.log('🎉 Bootstrap milestones: ALL SYSTEMS READY - Bootstrap completion confirmed!');
-      return true;
+
+      // Ping returned but system not ready
+      return false;
     } catch (error) {
-      console.log(`💥 Bootstrap milestone check failed: ${error}`);
+      // Ping failed - system not ready yet
       return false;
     }
   }

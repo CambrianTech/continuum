@@ -21,8 +21,6 @@ export class UserCreateServerCommand extends UserCreateCommand {
 
   async execute(params: UserCreateParams): Promise<UserCreateResult> {
     try {
-      console.log(`🆕 UserCreate: Creating ${params.type} user "${params.displayName}"`);
-
       // Validate parameters
       if (!params.type) {
         return createUserCreateResult(params, {
@@ -41,15 +39,12 @@ export class UserCreateServerCommand extends UserCreateCommand {
       // Factory creates user via appropriate subclass
       const user = await UserFactory.create(params, this.context, this.commander.router);
 
-      console.log(`✅ UserCreate: Created ${params.type} user ${user.entity.id}`);
-
       return createUserCreateResult(params, {
         success: true,
         user: user.entity
       });
 
     } catch (error) {
-      console.error(`❌ UserCreate: Failed to create user:`, error);
       return createUserCreateResult(params, {
         success: false,
         error: error instanceof Error ? error.message : String(error)

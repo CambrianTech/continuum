@@ -8,6 +8,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { USER_IDS, ROOM_IDS, MESSAGE_IDS, USER_CONFIG, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
+import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
 import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 import { UserEntity } from '../system/data/entities/UserEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
@@ -15,6 +16,7 @@ import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
 import { UserStateEntity } from '../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
 import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
+import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
 
 const execAsync = promisify(exec);
 
@@ -425,6 +427,47 @@ async function createStateRecord(collection: string, data: any, id: string, user
 }
 
 /**
+ * Create a user via user/create command (proper factory-based creation)
+ * Returns the UserEntity if successful, null otherwise
+ */
+async function createUserViaCommand(type: 'human' | 'agent' | 'persona', displayName: string, uniqueId?: string, provider?: string): Promise<UserEntity | null> {
+  const uniqueIdArg = uniqueId ? ` --uniqueId=${uniqueId}` : '';
+  const providerArg = provider ? ` --provider=${provider}` : '';
+  const cmd = `./jtag user/create --type=${type} --displayName="${displayName}"${uniqueIdArg}${providerArg}`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const response: UserCreateResult = JSON.parse(stdout);
+
+    if (response.success && response.user) {
+      console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${uniqueId || 'none'}, ID: ${response.user.id.slice(0, 8)}...)`);
+      return response.user;
+    } else {
+      console.error(`❌ Failed to create user ${displayName}: ${response.error || 'Unknown error'}`);
+      return null;
+    }
+  } catch (error: any) {
+    // exec throws on non-zero exit, but may still have valid output
+    if (error.stdout) {
+      try {
+        const response: UserCreateResult = JSON.parse(error.stdout);
+        if (response.success && response.user) {
+          console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${uniqueId || 'none'}, ID: ${response.user.id.slice(0, 8)}...)`);
+          return response.user;
+        }
+      } catch (parseError) {
+        // Fall through to error handling
+      }
+    }
+
+    console.error(`❌ Failed to create user ${displayName}: ${error.message}`);
+    if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}`);
+    if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}`);
+    return null;
+  }
+}
+
+/**
  * Create a record via JTAG command with proper shell escaping
  */
 async function createRecord(collection: string, data: any, id: string, displayName?: string, userId?: string): Promise<boolean> {
@@ -509,38 +552,21 @@ async function seedViaJTAG() {
       console.log('ℹ️ Database tables not found or already empty, proceeding with seeding...');
     }
 
-    // Create users using factory functions
-    const users = [
-      createUser(
-        USER_IDS.HUMAN,
-        USER_CONFIG.HUMAN.DISPLAY_NAME,
-        "System architect & dev lead",
-        "human",
-        USER_CONFIG.HUMAN.AVATAR,
-        "System architect and lead developer",
-        "San Francisco, CA"
-      ),
-      createUser(
-        USER_IDS.CLAUDE_CODE,
-        USER_CONFIG.CLAUDE.NAME,
-        "Code architect & debugger ⚡",
-        "agent",
-        "🤖",
-        "AI assistant specialized in coding, architecture, and system design",
-        "Anthropic Cloud"
-      ),
-      createUser(
-        USER_IDS.GENERAL_AI,
-        USER_CONFIG.GENERAL_AI.NAME,
-        "General purpose assistant",
-        "agent",
-        "⚡",
-        "General AI assistant for various tasks and conversations",
-        "Anthropic Cloud"
-      )
-    ];
+    // Create users via user/create command (proper factory-based creation)
+    console.log('📝 Creating users via user/create command...');
 
-    // Create rooms using factory functions (using human user as owner)
+    const humanUser = await createUserViaCommand('human', USER_CONFIG.HUMAN.DISPLAY_NAME, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+    const claudeUser = await createUserViaCommand('agent', USER_CONFIG.CLAUDE.NAME, DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE, 'anthropic');
+    const generalAIUser = await createUserViaCommand('agent', USER_CONFIG.GENERAL_AI.NAME, DEFAULT_USER_UNIQUE_IDS.GENERAL_AI, 'anthropic');
+
+    const users = [humanUser, claudeUser, generalAIUser].filter(u => u !== null) as UserEntity[];
+    console.log(`📊 Created ${users.length}/3 users`);
+
+    if (users.length !== 3 || !humanUser || !claudeUser || !generalAIUser) {
+      throw new Error('❌ Failed to create all required users');
+    }
+
+    // Create rooms using actual generated user entity
     const rooms = [
       createRoom(
         ROOM_IDS.GENERAL,
@@ -550,7 +576,7 @@ async function seedViaJTAG() {
         "Welcome to general discussion! Introduce yourself and chat about anything.",
         3,
         ["general", "welcome", "discussion"],
-        USER_IDS.HUMAN
+        humanUser.id
       ),
       createRoom(
         ROOM_IDS.ACADEMY,
@@ -560,11 +586,11 @@ async function seedViaJTAG() {
         "Share knowledge, tutorials, and collaborate on learning",
         2,
         ["academy", "learning", "education"],
-        USER_IDS.HUMAN
+        humanUser.id
       )
     ];
 
-    // Create messages using factory functions
+    // Create messages using actual generated user entities
     const messages = [
       createMessage(
         MESSAGE_IDS.WELCOME_GENERAL,
@@ -576,8 +602,8 @@ async function seedViaJTAG() {
       createMessage(
         MESSAGE_IDS.CLAUDE_INTRO,
         ROOM_IDS.GENERAL,
-        USER_IDS.CLAUDE_CODE,
-        'Claude Code',
+        claudeUser.id,
+        USER_CONFIG.CLAUDE.NAME,
         MESSAGE_CONTENT.CLAUDE_INTRO
       ),
       createMessage(
@@ -589,34 +615,84 @@ async function seedViaJTAG() {
       )
     ];
 
-    // Create content type registry and user states
+    // Create content type registry
     const contentTypes = createDefaultContentTypes();
-    const userStates = createDefaultUserStates();
-    const trainingSessions = createDefaultTrainingSessions();
+
+    // Create training sessions with actual generated user entities
+    const trainingSessions = [
+      {
+        id: 'ts-js-fundamentals',
+        roomId: ROOM_IDS.ACADEMY,
+        teacherUserId: claudeUser.id,
+        studentUserId: humanUser.id,
+        sessionName: 'JavaScript Fundamentals',
+        description: 'Learn core JavaScript concepts through interactive exercises',
+        sessionType: 'teacher-student',
+        status: 'active',
+        curriculum: 'javascript-basics',
+        startedAt: new Date().toISOString(),
+        plannedDuration: 90,
+        actualDuration: 15,
+        hyperparameters: {
+          learningRate: 0.15,
+          scoreThreshold: 80.0,
+          benchmarkInterval: 8,
+          maxSessionLength: 120,
+          adaptiveScoring: true,
+          contextWindow: 25
+        },
+        learningObjectives: [
+          {
+            id: 'obj-variables',
+            topic: 'variables-declarations',
+            description: 'Understand var, let, and const declarations',
+            targetScore: 85,
+            currentScore: 78,
+            completed: false,
+            evidence: []
+          },
+          {
+            id: 'obj-functions',
+            topic: 'function-basics',
+            description: 'Create and call functions effectively',
+            targetScore: 80,
+            completed: false,
+            evidence: []
+          }
+        ],
+        metrics: {
+          messagesExchanged: 24,
+          benchmarksPassed: 2,
+          benchmarksFailed: 1,
+          averageScore: 76.5,
+          timeSpent: 15,
+          objectivesCompleted: 0,
+          scoreHistory: [
+            {
+              timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+              score: 72,
+              objective: 'variables-declarations'
+            },
+            {
+              timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+              score: 81,
+              objective: 'function-basics'
+            }
+          ]
+        },
+        additionalParticipants: [],
+        isArchived: false
+      }
+    ];
 
     // Seed all data types using clean modular approach with user context
-    await seedRecords(UserEntity.collection, users, (user) => user.displayName);
+    // Note: User states are created automatically by user/create command
     await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
     await seedRecords(ChatMessageEntity.collection, messages,
-      (msg) => msg.senderId === USER_IDS.HUMAN ? 'Joel' : msg.senderId === USER_IDS.CLAUDE_CODE ? 'Claude' : 'Unknown',
+      (msg) => msg.senderId === humanUser.id ? humanUser.displayName : msg.senderId === claudeUser.id ? claudeUser.displayName : 'System',
       (msg) => msg.senderId
     );
     await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);
-    // Use state commands for UserState seeding (user-scoped collection)
-    console.log(`📝 Creating ${userStates.length} ${UserStateEntity.collection} records via state/create...`);
-    let userStateSuccessCount = 0;
-    for (const userState of userStates) {
-      const displayName = `${userState.userId.slice(0,8)}...`;
-      const success = await createStateRecord(
-        UserStateEntity.collection,
-        userState,
-        userState.id,
-        userState.userId,
-        displayName
-      );
-      if (success) userStateSuccessCount++;
-    }
-    console.log(`📊 Created ${userStateSuccessCount}/${userStates.length} ${UserStateEntity.collection} records`);
     await seedRecords(TrainingSessionEntity.collection, trainingSessions, (ts) => ts.sessionName);
 
     // Verify seeded data

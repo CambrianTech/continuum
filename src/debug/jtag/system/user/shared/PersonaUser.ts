@@ -68,11 +68,10 @@ export class PersonaUser extends AIUser {
     context: JTAGContext,
     router: JTAGRouter
   ): Promise<PersonaUser> {
-    console.log(`🧬 PersonaUser.create: Creating persona "${params.displayName}"`);
-
     // STEP 1: Create UserEntity in database
     const userEntity = new UserEntity();
     userEntity.type = 'persona';
+    userEntity.uniqueId = params.uniqueId;
     userEntity.displayName = params.displayName;
     userEntity.status = params.status ?? 'online';
     userEntity.lastActiveAt = new Date();
@@ -89,8 +88,6 @@ export class PersonaUser extends AIUser {
       userEntity
     );
 
-    console.log(`✅ PersonaUser.create: UserEntity stored with ID ${storedEntity.id}`);
-
     // STEP 2: Create UserStateEntity with persona-specific defaults
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('persona');
@@ -100,14 +97,11 @@ export class PersonaUser extends AIUser {
       userState
     );
 
-    console.log(`✅ PersonaUser.create: UserStateEntity stored`);
-
     // STEP 3: Add persona to rooms if specified
     if (params.addToRooms && params.addToRooms.length > 0) {
       for (const roomId of params.addToRooms) {
         await this.addToRoom(storedEntity.id, roomId, params.displayName);
       }
-      console.log(`✅ PersonaUser.create: Added to ${params.addToRooms.length} rooms`);
     }
 
     // STEP 4: Create PersonaUser instance

@@ -26,7 +26,9 @@ export class UserDaemonServer extends UserDaemon {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
     this.eventManager = new EventManager();
-    void this.setupEventSubscriptions();
+    this.setupEventSubscriptions().catch((error: Error) => {
+      console.error('❌ UserDaemon: Failed to setup event subscriptions:', error);
+    });
   }
 
   /**
@@ -94,8 +96,7 @@ export class UserDaemonServer extends UserDaemon {
     try {
       // For personas, cleanup client instance
       if (userEntity.type === 'persona' && this.personaClients.has(userEntity.id)) {
-        const personaClient = this.personaClients.get(userEntity.id);
-        // TODO: Shutdown persona client
+        // TODO: Shutdown persona client properly
         this.personaClients.delete(userEntity.id);
         console.log(`✅ UserDaemon: Removed persona client for ${userEntity.displayName}`);
       }
@@ -124,7 +125,11 @@ export class UserDaemonServer extends UserDaemon {
         return;
       }
 
-      const personas = result.data.map(r => r.data);
+      // Extract UserEntity from DataRecord - merge id from record level into entity data
+      const personas = result.data.map(r => ({
+        ...r.data,
+        id: r.id
+      } as UserEntity));
       console.log(`🔍 UserDaemon: Found ${personas.length} PersonaUsers`);
 
       // Ensure each persona has correct state
@@ -165,23 +170,18 @@ export class UserDaemonServer extends UserDaemon {
 
   /**
    * Create PersonaUser client instance
+   * Expects both UserEntity and UserStateEntity to exist in database (created via user/create)
    */
   private async createPersonaClient(userEntity: UserEntity): Promise<void> {
     try {
-      // Load or create UserStateEntity
+      // Load UserStateEntity (must exist - created by user/create command)
       const userStateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
-      let userState: UserStateEntity;
 
       if (!userStateResult.success || !userStateResult.data) {
-        // Create default state
-        const newState = new UserStateEntity();
-        newState.id = userEntity.id;
-        newState.userId = userEntity.id;
-        newState.deviceId = 'server-device';
-        userState = await DataDaemon.store<UserStateEntity>(COLLECTIONS.USER_STATES, newState);
-      } else {
-        userState = userStateResult.data as unknown as UserStateEntity;
+        throw new Error(`UserStateEntity not found for persona ${userEntity.displayName} (${userEntity.id}) - user must be created via user/create command`);
       }
+
+      const userState: UserStateEntity = userStateResult.data.data;
 
       // Initialize SQLite storage backend
       const dbPath = `.continuum/personas/${userEntity.id}/state.sqlite`;
@@ -234,7 +234,7 @@ export class UserDaemonServer extends UserDaemon {
         return false;
       }
 
-      const user = userResult.data as unknown as UserEntity;
+      const user: UserEntity = userResult.data.data;
 
       // Create UserState with type-specific defaults
       const userState = new UserStateEntity();
@@ -266,18 +266,23 @@ export class UserDaemonServer extends UserDaemon {
   /**
    * Start continuous monitoring loops
    */
-  protected startMonitoringLoops(): void {
+  protected startMonitoringLoops(): boolean {
     // User monitoring loop - every 5 seconds
-    this.monitoringInterval = setInterval(async () => {
-      await this.runUserMonitoringLoop();
+    this.monitoringInterval = setInterval(() => {
+      this.runUserMonitoringLoop().catch((error: Error) => {
+        console.error('❌ UserDaemon: Monitoring loop error:', error);
+      });
     }, 5000);
 
     // State reconciliation loop - every 30 seconds
-    this.reconciliationInterval = setInterval(async () => {
-      await this.runStateReconciliationLoop();
+    this.reconciliationInterval = setInterval(() => {
+      this.runStateReconciliationLoop().catch((error: Error) => {
+        console.error('❌ UserDaemon: Reconciliation loop error:', error);
+      });
     }, 30000);
 
     console.log('🔄 UserDaemon: Started monitoring loops');
+    return true;
   }
 
   /**
@@ -295,7 +300,11 @@ export class UserDaemonServer extends UserDaemon {
         return;
       }
 
-      const users = result.data.map(r => r.data);
+      // Extract UserEntity from DataRecord - merge id from record level into entity data
+      const users = result.data.map(r => ({
+        ...r.data,
+        id: r.id
+      } as UserEntity));
 
       // Check each user
       for (const user of users) {
@@ -325,9 +334,22 @@ export class UserDaemonServer extends UserDaemon {
         return;
       }
 
-      const personas = result.data.map(r => r.data);
+      // Extract UserEntity from DataRecord - id is at record level, data at .data level
+      const personas = result.data.map(r => ({
+        ...r.data,
+        id: r.id  // Add id from DataRecord to entity
+      } as UserEntity));
+
+      console.log(`🔍 UserDaemon: Found ${personas.length} persona(s) in database`);
 
       for (const persona of personas) {
+        console.log(`🔍 UserDaemon: Checking persona - id: ${persona?.id}, displayName: ${persona?.displayName}, type: ${persona?.type}`);
+
+        if (!persona || !persona.id) {
+          console.error(`❌ UserDaemon: Invalid persona data:`, persona);
+          continue;
+        }
+
         if (!this.personaClients.has(persona.id)) {
           console.warn(`🚀 UserDaemon: Starting missing persona client: ${persona.displayName}`);
           await this.createPersonaClient(persona);
@@ -345,18 +367,26 @@ export class UserDaemonServer extends UserDaemon {
   /**
    * Stop continuous monitoring loops
    */
-  protected stopMonitoringLoops(): void {
+  protected stopMonitoringLoops(): boolean {
+    let stopped = false;
+
     if (this.monitoringInterval) {
       clearInterval(this.monitoringInterval);
       this.monitoringInterval = undefined;
+      stopped = true;
     }
 
     if (this.reconciliationInterval) {
       clearInterval(this.reconciliationInterval);
       this.reconciliationInterval = undefined;
+      stopped = true;
     }
 
-    console.log('⏸️ UserDaemon: Stopped monitoring loops');
+    if (stopped) {
+      console.log('⏸️ UserDaemon: Stopped monitoring loops');
+    }
+
+    return stopped;
   }
 
   /**
@@ -366,7 +396,7 @@ export class UserDaemonServer extends UserDaemon {
     await super.shutdown();
 
     // Shutdown all persona clients
-    for (const [userId, personaClient] of this.personaClients.entries()) {
+    for (const userId of this.personaClients.keys()) {
       console.log(`👋 UserDaemon: Shutting down persona client ${userId}`);
       // TODO: Add shutdown method to PersonaUser
     }

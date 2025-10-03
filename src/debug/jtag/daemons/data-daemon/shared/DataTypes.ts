@@ -6,9 +6,10 @@
  */
 
 import type { JTAGPayload, JTAGContext } from '../../../system/core/types/JTAGTypes';
-import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
+import { createPayload } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
+import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 
 // ============================================================================
 // DATA OPERATIONS
@@ -20,7 +21,7 @@ export type DataOperation = 'create' | 'read' | 'update' | 'delete' | 'list' | '
 // DATA ENTITY TYPES
 // ============================================================================
 
-export interface DataRecord<T = any> {
+export interface DataRecord<T extends BaseEntity = BaseEntity> {
   readonly id: UUID;
   readonly collection: string;
   readonly data: T;
@@ -33,9 +34,9 @@ export interface DataRecord<T = any> {
 // DATA OPERATION PARAMETERS
 // ============================================================================
 
-export interface DataCreateParams extends JTAGPayload {
+export interface DataCreateParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
   readonly collection: string;
-  readonly data: any;
+  readonly data: T;
   readonly id?: UUID;
 }
 
@@ -44,10 +45,10 @@ export interface DataReadParams extends JTAGPayload {
   readonly id: UUID;
 }
 
-export interface DataUpdateParams extends JTAGPayload {
+export interface DataUpdateParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
   readonly collection: string;
   readonly id: UUID;
-  readonly data: any;
+  readonly data: Partial<T>;
   readonly merge?: boolean;
 }
 
@@ -58,7 +59,7 @@ export interface DataDeleteParams extends JTAGPayload {
 
 export interface DataListParams extends JTAGPayload {
   readonly collection: string;
-  readonly filter?: Record<string, any>;
+  readonly filter?: Partial<BaseEntity>;
   readonly limit?: number;
   readonly offset?: number;
 }

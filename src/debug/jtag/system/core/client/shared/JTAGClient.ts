@@ -107,6 +107,9 @@ export interface JTAGClientConnectOptions {
 }
 
 export interface JTAGConnectionContextInput {
+  // Citizen identity (single source of truth for user lookup)
+  uniqueId?: string;  // Human-readable citizen identifier (e.g., "joelteply@yahoo.com", "claude-code")
+
   // Agent detection context
   agentInfo?: {
     name: string;
@@ -128,14 +131,14 @@ export interface JTAGConnectionContextInput {
       tokensPerRequest?: number;
     };
   };
-  
+
   // CLI context
   cli?: {
     command: string;
     args: string[];
     timestamp: string;
   };
-  
+
   // Additional context fields
   [key: string]: any;
 }
@@ -448,11 +451,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
     console.log(`🔍 JTAGClient: Detected category=${category}, displayName=${displayName}, isAgent=${isAgent}`);
 
+    // Get stored userId from browser (if available) for citizen persistence
+    const storedUserId = await this.getStoredUserId();
+
     const sessionParams = {
       context: this.context,
       sessionId: targetSessionId,
       category: category as 'user' | 'agent',
       displayName: displayName,
+      userId: storedUserId, // Pass stored userId to link to existing citizen
       isShared: true, // All clients use shared sessions by default
       connectionContext: this.connectionContext // Pass full context for agent detection
     };
@@ -466,9 +473,14 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     } else if (session) {
       const wasBootstrap = this.sessionId === SYSTEM_SCOPES.UNKNOWN_SESSION;
       this._session = session;
-      
+
       // For browser clients: update sessionStorage (JTAGClientBrowser overrides this)
       this.updateClientSessionStorage(session.sessionId);
+
+      // Store userId from session for citizen persistence (browser clients store to localStorage)
+      if (session.userId) {
+        await this.storeUserIdentity(session.userId);
+      }
     }
 
     await this.discoverCommands();
@@ -482,6 +494,23 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Get environment-specific transport factory - implemented by JTAGClientServer/JTAGClientBrowser
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
+
+  /**
+   * Get stored userId from browser localStorage - implemented by JTAGClientBrowser
+   * Browser: loads from localStorage, Server: returns null
+   */
+  protected async getStoredUserId(): Promise<UUID | undefined> {
+    // Default no-op implementation for server clients
+    return undefined;
+  }
+
+  /**
+   * Store user identity for citizen persistence - implemented by JTAGClientBrowser
+   * Browser: stores to localStorage, Server: no-op
+   */
+  protected async storeUserIdentity(_userId: UUID): Promise<void> {
+    // Default no-op implementation for server clients
+  }
 
   /**
    * Get or create Connection Broker for intelligent connection management

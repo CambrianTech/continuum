@@ -62,6 +62,13 @@ export interface ServerEnvironmentInfo {
     user: number;
     system: number;
   };
+  // System health information
+  health: {
+    browsersConnected: number;
+    commandsRegistered: number;
+    daemonsActive: number;
+    systemReady: boolean;
+  };
   timestamp: string;
 }
 
