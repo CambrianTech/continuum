@@ -1,126 +1,93 @@
 /**
  * Ping Command - Server Implementation
- * 
- * Server-side ping command with server-specific environment detection.
+ *
+ * Server collects server info, optionally includes browser info if connected.
  */
 
-import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import { PingCommand } from '../shared/PingCommand';
-import type { PingResult } from '../shared/PingTypes';
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { PingParams, PingResult, ServerEnvironmentInfo } from '../shared/PingTypes';
 
-export class PingServerCommand extends PingCommand {
-  
+export class PingServerCommand extends CommandBase<PingParams, PingResult> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super(context, subpath, commander);
+    super('ping', context, subpath, commander);
   }
 
-  protected async getEnvironmentInfo(): Promise<PingResult['environment']> {
-    // Rich server environment information
-    const process = typeof globalThis.process !== 'undefined' ? globalThis.process : null;
-    const os = await import('os').catch(() => null);
-    const fs = await import('fs').catch(() => null);
+  async execute(params: JTAGPayload): Promise<PingResult> {
+    const pingParams = params as PingParams;
+    const server = await this.getServerInfo();
 
-    // Get package name and version
-    let name = 'JTAG';
-    let version = 'unknown';
-    try {
-      const packagePath = await import('path').then(p => p.join(globalThis.process.cwd(), 'package.json'));
-      const packageJson = JSON.parse(fs?.readFileSync(packagePath, 'utf-8') ?? '{}');
-      name = packageJson.name ?? name;
-      version = packageJson.version ?? version;
-    } catch {
-      // Use defaults if package.json read fails
+    // If browser already collected its info, we're the final step
+    if (pingParams.browser) {
+      return {
+        ...pingParams,
+        success: true,
+        server,
+        timestamp: new Date().toISOString()
+      };
     }
 
-    const memoryUsage = process?.memoryUsage() ?? { heapUsed: 0, heapTotal: 0, external: 0, arrayBuffers: 0 };
+    // No browser info yet - delegate to browser to collect it
+    return await this.remoteExecute({ ...pingParams, server });
+  }
 
-    // Collect system health metrics
+  private async getServerInfo(): Promise<ServerEnvironmentInfo> {
+    const proc = globalThis.process;
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const pkg = JSON.parse(fs.readFileSync(path.join(proc.cwd(), 'package.json'), 'utf-8'));
+    const mem = proc.memoryUsage();
+
     const health = await this.collectSystemHealth();
 
     return {
       type: 'server',
-      name,
-      version,
-      runtime: process?.version ?? 'Unknown',
-      platform: process?.platform ?? os?.platform() ?? 'Unknown',
-      arch: process?.arch ?? os?.arch() ?? 'Unknown',
-      processId: process?.pid ?? 0,
-      uptime: process?.uptime() ?? 0,
+      name: pkg.name,
+      version: pkg.version,
+      runtime: proc.version,
+      platform: proc.platform,
+      arch: proc.arch,
+      processId: proc.pid,
+      uptime: proc.uptime(),
       memory: {
-        used: memoryUsage.heapUsed,
-        total: memoryUsage.heapTotal,
-        usage: `${Math.round((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100)}%`
+        used: mem.heapUsed,
+        total: mem.heapTotal,
+        usage: `${Math.round((mem.heapUsed / mem.heapTotal) * 100)}%`
       },
       health,
       timestamp: new Date().toISOString()
     };
   }
 
-  /**
-   * Collect system health metrics leveraging cross-environment command system
-   * Server pings browser to get complete picture of system health
-   */
-  private async collectSystemHealth(): Promise<{ browsersConnected: number; commandsRegistered: number; daemonsActive: number; systemReady: boolean }> {
+  private async collectSystemHealth(): Promise<ServerEnvironmentInfo['health']> {
     try {
-      // Access the JTAGSystem singleton
-      const jtagSystemServerModule = await import('../../../system/core/system/server/JTAGSystemServer');
-      const system = jtagSystemServerModule.JTAGSystemServer.instance;
+      const { JTAGSystemServer } = await import('../../../system/core/system/server/JTAGSystemServer');
+      const sys = JTAGSystemServer.instance;
 
-      if (!system) {
+      if (!sys) {
         return { browsersConnected: 0, commandsRegistered: 0, daemonsActive: 0, systemReady: false };
       }
 
-      // Get WebSocket transport to count connected browsers
-      let browsersConnected = 0;
-      try {
-        interface Transport {
-          name: string;
-          clients?: Set<unknown>;
-        }
-        const transports = (system as { transports?: Transport[] }).transports ?? [];
-        const wsTransport = transports.find((t: Transport) => t.name === 'websocket-server');
-        if (wsTransport?.clients) {
-          browsersConnected = wsTransport.clients.size ?? 0;
-        }
-      } catch {
-        // Silently fail if transport access doesn't work
-      }
+      interface Transport { name: string; clients?: Set<unknown> }
+      interface Daemon { name: string; commands?: Map<string, unknown> }
 
-      // Note: Could ping browser via remoteExecute() for deeper health check
-      // For now, just report connection count as browsers are verified via WebSocket
-      const browserAlive = browsersConnected > 0;
+      const transports = (sys as { transports?: Transport[] }).transports ?? [];
+      const daemons = (sys as { systemDaemons?: Daemon[] }).systemDaemons ?? [];
 
-      // Get CommandDaemon to count registered commands
-      let commandsRegistered = 0;
-      try {
-        interface Daemon {
-          name: string;
-          commands?: Map<string, unknown>;
-        }
-        const commandDaemon = (system as { systemDaemons?: Daemon[] }).systemDaemons?.find((d: Daemon) => d.name === 'command-daemon');
-        if (commandDaemon?.commands) {
-          commandsRegistered = commandDaemon.commands.size ?? 0;
-        }
-      } catch {
-        // Silently fail
-      }
-
-      // Count active daemons
-      const daemonsActive = (system as { systemDaemons?: unknown[] }).systemDaemons?.length ?? 0;
+      const browsersConnected = transports.find(t => t.name === 'websocket-server')?.clients?.size ?? 0;
+      const commandsRegistered = daemons.find(d => d.name === 'command-daemon')?.commands?.size ?? 0;
+      const daemonsActive = daemons.length;
 
       return {
-        browsersConnected: browserAlive ? browsersConnected : 0, // Only count if browser responds
+        browsersConnected,
         commandsRegistered,
         daemonsActive,
-        systemReady: browserAlive || commandsRegistered > 0 // System ready if browser responds OR commands registered
+        systemReady: commandsRegistered > 0
       };
     } catch {
       return { browsersConnected: 0, commandsRegistered: 0, daemonsActive: 0, systemReady: false };
     }
-  }
-
-  protected getEnvironmentLabel(): string {
-    return 'SERVER';
   }
 }
