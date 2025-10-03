@@ -52,6 +52,7 @@ export class HumanUser extends BaseUser {
     // STEP 1: Create UserEntity in database
     const userEntity = new UserEntity();
     userEntity.type = 'human';
+    userEntity.uniqueId = params.uniqueId;
     userEntity.displayName = params.displayName;
     userEntity.status = params.status ?? 'online';
     userEntity.lastActiveAt = new Date();
@@ -64,8 +65,6 @@ export class HumanUser extends BaseUser {
       userEntity
     );
 
-    console.log(`✅ HumanUser.create: UserEntity stored with ID ${storedEntity.id}`);
-
     // STEP 2: Create UserStateEntity (human-specific defaults)
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('human');
@@ -74,8 +73,6 @@ export class HumanUser extends BaseUser {
       COLLECTIONS.USER_STATES,
       userState
     );
-
-    console.log(`✅ HumanUser.create: UserStateEntity stored`);
 
     // STEP 3: Create HumanUser instance (in-memory)
     const storage = new MemoryStateBackend();

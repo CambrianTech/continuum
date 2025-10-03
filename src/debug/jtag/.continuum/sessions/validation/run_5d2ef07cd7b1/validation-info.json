@@ -1,13 +1,13 @@
 {
-  "runId": "25cad5df7e91",
-  "timestamp": "2025-09-28T06:19:50Z",
-  "sessionId": "sessions/user/b3b64e7b-92dd-4f40-bb09-098480fd1043",
+  "runId": "5d2ef07cd7b1",
+  "timestamp": "2025-10-03T01:12:00Z",
+  "sessionId": "deadbeef-cafe-4bad-8ace-5e551000c0de",
   "validationType": "precommit",
   "status": "PASSED",
-  "testSummary": "CRUD Integration: 9/9 passed (100.0%) - ALL TESTS PASSED",
+  "testSummary": "CRUD + State Integration: 2/2 - ALL TESTS PASSED",
   "testResults": {
-    "exitCode": 0,
-    "outputLines":      160,
+    "exitCode": ,
+    "outputLines":        1,
     "outputFile": "test-results.txt"
   },
   "validationPhases": [

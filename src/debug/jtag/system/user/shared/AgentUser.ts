@@ -44,6 +44,7 @@ export class AgentUser extends AIUser {
     // STEP 1: Create UserEntity in database
     const userEntity = new UserEntity();
     userEntity.type = 'agent';
+    userEntity.uniqueId = params.uniqueId;
     userEntity.displayName = params.displayName;
     userEntity.status = params.status ?? 'offline';  // Agents start offline until they connect
     userEntity.lastActiveAt = new Date();
@@ -63,8 +64,6 @@ export class AgentUser extends AIUser {
       userEntity
     );
 
-    console.log(`✅ AgentUser.create: UserEntity stored with ID ${storedEntity.id}`);
-
     // STEP 2: Create UserStateEntity (agent-specific defaults - ephemeral)
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('agent');
@@ -73,8 +72,6 @@ export class AgentUser extends AIUser {
       COLLECTIONS.USER_STATES,
       userState
     );
-
-    console.log(`✅ AgentUser.create: UserStateEntity stored`);
 
     // STEP 3: Create AgentUser instance (ephemeral, in-memory)
     const storage = new MemoryStateBackend();

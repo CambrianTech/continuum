@@ -349,22 +349,43 @@ export async function createCompleteEntity(
 
     console.log(`🏗️ SchemaFactory: Generated complete data for ${collection}:`, entityData);
 
-    // Create entity via JTAG
-    const result = runJtagCommand(`data/create --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
+    // Special case: User entities must use user/create command (not data/create)
+    let result: Record<string, unknown>;
+    if (collection === 'User') {
+      const displayName = entityData.displayName as string;
+      const type = (entityData.type as string) || 'human';
+      const uniqueId = overrides.uniqueId ? `--uniqueId=${overrides.uniqueId}` : '';
 
-    if (result.success && result.data?.id) {
-      console.log(`✅ SchemaFactory: Created ${collection}/${result.data.id}`);
-      return {
-        success: true,
-        id: result.data.id,
-        data: result.data
-      };
+      result = runJtagCommand(`user/create --type=${type} --displayName="${displayName}" ${uniqueId}`);
+
+      // user/create returns { success, user } instead of { success, data }
+      if (result.success && result.user) {
+        const userData = result.user as Record<string, unknown>;
+        console.log(`✅ SchemaFactory: Created User/${userData.id} via user/create`);
+        return {
+          success: true,
+          id: userData.id as string,
+          data: userData
+        };
+      }
     } else {
-      return {
-        success: false,
-        error: result.error ?? 'Entity creation failed'
-      };
+      // All other entities use data/create
+      result = runJtagCommand(`data/create --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
+
+      if (result.success && result.data?.id) {
+        console.log(`✅ SchemaFactory: Created ${collection}/${result.data.id}`);
+        return {
+          success: true,
+          id: result.data.id as string,
+          data: result.data as Record<string, unknown>
+        };
+      }
     }
+
+    return {
+      success: false,
+      error: result.error as string ?? 'Entity creation failed'
+    };
 
   } catch (error) {
     console.error(`❌ SchemaFactory: Failed to create ${collection}:`, error);

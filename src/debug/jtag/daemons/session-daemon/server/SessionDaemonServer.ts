@@ -8,14 +8,18 @@
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { SessionDaemon} from '../shared/SessionDaemon';
+import type { BaseUser } from '../../../system/user/shared/BaseUser';
+import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
+import { UserFactory } from '../../../system/user/shared/UserFactory';
 import { HumanUser } from '../../../system/user/shared/HumanUser';
 import { AgentUser } from '../../../system/user/shared/AgentUser';
 import { PersonaUser } from '../../../system/user/shared/PersonaUser';
 import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
 import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
+import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
-import type { BaseUser } from '../../../system/user/shared/BaseUser';
 import {  
   type SessionMetadata, 
   type CreateSessionParams, 
@@ -352,13 +356,79 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     /**
+     * Find existing user (citizen) by uniqueId (single source of truth for identity)
+     */
+    private async findUserByUniqueId(uniqueId: string): Promise<BaseUser | null> {
+      console.log(`🔍 SessionDaemon: Looking for existing citizen with uniqueId: ${uniqueId}`);
+
+      // Query users by uniqueId (the single source of truth for citizen identity)
+      const result = await DataDaemon.query<UserEntity>({
+        collection: COLLECTIONS.USERS,
+        filters: { uniqueId }
+      });
+
+      if (!result.success || !result.data || result.data.length === 0) {
+        console.log(`ℹ️ SessionDaemon: No existing citizen found with uniqueId: ${uniqueId}`);
+        return null;
+      }
+
+      // Found existing citizen - load and return
+      const userRecord = result.data[0];
+      const userId = userRecord.id;
+
+      console.log(`✅ SessionDaemon: Found existing citizen: ${uniqueId} (userId: ${userId.slice(0, 8)}...)`);
+
+      return await this.getUserById(userId);
+    }
+
+    /**
+     * Load existing user (citizen) by ID
+     */
+    private async getUserById(userId: UUID): Promise<BaseUser> {
+      console.log(`👤 SessionDaemon: Loading existing citizen: ${userId}`);
+
+      // Load UserEntity from database
+      const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      if (!userResult.success || !userResult.data) {
+        throw new Error(`User ${userId} not found in database`);
+      }
+
+      const userEntity: UserEntity = userResult.data.data;
+
+      // Load UserStateEntity from database
+      const stateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      if (!stateResult.success || !stateResult.data) {
+        throw new Error(`UserState for ${userId} not found in database`);
+      }
+
+      const userState: UserStateEntity = stateResult.data.data;
+
+      // Create appropriate User subclass based on type
+      let user: BaseUser;
+      if (userEntity.type === 'persona') {
+        const personaDatabasePath = `.continuum/personas/${userId}/state.sqlite`;
+        const storage = new SQLiteStateBackend(personaDatabasePath);
+        user = new PersonaUser(userEntity, userState, storage);
+      } else if (userEntity.type === 'agent') {
+        const storage = new MemoryStateBackend();
+        user = new AgentUser(userEntity, userState, storage);
+      } else {
+        const storage = new MemoryStateBackend();
+        user = new HumanUser(userEntity, userState, storage);
+      }
+
+      await user.loadState();
+
+      console.log(`✅ SessionDaemon: Loaded existing citizen: ${userEntity.displayName} (${userEntity.type})`);
+
+      return user;
+    }
+
+    /**
      * Create User object with entity and state
-     * Uses appropriate storage backend based on category
+     * Uses UserFactory to ensure proper factory logic and AI enrichment
      */
     private async createUser(params: CreateSessionParams): Promise<BaseUser> {
-      const userId = params.userId ?? generateUUID();
-      const deviceId = `device-${generateUUID()}`;
-
       // Enhanced agent detection using connectionContext
       const agentInfo = params.connectionContext?.agentInfo;
       const isDetectedAgent = agentInfo?.detected && agentInfo.confidence > 0.5;
@@ -374,69 +444,23 @@ export class SessionDaemonServer extends SessionDaemon {
         userType = 'human';
       }
 
-      // Create UserEntity
-      const userEntity = new UserEntity();
-      userEntity.id = userId;
-      userEntity.displayName = params.displayName;
-      userEntity.type = userType;
+      // Use UserFactory to create user (same as user/create command - ensures proper logic + AI enrichment)
+      console.log(`📝 SessionDaemon: Creating ${userType} user via UserFactory: ${params.displayName}`);
 
-      // Create UserStateEntity with defaults appropriate for user type
-      const userState = new UserStateEntity();
-      userState.id = generateUUID();
-      userState.userId = userId;
-      userState.deviceId = deviceId;
+      const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
+        type: userType,
+        displayName: params.displayName,
+        provider: agentInfo?.name // Pass agent name as provider for agent users
+      });
 
-      // Agent-specific preferences (lighter state, no persistence assumptions)
-      if (userType === 'agent') {
-        userState.preferences = {
-          maxOpenTabs: 5, // Agents typically work with fewer contexts
-          autoCloseAfterDays: 1, // Short retention for agent state
-          rememberScrollPosition: false, // Agents don't need scroll positions
-          syncAcrossDevices: false // Agents are ephemeral
-        };
-      } else {
-        userState.preferences = {
-          maxOpenTabs: 10,
-          autoCloseAfterDays: 30,
-          rememberScrollPosition: true,
-          syncAcrossDevices: false
-        };
-      }
+      // UserFactory.create() handles everything:
+      // - Creates UserEntity and UserStateEntity in database
+      // - Sets up appropriate storage backend (SQLite for personas, Memory for agents/humans)
+      // - Creates the appropriate User subclass (PersonaUser/AgentUser/HumanUser)
+      // - Loads initial state
+      const user: BaseUser = await UserFactory.create(createParams, this.context, this.router);
 
-      userState.contentState = {
-        openItems: [],
-        lastUpdatedAt: new Date()
-      };
-
-      // Select storage backend based on user type
-      let storage;
-      if (userType === 'persona') {
-        // Personas get dedicated SQLite database per persona
-        const personaDatabasePath = `.continuum/personas/${userId}/state.sqlite`;
-        storage = new SQLiteStateBackend(personaDatabasePath);
-        console.log(`🧬 SessionDaemon: Using SQLiteStateBackend for persona ${params.displayName} at ${personaDatabasePath}`);
-      } else if (userType === 'agent') {
-        // Agents use ephemeral memory storage
-        storage = new MemoryStateBackend();
-        console.log(`🧠 SessionDaemon: Using MemoryStateBackend for agent ${params.displayName}`);
-      } else {
-        // Humans: TODO - Browser clients should use LocalStorageStateBackend
-        storage = new MemoryStateBackend();
-        console.log(`👤 SessionDaemon: Using MemoryStateBackend for human ${params.displayName}`);
-      }
-
-      // Create appropriate User subclass
-      let user: BaseUser;
-      if (userType === 'persona') {
-        user = new PersonaUser(userEntity, userState, storage);
-      } else if (userType === 'agent') {
-        user = new AgentUser(userEntity, userState, storage);
-      } else {
-        user = new HumanUser(userEntity, userState, storage);
-      }
-
-      // Load state from storage (will be empty for new users)
-      await user.loadState();
+      console.log(`✅ SessionDaemon: Created ${userType} user: ${user.entity.displayName} (${user.entity.id.slice(0, 8)}...)`);
 
       return user;
     }
@@ -465,8 +489,17 @@ export class SessionDaemonServer extends SessionDaemon {
       // Always generate a new UUID for actual sessions - never use bootstrap IDs
       const actualSessionId = isBootstrapSession(params.sessionId) ? generateUUID() : params.sessionId;
 
-      // Create User object with entity and state
-      const user = await this.createUser(params);
+      // Get or create User (citizen) - sessions link to existing citizens, don't create duplicates
+      // Priority: userId > lookup by uniqueId > create new citizen
+      let user: BaseUser;
+      if (params.userId) {
+        user = await this.getUserById(params.userId);
+      } else {
+        // Try to find existing citizen by uniqueId (single source of truth for identity)
+        const uniqueId = params.connectionContext?.uniqueId;
+        const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
+        user = existingUser ?? await this.createUser(params);
+      }
 
       const newSession: SessionMetadata = {
         sourceContext: params.context,

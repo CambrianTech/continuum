@@ -177,6 +177,34 @@ export class JTAGClientBrowser extends JTAGClient {
   }
 
   /**
+   * Get stored userId from localStorage for citizen persistence
+   */
+  protected async getStoredUserId(): Promise<UUID | undefined> {
+    try {
+      const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
+      const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
+      console.log(`🔍 JTAGClientBrowser: Retrieved stored userId: ${identity.userId.slice(0, 8)}...`);
+      return identity.userId;
+    } catch (error) {
+      console.error(`❌ JTAGClientBrowser: Failed to get stored userId:`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Store userId to localStorage for citizen persistence across sessions
+   */
+  protected async storeUserIdentity(userId: UUID): Promise<void> {
+    try {
+      const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
+      await BrowserDeviceIdentity.upgradeToAuthenticated(userId);
+      console.log(`✅ JTAGClientBrowser: Stored citizen identity (userId: ${userId.slice(0, 8)}...) to localStorage`);
+    } catch (error) {
+      console.error(`❌ JTAGClientBrowser: Failed to store userId:`, error);
+    }
+  }
+
+  /**
    * Update browser sessionStorage with new session ID and notify local system
    */
   protected updateClientSessionStorage(sessionId: UUID): void {

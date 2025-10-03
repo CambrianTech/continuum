@@ -155,14 +155,16 @@ VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
 echo "🔍 Creating validation directory: $VALIDATION_RUN_DIR"
 mkdir -p "$VALIDATION_RUN_DIR"
 
-# Find the current active session using currentUser symlink (EXACT legacy pattern)
-CURRENT_SESSION_LINK="examples/widget-ui/.continuum/jtag/currentUser"
-if [ -L "$CURRENT_SESSION_LINK" ]; then
-    CURRENT_SESSION=$(readlink "$CURRENT_SESSION_LINK")
-    SESSION_PATH="examples/widget-ui/.continuum/jtag/$CURRENT_SESSION"
+# Find the active browser session (where screenshots were saved)
+# Don't rely on currentUser symlink - it may point to wrong session if system restarted
+SCREENSHOT_SESSION=$(find examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/precommit-*.png 2>/dev/null | head -1)
+if [ -n "$SCREENSHOT_SESSION" ]; then
+    # Extract session directory from screenshot path
+    SESSION_PATH=$(echo "$SCREENSHOT_SESSION" | sed 's|/screenshots/.*||')
+    CURRENT_SESSION=$(basename "$SESSION_PATH")
 
     if [ -d "$SESSION_PATH" ]; then
-        echo "🔍 Current session: $CURRENT_SESSION"
+        echo "🔍 Active screenshot session: $CURRENT_SESSION"
 
         # Copy ENTIRE session directory to validation (following legacy pattern Line 210)
         echo "📋 Copying complete session directory to validation..."
@@ -197,22 +199,26 @@ if [ -L "$CURRENT_SESSION_LINK" ]; then
 }
 EOF
 
-        # VALIDATION ARTIFACTS: Keep for validation but don't commit to git
+        # VALIDATION ARTIFACTS: Add to git for commit inclusion
         echo "📋 Validation artifacts created for bulletproof validation..."
-        echo "ℹ️  Artifacts stored locally but not committed to reduce git noise"
 
-        # Validation successful - artifacts exist for inspection but not committed
-        echo "✅ VALIDATION COMPLETE: Session artifacts available for inspection"
+        # Force add validation directory (bypasses .continuum/ gitignore)
+        git add -f "$VALIDATION_RUN_DIR"
+        echo "✅ Validation artifacts staged for commit"
+
+        # Validation successful - artifacts will be committed with code changes
+        echo "✅ VALIDATION COMPLETE: Session artifacts staged for git commit"
         echo "📁 Validation session: $VALIDATION_RUN_DIR"
         echo "🔑 Session artifacts included: logs, screenshots, session metadata"
         echo "📝 Test results included: test-results.txt, validation-info.json"
 
     else
-        echo "❌ Current session directory not found: $SESSION_PATH"
+        echo "❌ Session directory not found: $SESSION_PATH"
         exit 1
     fi
 else
-    echo "❌ Current session symlink not found: $CURRENT_SESSION_LINK"
+    echo "❌ No precommit screenshots found - screenshot phase may have failed"
+    echo "   Expected: examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/precommit-*.png"
     exit 1
 fi
 
@@ -221,9 +227,8 @@ echo ""
 echo "🔎 Phase 5: Final validation check"
 echo "----------------------------------"
 
-# Verify all proof artifacts exist
+# Verify critical proof artifacts exist (screenshots and metadata)
 REQUIRED_ARTIFACTS=(
-    "$VALIDATION_RUN_DIR/logs"
     "$VALIDATION_RUN_DIR/screenshots"
     "$VALIDATION_RUN_DIR/validation-info.json"
 )
@@ -236,6 +241,11 @@ for artifact in "${REQUIRED_ARTIFACTS[@]}"; do
         exit 1
     fi
 done
+
+# Logs are optional (user sessions don't always have them)
+if [ -e "$VALIDATION_RUN_DIR/logs" ]; then
+    echo "✅ $VALIDATION_RUN_DIR/logs (optional)"
+fi
 
 # Phase 6: Commit Message Enhancement
 echo ""
