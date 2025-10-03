@@ -19,28 +19,38 @@ export class PingServerCommand extends PingCommand {
     // Rich server environment information
     const process = typeof globalThis.process !== 'undefined' ? globalThis.process : null;
     const os = await import('os').catch(() => null);
+    const fs = await import('fs').catch(() => null);
 
-    const memoryUsage = process?.memoryUsage() || { heapUsed: 0, heapTotal: 0, external: 0, arrayBuffers: 0 };
-    const cpuUsage = process?.cpuUsage() || { user: 0, system: 0 };
+    // Get package name and version
+    let name = 'JTAG';
+    let version = 'unknown';
+    try {
+      const packagePath = await import('path').then(p => p.join(globalThis.process.cwd(), 'package.json'));
+      const packageJson = JSON.parse(fs?.readFileSync(packagePath, 'utf-8') ?? '{}');
+      name = packageJson.name ?? name;
+      version = packageJson.version ?? version;
+    } catch {
+      // Use defaults if package.json read fails
+    }
+
+    const memoryUsage = process?.memoryUsage() ?? { heapUsed: 0, heapTotal: 0, external: 0, arrayBuffers: 0 };
 
     // Collect system health metrics
     const health = await this.collectSystemHealth();
 
     return {
       type: 'server',
-      nodeVersion: process?.version || 'Unknown',
-      platform: process?.platform || os?.platform() || 'Unknown',
-      arch: process?.arch || os?.arch() || 'Unknown',
-      processId: process?.pid || 0,
-      uptime: process?.uptime() || 0,
+      name,
+      version,
+      runtime: process?.version ?? 'Unknown',
+      platform: process?.platform ?? os?.platform() ?? 'Unknown',
+      arch: process?.arch ?? os?.arch() ?? 'Unknown',
+      processId: process?.pid ?? 0,
+      uptime: process?.uptime() ?? 0,
       memory: {
         used: memoryUsage.heapUsed,
         total: memoryUsage.heapTotal,
         usage: `${Math.round((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100)}%`
-      },
-      cpuUsage: {
-        user: cpuUsage.user,
-        system: cpuUsage.system
       },
       health,
       timestamp: new Date().toISOString()
@@ -54,8 +64,8 @@ export class PingServerCommand extends PingCommand {
   private async collectSystemHealth(): Promise<{ browsersConnected: number; commandsRegistered: number; daemonsActive: number; systemReady: boolean }> {
     try {
       // Access the JTAGSystem singleton
-      const { JTAGSystemServer } = await import('../../../system/core/system/server/JTAGSystemServer');
-      const system = JTAGSystemServer.instance;
+      const jtagSystemServerModule = await import('../../../system/core/system/server/JTAGSystemServer');
+      const system = jtagSystemServerModule.JTAGSystemServer.instance;
 
       if (!system) {
         return { browsersConnected: 0, commandsRegistered: 0, daemonsActive: 0, systemReady: false };
@@ -64,12 +74,16 @@ export class PingServerCommand extends PingCommand {
       // Get WebSocket transport to count connected browsers
       let browsersConnected = 0;
       try {
-        const transports = (system as any).transports || [];
-        const wsTransport = transports.find((t: any) => t.name === 'websocket-server');
-        if (wsTransport && wsTransport.clients) {
-          browsersConnected = wsTransport.clients.size || 0;
+        interface Transport {
+          name: string;
+          clients?: Set<unknown>;
         }
-      } catch (e) {
+        const transports = (system as { transports?: Transport[] }).transports ?? [];
+        const wsTransport = transports.find((t: Transport) => t.name === 'websocket-server');
+        if (wsTransport?.clients) {
+          browsersConnected = wsTransport.clients.size ?? 0;
+        }
+      } catch {
         // Silently fail if transport access doesn't work
       }
 
@@ -80,16 +94,20 @@ export class PingServerCommand extends PingCommand {
       // Get CommandDaemon to count registered commands
       let commandsRegistered = 0;
       try {
-        const commandDaemon = (system as any).systemDaemons?.find((d: any) => d.name === 'command-daemon');
-        if (commandDaemon && commandDaemon.commands) {
-          commandsRegistered = commandDaemon.commands.size || 0;
+        interface Daemon {
+          name: string;
+          commands?: Map<string, unknown>;
         }
-      } catch (e) {
+        const commandDaemon = (system as { systemDaemons?: Daemon[] }).systemDaemons?.find((d: Daemon) => d.name === 'command-daemon');
+        if (commandDaemon?.commands) {
+          commandsRegistered = commandDaemon.commands.size ?? 0;
+        }
+      } catch {
         // Silently fail
       }
 
       // Count active daemons
-      const daemonsActive = (system as any).systemDaemons?.length || 0;
+      const daemonsActive = (system as { systemDaemons?: unknown[] }).systemDaemons?.length ?? 0;
 
       return {
         browsersConnected: browserAlive ? browsersConnected : 0, // Only count if browser responds
@@ -97,7 +115,7 @@ export class PingServerCommand extends PingCommand {
         daemonsActive,
         systemReady: browserAlive || commandsRegistered > 0 // System ready if browser responds OR commands registered
       };
-    } catch (error) {
+    } catch {
       return { browsersConnected: 0, commandsRegistered: 0, daemonsActive: 0, systemReady: false };
     }
   }
