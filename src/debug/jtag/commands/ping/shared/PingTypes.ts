@@ -16,7 +16,6 @@ export interface ServerEnvironmentInfo {
   uptime: number;
   memory: { used: number; total: number; usage: string };
   health: {
-    browsersConnected: number;
     commandsRegistered: number;
     daemonsActive: number;
     systemReady: boolean;
