@@ -67,27 +67,21 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
       const sys = JTAGSystemServer.instance;
 
       if (!sys) {
-        return { browsersConnected: 0, commandsRegistered: 0, daemonsActive: 0, systemReady: false };
+        return { commandsRegistered: 0, daemonsActive: 0, systemReady: false };
       }
 
-      interface Transport { name: string; clients?: Set<unknown> }
-      interface Daemon { name: string; commands?: Map<string, unknown> }
-
-      const transports = (sys as { transports?: Transport[] }).transports ?? [];
-      const daemons = (sys as { systemDaemons?: Daemon[] }).systemDaemons ?? [];
-
-      const browsersConnected = transports.find(t => t.name === 'websocket-server')?.clients?.size ?? 0;
-      const commandsRegistered = daemons.find(d => d.name === 'command-daemon')?.commands?.size ?? 0;
+      const daemons = sys.systemDaemons ?? [];
+      const commandDaemon = daemons.find(d => d.name === 'command-daemon') as unknown as { commands?: Map<string, unknown> };
+      const commandsRegistered = commandDaemon?.commands?.size ?? 0;
       const daemonsActive = daemons.length;
 
       return {
-        browsersConnected,
         commandsRegistered,
         daemonsActive,
         systemReady: commandsRegistered > 0
       };
     } catch {
-      return { browsersConnected: 0, commandsRegistered: 0, daemonsActive: 0, systemReady: false };
+      return { commandsRegistered: 0, daemonsActive: 0, systemReady: false };
     }
   }
 }
