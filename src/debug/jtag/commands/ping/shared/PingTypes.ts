@@ -26,6 +26,8 @@ export interface ServerEnvironmentInfo {
 
 export interface BrowserEnvironmentInfo {
   type: 'browser';
+  packageName: string;
+  packageVersion: string;
   name: string;
   version: string;
   runtime: string;

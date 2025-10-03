@@ -7,6 +7,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import type { PingParams, PingResult, BrowserEnvironmentInfo } from '../shared/PingTypes';
+import { VERSION, PACKAGE_NAME } from '../../../shared/version';
 
 export class PingBrowserCommand extends CommandBase<PingParams, PingResult> {
 
@@ -39,6 +40,8 @@ export class PingBrowserCommand extends CommandBase<PingParams, PingResult> {
 
     return {
       type: 'browser',
+      packageName: PACKAGE_NAME,
+      packageVersion: VERSION,
       name: browserInfo.name,
       version: browserInfo.version,
       platform: navigator.platform,
