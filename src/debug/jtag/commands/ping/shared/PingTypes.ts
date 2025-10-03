@@ -21,23 +21,37 @@ export interface PingParams extends JTAGPayload {
 }
 
 /**
+ * Consistent environment information structure
+ * Both browser and server use same keys for comparable data
+ */
+interface BaseEnvironmentInfo {
+  type: 'browser' | 'server';
+  name: string;              // Browser name or package name
+  version: string;           // Browser version or package version
+  platform: string;          // OS platform
+  runtime: string;           // Runtime info (userAgent or nodeVersion)
+  timestamp: string;
+}
+
+/**
  * Browser-specific environment information
  */
-export interface BrowserEnvironmentInfo {
+export interface BrowserEnvironmentInfo extends BaseEnvironmentInfo {
   type: 'browser';
-  userAgent: string;
-  platform: string;
+  name: string;              // Extracted from userAgent (Chrome, Safari, Firefox)
+  version: string;           // Browser version
+  platform: string;          // navigator.platform
+  runtime: string;           // Full userAgent string
   language: string;
-  cookieEnabled: boolean;
-  onLine: boolean;
-  screenResolution: {
-    width: number;
-    height: number;
-    colorDepth: number;
-  };
+  online: boolean;
   viewport: {
     width: number;
     height: number;
+  };
+  screen: {
+    width: number;
+    height: number;
+    colorDepth: number;
   };
   url: string;
   timestamp: string;
@@ -46,10 +60,12 @@ export interface BrowserEnvironmentInfo {
 /**
  * Server-specific environment information
  */
-export interface ServerEnvironmentInfo {
+export interface ServerEnvironmentInfo extends BaseEnvironmentInfo {
   type: 'server';
-  nodeVersion: string;
-  platform: string;
+  name: string;              // Package name
+  version: string;           // Package version
+  platform: string;          // OS platform (darwin, linux, win32)
+  runtime: string;           // Node.js version
   arch: string;
   processId: number;
   uptime: number;
@@ -58,11 +74,6 @@ export interface ServerEnvironmentInfo {
     total: number;
     usage: string;
   };
-  cpuUsage: {
-    user: number;
-    system: number;
-  };
-  // System health information
   health: {
     browsersConnected: number;
     commandsRegistered: number;
@@ -76,6 +87,14 @@ export interface ServerEnvironmentInfo {
  * Union type for environment information
  */
 export type EnvironmentInfo = BrowserEnvironmentInfo | ServerEnvironmentInfo;
+
+/**
+ * Complete system health from both environments
+ */
+export interface SystemHealth {
+  server: ServerEnvironmentInfo;
+  browser?: BrowserEnvironmentInfo;  // Optional if browser not connected
+}
 
 /**
  * Ping command result
@@ -104,7 +123,7 @@ export function createPingParams(
   return {
     context,
     sessionId,
-    message: options.message || 'ping',
+    message: options.message ?? 'ping',
     includeTiming: options.includeTiming ?? true,
     includeEnvironment: options.includeEnvironment ?? true,
     ...options

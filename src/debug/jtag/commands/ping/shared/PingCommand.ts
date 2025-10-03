@@ -33,10 +33,11 @@ export abstract class PingCommand extends CommandBase<PingParams, PingResult> {
       
       console.log(`✅ ${this.getEnvironmentLabel()}: Pong! Round-trip: ${roundTripTime !== undefined ? `${roundTripTime}ms` : 'not measured'}`);
 
+      // Always include environment info (summary by default, full if requested)
       return createPingResultFromParams(pingParams, {
         success: true,
         roundTripTime,
-        environment: pingParams.includeEnvironment ? environment : undefined
+        environment
       });
 
     } catch (error) {
