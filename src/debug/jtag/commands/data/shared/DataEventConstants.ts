@@ -7,7 +7,7 @@
 /**
  * Generate data event name from collection
  */
-export const getDataEventName = (collection: string, action: 'created' | 'updated' | 'deleted') =>
+export const getDataEventName = (collection: string, action: 'created' | 'updated' | 'deleted' | 'truncated') =>
   `data:${collection}:${action}` as const;
 
 /**

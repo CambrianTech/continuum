@@ -653,22 +653,41 @@ Must prove **both database-side AND event-driven UI** for all collections:
 
 **Success Criteria**: All 9 tests must pass for complete real-time CRUD system
 
-### 📋 Manual Test Results (2025-09-23 17:29)
+### 📋 CRUD Test Strategy (2025-10-04)
 
-#### Database Tests: ✅ PASS
-- **Room UPDATE**: `5e71a0c8-0303-4eb8-a478-3a121248` - Version 1→2, description updated
-- **User UPDATE**: `002350cc-0031-408d-8040-004f000f` - Version 1→2, displayName updated
-- **ChatMessage UPDATE**: `035f3169-392e-4b50-8561-3966d3d18a26` - Version 1→2, content updated
+**Key Insight**: Widgets use pagination (20 items per page by default), so tests CANNOT expect all database records to be loaded in the widget immediately.
 
-#### Event Tests: ⚠️ PARTIAL
-- **Room Events**: `data:Room:updated` - TBD (need to check different log patterns)
-- **User Events**: No `data:User:updated` events found in logs
-- **ChatMessage Events**: No `data:ChatMessage:updated` events found in logs
+#### ✅ CORRECT Test Approach:
+```typescript
+// ✅ Verify that NEW test data appears in widget (proves real-time events work)
+const testMessagesInWidget = widgetEntities.filter(m => m.senderId === testUserId);
+if (testMessagesInWidget.length !== 3) {
+  throw new Error('Real-time events broken - test messages not in widget');
+}
+```
 
-#### Next Steps:
-1. Fix event emission for User and ChatMessage updates
-2. Test widget state inspection for all three widgets
-3. Prove UI synchronization works end-to-end
+#### ❌ WRONG Test Approach:
+```typescript
+// ❌ Expecting ALL database records to be loaded (ignores pagination)
+if (widgetEntities.length < totalMessagesInDatabase) {
+  throw new Error('Events broken');  // FALSE POSITIVE - widget uses pagination!
+}
+```
+
+**Why This Matters**:
+- Database might have 52 messages
+- Widget loads 20 per page (pagination/infinite scroll)
+- Widget might show 41 messages (2 pages loaded)
+- Test creates 3 NEW messages
+- **Test should verify those 3 NEW messages appear, not that all 52 are loaded**
+
+**CRUD Test Requirements**:
+1. **CREATE**: Add 3 test records → verify in database
+2. **READ**: Query database → verify test records exist
+3. **UPDATE**: Modify 1 test record → verify change persisted in database
+4. **DELETE**: Remove 1 test record → verify removed from database
+5. **HTML Sync**: Verify 3 NEW test records appear in widget (proves real-time events)
+6. **Cleanup**: Delete all test data (keep database clean)
 
 ---
 
