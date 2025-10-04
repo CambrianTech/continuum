@@ -28,6 +28,8 @@ echo "-------------------------------------"
 
 echo "🔨 Running TypeScript compilation..."
 npm run build:ts
+# Restore version.ts to avoid timestamp-only changes in commit
+git restore shared/version.ts 2>/dev/null || true
 echo "✅ TypeScript compilation passed"
 
 # Check if system is already running and healthy
@@ -255,6 +257,12 @@ REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${COMMIT_HAS
 mkdir -p "$REPO_VALIDATION_DIR"
 cp -r "$VALIDATION_RUN_DIR"/* "$REPO_VALIDATION_DIR/"
 echo "✅ Validation artifacts copied to ${REPO_VALIDATION_DIR}"
+
+# Stage the validation artifacts for this commit
+cd "$REPO_ROOT"
+git add ".continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
+echo "✅ Validation artifacts staged for git commit"
+cd - > /dev/null
 
 # Phase 6: Commit Message Enhancement
 echo ""
