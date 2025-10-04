@@ -67,8 +67,19 @@ Thumbs.db
 packages/cli/bin/debug-*.js
 
 # AI system generated files and directories
-.continuum/
-!.continuum/sessions/validation/
+# Ignore all .continuum directories except sessions/validation
+**/.continuum/data/
+**/.continuum/generator/
+**/.continuum/jtag/
+**/.continuum/test*/
+**/.continuum/sessions/user/
+**/.continuum/sessions/shared/
+**/.continuum/sessions/cli/
+**/.continuum/shared/
+**/.continuum/directory.json
+**/.continuum/*.log
+**/examples/**/.continuum/
+# Keep validation directory for historical test artifacts
 .claude-pool/
 .claude-messages/
 .continuum-comm/
