@@ -249,21 +249,6 @@ if [ -e "$VALIDATION_RUN_DIR/logs" ]; then
     echo "✅ $VALIDATION_RUN_DIR/logs (optional)"
 fi
 
-# Copy validation artifacts to repo root for git tracking
-echo ""
-echo "📦 Copying validation artifacts to repo root for git tracking..."
-REPO_ROOT="../../../"
-REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${VALIDATION_ID}"
-mkdir -p "$REPO_VALIDATION_DIR"
-cp -r "$VALIDATION_RUN_DIR"/* "$REPO_VALIDATION_DIR/"
-echo "✅ Validation artifacts copied to ${REPO_VALIDATION_DIR}"
-
-# Stage the validation artifacts immediately
-cd "$REPO_ROOT"
-git add ".continuum/sessions/validation/run_${VALIDATION_ID}"
-cd - > /dev/null
-echo "✅ Validation artifacts staged for commit"
-
 # Phase 6: Commit Message Enhancement
 echo ""
 echo "📝 Phase 6: Preparing validation summary for commit message"
