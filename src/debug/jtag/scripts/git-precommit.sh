@@ -29,7 +29,9 @@ echo "-------------------------------------"
 echo "🔨 Running TypeScript compilation..."
 npm run build:ts
 # Restore version.ts to avoid timestamp-only changes in commit
-git restore shared/version.ts 2>/dev/null || true
+cd ../../..
+git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
+cd src/debug/jtag
 echo "✅ TypeScript compilation passed"
 
 # Check if system is already running and healthy
