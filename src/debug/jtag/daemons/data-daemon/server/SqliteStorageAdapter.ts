@@ -1796,16 +1796,22 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     }
 
     try {
-      const result = await this.withTransaction(async () => {
-        // Delete all records from the collection
-        const deleteResult = await this.runStatement('DELETE FROM _data WHERE collection = ?', [collection]);
+      const tableName: string = SqlNamingConverter.toTableName(collection);
 
-        // Ready for future field extraction cleanup
+      // Validate table name to prevent SQL injection (must be alphanumeric + underscores)
+      if (!/^[a-z0-9_]+$/i.test(tableName)) {
+        throw new Error(`Invalid table name: ${tableName}`);
+      }
+
+      const result: number = await this.withTransaction(async (): Promise<number> => {
+        // Use DELETE with table name (cannot parameterize table names in SQL)
+        // Table name validated above to prevent injection
+        const deleteResult = await this.runStatement(`DELETE FROM ${tableName}`, []);
 
         // Update collection stats
         await this.updateCollectionStats(collection);
 
-        return deleteResult.changes;
+        return deleteResult.changes ?? 0;
       });
 
       console.log(`🧹 SQLite: Truncated collection '${collection}' - ${result} records removed`);
