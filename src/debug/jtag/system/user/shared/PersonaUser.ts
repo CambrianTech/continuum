@@ -89,15 +89,25 @@ export class PersonaUser extends AIUser {
 
     console.log(`💬 PersonaUser ${this.displayName}: Received message from ${messageEntity.senderName}`);
 
-    // Simple response logic (Phase 1 - no AI API yet)
-    // Respond with probability 0.3 to avoid spam
-    if (Math.random() > 0.3) {
-      console.log(`🤫 PersonaUser ${this.displayName}: Choosing not to respond`);
+    const messageText = messageEntity.content?.text?.toLowerCase() || '';
+
+    // Keyword triggers - respond if message contains these
+    const keywords = ['hello', 'help', 'question', 'persona', 'ai', 'bot'];
+    const hasKeyword = keywords.some(keyword => messageText.includes(keyword));
+
+    if (hasKeyword) {
+      console.log(`🎯 PersonaUser ${this.displayName}: Keyword detected, responding...`);
+      await this.respondToMessage(messageEntity);
       return;
     }
 
-    // Generate simple templated response
-    await this.respondToMessage(messageEntity);
+    // Random response with low probability to avoid spam
+    if (Math.random() < 0.2) {
+      console.log(`🎲 PersonaUser ${this.displayName}: Random response triggered`);
+      await this.respondToMessage(messageEntity);
+    } else {
+      console.log(`🤫 PersonaUser ${this.displayName}: Staying quiet`);
+    }
   }
 
   /**
