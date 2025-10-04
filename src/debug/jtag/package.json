@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.2243",
+  "version": "1.0.2245",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -126,8 +126,8 @@
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; find .continuum/sessions -mindepth 1 -maxdepth 1 ! -name 'validation' -exec rm -rf {} + 2>/dev/null || true; rm -rf examples/*/.continuum/jtag/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
-    "prebuild": "npm run clean:all && npx tsx generator/generate-structure.ts && npx tsx generator/generate-version.ts",
-    "build:ts": "tsc --project tsconfig.json",
+    "prebuild": "npm run clean:all && npx tsx generator/generate-structure.ts",
+    "build:ts": "npx tsx generator/generate-version.ts && tsc --project tsconfig.json",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
     "build": "npm run prebuild && npm run build:ts",

@@ -70,8 +70,13 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
         return { commandsRegistered: 0, daemonsActive: 0, systemReady: false };
       }
 
+      interface ICommandDaemonWithCommands {
+        name: string;
+        commands?: Map<string, unknown>;
+      }
+
       const daemons = sys.systemDaemons ?? [];
-      const commandDaemon = daemons.find(d => d.name === 'command-daemon') as unknown as { commands?: Map<string, unknown> };
+      const commandDaemon = daemons.find(d => d.name === 'command-daemon') as ICommandDaemonWithCommands | undefined;
       const commandsRegistered = commandDaemon?.commands?.size ?? 0;
       const daemonsActive = daemons.length;
 

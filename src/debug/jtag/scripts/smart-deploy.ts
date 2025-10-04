@@ -122,8 +122,12 @@ function smartDeploy(): void {
   const { version, tarballName } = getVersionInfo();
   
   if (!fs.existsSync(tarballName)) {
-    console.log('❌ Tarball missing - build first');
-    process.exit(1);
+    console.log('📦 Tarball missing - creating without version bump...');
+    execSync('npm pack', { stdio: 'inherit' });
+    if (!fs.existsSync(tarballName)) {
+      console.log('❌ Failed to create tarball');
+      process.exit(1);
+    }
   }
   
   console.log(`📦 Version: ${version}`);

@@ -171,8 +171,9 @@ async function smartBuild(): Promise<void> {
   
   const checks: BuildCheck[] = [
     checkGeneratedFiles(),
-    checkTypeScriptBuild(),
-    checkTarball()
+    checkTypeScriptBuild()
+    // Tarball check disabled for development - only pack for releases with: npm run pack
+    // checkTarball()
   ];
   
   for (const check of checks) {
