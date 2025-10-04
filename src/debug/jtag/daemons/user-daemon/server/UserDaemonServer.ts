@@ -191,6 +191,11 @@ export class UserDaemonServer extends UserDaemon {
       // Create PersonaUser instance
       const personaUser = new PersonaUser(userEntity, userState, storage);
 
+      // TODO: Create JTAGClient for this persona (Phase 2)
+      // const { JTAGClient } = await import('../../../system/core/client/shared/JTAGClient');
+      // const clientResult = await JTAGClient.connect({ userId: userEntity.id, context: 'server' });
+      // personaUser.setClient(clientResult.client);
+
       // Initialize persona (loads rooms, subscribes to events)
       await personaUser.initialize();
 
