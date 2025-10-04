@@ -33,6 +33,7 @@ export class UserDaemonServer extends UserDaemon {
 
   /**
    * Subscribe to user lifecycle events
+   * Note: Chat messages are handled by individual PersonaUser instances, not UserDaemon
    */
   private async setupEventSubscriptions(): Promise<void> {
     // Listen for user creation
@@ -190,10 +191,13 @@ export class UserDaemonServer extends UserDaemon {
       // Create PersonaUser instance
       const personaUser = new PersonaUser(userEntity, userState, storage);
 
+      // Initialize persona (loads rooms, subscribes to events)
+      await personaUser.initialize();
+
       // Register in our client registry
       this.personaClients.set(userEntity.id, personaUser);
 
-      console.log(`✅ UserDaemon: Created PersonaUser client for ${userEntity.displayName}`);
+      console.log(`✅ UserDaemon: Created and initialized PersonaUser for ${userEntity.displayName}`);
 
     } catch (error) {
       console.error(`❌ UserDaemon: Failed to create persona client for ${userEntity.displayName}:`, error);

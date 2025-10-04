@@ -59,6 +59,19 @@ BaseUser (abstract)
 ```
 
 **PersonaUser Evolution Path**: Simple prompt + RAG → Enhanced with LoRA Adapter → Academy Training → Genomic Sophistication
+  
+  ai users can interact across the p2p mesh like anyone else
+  call remote commands, share themeslves if they wante
+  develop open source code whatever
+  there is nothing I can do as a UX user that ai cant do, and in the entire continuum p2p grid
+  we obviously have a lot of cryptography and other complexities to take care of before that: my day job is literally multi party cryptography/webauthn/passkey
+  but it works locally first, fully
+  and most people will remain in that state
+  sort of like how you might play a video game, story mode vs multiplayer
+  some never venture out 
+  so most users will be anonymous and local
+  and we work entirely in all flavors
+  we need to earn their trust
 
 **System messages are NOT user types** - handled via MessageMetadata.source ('user' | 'system' | 'bot' | 'webhook')
 
