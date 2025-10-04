@@ -21,6 +21,8 @@ async function testDatabaseChatIntegration(): Promise<void> {
   console.log('=================================');
 
   let client = null;
+  let userId: string | undefined;
+  const messageIds: string[] = [];
   const testTimestamp = Date.now();
 
   try {
@@ -182,20 +184,15 @@ async function testDatabaseChatIntegration(): Promise<void> {
     const widgetEntities = widgetData.state?.entities || [];
     console.log(`📊 Chat widget has ${widgetEntities.length} message entities loaded`);
 
-    // Expected count = initialMessageCount (from before) + 3 test messages
-    const expectedCount = initialMessageCount + 3;
-    if (widgetEntities.length < expectedCount) {
-      throw new Error(`❌ REAL-TIME EVENTS BROKEN: Widget has ${widgetEntities.length} messages, expected at least ${expectedCount} (${initialMessageCount} initial + 3 test). Events not propagating to UI!`);
-    }
-
-    // Verify our test messages are in the widget by checking for messages from our test user
+    // Widget uses pagination (20 messages per page), so we can't expect ALL messages
+    // Instead, verify that our 3 NEW test messages appear in the widget (real-time events working)
     const testMessagesInWidget = widgetEntities.filter((m: any) => m.senderId === userId);
 
     if (testMessagesInWidget.length !== 3) {
-      throw new Error(`❌ REAL-TIME EVENTS BROKEN: Only ${testMessagesInWidget.length}/3 test messages in chat widget. Event system not working!`);
+      throw new Error(`❌ REAL-TIME EVENTS BROKEN: Only ${testMessagesInWidget.length}/3 test messages in chat widget. Event system not working! Widget has ${widgetEntities.length} total messages.`);
     }
 
-    console.log(`✅ Chat widget rendering verified - all ${expectedCount} messages present (${initialMessageCount} initial + 3 test)`);
+    console.log(`✅ Chat widget rendering verified - all 3 test messages present (widget using pagination, has ${widgetEntities.length} loaded)`);
 
     // Test 8: UPDATE operation - modify first test message
     console.log('✏️ 8. Testing message UPDATE operation...');
@@ -277,6 +274,31 @@ async function testDatabaseChatIntegration(): Promise<void> {
     });
     throw error;
   } finally {
+    // Cleanup: Delete test data
+    if (client && userId) {
+      try {
+        console.log('🧹 Cleaning up test data...');
+
+        // Delete test messages
+        for (const msgId of messageIds) {
+          await client.commands['data/delete']({
+            collection: ChatMessageEntity.collection,
+            id: msgId
+          }).catch(() => {}); // Ignore errors if already deleted
+        }
+
+        // Delete test user
+        await client.commands['data/delete']({
+          collection: UserEntity.collection,
+          id: userId
+        }).catch(() => {});
+
+        console.log('✅ Test data cleaned up');
+      } catch (cleanupError) {
+        console.warn('⚠️ Cleanup failed:', cleanupError);
+      }
+    }
+
     // Always disconnect
     if (client) {
       try {

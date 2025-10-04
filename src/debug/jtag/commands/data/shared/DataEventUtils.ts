@@ -11,7 +11,7 @@ import { getDataEventName } from './DataEventConstants';
 /**
  * CRUD operation actions
  */
-export type CrudAction = 'created' | 'updated' | 'deleted';
+export type CrudAction = 'created' | 'updated' | 'deleted' | 'truncated';
 
 /**
  * Command response structure for CRUD events
@@ -58,7 +58,7 @@ export function subscribeToAllCrudEvents<T>(
   // Subscribe to individual CRUD events until wildcard infrastructure is complete
   const unsubscribeFunctions: (() => void)[] = [];
 
-  (['created', 'updated', 'deleted'] as CrudAction[]).forEach(action => {
+  (['created', 'updated', 'deleted', 'truncated'] as CrudAction[]).forEach(action => {
     const eventName = getDataEventName(collection, action);
     const unsubscribe = Events.subscribe<CrudEventResponse<T>>(eventName, (eventData: CrudEventResponse<T>) => {
       console.log(`🔥 DataEventUtils: CRUD event received - ${collection}.${action}`, eventData);
@@ -166,10 +166,11 @@ export function createEntityCrudHandler<T extends { id: string }>(
     add: (entity: T) => void;
     update: (id: string, entity: T) => void;
     remove: (id: string) => void;
+    clear?: () => void;
   }
 ): () => void {
   return subscribeToAllCrudEvents<T>(collection, (entity: T, action: CrudAction) => {
-    console.log(`🔧 DataEventUtils: EntityScroller ${action} for ${collection}/${entity.id}`);
+    console.log(`🔧 DataEventUtils: EntityScroller ${action} for ${collection}/${entity?.id ?? 'N/A'}`);
 
     switch (action) {
       case 'created':
@@ -180,6 +181,14 @@ export function createEntityCrudHandler<T extends { id: string }>(
         break;
       case 'deleted':
         scroller.remove(entity.id);
+        break;
+      case 'truncated':
+        console.log(`🧹 DataEventUtils: Clearing scroller for ${collection} (truncated)`);
+        if (scroller.clear) {
+          scroller.clear();
+        } else {
+          console.warn(`⚠️ DataEventUtils: Scroller for ${collection} does not have clear() method`);
+        }
         break;
       default:
         console.warn(`⚠️ DataEventUtils: Unknown action ${action} for ${collection}`);

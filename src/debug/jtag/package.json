@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.2249",
+  "version": "1.0.2251",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -147,7 +147,7 @@
     "system:stop": "npx tsx scripts/cleanup-dynamic-ports.ts --force && npm run signal:clear",
     "system:wait": "npm run signal:wait",
     "system:restart": "npm run system:stop && npm run restart",
-    "system:seed": "echo '🌱 Seeding system data after startup...' && sleep 10 && npm run data:reseed || echo '⚠️ Data seeding failed - system may not be fully ready'",
+    "system:seed": "echo '🌱 Seeding system data after startup...' && sleep 10 && npm run data:reseed",
     "signal:ready": "npx tsx scripts/signal-system-ready.ts",
     "signal:check": "npx tsx scripts/signal-system-ready.ts --check",
     "signal:wait": "npx tsx scripts/signal-system-ready.ts --check",
@@ -281,7 +281,7 @@
     "dev:iterate": "npx tsx scripts/autonomous-dev-toolkit.ts iterate",
     "dev:stress": "npx tsx scripts/autonomous-dev-toolkit.ts stress",
     "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
-    "data:clear": "npx tsx -e \"import { execSync } from 'child_process'; console.log('🧹 Clearing SQLite tables...'); try { execSync('sqlite3 .continuum/jtag/data/database.sqlite \\'DELETE FROM users; DELETE FROM rooms; DELETE FROM chat_messages;\\'', {stdio: 'inherit'}); console.log('✅ Data tables cleared'); } catch(e) { console.log('⚠️  Could not clear tables:', e.message); }\"",
+    "data:clear": "npx tsx -e \"console.log('🧹 Clearing database tables via JTAG (emits events)...'); const { execSync } = require('child_process'); execSync('./jtag data/truncate --collection=ChatMessage', {stdio: 'inherit'}); execSync('./jtag data/truncate --collection=Room', {stdio: 'inherit'}); execSync('./jtag data/truncate --collection=User', {stdio: 'inherit'}); console.log('✅ Database tables cleared with events emitted');\"",
     "data:seed": "npx tsx scripts/seed-continuum.ts",
     "data:reseed": "npm run data:clear && npm run data:seed",
     "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'"

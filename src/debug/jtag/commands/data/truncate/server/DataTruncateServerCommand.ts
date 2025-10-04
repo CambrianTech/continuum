@@ -10,6 +10,8 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataTruncateParams, DataTruncateResult } from '../shared/DataTruncateTypes';
 import { createDataTruncateResultFromParams } from '../shared/DataTruncateTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { Events } from '../../../../system/core/server/shared/Events';
+import { getDataEventName } from '../../shared/DataEventConstants';
 
 export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, DataTruncateResult> {
 
@@ -37,6 +39,24 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
 
       if (result.success) {
         console.log(`✅ DATA SERVER: Truncated collection '${collection}' via adapter`);
+
+        // Emit truncated event for widgets to clear their state
+        const eventName = getDataEventName(collection, 'truncated');
+        await Events.emit(eventName, {
+          success: true,
+          data: {
+            collection,
+            id: '', // No specific ID for truncate operation
+            data: {}, // No entity data for truncate
+            metadata: {
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              version: 0
+            }
+          },
+          timestamp: new Date().toISOString()
+        }, this.context, this.commander);
+        console.log(`📢 DATA SERVER: Emitted ${eventName} event`);
 
         return createDataTruncateResultFromParams(params, {
           success: true,
