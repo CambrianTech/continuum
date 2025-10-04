@@ -204,8 +204,11 @@ EOF
         # VALIDATION ARTIFACTS: Add to git for commit inclusion
         echo "📋 Validation artifacts created for bulletproof validation..."
 
-        # Force add validation directory (bypasses .continuum/ gitignore)
-        git add -f "$VALIDATION_RUN_DIR"
+        # Stage validation directory from repo root
+        REPO_ROOT="../../.."
+        cd "$REPO_ROOT"
+        git add "src/debug/jtag/$VALIDATION_RUN_DIR"
+        cd - > /dev/null
         echo "✅ Validation artifacts staged for commit"
 
         # Validation successful - artifacts will be committed with code changes
