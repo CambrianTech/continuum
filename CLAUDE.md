@@ -53,6 +53,9 @@ BaseUser (abstract)
   BaseUser.entity:UserEntity (all user specific attributes, mostly for UX and identification)
   BaseUser.state:UserStateEntity (current tab, open content, theme)
 
+  The UserDaemon manages the creation of users via a factory approach
+  The BaseUser creates its own entities, and extensions can manage additional storage and intialization
+
 ```
 
 **PersonaUser Evolution Path**: Simple prompt + RAG → Enhanced with LoRA Adapter → Academy Training → Genomic Sophistication
