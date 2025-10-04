@@ -150,11 +150,11 @@ echo ""
 echo "📦 Phase 4: Collecting complete session artifacts for commit inclusion"
 echo "---------------------------------------------------------------------"
 
-# Get current commit hash for validation directory naming (following legacy pattern)
-COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "fallback-$(date +%s)")
-VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
+# Use temporary name - will be renamed in post-commit with actual hash
+TEMP_VALIDATION_ID="precommit-temp-$$"
+VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${TEMP_VALIDATION_ID}"
 
-echo "🔍 Creating validation directory: $VALIDATION_RUN_DIR"
+echo "🔍 Creating temporary validation directory: $VALIDATION_RUN_DIR"
 mkdir -p "$VALIDATION_RUN_DIR"
 
 # Find the active browser session (where screenshots were saved)
@@ -253,16 +253,14 @@ fi
 echo ""
 echo "📦 Copying validation artifacts to repo root for git tracking..."
 REPO_ROOT="../../../"
-REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
+REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${TEMP_VALIDATION_ID}"
 mkdir -p "$REPO_VALIDATION_DIR"
 cp -r "$VALIDATION_RUN_DIR"/* "$REPO_VALIDATION_DIR/"
 echo "✅ Validation artifacts copied to ${REPO_VALIDATION_DIR}"
 
-# Stage the validation artifacts for this commit
-cd "$REPO_ROOT"
-git add ".continuum/sessions/validation/run_${COMMIT_HASH:0:12}"
-echo "✅ Validation artifacts staged for git commit"
-cd - > /dev/null
+# Mark this for post-commit processing (save temp ID for post-commit hook)
+echo "$TEMP_VALIDATION_ID" > "${REPO_ROOT}.continuum/.precommit-validation-id"
+echo "✅ Validation will be renamed with commit hash in post-commit hook"
 
 # Phase 6: Commit Message Enhancement
 echo ""
