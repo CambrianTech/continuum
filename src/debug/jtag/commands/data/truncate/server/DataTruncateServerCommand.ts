@@ -41,8 +41,24 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
         console.log(`✅ DATA SERVER: Truncated collection '${collection}' via adapter`);
 
         // Emit truncated event for widgets to clear their state
+        // For truncate, we don't have entity data (clearing all), so use empty object with proper typing
+        interface TruncateEventData {
+          success: boolean;
+          data: {
+            collection: string;
+            id: string;
+            data: Record<string, never>; // Empty object type
+            metadata?: {
+              createdAt: string;
+              updatedAt: string;
+              version: number;
+            };
+          };
+          timestamp?: string;
+        }
+
         const eventName = getDataEventName(collection, 'truncated');
-        await Events.emit(eventName, {
+        const eventData: TruncateEventData = {
           success: true,
           data: {
             collection,
@@ -55,7 +71,9 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
             }
           },
           timestamp: new Date().toISOString()
-        }, this.context, this.commander);
+        };
+
+        await Events.emit<TruncateEventData>(eventName, eventData, this.context, this.commander);
         console.log(`📢 DATA SERVER: Emitted ${eventName} event`);
 
         return createDataTruncateResultFromParams(params, {
