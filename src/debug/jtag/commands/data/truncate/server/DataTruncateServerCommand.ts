@@ -84,7 +84,7 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
         console.error(`❌ DATA SERVER: Truncate operation failed for '${collection}':`, result.error);
         return createDataTruncateResultFromParams(params, {
           success: false,
-          error: result.error || 'Truncate operation failed'
+          error: result.error ?? 'Truncate operation failed'
         });
       }
 
