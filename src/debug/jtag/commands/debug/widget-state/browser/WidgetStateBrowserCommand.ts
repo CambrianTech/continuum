@@ -122,6 +122,25 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
         connectivity = WidgetConnectivityTester.testDataConnectivity(widgetRef.element);
       }
 
+      // Extract entities from scroller - access widget element directly, not analyzed state
+      let entities = [];
+      const widget = widgetRef.element as any;
+      if (widget.scroller && typeof widget.scroller === 'object') {
+        // entities might be a getter function or array property
+        const entitiesValue = typeof widget.scroller.entities === 'function'
+          ? widget.scroller.entities()
+          : widget.scroller.entities;
+
+        if (Array.isArray(entitiesValue)) {
+          entities = entitiesValue;
+          logs.push(`📦 Extracted ${entities.length} entities from widget scroller`);
+        } else {
+          logs.push(`⚠️ Widget has scroller but entities is not an array: ${typeof entitiesValue}`);
+        }
+      } else {
+        logs.push(`⚠️ Widget does not have scroller or scroller is not an object: ${typeof widget.scroller}`);
+      }
+
       return createWidgetStateDebugResult(this.context, this.context.uuid, {
         success: true,
         widgetFound: true,
@@ -132,7 +151,7 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
           properties: widgetState.properties,
           messageCount: widgetState.messageCount,
           currentRoomId: widgetState.currentRoomId,
-          entities: [], // Could be enhanced to extract entities
+          entities,
         },
         messages,
         eventSystem,

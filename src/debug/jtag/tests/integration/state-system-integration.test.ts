@@ -88,6 +88,7 @@ async function testStateSystemIntegration(): Promise<void> {
       sessionId: testSessionId,
       userId: stateUserId, // Should be injected into room data
       data: {
+        uniqueId: `state-test-room-${testTimestamp}`,
         name: 'state-test-room',
         displayName: 'State Test Room',
         description: 'Test room for state integration',

@@ -44,8 +44,10 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
 
     return {
       type: 'server',
-      name: pkg.name,
-      version: pkg.version,
+      packageName: pkg.name,
+      packageVersion: pkg.version,
+      name: 'Node.js',
+      version: proc.version,
       runtime: proc.version,
       platform: proc.platform,
       arch: proc.arch,
