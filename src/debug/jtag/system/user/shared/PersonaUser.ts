@@ -15,23 +15,37 @@
 import { AIUser } from './AIUser';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { UserStateEntity } from '../../data/entities/UserStateEntity';
-import type { IUserStateStorage } from '../storage/IUserStateStorage';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
-import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import { Commands } from '../../core/client/shared/Commands';
+import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
+import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 
 /**
  * PersonaUser - Our internal AI citizens
+ *
+ * First-class citizens with their own JTAGClient for universal Commands/Events API
  */
 export class PersonaUser extends AIUser {
   private isInitialized: boolean = false;
+  private client?: JTAGClient; // Optional - set by UserDaemon after creation
+
+  /**
+   * Set JTAGClient for this persona (called by UserDaemon)
+   * Dependency injection pattern for clean separation of concerns
+   */
+  setClient(client: JTAGClient): void {
+    this.client = client;
+    console.log(`🔌 PersonaUser ${this.displayName}: Client connected`);
+  }
 
   /**
    * Initialize persona - use BaseUser helpers for room management and event subscriptions
@@ -99,7 +113,7 @@ export class PersonaUser extends AIUser {
 
       const responseText = responses[Math.floor(Math.random() * responses.length)];
 
-      // Create response message
+      // Create response message entity
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
       responseMessage.senderId = this.id;
@@ -110,11 +124,25 @@ export class PersonaUser extends AIUser {
       responseMessage.timestamp = new Date();
       responseMessage.reactions = [];
 
-      // Post response via data/create
-      await DataDaemon.store<ChatMessageEntity>(
-        COLLECTIONS.CHAT_MESSAGES,
-        responseMessage
-      );
+      // ✅ Post response via JTAGClient - universal Commands API
+      // Prefer this.client if available (set by UserDaemon), fallback to shared instance
+      const result = this.client
+        ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
+            context: this.client.context,
+            sessionId: this.client.sessionId,
+            collection: ChatMessageEntity.collection,
+            backend: 'server',
+            data: responseMessage
+          })
+        : await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
+            collection: ChatMessageEntity.collection,
+            backend: 'server',
+            data: responseMessage
+          });
+
+      if (!result.success) {
+        throw new Error(`Failed to create message: ${result.error}`);
+      }
 
       console.log(`✅ PersonaUser ${this.displayName}: Posted response: "${responseText}"`);
 
@@ -152,10 +180,10 @@ export class PersonaUser extends AIUser {
   /**
    * PersonaUser creation recipe
    *
-   * Follows ARCHITECTURE-RULES.md:
-   * - Uses DataDaemon generically with BaseEntity
-   * - No hardcoded collection names
-   * - Events emitted automatically by DataDaemon
+   * ARCHITECTURE NOTE: Creation still uses DataDaemon for now
+   * - DataDaemon is the internal data layer (system-level operations)
+   * - Commands.execute() is for user-level operations (PersonaUser responding to chat)
+   * - This maintains proper abstraction: creation is system concern, chat is user concern
    *
    * Recipe steps:
    * 1. Create UserEntity in database
@@ -165,8 +193,8 @@ export class PersonaUser extends AIUser {
    */
   static async create(
     params: UserCreateParams,
-    context: JTAGContext,
-    router: JTAGRouter
+    _context: JTAGContext,
+    _router: JTAGRouter
   ): Promise<PersonaUser> {
     // STEP 1: Create UserEntity in database
     const userEntity = new UserEntity();
