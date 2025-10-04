@@ -17,6 +17,7 @@ import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { getDefaultPreferencesForType } from '../../../system/user/config/UserCapabilitiesDefaults';
+import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 
 export class UserDaemonServer extends UserDaemon {
   private eventManager: EventManager;
@@ -188,13 +189,14 @@ export class UserDaemonServer extends UserDaemon {
       const dbPath = `.continuum/personas/${userEntity.id}/state.sqlite`;
       const storage = new SQLiteStateBackend(dbPath);
 
-      // Create PersonaUser instance
-      const personaUser = new PersonaUser(userEntity, userState, storage);
+      // Create JTAGClient for this persona - everyone has a client
+      const clientResult = await (JTAGClient as any).connect({
+        userId: userEntity.id,
+        targetEnvironment: 'server'
+      });
 
-      // TODO: Create JTAGClient for this persona (Phase 2)
-      // const { JTAGClient } = await import('../../../system/core/client/shared/JTAGClient');
-      // const clientResult = await JTAGClient.connect({ userId: userEntity.id, context: 'server' });
-      // personaUser.setClient(clientResult.client);
+      // Create PersonaUser instance with client injected
+      const personaUser = new PersonaUser(userEntity, userState, storage, clientResult.client);
 
       // Initialize persona (loads rooms, subscribes to events)
       await personaUser.initialize();

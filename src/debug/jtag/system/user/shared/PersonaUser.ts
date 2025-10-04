@@ -15,6 +15,7 @@
 import { AIUser } from './AIUser';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { UserStateEntity } from '../../data/entities/UserStateEntity';
+import type { IUserStateStorage } from '../storage/IUserStateStorage';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
@@ -36,15 +37,19 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
  */
 export class PersonaUser extends AIUser {
   private isInitialized: boolean = false;
-  private client?: JTAGClient; // Optional - set by UserDaemon after creation
+  private client?: JTAGClient; // Injected via constructor
 
-  /**
-   * Set JTAGClient for this persona (called by UserDaemon)
-   * Dependency injection pattern for clean separation of concerns
-   */
-  setClient(client: JTAGClient): void {
+  constructor(
+    entity: UserEntity,
+    state: UserStateEntity,
+    storage: IUserStateStorage,
+    client?: JTAGClient
+  ) {
+    super(entity, state, storage);
     this.client = client;
-    console.log(`🔌 PersonaUser ${this.displayName}: Client connected`);
+    if (client) {
+      console.log(`🔌 PersonaUser ${this.displayName}: Client injected`);
+    }
   }
 
   /**
@@ -241,9 +246,9 @@ export class PersonaUser extends AIUser {
       }
     }
 
-    // STEP 5: Create PersonaUser instance
+    // STEP 5: Create PersonaUser instance (client injected by UserDaemon)
     const storage = new MemoryStateBackend();
-    return new PersonaUser(storedEntity, storedState, storage);
+    return new PersonaUser(storedEntity, storedState, storage, undefined);
   }
 
 }
