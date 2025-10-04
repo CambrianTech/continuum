@@ -146,9 +146,10 @@ function createRoomStats(memberCount: number): any {
 /**
  * Create complete room object
  */
-function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[], ownerId: string): any {
+function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[], ownerId: string, uniqueId: string): any {
   return {
     id,
+    uniqueId,  // REQUIRED field for RoomEntity validation
     name: name.toLowerCase(),
     displayName,
     description,
@@ -576,7 +577,8 @@ async function seedViaJTAG() {
         "Welcome to general discussion! Introduce yourself and chat about anything.",
         3,
         ["general", "welcome", "discussion"],
-        humanUser.id
+        humanUser.id,
+        'general'  // uniqueId - stable identifier
       ),
       createRoom(
         ROOM_IDS.ACADEMY,
@@ -586,7 +588,8 @@ async function seedViaJTAG() {
         "Share knowledge, tutorials, and collaborate on learning",
         2,
         ["academy", "learning", "education"],
-        humanUser.id
+        humanUser.id,
+        'academy'  // uniqueId - stable identifier
       )
     ];
 

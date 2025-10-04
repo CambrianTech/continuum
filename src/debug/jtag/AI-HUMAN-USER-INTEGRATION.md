@@ -425,12 +425,18 @@ interface UserStateEntity {
 - ✅ JTAGClient.userId getter from session
 - ✅ Theme persistence using client.userId
 
-### **Phase 2: AI Citizens 🚧 NEXT**
-- ⏳ Test theme persistence (prove foundation)
-- ⏳ Seed anonymous user UserState
-- ⏳ Design AIDaemon architecture
-- ⏳ Implement AgentUser spawning
-- ⏳ Simple chat bot (Claude Code responds to messages)
+### **Phase 2: AI Citizens 🚧 IN PROGRESS** (2025-10-04)
+**Progress:** PersonaUser autonomous chat system implemented
+- ✅ BaseUser room management (loadMyRooms, subscribeToChat, ensureInGeneralRoom)
+- ✅ PersonaUser event subscriptions (listens to `data:ChatMessage:created`)
+- ✅ PersonaUser autonomous responses (probability-based, Phase 1 templates)
+- ✅ UserDaemon spawns PersonaUser instances as server-side citizens
+- ✅ RoomEntity uniqueId system (stable room identification)
+- ⏳ **NEXT: PersonaUser JTAGClient** - Currently calls DataDaemon directly (cheating)
+- ⏳ PersonaUser should use `client.commands.execute()` not `DataDaemon.store()`
+- ⏳ AgentUser implementation (external AI: Claude, GPT)
+- ⏳ Refactor UserDaemon → AIDaemon (manages only AI citizens)
+- ⏳ Remove all direct DataDaemon calls (everything via client)
 
 ### **Phase 3: PersonaUser & Academy 🚧 FUTURE**
 - PersonaUser with prompt + RAG
@@ -461,12 +467,14 @@ Humans and AIs are treated identically by the system:
 - Same state management
 - Same permissions system
 
-### **2. Independent Clients**
+### **2. Independent Clients (client.user is standard)**
 Each user gets their own JTAGClient instance:
+- **client.user** - Standard accessor for user identity and state
 - Isolated state and context
 - Independent event processing
 - Autonomous decision making
 - Separate lifecycle management
+- **All operations via client.commands** - No direct daemon calls
 
 ### **3. Session-Centric Identity**
 Sessions tie everything together:
@@ -487,6 +495,58 @@ PersonaUsers inherit community capabilities:
 - Assemble optimal capability stack
 - Evolve in real-time based on performance
 - Contribute back to community genome
+
+## 🔄 **ARCHITECTURAL EVOLUTION** (2025-10-04)
+
+### **Discovery: True First-Class Citizenship**
+
+During PersonaUser implementation, we discovered the path to **removing raw data entry** and making **all interactions real**:
+
+**❌ Old Pattern (Cheating):**
+```typescript
+// PersonaUser responds by calling daemon directly
+await DataDaemon.store<ChatMessageEntity>(COLLECTIONS.CHAT_MESSAGES, message);
+// ❌ Bypasses client layer - not a real citizen!
+```
+
+**✅ New Pattern (True Citizen):**
+```typescript
+// PersonaUser responds via its own client
+await this.client.commands.execute('data/create', {
+  collection: 'chat_messages',
+  data: message
+});
+// ✅ Uses client.commands like HumanUsers do via widgets!
+```
+
+### **Why This Matters**
+
+1. **Consistency** - All users operate the same way (HumanUser via widgets, PersonaUser via client, AgentUser via client)
+2. **Auditability** - All actions go through command layer (logging, permissions, validation)
+3. **Visibility** - AgentUsers (Claude chatting) visible in widgets like any other user
+4. **Testability** - All AI users become testable like any other user
+5. **Scalability** - Can move AI users to separate processes/machines
+6. **Security** - No privileged backdoors, everything via proper channels
+
+### **Next Evolution: Seeding as Citizens**
+
+Eventually even **seeding scripts** become AI citizens:
+```typescript
+// Instead of: DataSeeder.seedAllData()
+// We get: SeederPersona posts messages via client
+
+const seederClient = await JTAGClient.connect({
+  userId: SEEDER_BOT_ID,
+  context: 'server'
+});
+
+await seederClient.commands.execute('data/create', {
+  collection: 'rooms',
+  data: generalRoom
+});
+```
+
+**Result:** Everything is a user, everything is auditable, everything is real.
 
 ## 🎯 **CONCLUSION**
 

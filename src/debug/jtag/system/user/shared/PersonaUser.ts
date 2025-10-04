@@ -34,12 +34,112 @@ export class PersonaUser extends AIUser {
   private isInitialized: boolean = false;
 
   /**
-   * Initialize persona - load state and subscribe to events
-   * TODO Phase 4: Implement event subscriptions
+   * Initialize persona - use BaseUser helpers for room management and event subscriptions
+   * PersonaUser acts as an autonomous agent, listening for messages in rooms they're a member of
    */
   async initialize(): Promise<void> {
-    // Phase 4 work
+    if (this.isInitialized) {
+      console.log(`ℹ️ PersonaUser ${this.displayName}: Already initialized`);
+      return;
+    }
+
+    console.log(`🤖 PersonaUser ${this.displayName}: Initializing...`);
+
+    // STEP 1: Base initialization (loads state + rooms)
+    await super.initialize();
+
+    // STEP 2: Subscribe to chat events using BaseUser helper
+    this.subscribeToChatEvents(this.handleChatMessage.bind(this));
+
+    // STEP 3: Subscribe to room updates using BaseUser helper
+    this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
+
     this.isInitialized = true;
+    console.log(`✅ PersonaUser ${this.displayName}: Initialized with ${this.myRoomIds.size} rooms`);
+  }
+
+  /**
+   * Handle incoming chat message
+   * Decides whether to respond based on room membership and other factors
+   */
+  private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
+    // Ignore our own messages
+    if (messageEntity.senderId === this.id) {
+      return;
+    }
+
+    console.log(`💬 PersonaUser ${this.displayName}: Received message from ${messageEntity.senderName}`);
+
+    // Simple response logic (Phase 1 - no AI API yet)
+    // Respond with probability 0.3 to avoid spam
+    if (Math.random() > 0.3) {
+      console.log(`🤫 PersonaUser ${this.displayName}: Choosing not to respond`);
+      return;
+    }
+
+    // Generate simple templated response
+    await this.respondToMessage(messageEntity);
+  }
+
+  /**
+   * Generate and post a response to a chat message
+   * Phase 1: Simple templated responses
+   * Phase 2+: AI API integration with RAG context
+   */
+  private async respondToMessage(originalMessage: ChatMessageEntity): Promise<void> {
+    try {
+      // Simple response templates (Phase 1)
+      const responses = [
+        `Interesting point, ${originalMessage.senderName}!`,
+        `I see what you mean about that.`,
+        `That's a good question. Let me think about it.`,
+        `Thanks for sharing!`,
+        `Could you elaborate on that?`
+      ];
+
+      const responseText = responses[Math.floor(Math.random() * responses.length)];
+
+      // Create response message
+      const responseMessage = new ChatMessageEntity();
+      responseMessage.roomId = originalMessage.roomId;
+      responseMessage.senderId = this.id;
+      responseMessage.senderName = this.displayName;
+      responseMessage.content = { text: responseText, attachments: [] };
+      responseMessage.status = 'sent';
+      responseMessage.priority = 'normal';
+      responseMessage.timestamp = new Date();
+      responseMessage.reactions = [];
+
+      // Post response via data/create
+      await DataDaemon.store<ChatMessageEntity>(
+        COLLECTIONS.CHAT_MESSAGES,
+        responseMessage
+      );
+
+      console.log(`✅ PersonaUser ${this.displayName}: Posted response: "${responseText}"`);
+
+    } catch (error) {
+      console.error(`❌ PersonaUser ${this.displayName}: Failed to respond:`, error);
+    }
+  }
+
+  /**
+   * Handle room update event
+   * Updates membership tracking when this persona is added/removed from a room
+   */
+  private async handleRoomUpdate(roomEntity: RoomEntity): Promise<void> {
+    const isMember = roomEntity.members.some((m: { userId: UUID }) => m.userId === this.id);
+    const wasInRoom = this.myRoomIds.has(roomEntity.id);
+
+    if (isMember && !wasInRoom) {
+      // Added to room
+      this.myRoomIds.add(roomEntity.id);
+      console.log(`✅ PersonaUser ${this.displayName}: Added to room "${roomEntity.name}"`);
+    } else if (!isMember && wasInRoom) {
+      // Removed from room
+      this.myRoomIds.delete(roomEntity.id);
+      console.log(`➖ PersonaUser ${this.displayName}: Removed from room "${roomEntity.name}"`);
+    }
   }
 
   /**
@@ -97,28 +197,25 @@ export class PersonaUser extends AIUser {
       userState
     );
 
-    // STEP 3: Add persona to rooms if specified
+    // STEP 3: Auto-join "general" room (all users start here)
+    try {
+      console.log(`🚪 PersonaUser.create: Adding ${params.displayName} to general room...`);
+      await this.addToGeneralRoom(storedEntity.id, params.displayName);
+      console.log(`✅ PersonaUser.create: Successfully added ${params.displayName} to general room`);
+    } catch (error) {
+      console.error(`❌ PersonaUser.create: Failed to add to general room:`, error);
+    }
+
+    // STEP 4: Add persona to additional rooms if specified
     if (params.addToRooms && params.addToRooms.length > 0) {
       for (const roomId of params.addToRooms) {
         await this.addToRoom(storedEntity.id, roomId, params.displayName);
       }
     }
 
-    // STEP 4: Create PersonaUser instance
+    // STEP 5: Create PersonaUser instance
     const storage = new MemoryStateBackend();
     return new PersonaUser(storedEntity, storedState, storage);
-  }
-
-  /**
-   * Helper: Add persona to room
-   * Phase 1 stub - full implementation in Phase 4
-   */
-  private static async addToRoom(
-    userId: UUID,
-    roomId: UUID,
-    displayName: string
-  ): Promise<void> {
-    console.log(`⚠️ PersonaUser.create: addToRoom stub - implement in Phase 4`);
   }
 
 }

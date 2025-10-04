@@ -38,6 +38,14 @@ export class HumanUser extends BaseUser {
   }
 
   /**
+   * Initialize human user
+   */
+  async initialize(): Promise<void> {
+    await super.initialize();
+    // Humans interact via browser - no additional server-side initialization needed
+  }
+
+  /**
    * HumanUser creation recipe
    *
    * Usually created via session/create, but can be created directly
@@ -74,7 +82,17 @@ export class HumanUser extends BaseUser {
       userState
     );
 
-    // STEP 3: Create HumanUser instance (in-memory)
+    // STEP 3: Auto-join "general" room (all users start here)
+    await this.addToGeneralRoom(storedEntity.id, params.displayName);
+
+    // STEP 4: Add to additional rooms if specified
+    if (params.addToRooms && params.addToRooms.length > 0) {
+      for (const roomId of params.addToRooms) {
+        await this.addToRoom(storedEntity.id, roomId, params.displayName);
+      }
+    }
+
+    // STEP 5: Create HumanUser instance (in-memory)
     const storage = new MemoryStateBackend();
     return new HumanUser(storedEntity, storedState, storage);
   }

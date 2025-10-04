@@ -93,16 +93,16 @@ export class DataSeeder {
    */
   public static async seedAllData(): Promise<void> {
     console.log('🌱 SEEDING ALL INITIAL DATA - Creating fresh system state');
-    
+
     // Seed users first (required for rooms and messages)
     await this.seedUsers();
-    
-    // Seed chat rooms
-    await this.seedChatRooms();
-    
-    // Seed initial messages
-    await this.seedInitialMessages();
-    
+
+    // Seed chat rooms (returns room ID map for messages)
+    const roomIdMap = await this.seedChatRooms();
+
+    // Seed initial messages (uses room ID map)
+    await this.seedInitialMessages(roomIdMap);
+
     console.log('✅ ALL DATA SEEDED - System ready for new repo users');
   }
 
@@ -137,59 +137,67 @@ export class DataSeeder {
 
   /**
    * Seed initial chat rooms using RoomDataSeed
+   * Returns map of uniqueId -> roomId for message seeding
    */
-  private static async seedChatRooms(): Promise<void> {
+  private static async seedChatRooms(): Promise<Map<string, string>> {
     console.log('🏠 Seeding chat rooms...');
-    
+
     const roomData = RoomDataSeed.generateSeedRooms();
-    
+    const roomIdMap = new Map<string, string>();
+
     for (const room of roomData.rooms) {
       try {
-        const command = RoomDataSeed.createRoomDataCommand(room);
-        
+        const validatedRoom = RoomDataSeed.createRoomStoreData(room);
+
         const { execSync } = require('child_process');
         const result = execSync(
-          `./jtag data/create --collection="${command.collection}" --id="${command.id}" --data='${JSON.stringify(command.data)}'`,
+          `./jtag data/create --collection="rooms" --data='${JSON.stringify(validatedRoom)}'`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
-        
-        console.log(`🏠 Created room: ${room.name} (${room.members.length} members)`);
-        
+
+        // Parse result to get created room ID
+        const resultData = JSON.parse(result.split('COMMAND RESULT:')[1].split('============================================================')[0].trim());
+        if (resultData.success && resultData.data?.id) {
+          roomIdMap.set(validatedRoom.uniqueId, resultData.data.id);
+          console.log(`🏠 Created room: ${room.displayName} (${room.members.length} members, ID: ${resultData.data.id})`);
+        }
+
       } catch (error: any) {
         console.error(`❌ FATAL: Failed to create room ${room.name}:`, error.message);
         throw error; // Crash and burn - no fallbacks
       }
     }
-    
+
     console.log(`✅ Seeded ${roomData.totalCount} chat rooms`);
+    return roomIdMap;
   }
 
   /**
    * Seed initial welcome messages using RoomDataSeed
    */
-  private static async seedInitialMessages(): Promise<void> {
+  private static async seedInitialMessages(roomIdMap: Map<string, string>): Promise<void> {
     console.log('💬 Seeding initial messages...');
-    
-    const messages = RoomDataSeed.generateSeedMessages();
-    
+
+    const messages = RoomDataSeed.generateSeedMessages(roomIdMap);
+
     for (const message of messages) {
       try {
-        const command = RoomDataSeed.createMessageDataCommand(message);
-        
+        const validatedMessage = RoomDataSeed.createMessageStoreData(message);
+
         const { execSync } = require('child_process');
         const result = execSync(
-          `./jtag data/create --collection="${command.collection}" --id="${command.id}" --data='${JSON.stringify(command.data)}'`,
+          `./jtag data/create --collection="chat_messages" --data='${JSON.stringify(validatedMessage)}'`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
-        
-        console.log(`💬 Created message: ${message.content.slice(0, 50)}...`);
-        
+
+        console.log(`💬 Created message: ${message.content.text.slice(0, 50)}...`);
+
       } catch (error: any) {
-        console.error(`❌ FATAL: Failed to create message ${message.id}:`, error.message);
+        console.error(`❌ FATAL: Failed to create message:`, error.message);
         throw error; // Crash and burn - no fallbacks
       }
     }
-    
+
     console.log(`✅ Seeded ${messages.length} initial messages`);
   }
 

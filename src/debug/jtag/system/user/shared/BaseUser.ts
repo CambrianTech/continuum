@@ -22,6 +22,10 @@ import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { UserCapabilities } from '../../data/entities/UserEntity';
+import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import type { RoomEntity } from '../../data/entities/RoomEntity';
+import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 
 /**
  * BaseUser abstract class
@@ -33,6 +37,156 @@ export abstract class BaseUser {
     public readonly state: UserStateEntity,
     protected readonly storage: IUserStateStorage
   ) {}
+
+  protected myRoomIds: Set<UUID> = new Set();
+
+  /**
+   * Initialize user - common setup, subclasses extend with type-specific logic
+   * Base implementation loads user state, subclasses call super.initialize() then add their own
+   */
+  async initialize(): Promise<void> {
+    // Load state from storage
+    await this.loadState();
+
+    // Load rooms this user is a member of
+    await this.loadMyRooms();
+
+    // Auto-join "general" room if not already a member (all users start here)
+    await this.ensureInGeneralRoom();
+
+    console.log(`✅ BaseUser ${this.displayName}: Base initialization complete`);
+  }
+
+  /**
+   * Ensure user is in "general" room - all users should be here
+   * Called during initialization to handle users created before this feature
+   */
+  private async ensureInGeneralRoom(): Promise<void> {
+    console.log(`🔍 ${this.constructor.name} ${this.displayName}: Checking general room membership...`);
+    try {
+      // Query general room
+      console.log(`🔍 ${this.constructor.name} ${this.displayName}: Querying for general room...`);
+      const roomsResult = await DataDaemon.query<RoomEntity>({
+        collection: COLLECTIONS.ROOMS,
+        filters: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
+      });
+      console.log(`🔍 ${this.constructor.name} ${this.displayName}: Query result success=${roomsResult.success}, count=${roomsResult.data?.length}`);
+
+      if (!roomsResult.success || !roomsResult.data || roomsResult.data.length === 0) {
+        console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: General room not found`);
+        return;
+      }
+
+      const generalRoomRecord = roomsResult.data[0];
+      const generalRoom = generalRoomRecord.data || generalRoomRecord;
+
+      // Check if already a member
+      if (generalRoom.members.some((m: { userId: UUID }) => m.userId === this.id)) {
+        console.log(`✅ ${this.constructor.name} ${this.displayName}: Already in general room`);
+        this.myRoomIds.add(generalRoom.id);
+        return;
+      }
+
+      // Not a member yet - add them
+      console.log(`🚪 ${this.constructor.name} ${this.displayName}: Auto-joining general room...`);
+      const updatedMembers = [
+        ...generalRoom.members,
+        {
+          userId: this.id,
+          role: 'member' as const,
+          joinedAt: new Date()
+        }
+      ];
+
+      await DataDaemon.update<RoomEntity>(
+        COLLECTIONS.ROOMS,
+        generalRoom.id,
+        { members: updatedMembers }
+      );
+
+      this.myRoomIds.add(generalRoom.id);
+      console.log(`✅ ${this.constructor.name} ${this.displayName}: Added to general room`);
+
+    } catch (error) {
+      console.error(`❌ ${this.constructor.name} ${this.displayName}: Failed to ensure in general room:`, error);
+    }
+  }
+
+  /**
+   * Load rooms where this user is a member
+   * All user types need to know which rooms they're in
+   */
+  protected async loadMyRooms(): Promise<void> {
+    try {
+      // Query all rooms
+      const roomsResult = await DataDaemon.query<RoomEntity>({
+        collection: COLLECTIONS.ROOMS,
+        filters: {}
+      });
+
+      if (!roomsResult.success || !roomsResult.data) {
+        console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: Failed to load rooms`);
+        return;
+      }
+
+      // Filter rooms where this user is a member
+      for (const roomRecord of roomsResult.data) {
+        const room = roomRecord.data;
+        const isMember = room.members.some((m: { userId: UUID }) => m.userId === this.id);
+        if (isMember) {
+          this.myRoomIds.add(room.id);
+          console.log(`🚪 ${this.constructor.name} ${this.displayName}: Member of room "${room.name}"`);
+        }
+      }
+    } catch (error) {
+      console.error(`❌ ${this.constructor.name} ${this.displayName}: Error loading rooms:`, error);
+    }
+  }
+
+  /**
+   * Subscribe to chat events for a specific room
+   * Helper method for subclasses to subscribe to room-specific chat events
+   */
+  protected subscribeToRoomChat(roomId: UUID, handler: (message: any) => Promise<void>): void {
+    const { EventManager } = require('../../events/shared/JTAGEventSystem');
+    const eventManager = new EventManager();
+
+    eventManager.events.on('data:ChatMessage:created', async (messageData: any) => {
+      // Only handle messages for this room
+      if (messageData.roomId === roomId) {
+        await handler(messageData);
+      }
+    });
+  }
+
+  /**
+   * Subscribe to all chat events (for users who want to handle all their rooms)
+   * Subclasses can use this to listen to messages in any room they're a member of
+   */
+  protected subscribeToChatEvents(handler: (message: any) => Promise<void>): void {
+    const { EventManager } = require('../../events/shared/JTAGEventSystem');
+    const eventManager = new EventManager();
+
+    eventManager.events.on('data:ChatMessage:created', async (messageData: any) => {
+      // Only handle messages in rooms we're a member of
+      if (this.myRoomIds.has(messageData.roomId)) {
+        await handler(messageData);
+      }
+    });
+  }
+
+  /**
+   * Subscribe to room update events to handle dynamic membership changes
+   * All user types need to track when they're added/removed from rooms
+   */
+  protected subscribeToRoomUpdates(handler: (room: any) => Promise<void>): void {
+    const { EventManager } = require('../../events/shared/JTAGEventSystem');
+    const eventManager = new EventManager();
+
+    eventManager.events.on('data:Room:updated', async (roomData: any) => {
+      await handler(roomData);
+    });
+  }
 
   /**
    * Get user ID
@@ -97,5 +251,89 @@ export abstract class BaseUser {
     state.userId = userId;
     state.deviceId = 'server-device';
     return state;
+  }
+
+  /**
+   * Auto-join "general" room - all users start here
+   * Uses stable ROOM_UNIQUE_IDS constant
+   */
+  protected static async addToGeneralRoom(userId: UUID, displayName: string): Promise<void> {
+    await this.addToRoomByUniqueId(userId, ROOM_UNIQUE_IDS.GENERAL, displayName);
+  }
+
+  /**
+   * Add user to room by uniqueId (stable identifier that won't break)
+   * Subclasses use this to join additional rooms
+   */
+  protected static async addToRoomByUniqueId(userId: UUID, roomUniqueId: string, displayName: string): Promise<void> {
+    // Query room by uniqueId (stable identifier)
+    const roomsResult = await DataDaemon.query<RoomEntity>({
+      collection: COLLECTIONS.ROOMS,
+      filters: { uniqueId: roomUniqueId }
+    });
+
+    console.log(`🔍 ${this.name}: Query result for uniqueId="${roomUniqueId}":`, JSON.stringify(roomsResult, null, 2).slice(0, 500));
+
+    if (!roomsResult.success || !roomsResult.data || roomsResult.data.length === 0) {
+      console.warn(`⚠️ ${this.name}: Room with uniqueId "${roomUniqueId}" not found`);
+      return;
+    }
+
+    // DataDaemon.query returns records, access .data property for entity
+    const roomRecord = roomsResult.data[0];
+    const room = roomRecord.data || roomRecord;
+    console.log(`🔍 ${this.name}: First room:`, JSON.stringify(room, null, 2).slice(0, 400));
+    console.log(`🔍 ${this.name}: Room id=${room?.id}, uniqueId=${room?.uniqueId}, name=${room?.name}`);
+
+    if (!room || !room.id) {
+      console.warn(`⚠️ ${this.name}: Room data missing id field`);
+      return;
+    }
+
+    await this.addToRoom(userId, room.id, displayName);
+  }
+
+  /**
+   * Helper: Add user to room by adding to members array
+   * Shared by all user types for consistent room membership management
+   */
+  protected static async addToRoom(
+    userId: UUID,
+    roomId: UUID,
+    displayName: string
+  ): Promise<void> {
+    // Read current room
+    const roomResult = await DataDaemon.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+    if (!roomResult.success || !roomResult.data) {
+      console.warn(`⚠️ ${this.name}.create: Room ${roomId} not found`);
+      return;
+    }
+
+    const room = roomResult.data.data;
+
+    // Check if already a member
+    if (room.members.some((m: { userId: UUID }) => m.userId === userId)) {
+      console.log(`ℹ️ ${this.name}.create: ${displayName} already member of room ${room.name}`);
+      return;
+    }
+
+    // Add to members array
+    const updatedMembers = [
+      ...room.members,
+      {
+        userId,
+        role: 'member' as const,
+        joinedAt: new Date()
+      }
+    ];
+
+    // Update room
+    await DataDaemon.update<RoomEntity>(
+      COLLECTIONS.ROOMS,
+      roomId,
+      { members: updatedMembers }
+    );
+
+    console.log(`✅ ${this.name}.create: Added ${displayName} to room ${room.name}`);
   }
 }
