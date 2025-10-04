@@ -28,6 +28,9 @@ async function testStateSystemIntegration(): Promise<void> {
   console.log('=================================');
 
   let client = null;
+  let stateUserId: string | undefined;
+  let stateRoomId: string | undefined;
+  let stateMessageId: string | undefined;
   const testTimestamp = Date.now();
   const testContext = `state-test-${testTimestamp}`;
   const testSessionId = `session-${testTimestamp}`;
@@ -71,7 +74,7 @@ async function testStateSystemIntegration(): Promise<void> {
 
     // Extract the actual StateCreateResult from the commandResult
     const userStateResult = userStateResponse.commandResult as StateCreateResult<UserEntity>;
-    const stateUserId = userStateResult.id || userStateResult.item?.id;
+    stateUserId = userStateResult.id || userStateResult.item?.id;
     console.log(`👤 Created state user with ID: ${stateUserId}`);
     if (!stateUserId) {
       console.error('❌ No user ID returned from state/create');
@@ -125,7 +128,7 @@ async function testStateSystemIntegration(): Promise<void> {
     }
 
     const roomStateResult = roomStateResponse.commandResult as StateCreateResult<RoomEntity>;
-    const stateRoomId = roomStateResult.id || roomStateResult.item?.id;
+    stateRoomId = roomStateResult.id || roomStateResult.item?.id;
     console.log(`🏠 Created state room with ID: ${stateRoomId}`);
     if (!stateRoomId) {
       console.error('❌ No room ID returned from state/create');
@@ -168,7 +171,7 @@ async function testStateSystemIntegration(): Promise<void> {
     }
 
     const messageStateResult = messageStateResponse.commandResult as StateCreateResult<ChatMessageEntity>;
-    const stateMessageId = messageStateResult.id || messageStateResult.item?.id;
+    stateMessageId = messageStateResult.id || messageStateResult.item?.id;
     console.log(`💬 Created state message with ID: ${stateMessageId}`);
     if (!stateMessageId) {
       console.error('❌ No message ID returned from state/create');
@@ -318,6 +321,79 @@ async function testStateSystemIntegration(): Promise<void> {
     });
     throw error;
   } finally {
+    // Cleanup: Delete test data with verification
+    if (client && (stateMessageId || stateRoomId || stateUserId)) {
+      console.log(`🧹 Cleaning up test data...`);
+
+      // Delete message first (has foreign key to user)
+      if (stateMessageId) {
+        console.log(`🗑️ Deleting message ${stateMessageId}...`);
+        const deleteResult = await client.commands['data/delete']({
+          collection: ChatMessageEntity.collection,
+          id: stateMessageId
+        });
+        if (deleteResult.error) {
+          throw new Error(`Failed to delete message ${stateMessageId}: ${deleteResult.error}`);
+        }
+
+        // VERIFY deletion worked
+        const verifyResult = await client.commands['data/read']({
+          collection: ChatMessageEntity.collection,
+          id: stateMessageId
+        });
+        if (verifyResult.success && verifyResult.data) {
+          throw new Error(`❌ DELETE VERIFICATION FAILED: Message ${stateMessageId} still exists!`);
+        }
+        console.log(`✅ Deleted message ${stateMessageId}`);
+      }
+
+      // Delete room
+      if (stateRoomId) {
+        console.log(`🗑️ Deleting room ${stateRoomId}...`);
+        const deleteResult = await client.commands['data/delete']({
+          collection: RoomEntity.collection,
+          id: stateRoomId
+        });
+        if (deleteResult.error) {
+          throw new Error(`Failed to delete room ${stateRoomId}: ${deleteResult.error}`);
+        }
+
+        // VERIFY deletion worked
+        const verifyResult = await client.commands['data/read']({
+          collection: RoomEntity.collection,
+          id: stateRoomId
+        });
+        if (verifyResult.success && verifyResult.data) {
+          throw new Error(`❌ DELETE VERIFICATION FAILED: Room ${stateRoomId} still exists!`);
+        }
+        console.log(`✅ Deleted room ${stateRoomId}`);
+      }
+
+      // Delete user last
+      if (stateUserId) {
+        console.log(`🗑️ Deleting user ${stateUserId}...`);
+        const deleteResult = await client.commands['data/delete']({
+          collection: UserEntity.collection,
+          id: stateUserId
+        });
+        if (deleteResult.error) {
+          throw new Error(`Failed to delete user ${stateUserId}: ${deleteResult.error}`);
+        }
+
+        // VERIFY deletion worked
+        const verifyResult = await client.commands['data/read']({
+          collection: UserEntity.collection,
+          id: stateUserId
+        });
+        if (verifyResult.success && verifyResult.data) {
+          throw new Error(`❌ DELETE VERIFICATION FAILED: User ${stateUserId} still exists!`);
+        }
+        console.log(`✅ Deleted user ${stateUserId}`);
+      }
+
+      console.log('✅ Test data cleanup verified');
+    }
+
     // Always disconnect
     if (client) {
       try {
