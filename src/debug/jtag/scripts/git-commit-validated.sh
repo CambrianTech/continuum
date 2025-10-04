@@ -21,7 +21,7 @@ echo ""
 echo "📋 Step 1: Running validation..."
 ./scripts/git-precommit.sh
 
-# Step 2: Find the validation artifacts that were created
+# Step 2: Find the validation artifacts that were created in jtag validation dir
 VALIDATION_DIR=$(ls -td .continuum/sessions/validation/run_* 2>/dev/null | head -1)
 if [ -z "$VALIDATION_DIR" ]; then
     echo "❌ No validation artifacts found"
@@ -31,24 +31,16 @@ fi
 echo "✅ Validation passed"
 echo ""
 
-# Step 3: Move validation artifacts to repo root (not copy)
+# Step 3: Stage the validation artifacts from jtag location (no moving to repo root)
 echo "📋 Step 2: Staging validation artifacts..."
 REPO_ROOT="../../../"
-VALIDATION_ID=$(basename "$VALIDATION_DIR" | sed 's/run_//')
-REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${VALIDATION_ID}"
 
-# Ensure parent directory exists
-mkdir -p "${REPO_ROOT}.continuum/sessions/validation"
-
-# Move the session directory to repo root
-mv "$VALIDATION_DIR" "$REPO_VALIDATION_DIR"
-
-# Stage the validation artifacts
 cd "$REPO_ROOT"
-git add ".continuum/sessions/validation/run_${VALIDATION_ID}"
+# Stage the validation directory from jtag location
+git add "src/debug/jtag/$VALIDATION_DIR"
 cd - > /dev/null
 
-echo "✅ Validation artifacts staged"
+echo "✅ Validation artifacts staged at src/debug/jtag/$VALIDATION_DIR"
 echo ""
 
 # Step 4: Perform the actual commit
