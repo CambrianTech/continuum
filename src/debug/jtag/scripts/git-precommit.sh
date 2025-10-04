@@ -150,12 +150,9 @@ echo ""
 echo "📦 Phase 4: Collecting complete session artifacts for commit inclusion"
 echo "---------------------------------------------------------------------"
 
-# Use temporary name - will be renamed in post-commit with actual hash
-TEMP_VALIDATION_ID="precommit-temp-$$"
-VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${TEMP_VALIDATION_ID}"
-
-echo "🔍 Creating temporary validation directory: $VALIDATION_RUN_DIR"
-mkdir -p "$VALIDATION_RUN_DIR"
+# Use a stable validation ID based on timestamp for this precommit run
+VALIDATION_ID="$(date +%Y%m%d-%H%M%S)-$$"
+VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${VALIDATION_ID}"
 
 # Find the active browser session (where screenshots were saved)
 # Don't rely on currentUser symlink - it may point to wrong session if system restarted
@@ -168,10 +165,13 @@ if [ -n "$SCREENSHOT_SESSION" ]; then
     if [ -d "$SESSION_PATH" ]; then
         echo "🔍 Active screenshot session: $CURRENT_SESSION"
 
-        # Copy ENTIRE session directory to validation (following legacy pattern Line 210)
-        echo "📋 Copying complete session directory to validation..."
-        cp -r "$SESSION_PATH"/* "$VALIDATION_RUN_DIR/"
-        echo "✅ Complete session copied to validation directory"
+        # Ensure validation parent directory exists
+        mkdir -p ".continuum/sessions/validation"
+
+        # Move ENTIRE session directory to validation (rename it to run_ID)
+        echo "📋 Moving complete session directory to validation..."
+        mv "$SESSION_PATH" "$VALIDATION_RUN_DIR"
+        echo "✅ Complete session moved to validation directory"
 
         # Add test results to the validation directory
         echo "$TEST_OUTPUT" > "$VALIDATION_RUN_DIR/test-results.txt"
@@ -253,14 +253,16 @@ fi
 echo ""
 echo "📦 Copying validation artifacts to repo root for git tracking..."
 REPO_ROOT="../../../"
-REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${TEMP_VALIDATION_ID}"
+REPO_VALIDATION_DIR="${REPO_ROOT}.continuum/sessions/validation/run_${VALIDATION_ID}"
 mkdir -p "$REPO_VALIDATION_DIR"
 cp -r "$VALIDATION_RUN_DIR"/* "$REPO_VALIDATION_DIR/"
 echo "✅ Validation artifacts copied to ${REPO_VALIDATION_DIR}"
 
-# Mark this for post-commit processing (save temp ID for post-commit hook)
-echo "$TEMP_VALIDATION_ID" > "${REPO_ROOT}.continuum/.precommit-validation-id"
-echo "✅ Validation will be renamed with commit hash in post-commit hook"
+# Stage the validation artifacts immediately
+cd "$REPO_ROOT"
+git add ".continuum/sessions/validation/run_${VALIDATION_ID}"
+cd - > /dev/null
+echo "✅ Validation artifacts staged for commit"
 
 # Phase 6: Commit Message Enhancement
 echo ""
