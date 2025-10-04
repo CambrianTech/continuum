@@ -560,26 +560,40 @@ async function seedViaJTAG() {
     const claudeUser = await createUserViaCommand('agent', USER_CONFIG.CLAUDE.NAME, DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE, 'anthropic');
     const generalAIUser = await createUserViaCommand('agent', USER_CONFIG.GENERAL_AI.NAME, DEFAULT_USER_UNIQUE_IDS.GENERAL_AI, 'anthropic');
 
-    const users = [humanUser, claudeUser, generalAIUser].filter(u => u !== null) as UserEntity[];
-    console.log(`📊 Created ${users.length}/3 users`);
+    // Create persona users for testing autonomous chat
+    const helperPersona = await createUserViaCommand('persona', 'Helper AI', 'persona-helper-001');
+    const teacherPersona = await createUserViaCommand('persona', 'Teacher AI', 'persona-teacher-001');
+    const codeReviewPersona = await createUserViaCommand('persona', 'CodeReview AI', 'persona-codereview-001');
 
-    if (users.length !== 3 || !humanUser || !claudeUser || !generalAIUser) {
+    const users = [humanUser, claudeUser, generalAIUser, helperPersona, teacherPersona, codeReviewPersona].filter(u => u !== null) as UserEntity[];
+    console.log(`📊 Created ${users.length}/6 users (1 human, 2 agents, 3 personas)`);
+
+    if (users.length !== 6 || !humanUser || !claudeUser || !generalAIUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
       throw new Error('❌ Failed to create all required users');
     }
 
     // Create rooms using actual generated user entity
+    const generalRoom = createRoom(
+      ROOM_IDS.GENERAL,
+      ROOM_CONFIG.GENERAL.NAME,
+      ROOM_CONFIG.GENERAL.NAME,
+      ROOM_CONFIG.GENERAL.DESCRIPTION,
+      "Welcome to general discussion! Introduce yourself and chat about anything.",
+      6,  // Updated member count: 3 personas + human + 2 agents
+      ["general", "welcome", "discussion"],
+      humanUser.id,
+      'general'  // uniqueId - stable identifier
+    );
+
+    // Add personas to general room members (they need room membership to receive chat events)
+    generalRoom.members = [
+      { userId: helperPersona.id, role: 'member', joinedAt: new Date().toISOString() },
+      { userId: teacherPersona.id, role: 'member', joinedAt: new Date().toISOString() },
+      { userId: codeReviewPersona.id, role: 'member', joinedAt: new Date().toISOString() }
+    ];
+
     const rooms = [
-      createRoom(
-        ROOM_IDS.GENERAL,
-        ROOM_CONFIG.GENERAL.NAME,
-        ROOM_CONFIG.GENERAL.NAME,
-        ROOM_CONFIG.GENERAL.DESCRIPTION,
-        "Welcome to general discussion! Introduce yourself and chat about anything.",
-        3,
-        ["general", "welcome", "discussion"],
-        humanUser.id,
-        'general'  // uniqueId - stable identifier
-      ),
+      generalRoom,
       createRoom(
         ROOM_IDS.ACADEMY,
         ROOM_CONFIG.ACADEMY.NAME,

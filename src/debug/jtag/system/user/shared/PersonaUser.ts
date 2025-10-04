@@ -37,7 +37,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
  */
 export class PersonaUser extends AIUser {
   private isInitialized: boolean = false;
-  private client?: JTAGClient; // Injected via constructor
+  // Note: client is now in BaseUser as protected property, accessible via this.client
 
   constructor(
     entity: UserEntity,
@@ -45,10 +45,9 @@ export class PersonaUser extends AIUser {
     storage: IUserStateStorage,
     client?: JTAGClient
   ) {
-    super(entity, state, storage);
-    this.client = client;
+    super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
     if (client) {
-      console.log(`🔌 PersonaUser ${this.displayName}: Client injected`);
+      console.log(`🔌 PersonaUser ${this.displayName}: Client injected and passed to BaseUser`);
     }
   }
 

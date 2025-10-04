@@ -62,50 +62,20 @@ async function testDatabaseChatIntegration(): Promise<void> {
     console.log(`👤 Created user with ID: ${userId}`);
     console.log('✅ User created successfully');
 
-    // Test 2: Create a test room via data/create (state/create has timeout issue)
-    console.log('🏠 2. Testing room creation via data/create...');
-    const roomResult = await client.commands['data/create']({
+    // Test 2: Use existing "General" room (displayed in chat widget)
+    console.log('🏠 2. Querying for General room...');
+    const roomsResult = await client.commands['data/list']({
       collection: RoomEntity.collection,
-      data: {
-        name: 'database-test-room',
-        displayName: 'Database Test Room',
-        description: 'Test room for database integration',
-        topic: 'Integration testing room',
-        type: 'public',
-        status: 'active',
-        ownerId: userId,
-        lastMessageAt: new Date().toISOString(),
-        privacy: {
-          isPublic: true,
-          requiresInvite: false,
-          allowGuestAccess: true,
-          searchable: true
-        },
-        settings: {
-          allowReactions: true,
-          allowThreads: true,
-          allowFileSharing: true,
-          messageRetentionDays: 365
-        },
-        stats: {
-          memberCount: 1,
-          messageCount: 0,
-          createdAt: new Date().toISOString(),
-          lastActivityAt: new Date().toISOString()
-        },
-        members: [],
-        tags: ['test', 'integration']
-      }
+      filter: { uniqueId: 'general' }
     });
 
-    if (!roomResult.success) {
-      throw new Error(`Room creation failed: ${roomResult.error ?? 'Unknown error'}`);
+    if (!roomsResult.success || !roomsResult.items || roomsResult.items.length === 0) {
+      throw new Error('General room not found');
     }
 
-    // Use the actual generated ID from the result
-    const roomId = roomResult.data?.id || roomResult.id;
-    console.log(`🏠 Created room with ID: ${roomId}`);
-    console.log('✅ Room created successfully');
+    const roomId = roomsResult.items[0].id;
+    console.log(`🏠 Using General room with ID: ${roomId}`);
+    console.log('✅ Room found successfully');
 
     // Test 3: Store test messages via data/create (state/create has timeout issue)
     console.log('💬 3. Testing message storage via data/create...');
@@ -173,12 +143,11 @@ async function testDatabaseChatIntegration(): Promise<void> {
       throw new Error('Room messages retrieval failed');
     }
 
-    if (messagesResult.items.length !== 3) {
-      throw new Error(`Expected 3 messages, got ${messagesResult.items.length}`);
-    }
-    console.log('✅ Room messages retrieved successfully');
+    // Count includes seeded messages + our 3 test messages
+    const initialMessageCount = messagesResult.items.length - 3;
+    console.log(`✅ Room messages retrieved successfully (${messagesResult.items.length} total, ${initialMessageCount} pre-existing + 3 test)`);
 
-    // Test 6: Retrieve messages by user
+    // Test 6: Retrieve messages by user (should be exactly 3 - only ours)
     console.log('👤 6. Testing user message retrieval...');
     const userMessagesResult = await client.commands['data/list']({
       collection: ChatMessageEntity.collection,
@@ -192,11 +161,113 @@ async function testDatabaseChatIntegration(): Promise<void> {
     if (userMessagesResult.items.length !== 3) {
       throw new Error(`Expected 3 user messages, got ${userMessagesResult.items.length}`);
     }
-    console.log('✅ User messages retrieved successfully');
+    console.log('✅ User messages retrieved successfully (3 from test user)');
+
+    // Test 7: CRITICAL - Verify messages appear in chat widget HTML (real-time events working)
+    console.log('📱 7. Testing chat widget HTML rendering (CRUD → Event → UI chain)...');
+    console.log('⏳ Waiting 2 seconds for events to propagate...');
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const widgetStateResult = await client.commands['debug/widget-state']({
+      widgetSelector: 'chat-widget'
+    });
+
+    if (!widgetStateResult.success) {
+      throw new Error('Failed to get widget state for HTML verification');
+    }
+
+    // Check widget entities (ChatWidget uses EntityScrollerWidget which stores entities)
+    // Command result is wrapped in commandResult envelope
+    const widgetData = (widgetStateResult as any).commandResult || widgetStateResult;
+    const widgetEntities = widgetData.state?.entities || [];
+    console.log(`📊 Chat widget has ${widgetEntities.length} message entities loaded`);
+
+    // Expected count = initialMessageCount (from before) + 3 test messages
+    const expectedCount = initialMessageCount + 3;
+    if (widgetEntities.length < expectedCount) {
+      throw new Error(`❌ REAL-TIME EVENTS BROKEN: Widget has ${widgetEntities.length} messages, expected at least ${expectedCount} (${initialMessageCount} initial + 3 test). Events not propagating to UI!`);
+    }
+
+    // Verify our test messages are in the widget by checking for messages from our test user
+    const testMessagesInWidget = widgetEntities.filter((m: any) => m.senderId === userId);
+
+    if (testMessagesInWidget.length !== 3) {
+      throw new Error(`❌ REAL-TIME EVENTS BROKEN: Only ${testMessagesInWidget.length}/3 test messages in chat widget. Event system not working!`);
+    }
+
+    console.log(`✅ Chat widget rendering verified - all ${expectedCount} messages present (${initialMessageCount} initial + 3 test)`);
+
+    // Test 8: UPDATE operation - modify first test message
+    console.log('✏️ 8. Testing message UPDATE operation...');
+    const firstMessageId = messageIds[0];
+    const updateResult = await client.commands['data/update']({
+      collection: ChatMessageEntity.collection,
+      id: firstMessageId,
+      data: {
+        content: {
+          text: 'UPDATED: This message was modified by CRUD test',
+          attachments: [],
+          formatting: { markdown: false, mentions: [], hashtags: [], links: [], codeBlocks: [] }
+        }
+      }
+    });
+
+    // Check if update succeeded (may return data directly or have success field)
+    if (updateResult.error || (!updateResult.data && !updateResult.id)) {
+      console.log('❌ Update result:', JSON.stringify(updateResult, null, 2));
+      throw new Error(`Message update failed: ${updateResult.error ?? 'No data returned'}`);
+    }
+    console.log(`✅ Message updated successfully (ID: ${firstMessageId})`);
+
+    // Test 9: DELETE operation - remove second test message
+    console.log('🗑️ 9. Testing message DELETE operation...');
+    const secondMessageId = messageIds[1];
+    const deleteResult = await client.commands['data/delete']({
+      collection: ChatMessageEntity.collection,
+      id: secondMessageId
+    });
+
+    // Check if delete succeeded (returns id if successful)
+    if (deleteResult.error || !deleteResult.id) {
+      console.log('❌ Delete result:', JSON.stringify(deleteResult, null, 2));
+      throw new Error(`Message deletion failed: ${deleteResult.error ?? 'No id returned'}`);
+    }
+    console.log(`✅ Message deleted successfully (ID: ${secondMessageId})`);
+
+    // Test 10: Verify UPDATE and DELETE reflected in database
+    console.log('🔍 10. Verifying UPDATE and DELETE operations...');
+    const finalMessagesResult = await client.commands['data/list']({
+      collection: ChatMessageEntity.collection,
+      filter: { roomId }
+    });
+
+    if (!finalMessagesResult.success || !finalMessagesResult.items) {
+      throw new Error('Failed to verify final state');
+    }
+
+    // Should have one less message (deleted one)
+    const expectedFinalCount = messagesResult.items.length - 1;
+    if (finalMessagesResult.items.length !== expectedFinalCount) {
+      throw new Error(`Expected ${expectedFinalCount} messages after delete, got ${finalMessagesResult.items.length}`);
+    }
+
+    // Check updated message content
+    const updatedMessage = finalMessagesResult.items.find((m: any) => m.id === firstMessageId);
+    if (!updatedMessage || !updatedMessage.content.text.includes('UPDATED:')) {
+      throw new Error('UPDATE operation did not persist correctly');
+    }
+
+    // Check deleted message is gone
+    const deletedMessage = finalMessagesResult.items.find((m: any) => m.id === secondMessageId);
+    if (deletedMessage) {
+      throw new Error('DELETE operation did not remove message from database');
+    }
+
+    console.log(`✅ UPDATE and DELETE operations verified in database`);
 
     console.log('');
-    console.log('🎉 DATABASE CHAT INTEGRATION TEST PASSED');
-    console.log('✅ All database operations for chat functionality working correctly');
+    console.log('🎉 FULL CRUD TEST PASSED');
+    console.log('✅ All database operations working: CREATE, READ, UPDATE, DELETE + Event → UI sync');
 
   } catch (error) {
     console.error('❌ Test failed:', error);

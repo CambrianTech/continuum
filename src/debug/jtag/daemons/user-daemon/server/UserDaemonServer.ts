@@ -17,7 +17,7 @@ import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { getDefaultPreferencesForType } from '../../../system/user/config/UserCapabilitiesDefaults';
-import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
+import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientServer';
 
 export class UserDaemonServer extends UserDaemon {
   private eventManager: EventManager;
@@ -158,7 +158,12 @@ export class UserDaemonServer extends UserDaemon {
 
       // STEP 2: Check if persona client already exists
       if (this.personaClients.has(userEntity.id)) {
-        console.log(`✅ UserDaemon: Persona ${userEntity.displayName} already has client`);
+        const existingPersona = this.personaClients.get(userEntity.id);
+        console.log(`✅ UserDaemon: Persona ${userEntity.displayName} already has client, reinitializing...`);
+        // ✅ Re-initialize persona to set up event subscriptions (happens on system restart)
+        if (existingPersona) {
+          await existingPersona.initialize();
+        }
         return;
       }
 
@@ -189,8 +194,8 @@ export class UserDaemonServer extends UserDaemon {
       const dbPath = `.continuum/personas/${userEntity.id}/state.sqlite`;
       const storage = new SQLiteStateBackend(dbPath);
 
-      // Create JTAGClient for this persona - everyone has a client
-      const clientResult = await (JTAGClient as any).connect({
+      // Create JTAGClientServer for this persona via static connect method
+      const clientResult = await JTAGClientServer.connect({
         userId: userEntity.id,
         targetEnvironment: 'server'
       });

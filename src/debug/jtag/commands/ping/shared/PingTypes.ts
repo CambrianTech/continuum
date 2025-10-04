@@ -7,6 +7,8 @@ export interface PingParams extends JTAGPayload {
 
 export interface ServerEnvironmentInfo {
   type: 'server';
+  packageName: string;
+  packageVersion: string;
   name: string;
   version: string;
   runtime: string;

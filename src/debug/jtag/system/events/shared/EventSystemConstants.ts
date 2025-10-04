@@ -158,3 +158,79 @@ export const EVENT_HEALTH_CONSTANTS = {
   HEALTH_CHECK_INTERVAL_MS: 5000, // How often to check event system health
   ERROR_THRESHOLD: 10             // Number of errors before marking unhealthy
 } as const;
+
+/**
+ * Data event operations
+ * CRUD operations that trigger data events
+ */
+export const DATA_EVENT_OPERATIONS = {
+  CREATED: 'created',
+  UPDATED: 'updated',
+  DELETED: 'deleted',
+  READ: 'read'
+} as const;
+
+export type DataEventOperation = typeof DATA_EVENT_OPERATIONS[keyof typeof DATA_EVENT_OPERATIONS];
+
+/**
+ * Utility for creating type-safe data event names
+ * Single source of truth for data:collection:operation event naming
+ *
+ * @example
+ * DataEventNames.forCollection('chat_messages', 'created')
+ * // Returns: 'data:chat_messages:created'
+ *
+ * DataEventNames.created('users')
+ * // Returns: 'data:users:created'
+ */
+export class DataEventNames {
+  /**
+   * Create data event name from collection and operation
+   * Format: data:collection:operation
+   */
+  static forCollection(collection: string, operation: DataEventOperation): string {
+    return `data:${collection}:${operation}`;
+  }
+
+  /**
+   * Create 'created' event name for collection
+   */
+  static created(collection: string): string {
+    return this.forCollection(collection, DATA_EVENT_OPERATIONS.CREATED);
+  }
+
+  /**
+   * Create 'updated' event name for collection
+   */
+  static updated(collection: string): string {
+    return this.forCollection(collection, DATA_EVENT_OPERATIONS.UPDATED);
+  }
+
+  /**
+   * Create 'deleted' event name for collection
+   */
+  static deleted(collection: string): string {
+    return this.forCollection(collection, DATA_EVENT_OPERATIONS.DELETED);
+  }
+
+  /**
+   * Create 'read' event name for collection
+   */
+  static read(collection: string): string {
+    return this.forCollection(collection, DATA_EVENT_OPERATIONS.READ);
+  }
+
+  /**
+   * Parse event name to extract collection and operation
+   * Returns null if not a valid data event name
+   */
+  static parse(eventName: string): { collection: string; operation: DataEventOperation } | null {
+    const match = eventName.match(/^data:(.+?):(created|updated|deleted|read)$/);
+    if (!match) return null;
+
+    return {
+      collection: match[1],
+      operation: match[2] as DataEventOperation
+    };
+  }
+}
