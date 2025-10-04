@@ -60,7 +60,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
     }
 
     // Use the actual generated ID from the result
-    const userId = userResult.data?.id || userResult.id;
+    userId = userResult.data?.id || userResult.id;
     console.log(`👤 Created user with ID: ${userId}`);
     console.log('✅ User created successfully');
 
@@ -81,7 +81,6 @@ async function testDatabaseChatIntegration(): Promise<void> {
 
     // Test 3: Store test messages via data/create (state/create has timeout issue)
     console.log('💬 3. Testing message storage via data/create...');
-    const messageIds = [];
     for (let i = 1; i <= 3; i++) {
       const messageResult = await client.commands['data/create']({
         collection: ChatMessageEntity.collection,
@@ -275,28 +274,39 @@ async function testDatabaseChatIntegration(): Promise<void> {
     throw error;
   } finally {
     // Cleanup: Delete test data
+    console.log(`🧹 Cleanup check: client=${!!client}, userId=${userId}, messageIds=${messageIds.length}`);
+
     if (client && userId) {
-      try {
-        console.log('🧹 Cleaning up test data...');
+      console.log(`🧹 Cleaning up test data (${messageIds.length} messages, 1 user)...`);
 
-        // Delete test messages
-        for (const msgId of messageIds) {
-          await client.commands['data/delete']({
-            collection: ChatMessageEntity.collection,
-            id: msgId
-          }).catch(() => {}); // Ignore errors if already deleted
+      // Delete test messages
+      for (const msgId of messageIds) {
+        console.log(`🗑️ Deleting message ${msgId}...`);
+        const deleteResult = await client.commands['data/delete']({
+          collection: ChatMessageEntity.collection,
+          id: msgId
+        });
+        // Delete returns {id, collection, ...} on success, {error} on failure
+        if (deleteResult.error) {
+          throw new Error(`Failed to delete message ${msgId}: ${deleteResult.error}`);
         }
-
-        // Delete test user
-        await client.commands['data/delete']({
-          collection: UserEntity.collection,
-          id: userId
-        }).catch(() => {});
-
-        console.log('✅ Test data cleaned up');
-      } catch (cleanupError) {
-        console.warn('⚠️ Cleanup failed:', cleanupError);
+        console.log(`✅ Deleted message ${msgId}`);
       }
+
+      // Delete test user
+      console.log(`🗑️ Deleting user ${userId}...`);
+      const userDeleteResult = await client.commands['data/delete']({
+        collection: UserEntity.collection,
+        id: userId
+      });
+      if (userDeleteResult.error) {
+        throw new Error(`Failed to delete user ${userId}: ${userDeleteResult.error}`);
+      }
+      console.log(`✅ Deleted user ${userId}`);
+
+      console.log('✅ Test data cleanup attempted');
+    } else {
+      console.warn(`⚠️ Skipping cleanup - client=${!!client}, userId=${userId}`);
     }
 
     // Always disconnect
