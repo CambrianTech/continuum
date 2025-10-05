@@ -83,12 +83,35 @@ export class Events {
       // Auto-discover router from context
       const router = RouterRegistry.getForContext(context);
 
+      // Check runtime environment (not context.environment, which is the connected server's environment)
+      const isBrowserRuntime = typeof document !== 'undefined';
+
       if (!router) {
-        const error = `Events: No router found for context ${context.environment}/${context.uuid}`;
-        console.error(`❌ ${error}`);
-        return { success: false, error };
+        // If no router found and we're running in browser, fall back to DOM-only events
+        if (isBrowserRuntime) {
+          console.log(`🌐 Events: No router for context ${context.environment}/${context.uuid}, using DOM-only event for ${eventName}`);
+
+          // Trigger wildcard/pattern subscriptions
+          this.checkWildcardSubscriptions(eventName, eventData);
+
+          // Dispatch DOM event for direct listeners
+          const domEvent = new CustomEvent(eventName, {
+            detail: eventData,
+            bubbles: true
+          });
+          document.dispatchEvent(domEvent);
+
+          console.log(`✅ Events: Emitted DOM-only event ${eventName}`);
+          return { success: true };
+        } else {
+          // Server runtime without router is an error
+          const error = `Events: No router found for context ${context.environment}/${context.uuid}`;
+          console.error(`❌ ${error}`);
+          return { success: false, error };
+        }
       }
 
+      // Router found - use full EventBridge routing
       // Create event payload
       const eventPayload: EventBridgePayload = {
         context,
@@ -117,8 +140,8 @@ export class Events {
       // Route event through discovered router
       await router.postMessage(eventMessage);
 
-      // Also trigger wildcard/pattern subscriptions in browser
-      if (typeof document !== 'undefined') {
+      // Also trigger wildcard/pattern subscriptions and DOM events if running in browser
+      if (isBrowserRuntime) {
         this.checkWildcardSubscriptions(eventName, eventData);
 
         // Dispatch DOM event for direct listeners

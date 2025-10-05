@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { DOMEventBridge } from '../../../system/events/browser/DOMEventBridge';
-import { Events } from '../../../system/core/client/shared/Events';
+import { Events } from '../../../system/core/shared/Events';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { EventSubscriptionManager } from '../../../system/events/shared/EventSubscriptionManager';
 import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';

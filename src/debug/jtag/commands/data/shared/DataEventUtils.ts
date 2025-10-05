@@ -5,7 +5,7 @@
  * with wildcard pattern matching.
  */
 
-import { Events } from '../../../system/core/client/shared/Events';
+import { Events } from '../../../system/core/shared/Events';
 import { getDataEventName } from './DataEventConstants';
 
 /**

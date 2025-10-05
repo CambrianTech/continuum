@@ -5,7 +5,7 @@
  * stay synchronized with the current selected room.
  */
 
-import { Events } from '../../system/core/client/shared/Events';
+import { Events } from '../../system/core/shared/Events';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
