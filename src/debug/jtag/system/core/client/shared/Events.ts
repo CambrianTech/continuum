@@ -63,31 +63,38 @@ export class Events {
       };
 
       // Create event message using JTAG message factory
+      // Route to 'events' endpoint (EventsDaemon.subpath), not 'event-bridge'
       const eventMessage = JTAGMessageFactory.createEvent(
         jtagClient.context,
         'events',
-        JTAG_ENDPOINTS.EVENTS.BRIDGE,
+        JTAG_ENDPOINTS.EVENTS.BASE,
         eventPayload
       );
 
-      // Route event through Router - same mechanism as DataCreateServerCommand
+      // Try to route event through Router - if it fails, we still dispatch DOM event
       const router = (jtagClient as any).getRouter();
-      const result = await router.postMessage(eventMessage);
+      let routerSuccess = false;
+      try {
+        const result = await router.postMessage(eventMessage);
+        console.log(`📨 Events: Emitted ${eventName} via EventBridge`, result);
+        routerSuccess = true;
+      } catch (routerError) {
+        // EventBridge routing failed, but we'll still dispatch DOM event for local subscribers
+        console.warn(`⚠️ Events: EventBridge routing failed for ${eventName}, using DOM fallback:`, routerError);
+      }
 
-      // Also dispatch DOM event for local subscribers (bridge server→browser)
+      // Always dispatch DOM event for local subscribers (even if EventBridge fails)
       if (typeof document !== 'undefined') {
         const domEvent = new CustomEvent(eventName, {
           detail: eventData,
           bubbles: true
         });
         document.dispatchEvent(domEvent);
-        console.log(`📨 Events: Also dispatched DOM event ${eventName}`);
+        console.log(`📨 Events: Dispatched DOM event ${eventName} (bridge=${routerSuccess})`);
 
         // Also check wildcard subscriptions for pattern matches
         this.checkWildcardSubscriptions(eventName, eventData);
       }
-
-      console.log(`📨 Events: Emitted ${eventName} via EventBridge`, result);
 
       return { success: true };
     } catch (error) {

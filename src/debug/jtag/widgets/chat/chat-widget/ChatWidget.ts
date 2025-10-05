@@ -5,9 +5,12 @@
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import { RoomEntity, type RoomMember } from '../../../system/data/entities/RoomEntity';
+import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import { Commands } from '../../../system/core/client/shared/Commands';
 import { Events } from '../../../system/core/client/shared/Events';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
@@ -17,6 +20,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLInputElement;
   private currentRoomId: UUID | null = DEFAULT_ROOMS.GENERAL as UUID; // Default to General room
   private currentRoomName: string = 'General';
+  private currentRoom: RoomEntity | null = null;
+  private roomMembers: Map<UUID, UserEntity> = new Map(); // Map of userId -> UserEntity
 
   constructor() {
     super({
@@ -44,6 +49,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   protected getRenderFunction(): RenderFn<ChatMessageEntity> {
     return (message: ChatMessageEntity, _context) => {
       const isCurrentUser = message.senderId === DEFAULT_USERS.HUMAN;
+      const senderName = message.senderName || 'Unknown';
 
       const messageElement = globalThis.document.createElement('div');
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}`;
@@ -52,6 +58,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       messageElement.innerHTML = `
         <div class="message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}">
           <div class="message-header">
+            <span class="sender-name">${senderName}</span>
             <span class="message-time">${new Date(message.timestamp).toLocaleString()}</span>
           </div>
           <div class="message-content">
@@ -159,19 +166,28 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     console.log(`📨 ChatWidget: Enabled ChatMessage event subscriptions for real-time updates`);
 
+    // Load initial room data (General room by default)
+    if (this.currentRoomId) {
+      await this.loadRoomData(this.currentRoomId);
+      this.updateHeader();
+    }
+
     // Listen for room selection events
-    Events.subscribe('room:selected', (eventData: { roomId: string; roomName: string }) => {
+    Events.subscribe('room:selected', async (eventData: { roomId: string; roomName: string }) => {
       console.log(`🏠 ChatWidget: Room selected "${eventData.roomName}" (${eventData.roomId})`);
       this.currentRoomId = eventData.roomId as UUID;
       this.currentRoomName = eventData.roomName;
+
+      // Load room data and members
+      await this.loadRoomData(this.currentRoomId);
 
       // Refresh the EntityScroller to load messages for new room
       if (this.scroller) {
         this.scroller.refresh();
       }
 
-      // Update the title display
-      this.updateEntityCount(); // This triggers a re-render of the header
+      // Update the header to show new room members
+      this.updateHeader();
     });
 
     // MANUAL ChatMessage creation handling since automatic events don't work properly
@@ -255,6 +271,126 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     this.messageInput.addEventListener('keydown', keydownHandler);
     sendButton?.addEventListener('click', clickHandler);
+  }
+
+  /**
+   * Load room data and member information
+   */
+  private async loadRoomData(roomId: UUID): Promise<void> {
+    try {
+      // Load room entity
+      const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>('data/read', {
+        collection: RoomEntity.collection,
+        id: roomId,
+        backend: 'server'
+      });
+
+      if (!roomResult?.success || !roomResult.data) {
+        console.error(`❌ ChatWidget: Failed to load room data for ${roomId}`);
+        return;
+      }
+
+      this.currentRoom = roomResult.data;
+      console.log(`✅ ChatWidget: Loaded room data with ${this.currentRoom?.members?.length ?? 0} members`);
+
+      // Load user details for each member
+      await this.loadRoomMembers();
+    } catch (error) {
+      console.error(`❌ ChatWidget: Error loading room data:`, error);
+    }
+  }
+
+  /**
+   * Load user entities for all room members
+   */
+  private async loadRoomMembers(): Promise<void> {
+    if (!this.currentRoom) return;
+
+    this.roomMembers.clear();
+
+    // Load each member's user entity
+    for (const member of this.currentRoom.members) {
+      try {
+        const userResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>('data/read', {
+          collection: UserEntity.collection,
+          id: member.userId,
+          backend: 'server'
+        });
+
+        if (userResult?.success && userResult.data) {
+          this.roomMembers.set(member.userId, userResult.data);
+        }
+      } catch (error) {
+        console.warn(`⚠️ ChatWidget: Failed to load user ${member.userId}:`, error);
+      }
+    }
+
+    console.log(`✅ ChatWidget: Loaded ${this.roomMembers.size} member details`);
+  }
+
+  /**
+   * Override renderHeader to display room members
+   */
+  protected override renderHeader(): string {
+    // Get member display (avatars/names)
+    const memberDisplay = this.renderMemberList();
+
+    return `
+      <div class="entity-list-header">
+        <div class="header-top">
+          <span class="header-title">${this.currentRoomName}</span>
+          <span class="list-count">${this.getEntityCount()}</span>
+        </div>
+        <div class="header-members">
+          ${memberDisplay}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render the list of room members
+   */
+  private renderMemberList(): string {
+    if (!this.currentRoom || this.roomMembers.size === 0) {
+      return '<span class="no-members">Loading members...</span>';
+    }
+
+    const memberElements = Array.from(this.roomMembers.values())
+      .map(user => {
+        const displayName = user.displayName || user.username || 'Unknown';
+        const role = this.getMemberRole(user.id);
+        const roleIcon = role === 'owner' ? '👑' : role === 'admin' ? '⭐' : '';
+
+        return `
+          <div class="member-chip" title="${displayName} (${role})">
+            ${roleIcon}
+            <span class="member-name">${displayName}</span>
+          </div>
+        `;
+      })
+      .join('');
+
+    return `<div class="members-list">${memberElements}</div>`;
+  }
+
+  /**
+   * Get the role of a member by userId
+   */
+  private getMemberRole(userId: UUID): string {
+    if (!this.currentRoom) return 'member';
+    const member = this.currentRoom.members.find(m => m.userId === userId);
+    return member?.role || 'member';
+  }
+
+  /**
+   * Update the header with current room and member information
+   */
+  private updateHeader(): void {
+    const headerElement = this.shadowRoot.querySelector('.entity-list-header');
+    if (headerElement) {
+      headerElement.innerHTML = this.renderHeader();
+    }
   }
 
   // Send message - the only business logic ChatWidget needs

@@ -185,6 +185,14 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
     return this.scroller?.entities().length ?? 0;
   }
 
+  /**
+   * Clear all entities from the scroller
+   */
+  public clear(): void {
+    this.scroller?.clear();
+    this.updateEntityCount();
+  }
+
   protected override async onWidgetCleanup(): Promise<void> {
     // Clean up event subscriptions
     this.unsubscribeEvents?.();
