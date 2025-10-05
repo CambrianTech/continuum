@@ -37,6 +37,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
  */
 export class PersonaUser extends AIUser {
   private isInitialized: boolean = false;
+  private eventsSubscribed: boolean = false;
   // Note: client is now in BaseUser as protected property, accessible via this.client
 
   constructor(
@@ -57,7 +58,23 @@ export class PersonaUser extends AIUser {
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
-      console.log(`ℹ️ PersonaUser ${this.displayName}: Already initialized`);
+      console.log(`ℹ️ PersonaUser ${this.displayName}: Already initialized, reloading rooms...`);
+      console.log(`🔍 DEBUG: eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client}`);
+      // CRITICAL: Reload rooms even when already initialized
+      // PersonaUsers might be created before rooms exist, so we need to refresh membership
+      await this.loadMyRooms();
+      console.log(`✅ PersonaUser ${this.displayName}: Reloaded, now in ${this.myRoomIds.size} rooms`);
+
+      // CRITICAL: Subscribe to events if not already done
+      // PersonaUsers might be created and initialized before having a client
+      if (!this.eventsSubscribed && this.client) {
+        console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions (deferred)`);
+        this.subscribeToChatEvents(this.handleChatMessage.bind(this));
+        this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
+        this.eventsSubscribed = true;
+      } else {
+        console.log(`⏭️ PersonaUser ${this.displayName}: Skipping subscription (eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client})`);
+      }
       return;
     }
 
@@ -66,14 +83,16 @@ export class PersonaUser extends AIUser {
     // STEP 1: Base initialization (loads state + rooms)
     await super.initialize();
 
-    // STEP 2: Subscribe to chat events using BaseUser helper
-    this.subscribeToChatEvents(this.handleChatMessage.bind(this));
-
-    // STEP 3: Subscribe to room updates using BaseUser helper
-    this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
+    // STEP 2: Subscribe to chat events using BaseUser helper (only if client available)
+    if (this.client && !this.eventsSubscribed) {
+      console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions (first init)`);
+      this.subscribeToChatEvents(this.handleChatMessage.bind(this));
+      this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
+      this.eventsSubscribed = true;
+    }
 
     this.isInitialized = true;
-    console.log(`✅ PersonaUser ${this.displayName}: Initialized with ${this.myRoomIds.size} rooms`);
+    console.log(`✅ PersonaUser ${this.displayName}: Initialized with ${this.myRoomIds.size} rooms, eventsSubscribed=${this.eventsSubscribed}`);
   }
 
   /**
@@ -81,8 +100,11 @@ export class PersonaUser extends AIUser {
    * Decides whether to respond based on room membership and other factors
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
+    console.log(`🔧 PersonaUser ${this.displayName}: handleChatMessage called with data:`, JSON.stringify(messageEntity).slice(0, 200));
+
     // Ignore our own messages
     if (messageEntity.senderId === this.id) {
+      console.log(`🔇 PersonaUser ${this.displayName}: Ignoring own message`);
       return;
     }
 
