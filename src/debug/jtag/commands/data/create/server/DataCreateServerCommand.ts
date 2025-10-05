@@ -10,8 +10,8 @@ import { DataCreateCommand } from '../shared/DataCreateCommand';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { createDataCreateResultFromParams } from '../shared/DataCreateTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import { Events } from '../../../../system/core/server/shared/Events';
+// import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+// import { Events } from '../../../../system/core/server/shared/Events';
 
 export class DataCreateServerCommand extends DataCreateCommand {
 
@@ -29,14 +29,15 @@ export class DataCreateServerCommand extends DataCreateCommand {
     console.debug(`🗄️ DATA SERVER: Creating ${collection} entity`);
 
     // DataDaemon creates entity directly or throws
+    // Events are emitted by DataDaemon.store() via universal Events system
     const entity = await DataDaemon.store(collection, params.data);
 
     console.debug(`✅ DATA SERVER: Created ${collection}/${entity.id}`);
 
-    // Emit event using BaseEntity helper
-    const eventName = BaseEntity.getEventName(collection, 'created');
-    await Events.emit(eventName, entity, this.context, this.commander);
-    console.log(`✅ DataCreateServerCommand: Emitted ${eventName}`);
+    // Event emission handled by DataDaemon layer (no duplicate emission)
+    // const eventName = BaseEntity.getEventName(collection, 'created');
+    // await Events.emit(eventName, entity, this.context, this.commander);
+    // console.log(`✅ DataCreateServerCommand: Emitted ${eventName}`);
 
     return createDataCreateResultFromParams(params, {
       success: true,
