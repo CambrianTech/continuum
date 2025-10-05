@@ -11,7 +11,8 @@
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import type {
   DataStorageAdapter,
   DataRecord,
@@ -25,6 +26,9 @@ import type {
 
 // Import entity registry for proper entity instantiation during validation
 import { getRegisteredEntity } from '../server/SqliteStorageAdapter';
+
+// Import universal events for automatic event emission
+import { Events } from '../../../system/core/shared/Events';
 
 // Removed complex decorator dependency - using simple field validation instead
 
@@ -381,7 +385,7 @@ export class DataDaemon {
 
   private static sharedInstance: DataDaemon | undefined;
   private static context: DataOperationContext | undefined;
-  private static eventEmitter: ((operation: 'created' | 'updated' | 'deleted', collection: string, entity: any) => Promise<void>) | undefined;
+  private static jtagContext: JTAGContext | undefined;
 
   /**
    * Initialize static DataDaemon context (called by system)
@@ -389,11 +393,11 @@ export class DataDaemon {
   static initialize(
     instance: DataDaemon,
     context: DataOperationContext,
-    eventEmitter?: (operation: 'created' | 'updated' | 'deleted', collection: string, entity: any) => Promise<void>
+    jtagContext: JTAGContext
   ): void {
     DataDaemon.sharedInstance = instance;
     DataDaemon.context = context;
-    DataDaemon.eventEmitter = eventEmitter;
+    DataDaemon.jtagContext = jtagContext;
   }
 
   /**
@@ -407,15 +411,14 @@ export class DataDaemon {
     collection: string,
     data: T
   ): Promise<T> {
-    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context || !DataDaemon.jtagContext) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
     const entity = await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context);
 
-    // Emit created event if event emitter was provided
-    if (DataDaemon.eventEmitter) {
-      await DataDaemon.eventEmitter('created', collection, entity);
-    }
+    // ✨ Universal event emission - works anywhere!
+    const eventName = BaseEntity.getEventName(collection, 'created');
+    await Events.emit(DataDaemon.jtagContext, eventName, entity);
 
     return entity;
   }
@@ -466,16 +469,15 @@ export class DataDaemon {
     data: Partial<T>,
     incrementVersion: boolean = true
   ): Promise<T> {
-    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context || !DataDaemon.jtagContext) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
     const entity = await DataDaemon.sharedInstance.update<T>(collection, id, data, DataDaemon.context, incrementVersion);
 
-    // Emit updated event if event emitter was provided
-    if (DataDaemon.eventEmitter) {
-      await DataDaemon.eventEmitter('updated', collection, entity);
-    }
+    // ✨ Universal event emission - works anywhere!
+    const eventName = BaseEntity.getEventName(collection, 'updated');
+    await Events.emit(DataDaemon.jtagContext, eventName, entity);
 
     return entity;
   }
@@ -487,7 +489,7 @@ export class DataDaemon {
    * const success = await DataDaemon.remove('users', userId);
    */
   static async remove(collection: string, id: UUID): Promise<StorageResult<boolean>> {
-    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context || !DataDaemon.jtagContext) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
@@ -497,9 +499,10 @@ export class DataDaemon {
 
     const deleteResult = await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context);
 
-    // Emit deleted event if deletion was successful and we have the entity data
-    if (deleteResult.success && entity && DataDaemon.eventEmitter) {
-      await DataDaemon.eventEmitter('deleted', collection, entity);
+    // ✨ Universal event emission - works anywhere!
+    if (deleteResult.success && entity) {
+      const eventName = BaseEntity.getEventName(collection, 'deleted');
+      await Events.emit(DataDaemon.jtagContext, eventName, entity);
     }
 
     return deleteResult;
