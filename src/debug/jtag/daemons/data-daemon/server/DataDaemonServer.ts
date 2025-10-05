@@ -15,6 +15,7 @@ import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStor
 import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/DatabaseConfig';
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { Events } from '../../../system/core/server/shared/Events';
+import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -61,6 +62,10 @@ export class DataDaemonServer extends DataDaemonBase {
    * Initialize data daemon
    */
   protected async initialize(): Promise<void> {
+    // Register router for universal event system
+    RouterRegistry.register(this.context, this.router);
+    console.log(`🗂️ ${this.toString()}: Registered router with RouterRegistry`);
+
     // Initialize entity registry before DataDaemon initialization
     await this.initializeEntityRegistry();
 
@@ -68,7 +73,7 @@ export class DataDaemonServer extends DataDaemonBase {
 
     // Initialize static DataDaemon interface for commands to use
     const context = this.createDataContext('data-daemon-server');
-    DataDaemon.initialize(this.dataDaemon, context, this.emitCrudEvent.bind(this));
+    DataDaemon.initialize(this.dataDaemon, context, this.context);
 
     console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
   }
