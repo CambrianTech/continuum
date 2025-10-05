@@ -381,13 +381,19 @@ export class DataDaemon {
 
   private static sharedInstance: DataDaemon | undefined;
   private static context: DataOperationContext | undefined;
+  private static eventEmitter: ((operation: 'created' | 'updated' | 'deleted', collection: string, entity: any) => Promise<void>) | undefined;
 
   /**
    * Initialize static DataDaemon context (called by system)
    */
-  static initialize(instance: DataDaemon, context: DataOperationContext): void {
+  static initialize(
+    instance: DataDaemon,
+    context: DataOperationContext,
+    eventEmitter?: (operation: 'created' | 'updated' | 'deleted', collection: string, entity: any) => Promise<void>
+  ): void {
     DataDaemon.sharedInstance = instance;
     DataDaemon.context = context;
+    DataDaemon.eventEmitter = eventEmitter;
   }
 
   /**
@@ -404,7 +410,14 @@ export class DataDaemon {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
-    return await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context);
+    const entity = await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context);
+
+    // Emit created event if event emitter was provided
+    if (DataDaemon.eventEmitter) {
+      await DataDaemon.eventEmitter('created', collection, entity);
+    }
+
+    return entity;
   }
 
   /**
@@ -457,7 +470,14 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    return await DataDaemon.sharedInstance.update<T>(collection, id, data, DataDaemon.context, incrementVersion);
+    const entity = await DataDaemon.sharedInstance.update<T>(collection, id, data, DataDaemon.context, incrementVersion);
+
+    // Emit updated event if event emitter was provided
+    if (DataDaemon.eventEmitter) {
+      await DataDaemon.eventEmitter('updated', collection, entity);
+    }
+
+    return entity;
   }
 
   /**
@@ -471,7 +491,18 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    return await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context);
+    // Read entity before deletion for event emission
+    const readResult = await DataDaemon.sharedInstance.read(collection, id, DataDaemon.context);
+    const entity = readResult.data?.data;
+
+    const deleteResult = await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context);
+
+    // Emit deleted event if deletion was successful and we have the entity data
+    if (deleteResult.success && entity && DataDaemon.eventEmitter) {
+      await DataDaemon.eventEmitter('deleted', collection, entity);
+    }
+
+    return deleteResult;
   }
 
   /**

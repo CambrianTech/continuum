@@ -13,6 +13,8 @@ import { DataDaemon, type StorageStrategyConfig, type DataOperationContext } fro
 import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
 import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/DatabaseConfig';
+import { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import { Events } from '../../../system/core/server/shared/Events';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -66,7 +68,7 @@ export class DataDaemonServer extends DataDaemonBase {
 
     // Initialize static DataDaemon interface for commands to use
     const context = this.createDataContext('data-daemon-server');
-    DataDaemon.initialize(this.dataDaemon, context);
+    DataDaemon.initialize(this.dataDaemon, context, this.emitCrudEvent.bind(this));
 
     console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
   }
@@ -86,11 +88,48 @@ export class DataDaemonServer extends DataDaemonBase {
   }
   
   /**
+   * Emit CRUD event - centralized event emission for all data operations
+   */
+  private async emitCrudEvent(operation: 'created' | 'updated' | 'deleted', collection: string, entity: any): Promise<void> {
+    try {
+      const eventName = BaseEntity.getEventName(collection, operation);
+
+      // Create mock commander object with router for Events.emit()
+      const mockCommander = {
+        router: this.router
+      } as any;
+
+      await Events.emit(eventName, entity, this.context, mockCommander);
+      console.log(`✅ DataDaemonServer: Emitted ${eventName}`);
+    } catch (error) {
+      console.error(`❌ DataDaemonServer: Failed to emit ${operation} event for ${collection}:`, error);
+    }
+  }
+
+  /**
    * Handle create operation using DataDaemon
    */
   protected async handleCreate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
     const context = this.createDataContext('data-daemon-server');
-    return await this.dataDaemon.create(payload.collection!, payload.data, context);
+    const entity = await this.dataDaemon.create(payload.collection!, payload.data, context);
+
+    // Emit created event
+    await this.emitCrudEvent('created', payload.collection!, entity);
+
+    // Return as StorageResult format
+    return {
+      success: true,
+      data: {
+        id: entity.id,
+        collection: payload.collection!,
+        data: entity,
+        metadata: {
+          createdAt: entity.createdAt?.toISOString() || new Date().toISOString(),
+          updatedAt: entity.updatedAt?.toISOString() || new Date().toISOString(),
+          version: entity.version || 1
+        }
+      }
+    };
   }
   
   /**
@@ -115,6 +154,10 @@ export class DataDaemonServer extends DataDaemonBase {
   protected async handleUpdate(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
     const context = this.createDataContext('data-daemon-server');
     const entity = await this.dataDaemon.update(payload.collection!, payload.id!, payload.data, context);
+
+    // Emit updated event
+    await this.emitCrudEvent('updated', payload.collection!, entity);
+
     return {
       success: true,
       data: {
@@ -135,7 +178,20 @@ export class DataDaemonServer extends DataDaemonBase {
    */
   protected async handleDelete(payload: DataOperationPayload): Promise<StorageResult<boolean>> {
     const context = this.createDataContext('data-daemon-server');
-    return await this.dataDaemon.delete(payload.collection!, payload.id!, context);
+
+    // Read entity before deletion for event emission
+    const readResult = await this.dataDaemon.read(payload.collection!, payload.id!, context);
+    const entity = readResult.data?.data;
+
+    // Perform deletion
+    const deleteResult = await this.dataDaemon.delete(payload.collection!, payload.id!, context);
+
+    // Emit deleted event if deletion was successful and we have the entity data
+    if (deleteResult.success && entity) {
+      await this.emitCrudEvent('deleted', payload.collection!, entity);
+    }
+
+    return deleteResult;
   }
   
   /**

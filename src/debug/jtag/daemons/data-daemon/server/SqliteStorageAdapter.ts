@@ -101,6 +101,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
   private createdTables = new Set<string>(); // Track created tables
+  private inTransaction: boolean = false; // Track transaction state to prevent nesting
 
   /**
    * Initialize SQLite database with configuration
@@ -634,8 +635,17 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
   /**
    * Execute operations within a transaction for atomic consistency
+   * Supports nested calls by only creating transaction if not already in one
    */
   private async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
+    // If already in a transaction, just execute the operation without nesting
+    if (this.inTransaction) {
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Already in transaction, skipping nested BEGIN`);
+      return await operation();
+    }
+
+    // Start new transaction
+    this.inTransaction = true;
     await this.beginTransaction();
 
     try {
@@ -647,6 +657,8 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       await this.rollbackTransaction();
       console.error(`❌ SQLite: Transaction rolled back due to error:`, error);
       throw error;
+    } finally {
+      this.inTransaction = false;
     }
   }
 
@@ -1661,7 +1673,11 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
     return new Promise((resolve) => {
       this.db!.serialize(() => {
-        this.db!.run('BEGIN TRANSACTION');
+        // Only begin transaction if not already in one
+        if (!this.inTransaction) {
+          this.inTransaction = true;
+          this.db!.run('BEGIN TRANSACTION');
+        }
 
         const results: any[] = [];
         let hasError = false;
@@ -1718,6 +1734,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
           // Commit or rollback
           if (hasError) {
             this.db!.run('ROLLBACK', (err) => {
+              this.inTransaction = false;
               resolve({
                 success: false,
                 error: errorMessage,
@@ -1726,6 +1743,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
             });
           } else {
             this.db!.run('COMMIT', (err) => {
+              this.inTransaction = false;
               if (err) {
                 resolve({
                   success: false,

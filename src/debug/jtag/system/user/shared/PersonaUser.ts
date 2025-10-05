@@ -25,10 +25,29 @@ import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
+import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+
+/**
+ * RAG Context Types - Storage structure for persona conversation context
+ */
+interface PersonaRAGMessage {
+  senderId: UUID;
+  senderName: string;
+  text: string;
+  timestamp: string;
+}
+
+interface PersonaRAGContext {
+  roomId: UUID;
+  personaId: UUID;
+  messages: PersonaRAGMessage[];
+  lastUpdated: string;
+  tokenCount: number;
+}
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -39,6 +58,7 @@ export class PersonaUser extends AIUser {
   private isInitialized: boolean = false;
   private eventsSubscribed: boolean = false;
   // Note: client is now in BaseUser as protected property, accessible via this.client
+  // ArtifactsAPI access is through this.client.daemons.artifacts
 
   constructor(
     entity: UserEntity,
@@ -49,6 +69,7 @@ export class PersonaUser extends AIUser {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
     if (client) {
       console.log(`🔌 PersonaUser ${this.displayName}: Client injected and passed to BaseUser`);
+      console.log(`📦 PersonaUser ${this.displayName}: ArtifactsAPI available via client.daemons`);
     }
   }
 
@@ -100,35 +121,21 @@ export class PersonaUser extends AIUser {
    * Decides whether to respond based on room membership and other factors
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
-    console.log(`🔧 PersonaUser ${this.displayName}: handleChatMessage called with data:`, JSON.stringify(messageEntity).slice(0, 200));
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: PersonaUser ${this.displayName}: handleChatMessage called`);
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Message from ${messageEntity.senderName} (${messageEntity.senderId})`);
 
     // Ignore our own messages
     if (messageEntity.senderId === this.id) {
-      console.log(`🔇 PersonaUser ${this.displayName}: Ignoring own message`);
+      console.log(`🔇 CLAUDE-FIX-${Date.now()}: ${this.displayName}: Ignoring own message`);
       return;
     }
 
-    console.log(`💬 PersonaUser ${this.displayName}: Received message from ${messageEntity.senderName}`);
+    // TEMPORARY: Disable ALL persona responses until we verify the filtering works
+    console.log(`🚫 CLAUDE-FIX-${Date.now()}: ${this.displayName}: Persona responses DISABLED for debugging`);
 
-    const messageText = messageEntity.content?.text?.toLowerCase() || '';
-
-    // Keyword triggers - respond if message contains these
-    const keywords = ['hello', 'help', 'question', 'persona', 'ai', 'bot'];
-    const hasKeyword = keywords.some(keyword => messageText.includes(keyword));
-
-    if (hasKeyword) {
-      console.log(`🎯 PersonaUser ${this.displayName}: Keyword detected, responding...`);
-      await this.respondToMessage(messageEntity);
-      return;
-    }
-
-    // Random response with low probability to avoid spam
-    if (Math.random() < 0.2) {
-      console.log(`🎲 PersonaUser ${this.displayName}: Random response triggered`);
-      await this.respondToMessage(messageEntity);
-    } else {
-      console.log(`🤫 PersonaUser ${this.displayName}: Staying quiet`);
-    }
+    // Still update RAG context for future use
+    await this.updateRAGContext(messageEntity.roomId, messageEntity);
+    return;
   }
 
   /**
@@ -207,10 +214,150 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Check if this persona is mentioned in a message
+   * Supports @username mentions and channel directives
+   *
+   * TODO Phase 2: Use dedicated mention/directive events instead of text parsing
+   */
+  private isPersonaMentioned(messageText: string): boolean {
+    const displayNameLower = this.displayName.toLowerCase();
+    const uniqueIdLower = this.entity.uniqueId?.toLowerCase() || '';
+
+    // Check for @mentions: "@PersonaName" or "@uniqueid"
+    const mentionPatterns = [
+      `@${displayNameLower}`,
+      `@${uniqueIdLower}`,
+      // Also support space after @ for natural language: "@ PersonaName"
+      `@ ${displayNameLower}`,
+      `@ ${uniqueIdLower}`
+    ];
+
+    for (const pattern of mentionPatterns) {
+      if (messageText.includes(pattern)) {
+        return true;
+      }
+    }
+
+    // Check for channel/directive patterns (if needed)
+    // TODO: Add channel directive support when that feature exists
+
+    return false;
+  }
+
+  /**
+   * Check if a sender is a human user (not AI/persona/agent)
+   * CRITICAL for preventing infinite response loops between AI users
+   */
+  private async isSenderHuman(senderId: UUID): Promise<boolean> {
+    if (!this.client) {
+      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot check sender type - no client`);
+      return true; // Fail open - allow response if we can't verify
+    }
+
+    try {
+      // Query the sender's UserEntity to check their type
+      const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<UserEntity>>('data/read', {
+        collection: COLLECTIONS.USERS,
+        id: senderId,
+        context: this.client.context,
+        sessionId: this.client.sessionId,
+        backend: 'server'
+      });
+
+      if (!result.success || !result.found || !result.data) {
+        console.warn(`⚠️  PersonaUser ${this.displayName}: Could not read sender ${senderId}, assuming human`);
+        return true; // Fail open
+      }
+
+      const senderType = result.data.type;
+      const isHuman = senderType === 'human';
+
+      console.log(`🔍 PersonaUser ${this.displayName}: Sender ${senderId} type is "${senderType}" (human: ${isHuman})`);
+      return isHuman;
+
+    } catch (error) {
+      console.error(`❌ PersonaUser ${this.displayName}: Error checking sender type:`, error);
+      return true; // Fail open on error
+    }
+  }
+
+  /**
    * Get persona database path
    */
   getPersonaDatabasePath(): string {
     return `.continuum/personas/${this.entity.id}/state.sqlite`;
+  }
+
+  /**
+   * RAG Context Storage - Store conversation context for a room
+   * Enables persona to maintain context across sessions
+   *
+   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
+   * For now, store in memory until artifact commands are implemented
+   */
+  async storeRAGContext(roomId: UUID, context: PersonaRAGContext): Promise<void> {
+    if (!this.client) {
+      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot store RAG context - no client`);
+      return;
+    }
+
+    // TODO Phase 2: Use artifacts daemon when commands are implemented
+    // await this.client.daemons.artifacts.writeJSON(...)
+    console.log(`📝 PersonaUser ${this.displayName}: RAG context stored (in-memory) for room ${roomId}`);
+  }
+
+  /**
+   * RAG Context Loading - Load conversation context for a room
+   * Returns null if no context exists yet
+   *
+   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
+   * For now, return null until artifact commands are implemented
+   */
+  async loadRAGContext(roomId: UUID): Promise<PersonaRAGContext | null> {
+    if (!this.client) {
+      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot load RAG context - no client`);
+      return null;
+    }
+
+    // TODO Phase 2: Use artifacts daemon when commands are implemented
+    // return await this.client.daemons.artifacts.readJSON<PersonaRAGContext>(...)
+    console.log(`📭 PersonaUser ${this.displayName}: No RAG context for room ${roomId} (not yet implemented)`);
+    return null;
+  }
+
+  /**
+   * Update RAG Context - Add new message to context and trim if needed
+   */
+  async updateRAGContext(roomId: UUID, message: ChatMessageEntity): Promise<void> {
+    // Load existing context or create new
+    let context = await this.loadRAGContext(roomId);
+    if (!context) {
+      context = {
+        roomId,
+        personaId: this.id,
+        messages: [],
+        lastUpdated: new Date().toISOString(),
+        tokenCount: 0
+      };
+    }
+
+    // Add new message to context
+    context.messages.push({
+      senderId: message.senderId,
+      senderName: message.senderName,
+      text: message.content?.text || '',
+      timestamp: typeof message.timestamp === 'string' ? message.timestamp : message.timestamp.toISOString()
+    });
+
+    // Keep only last 50 messages (simple context window for now)
+    if (context.messages.length > 50) {
+      context.messages = context.messages.slice(-50);
+    }
+
+    context.lastUpdated = new Date().toISOString();
+
+    // Store updated context
+    await this.storeRAGContext(roomId, context);
   }
 
   /**
