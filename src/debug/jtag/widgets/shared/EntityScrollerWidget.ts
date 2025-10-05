@@ -171,6 +171,11 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
             } else {
               console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out removal:`, id);
             }
+          },
+          clear: () => {
+            console.log(`🧹 ${this.constructor.name}: Clearing all entities (truncated)`);
+            this.scroller?.clear();
+            this.updateEntityCount();
           }
         }
       );
