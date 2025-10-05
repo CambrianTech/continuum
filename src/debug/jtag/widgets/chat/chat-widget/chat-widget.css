@@ -31,11 +31,60 @@
   background: var(--widget-header-background, var(--surface-secondary, rgba(10, 15, 20, 0.9)));
   border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: var(--spacing-xs, 4px);
   font-weight: 600;
   color: var(--text-primary, rgba(255, 255, 255, 0.95));
   font-size: 16px;
+}
+
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.header-members {
+  width: 100%;
+  margin-top: var(--spacing-xs, 4px);
+}
+
+.members-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs, 6px);
+  align-items: center;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xxs, 4px);
+  padding: var(--spacing-xxs, 3px) var(--spacing-xs, 6px);
+  background: var(--surface-tertiary, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: var(--radius-sm, 12px);
+  font-size: var(--font-xs, 11px);
+  font-weight: 500;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.8));
+  cursor: default;
+  transition: all 0.2s ease;
+}
+
+.member-chip:hover {
+  background: var(--surface-tertiary-hover, rgba(255, 255, 255, 0.12));
+  border-color: var(--border-subtle-hover, rgba(255, 255, 255, 0.25));
+}
+
+.member-name {
+  white-space: nowrap;
+}
+
+.no-members {
+  font-size: var(--font-xs, 11px);
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.5));
+  font-style: italic;
 }
 
 .header-title {

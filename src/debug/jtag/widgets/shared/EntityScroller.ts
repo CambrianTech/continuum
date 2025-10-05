@@ -53,6 +53,7 @@ export interface EntityScroller<T extends BaseEntity> {
   readonly add: (entity: T, position?: 'start' | 'end') => void;
   readonly update: (id: string, entity: T) => boolean;
   readonly remove: (id: string) => boolean;
+  readonly clear: () => void;
 
   // Smart real-time updates with auto-scroll
   readonly addWithAutoScroll: (entity: T, position?: 'start' | 'end') => void;
@@ -365,6 +366,13 @@ export function createScroller<T extends BaseEntity>(
 
       container.querySelector(`[data-entity-id="${id}"]`)?.remove();
       return true;
+    },
+
+    clear(): void {
+      entityManager.clear();
+      container.innerHTML = '';
+      hasMoreItems = true;
+      cursor = undefined;
     },
 
     // State queries - clean getters
