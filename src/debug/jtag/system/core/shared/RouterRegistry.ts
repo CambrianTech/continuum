@@ -24,16 +24,13 @@ export class RouterRegistry {
   /**
    * Get router for a context
    * Used by Events.emit() to automatically discover routing
+   *
+   * Note: Missing router is normal for browser-local events (room selection, UI state)
+   * Events.emit() handles this gracefully by falling back to DOM-only events
    */
   static getForContext(context: JTAGContext): JTAGRouter | undefined {
     const key = this.getContextKey(context);
-    const router = this.routers.get(key);
-
-    if (!router) {
-      console.warn(`⚠️ RouterRegistry: No router found for context ${context.environment}/${context.uuid}`);
-    }
-
-    return router;
+    return this.routers.get(key);
   }
 
   /**

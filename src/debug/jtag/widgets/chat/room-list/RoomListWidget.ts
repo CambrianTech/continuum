@@ -10,7 +10,7 @@ import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEnti
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/client/shared/Commands';
-import { Events } from '../../../system/core/client/shared/Events';
+import { Events } from '../../../system/core/shared/Events';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 
