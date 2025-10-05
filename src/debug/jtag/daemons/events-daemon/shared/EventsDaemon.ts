@@ -56,7 +56,7 @@ export interface EventBridgeResponse extends BaseResponsePayload {
  * Events Daemon - Handles cross-context event bridging
  */
 export abstract class EventsDaemon extends DaemonBase {
-  public readonly subpath: string = JTAG_ENDPOINTS.EVENTS.BRIDGE;
+  public readonly subpath: string = JTAG_ENDPOINTS.EVENTS.BASE;
   protected abstract eventManager: EventManager;
 
   /**
@@ -82,18 +82,20 @@ export abstract class EventsDaemon extends DaemonBase {
    * Handle event bridge messages from other contexts
    */
   async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
-    // Normalize endpoint using shared utility
-    const endpoint = EventRoutingUtils.normalizeEndpoint(message.endpoint);
+    // Check payload type - events route to 'events' endpoint but have type 'event-bridge'
+    const payload = message.payload as EventBridgePayload;
 
-    if (endpoint === JTAG_ENDPOINTS.EVENTS.BRIDGE) {
+    if (payload.type === 'event-bridge') {
       return await this.handleEventBridge(message);
     }
 
+    // Check for stats requests
+    const endpoint = EventRoutingUtils.normalizeEndpoint(message.endpoint);
     if (endpoint === JTAG_ENDPOINTS.EVENTS.STATS) {
       return await this.getBridgeStats();
     }
-    
-    const errorMsg = `Unknown endpoint: ${message.endpoint}`;
+
+    const errorMsg = `Unknown payload type: ${payload.type}, endpoint: ${message.endpoint}`;
     console.error(`❌ EventsDaemon: ${errorMsg}`);
     return createBaseResponse(false, message.context, message.payload.sessionId, {}) as EventBridgeResponse;
   }

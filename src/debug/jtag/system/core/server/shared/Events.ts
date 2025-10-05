@@ -36,8 +36,10 @@ export class Events {
     commander: ICommandDaemon,
     options: EventEmitOptions = {}
   ): Promise<{ success: boolean; error?: string }> {
+    console.log(`🔧 Events.emit: START - eventName='${eventName}', hasCommander=${!!commander}, hasRouter=${!!commander?.router}`);
     try {
       if (!commander?.router) {
+        console.error(`❌ Events.emit: Router not available for ${eventName}`);
         throw new Error('Router not available for event emission');
       }
 
@@ -57,16 +59,21 @@ export class Events {
         originContextUUID: context.uuid,
         timestamp: new Date().toISOString()
       };
+      console.log(`🔧 Events.emit: Created payload for ${eventName}`);
 
       // Create event message using JTAG message factory
+      // CRITICAL: Use full 'events' endpoint to match EventsDaemon registration
+      // EventsDaemon.subpath = 'events', so message must route to 'events' for local handling
       const eventMessage = JTAGMessageFactory.createEvent(
         context,
         'events',
-        JTAG_ENDPOINTS.EVENTS.BRIDGE,
+        JTAG_ENDPOINTS.EVENTS.BASE, // Changed from EVENTS.BRIDGE to match daemon registration
         eventPayload
       );
+      console.log(`🔧 Events.emit: Created message with endpoint=${eventMessage.endpoint}`);
 
       // Route event through Router (handles cross-context distribution)
+      console.log(`🔧 Events.emit: Calling router.postMessage for ${eventName}...`);
       const result = await commander.router.postMessage(eventMessage);
       console.log(`📨 SERVER-EVENT: Emitted ${eventName} via EventBridge`, result);
 

@@ -121,6 +121,8 @@ export abstract class BaseUser {
    */
   protected async loadMyRooms(): Promise<void> {
     try {
+      console.log(`🔧 LOAD-ROOMS-START: ${this.constructor.name} ${this.displayName} (id=${this.id.slice(0,8)}), current myRoomIds.size=${this.myRoomIds.size}`);
+
       // Query all rooms
       const roomsResult = await DataDaemon.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
@@ -132,15 +134,27 @@ export abstract class BaseUser {
         return;
       }
 
+      console.log(`🔧 LOAD-ROOMS-QUERY: ${this.constructor.name} ${this.displayName} found ${roomsResult.data.length} total rooms`);
+
       // Filter rooms where this user is a member
+      let memberCount = 0;
       for (const roomRecord of roomsResult.data) {
         const room = roomRecord.data;
+        console.log(`🔧 ROOM-RECORD STRUCTURE: roomRecord.id=${roomRecord.id}, roomRecord.data.id=${room.id}, room.name=${room.name}`);
+
+        // Use roomRecord.id (the record ID) not room.id (might be undefined in data payload)
+        const roomId = roomRecord.id || room.id;
+        console.log(`🔧 ROOM-RECORD: roomId=${roomId}, room.name=${room.name}, hasMembers=${!!room.members}`);
+
         const isMember = room.members.some((m: { userId: UUID }) => m.userId === this.id);
         if (isMember) {
-          this.myRoomIds.add(room.id);
+          this.myRoomIds.add(roomId);
+          memberCount++;
           console.log(`🚪 ${this.constructor.name} ${this.displayName}: Member of room "${room.name}"`);
         }
       }
+
+      console.log(`🔧 LOAD-ROOMS-END: ${this.constructor.name} ${this.displayName}, found ${memberCount} memberships, myRoomIds.size=${this.myRoomIds.size}`);
     } catch (error) {
       console.error(`❌ ${this.constructor.name} ${this.displayName}: Error loading rooms:`, error);
     }
@@ -186,10 +200,37 @@ export abstract class BaseUser {
 
     if (this.client) {
       // ✅ Use shared EventManager via JTAGClient when available (PersonaUsers)
+      console.log(`🔍 SUBSCRIBE-START: ${this.constructor.name} ${this.displayName} subscribing to '${eventName}'`);
+      console.log(`🔍 CLIENT-CHECK: this.client exists=${!!this.client}, this.client.daemons exists=${!!this.client.daemons}, this.client.daemons.events exists=${!!this.client.daemons?.events}`);
+
+      if (!this.client.daemons?.events) {
+        console.error(`❌ CRITICAL: ${this.constructor.name} ${this.displayName} - client.daemons.events is undefined!`);
+        return;
+      }
+
       this.client.daemons.events.on(eventName, async (messageData: any) => {
-        // Only handle messages in rooms we're a member of
-        if (this.myRoomIds.has(messageData.roomId)) {
-          await handler(messageData);
+        try {
+          console.log(`🔧 EVENT-HANDLER-START: ${this.constructor.name} ${this.displayName}`);
+
+          // Capture IDs safely (they might be getters that can fail)
+          const myId = this.id || 'undefined-id';
+          const roomIdShort = messageData.roomId?.slice(0,8) || 'no-room';
+          const senderIdShort = messageData.senderId?.slice(0,8) || 'no-sender';
+          const myRoomIdsArray = Array.from(this.myRoomIds || []);
+
+          console.log(`🔧 EVENT-HANDLER: ${this.constructor.name} ${this.displayName} (id=${typeof myId === 'string' ? myId.slice(0,8) : 'invalid'}), myRoomIds.size=${this.myRoomIds?.size || 0}`);
+          console.log(`🔧 EVENT-DATA: messageData.roomId=${roomIdShort}, senderId=${senderIdShort}`);
+          console.log(`🔧 MY-ROOM-IDS: ${JSON.stringify(myRoomIdsArray)}`);
+
+          // Only handle messages in rooms we're a member of
+          if (this.myRoomIds && this.myRoomIds.has(messageData.roomId)) {
+            console.log(`✅ ROOM-CHECK-PASS: ${this.constructor.name} ${this.displayName} calling handler for room ${roomIdShort}`);
+            await handler(messageData);
+          } else {
+            console.log(`❌ ROOM-CHECK-FAIL: ${this.constructor.name} ${this.displayName} NOT in room ${roomIdShort}, has ${myRoomIdsArray.length} rooms`);
+          }
+        } catch (error) {
+          console.error(`❌ EVENT-HANDLER-ERROR: ${this.constructor.name} ${this.displayName}:`, error);
         }
       });
       console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to all chat events via client.daemons.events`);
