@@ -57,6 +57,10 @@ export class ArtifactsDaemonBrowser extends ArtifactsDaemon {
     return await this.delegateToServer(payload);
   }
 
+  protected async handleLoadEnvironment(payload: ArtifactsPayload) {
+    return await this.delegateToServer(payload);
+  }
+
   /**
    * Delegate operation to server via router (following DataDaemon pattern)
    */

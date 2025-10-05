@@ -14,13 +14,25 @@ import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import { createBaseResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 
 // Storage location types that ArtifactsDaemon manages
-export type StorageType = 'database' | 'session' | 'system' | 'cache' | 'logs';
+export type StorageType = 'database' | 'session' | 'system' | 'cache' | 'logs' | 'config' | 'persona';
+
+// Storage base paths
+export const STORAGE_PATHS = {
+  DATABASE: '.continuum/database',
+  SYSTEM: '.continuum/jtag/system',
+  CACHE: '.continuum/cache',
+  LOGS: '.continuum/logs',
+  CONFIG: (homeDir: string) => `${homeDir}/.continuum`,
+  SESSION: (sessionId: string) => `.continuum/jtag/sessions/user/${sessionId}`,
+  PERSONA: (personaId: string) => `${process.env.HOME}/.continuum/personas/${personaId}`
+} as const;
 
 // Artifacts operation types
 export interface ArtifactsPayload extends JTAGPayload {
-  readonly operation: 'read' | 'write' | 'append' | 'mkdir' | 'list' | 'stat' | 'delete';
+  readonly operation: 'read' | 'write' | 'append' | 'mkdir' | 'list' | 'stat' | 'delete' | 'loadEnvironment';
   readonly relativePath: string;
   readonly storageType?: StorageType;  // Where to store/read from
+  readonly personaId?: UUID;  // Required for persona storage type
   readonly content?: string | Buffer;
   readonly options?: {
     createDirectories?: boolean;
@@ -115,31 +127,35 @@ export abstract class ArtifactsDaemon extends DaemonBase {
         case 'read':
           result = await this.handleRead(artifactsPayload);
           break;
-          
+
         case 'write':
           result = await this.handleWrite(artifactsPayload);
           break;
-          
+
         case 'append':
           result = await this.handleAppend(artifactsPayload);
           break;
-          
+
         case 'mkdir':
           result = await this.handleMkdir(artifactsPayload);
           break;
-          
+
         case 'list':
           result = await this.handleList(artifactsPayload);
           break;
-          
+
         case 'stat':
           result = await this.handleStat(artifactsPayload);
           break;
-          
+
         case 'delete':
           result = await this.handleDelete(artifactsPayload);
           break;
-          
+
+        case 'loadEnvironment':
+          result = await this.handleLoadEnvironment(artifactsPayload);
+          break;
+
         default:
           result = {
             success: false,
@@ -159,42 +175,46 @@ export abstract class ArtifactsDaemon extends DaemonBase {
    * Validate and resolve path within .continuum structure based on storage type
    */
   protected validateAndResolvePath(
-    relativePath: string, 
+    relativePath: string,
     storageType: StorageType = 'system',
-    sessionId?: UUID
+    sessionId?: UUID,
+    personaId?: UUID
   ): string {
     // Remove leading slash if present
     const cleanPath = relativePath.startsWith('/') ? relativePath.slice(1) : relativePath;
-    
+
     // Build full path based on storage type
     let basePath: string;
-    
+
     switch (storageType) {
       case 'database':
-        // Global user database: $HOME/.continuum/database/
-        basePath = '.continuum/database';
+        basePath = STORAGE_PATHS.DATABASE;
         break;
       case 'session':
-        // Session-specific data
         if (!sessionId) throw new Error('Session storage requires sessionId');
-        basePath = `.continuum/jtag/sessions/user/${sessionId}`;
+        basePath = STORAGE_PATHS.SESSION(sessionId);
         break;
       case 'system':
-        // System/project data
-        basePath = '.continuum/jtag/system';
+        basePath = STORAGE_PATHS.SYSTEM;
         break;
       case 'cache':
-        // Temporary cache data
-        basePath = '.continuum/cache';
+        basePath = STORAGE_PATHS.CACHE;
         break;
       case 'logs':
-        // Log files
-        basePath = '.continuum/logs';
+        basePath = STORAGE_PATHS.LOGS;
+        break;
+      case 'config':
+        if (!process.env.HOME) throw new Error('HOME environment variable not set');
+        basePath = STORAGE_PATHS.CONFIG(process.env.HOME);
+        break;
+      case 'persona':
+        if (!personaId) throw new Error('Persona storage requires personaId');
+        basePath = STORAGE_PATHS.PERSONA(personaId);
         break;
       default:
         throw new Error(`Unknown storage type: ${storageType}`);
     }
-      
+
     return `${basePath}/${cleanPath}`;
   }
 
@@ -206,6 +226,7 @@ export abstract class ArtifactsDaemon extends DaemonBase {
   protected abstract handleList(payload: ArtifactsPayload): Promise<ArtifactsResult>;
   protected abstract handleStat(payload: ArtifactsPayload): Promise<ArtifactsResult>;
   protected abstract handleDelete(payload: ArtifactsPayload): Promise<ArtifactsResult>;
+  protected abstract handleLoadEnvironment(payload: ArtifactsPayload): Promise<ArtifactsResult>;
 
   toString(): string {
     return `ArtifactsDaemon[${this.context.environment}]`;

@@ -25,31 +25,31 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleRead(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
       const encoding = payload.options?.encoding || 'utf8';
-      
+
       const content = await fs.readFile(fullPath, encoding);
-      
+
       return {
         success: true,
         data: content,
         fullPath,
         bytesProcessed: Buffer.byteLength(content.toString(), encoding)
       };
-      
+
     } catch (error: any) {
       if (error.code === 'ENOENT') {
         return {
           success: true,
           data: undefined,
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
         };
       }
-      
+
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
   }
@@ -59,7 +59,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleWrite(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
       const content = payload.content || '';
       
       // Ensure directory exists
@@ -103,7 +103,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
   }
@@ -113,7 +113,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleAppend(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
       const content = payload.content || '';
       
       // Ensure directory exists
@@ -141,7 +141,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
   }
@@ -151,7 +151,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleMkdir(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
       
       await fs.mkdir(fullPath, { recursive: payload.options?.createDirectories !== false });
       
@@ -164,7 +164,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
   }
@@ -174,7 +174,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleList(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
       
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
       const files = entries.map(entry => ({
@@ -194,14 +194,14 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         return {
           success: true,
           data: [],
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
         };
       }
       
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
   }
@@ -211,7 +211,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleStat(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
       
       const stats = await fs.stat(fullPath);
       
@@ -232,14 +232,14 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
         return {
           success: true,
           data: undefined,
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
         };
       }
       
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
       };
     }
   }
@@ -249,34 +249,88 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
    */
   protected async handleDelete(payload: ArtifactsPayload): Promise<ArtifactsResult> {
     try {
-      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId);
-      
+      const fullPath = this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId);
+
       const stats = await fs.stat(fullPath);
-      
+
       if (stats.isDirectory()) {
         await fs.rmdir(fullPath, { recursive: true });
       } else {
         await fs.unlink(fullPath);
       }
-      
+
       return {
         success: true,
         fullPath
       };
-      
+
     } catch (error: any) {
       if (error.code === 'ENOENT') {
         return {
           success: true,
           data: false, // File didn't exist
-          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+          fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
         };
       }
-      
+
       return {
         success: false,
         error: error.message,
-        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId)
+        fullPath: this.validateAndResolvePath(payload.relativePath, payload.storageType, payload.sessionId, payload.personaId)
+      };
+    }
+  }
+
+  /**
+   * Load environment variables from config.env
+   */
+  protected async handleLoadEnvironment(payload: ArtifactsPayload): Promise<ArtifactsResult> {
+    try {
+      const configPath = this.validateAndResolvePath('config.env', 'config');
+
+      let content: string;
+      try {
+        content = await fs.readFile(configPath, 'utf-8');
+      } catch (error: any) {
+        if (error.code === 'ENOENT') {
+          return {
+            success: true,
+            data: { loaded: 0, message: 'No config.env found', path: configPath }
+          };
+        }
+        throw error;
+      }
+
+      const lines = content.split('\n');
+      let loaded = 0;
+      const variables: Record<string, string> = {};
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+
+        // Skip empty lines and comments
+        if (!trimmed || trimmed.startsWith('#')) continue;
+
+        // Parse KEY=value
+        const match = trimmed.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+        if (match) {
+          const [, key, value] = match;
+          process.env[key] = value;
+          variables[key] = value;
+          loaded++;
+          console.log(`🔑 Loaded env var: ${key}`);
+        }
+      }
+
+      return {
+        success: true,
+        data: { loaded, variables, path: configPath }
+      };
+
+    } catch (error: any) {
+      return {
+        success: false,
+        error: `Failed to load environment: ${error.message}`
       };
     }
   }
