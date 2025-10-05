@@ -10,8 +10,8 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataDeleteParams, DataDeleteResult } from '../shared/DataDeleteTypes';
 import { createDataDeleteResultFromParams } from '../shared/DataDeleteTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import { Events } from '../../../../system/core/server/shared/Events';
+// import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+// import { Events } from '../../../../system/core/server/shared/Events';
 
 export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataDeleteResult> {
 
@@ -35,6 +35,7 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
     }
 
     // DataDaemon throws on failure, returns success result on success
+    // Events are emitted by DataDaemon.remove() via universal Events system
     const result = await DataDaemon.remove(collection, params.id);
 
     if (!result.success) {
@@ -43,10 +44,10 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
 
     console.debug(`✅ DATA DELETE: Deleted ${collection}/${params.id}`);
 
-    // Emit event using BaseEntity helper (with the entity data before deletion)
-    const eventName = BaseEntity.getEventName(collection, 'deleted');
-    await Events.emit(eventName, entityBeforeDelete, this.context, this.commander);
-    console.log(`✅ DataDeleteServerCommand: Emitted ${eventName}`);
+    // Event emission handled by DataDaemon layer (no duplicate emission)
+    // const eventName = BaseEntity.getEventName(collection, 'deleted');
+    // await Events.emit(eventName, entityBeforeDelete, this.context, this.commander);
+    // console.log(`✅ DataDeleteServerCommand: Emitted ${eventName}`);
 
     return createDataDeleteResultFromParams(params, {
       found: true,
