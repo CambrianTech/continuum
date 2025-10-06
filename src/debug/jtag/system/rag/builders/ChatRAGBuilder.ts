@@ -24,6 +24,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { UserEntity } from '../../data/entities/UserEntity';
+import { RoomEntity } from '../../data/entities/RoomEntity';
 
 /**
  * Chat-specific RAG builder
@@ -51,8 +52,8 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     console.log(`📚 ChatRAGBuilder: Building context for room ${contextId.slice(0, 8)} (persona: ${personaId.slice(0, 8)})`);
 
-    // 1. Load persona identity
-    const identity = await this.loadPersonaIdentity(personaId);
+    // 1. Load persona identity (with room context for system prompt)
+    const identity = await this.loadPersonaIdentity(personaId, contextId);
 
     // 2. Load recent conversation history from database
     const conversationHistory = await this.loadConversationHistory(
@@ -99,7 +100,7 @@ export class ChatRAGBuilder extends RAGBuilder {
   /**
    * Load persona identity from UserEntity
    */
-  private async loadPersonaIdentity(personaId: UUID): Promise<PersonaIdentity> {
+  private async loadPersonaIdentity(personaId: UUID, roomId: UUID): Promise<PersonaIdentity> {
     try {
       const result = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
 
@@ -119,7 +120,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         name: user.displayName,
         bio: user.profile?.bio,
         role: user.type, // 'persona' type
-        systemPrompt: this.buildSystemPrompt(user),
+        systemPrompt: await this.buildSystemPrompt(user, roomId),
         capabilities: user.capabilities ? Object.keys(user.capabilities) : []
       };
     } catch (error) {
@@ -132,20 +133,33 @@ export class ChatRAGBuilder extends RAGBuilder {
   }
 
   /**
-   * Build system prompt from persona UserEntity
+   * Build system prompt from persona UserEntity with room context
    */
-  private buildSystemPrompt(user: UserEntity): string {
+  private async buildSystemPrompt(user: UserEntity, roomId: UUID): Promise<string> {
     const name = user.displayName;
     const bio = user.profile?.bio || '';
     const capabilities = user.capabilities?.autoResponds
       ? 'You respond naturally to conversations.'
       : 'You participate when mentioned or when the conversation is relevant.';
 
+    // Load room members to provide context
+    const membersList = await this.loadRoomMembers(roomId);
+    const membersContext = membersList.length > 0
+      ? `\n\nCurrent room members: ${membersList.join(', ')}`
+      : '';
+
     return `You are ${name}${bio ? `, ${bio}` : ''}. ${capabilities}
 
-This is a multi-party group chat with humans and AI participants. You'll see messages from different speakers.
-Respond naturally and conversationally (1-3 sentences unless more detail is needed).
-DO NOT prefix your responses with names or labels - just respond as yourself directly.`;
+This is a multi-party group chat. ${membersContext}
+
+CRITICAL INSTRUCTIONS FOR YOUR RESPONSES:
+1. DO NOT start your response with your name or any label like "${name}:" or "Assistant:"
+2. DO NOT generate fake multi-turn conversations with "A:" and "H:" prefixes
+3. DO NOT invent participants - ONLY these people exist: ${membersList.join(', ')}
+4. Just respond naturally in 1-3 sentences as yourself
+5. In the conversation history, you'll see "Name: message" format to identify speakers, but YOUR responses should NOT include this prefix
+
+When you see messages formatted as "SpeakerName: text", that's just to help you identify who said what. You should respond with just your message text, no prefix.`;
   }
 
   /**
@@ -291,5 +305,40 @@ DO NOT prefix your responses with names or labels - just respond as yourself dir
     // TODO: Query persona_memory collection when implemented
     // For now, return empty array
     return [];
+  }
+
+  /**
+   * Load room members to provide context about who's in the chat
+   */
+  private async loadRoomMembers(roomId: UUID): Promise<string[]> {
+    try {
+      // 1. Load room entity
+      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (!roomResult.success || !roomResult.data) {
+        console.warn(`⚠️ ChatRAGBuilder: Could not load room ${roomId}`);
+        return [];
+      }
+
+      const room = roomResult.data.data;
+      if (!room.members || room.members.length === 0) {
+        console.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no members`);
+        return [];
+      }
+
+      // 2. Load user entities for each member to get display names
+      const memberNames: string[] = [];
+      for (const member of room.members) {
+        const userResult = await DataDaemon.read<UserEntity>(UserEntity.collection, member.userId);
+        if (userResult.success && userResult.data) {
+          memberNames.push(userResult.data.data.displayName);
+        }
+      }
+
+      console.log(`👥 ChatRAGBuilder: Loaded ${memberNames.length} room members: ${memberNames.join(', ')}`);
+      return memberNames;
+    } catch (error) {
+      console.error(`❌ ChatRAGBuilder: Error loading room members:`, error);
+      return [];
+    }
   }
 }
