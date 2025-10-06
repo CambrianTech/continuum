@@ -33,6 +33,7 @@ import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -209,44 +210,57 @@ export class PersonaUser extends AIUser {
    */
   private async respondToMessage(originalMessage: ChatMessageEntity): Promise<void> {
     try {
-      // Load RAG context for this room
-      const ragContext = await this.loadRAGContext(originalMessage.roomId);
+      // Build RAG context using ChatRAGBuilder (includes room membership, message history, persona identity)
+      const ragBuilder = new ChatRAGBuilder();
+      const fullRAGContext = await ragBuilder.buildContext(
+        originalMessage.roomId,
+        this.id,
+        {
+          maxMessages: 20,
+          maxMemories: 10,
+          includeArtifacts: false, // Skip artifacts for now (image attachments)
+          includeMemories: false    // Skip private memories for now
+        }
+      );
 
       // Build message history for LLM
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
 
-      // System prompt defining persona behavior
+      // System prompt from RAG builder (includes room membership!)
       messages.push({
         role: 'system',
-        content: `You are ${this.displayName}, a helpful AI assistant participating in a group chat. Keep your responses natural, conversational, and concise (1-3 sentences unless more detail is needed). You're part of an ongoing conversation, so be contextually aware.`
+        content: fullRAGContext.identity.systemPrompt
       });
 
-      // Add recent chat history as context (last 10 messages)
-      if (ragContext && ragContext.messages.length > 0) {
-        const recentMessages = ragContext.messages.slice(-10);
-        for (const msg of recentMessages) {
+      // Add conversation history from RAG context
+      // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
+      // Format: "SpeakerName: message" (Llama only supports system/user/assistant/ipython roles)
+      if (fullRAGContext.conversationHistory.length > 0) {
+        for (const msg of fullRAGContext.conversationHistory) {
+          // For Llama models, embed speaker identity in the content since name parameter isn't supported
+          const formattedContent = msg.name ? `${msg.name}: ${msg.content}` : msg.content;
+
           messages.push({
-            role: msg.senderId === this.id ? 'assistant' : 'user',
-            content: `${msg.senderName}: ${msg.text}`
+            role: msg.role,
+            content: formattedContent
           });
         }
       }
 
-      // Add the current message if not already in context
-      const lastMsg = ragContext?.messages[ragContext.messages.length - 1];
-      if (!lastMsg || lastMsg.senderId !== originalMessage.senderId || lastMsg.timestamp !== (typeof originalMessage.timestamp === 'string' ? originalMessage.timestamp : originalMessage.timestamp.toISOString())) {
-        messages.push({
-          role: 'user',
-          content: `${originalMessage.senderName}: ${originalMessage.content?.text || ''}`
-        });
-      }
+      // CRITICAL: Identity reminder at END of context (research shows this prevents "prompt drift")
+      // LLMs have recency bias - instructions at the end have MORE influence than at beginning
+      // This prevents the persona from copying the "Name: message" format or inventing fake participants
+      messages.push({
+        role: 'system',
+        content: `IDENTITY REMINDER: You are ${this.displayName}. Respond naturally with JUST your message - NO name prefix, NO "A:" or "H:" labels, NO fake conversations. The room has ONLY these people: ${fullRAGContext.identity.systemPrompt.match(/Current room members: ([^\n]+)/)?.[1] || 'unknown members'}.`
+      });
 
       // Generate response using AIProviderDaemon (static method like DataDaemon.query)
       console.log(`🤖 ${this.displayName}: Generating AI response with ${messages.length} context messages...`);
 
       const request: TextGenerationRequest = {
         messages,
-        model: 'llama3.2:1b', // Fast local model for chat responses
+        model: 'llama3.2:3b', // Larger model for better instruction following (was 1b)
         temperature: 0.7,
         maxTokens: 150, // Keep responses concise
         preferredProvider: 'ollama'
