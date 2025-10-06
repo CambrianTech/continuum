@@ -18,6 +18,32 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 export type RAGDomain = 'chat' | 'academy' | 'game' | 'code' | 'analysis';
 
 /**
+ * Model capabilities that affect RAG context building
+ * Determines how artifacts (images, etc.) are processed
+ */
+export type ModelCapability =
+  | 'text'                  // Basic text generation
+  | 'vision'                // Can process images directly
+  | 'function-calling'      // Supports tool/function calls
+  | 'streaming'             // Supports streaming responses
+  | 'embeddings'            // Can generate embeddings
+  | 'multimodal';           // Supports multiple input types
+
+/**
+ * Model capability profile
+ * Each model adapter reports its capabilities
+ */
+export interface ModelCapabilities {
+  readonly modelId: string;
+  readonly providerId: string;
+  readonly capabilities: ModelCapability[];
+  readonly maxContextTokens: number;
+  readonly supportsImages: boolean;
+  readonly supportsFunctionCalling: boolean;
+  readonly supportsStreaming: boolean;
+}
+
+/**
  * LLM message format (OpenAI/Anthropic compatible)
  * Matches ChatMessage from AIProviderTypes
  */
@@ -33,11 +59,20 @@ export interface LLMMessage {
  * Vision models can process images, code analyzers can read files, etc.
  */
 export interface RAGArtifact {
-  type: 'screenshot' | 'file' | 'image' | 'data' | 'benchmark';
+  type: 'screenshot' | 'file' | 'image' | 'data' | 'benchmark' | 'video' | 'audio';
   url?: string;
   base64?: string;
   content?: string;
   metadata: Record<string, any>;
+
+  // NEW: Preprocessing results for text-only models
+  preprocessed?: {
+    type: 'yolo_detection' | 'image_description' | 'ocr' | 'video_summary' | 'audio_transcript';
+    result: string | Record<string, unknown>;
+    confidence?: number;
+    processingTime?: number;
+    model?: string;
+  };
 }
 
 /**
@@ -102,7 +137,13 @@ export interface RAGBuildOptions {
   includeArtifacts?: boolean;  // Include images/files (default: true)
   includeMemories?: boolean;  // Include private memories (default: true)
 
-  // NEW: Context markers for clarity - what triggered this response?
+  // Context markers for clarity - what triggered this response?
   triggeringMessageId?: UUID;  // The specific message that triggered this context build
   triggeringTimestamp?: number;  // Cutoff - exclude messages AFTER this (race condition protection)
+
+  // NEW: Model capability-aware processing
+  modelCapabilities?: ModelCapabilities;  // Target model's capabilities
+  preprocessImages?: boolean;  // Force preprocessing even for vision models (default: auto-detect)
+  yoloEndpoint?: string;  // YOLO detection service endpoint (default: local)
+  imageDescriptionModel?: string;  // Model for generating image descriptions
 }
