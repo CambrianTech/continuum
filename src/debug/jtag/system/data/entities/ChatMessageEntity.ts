@@ -5,6 +5,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { UserType } from './UserEntity';
 
 // Message-specific types moved here since domain files are deleted
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
@@ -38,6 +39,7 @@ export interface CreateMessageData {
   roomId: UUID;
   senderId: UUID;
   senderName: string;
+  senderType: UserType; // Denormalized for performance (avoid extra DB lookup)
   content: MessageContent;
   priority?: MessagePriority;
   metadata?: Partial<MessageMetadata>;
@@ -80,6 +82,9 @@ export class ChatMessageEntity extends BaseEntity {
   @TextField()
   senderName: string;
 
+  @EnumField({ index: true }) // Index for efficient AI vs human filtering
+  senderType: UserType;
+
   @JsonField()
   content: MessageContent;
 
@@ -112,6 +117,7 @@ export class ChatMessageEntity extends BaseEntity {
     this.roomId = '' as UUID;
     this.senderId = '' as UUID;
     this.senderName = '';
+    this.senderType = 'human'; // Default to human
     this.content = { text: '', attachments: [] };
     this.status = 'sending';
     this.priority = 'normal';

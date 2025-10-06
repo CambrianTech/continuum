@@ -186,12 +186,13 @@ function createMessageContent(text: string): any {
 /**
  * Create complete message object
  */
-function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string): any {
+function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string, senderType: 'human' | 'agent' | 'persona' | 'system' = 'system'): any {
   return {
     id,
     roomId,
     senderId,
     senderName,
+    senderType,  // REQUIRED field for ChatMessageEntity
     content: createMessageContent(text),
     status: "sent",
     priority: "normal",
@@ -614,21 +615,24 @@ async function seedViaJTAG() {
         ROOM_IDS.GENERAL,
         'system',
         'System',
-        MESSAGE_CONTENT.WELCOME_GENERAL
+        MESSAGE_CONTENT.WELCOME_GENERAL,
+        'system'  // senderType
       ),
       createMessage(
         MESSAGE_IDS.CLAUDE_INTRO,
         ROOM_IDS.GENERAL,
         claudeUser.id,
         USER_CONFIG.CLAUDE.NAME,
-        MESSAGE_CONTENT.CLAUDE_INTRO
+        MESSAGE_CONTENT.CLAUDE_INTRO,
+        'agent'  // senderType - Claude Code is an agent
       ),
       createMessage(
         MESSAGE_IDS.WELCOME_ACADEMY,
         ROOM_IDS.ACADEMY,
         'system',
         'System',
-        MESSAGE_CONTENT.WELCOME_ACADEMY
+        MESSAGE_CONTENT.WELCOME_ACADEMY,
+        'system'  // senderType
       )
     ];
 

@@ -413,6 +413,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     messageEntity.roomId = this.currentRoomId; // Use centralized roomId
     messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
     messageEntity.senderName = 'Joel';
+    messageEntity.senderType = 'human'; // Denormalized user type (human messages from UI)
     messageEntity.content = { text: content, attachments: [] };
     messageEntity.status = 'sending';
     messageEntity.priority = 'normal';
