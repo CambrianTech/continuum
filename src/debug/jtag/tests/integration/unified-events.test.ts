@@ -7,6 +7,8 @@
 
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import { Commands } from '../../system/core/shared/Commands';
+import { STATE_COMMANDS } from '../../commands/state/shared/StateCommandConstants';
+import { DATA_EVENTS } from '../../system/core/shared/EventConstants';
 
 async function testUnifiedEvents() {
   console.log('🎯 Testing Unified Events System');
@@ -23,13 +25,13 @@ async function testUnifiedEvents() {
     let exactEventReceived = false;
     let exactEventData: any = null;
 
-    const unsubExact = jtag.daemons.events.on('data:User:created', (user: any) => {
+    const unsubExact = jtag.daemons.events.on(DATA_EVENTS.USERS.CREATED, (user: any) => {
       console.log('   ✅ Received exact event:', user);
       exactEventReceived = true;
       exactEventData = user;
     });
 
-    console.log('   ✅ Subscribed to data:User:created');
+    console.log(`   ✅ Subscribed to ${DATA_EVENTS.USERS.CREATED}`);
 
     // Test 2: Subscribe to elegant pattern
     console.log('\n📋 Test 2: Elegant pattern subscription');
@@ -44,7 +46,7 @@ async function testUnifiedEvents() {
 
     // Test 3: Create a user to trigger events
     console.log('\n📋 Test 3: Creating user to trigger events');
-    const createResult = await Commands.execute('state/create', {
+    const createResult = await Commands.execute(STATE_COMMANDS.CREATE, {
       collection: 'User',
       data: {
         displayName: 'Test User for Unified Events',

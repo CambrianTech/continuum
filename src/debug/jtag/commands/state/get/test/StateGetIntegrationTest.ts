@@ -5,6 +5,7 @@
  */
 
 import { Commands } from '../../../../system/core/shared/Commands';
+import { STATE_COMMANDS } from '../../shared/StateCommandConstants';
 import type { StateGetParams, StateGetResult } from '../shared/StateGetTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
 
@@ -16,7 +17,7 @@ export class StateGetIntegrationTest {
   static async testBasicStateGet(): Promise<void> {
     console.log('🧪 Testing basic state/get command...');
 
-    const result = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>('state/get', {
+    const result = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>(STATE_COMMANDS.GET, {
       collection: 'UserState',
       limit: 5
     });
@@ -50,7 +51,7 @@ export class StateGetIntegrationTest {
     console.log('🧪 Testing state/get with user context filtering...');
 
     // First get all UserState entities
-    const allResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>('state/get', {
+    const allResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>(STATE_COMMANDS.GET, {
       collection: 'UserState'
     });
 
@@ -63,7 +64,7 @@ export class StateGetIntegrationTest {
     const testUserId = allResult.items[0].userId;
 
     // Test filtering by userId
-    const filteredResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>('state/get', {
+    const filteredResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>(STATE_COMMANDS.GET, {
       collection: 'UserState',
       userId: testUserId,
       limit: 10
@@ -89,7 +90,7 @@ export class StateGetIntegrationTest {
   static async testThemePreferencesStructure(): Promise<void> {
     console.log('🧪 Testing theme preferences data structure...');
 
-    const result = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>('state/get', {
+    const result = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>(STATE_COMMANDS.GET, {
       collection: 'UserState',
       limit: 10
     });
@@ -140,7 +141,7 @@ export class StateGetIntegrationTest {
     console.log('🧪 Testing limit and ordering parameters...');
 
     // Test limit parameter
-    const limitedResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>('state/get', {
+    const limitedResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>(STATE_COMMANDS.GET, {
       collection: 'UserState',
       limit: 1
     });
@@ -154,7 +155,7 @@ export class StateGetIntegrationTest {
     }
 
     // Test ordering (if we have multiple items)
-    const allResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>('state/get', {
+    const allResult = await Commands.execute<StateGetParams, StateGetResult<UserStateEntity>>(STATE_COMMANDS.GET, {
       collection: 'UserState',
       orderBy: [{ field: 'id', direction: 'asc' }]
     });

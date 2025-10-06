@@ -7,6 +7,7 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { Commands } from '../../system/core/shared/Commands';
+import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {
@@ -86,10 +87,10 @@ export class ContinuumWidget extends BaseWidget {
     try {
       // Load both base layout CSS and theme variables CSS
       const [baseLayoutResult, themeVariablesResult] = await Promise.all([
-        Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+        Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
           filepath: 'widgets/shared/themes/base/base.css'
         }),
-        Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+        Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
           filepath: 'widgets/shared/themes/base/theme.css'
         })
       ]);

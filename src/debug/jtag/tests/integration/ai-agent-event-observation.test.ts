@@ -15,6 +15,8 @@
 
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import { Commands } from '../../system/core/shared/Commands';
+import { STATE_COMMANDS } from '../../commands/state/shared/StateCommandConstants';
+import { DATA_EVENTS, getDataEventName } from '../../system/core/shared/EventConstants';
 
 async function testAIAgentEventObservation() {
   console.log('🤖 AI Agent Event Observation Test');
@@ -38,7 +40,7 @@ async function testAIAgentEventObservation() {
     console.log('\n📋 Test 1: AI Agent subscribing to chat message events');
     const observedMessages: any[] = [];
 
-    const unsubMessages = jtag.daemons.events.on('data:ChatMessage:created', (message: any) => {
+    const unsubMessages = jtag.daemons.events.on(getDataEventName('ChatMessage', 'created'), (message: any) => {
       console.log(`   🤖 AI Agent observed: "${message.content?.text}"`);
       observedMessages.push(message);
     });
@@ -58,7 +60,7 @@ async function testAIAgentEventObservation() {
 
     // Test 3: Simulate browser creating chat message (AI agent should observe)
     console.log('\n📋 Test 3: Simulating browser creating chat message');
-    const messageResult = await Commands.execute('state/create', {
+    const messageResult = await Commands.execute(STATE_COMMANDS.CREATE, {
       collection: 'ChatMessage',
       data: {
         roomId: '5e71a0c8-0303-4eb8-a478-3a121248',
@@ -103,7 +105,7 @@ async function testAIAgentEventObservation() {
 
     // Test 6: Simulate user action (AI agent should observe with elegant pattern)
     console.log('\n📋 Test 6: Simulating user update (AI agent observes with pattern)');
-    const userResult = await Commands.execute('state/create', {
+    const userResult = await Commands.execute(STATE_COMMANDS.CREATE, {
       collection: 'User',
       data: {
         displayName: 'AI Test User',
