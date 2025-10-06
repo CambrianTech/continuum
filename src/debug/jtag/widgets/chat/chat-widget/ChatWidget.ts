@@ -13,6 +13,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
+import { UI_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 
@@ -173,7 +174,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     // Listen for room selection events
-    Events.subscribe('room:selected', async (eventData: { roomId: string; roomName: string }) => {
+    Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (eventData: { roomId: string; roomName: string }) => {
       console.log(`🏠 ChatWidget: Room selected "${eventData.roomName}" (${eventData.roomId})`);
       this.currentRoomId = eventData.roomId as UUID;
       this.currentRoomName = eventData.roomName;
@@ -191,7 +192,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     });
 
     // MANUAL ChatMessage creation handling since automatic events don't work properly
-    Events.subscribe('data:ChatMessage:created', (eventData: ChatMessageEntity) => {
+    Events.subscribe(getDataEventName('ChatMessage', 'created'), (eventData: ChatMessageEntity) => {
       console.log(`📨 ChatWidget: Received ChatMessage created event`, eventData);
 
       // Validate event data structure - the entity comes directly, not wrapped

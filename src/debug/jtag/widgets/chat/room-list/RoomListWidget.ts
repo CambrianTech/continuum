@@ -11,6 +11,7 @@ import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
+import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 
@@ -187,7 +188,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     this.currentRoomId = roomId;
 
     // Emit room selection event for ChatWidget to listen to
-    Events.emit('room:selected', {
+    Events.emit(UI_EVENTS.ROOM_SELECTED, {
       roomId: roomId,
       roomName: roomEntity.displayName || roomEntity.name
     });
