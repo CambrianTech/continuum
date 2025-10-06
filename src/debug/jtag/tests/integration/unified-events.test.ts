@@ -6,7 +6,7 @@
  */
 
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
-import { Commands } from '../../system/core/client/shared/Commands';
+import { Commands } from '../../system/core/shared/Commands';
 
 async function testUnifiedEvents() {
   console.log('🎯 Testing Unified Events System');

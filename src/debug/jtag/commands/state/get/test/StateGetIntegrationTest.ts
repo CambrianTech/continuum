@@ -4,7 +4,7 @@
  * Tests the state/get command following the established JTAG command testing methodology
  */
 
-import { Commands } from '../../../../system/core/client/shared/Commands';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { StateGetParams, StateGetResult } from '../shared/StateGetTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
 

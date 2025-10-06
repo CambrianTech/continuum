@@ -8,7 +8,7 @@ import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-da
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { StateCreateParams, StateCreateResult } from '../shared/StateCreateTypes';
 import { createStateCreateResult } from '../shared/StateCreateTypes';
-import { Commands } from '../../../../system/core/client/shared/Commands';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 

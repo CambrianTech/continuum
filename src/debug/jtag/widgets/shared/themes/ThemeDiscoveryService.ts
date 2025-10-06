@@ -4,7 +4,7 @@
  */
 
 import { ThemeManifest, ThemeRegistry, ThemeLoadResult } from './ThemeTypes';
-import { Commands } from '../../../system/core/client/shared/Commands';
+import { Commands } from '../../../system/core/shared/Commands';
 import type { FileLoadParams, FileLoadResult } from '../../../commands/file/load/shared/FileLoadTypes';
 
 export class ThemeDiscoveryService {

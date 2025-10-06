@@ -7,7 +7,7 @@ import { createThemeSetResult } from '../shared/ThemeSetTypes';
 import { EnhancementError } from '../../../../system/core/types/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
-import { Commands } from '../../../../system/core/client/shared/Commands';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
 

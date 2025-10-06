@@ -14,7 +14,7 @@ import { DefaultStorageAdapterFactory } from './DefaultStorageAdapterFactory';
 import type { DataRecord, StorageQuery, StorageResult } from '../shared/DataStorageAdapter';
 import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/DatabaseConfig';
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
-import { Events } from '../../../system/core/server/shared/Events';
+// import { Events } from '../../../system/core/shared/Events';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
 
 /**
@@ -94,21 +94,24 @@ export class DataDaemonServer extends DataDaemonBase {
   
   /**
    * Emit CRUD event - centralized event emission for all data operations
+   * NOTE: This method is no longer used - event emission now handled by DataDaemon layer
+   * via universal Events system (system/core/shared/Events.ts)
    */
   private async emitCrudEvent(operation: 'created' | 'updated' | 'deleted', collection: string, entity: any): Promise<void> {
-    try {
-      const eventName = BaseEntity.getEventName(collection, operation);
-
-      // Create mock commander object with router for Events.emit()
-      const mockCommander = {
-        router: this.router
-      } as any;
-
-      await Events.emit(eventName, entity, this.context, mockCommander);
-      console.log(`✅ DataDaemonServer: Emitted ${eventName}`);
-    } catch (error) {
-      console.error(`❌ DataDaemonServer: Failed to emit ${operation} event for ${collection}:`, error);
-    }
+    // Event emission now handled by DataDaemon layer via universal Events system
+    // try {
+    //   const eventName = BaseEntity.getEventName(collection, operation);
+    //
+    //   // Create mock commander object with router for Events.emit()
+    //   const mockCommander = {
+    //     router: this.router
+    //   } as any;
+    //
+    //   await Events.emit(eventName, entity, this.context, mockCommander);
+    //   console.log(`✅ DataDaemonServer: Emitted ${eventName}`);
+    // } catch (error) {
+    //   console.error(`❌ DataDaemonServer: Failed to emit ${operation} event for ${collection}:`, error);
+    // }
   }
 
   /**
@@ -118,8 +121,8 @@ export class DataDaemonServer extends DataDaemonBase {
     const context = this.createDataContext('data-daemon-server');
     const entity = await this.dataDaemon.create(payload.collection!, payload.data, context);
 
-    // Emit created event
-    await this.emitCrudEvent('created', payload.collection!, entity);
+    // Event emission handled by DataDaemon layer via universal Events system
+    // await this.emitCrudEvent('created', payload.collection!, entity);
 
     // Return as StorageResult format
     return {
@@ -160,8 +163,8 @@ export class DataDaemonServer extends DataDaemonBase {
     const context = this.createDataContext('data-daemon-server');
     const entity = await this.dataDaemon.update(payload.collection!, payload.id!, payload.data, context);
 
-    // Emit updated event
-    await this.emitCrudEvent('updated', payload.collection!, entity);
+    // Event emission handled by DataDaemon layer via universal Events system
+    // await this.emitCrudEvent('updated', payload.collection!, entity);
 
     return {
       success: true,
@@ -191,10 +194,10 @@ export class DataDaemonServer extends DataDaemonBase {
     // Perform deletion
     const deleteResult = await this.dataDaemon.delete(payload.collection!, payload.id!, context);
 
-    // Emit deleted event if deletion was successful and we have the entity data
-    if (deleteResult.success && entity) {
-      await this.emitCrudEvent('deleted', payload.collection!, entity);
-    }
+    // Event emission handled by DataDaemon layer via universal Events system
+    // if (deleteResult.success && entity) {
+    //   await this.emitCrudEvent('deleted', payload.collection!, entity);
+    // }
 
     return deleteResult;
   }

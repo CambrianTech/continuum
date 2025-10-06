@@ -12,14 +12,14 @@
  *   await Commands.execute('file/save', { filepath: 'test.txt', content: 'hello' });
  */
 
-import { JTAGClient } from './JTAGClient';
-import type { CommandParams, CommandResult } from '../../types/JTAGTypes';
+import { JTAGClient } from '../client/shared/JTAGClient';
+import type { CommandParams, CommandResult } from '../types/JTAGTypes';
 import type {
   CommandName,
   CommandInputFor,
   CommandResultFor,
   CommandParamsFor
-} from './CommandRegistry';
+} from '../client/shared/CommandRegistry';
 
 export class Commands {
   /**

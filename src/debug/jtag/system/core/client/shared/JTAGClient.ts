@@ -836,7 +836,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
           data: T,
           options?: { scope?: any; scopeId?: string; sessionId?: string }
         ): Promise<{ success: boolean; error?: string }> => {
-          const { Events } = await import('./Events');
+          const { Events } = await import('../../shared/Events');
           return await Events.emit(eventName, data, options as any || {});
         },
 

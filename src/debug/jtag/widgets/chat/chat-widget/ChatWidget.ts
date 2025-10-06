@@ -11,7 +11,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
-import { Commands } from '../../../system/core/client/shared/Commands';
+import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';

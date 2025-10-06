@@ -23,7 +23,7 @@ import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/sh
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import { WIDGET_DEFAULTS} from './WidgetConstants';
 import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from '../../daemons/command-daemon/shared/CommandResponseTypes';
-import { Commands } from '../../system/core/client/shared/Commands';
+import { Commands } from '../../system/core/shared/Commands';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
