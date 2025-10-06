@@ -24,6 +24,7 @@ import type { CommandParams, CommandResult } from '../../system/core/types/JTAGT
 import { WIDGET_DEFAULTS} from './WidgetConstants';
 import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from '../../daemons/command-daemon/shared/CommandResponseTypes';
 import { Commands } from '../../system/core/shared/Commands';
+import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
@@ -378,7 +379,7 @@ export abstract class BaseWidget extends HTMLElement {
     console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
-      const result = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+      const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
         filepath: resourcePath
       });
       

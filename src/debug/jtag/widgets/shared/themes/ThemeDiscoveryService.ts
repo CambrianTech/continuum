@@ -5,6 +5,7 @@
 
 import { ThemeManifest, ThemeRegistry, ThemeLoadResult } from './ThemeTypes';
 import { Commands } from '../../../system/core/shared/Commands';
+import { FILE_COMMANDS } from '../../../commands/file/shared/FileCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../../commands/file/load/shared/FileLoadTypes';
 
 export class ThemeDiscoveryService {
@@ -73,7 +74,7 @@ export class ThemeDiscoveryService {
           const filePath = `${this.themesPath}/${themeName}/${filename}`;
           console.log(`🎨 ThemeDiscoveryService: Loading ${filePath}`);
           
-          const result = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+          const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
             filepath: filePath
           });
           
@@ -155,7 +156,7 @@ export class ThemeDiscoveryService {
       const manifestPath = `${this.themesPath}/${themeName}/theme.json`;
       console.log(`🎨 ThemeDiscoveryService: Loading manifest ${manifestPath}`);
       
-      const result = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+      const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
         filepath: manifestPath
       });
       

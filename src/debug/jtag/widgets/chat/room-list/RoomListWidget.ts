@@ -10,6 +10,7 @@ import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEnti
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { Events } from '../../../system/core/shared/Events';
 import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
@@ -65,7 +66,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   // Required by EntityScrollerWidget - load function using data/list command
   protected getLoadFunction(): LoadFn<RoomEntity> {
     return async (cursor, limit) => {
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: RoomEntity.collection,
         orderBy: [{ field: 'name', direction: 'asc' }],
         limit: limit ?? 100
@@ -127,7 +128,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     for (const room of this.scroller.entities()) {
       // Domain-owned: CommandDaemon handles optimization, caching, retries
       const roomId = room.id;
-      const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+      const messageResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
         filter: { roomId, isRead: false }
       });
