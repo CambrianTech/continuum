@@ -216,6 +216,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
         roomId: generalRoomId,
         senderId: '0137e402',
         senderName: 'CRUD Test',
+        senderType: 'system',  // Required field for ChatMessageEntity
         content: {
           text: 'CRUD test message',
           attachments: [],

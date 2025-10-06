@@ -148,6 +148,7 @@ async function testStateSystemIntegration(): Promise<void> {
         roomId: stateRoomId,
         senderId: stateUserId,
         senderName: 'State Test User',
+        senderType: 'system',  // Required field for ChatMessageEntity
         content: {
           text: 'This message was created via state/create with context injection',
           attachments: [],

@@ -539,13 +539,42 @@ async function getEntityCount(collection: string): Promise<string> {
 }
 
 /**
- * Main seeding function
+ * Check if database is already seeded by looking for primary-human user
+ * This enables fast-path: <1 second when data exists vs 60+ seconds for full seed
+ */
+async function checkIfSeeded(): Promise<boolean> {
+  try {
+    const result = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
+    const stdout = result.stdout;
+
+    // Check if primary-human exists in the output
+    if (stdout.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
+      const count = stdout.match(/"count":\s*(\d+)/)?.[1];
+      if (count && parseInt(count) >= 6) {
+        console.log('✅ Database already seeded (found primary-human user and 6+ users)');
+        return true;
+      }
+    }
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Main seeding function with idempotent behavior
  */
 async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // Clear existing database tables
+    // Fast path: Check if already seeded (reduces 60+ seconds to <1 second)
+    if (await checkIfSeeded()) {
+      console.log('⚡ Skipping seeding - database already populated');
+      return;
+    }
+
+    // Clear existing database tables (only if not seeded)
     console.log('🧹 Clearing existing database tables...');
     try {
       await execAsync(`sqlite3 ${DATABASE_PATHS.SQLITE} "DELETE FROM _data; DELETE FROM _collections;" 2>/dev/null || true`);
