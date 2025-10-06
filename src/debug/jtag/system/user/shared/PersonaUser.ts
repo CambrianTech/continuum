@@ -31,6 +31,8 @@ import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import type { TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -60,6 +62,14 @@ export class PersonaUser extends AIUser {
   private eventsSubscribed: boolean = false;
   // Note: client is now in BaseUser as protected property, accessible via this.client
   // ArtifactsAPI access is through this.client.daemons.artifacts
+
+  // Rate limiting state (in-memory for now, will move to SQLite later)
+  private lastResponseTime: Map<UUID, Date> = new Map();
+  private readonly minSecondsBetweenResponses = 10; // 10 seconds between responses per room
+
+  // Response cap to prevent infinite loops
+  private responseCount: Map<UUID, number> = new Map(); // room -> count
+  private readonly maxResponsesPerSession = 10; // Max 10 responses per room per session
 
   constructor(
     entity: UserEntity,
@@ -122,47 +132,137 @@ export class PersonaUser extends AIUser {
    * Decides whether to respond based on room membership and other factors
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: PersonaUser ${this.displayName}: handleChatMessage called`);
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Message from ${messageEntity.senderName} (${messageEntity.senderId})`);
+    console.log(`📨 ${this.displayName}: Message from ${messageEntity.senderName}`);
 
-    // Ignore our own messages
+    // STEP 1: Ignore our own messages
     if (messageEntity.senderId === this.id) {
-      console.log(`🔇 CLAUDE-FIX-${Date.now()}: ${this.displayName}: Ignoring own message`);
+      console.log(`🔇 ${this.displayName}: Ignoring own message`);
       return;
     }
 
-    // TEMPORARY: Disable ALL persona responses until we verify the filtering works
-    console.log(`🚫 CLAUDE-FIX-${Date.now()}: ${this.displayName}: Persona responses DISABLED for debugging`);
+    // STEP 2: Check response cap (prevent infinite loops)
+    const currentCount = this.responseCount.get(messageEntity.roomId) || 0;
+    if (currentCount >= this.maxResponsesPerSession) {
+      console.log(`🛑 ${this.displayName}: Response cap reached (${currentCount}/${this.maxResponsesPerSession}) in room ${messageEntity.roomId.slice(0, 8)}`);
+      return;
+    }
 
-    // Still update RAG context for future use
+    // STEP 3: Check if sender is human or AI (use denormalized field!)
+    const senderIsHuman = messageEntity.senderType === 'human';
+    const messageText = messageEntity.content?.text || '';
+    const isMentioned = this.isPersonaMentioned(messageText);
+
+    console.log(`🔍 ${this.displayName}: Sender type is "${messageEntity.senderType}" (human: ${senderIsHuman})`);
+
+    // STEP 4: Check rate limiting (before expensive LLM call)
+    if (this.isRateLimited(messageEntity.roomId)) {
+      const lastTime = this.lastResponseTime.get(messageEntity.roomId)!;
+      const secondsSince = (Date.now() - lastTime.getTime()) / 1000;
+      const waitTime = this.minSecondsBetweenResponses - secondsSince;
+      console.log(`⏸️  ${this.displayName}: Rate limited, wait ${waitTime.toFixed(1)}s more`);
+      return;
+    }
+
+    // STEP 5: Use LLM judgment to decide whether to respond
+    // This implements the 8-rule protocol: mentioned, direct-question, concluded, just-spoke, etc.
+    const shouldRespond = await this.shouldRespondToMessage(messageEntity, senderIsHuman, isMentioned);
+
+    if (!shouldRespond) {
+      console.log(`🤔 ${this.displayName}: LLM decided not to respond to "${messageText.slice(0, 50)}..."`);
+      return;
+    }
+
+    // STEP 6: We should respond!
+    console.log(`✅ ${this.displayName}: LLM decided to respond to ${messageEntity.senderName}`);
+
+    // Update RAG context
     await this.updateRAGContext(messageEntity.roomId, messageEntity);
-    return;
+
+    // Post response
+    await this.respondToMessage(messageEntity);
+
+    // Increment response count
+    const newCount = (this.responseCount.get(messageEntity.roomId) || 0) + 1;
+    this.responseCount.set(messageEntity.roomId, newCount);
+    console.log(`📊 ${this.displayName}: Response ${newCount}/${this.maxResponsesPerSession} in room ${messageEntity.roomId.slice(0, 8)}`);
+
+    // Track response time for rate limiting
+    this.lastResponseTime.set(messageEntity.roomId, new Date());
+  }
+
+  /**
+   * Check if this persona is rate limited for a room
+   */
+  private isRateLimited(roomId: UUID): boolean {
+    const lastTime = this.lastResponseTime.get(roomId);
+    if (!lastTime) {
+      return false; // Never responded in this room
+    }
+
+    const secondsSince = (Date.now() - lastTime.getTime()) / 1000;
+    return secondsSince < this.minSecondsBetweenResponses;
   }
 
   /**
    * Generate and post a response to a chat message
-   * Phase 1: Simple templated responses
-   * Phase 2+: AI API integration with RAG context
+   * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
   private async respondToMessage(originalMessage: ChatMessageEntity): Promise<void> {
     try {
-      // Simple response templates (Phase 1)
-      const responses = [
-        `Interesting point, ${originalMessage.senderName}!`,
-        `I see what you mean about that.`,
-        `That's a good question. Let me think about it.`,
-        `Thanks for sharing!`,
-        `Could you elaborate on that?`
-      ];
+      // Load RAG context for this room
+      const ragContext = await this.loadRAGContext(originalMessage.roomId);
 
-      const responseText = responses[Math.floor(Math.random() * responses.length)];
+      // Build message history for LLM
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+
+      // System prompt defining persona behavior
+      messages.push({
+        role: 'system',
+        content: `You are ${this.displayName}, a helpful AI assistant participating in a group chat. Keep your responses natural, conversational, and concise (1-3 sentences unless more detail is needed). You're part of an ongoing conversation, so be contextually aware.`
+      });
+
+      // Add recent chat history as context (last 10 messages)
+      if (ragContext && ragContext.messages.length > 0) {
+        const recentMessages = ragContext.messages.slice(-10);
+        for (const msg of recentMessages) {
+          messages.push({
+            role: msg.senderId === this.id ? 'assistant' : 'user',
+            content: `${msg.senderName}: ${msg.text}`
+          });
+        }
+      }
+
+      // Add the current message if not already in context
+      const lastMsg = ragContext?.messages[ragContext.messages.length - 1];
+      if (!lastMsg || lastMsg.senderId !== originalMessage.senderId || lastMsg.timestamp !== (typeof originalMessage.timestamp === 'string' ? originalMessage.timestamp : originalMessage.timestamp.toISOString())) {
+        messages.push({
+          role: 'user',
+          content: `${originalMessage.senderName}: ${originalMessage.content?.text || ''}`
+        });
+      }
+
+      // Generate response using AIProviderDaemon (static method like DataDaemon.query)
+      console.log(`🤖 ${this.displayName}: Generating AI response with ${messages.length} context messages...`);
+
+      const request: TextGenerationRequest = {
+        messages,
+        model: 'llama3.2:1b', // Fast local model for chat responses
+        temperature: 0.7,
+        maxTokens: 150, // Keep responses concise
+        preferredProvider: 'ollama'
+      };
+
+      const aiResponse = await AIProviderDaemon.generateText(request);
+
+      console.log(`✅ ${this.displayName}: Generated response in ${aiResponse.responseTime}ms (${aiResponse.usage.outputTokens} tokens)`);
 
       // Create response message entity
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
       responseMessage.senderId = this.id;
       responseMessage.senderName = this.displayName;
-      responseMessage.content = { text: responseText, attachments: [] };
+      responseMessage.senderType = this.entity.type; // Denormalize from UserEntity (persona)
+      responseMessage.content = { text: aiResponse.text.trim(), attachments: [] };
       responseMessage.status = 'sent';
       responseMessage.priority = 'normal';
       responseMessage.timestamp = new Date();
@@ -188,10 +288,45 @@ export class PersonaUser extends AIUser {
         throw new Error(`Failed to create message: ${result.error}`);
       }
 
-      console.log(`✅ PersonaUser ${this.displayName}: Posted response: "${responseText}"`);
+      console.log(`✅ PersonaUser ${this.displayName}: Posted AI response: "${aiResponse.text.slice(0, 100)}${aiResponse.text.length > 100 ? '...' : ''}"`);
 
     } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Failed to respond:`, error);
+      console.error(`❌ PersonaUser ${this.displayName}: Failed to generate or post AI response:`, error);
+
+      // Fallback to simple response if AI generation fails
+      try {
+        const fallbackText = `Sorry, I'm having trouble generating a response right now.`;
+        const fallbackMessage = new ChatMessageEntity();
+        fallbackMessage.roomId = originalMessage.roomId;
+        fallbackMessage.senderId = this.id;
+        fallbackMessage.senderName = this.displayName;
+        fallbackMessage.senderType = this.entity.type; // Denormalize from UserEntity (persona)
+        fallbackMessage.content = { text: fallbackText, attachments: [] };
+        fallbackMessage.status = 'sent';
+        fallbackMessage.priority = 'normal';
+        fallbackMessage.timestamp = new Date();
+        fallbackMessage.reactions = [];
+
+        const result = this.client
+          ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
+              context: this.client.context,
+              sessionId: this.client.sessionId,
+              collection: ChatMessageEntity.collection,
+              backend: 'server',
+              data: fallbackMessage
+            })
+          : await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+              collection: ChatMessageEntity.collection,
+              backend: 'server',
+              data: fallbackMessage
+            });
+
+        if (result.success) {
+          console.log(`⚠️  PersonaUser ${this.displayName}: Posted fallback response`);
+        }
+      } catch (fallbackError) {
+        console.error(`❌ PersonaUser ${this.displayName}: Even fallback response failed:`, fallbackError);
+      }
     }
   }
 
@@ -246,13 +381,104 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Use LLM to decide whether to respond to a message
+   * Implements the 8-rule protocol from AI_TO_AI_INTERACTION_PROTOCOL.md
+   *
+   * Uses a cheap/fast model (like GPT-3.5 or Claude Haiku) for the decision,
+   * then uses the full model for actual response generation
+   */
+  private async shouldRespondToMessage(
+    messageEntity: ChatMessageEntity,
+    senderIsHuman: boolean,
+    isMentioned: boolean
+  ): Promise<boolean> {
+    // Rule 1: Always respond if @mentioned (highest priority - forced response)
+    if (isMentioned) {
+      console.log(`📣 ${this.displayName}: Mentioned - FORCED RESPONSE`);
+      return true;
+    }
+
+    // Rule 2: Respond to humans (Phase 1 - simple rule)
+    if (senderIsHuman) {
+      console.log(`👤 ${this.displayName}: Human message - will respond`);
+      return true;
+    }
+
+    // Rule 3: Don't respond to AIs without @mention (prevents loops)
+    console.log(`🔇 ${this.displayName}: AI message without @mention - staying quiet`);
+    return false;
+
+    // PHASE 2: Fuzzy logic heuristics (NO API costs)
+    // This code will be enabled when Phase 1 testing is complete
+    //
+    // const heuristics = await this.calculateResponseHeuristics(messageEntity);
+    //
+    // // Score-based decision (0-100 scale)
+    // let score = 0;
+    //
+    // // 1. Question detection (+40 points - strong signal)
+    // if (heuristics.containsQuestion) score += 40;
+    //
+    // // 2. Conversation temperature (+0 to +30)
+    // if (heuristics.conversationTemp === 'HOT') score += 30;
+    // else if (heuristics.conversationTemp === 'WARM') score += 20;
+    // else if (heuristics.conversationTemp === 'COOL') score += 10;
+    // // COLD = +0
+    //
+    // // 3. Participation ratio (-30 if dominating, +10 if quiet)
+    // if (heuristics.myParticipationRatio > 0.5) score -= 30; // I'm dominating
+    // else if (heuristics.myParticipationRatio < 0.2) score += 10; // I'm quiet
+    //
+    // // 4. Time since my last message (+20 if been quiet, -20 if just spoke)
+    // if (heuristics.secondsSinceMyLastMessage > 60) score += 20;
+    // else if (heuristics.secondsSinceMyLastMessage < 15) score -= 20;
+    //
+    // // 5. Turn-taking pattern (+15 if it's my turn)
+    // if (heuristics.appearsToBeMyTurn) score += 15;
+    //
+    // // Decision threshold: 50+ = respond
+    // const shouldRespond = score >= 50;
+    //
+    // console.log(`🎯 ${this.displayName}: Heuristic score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
+    // return shouldRespond;
+  }
+
+  /**
+   * Calculate heuristics for response decision (Phase 2)
+   * NO API calls - pure logic based on conversation history
+   */
+  private async calculateResponseHeuristics(messageEntity: ChatMessageEntity): Promise<{
+    containsQuestion: boolean;
+    conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD';
+    myParticipationRatio: number;
+    secondsSinceMyLastMessage: number;
+    appearsToBeMyTurn: boolean;
+  }> {
+    // TODO: Implement when Phase 2 is enabled
+    // 1. Check if message contains "?" (simple question detection)
+    // 2. Get last 10 messages from room to calculate:
+    //    - Conversation temperature (time between messages)
+    //    - My participation ratio (my messages / total messages)
+    //    - Time since my last message
+    //    - Turn-taking pattern (did I just speak? does message follow someone else?)
+
+    return {
+      containsQuestion: false,
+      conversationTemp: 'COLD',
+      myParticipationRatio: 0,
+      secondsSinceMyLastMessage: 999,
+      appearsToBeMyTurn: false
+    };
+  }
+
+  /**
    * Check if a sender is a human user (not AI/persona/agent)
    * CRITICAL for preventing infinite response loops between AI users
    */
   private async isSenderHuman(senderId: UUID): Promise<boolean> {
     if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot check sender type - no client`);
-      return true; // Fail open - allow response if we can't verify
+      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot check sender type - no client, BLOCKING response`);
+      return false; // Fail CLOSED - don't respond if we can't verify (prevents startup loops)
     }
 
     try {
@@ -266,8 +492,8 @@ export class PersonaUser extends AIUser {
       });
 
       if (!result.success || !result.found || !result.data) {
-        console.warn(`⚠️  PersonaUser ${this.displayName}: Could not read sender ${senderId}, assuming human`);
-        return true; // Fail open
+        console.warn(`⚠️  PersonaUser ${this.displayName}: Could not read sender ${senderId}, BLOCKING response`);
+        return false; // Fail CLOSED - don't respond if database fails (prevents loops)
       }
 
       const senderType = result.data.type;
@@ -277,8 +503,8 @@ export class PersonaUser extends AIUser {
       return isHuman;
 
     } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Error checking sender type:`, error);
-      return true; // Fail open on error
+      console.error(`❌ PersonaUser ${this.displayName}: Error checking sender type, BLOCKING response:`, error);
+      return false; // Fail CLOSED on error (prevents loops)
     }
   }
 

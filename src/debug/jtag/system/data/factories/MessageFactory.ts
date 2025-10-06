@@ -9,12 +9,14 @@ import { ChatMessageEntity } from '../entities/ChatMessageEntity';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { DEFAULT_USERS, DEFAULT_ROOMS } from '../domains/DefaultEntities';
+import type { UserType } from '../entities/UserEntity';
 
 export interface EasyMessageOptions {
   text: string;
   room?: UUID | 'general' | 'academy';
   sender?: UUID | 'joel' | 'claude' | 'ai';
   senderName?: string;
+  senderType?: UserType; // Optional - inferred from sender alias if not provided
   status?: 'sending' | 'sent' | 'failed';
   priority?: 'low' | 'normal' | 'high' | 'urgent';
 }
@@ -58,16 +60,19 @@ export function createMessage(textOrOptions: string | EasyMessageOptions, option
     message.roomId = opts.room;
   }
 
-  // Sender - support aliases
+  // Sender - support aliases and infer senderType
   if (opts.sender === 'joel' || !opts.sender) {
     message.senderId = DEFAULT_USERS.HUMAN as UUID;
     message.senderName = opts.senderName || 'Joel';
+    message.senderType = opts.senderType || 'human'; // Denormalized from UserEntity
   } else if (opts.sender === 'claude' || opts.sender === 'ai') {
     message.senderId = DEFAULT_USERS.CLAUDE_CODE as UUID;
     message.senderName = opts.senderName || 'Claude Code';
+    message.senderType = opts.senderType || 'agent'; // Denormalized (Claude Code is agent)
   } else {
     message.senderId = opts.sender;
     message.senderName = opts.senderName || 'User';
+    message.senderType = opts.senderType || 'human'; // Default to human if not specified
   }
 
   // Simple defaults for everything else

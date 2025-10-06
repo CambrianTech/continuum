@@ -8,6 +8,10 @@
 import sqlite3 from 'sqlite3';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 import {
   DataStorageAdapter,
   type DataRecord,
@@ -123,15 +127,67 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
     // Ensure directory exists with proper permissions
     const dbDir = path.dirname(dbPath);
-    console.log(`📁 SQLite: Ensuring directory exists: ${dbDir}`);
-    await fs.mkdir(dbDir, { recursive: true, mode: 0o755 });
+    // CRITICAL: Save and set umask to ensure permissions stick
+    const oldUmask = process.umask(0o000);
+    console.log(`🔒 SQLite: Saved umask ${oldUmask.toString(8)}, set to 0o000 for permission control`);
 
-    // Check if database file exists before connection
     try {
-      const stats = await fs.stat(dbPath);
-      console.log(`📊 SQLite: Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
-    } catch (error) {
-      console.log('📄 SQLite: No existing database file, will create new');
+      console.log(`📁 SQLite: Ensuring directory exists: ${dbDir}`);
+      await fs.mkdir(dbDir, { recursive: true, mode: 0o755 });
+
+      // Set directory permissions for SQLite write operations
+      console.log('🔒 SQLite: Setting directory permissions to 0o755...');
+      await fs.chmod(dbDir, 0o755);
+      console.log('✅ SQLite: Directory permissions set successfully');
+
+      // Clear extended attributes on directory (macOS)
+      if (process.platform === 'darwin') {
+        try {
+          console.log('🍎 SQLite: Clearing directory extended attributes...');
+          await execAsync(`xattr -c "${dbDir}"`);
+          console.log('✅ SQLite: Directory extended attributes cleared');
+        } catch (error) {
+          console.warn('⚠️ SQLite: Could not clear directory xattr (non-fatal):', error);
+        }
+      }
+
+      // Check if database file exists before connection
+      let dbFileExists = false;
+      try {
+        const stats = await fs.stat(dbPath);
+        console.log(`📊 SQLite: Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
+        dbFileExists = true;
+      } catch (error) {
+        console.log('📄 SQLite: No existing database file, will create new');
+      }
+
+      // CRITICAL FIX: Create empty file BEFORE opening connection
+      // This allows us to set permissions/clear xattr before SQLite touches it
+      if (!dbFileExists) {
+        console.log('📝 SQLite: Creating empty database file...');
+        await fs.writeFile(dbPath, '', { mode: 0o666 });
+        console.log('✅ SQLite: Empty file created with mode 0o666');
+      }
+
+      console.log('🔒 SQLite: Setting file permissions to 0o666...');
+      await fs.chmod(dbPath, 0o666);
+      console.log('✅ SQLite: File permissions set successfully');
+
+      // Clear extended attributes on macOS BEFORE opening connection (prevents SQLITE_READONLY errors)
+      if (process.platform === 'darwin') {
+        try {
+          console.log('🍎 SQLite: Clearing macOS extended attributes...');
+          await execAsync(`xattr -c "${dbPath}"`);
+          console.log('✅ SQLite: Extended attributes cleared');
+        } catch (error) {
+          // This is non-fatal, just log it
+          console.warn('⚠️ SQLite: Could not clear extended attributes (non-fatal):', error);
+        }
+      }
+    } finally {
+      // Restore original umask
+      process.umask(oldUmask);
+      console.log(`🔒 SQLite: Restored umask to ${oldUmask.toString(8)}`);
     }
 
     console.log(`🔗 SQLite: Opening database connection with READWRITE | CREATE mode`);
@@ -162,21 +218,10 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     const { initializeEntityRegistry } = await import('./EntityRegistry');
     initializeEntityRegistry();
 
-    console.log('🏗️ SQLite: Creating core schema...');
-    // Create core schema
-    await this.createCoreSchema();
-
-    console.log('🔍 SQLite: Testing entity schema generation...');
-    // Test schema generation for registered entities (just log, don't create yet)
-    await this.logEntitySchemas();
-
-    console.log('🔒 SQLite: Setting file permissions...');
-    // Ensure database file has correct permissions (read/write for owner)
-    try {
-      await fs.chmod(dbPath, 0o666);
-      console.log('✅ SQLite: File permissions set successfully');
-    } catch (error) {
-      console.warn('⚠️ SQLite: Could not set database file permissions:', error);
+    console.log('🏗️ SQLite: Creating entity tables...');
+    // Create entity tables for all registered entities
+    for (const [collectionName] of ENTITY_REGISTRY.entries()) {
+      await this.ensureEntityTable(collectionName);
     }
 
     // Verify integrity after initialization
@@ -195,109 +240,52 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       throw new Error('Database not initialized');
     }
 
-    console.log('🧪 SQLite: Testing database write capability...');
-
-    // Create test metadata using real daemon context information
-    const testId = `integrity-test-${Date.now()}`;
-    const testMetadata = {
-      adapterType: 'SqliteStorageAdapter',
-      initializationTime: new Date().toISOString(),
-      databasePath: DATABASE_PATHS.SQLITE,
-      configOptions: this.config?.options || {},
-      nodeVersion: process.version,
-      platform: process.platform,
-      test: true
-    };
+    console.log('🧪 SQLite: Creating system_info table for version tracking...');
 
     try {
-      // First register the collection to avoid foreign key constraint errors
-      console.log('🧪 SQLite: Registering test collection...');
+      // Create system_info table to track database version and initialization
+      await this.runSql(`
+        CREATE TABLE IF NOT EXISTS system_info (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('✅ SQLite: system_info table created');
+
+      // Insert database version and metadata
+      const initTime = new Date().toISOString();
       await this.runSql(
-        'INSERT OR IGNORE INTO _collections (name, created_at) VALUES (?, ?)',
-        ['DAEMON_METADATA', new Date().toISOString()]
-      );
-      console.log('✅ SQLite: Test collection registered');
-
-      // Test 1: Insert daemon metadata record
-      console.log('🧪 SQLite: Testing insert operation...');
-      await this.runSql(
-        'INSERT INTO _data (id, collection, data, created_at) VALUES (?, ?, ?, ?)',
-        [testId, 'DAEMON_METADATA', JSON.stringify(testMetadata), new Date().toISOString()]
-      );
-      console.log('✅ SQLite: Insert test successful');
-
-      // Test 2: Read back the metadata
-      console.log('🧪 SQLite: Testing read operation...');
-      const results = await this.runSql(
-        'SELECT data, created_at FROM _data WHERE id = ? AND collection = ?',
-        [testId, 'DAEMON_METADATA']
-      );
-
-      if (!results || results.length === 0) {
-        throw new Error('Read test failed - no data returned');
-      }
-
-      const result = results[0];
-      const retrievedData = JSON.parse(result.data);
-      if (retrievedData.test !== true || retrievedData.adapterType !== 'SqliteStorageAdapter') {
-        throw new Error('Read test failed - data integrity mismatch');
-      }
-      console.log('✅ SQLite: Read test successful');
-
-      // Test 3: Update the record
-      console.log('🧪 SQLite: Testing update operation...');
-      const updatedMetadata = { ...testMetadata, verified: true, verificationTime: new Date().toISOString() };
-      await this.runSql(
-        'UPDATE _data SET data = ?, updated_at = ? WHERE id = ? AND collection = ?',
-        [JSON.stringify(updatedMetadata), new Date().toISOString(), testId, 'DAEMON_METADATA']
-      );
-      console.log('✅ SQLite: Update test successful');
-
-      // Test 4: Verify update worked
-      const updatedResults = await this.runSql(
-        'SELECT data FROM _data WHERE id = ? AND collection = ?',
-        [testId, 'DAEMON_METADATA']
-      );
-
-      if (!updatedResults || updatedResults.length === 0 || !JSON.parse(updatedResults[0].data).verified) {
-        throw new Error('Update verification failed');
-      }
-      console.log('✅ SQLite: Update verification successful');
-
-      // Test 5: Test collection query (like the commands use)
-      console.log('🧪 SQLite: Testing collection query...');
-      const collectionResults = await this.runSql(
-        'SELECT id, data FROM _data WHERE collection = ?',
-        ['DAEMON_METADATA']
-      );
-
-      if (!collectionResults || collectionResults.length === 0) {
-        throw new Error('Collection query failed');
-      }
-      console.log('✅ SQLite: Collection query test successful');
-
-      // Cleanup: Delete test record and collection
-      await this.runSql(
-        'DELETE FROM _data WHERE id = ? AND collection = ?',
-        [testId, 'DAEMON_METADATA']
+        'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        ['db_version', '1.0.0', initTime, initTime]
       );
       await this.runSql(
-        'DELETE FROM _collections WHERE name = ?',
-        ['DAEMON_METADATA']
+        'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        ['adapter_type', 'SqliteStorageAdapter', initTime, initTime]
       );
-      console.log('✅ SQLite: Cleanup successful - database fully operational');
-
-      // Final verification: Ensure cleanup worked
-      const cleanupResults = await this.runSql(
-        'SELECT COUNT(*) as count FROM _data WHERE collection = ?',
-        ['DAEMON_METADATA']
+      await this.runSql(
+        'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        ['node_version', process.version, initTime, initTime]
       );
+      await this.runSql(
+        'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        ['platform', process.platform, initTime, initTime]
+      );
+      await this.runSql(
+        'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        ['last_init', initTime, initTime, initTime]
+      );
+      console.log('✅ SQLite: System info populated');
 
-      if (cleanupResults && cleanupResults.length > 0 && parseInt(cleanupResults[0].count) > 0) {
-        console.warn('⚠️ SQLite: Test data may not have been fully cleaned up');
+      // Verify we can read it back
+      const results = await this.runSql('SELECT key, value FROM system_info WHERE key = ?', ['db_version']);
+      if (!results || results.length === 0 || results[0].value !== '1.0.0') {
+        throw new Error('Read verification failed - system_info data mismatch');
       }
+      console.log('✅ SQLite: Read verification successful');
 
-      console.log('🎉 SQLite: All integrity checks passed - adapter fully functional');
+      console.log('🎉 SQLite: Database integrity verified - adapter fully functional');
 
     } catch (error) {
       console.error('❌ SQLite: Integrity verification failed:', error);
@@ -1599,11 +1587,18 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * List collections
+   * List collections (entity tables from sqlite_master, not old _collections table)
    */
   async listCollections(): Promise<StorageResult<string[]>> {
     try {
-      const sql = 'SELECT name FROM _collections ORDER BY name';
+      // List all non-system tables (entity tables)
+      const sql = `
+        SELECT name FROM sqlite_master
+        WHERE type='table'
+        AND name NOT LIKE 'sqlite_%'
+        AND name NOT IN ('system_info', '_data', '_collections')
+        ORDER BY name
+      `;
       const rows = await this.runSql(sql);
 
       const collections = rows.map(row => row.name);
@@ -1623,27 +1618,34 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Get collection statistics
+   * Get collection statistics (from entity table directly, not old _collections table)
    */
   async getCollectionStats(collection: string): Promise<StorageResult<CollectionStats>> {
     try {
-      const sql = 'SELECT * FROM _collections WHERE name = ?';
-      const rows = await this.runSql(sql, [collection]);
+      const tableName = SqlNamingConverter.toTableName(collection);
 
-      if (rows.length === 0) {
+      // Count records directly from entity table
+      const countSql = `SELECT COUNT(*) as count FROM ${tableName}`;
+      const countRows = await this.runSql(countSql);
+      const recordCount = countRows[0]?.count || 0;
+
+      // Get table info
+      const infoSql = `SELECT sql FROM sqlite_master WHERE type='table' AND name = ?`;
+      const infoRows = await this.runSql(infoSql, [tableName]);
+
+      if (infoRows.length === 0) {
         return {
           success: true,
           data: undefined
         };
       }
 
-      const row = rows[0];
       const stats: CollectionStats = {
-        name: row.name,
-        recordCount: row.record_count,
-        totalSize: row.total_size,
-        lastModified: row.updated_at,
-        schema: `v${row.schema_version}`
+        name: collection,
+        recordCount: recordCount,
+        totalSize: 0,
+        lastModified: new Date().toISOString(),
+        schema: 'v1'
       };
 
       return {
@@ -1766,7 +1768,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Clear all data from all collections
+   * Clear all data from all collections (entity tables)
    */
   async clear(): Promise<StorageResult<boolean>> {
     if (!this.isInitialized || !this.db) {
@@ -1778,16 +1780,23 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
 
     try {
       const result = await this.withTransaction(async () => {
-        // Clear all data and collections
-        await this.runStatement('DELETE FROM _data');
-        await this.runStatement('DELETE FROM _collections');
+        // Get all entity tables
+        const tables = await this.runSql(`
+          SELECT name FROM sqlite_master
+          WHERE type='table'
+          AND name NOT LIKE 'sqlite_%'
+          AND name NOT IN ('system_info', '_data', '_collections')
+        `);
 
-        // Ready for future field extraction cleanup
+        // Delete from each entity table
+        for (const table of tables) {
+          await this.runStatement(`DELETE FROM ${table.name}`);
+        }
 
         return true;
       });
 
-      console.log('🧹 SQLite: All data cleared successfully');
+      console.log('🧹 SQLite: All entity data cleared successfully');
       return {
         success: true,
         data: result
@@ -1915,23 +1924,12 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Update collection statistics
+   * Update collection statistics (no-op - we don't use _collections table anymore)
    */
   private async updateCollectionStats(collection: string): Promise<void> {
-    const countSql = 'SELECT COUNT(*) as count, SUM(LENGTH(data)) as total_size FROM _data WHERE collection = ?';
-    const rows = await this.runSql(countSql, [collection]);
-
-    if (rows.length > 0) {
-      const { count, total_size } = rows[0];
-
-      const updateSql = `
-        UPDATE _collections
-        SET record_count = ?, total_size = ?, updated_at = ?
-        WHERE name = ?
-      `;
-
-      await this.runStatement(updateSql, [count, total_size || 0, new Date().toISOString(), collection]);
-    }
+    // No-op: Entity tables don't need statistics tracking in separate table
+    // Stats can be queried directly from entity tables when needed
+    return;
   }
 
   /**
@@ -1983,12 +1981,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
           }
         }
 
-        // Reset collection statistics
-        await this.runStatement(`
-          UPDATE _collections
-          SET record_count = 0, total_size = 0, updated_at = ?
-          WHERE record_count > 0
-        `, [new Date().toISOString()]);
+        // No collection statistics to reset (entity tables only)
 
         // Reset SQLite sequence counters for tables that use them
         const sequenceTables = await this.runSql(`

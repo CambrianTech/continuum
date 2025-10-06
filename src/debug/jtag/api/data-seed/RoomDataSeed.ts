@@ -113,6 +113,7 @@ export class RoomDataSeed {
       welcome.roomId = generalRoomId;
       welcome.senderId = USER_IDS.HUMAN as UUID;
       welcome.senderName = 'Joel';
+      welcome.senderType = 'human'; // Denormalized user type (human seed message)
       welcome.content = {
         text: 'Welcome to the General room! This is where we discuss development, collaborate, and share ideas.',
         attachments: []
@@ -130,6 +131,7 @@ export class RoomDataSeed {
       academyWelcome.roomId = academyRoomId;
       academyWelcome.senderId = USER_IDS.HUMAN as UUID;
       academyWelcome.senderName = 'Joel';
+      academyWelcome.senderType = 'human'; // Denormalized user type (human seed message)
       academyWelcome.content = {
         text: 'Welcome to the Academy! This room is for learning, tutorials, and educational discussions.',
         attachments: []
