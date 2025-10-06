@@ -166,6 +166,7 @@ export class PersonaUser extends AIUser {
 
     // STEP 5: Use LLM judgment to decide whether to respond
     // This implements the 8-rule protocol: mentioned, direct-question, concluded, just-spoke, etc.
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: About to call shouldRespondToMessage for ${this.displayName}`);
     const shouldRespond = await this.shouldRespondToMessage(messageEntity, senderIsHuman, isMentioned);
 
     if (!shouldRespond) {
@@ -305,42 +306,8 @@ export class PersonaUser extends AIUser {
       console.log(`✅ PersonaUser ${this.displayName}: Posted AI response: "${aiResponse.text.slice(0, 100)}${aiResponse.text.length > 100 ? '...' : ''}"`);
 
     } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Failed to generate or post AI response:`, error);
-
-      // Fallback to simple response if AI generation fails
-      try {
-        const fallbackText = `Sorry, I'm having trouble generating a response right now.`;
-        const fallbackMessage = new ChatMessageEntity();
-        fallbackMessage.roomId = originalMessage.roomId;
-        fallbackMessage.senderId = this.id;
-        fallbackMessage.senderName = this.displayName;
-        fallbackMessage.senderType = this.entity.type; // Denormalize from UserEntity (persona)
-        fallbackMessage.content = { text: fallbackText, attachments: [] };
-        fallbackMessage.status = 'sent';
-        fallbackMessage.priority = 'normal';
-        fallbackMessage.timestamp = new Date();
-        fallbackMessage.reactions = [];
-
-        const result = this.client
-          ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
-              context: this.client.context,
-              sessionId: this.client.sessionId,
-              collection: ChatMessageEntity.collection,
-              backend: 'server',
-              data: fallbackMessage
-            })
-          : await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-              collection: ChatMessageEntity.collection,
-              backend: 'server',
-              data: fallbackMessage
-            });
-
-        if (result.success) {
-          console.log(`⚠️  PersonaUser ${this.displayName}: Posted fallback response`);
-        }
-      } catch (fallbackError) {
-        console.error(`❌ PersonaUser ${this.displayName}: Even fallback response failed:`, fallbackError);
-      }
+      // Fail silently - real people don't send canned error messages, they just stay quiet
+      console.error(`❌ PersonaUser ${this.displayName}: Failed to generate response, staying silent:`, error);
     }
   }
 
@@ -412,15 +379,38 @@ export class PersonaUser extends AIUser {
       return true;
     }
 
-    // Rule 2: Respond to humans (Phase 1 - simple rule)
-    if (senderIsHuman) {
-      console.log(`👤 ${this.displayName}: Human message - will respond`);
-      return true;
-    }
+    // Rule 2: FUZZY LOGIC - All citizens equal (human OR AI)
+    // Calculate response probability based on conversation context
+    const heuristics = await this.calculateResponseHeuristics(messageEntity);
 
-    // Rule 3: Don't respond to AIs without @mention (prevents loops)
-    console.log(`🔇 ${this.displayName}: AI message without @mention - staying quiet`);
-    return false;
+    // Score-based decision (0-100 scale)
+    let score = 0;
+
+    // 1. Question detection (+40 points - strong signal)
+    if (heuristics.containsQuestion) score += 40;
+
+    // 2. Conversation temperature (+0 to +30)
+    if (heuristics.conversationTemp === 'HOT') score += 30;
+    else if (heuristics.conversationTemp === 'WARM') score += 20;
+    else if (heuristics.conversationTemp === 'COOL') score += 10;
+    // COLD = +0
+
+    // 3. Participation ratio (-30 if dominating, +10 if quiet)
+    if (heuristics.myParticipationRatio > 0.5) score -= 30; // I'm dominating
+    else if (heuristics.myParticipationRatio < 0.2) score += 10; // I'm quiet
+
+    // 4. Time since my last message (+20 if been quiet, -20 if just spoke)
+    if (heuristics.secondsSinceMyLastMessage > 60) score += 20;
+    else if (heuristics.secondsSinceMyLastMessage < 15) score -= 20;
+
+    // 5. Turn-taking pattern (+15 if it's my turn)
+    if (heuristics.appearsToBeMyTurn) score += 15;
+
+    // Decision threshold: 50+ = respond
+    const shouldRespond = score >= 50;
+
+    console.log(`🎯 ${this.displayName}: Heuristic score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
+    return shouldRespond;
 
     // PHASE 2: Fuzzy logic heuristics (NO API costs)
     // This code will be enabled when Phase 1 testing is complete
@@ -468,20 +458,62 @@ export class PersonaUser extends AIUser {
     secondsSinceMyLastMessage: number;
     appearsToBeMyTurn: boolean;
   }> {
-    // TODO: Implement when Phase 2 is enabled
-    // 1. Check if message contains "?" (simple question detection)
-    // 2. Get last 10 messages from room to calculate:
-    //    - Conversation temperature (time between messages)
-    //    - My participation ratio (my messages / total messages)
-    //    - Time since my last message
-    //    - Turn-taking pattern (did I just speak? does message follow someone else?)
+    // 1. Question detection (simple)
+    const containsQuestion = messageEntity.content?.text?.includes('?') || false;
+
+    // 2. Get recent messages for context
+    const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+      collection: COLLECTIONS.CHAT_MESSAGES,
+      filter: { roomId: messageEntity.roomId },
+      sort: [{ field: 'timestamp', direction: 'desc' }],
+      limit: 10
+    });
+
+    const messages: ChatMessageEntity[] = recentMessages.success && recentMessages.data
+      ? recentMessages.data.map(record => record.data)
+      : [];
+
+    // 3. Calculate conversation temperature (time between recent messages)
+    let conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD' = 'COLD';
+    if (messages.length >= 2) {
+      const timeDiffs: number[] = [];
+      for (let i = 0; i < messages.length - 1; i++) {
+        const t1 = new Date(messages[i].timestamp).getTime();
+        const t2 = new Date(messages[i + 1].timestamp).getTime();
+        const diff = t1 - t2;
+        timeDiffs.push(diff / 1000); // Convert to seconds
+      }
+      const avgTimeBetween = timeDiffs.reduce((a, b) => a + b, 0) / timeDiffs.length;
+
+      if (avgTimeBetween < 10) conversationTemp = 'HOT';      // <10s between messages
+      else if (avgTimeBetween < 30) conversationTemp = 'WARM'; // <30s
+      else if (avgTimeBetween < 60) conversationTemp = 'COOL'; // <60s
+      else conversationTemp = 'COLD';                           // >60s
+    }
+
+    // 4. Calculate my participation ratio
+    const myMessages = messages.filter(m => m.senderId === this.id);
+    const myParticipationRatio = messages.length > 0 ? myMessages.length / messages.length : 0;
+
+    // 5. Time since my last message
+    const myLastMessage = myMessages[0];
+    const secondsSinceMyLastMessage = myLastMessage
+      ? (Date.now() - new Date(myLastMessage.timestamp).getTime()) / 1000
+      : 999;
+
+    // 6. Turn-taking pattern - is it my turn?
+    // My turn if: last message wasn't mine AND I haven't spoken recently
+    const lastMessage = messages[0];
+    const appearsToBeMyTurn =
+      lastMessage?.senderId !== this.id &&
+      secondsSinceMyLastMessage > 30;
 
     return {
-      containsQuestion: false,
-      conversationTemp: 'COLD',
-      myParticipationRatio: 0,
-      secondsSinceMyLastMessage: 999,
-      appearsToBeMyTurn: false
+      containsQuestion,
+      conversationTemp,
+      myParticipationRatio,
+      secondsSinceMyLastMessage,
+      appearsToBeMyTurn
     };
   }
 
