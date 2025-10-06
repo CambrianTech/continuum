@@ -91,11 +91,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // CRITICAL: The filter MUST be applied at the database level, not client-side
       // This ensures we only get messages for THIS room, with proper paging/cursors
+      // Load NEWEST messages first (DESC) so recent messages appear after refresh
+      // EntityScroller + CSS handle display order based on SCROLLER_PRESETS.CHAT direction
       const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
-        filter: { roomId: this.currentRoomId }, // Database-level filtering - ESSENTIAL
-        orderBy: [{ field: 'timestamp', direction: 'asc' }],
-        limit: limit ?? 20,
+        filter: {
+          roomId: this.currentRoomId,
+          status: 'sent' // Only show successfully sent messages
+        },
+        orderBy: [{ field: 'timestamp', direction: 'desc' }], // Load NEWEST first
+        limit: limit ?? 100, // Increased limit to catch recent messages
         ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'after' } })
       });
 
@@ -110,7 +115,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       return {
         items: validMessages,
-        hasMore: false, // Keep simple for now
+        hasMore: false,
         nextCursor: undefined
       };
     };
@@ -415,7 +420,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     messageEntity.senderName = 'Joel';
     messageEntity.senderType = 'human'; // Denormalized user type (human messages from UI)
     messageEntity.content = { text: content, attachments: [] };
-    messageEntity.status = 'sending';
+    messageEntity.status = 'sent'; // Message is sent when saved to DB
     messageEntity.priority = 'normal';
     messageEntity.timestamp = new Date();
     messageEntity.reactions = [];
