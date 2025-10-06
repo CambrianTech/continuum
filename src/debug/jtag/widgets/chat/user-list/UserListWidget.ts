@@ -7,6 +7,7 @@ import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { Commands } from '../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 
 export class UserListWidget extends EntityScrollerWidget<UserEntity> {
@@ -64,7 +65,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   // Required by EntityScrollerWidget - load function using data/list command
   protected getLoadFunction(): LoadFn<UserEntity> {
     return async (cursor, limit) => {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
         collection: UserEntity.collection,
         orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
         limit: limit ?? 100

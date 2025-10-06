@@ -12,6 +12,7 @@ import type { DataCreateParams, DataCreateResult } from '../../../commands/data/
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import { Commands } from '../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { Events } from '../../../system/core/shared/Events';
 import { UI_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
@@ -90,7 +91,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // CRITICAL: The filter MUST be applied at the database level, not client-side
       // This ensures we only get messages for THIS room, with proper paging/cursors
-      const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
         filter: { roomId: this.currentRoomId }, // Database-level filtering - ESSENTIAL
         orderBy: [{ field: 'timestamp', direction: 'asc' }],
@@ -280,7 +281,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private async loadRoomData(roomId: UUID): Promise<void> {
     try {
       // Load room entity
-      const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>('data/read', {
+      const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>(DATA_COMMANDS.READ, {
         collection: RoomEntity.collection,
         id: roomId,
         backend: 'server'
@@ -312,7 +313,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Load each member's user entity
     for (const member of this.currentRoom.members) {
       try {
-        const userResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>('data/read', {
+        const userResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
           collection: UserEntity.collection,
           id: member.userId,
           backend: 'server'
@@ -419,7 +420,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     messageEntity.reactions = [];
 
     try {
-      await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
+      await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
         collection: ChatMessageEntity.collection,
         data: messageEntity,
         backend: 'server'

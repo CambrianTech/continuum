@@ -9,6 +9,9 @@
 import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import { Commands } from '../../system/core/shared/Commands';
+import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
+import { THEME_COMMANDS } from '../../commands/theme/shared/ThemeCommandConstants';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry } from './themes/ThemeTypes';
 import type { DataListResult } from '../../commands/data/list/shared/DataListTypes';
@@ -259,7 +262,7 @@ export class ThemeWidget extends BaseWidget {
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
           console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
 
-          const result = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+          const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
             filepath: filePath
           });
           
@@ -343,7 +346,7 @@ export class ThemeWidget extends BaseWidget {
         // Use the actual JTAG theme/set command for proper theme switching
         try {
           // Domain-owned: CommandDaemon handles theme switching with optimization
-          await Commands.execute('theme/set', {
+          await Commands.execute(THEME_COMMANDS.SET, {
             themeName: selectedTheme
           });
           console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via CommandDaemon`);
@@ -456,7 +459,7 @@ export class ThemeWidget extends BaseWidget {
       console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
 
       // Update existing UserState's preferences
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',
@@ -501,7 +504,7 @@ export class ThemeWidget extends BaseWidget {
       console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
 
       // Find the user's UserState in localStorage (get most recent first)
-      const userStates = await Commands.execute('data/list', {
+      const userStates = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: 'UserState',
         filter: {
           userId: identity.userId,
