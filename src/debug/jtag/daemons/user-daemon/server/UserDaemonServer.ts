@@ -14,45 +14,48 @@ import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
-import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
+import { Events } from '../../../system/core/shared/Events';
+import { DATA_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { getDefaultPreferencesForType } from '../../../system/user/config/UserCapabilitiesDefaults';
 import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientServer';
 
 export class UserDaemonServer extends UserDaemon {
-  private eventManager: EventManager;
   private monitoringInterval?: ReturnType<typeof setInterval>;
   private reconciliationInterval?: ReturnType<typeof setInterval>;
+  private unsubscribeFunctions: (() => void)[] = [];
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
-    this.eventManager = new EventManager();
     this.setupEventSubscriptions().catch((error: Error) => {
       console.error('❌ UserDaemon: Failed to setup event subscriptions:', error);
     });
   }
 
   /**
-   * Subscribe to user lifecycle events
+   * Subscribe to user lifecycle events using universal Events system
    * Note: Chat messages are handled by individual PersonaUser instances, not UserDaemon
    */
   private async setupEventSubscriptions(): Promise<void> {
-    // Listen for user creation
-    this.eventManager.events.on('data:User:created', async (userData) => {
-      await this.handleUserCreated(userData as UserEntity);
+    // Listen for user creation using EventConstants
+    const unsubCreated = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.CREATED, async (userData: UserEntity) => {
+      await this.handleUserCreated(userData);
     });
+    this.unsubscribeFunctions.push(unsubCreated);
 
-    // Listen for user updates
-    this.eventManager.events.on('data:User:updated', async (userData) => {
-      await this.handleUserUpdated(userData as UserEntity);
+    // Listen for user updates using EventConstants
+    const unsubUpdated = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.UPDATED, async (userData: UserEntity) => {
+      await this.handleUserUpdated(userData);
     });
+    this.unsubscribeFunctions.push(unsubUpdated);
 
-    // Listen for user deletion
-    this.eventManager.events.on('data:User:deleted', async (userData) => {
-      await this.handleUserDeleted(userData as UserEntity);
+    // Listen for user deletion using EventConstants
+    const unsubDeleted = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.DELETED, async (userData: UserEntity) => {
+      await this.handleUserDeleted(userData);
     });
+    this.unsubscribeFunctions.push(unsubDeleted);
 
-    console.log('📡 UserDaemon: Subscribed to user lifecycle events');
+    console.log('📡 UserDaemon: Subscribed to user lifecycle events via universal Events system');
   }
 
   /**
@@ -410,6 +413,13 @@ export class UserDaemonServer extends UserDaemon {
    */
   async shutdown(): Promise<void> {
     await super.shutdown();
+
+    // Unsubscribe from all events
+    for (const unsubscribe of this.unsubscribeFunctions) {
+      unsubscribe();
+    }
+    this.unsubscribeFunctions = [];
+    console.log('📡 UserDaemon: Unsubscribed from all events');
 
     // Shutdown all persona clients
     for (const userId of this.personaClients.keys()) {
