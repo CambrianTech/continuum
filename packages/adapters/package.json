@@ -20,7 +20,7 @@
   "author": "Cambrian Technologies",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^22.14.0",
+    "@types/node": "^24.7.0",
     "typescript": "^5.0.4"
   },
   "dependencies": {
