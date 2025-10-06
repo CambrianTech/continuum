@@ -6,12 +6,13 @@
  */
 
 import { Events } from '../../../system/core/shared/Events';
-import { getDataEventName } from './DataEventConstants';
+import { getDataEventName, type CrudOperation } from '../../../system/core/shared/EventConstants';
 
 /**
  * CRUD operation actions
+ * Re-export from EventConstants for backward compatibility
  */
-export type CrudAction = 'created' | 'updated' | 'deleted' | 'truncated';
+export type CrudAction = CrudOperation;
 
 /**
  * Command response structure for CRUD events

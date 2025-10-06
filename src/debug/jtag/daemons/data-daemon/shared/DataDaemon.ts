@@ -29,6 +29,7 @@ import { getRegisteredEntity } from '../server/SqliteStorageAdapter';
 
 // Import universal events for automatic event emission
 import { Events } from '../../../system/core/shared/Events';
+import { getDataEventName, DATA_EVENTS } from '../../../system/core/shared/EventConstants';
 
 // Removed complex decorator dependency - using simple field validation instead
 
@@ -167,7 +168,7 @@ export class DataDaemon {
 
       // Emit created event via universal Events system
       if (DataDaemon.jtagContext) {
-        const eventName = BaseEntity.getEventName(collection, 'created');
+        const eventName = getDataEventName(collection, 'created');
         await Events.emit(DataDaemon.jtagContext, eventName, entity);
         console.log(`✅ DataDaemon: Emitted ${eventName}`);
       }
@@ -219,7 +220,7 @@ export class DataDaemon {
 
       // Emit updated event via universal Events system
       if (DataDaemon.jtagContext) {
-        const eventName = BaseEntity.getEventName(collection, 'updated');
+        const eventName = getDataEventName(collection, 'updated');
         await Events.emit(DataDaemon.jtagContext, eventName, entity);
         console.log(`✅ DataDaemon: Emitted ${eventName}`);
       }
@@ -248,7 +249,7 @@ export class DataDaemon {
 
     // Emit deleted event if deletion was successful and we have the entity data
     if (result.success && entity && DataDaemon.jtagContext) {
-      const eventName = BaseEntity.getEventName(collection, 'deleted');
+      const eventName = getDataEventName(collection, 'deleted');
       await Events.emit(DataDaemon.jtagContext, eventName, entity);
       console.log(`✅ DataDaemon: Emitted ${eventName}`);
     }
@@ -277,13 +278,47 @@ export class DataDaemon {
   
   /**
    * Batch operations - Transactions for SQL, bulk operations for NoSQL
+   *
+   * Emits individual CRUD events for each operation in the batch
+   * to keep widgets in sync per-entity, not just "batch done"
    */
   async batch(
     operations: StorageOperation[],
     context: DataOperationContext
   ): Promise<StorageResult<any[]>> {
     await this.ensureInitialized();
-    return await this.adapter.batch(operations);
+    const result = await this.adapter.batch(operations);
+
+    // Emit individual events for each successful operation in the batch
+    if (result.success && result.data && DataDaemon.jtagContext) {
+      for (let i = 0; i < operations.length; i++) {
+        const operation = operations[i];
+        const operationResult = result.data[i];
+
+        // Map operation type to event operation name
+        const eventOperationMap: Record<string, 'created' | 'updated' | 'deleted'> = {
+          'create': 'created',
+          'update': 'updated',
+          'delete': 'deleted'
+        };
+
+        const eventOperation = eventOperationMap[operation.type];
+        if (!eventOperation) continue; // Skip read operations
+
+        const eventName = getDataEventName(operation.collection, eventOperation);
+
+        // For create/update, emit with entity data
+        if (operation.type === 'create' || operation.type === 'update') {
+          await Events.emit(DataDaemon.jtagContext, eventName, operationResult);
+          console.log(`✅ DataDaemon: Emitted ${eventName} (batch ${operation.type} ${i + 1}/${operations.length})`);
+        } else if (operation.type === 'delete') {
+          await Events.emit(DataDaemon.jtagContext, eventName, { id: operation.id });
+          console.log(`✅ DataDaemon: Emitted ${eventName} (batch delete ${i + 1}/${operations.length})`);
+        }
+      }
+    }
+
+    return result;
   }
   
   /**
@@ -291,7 +326,15 @@ export class DataDaemon {
    */
   async clear(): Promise<StorageResult<boolean>> {
     await this.ensureInitialized();
-    return await this.adapter.clear();
+    const result = await this.adapter.clear();
+
+    // Emit cleared event if successful
+    if (result.success && DataDaemon.jtagContext) {
+      await Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, { all: true });
+      console.log(`✅ DataDaemon: Emitted ${DATA_EVENTS.ALL.CLEARED}`);
+    }
+
+    return result;
   }
 
   /**
@@ -299,7 +342,19 @@ export class DataDaemon {
    */
   async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
     await this.ensureInitialized();
-    return await this.adapter.clearAll();
+    const result = await this.adapter.clearAll();
+
+    // Emit cleared event if successful with details about what was cleared
+    if (result.success && result.data && DataDaemon.jtagContext) {
+      await Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, {
+        all: true,
+        tablesCleared: result.data.tablesCleared,
+        recordsDeleted: result.data.recordsDeleted
+      });
+      console.log(`✅ DataDaemon: Emitted ${DATA_EVENTS.ALL.CLEARED} (${result.data.tablesCleared.length} tables, ${result.data.recordsDeleted} records)`);
+    }
+
+    return result;
   }
 
   /**
@@ -311,7 +366,7 @@ export class DataDaemon {
 
     // Emit truncated event if successful
     if (result.success && DataDaemon.jtagContext) {
-      const eventName = `data:${collection}:truncated`;
+      const eventName = getDataEventName(collection, 'truncated');
       await Events.emit(DataDaemon.jtagContext, eventName, { collection });
       console.log(`✅ DataDaemon: Emitted ${eventName}`);
     }
