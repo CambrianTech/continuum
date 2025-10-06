@@ -198,7 +198,13 @@ export function createScroller<T extends BaseEntity>(
         container.innerHTML = '';
 
         if (result.items.length > 0) {
-          addEntitiesToDOM(result.items, 'end');
+          // For 'newest-first' chat, query returns DESC order (newest→oldest)
+          // but DOM needs chronological order (oldest→newest) for proper display
+          const itemsToAdd = config.direction === 'newest-first'
+            ? [...result.items].reverse()
+            : result.items;
+
+          addEntitiesToDOM(itemsToAdd, 'end');
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
@@ -228,8 +234,13 @@ export function createScroller<T extends BaseEntity>(
         const result = await load(cursor, config.pageSize);
 
         if (result.items.length > 0) {
-          // Always append - CSS handles visual direction
-          addEntitiesToDOM(result.items, 'end');
+          // For 'newest-first' chat, query returns DESC order (newest→oldest)
+          // but DOM needs chronological order (oldest→newest) for proper display
+          const itemsToAdd = config.direction === 'newest-first'
+            ? [...result.items].reverse()
+            : result.items;
+
+          addEntitiesToDOM(itemsToAdd, 'end');
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
@@ -394,7 +405,7 @@ export function createScroller<T extends BaseEntity>(
 // Convenient presets
 export const SCROLLER_PRESETS = {
   CHAT: {
-    pageSize: 20,
+    pageSize: 100,
     direction: 'newest-first' as const,
     threshold: 0.1,
     rootMargin: '50px',

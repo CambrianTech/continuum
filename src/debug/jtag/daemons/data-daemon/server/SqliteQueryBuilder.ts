@@ -83,6 +83,10 @@ export class SqliteQueryBuilder {
     if (query.sort && query.sort.length > 0) {
       const orderClauses = query.sort.map(sortField => {
         const columnName = `JSON_EXTRACT(data, '$.${sortField.field}')`;
+        // For timestamp fields, treat as datetime for proper sorting
+        if (sortField.field === 'timestamp' || sortField.field.includes('Time') || sortField.field.includes('Date')) {
+          return `datetime(${columnName}) ${sortField.direction.toUpperCase()}`;
+        }
         return `${columnName} ${sortField.direction.toUpperCase()}`;
       });
       sql += ' ORDER BY ' + orderClauses.join(', ');
