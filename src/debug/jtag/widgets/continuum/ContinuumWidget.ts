@@ -6,7 +6,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { Commands } from '../../system/core/client/shared/Commands';
+import { Commands } from '../../system/core/shared/Commands';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 
 export class ContinuumWidget extends BaseWidget {

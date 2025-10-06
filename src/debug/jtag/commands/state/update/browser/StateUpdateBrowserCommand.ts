@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { StateUpdateParams, StateUpdateResult } from '../shared/StateUpdateTypes';
 import { createStateUpdateResult } from '../shared/StateUpdateTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import { Commands } from '../../../../system/core/client/shared/Commands';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataUpdateResult } from '../../../data/update/shared/DataUpdateTypes';
 
 export class StateUpdateBrowserCommand extends CommandBase<StateUpdateParams, StateUpdateResult<BaseEntity>> {

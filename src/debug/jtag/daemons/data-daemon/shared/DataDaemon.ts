@@ -163,8 +163,17 @@ export class DataDaemon {
 
     const result = await this.adapter.create(record);
     if (result.success && result.data) {
+      const entity = result.data.data;
+
+      // Emit created event via universal Events system
+      if (DataDaemon.jtagContext) {
+        const eventName = BaseEntity.getEventName(collection, 'created');
+        await Events.emit(DataDaemon.jtagContext, eventName, entity);
+        console.log(`✅ DataDaemon: Emitted ${eventName}`);
+      }
+
       // Return the complete entity (already includes proper ID)
-      return result.data.data;
+      return entity;
     } else {
       throw new Error(result.error ?? 'Unknown error during data storage');
     }
@@ -206,7 +215,16 @@ export class DataDaemon {
     await this.ensureInitialized();
     const result = await this.adapter.update<T>(collection, id, data, incrementVersion);
     if (result.success && result.data) {
-      return result.data.data;
+      const entity = result.data.data;
+
+      // Emit updated event via universal Events system
+      if (DataDaemon.jtagContext) {
+        const eventName = BaseEntity.getEventName(collection, 'updated');
+        await Events.emit(DataDaemon.jtagContext, eventName, entity);
+        console.log(`✅ DataDaemon: Emitted ${eventName}`);
+      }
+
+      return entity;
     } else {
       throw new Error(result.error ?? 'Unknown error during data update');
     }
@@ -216,12 +234,26 @@ export class DataDaemon {
    * Delete record - SQL DELETE or NoSQL deleteOne
    */
   async delete(
-    collection: string, 
+    collection: string,
     id: UUID,
     context: DataOperationContext
   ): Promise<StorageResult<boolean>> {
     await this.ensureInitialized();
-    return await this.adapter.delete(collection, id);
+
+    // Read entity before deletion for event emission
+    const readResult = await this.adapter.read(collection, id);
+    const entity = readResult.data?.data;
+
+    const result = await this.adapter.delete(collection, id);
+
+    // Emit deleted event if deletion was successful and we have the entity data
+    if (result.success && entity && DataDaemon.jtagContext) {
+      const eventName = BaseEntity.getEventName(collection, 'deleted');
+      await Events.emit(DataDaemon.jtagContext, eventName, entity);
+      console.log(`✅ DataDaemon: Emitted ${eventName}`);
+    }
+
+    return result;
   }
   
   /**
@@ -275,7 +307,16 @@ export class DataDaemon {
    */
   async truncate(collection: string): Promise<StorageResult<boolean>> {
     await this.ensureInitialized();
-    return await this.adapter.truncate(collection);
+    const result = await this.adapter.truncate(collection);
+
+    // Emit truncated event if successful
+    if (result.success && DataDaemon.jtagContext) {
+      const eventName = `data:${collection}:truncated`;
+      await Events.emit(DataDaemon.jtagContext, eventName, { collection });
+      console.log(`✅ DataDaemon: Emitted ${eventName}`);
+    }
+
+    return result;
   }
 
   /**

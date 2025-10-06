@@ -6,7 +6,7 @@
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import { Commands } from '../../../system/core/client/shared/Commands';
+import { Commands } from '../../../system/core/shared/Commands';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 
 export class UserListWidget extends EntityScrollerWidget<UserEntity> {

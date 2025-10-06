@@ -95,7 +95,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     this: CommandConstructor,
     params: Omit<TParams, 'context' | 'sessionId'>
   ): Promise<TResult> {
-    const { Commands } = await import('../../../system/core/client/shared/Commands');
+    const { Commands } = await import('../../../system/core/shared/Commands');
     return await Commands.execute<TParams, TResult>(
       this.commandName,
       params
@@ -116,7 +116,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
     environment: 'browser' | 'server',
     params: Omit<TParams, 'context' | 'sessionId'>
   ): Promise<TResult> {
-    const { Commands } = await import('../../../system/core/client/shared/Commands');
+    const { Commands } = await import('../../../system/core/shared/Commands');
     return await Commands.execute<TParams, TResult>(
       this.commandName,
       { ...params, targetEnvironment: environment } as any

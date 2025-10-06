@@ -8,7 +8,7 @@
 
 import { BaseWidget } from './BaseWidget';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
-import { Commands } from '../../system/core/client/shared/Commands';
+import { Commands } from '../../system/core/shared/Commands';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry } from './themes/ThemeTypes';
 import type { DataListResult } from '../../commands/data/list/shared/DataListTypes';

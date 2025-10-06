@@ -13,7 +13,7 @@
  * Seamless marshaling - works identically everywhere, properly typed.
  */
 
-import { Commands } from '../../../system/core/client/shared/Commands';
+import { Commands } from '../../../system/core/shared/Commands';
 import type { ScreenshotParams, ScreenshotResult } from './ScreenshotTypes';
 import { createScreenshotParams } from './ScreenshotTypes';
 

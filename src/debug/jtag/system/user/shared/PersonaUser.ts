@@ -19,7 +19,7 @@ import type { IUserStateStorage } from '../storage/IUserStateStorage';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
-import { Commands } from '../../core/client/shared/Commands';
+import { Commands } from '../../core/shared/Commands';
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';

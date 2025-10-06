@@ -2,7 +2,7 @@
  * SidebarResizer - Draggable resizer for desktop layout
  * Handles sidebar width with UIPreferencesEntity persistence
  */
-import { Commands } from '../../../../system/core/client/shared/Commands';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { UIPreferencesEntity } from '../../../../system/data/entities/UIPreferencesEntity';
 import type { DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
