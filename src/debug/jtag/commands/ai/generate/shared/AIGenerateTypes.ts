@@ -13,13 +13,24 @@ import type { TextGenerationRequest, TextGenerationResponse } from '../../../../
 
 // AI Generate Parameters
 export interface AIGenerateParams extends JTAGPayload {
-  // Input
-  messages: Array<{
+  // Input - Two modes: Direct messages OR RAG context building
+  // Mode 1: Direct messages (existing behavior)
+  messages?: Array<{
     role: 'system' | 'user' | 'assistant';
     content: string;
     name?: string;
   }>;
   systemPrompt?: string;
+
+  // Mode 2: RAG context building (chat-specific, will be template-driven later)
+  roomId?: UUID;      // Chat room context
+  personaId?: UUID;   // Persona generating response (optional, auto-selects first persona)
+  maxMessages?: number; // How many messages to include in context (default: 20)
+  includeArtifacts?: boolean; // Include images/attachments (default: true)
+  includeMemories?: boolean;  // Include private memories (default: true)
+
+  // Preview mode - returns request instead of calling LLM
+  preview?: boolean;
 
   // Model configuration
   model?: string;
@@ -33,16 +44,25 @@ export interface AIGenerateParams extends JTAGPayload {
 // AI Generate Result
 export interface AIGenerateResult extends JTAGPayload {
   readonly success: boolean;
-  readonly text: string;
-  readonly model: string;
-  readonly provider: string;
-  readonly usage: {
+
+  // Generation result (when preview=false)
+  readonly text?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly usage?: {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
   };
-  readonly responseTime: number;
-  readonly requestId: string;
+  readonly responseTime?: number;
+  readonly requestId?: string;
+
+  // Preview result (when preview=true)
+  readonly preview?: boolean;
+  readonly request?: TextGenerationRequest; // Exact request that would be sent
+  readonly formatted?: string;              // Human-readable preview
+  readonly ragContext?: any;                // Full RAG context for debugging
+
   readonly timestamp: string;
   readonly error?: string;
 }
@@ -60,22 +80,17 @@ export const createAIGenerateResultFromParams = (
   differences: Omit<Partial<AIGenerateResult>, 'context' | 'sessionId'>
 ): AIGenerateResult => transformPayload(params, {
   success: false,
-  text: '',
-  model: '',
-  provider: '',
-  usage: {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-  },
-  responseTime: 0,
-  requestId: '',
   timestamp: new Date().toISOString(),
   ...differences
 });
 
 // Helper to convert command params to daemon request
+// Note: Only call this when params.messages is provided (direct mode)
 export function paramsToRequest(params: AIGenerateParams): TextGenerationRequest {
+  if (!params.messages) {
+    throw new Error('params.messages is required for paramsToRequest (use RAG mode with roomId instead)');
+  }
+
   return {
     messages: params.messages,
     systemPrompt: params.systemPrompt,

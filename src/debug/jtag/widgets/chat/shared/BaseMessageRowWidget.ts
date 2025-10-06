@@ -212,13 +212,13 @@ export class TextMessageRowWidget extends BaseMessageRowWidget {
     if (!this.canRender(message)) {
       throw new Error('TextMessageRowWidget.renderContent: message failed canRender check');
     }
-    
+
     const customClasses = this.options.customClassNames?.join(' ') || '';
-    const content = this.escapeHtml(message.content.text);
-    const interactionAttrs = this.options.enableInteractions 
+    const content = this.escapeHtml(message.content.text); // Keep original formatting
+    const interactionAttrs = this.options.enableInteractions
       ? 'data-interactive="true" tabindex="0"'
       : '';
-      
+
     return `<p class="text-content ${customClasses}" ${interactionAttrs}>${content}</p>`;
   }
 

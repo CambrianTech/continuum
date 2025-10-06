@@ -393,12 +393,11 @@ function createDefaultTrainingSessions(): any[] {
 // ===== SEEDING FUNCTIONS =====
 
 /**
- * Create a record via state/create command (user-scoped) with proper shell escaping
+ * Create a record via data/create command (server-side, no browser required) with proper shell escaping
  */
 async function createStateRecord(collection: string, data: any, id: string, userId?: string, displayName?: string): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'\"'\"'`);
-  const userIdArg = userId ? ` --userId=${userId}` : '';
-  const cmd = `./jtag state/create --collection=${collection} --data='${dataArg}' --id=${id}${userIdArg}`;
+  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}'`;
 
   try {
     const result = await execAsync(cmd);
@@ -470,12 +469,11 @@ async function createUserViaCommand(type: 'human' | 'agent' | 'persona', display
 }
 
 /**
- * Create a record via JTAG command with proper shell escaping
+ * Create a record via JTAG data/create command (server-side, no browser required) with proper shell escaping
  */
 async function createRecord(collection: string, data: any, id: string, displayName?: string, userId?: string): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'"'"'`);
-  const userIdArg = userId ? ` --userId=${userId}` : '';
-  const cmd = `./jtag state/create --collection=${collection} --data='${dataArg}' --id=${id}${userIdArg}`;
+  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}'`;
 
   try {
     const result = await execAsync(cmd);
@@ -509,7 +507,7 @@ async function createRecord(collection: string, data: any, id: string, displayNa
  * Seed multiple records of the same type
  */
 async function seedRecords<T extends { id: string; displayName?: string }>(collection: string, records: T[], getDisplayName?: (record: T) => string, getUserId?: (record: T) => string): Promise<void> {
-  console.log(`📝 Creating ${records.length} ${collection} records via state/create...`);
+  console.log(`📝 Creating ${records.length} ${collection} records via data/create...`);
 
   let successCount = 0;
   for (const record of records) {
