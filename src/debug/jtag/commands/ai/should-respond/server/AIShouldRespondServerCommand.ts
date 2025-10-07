@@ -1,7 +1,7 @@
 /**
  * AI Should-Respond Server Command
  *
- * Uses AIProviderDaemon to call llama3.2:3b for gating decisions
+ * Uses AIProviderDaemon with proper RAG context (message array, not flattened string)
  */
 
 import { AIShouldRespondCommand } from '../shared/AIShouldRespondCommand';
@@ -18,12 +18,15 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
   async execute(params: AIShouldRespondParams): Promise<AIShouldRespondResult> {
     try {
-      const prompt = this.buildGatingPrompt(params);
+      // Build gating instruction
+      const gatingInstruction = this.buildGatingInstruction(params);
 
+      // Build proper messages array: system + conversation history + gating instruction
       const request: TextGenerationRequest = {
         messages: [
           { role: 'system', content: 'You are a conversation coordinator. Respond ONLY with JSON.' },
-          { role: 'user', content: prompt }
+          ...params.ragContext.conversationHistory,  // Already proper LLMMessage[] format
+          { role: 'user', content: gatingInstruction }
         ],
         model: params.model || 'llama3.2:3b',
         temperature: 0.3,
@@ -31,7 +34,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
         preferredProvider: 'ollama'
       };
 
-      console.log(`🤖 AI Should-Respond: Calling LLM for ${params.personaName}...`);
+      console.log(`🤖 AI Should-Respond: Calling LLM for ${params.personaName} with ${params.ragContext.conversationHistory.length} context messages...`);
       const response = await AIProviderDaemon.generateText(request);
 
       if (!response.text) {
@@ -42,6 +45,23 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
       const confidence = parsed.confidence ?? 0.5;
       console.log(`✅ AI Should-Respond: ${params.personaName} → ${parsed.shouldRespond ? 'RESPOND' : 'SILENT'} (${(confidence * 100).toFixed(0)}% confidence)`);
+
+      // Build debug output if verbose mode enabled
+      let debugOutput: AIShouldRespondResult['debug'] = undefined;
+      if (params.verbose) {
+        const conversationText = params.ragContext.conversationHistory
+          .map(msg => `${msg.role}: ${msg.content}`)
+          .join('\n');
+
+        debugOutput = {
+          ragContext: {
+            messageCount: params.ragContext.conversationHistory.length,
+            conversationPreview: conversationText.substring(0, 500) + (conversationText.length > 500 ? '...' : '')
+          },
+          promptSent: gatingInstruction,
+          aiResponse: response.text
+        };
+      }
 
       return {
         context: params.context,
@@ -55,7 +75,8 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           domainRelevant: false,
           recentlySpoke: false,
           othersAnswered: false
-        }
+        },
+        debug: debugOutput
       };
     } catch (error) {
       console.error('❌ AI Should-Respond: Command failed:', error);

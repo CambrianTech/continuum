@@ -12,6 +12,7 @@ import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
 import type { StorageQuery, RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 
@@ -54,12 +55,14 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       const result = await DataDaemon.query<BaseEntity>(storageQuery);
 
       if (!result.success) {
-        console.error(`❌ DATA SERVER: DataDaemon query failed:`, result.error);
+        const availableCollections = Object.values(COLLECTIONS).join(', ');
+        const errorWithHint = `${result.error || 'Unknown DataDaemon error'}. Valid collections are: ${availableCollections}`;
+        console.error(`❌ DATA SERVER: DataDaemon query failed:`, errorWithHint);
         return createDataListResultFromParams(params, {
           success: false,
           items: [],
           count: 0,
-          error: result.error || 'Unknown DataDaemon error'
+          error: errorWithHint
         });
       }
 
@@ -80,12 +83,14 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
 
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ DATA SERVER: DataDaemon execution failed:`, errorMessage);
+      const availableCollections = Object.values(COLLECTIONS).join(', ');
+      const errorWithHint = `${errorMessage}. Valid collections are: ${availableCollections}`;
+      console.error(`❌ DATA SERVER: DataDaemon execution failed:`, errorWithHint);
       return createDataListResultFromParams(params, {
         success: false,
         items: [],
         count: 0,
-        error: errorMessage
+        error: errorWithHint
       });
     }
   }

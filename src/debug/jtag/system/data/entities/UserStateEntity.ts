@@ -64,6 +64,16 @@ export class UserStateEntity extends BaseEntity {
     syncAcrossDevices: boolean;
   };
 
+  // Room/subscription read state - tracks last processed message per room
+  // Used by both human users (unread messages) and AI personas (message processing pointer)
+  @JsonField()
+  roomReadState: {
+    [roomId: string]: {
+      lastReadMessageTimestamp: string; // ISO timestamp of last read/processed message
+      lastReadMessageId?: UUID;          // Optional message ID for exact tracking
+    };
+  };
+
   // Index signature for compatibility
   [key: string]: unknown;
 
@@ -83,6 +93,7 @@ export class UserStateEntity extends BaseEntity {
       rememberScrollPosition: true,
       syncAcrossDevices: true
     };
+    this.roomReadState = {};
   }
 
   /**
@@ -253,5 +264,46 @@ export class UserStateEntity extends BaseEntity {
     if (this.contentState.openItems.length !== initialLength) {
       this.contentState.lastUpdatedAt = new Date();
     }
+  }
+
+  /**
+   * Update last read message timestamp for a room
+   * Used by both human users (unread messages) and AI personas (message processing pointer)
+   */
+  updateRoomReadState(roomId: UUID, timestamp: Date, messageId?: UUID): void {
+    if (!this.roomReadState) {
+      this.roomReadState = {};
+    }
+
+    this.roomReadState[roomId] = {
+      lastReadMessageTimestamp: timestamp.toISOString(),
+      lastReadMessageId: messageId
+    };
+  }
+
+  /**
+   * Get last read message timestamp for a room
+   * Returns undefined if never read
+   */
+  getLastReadTimestamp(roomId: UUID): Date | undefined {
+    const readState = this.roomReadState?.[roomId];
+    if (!readState?.lastReadMessageTimestamp) {
+      return undefined;
+    }
+
+    return new Date(readState.lastReadMessageTimestamp);
+  }
+
+  /**
+   * Check if a message timestamp is newer than last read
+   * Used to determine unread messages
+   */
+  isMessageUnread(roomId: UUID, messageTimestamp: Date): boolean {
+    const lastRead = this.getLastReadTimestamp(roomId);
+    if (!lastRead) {
+      return true; // Never read any messages in this room
+    }
+
+    return messageTimestamp > lastRead;
   }
 }

@@ -83,6 +83,16 @@ export abstract class JTAGSystem extends JTAGBase {
   }
 
   /**
+   * Get CommandDaemon for direct local command execution
+   * Returns null if CommandDaemon is not available
+   * CRITICAL for server-side autonomous agents (PersonaUser, etc.)
+   */
+  public getCommandDaemon(): DaemonBase | null {
+    const commandDaemon = this.daemons.find(daemon => daemon.subpath === 'commands');
+    return commandDaemon || null;
+  }
+
+  /**
    * Get EventsDaemon for event subscription management
    * Returns null if EventsDaemon is not available
    */

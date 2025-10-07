@@ -13,40 +13,86 @@ import type { AIShouldRespondParams, AIShouldRespondResult } from './AIShouldRes
 
 export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, CommandResult> {
   static readonly commandName = 'ai/should-respond';
+
   /**
-   * Build the prompt for the gating AI
+   * Build the gating instruction that gets appended AFTER the conversation history
    *
-   * This prompt teaches the AI to be a "conversation coordinator" that decides
-   * whether each persona should speak based on:
-   * - Recent conversation flow
-   * - Who has already answered
-   * - Whether persona is directly mentioned
-   * - Domain relevance (code questions → CodeReview AI)
-   * - Participation balance (don't let anyone dominate)
+   * The LLM will see:
+   * 1. System: "You are a conversation coordinator..."
+   * 2. [Full conversation history as proper messages]
+   * 3. User: [This gating instruction]
+   */
+  protected buildGatingInstruction(params: AIShouldRespondParams): string {
+    const { personaName, triggerMessage } = params;
+
+    return `**Your Task**: Decide if "${personaName}" should respond to the message marked with >>> arrows <<< above.
+
+**Decision Rules**:
+1. If ${personaName} is directly mentioned by name → respond
+2. If this is a question and ${personaName} has unique expertise → respond
+3. If someone else JUST answered the same question → DON'T respond (avoid spam)
+4. If ${personaName} has spoken in 3+ of last 5 messages → DON'T respond (dominating)
+5. If message is off-topic for ${personaName}'s expertise → DON'T respond
+6. When in doubt, err on the side of SILENCE (better to miss one than spam)
+
+**Response Format** (JSON only):
+{
+  "shouldRespond": true/false,
+  "confidence": 0.0-1.0,
+  "reason": "brief explanation",
+  "factors": {
+    "mentioned": true/false,
+    "questionAsked": true/false,
+    "domainRelevant": true/false,
+    "recentlySpoke": true/false,
+    "othersAnswered": true/false
+  }
+}`;
+  }
+
+  /**
+   * DEPRECATED: Old method that flattened conversation to string
+   * Kept for reference but should not be used
    */
   protected buildGatingPrompt(params: AIShouldRespondParams): string {
     const { personaName, ragContext, triggerMessage } = params;
 
     // Extract conversation history from RAG context
-    const recentMessages = ragContext.conversationHistory?.slice(-10) || [];
-    const conversationText = recentMessages
-      .map(msg => `${msg.name || msg.role}: ${msg.content}`)
-      .join('\n');
+    // IMPORTANT: Take more context to see past AI chatter, but highlight the trigger message
+    const recentMessages = ragContext.conversationHistory?.slice(-15) || [];
+
+    // Build conversation text with the trigger message HIGHLIGHTED
+    const conversationLines = recentMessages.map(msg => {
+      const line = `${msg.name || msg.role}: ${msg.content}`;
+      // Check if this is the trigger message (match by content and sender)
+      const isTrigger = msg.content === triggerMessage.content &&
+                       msg.name === triggerMessage.senderName;
+      return isTrigger ? `>>> ${line} <<<` : line;
+    });
+
+    // If trigger message isn't in recent history, append it explicitly
+    const triggerInHistory = recentMessages.some(msg =>
+      msg.content === triggerMessage.content &&
+      msg.name === triggerMessage.senderName
+    );
+
+    if (!triggerInHistory) {
+      conversationLines.push(`>>> ${triggerMessage.senderName}: ${triggerMessage.content} <<<`);
+    }
+
+    const conversationText = conversationLines.join('\n');
 
     // Extract persona identity for context
     const members = `${ragContext.identity?.name || personaName} and others`;
 
     return `You are a conversation coordinator for a multi-party chat room.
 
-**Your Job**: Decide if "${personaName}" should respond to the latest message.
+**Your Job**: Decide if "${personaName}" should respond to the message marked with >>> arrows <<<.
 
 **Room Members**: ${members}
 
-**Recent Conversation**:
+**Recent Conversation** (message to evaluate is marked with >>> arrows <<<):
 ${conversationText}
-
-**Latest Message**:
-${triggerMessage.senderName}: ${triggerMessage.content}
 
 **Decision Rules**:
 1. If ${personaName} is directly mentioned by name → respond

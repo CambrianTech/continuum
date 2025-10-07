@@ -70,7 +70,7 @@ export class PersonaUser extends AIUser {
 
   // Response cap to prevent infinite loops
   private responseCount: Map<UUID, number> = new Map(); // room -> count
-  private readonly maxResponsesPerSession = 10; // Max 10 responses per room per session
+  private readonly maxResponsesPerSession = 50; // Max 50 responses per room per session
 
   constructor(
     entity: UserEntity,
@@ -83,6 +83,15 @@ export class PersonaUser extends AIUser {
       console.log(`🔌 PersonaUser ${this.displayName}: Client injected and passed to BaseUser`);
       console.log(`📦 PersonaUser ${this.displayName}: ArtifactsAPI available via client.daemons`);
     }
+  }
+
+  /**
+   * Log AI decision to dedicated AI log (separate from general system logs)
+   * Uses prefix "🤖 AI-DECISION:" so it can be easily filtered
+   */
+  private logAIDecision(decision: 'RESPOND' | 'SILENT', reason: string, context: { message: string; sender: string; roomId: string; mentioned?: boolean; humanSender?: boolean }): void {
+    const logMessage = `🤖 AI-DECISION: ${this.displayName} → ${decision} | Room: ${context.roomId.slice(0, 8)} | Reason: ${reason} | Message: "${context.message.slice(0, 80)}..." | Sender: ${context.sender}${context.mentioned ? ' | MENTIONED' : ''}${context.humanSender !== undefined ? ` | Human: ${context.humanSender}` : ''}`;
+    console.log(logMessage);
   }
 
   /**
@@ -141,16 +150,22 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // Extract message text early for logging
+    const messageText = messageEntity.content?.text || '';
+    const senderIsHuman = messageEntity.senderType === 'human';
+
     // STEP 2: Check response cap (prevent infinite loops)
     const currentCount = this.responseCount.get(messageEntity.roomId) || 0;
     if (currentCount >= this.maxResponsesPerSession) {
-      console.log(`🛑 ${this.displayName}: Response cap reached (${currentCount}/${this.maxResponsesPerSession}) in room ${messageEntity.roomId.slice(0, 8)}`);
+      this.logAIDecision('SILENT', `Response cap reached (${currentCount}/${this.maxResponsesPerSession})`, {
+        message: messageText,
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId
+      });
       return;
     }
 
     // STEP 3: Check if sender is human or AI (use denormalized field!)
-    const senderIsHuman = messageEntity.senderType === 'human';
-    const messageText = messageEntity.content?.text || '';
     const isMentioned = this.isPersonaMentioned(messageText);
 
     console.log(`🔍 ${this.displayName}: Sender type is "${messageEntity.senderType}" (human: ${senderIsHuman})`);
@@ -160,7 +175,11 @@ export class PersonaUser extends AIUser {
       const lastTime = this.lastResponseTime.get(messageEntity.roomId)!;
       const secondsSince = (Date.now() - lastTime.getTime()) / 1000;
       const waitTime = this.minSecondsBetweenResponses - secondsSince;
-      console.log(`⏸️  ${this.displayName}: Rate limited, wait ${waitTime.toFixed(1)}s more`);
+      this.logAIDecision('SILENT', `Rate limited, wait ${waitTime.toFixed(1)}s more`, {
+        message: messageText,
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId
+      });
       return;
     }
 
@@ -170,12 +189,24 @@ export class PersonaUser extends AIUser {
     const shouldRespond = await this.shouldRespondToMessage(messageEntity, senderIsHuman, isMentioned);
 
     if (!shouldRespond) {
-      console.log(`🤔 ${this.displayName}: LLM decided not to respond to "${messageText.slice(0, 50)}..."`);
+      this.logAIDecision('SILENT', 'LLM gating decided not to respond', {
+        message: messageText,
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId,
+        mentioned: isMentioned,
+        humanSender: senderIsHuman
+      });
       return;
     }
 
     // STEP 6: We should respond!
-    console.log(`✅ ${this.displayName}: LLM decided to respond to ${messageEntity.senderName}`);
+    this.logAIDecision('RESPOND', 'LLM gating approved', {
+      message: messageText,
+      sender: messageEntity.senderName,
+      roomId: messageEntity.roomId,
+      mentioned: isMentioned,
+      humanSender: senderIsHuman
+    });
 
     // Update RAG context
     await this.updateRAGContext(messageEntity.roomId, messageEntity);
@@ -363,10 +394,9 @@ export class PersonaUser extends AIUser {
 
   /**
    * Use LLM to decide whether to respond to a message
-   * Implements the 8-rule protocol from AI_TO_AI_INTERACTION_PROTOCOL.md
    *
-   * Uses a cheap/fast model (like GPT-3.5 or Claude Haiku) for the decision,
-   * then uses the full model for actual response generation
+   * Uses llama3.2:1b (tiny, fast) for gating decision alongside Ollama's main models
+   * Then uses the persona's full model (llama3.2:3b) for actual response generation
    */
   private async shouldRespondToMessage(
     messageEntity: ChatMessageEntity,
@@ -379,72 +409,83 @@ export class PersonaUser extends AIUser {
       return true;
     }
 
-    // Rule 2: FUZZY LOGIC - All citizens equal (human OR AI)
-    // Calculate response probability based on conversation context
-    const heuristics = await this.calculateResponseHeuristics(messageEntity);
+    try {
+      // Build RAG context for gating decision (last 15 messages)
+      const ragBuilder = new ChatRAGBuilder();
+      const ragContext = await ragBuilder.buildContext(
+        messageEntity.roomId,
+        this.id,
+        {
+          maxMessages: 15,
+          maxMemories: 0,
+          includeArtifacts: false,
+          includeMemories: false
+        }
+      );
 
-    // Score-based decision (0-100 scale)
-    let score = 0;
+      // Build gating prompt - just the conversation with a simple decision instruction
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
 
-    // 1. Question detection (+40 points - strong signal)
-    if (heuristics.containsQuestion) score += 40;
+      // System instruction
+      messages.push({
+        role: 'system',
+        content: `You are a conversation coordinator. Decide if "${this.displayName}" should respond to the latest message. Consider:
+1. Is ${this.displayName} directly mentioned? → respond
+2. Is this a question for ${this.displayName}'s expertise? → respond
+3. Has someone else already answered? → don't respond
+4. Has ${this.displayName} spoken too much recently? → don't respond
+5. When uncertain, stay silent (better to miss one than spam)
 
-    // 2. Conversation temperature (+0 to +30)
-    if (heuristics.conversationTemp === 'HOT') score += 30;
-    else if (heuristics.conversationTemp === 'WARM') score += 20;
-    else if (heuristics.conversationTemp === 'COOL') score += 10;
-    // COLD = +0
+Respond ONLY with JSON: {"shouldRespond": true/false, "reason": "brief explanation"}`
+      });
 
-    // 3. Participation ratio (-30 if dominating, +10 if quiet)
-    if (heuristics.myParticipationRatio > 0.5) score -= 30; // I'm dominating
-    else if (heuristics.myParticipationRatio < 0.2) score += 10; // I'm quiet
+      // Add conversation history (embed speaker names for llama)
+      for (const msg of ragContext.conversationHistory) {
+        const formattedContent = msg.name ? `${msg.name}: ${msg.content}` : msg.content;
+        messages.push({
+          role: msg.role,
+          content: formattedContent
+        });
+      }
 
-    // 4. Time since my last message (+20 if been quiet, -20 if just spoke)
-    if (heuristics.secondsSinceMyLastMessage > 60) score += 20;
-    else if (heuristics.secondsSinceMyLastMessage < 15) score -= 20;
+      // Use tiny llama3.2:1b for fast gating decision
+      console.log(`🤔 ${this.displayName}: Asking llama3.2:1b for gating decision...`);
+      const gatingResponse = await AIProviderDaemon.generateText({
+        messages,
+        model: 'llama3.2:1b', // Tiny, fast model for gating
+        temperature: 0.3,
+        maxTokens: 100,
+        preferredProvider: 'ollama'
+      });
 
-    // 5. Turn-taking pattern (+15 if it's my turn)
-    if (heuristics.appearsToBeMyTurn) score += 15;
+      // Parse JSON response
+      const jsonMatch = gatingResponse.text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const decision = JSON.parse(jsonMatch[0]);
+        console.log(`🎯 ${this.displayName}: AI gating → ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (${decision.reason})`);
+        return decision.shouldRespond || false;
+      }
 
-    // Decision threshold: 50+ = respond
-    const shouldRespond = score >= 50;
+      // Fallback: Look for keywords if JSON parsing fails
+      const lowerText = gatingResponse.text.toLowerCase();
+      const shouldRespond = lowerText.includes('true') || lowerText.includes('should respond');
+      console.log(`🎯 ${this.displayName}: AI gating (fallback) → ${shouldRespond ? 'RESPOND' : 'SILENT'}`);
+      return shouldRespond;
 
-    console.log(`🎯 ${this.displayName}: Heuristic score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
-    return shouldRespond;
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: AI gating failed, falling back to heuristics:`, error);
 
-    // PHASE 2: Fuzzy logic heuristics (NO API costs)
-    // This code will be enabled when Phase 1 testing is complete
-    //
-    // const heuristics = await this.calculateResponseHeuristics(messageEntity);
-    //
-    // // Score-based decision (0-100 scale)
-    // let score = 0;
-    //
-    // // 1. Question detection (+40 points - strong signal)
-    // if (heuristics.containsQuestion) score += 40;
-    //
-    // // 2. Conversation temperature (+0 to +30)
-    // if (heuristics.conversationTemp === 'HOT') score += 30;
-    // else if (heuristics.conversationTemp === 'WARM') score += 20;
-    // else if (heuristics.conversationTemp === 'COOL') score += 10;
-    // // COLD = +0
-    //
-    // // 3. Participation ratio (-30 if dominating, +10 if quiet)
-    // if (heuristics.myParticipationRatio > 0.5) score -= 30; // I'm dominating
-    // else if (heuristics.myParticipationRatio < 0.2) score += 10; // I'm quiet
-    //
-    // // 4. Time since my last message (+20 if been quiet, -20 if just spoke)
-    // if (heuristics.secondsSinceMyLastMessage > 60) score += 20;
-    // else if (heuristics.secondsSinceMyLastMessage < 15) score -= 20;
-    //
-    // // 5. Turn-taking pattern (+15 if it's my turn)
-    // if (heuristics.appearsToBeMyTurn) score += 15;
-    //
-    // // Decision threshold: 50+ = respond
-    // const shouldRespond = score >= 50;
-    //
-    // console.log(`🎯 ${this.displayName}: Heuristic score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
-    // return shouldRespond;
+      // Fallback to simple heuristics if AI fails
+      const heuristics = await this.calculateResponseHeuristics(messageEntity);
+      let score = 0;
+      if (heuristics.containsQuestion) score += 40;
+      if (heuristics.conversationTemp === 'HOT') score += 30;
+      if (heuristics.myParticipationRatio < 0.3) score += 20;
+
+      const shouldRespond = score >= 50;
+      console.log(`🎯 ${this.displayName}: Heuristic fallback score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
+      return shouldRespond;
+    }
   }
 
   /**
