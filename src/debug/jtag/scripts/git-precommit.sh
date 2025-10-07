@@ -104,15 +104,26 @@ echo "----------------------------------------------------"
 
 echo "🧪 Running precommit test profile via JTAG test runner..."
 
-# Run precommit integration tests directly to avoid CLI timeout
+# Ensure test output directory exists
+mkdir -p .continuum/sessions/validation
+
+# Run precommit integration tests with immediate output visibility
 echo "🧪 Running CRUD integration test..."
-TEST_OUTPUT1=$(npx tsx tests/integration/database-chat-integration.test.ts 2>&1)
-TEST_EXIT_CODE1=$?
+echo "=================================================="
+npx tsx tests/integration/database-chat-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test1-output.txt
+TEST_EXIT_CODE1=${PIPESTATUS[0]}
+TEST_OUTPUT1=$(cat .continuum/sessions/validation/test1-output.txt)
+echo "=================================================="
 
+echo ""
 echo "🧪 Running State integration test..."
-TEST_OUTPUT2=$(npx tsx tests/integration/state-system-integration.test.ts 2>&1)
-TEST_EXIT_CODE2=$?
+echo "=================================================="
+npx tsx tests/integration/state-system-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test2-output.txt
+TEST_EXIT_CODE2=${PIPESTATUS[0]}
+TEST_OUTPUT2=$(cat .continuum/sessions/validation/test2-output.txt)
+echo "=================================================="
 
+echo ""
 # Check if both tests passed
 if [ $TEST_EXIT_CODE1 -eq 0 ] && [ $TEST_EXIT_CODE2 -eq 0 ]; then
     echo "✅ Precommit integration tests: ALL PASSED"
@@ -121,15 +132,22 @@ if [ $TEST_EXIT_CODE1 -eq 0 ] && [ $TEST_EXIT_CODE2 -eq 0 ]; then
     # Store test results for commit message
     TEST_SUMMARY="CRUD + State Integration: 2/2 - ALL TESTS PASSED"
 else
-    echo "❌ Precommit integration tests FAILED - blocking commit"
+    echo ""
+    echo "❌ PRECOMMIT INTEGRATION TESTS FAILED - BLOCKING COMMIT"
+    echo "=================================================="
     if [ $TEST_EXIT_CODE1 -ne 0 ]; then
-        echo "❌ CRUD integration test failed:"
-        echo "$TEST_OUTPUT1"
+        echo "❌ CRUD integration test FAILED (exit code: $TEST_EXIT_CODE1)"
+        echo "   Test file: tests/integration/database-chat-integration.test.ts"
+        echo "   Output shown above"
     fi
     if [ $TEST_EXIT_CODE2 -ne 0 ]; then
-        echo "❌ State integration test failed:"
-        echo "$TEST_OUTPUT2"
+        echo "❌ State integration test FAILED (exit code: $TEST_EXIT_CODE2)"
+        echo "   Test file: tests/integration/state-system-integration.test.ts"
+        echo "   Output shown above"
     fi
+    echo ""
+    echo "🔍 Fix the failing tests before committing"
+    echo "=================================================="
     exit 1
 fi
 

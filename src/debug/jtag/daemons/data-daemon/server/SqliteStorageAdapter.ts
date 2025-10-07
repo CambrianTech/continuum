@@ -213,6 +213,16 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     // Configure SQLite settings
     await this.configureSqlite(options);
 
+    // EXFAT FIX: Re-apply permissions after SQLite opens and potentially modifies the file
+    // This handles cases where filesystem doesn't properly support Unix permissions
+    try {
+      console.log('🔧 SQLite: Re-applying file permissions after connection (exFAT workaround)...');
+      await fs.chmod(dbPath, 0o666);
+      console.log('✅ SQLite: Post-connection permissions applied');
+    } catch (error) {
+      console.warn('⚠️ SQLite: Could not re-apply permissions (non-fatal):', error);
+    }
+
     console.log('📋 SQLite: Initializing entity registry...');
     // Import and register all known entities (server-side only)
     const { initializeEntityRegistry } = await import('./EntityRegistry');
@@ -304,17 +314,21 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       // Set foreign keys based on configuration
       options.foreignKeys === false ? 'PRAGMA foreign_keys = OFF' : 'PRAGMA foreign_keys = ON',
 
-      // Set WAL mode for better concurrency
-      options.wal ? 'PRAGMA journal_mode = WAL' : null,
+      // EXFAT FIX: Use MEMORY journal mode to avoid file permission issues
+      // WAL and DELETE modes create auxiliary files that may have permission problems
+      'PRAGMA journal_mode = MEMORY',
 
-      // Set synchronous mode
-      options.synchronous ? `PRAGMA synchronous = ${options.synchronous}` : 'PRAGMA synchronous = NORMAL',
+      // EXFAT FIX: Use FULL synchronous mode for data integrity without relying on filesystem
+      'PRAGMA synchronous = FULL',
 
       // Set cache size (negative = KB, positive = pages)
       options.cacheSize ? `PRAGMA cache_size = ${options.cacheSize}` : 'PRAGMA cache_size = -2000',
 
       // Set busy timeout
-      options.timeout ? `PRAGMA busy_timeout = ${options.timeout}` : 'PRAGMA busy_timeout = 10000'
+      options.timeout ? `PRAGMA busy_timeout = ${options.timeout}` : 'PRAGMA busy_timeout = 10000',
+
+      // EXFAT FIX: Disable locking mode to reduce filesystem permission requirements
+      'PRAGMA locking_mode = NORMAL'
     ].filter(Boolean);
 
     for (const sql of settings) {
@@ -323,7 +337,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       }
     }
 
-    console.log('⚙️ SQLite: Configuration applied');
+    console.log('⚙️ SQLite: Configuration applied (exFAT-compatible settings)');
   }
 
   /**

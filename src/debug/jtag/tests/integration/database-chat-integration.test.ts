@@ -137,6 +137,7 @@ async function testDatabaseChatIntegration(): Promise<void> {
       UserEntity.collection,
       {
         displayName: 'CRUD Test User',
+        uniqueId: `crud-test-user-${Date.now()}`,  // uniqueId is required
         type: 'human',
         status: 'online',
         lastActiveAt: new Date().toISOString(),

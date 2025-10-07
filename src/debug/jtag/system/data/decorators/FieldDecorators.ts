@@ -158,7 +158,7 @@ export function EnumField(options?: { index?: boolean; nullable?: boolean; defau
 /**
  * Text field
  */
-export function TextField(options?: { maxLength?: number; index?: boolean; nullable?: boolean }) {
+export function TextField(options?: { maxLength?: number; index?: boolean; nullable?: boolean; unique?: boolean }) {
   return function (target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {

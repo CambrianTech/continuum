@@ -89,6 +89,7 @@ import type { BaseUser } from '../../../user/shared/BaseUser';
 import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
 import type { IConnectionBroker, ConnectionParams } from '../../connection-broker/shared/ConnectionBrokerTypes';
 import { ConnectionBroker } from '../../connection-broker/shared/ConnectionBroker';
+import { DEFAULT_USER_UNIQUE_IDS } from '../../../data/domains/DefaultEntities';
 /**
  * JTAGClient connection options
  */
@@ -454,6 +455,19 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     // Get stored userId from browser (if available) for citizen persistence
     const storedUserId = await this.getStoredUserId();
 
+    // For agents, derive a consistent uniqueId from the agent name
+    // For CLI clients, use CLI_CLIENT constant
+    // For browser clients, use PRIMARY_HUMAN constant (could be enhanced with login later)
+    // This allows persistent identity across sessions
+    const uniqueId = isAgent && agentInfo?.name
+      ? agentInfo.name.toLowerCase().replace(/\s+/g, '-')
+      : (isEphemeralClient ? DEFAULT_USER_UNIQUE_IDS.CLI_CLIENT : DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+
+    // Enhance connectionContext with uniqueId for lookup
+    const enhancedConnectionContext = this.connectionContext
+      ? { ...this.connectionContext, uniqueId }
+      : { uniqueId };
+
     const sessionParams = {
       context: this.context,
       sessionId: targetSessionId,
@@ -461,7 +475,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       displayName: displayName,
       userId: storedUserId, // Pass stored userId to link to existing citizen
       isShared: true, // All clients use shared sessions by default
-      connectionContext: this.connectionContext // Pass full context for agent detection
+      connectionContext: enhancedConnectionContext // Pass enhanced context with uniqueId for agent detection
     };
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;
