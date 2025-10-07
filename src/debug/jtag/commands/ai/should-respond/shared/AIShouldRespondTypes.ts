@@ -29,6 +29,9 @@ export interface AIShouldRespondParams extends CommandParams {
 
   /** Optional: Override model (defaults to llama3.2:3b) */
   readonly model?: string;
+
+  /** Verbose mode - include full RAG context and prompt in response */
+  readonly verbose?: boolean;
 }
 
 /**
@@ -54,5 +57,15 @@ export interface AIShouldRespondResult extends CommandResult {
     readonly domainRelevant: boolean;
     readonly recentlySpoke: boolean;
     readonly othersAnswered: boolean;
+  };
+
+  /** Verbose mode output - shows what AI saw */
+  readonly debug?: {
+    readonly ragContext: {
+      readonly messageCount: number;
+      readonly conversationPreview: string;  // First 500 chars
+    };
+    readonly promptSent: string;  // The actual prompt sent to LLM
+    readonly aiResponse: string;  // Raw AI response
   };
 }

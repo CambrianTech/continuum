@@ -824,6 +824,39 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
           // Already unwrapped - return as-is
           return response as U;
+        },
+        /**
+         * Execute command LOCALLY without routing through transport layers
+         * CRITICAL for server-side autonomous agents (PersonaUser, etc.)
+         * Only works with LocalConnection - throws error for remote connections
+         */
+        localExecute: async <T extends CommandParams = CommandParams, U extends CommandResult = CommandResult>(
+          commandName: string,
+          params?: T
+        ): Promise<U> => {
+          const localConnection = this.connection as LocalConnection;
+          if (!localConnection || !localConnection.localSystem) {
+            throw new Error('localExecute only available in local connections');
+          }
+
+          // Get CommandDaemon from local system
+          const commandDaemon = localConnection.localSystem.getCommandDaemon();
+          if (!commandDaemon) {
+            throw new Error('CommandDaemon not available');
+          }
+
+          // Cast to CommandDaemon type (has execute method)
+          type CommandDaemonWithExecute = {
+            execute(commandName: string, sessionId: UUID, params?: CommandParams): Promise<CommandResult>;
+          };
+
+          // Execute command directly via CommandDaemon.execute() - bypasses all routing
+          const result = await (commandDaemon as unknown as CommandDaemonWithExecute).execute(
+            commandName,
+            this.sessionId,
+            params
+          );
+          return result as U;
         }
       },
       events: {
