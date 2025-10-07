@@ -50,6 +50,7 @@ async function testStateSystemIntegration(): Promise<void> {
       userId: `state-test-user-${testTimestamp}`, // This should be injected
       data: {
         displayName: 'State Test User',
+        uniqueId: `state-test-user-${testTimestamp}`,  // uniqueId is required
         type: 'human',
         status: 'online',
         lastActiveAt: new Date().toISOString(),

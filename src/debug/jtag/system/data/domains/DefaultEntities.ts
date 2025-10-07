@@ -15,6 +15,7 @@ import { stringToUUID, type UUID } from '../../core/types/CrossPlatformUUID';
  */
 export const DEFAULT_USER_UNIQUE_IDS = {
   PRIMARY_HUMAN: 'primary-human',
+  CLI_CLIENT: 'cli-client',
   CLAUDE_CODE: 'claude-code',
   GENERAL_AI: 'general-ai',
   CODE_AI: 'code-ai',

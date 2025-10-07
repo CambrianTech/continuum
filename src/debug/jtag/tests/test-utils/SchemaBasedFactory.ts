@@ -136,10 +136,12 @@ function createCompleteEntityData(collection: string, timestamp: number, overrid
 
   switch (collection) {
     case 'User':
+    case 'users':  // Support both entity class name and collection name
       // Mirror the exact successful seeding structure
       return {
         displayName: overrides.displayName || `Test User ${timestamp}`,
         shortDescription: overrides.shortDescription || "Test user entity",
+        uniqueId: overrides.uniqueId || `test-user-${timestamp}`,
         type: overrides.type || "human",
         profile: {
           displayName: overrides.displayName || `Test User ${timestamp}`,
@@ -181,9 +183,11 @@ function createCompleteEntityData(collection: string, timestamp: number, overrid
       };
 
     case 'Room':
+    case 'rooms':  // Support both entity class name and collection name
       // Mirror the exact successful seeding structure
       return {
         name: (overrides.name || `test-room-${timestamp}`).toLowerCase(), // Ensure lowercase like seeding
+        uniqueId: overrides.uniqueId || `test-room-${timestamp}`,  // uniqueId is required
         displayName: overrides.displayName || overrides.name || `Test Room ${timestamp}`,
         description: overrides.description || "Test room for integration testing",
         topic: "Test room topic for development",
@@ -215,11 +219,13 @@ function createCompleteEntityData(collection: string, timestamp: number, overrid
       };
 
     case 'ChatMessage':
+    case 'chat_messages':  // Support both entity class name and collection name
       // Mirror the exact successful seeding structure
       return {
         roomId: overrides.roomId || "5e71a0c8-0303-4eb8-a478-3a121248", // Use actual seeded room ID
         senderId: overrides.senderId || "002350cc-0031-408d-8040-004f000f", // Use actual seeded user ID
         senderName: overrides.senderName || "Test Sender",
+        senderType: overrides.senderType || "user",  // senderType is required
         content: overrides.content || {
           text: `Test message ${timestamp}`,
           attachments: [],
@@ -275,6 +281,9 @@ function generateFieldDefault(field: SchemaField, example?: unknown): unknown {
       }
       if (field.fieldName === 'name') {
         return `test-name-${timestamp}`;
+      }
+      if (field.fieldName === 'uniqueId') {
+        return `test-unique-${timestamp}`;
       }
       if (field.fieldName === 'description') {
         return 'Test description for development';
@@ -351,12 +360,12 @@ export async function createCompleteEntity(
 
     // Special case: User entities must use user/create command (not data/create)
     let result: Record<string, unknown>;
-    if (collection === 'User') {
+    if (collection === 'User' || collection === 'users') {
       const displayName = entityData.displayName as string;
       const type = (entityData.type as string) || 'human';
-      const uniqueId = overrides.uniqueId ? `--uniqueId=${overrides.uniqueId}` : '';
+      const uniqueId = (entityData.uniqueId as string) || `test-user-${timestamp}`;
 
-      result = runJtagCommand(`user/create --type=${type} --displayName="${displayName}" ${uniqueId}`);
+      result = runJtagCommand(`user/create --type=${type} --displayName="${displayName}" --uniqueId="${uniqueId}"`);
 
       // user/create returns { success, user } instead of { success, data }
       if (result.success && result.user) {

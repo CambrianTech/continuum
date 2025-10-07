@@ -53,8 +53,8 @@ export class UserEntity extends BaseEntity {
   @EnumField({ index: true })
   type: UserType;
 
-  @TextField({ index: true, nullable: true })
-  uniqueId?: string;
+  @TextField({ index: true, unique: true })
+  uniqueId!: string;
 
   @TextField({ index: true })
   displayName: string;

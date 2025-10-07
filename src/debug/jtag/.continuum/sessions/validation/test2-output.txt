@@ -1,0 +1,104 @@
+🔧 STATE SYSTEM INTEGRATION TEST
+=================================
+🔗 Connecting to JTAG system...
+🔌 Server: Connecting via JTAGClientServer (target: server)
+🔄 JTAGClient: Connecting to server system with secure configuration...
+🎯 JTAGClient: Provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
+🌐 JTAGClientServer: No local system - using remote connection
+🔗 JTAGClient: Using Connection Broker for intelligent connection management
+🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
+🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
+🔗 ConnectionBroker: Creating client connection to existing server
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (8739e1eb-a8ca-4db2-9a6e-0ab96f9f3bd9) on port 9002
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+✅ websocket-server-client: Connected
+✅ websocket-server-client: Handler compliance enforced by TypeScript
+🚀 Server Factory: Adapter WebSocketTransportClientServer connected successfully
+✅ Server Transport Factory (Registry-Based): web-socket-transport-client-server transport created successfully
+✅ JTAGClient: created_new connection established on port 9002
+🏷️ JTAGClient: Requesting session from SessionDaemon...
+🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
+🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1759816686574_4xqs4mhq
+📥 JTAGClient: Transport message received (type: response)
+🔗 JTAGClient: Processing response for correlation client_1759816686574_4xqs4mhq
+✅ JTAGClient: Completed correlation client_1759816686574_4xqs4mhq
+❌ JTAGClient: Failed to create session: uniqueId is required for user creation. displayName: CLI Client, type: human
+📋 JTAGClient: Discovering available commands...
+📤 RemoteConnection: Sending command 'list' with correlation client_1759816686588_31pm705u
+📥 JTAGClient: Transport message received (type: response)
+🔗 JTAGClient: Processing response for correlation client_1759816686588_31pm705u
+✅ JTAGClient: Completed correlation client_1759816686588_31pm705u
+✅ JTAGClient: Connection established
+🔄 JTAGClient: Discovering available commands...
+📤 RemoteConnection: Sending command 'list' with correlation client_1759816686590_j28wg1g1
+📥 JTAGClient: Transport message received (type: response)
+🔗 JTAGClient: Processing response for correlation client_1759816686590_j28wg1g1
+✅ JTAGClient: Completed correlation client_1759816686590_j28wg1g1
+✅ JTAGClient: Bootstrap complete! Discovered 53 commands
+✅ Server: JTAGClient connected with 53 commands
+✅ Connected
+👤 1. Testing state/create for user with context injection...
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1759816686592_fgqo7c7t
+📥 JTAGClient: Transport message received (type: request)
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+📥 JTAGClient: Transport message received (type: response)
+🔗 JTAGClient: Processing response for correlation client_1759816686592_fgqo7c7t
+✅ JTAGClient: Completed correlation client_1759816686592_fgqo7c7t
+👤 Created state user with ID: undefined
+❌ No user ID returned from state/create
+Full result: {
+  "context": "state-test-1759816686551",
+  "sessionId": "session-1759816686551",
+  "success": true,
+  "timestamp": "2025-10-07T05:58:06.620Z",
+  "commandResult": {
+    "collection": "users",
+    "context": "state-test-1759816686551",
+    "sessionId": "session-1759816686551",
+    "userId": "state-test-user-1759816686551",
+    "data": {
+      "displayName": "State Test User",
+      "type": "human",
+      "status": "online",
+      "lastActiveAt": "2025-10-07T05:58:06.592Z",
+      "capabilities": {
+        "canSendMessages": true,
+        "canReceiveMessages": true,
+        "canCreateRooms": false,
+        "canInviteOthers": false,
+        "canModerate": false,
+        "autoResponds": false,
+        "providesContext": false,
+        "canTrain": false,
+        "canAccessPersonas": false
+      },
+      "sessionsActive": []
+    },
+    "success": false,
+    "error": "SQLITE_CONSTRAINT: NOT NULL constraint failed: users.unique_id"
+  }
+}
+❌ State system test failed: Error: State user ID is undefined
+    at testStateSystemIntegration (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/state-system-integration.test.ts:82:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+❌ Error details: {
+  message: 'State user ID is undefined',
+  stack: 'Error: State user ID is undefined\n' +
+    '    at testStateSystemIntegration (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/state-system-integration.test.ts:82:13)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)'
+}
+🔌 Disconnecting...
+🔌 JTAGClient: Disconnecting...
+🔌 websocket-server-client: Disconnecting
+✅ JTAGClient: Transport disconnected
+🛑 ConnectionBroker: Shutting down...
+✅ ConnectionBroker: Shutdown complete
+✅ JTAGClient: Connection Broker shut down
+✅ Disconnected cleanly
+🚨 State system integration test failed: Error: State user ID is undefined
+    at testStateSystemIntegration (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/state-system-integration.test.ts:82:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)

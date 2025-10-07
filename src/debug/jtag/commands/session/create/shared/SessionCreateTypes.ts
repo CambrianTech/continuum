@@ -21,6 +21,11 @@ export interface SessionCreateParams extends JTAGPayload {
   userId?: UUID;
   /** Whether this should be a shared session */
   isShared?: boolean;
+  /** Connection context with uniqueId for user lookup/creation */
+  connectionContext?: {
+    uniqueId?: string;
+    [key: string]: unknown;
+  };
 }
 
 /**

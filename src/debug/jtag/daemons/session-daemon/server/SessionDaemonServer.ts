@@ -447,9 +447,16 @@ export class SessionDaemonServer extends SessionDaemon {
       // Use UserFactory to create user (same as user/create command - ensures proper logic + AI enrichment)
       console.log(`📝 SessionDaemon: Creating ${userType} user via UserFactory: ${params.displayName}`);
 
+      // uniqueId is REQUIRED - caller must provide it
+      const uniqueId = params.connectionContext?.uniqueId;
+      if (!uniqueId) {
+        throw new Error(`uniqueId is required for user creation. displayName: ${params.displayName}, type: ${userType}`);
+      }
+
       const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
         type: userType,
         displayName: params.displayName,
+        uniqueId: uniqueId, // REQUIRED - caller must provide
         provider: agentInfo?.name // Pass agent name as provider for agent users
       });
 
@@ -490,15 +497,27 @@ export class SessionDaemonServer extends SessionDaemon {
       const actualSessionId = isBootstrapSession(params.sessionId) ? generateUUID() : params.sessionId;
 
       // Get or create User (citizen) - sessions link to existing citizens, don't create duplicates
-      // Priority: userId > lookup by uniqueId > create new citizen
+      // Priority: uniqueId (for agents) > userId (for browser persistence) > create new citizen
       let user: BaseUser;
-      if (params.userId) {
-        user = await this.getUserById(params.userId);
+
+      // Try uniqueId first (single source of truth for agent identity)
+      const uniqueId = params.connectionContext?.uniqueId;
+      const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
+
+      if (existingUser) {
+        user = existingUser;
+      } else if (params.userId) {
+        // Fall back to userId lookup (for browser-stored sessions)
+        try {
+          user = await this.getUserById(params.userId);
+        } catch (error) {
+          // userId doesn't exist, create new user
+          console.log(`ℹ️ SessionDaemon: userId ${params.userId} not found, creating new user`);
+          user = await this.createUser(params);
+        }
       } else {
-        // Try to find existing citizen by uniqueId (single source of truth for identity)
-        const uniqueId = params.connectionContext?.uniqueId;
-        const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
-        user = existingUser ?? await this.createUser(params);
+        // No uniqueId or userId, create new user
+        user = await this.createUser(params);
       }
 
       const newSession: SessionMetadata = {

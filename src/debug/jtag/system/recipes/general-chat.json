@@ -1,0 +1,68 @@
+{
+  "uniqueId": "general-chat",
+  "name": "General Chat (Human-Focused)",
+  "displayName": "General Chat",
+  "description": "Natural conversation where AIs respond to humans thoughtfully, avoiding AI-to-AI loops",
+  "version": 1,
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 20,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "human-focused"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 20,
+      "orderBy": "chronological",
+      "includeTimestamps": false
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "roomMetadata": true
+  },
+
+  "strategy": {
+    "conversationPattern": "human-focused",
+    "responseRules": [
+      "If human asks question → ONE AI responds",
+      "If AI just responded → WAIT for human",
+      "If multiple AIs responded → STAY SILENT",
+      "Prefer letting human guide conversation"
+    ],
+    "decisionCriteria": [
+      "Is human mentioned?",
+      "Is this answering human's question?",
+      "Have other AIs already responded?",
+      "Is conversation in a natural lull?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["chat", "human-focused", "general"]
+}

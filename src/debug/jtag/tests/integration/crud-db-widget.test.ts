@@ -95,19 +95,19 @@ async function testCRUDWithDBAndWidget() {
 
   const testConfigs = [
     {
-      collection: 'User',
+      collection: 'users',  // Use actual entity.collection value
       widget: 'user-list-widget',
       createData: { displayName: 'Test User' },
       updateData: { displayName: 'Updated Test User' }
     },
     {
-      collection: 'Room',
+      collection: 'rooms',  // Use actual entity.collection value
       widget: 'room-list-widget',
       createData: { name: 'Test Room' },
       updateData: { displayName: 'Updated Test Room' }
     },
     {
-      collection: 'ChatMessage',
+      collection: 'chat_messages',  // Use actual entity.collection value
       widget: 'chat-widget',
       createData: { content: { text: 'Test Message', attachments: [] } },
       updateData: { content: { text: 'Updated Test Message', attachments: [] } }

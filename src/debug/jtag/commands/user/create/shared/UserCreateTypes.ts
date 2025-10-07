@@ -37,9 +37,9 @@ export interface UserCreateParams extends JTAGPayload {
   // Required
   readonly type: UserType;
   readonly displayName: string;
+  readonly uniqueId: string;                 // Required - single source of truth for user identity
 
   // Optional - recipe-specific
-  readonly uniqueId?: string;                // Human-readable handle for searches
   readonly addToRooms?: readonly UUID[];     // Which rooms to join
   readonly provider?: string;                // For agents: 'openai', 'anthropic', etc.
   readonly modelConfig?: ModelConfig;        // For personas: AI model configuration
