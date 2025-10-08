@@ -144,6 +144,8 @@
 .entity-list-body {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse; /* Newest messages at bottom, scroll up for older */
 }
 
 .input-container {
