@@ -50,13 +50,14 @@ export interface EntityScroller<T extends BaseEntity> {
   readonly refresh: () => Promise<void>;
 
   // Real-time updates
-  readonly add: (entity: T, position?: 'start' | 'end') => void;
+  // Always appends to DOM end - CSS column-reverse handles visual positioning
+  readonly add: (entity: T) => void;
   readonly update: (id: string, entity: T) => boolean;
   readonly remove: (id: string) => boolean;
   readonly clear: () => void;
 
   // Smart real-time updates with auto-scroll
-  readonly addWithAutoScroll: (entity: T, position?: 'start' | 'end') => void;
+  readonly addWithAutoScroll: (entity: T) => void;
 
   // State queries
   readonly entities: () => readonly T[];
@@ -94,21 +95,16 @@ export function createScroller<T extends BaseEntity>(
   const isNearEnd = (threshold: number = config.autoScroll?.threshold || 100): boolean => {
     const { scrollTop, scrollHeight, clientHeight } = container;
 
-    if (config.direction === 'newest-first') {
-      // With column-reverse CSS: scrollTop=0 is newest (visual bottom)
-      return scrollTop <= threshold;
-    } else {
-      // Normal direction: check distance from bottom
-      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-      return distanceFromBottom <= threshold;
-    }
+    // Discord/Slack pattern: newest at bottom, check distance from bottom
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    return distanceFromBottom <= threshold;
   };
 
   const scrollToEnd = (behavior: 'smooth' | 'instant' = config.autoScroll?.behavior || 'smooth'): void => {
+    // Discord/Slack pattern: scroll to actual bottom (newest messages)
     const scrollOptions: ScrollToOptions = {
       behavior: behavior === 'smooth' ? 'smooth' : 'auto',
-      // With column-reverse CSS: scrollTop=0 shows newest content
-      top: config.direction === 'newest-first' ? 0 : container.scrollHeight
+      top: container.scrollHeight
     };
 
     container.scrollTo(scrollOptions);
@@ -126,7 +122,8 @@ export function createScroller<T extends BaseEntity>(
   };
 
   // Efficient DOM operations using fragments - only add genuinely new entities
-  const addEntitiesToDOM = (newEntities: readonly T[], position: 'start' | 'end'): void => {
+  // ALWAYS appends to DOM end - CSS column-reverse handles visual positioning
+  const addEntitiesToDOM = (newEntities: readonly T[]): void => {
     const fragment = document.createDocumentFragment();
     const validEntities: T[] = [];
 
@@ -150,7 +147,7 @@ export function createScroller<T extends BaseEntity>(
       fragment.appendChild(element);
     });
 
-    // Always append to DOM - CSS handles display direction
+    // Always append to DOM end - CSS column-reverse handles visual positioning
     if (validEntities.length > 0) {
       container.appendChild(fragment);
     }
@@ -176,15 +173,13 @@ export function createScroller<T extends BaseEntity>(
     // Create sentinel
     sentinel = document.createElement('div');
     sentinel.className = 'entity-scroller-sentinel';
-    sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0; position: absolute; top: -1px;';
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: EntityScroller sentinel created with improved positioning for ${config.direction}`);
+    sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0;';
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: EntityScroller sentinel created for Discord/Slack pattern`);
 
-    // For newest-first (chat with column-reverse CSS):
-    // - Sentinel at DOM END (visual TOP after CSS reversal)
-    // - User scrolls down (positive scrollTop) to see older messages
-    // - When sentinel becomes visible, load older messages
+    // Discord/Slack pattern: newest at bottom, oldest at top
+    // Sentinel at DOM START (top) - when user scrolls up, load older messages
     if (config.direction === 'newest-first') {
-      container.appendChild(sentinel); // DOM end = visual top with column-reverse
+      container.insertBefore(sentinel, container.firstChild);
     } else {
       container.appendChild(sentinel);
     }
@@ -206,9 +201,13 @@ export function createScroller<T extends BaseEntity>(
         container.innerHTML = '';
 
         if (result.items.length > 0) {
-          // For 'newest-first' chat, query returns DESC order (newest→oldest)
-          // CSS column-reverse handles visual display, so keep DB order in DOM
-          addEntitiesToDOM(result.items, 'end');
+          // For Discord/Slack pattern: DB returns DESC (newest→oldest)
+          // Reverse to display oldest→newest in normal DOM order
+          const itemsToAdd = config.direction === 'newest-first'
+            ? [...result.items].reverse()
+            : result.items;
+
+          addEntitiesToDOM(itemsToAdd);
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
@@ -238,14 +237,20 @@ export function createScroller<T extends BaseEntity>(
         const result = await load(cursor, config.pageSize);
 
         if (result.items.length > 0) {
-          // For 'newest-first' chat, query returns DESC order (newest→oldest)
-          // CSS column-reverse handles visual display, so keep DB order in DOM
-          addEntitiesToDOM(result.items, 'end');
+          // For Discord/Slack pattern: DB returns DESC (newest→oldest)
+          // Reverse to display oldest→newest in normal DOM order
+          const itemsToAdd = config.direction === 'newest-first'
+            ? [...result.items].reverse()
+            : result.items;
+
+          addEntitiesToDOM(itemsToAdd);
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
-          // Keep sentinel at bottom for intersection observer
-          if (sentinel) {
+          // Discord/Slack pattern: Keep sentinel at top for loading older messages
+          if (sentinel && config.direction === 'newest-first') {
+            container.insertBefore(sentinel, container.firstChild);
+          } else if (sentinel) {
             container.appendChild(sentinel);
           }
         } else {
@@ -266,7 +271,8 @@ export function createScroller<T extends BaseEntity>(
     },
 
     // Real-time updates with automatic deduplication and replacement
-    add(entity: T, position = 'end'): void {
+    // Always appends to DOM end - CSS column-reverse handles visual positioning
+    add(entity: T): void {
       const entityId = entity.id || (entity as any).messageId || 'unknown';
 
       // Check for duplicate using EntityManager
@@ -295,13 +301,14 @@ export function createScroller<T extends BaseEntity>(
         existingElement.remove();
       }
 
-      // Add entity - addEntitiesToDOM handles deduplication via EntityManager
-      addEntitiesToDOM([entity], 'end');
+      // Add entity - always appends to DOM end, CSS handles visual positioning
+      addEntitiesToDOM([entity]);
       console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
     },
 
-    // Smart real-time updates with intrinsic direction awareness and replacement
-    addWithAutoScroll(entity: T, position?: 'start' | 'end'): void {
+    // Smart real-time updates with auto-scroll
+    // Always appends to DOM end - CSS column-reverse handles visual positioning
+    addWithAutoScroll(entity: T): void {
       const entityId = entity.id || (entity as any).messageId || 'unknown';
 
       // Check for duplicate using EntityManager
@@ -330,15 +337,11 @@ export function createScroller<T extends BaseEntity>(
         existingElement.remove();
       }
 
-      // Determine where "new content" naturally goes based on direction
-      const newContentPosition = config.direction === 'newest-first' ? 'end' : 'start';
-      const actualPosition = position || newContentPosition;
-
       // Track count before attempting add
       const initialCount = entityManager.count();
 
-      // Add entity - addEntitiesToDOM handles deduplication via EntityManager
-      addEntitiesToDOM([entity], 'end');
+      // Add entity - always appends to DOM end, CSS handles visual positioning
+      addEntitiesToDOM([entity]);
       console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() processed entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
 
       // Auto-scroll only if entity was genuinely added
