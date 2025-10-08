@@ -145,7 +145,7 @@
   flex: 1;
   overflow-y: auto;
   display: flex;
-  flex-direction: column-reverse; /* Newest messages at bottom, scroll up for older */
+  flex-direction: column; /* Normal order: oldest to newest, like Discord/Slack */
 }
 
 .input-container {
