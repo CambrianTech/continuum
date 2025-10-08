@@ -5,19 +5,22 @@
  */
 
 import { RecipeLoadCommand } from '../shared/RecipeLoadCommand';
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { RecipeLoadParams, RecipeLoadResult } from '../shared/RecipeLoadTypes';
 import type { RecipeDefinition } from '../../../../system/recipes/shared/RecipeTypes';
 import { RecipeEntity } from '../../../../system/data/entities/RecipeEntity';
 import type { DataListResult } from '../../../data/list/shared/DataListTypes';
+import type { DataCreateParams } from '../../../data/create/shared/DataCreateTypes';
+import type { DataUpdateParams } from '../../../data/update/shared/DataUpdateTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 
 // Use process.cwd() to get consistent path from project root
 const RECIPES_DIR = path.join(process.cwd(), 'system/recipes');
-const COLLECTION = 'recipes';
+const COLLECTION = 'recipes'; // TODO: Add to DATABASE_CONFIG.COLLECTIONS
 
 export class RecipeLoadServerCommand extends RecipeLoadCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -29,7 +32,6 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
       const loaded: RecipeEntity[] = [];
       const skipped: string[] = [];
       const errors: Array<{ recipeId: string; error: string }> = [];
-
       // Determine which recipes to load
       let recipeFiles: string[] = [];
 
@@ -49,9 +51,6 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
           errors: [{ recipeId: 'unknown', error: 'Must specify recipeId or loadAll=true' }]
         };
       }
-
-      // Dynamic import Commands
-      const { Commands } = await import('../../../../system/core/shared/Commands');
 
       // Load each recipe file
       for (const filename of recipeFiles) {
@@ -73,32 +72,44 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
             context: params.context,
             sessionId: params.sessionId,
             collection: COLLECTION,
+            backend: 'server',
             filter: { uniqueId: definition.uniqueId }
           })) as DataListResult<RecipeEntity>;
 
+          const now = new Date();
+
           if (existingResult.items && existingResult.items.length > 0) {
-            if (!params.reload) {
+            // Recipe exists
+            if (params.reload) {
+              // Update existing recipe
+              const updateResult = await Commands.execute('data/update', {
+                context: params.context,
+                sessionId: params.sessionId,
+                backend: 'server',
+                collection: COLLECTION,
+                id: existingResult.items[0].id,
+                data: {
+                  name: definition.name,
+                  displayName: definition.displayName,
+                  description: definition.description,
+                  pipeline: definition.pipeline,
+                  ragTemplate: definition.ragTemplate,
+                  strategy: definition.strategy,
+                  isPublic: definition.isPublic,
+                  tags: definition.tags,
+                  lastUsedAt: now
+                }
+              } as DataUpdateParams);
+
+              loaded.push(updateResult.data! as RecipeEntity);
+              console.log(`🔄 Recipe updated: ${recipeId}`);
+            } else {
+              // Skip existing recipe
               skipped.push(recipeId);
-              continue;
+              console.log(`⏭️  Recipe skipped (already exists): ${recipeId}`);
             }
-
-            // Update existing recipe
-            const existing = existingResult.items[0];
-            const updated = new RecipeEntity();
-            Object.assign(updated, existing, definition);
-
-            await Commands.execute('data/update', {
-              context: params.context,
-              sessionId: params.sessionId,
-              collection: COLLECTION,
-              id: existing.id,
-              data: updated
-            });
-
-            loaded.push(updated);
           } else {
             // Create new recipe
-            const now = new Date();
             const entity = new RecipeEntity();
             Object.assign(entity, {
               uniqueId: definition.uniqueId,
@@ -115,17 +126,17 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
               lastUsedAt: now
             });
 
-            await Commands.execute('data/create', {
+            const createResult = await Commands.execute('data/create', {
               context: params.context,
               sessionId: params.sessionId,
+              backend: 'server',
               collection: COLLECTION,
               data: entity
-            });
+            } as DataCreateParams);
 
-            loaded.push(entity);
+            loaded.push(createResult.data! as RecipeEntity);
+            console.log(`✅ Recipe created: ${recipeId}`);
           }
-
-          console.log(`✅ Recipe loaded: ${recipeId}`);
         } catch (error) {
           errors.push({
             recipeId,

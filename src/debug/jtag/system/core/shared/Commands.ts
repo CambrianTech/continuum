@@ -45,7 +45,24 @@ export class Commands {
     command: string,
     params?: any
   ): Promise<any> {
-    // Get the shared JTAG client instance (works in both browser and server)
+    // Server-side optimization: If we're already in a server context with a CommandDaemon,
+    // route internally instead of creating a new client connection
+    if (typeof process !== 'undefined' && (globalThis as any).__JTAG_COMMAND_DAEMON__) {
+      const commandDaemon = (globalThis as any).__JTAG_COMMAND_DAEMON__;
+      const finalParams = {
+        context: params?.context || (globalThis as any).__JTAG_CONTEXT__,
+        sessionId: params?.sessionId || (globalThis as any).__JTAG_SESSION_ID__,
+        ...(params || {})
+      } as any;
+
+      // Route command internally via CommandDaemon
+      const commandInstance = commandDaemon.commands.get(command);
+      if (commandInstance) {
+        return await commandInstance.execute(finalParams);
+      }
+    }
+
+    // Client-side or fallback: Use JTAGClient
     const jtagClient = await JTAGClient.sharedInstance;
 
     // Auto-inject context and sessionId

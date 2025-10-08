@@ -448,7 +448,11 @@ export class SessionDaemonServer extends SessionDaemon {
       console.log(`📝 SessionDaemon: Creating ${userType} user via UserFactory: ${params.displayName}`);
 
       // uniqueId is REQUIRED - caller must provide it
-      const uniqueId = params.connectionContext?.uniqueId;
+      if (!params.connectionContext) {
+        throw new Error(`connectionContext is required for user creation. displayName: ${params.displayName}, type: ${userType}`);
+      }
+
+      const uniqueId = params.connectionContext.uniqueId;
       if (!uniqueId) {
         throw new Error(`uniqueId is required for user creation. displayName: ${params.displayName}, type: ${userType}`);
       }
