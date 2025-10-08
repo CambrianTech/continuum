@@ -24,6 +24,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private currentRoomName: string = 'General';
   private currentRoom: RoomEntity | null = null;
   private roomMembers: Map<UUID, UserEntity> = new Map(); // Map of userId -> UserEntity
+  private totalMessageCount: number = 0; // Total messages in database (not just loaded)
+  private loadedMessageCount: number = 0; // Number of messages actually loaded so far
 
   constructor() {
     super({
@@ -108,15 +110,44 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         throw new Error(`Failed to load messages for room ${this.currentRoomId}: ${result?.error ?? 'Unknown error'}`);
       }
 
-      console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}"`);
+      console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
+
+      // Store total count from database (not just loaded items)
+      this.totalMessageCount = result.count ?? result.items.length;
 
       // Only filter out empty messages, NOT by roomId (database already did that)
       const validMessages = result.items.filter(msg => msg.content?.text?.trim());
 
+      // Calculate if there are more messages to load
+      // Update running total of loaded messages
+      if (!cursor) {
+        // First load - reset counter
+        this.loadedMessageCount = validMessages.length;
+      } else {
+        // Subsequent load - add to counter
+        this.loadedMessageCount += validMessages.length;
+      }
+
+      // WORKAROUND: Backend returns items.length as count, not total DB count
+      // If we got exactly the limit, assume there are more messages
+      // If we got less than limit, we've reached the end
+      const requestedLimit = limit ?? 100;
+      const hasMoreMessages = validMessages.length >= requestedLimit;
+
+      // For cursor-based pagination, use the oldest message's timestamp as next cursor
+      let nextCursor: string | undefined;
+      if (hasMoreMessages && validMessages.length > 0) {
+        // Since we load DESC (newest first), the LAST item is the oldest
+        const oldestMessage = validMessages[validMessages.length - 1];
+        nextCursor = oldestMessage?.timestamp?.toString();
+      }
+
+      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${requestedLimit}), nextCursor=${nextCursor}`);
+
       return {
         items: validMessages,
-        hasMore: false,
-        nextCursor: undefined
+        hasMore: hasMoreMessages,
+        nextCursor: nextCursor
       };
     };
   }
@@ -136,11 +167,24 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     return ChatMessageEntity.collection;
   }
 
+  // Override to show total database count instead of just loaded entities
+  protected override getEntityCount(): number {
+    return this.totalMessageCount;
+  }
+
   // CRITICAL: Override filtering hooks to only accept messages from current room
   protected override shouldAddEntity(entity: ChatMessageEntity): boolean {
     // Only add messages that belong to the current room
     const shouldAdd = !!(this.currentRoomId && entity.roomId === this.currentRoomId);
     console.log(`🔧 CLAUDE-FIX-${Date.now()}: ChatWidget filtering ADD - entity.roomId="${entity.roomId}", currentRoomId="${this.currentRoomId}", shouldAdd=${shouldAdd}`);
+
+    // CRITICAL: Increment total count when new message is accepted via events
+    if (shouldAdd) {
+      this.totalMessageCount++;
+      this.loadedMessageCount++;
+      console.log(`🔧 CLAUDE-COUNT-UPDATE: Total messages now: ${this.totalMessageCount}`);
+    }
+
     return shouldAdd;
   }
 

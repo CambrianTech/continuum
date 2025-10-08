@@ -158,8 +158,12 @@ export function createScroller<T extends BaseEntity>(
     observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
+        console.log(`🔍 INTERSECTION: isIntersecting=${entry?.isIntersecting}, hasMore=${hasMoreItems}, isLoading=${isLoading}, target=${entry?.target?.className}`);
         if (entry?.isIntersecting && hasMoreItems && !isLoading) {
+          console.log(`🔄 INTERSECTION: Triggering loadMore()`);
           scroller.loadMore();
+        } else if (entry?.isIntersecting) {
+          console.log(`⚠️ INTERSECTION: Blocked - hasMore=${hasMoreItems}, isLoading=${isLoading}`);
         }
       },
       {
@@ -174,17 +178,20 @@ export function createScroller<T extends BaseEntity>(
     sentinel = document.createElement('div');
     sentinel.className = 'entity-scroller-sentinel';
     sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0;';
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: EntityScroller sentinel created for Discord/Slack pattern`);
+    console.log(`🔧 SENTINEL-SETUP: Created for ${config.direction}, hasMore=${hasMoreItems}`);
 
     // Discord/Slack pattern: newest at bottom, oldest at top
     // Sentinel at DOM START (top) - when user scrolls up, load older messages
     if (config.direction === 'newest-first') {
       container.insertBefore(sentinel, container.firstChild);
+      console.log(`🔧 SENTINEL-POSITION: Inserted at DOM START (top) for newest-first`);
     } else {
       container.appendChild(sentinel);
+      console.log(`🔧 SENTINEL-POSITION: Appended at DOM END (bottom) for oldest-first`);
     }
 
     observer.observe(sentinel);
+    console.log(`🔧 SENTINEL-OBSERVE: Observer attached, container scrollHeight=${container.scrollHeight}, clientHeight=${container.clientHeight}`);
   };
 
   // The clean API object
@@ -214,6 +221,12 @@ export function createScroller<T extends BaseEntity>(
           // Setup observer AFTER DOM is painted
           requestAnimationFrame(() => {
             setupObserver();
+
+            // For newest-first (chat), scroll to bottom to show latest messages
+            if (config.direction === 'newest-first') {
+              scrollToEnd('instant'); // Instant scroll on initial load
+              console.log(`🔧 CLAUDE-INITIAL-SCROLL: Scrolled to bottom after initial load`);
+            }
           });
         } else {
           setupObserver();
