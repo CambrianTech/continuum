@@ -90,20 +90,25 @@ export function createScroller<T extends BaseEntity>(
   let observer: IntersectionObserver | undefined;
   let sentinel: HTMLElement | undefined;
 
-  // Smart scroll utilities - check if user is near bottom (where new content appears)
+  // Smart scroll utilities - check if user is near newest content
   const isNearEnd = (threshold: number = config.autoScroll?.threshold || 100): boolean => {
     const { scrollTop, scrollHeight, clientHeight } = container;
 
-    // Always check distance from bottom since new items are added at 'end' (bottom)
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    return distanceFromBottom <= threshold;
+    if (config.direction === 'newest-first') {
+      // With column-reverse CSS: scrollTop=0 is newest (visual bottom)
+      return scrollTop <= threshold;
+    } else {
+      // Normal direction: check distance from bottom
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      return distanceFromBottom <= threshold;
+    }
   };
 
   const scrollToEnd = (behavior: 'smooth' | 'instant' = config.autoScroll?.behavior || 'smooth'): void => {
     const scrollOptions: ScrollToOptions = {
       behavior: behavior === 'smooth' ? 'smooth' : 'auto',
-      // Always scroll to bottom since new items are always added at 'end' (bottom)
-      top: container.scrollHeight
+      // With column-reverse CSS: scrollTop=0 shows newest content
+      top: config.direction === 'newest-first' ? 0 : container.scrollHeight
     };
 
     container.scrollTo(scrollOptions);
@@ -174,9 +179,12 @@ export function createScroller<T extends BaseEntity>(
     sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0; position: absolute; top: -1px;';
     console.log(`🔧 CLAUDE-FIX-${Date.now()}: EntityScroller sentinel created with improved positioning for ${config.direction}`);
 
-    // For newest-first (chat), sentinel at TOP triggers when scrolling UP to load older messages
+    // For newest-first (chat with column-reverse CSS):
+    // - Sentinel at DOM END (visual TOP after CSS reversal)
+    // - User scrolls down (positive scrollTop) to see older messages
+    // - When sentinel becomes visible, load older messages
     if (config.direction === 'newest-first') {
-      container.insertBefore(sentinel, container.firstChild);
+      container.appendChild(sentinel); // DOM end = visual top with column-reverse
     } else {
       container.appendChild(sentinel);
     }
@@ -199,12 +207,8 @@ export function createScroller<T extends BaseEntity>(
 
         if (result.items.length > 0) {
           // For 'newest-first' chat, query returns DESC order (newest→oldest)
-          // but DOM needs chronological order (oldest→newest) for proper display
-          const itemsToAdd = config.direction === 'newest-first'
-            ? [...result.items].reverse()
-            : result.items;
-
-          addEntitiesToDOM(itemsToAdd, 'end');
+          // CSS column-reverse handles visual display, so keep DB order in DOM
+          addEntitiesToDOM(result.items, 'end');
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
@@ -235,12 +239,8 @@ export function createScroller<T extends BaseEntity>(
 
         if (result.items.length > 0) {
           // For 'newest-first' chat, query returns DESC order (newest→oldest)
-          // but DOM needs chronological order (oldest→newest) for proper display
-          const itemsToAdd = config.direction === 'newest-first'
-            ? [...result.items].reverse()
-            : result.items;
-
-          addEntitiesToDOM(itemsToAdd, 'end');
+          // CSS column-reverse handles visual display, so keep DB order in DOM
+          addEntitiesToDOM(result.items, 'end');
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
