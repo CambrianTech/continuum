@@ -180,8 +180,15 @@ export abstract class JTAGSystem extends JTAGBase {
         if (daemon) {
           // Initialize daemon after construction is complete
           await daemon.initializeDaemon();
-          
+
           this.register(daemon);
+
+          // Register CommandDaemon to globalThis for server-side Commands.execute() routing
+          if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
+            (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
+            console.log(`🔗 Registered CommandDaemon to globalThis for server-side routing`);
+          }
+
           console.log(`📦 Registered server daemon: ${daemon.constructor.name}`);
           return daemon;
         }

@@ -63,7 +63,7 @@ export interface RAGArtifact {
   url?: string;
   base64?: string;
   content?: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 
   // NEW: Preprocessing results for text-only models
   preprocessed?: {

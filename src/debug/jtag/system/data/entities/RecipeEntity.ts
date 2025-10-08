@@ -19,10 +19,10 @@ import type {
  * Contains command pipelines, RAG templates, and behavioral strategies
  */
 export class RecipeEntity extends BaseEntity {
-  static readonly collectionName = 'recipes';
+  static readonly collection = 'recipes';
 
   get collection(): string {
-    return RecipeEntity.collectionName;
+    return RecipeEntity.collection;
   }
 
   @TextField({ maxLength: TEXT_LENGTH.DEFAULT, index: true })

@@ -463,6 +463,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       ? agentInfo.name.toLowerCase().replace(/\s+/g, '-')
       : (isEphemeralClient ? DEFAULT_USER_UNIQUE_IDS.CLI_CLIENT : DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
 
+    console.log(`🔑 JTAGClient: Computed uniqueId="${uniqueId}" for ${displayName} (isEphemeralClient=${isEphemeralClient}, isAgent=${isAgent})`);
+
     // Enhance connectionContext with uniqueId for lookup
     const enhancedConnectionContext = this.connectionContext
       ? { ...this.connectionContext, uniqueId }
@@ -477,6 +479,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       isShared: true, // All clients use shared sessions by default
       connectionContext: enhancedConnectionContext // Pass enhanced context with uniqueId for agent detection
     };
+    console.log(`🔍 JTAGClient: Sending session/create with params:`, JSON.stringify(sessionParams, null, 2));
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;
     const session = sessionResult.session;

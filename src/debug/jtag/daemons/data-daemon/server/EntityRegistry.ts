@@ -12,6 +12,7 @@ import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEnti
 import { TrainingSessionEntity } from '../../../system/data/entities/TrainingSessionEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../../../system/data/entities/ContentTypeEntity';
+import { RecipeEntity } from '../../../system/data/entities/RecipeEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -28,6 +29,7 @@ export function initializeEntityRegistry(): void {
   new TrainingSessionEntity();
   new UserStateEntity();
   new ContentTypeEntity();
+  new RecipeEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -36,6 +38,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(TrainingSessionEntity.collection, TrainingSessionEntity);
   registerEntity(UserStateEntity.collection, UserStateEntity);
   registerEntity(ContentTypeEntity.collection, ContentTypeEntity);
+  registerEntity(RecipeEntity.collection, RecipeEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }

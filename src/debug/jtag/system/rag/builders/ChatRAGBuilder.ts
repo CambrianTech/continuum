@@ -137,7 +137,7 @@ export class ChatRAGBuilder extends RAGBuilder {
    */
   private async buildSystemPrompt(user: UserEntity, roomId: UUID): Promise<string> {
     const name = user.displayName;
-    const bio = user.profile?.bio || '';
+    const bio = user.profile?.bio ?? '';
     const capabilities = user.capabilities?.autoResponds
       ? 'You respond naturally to conversations.'
       : 'You participate when mentioned or when the conversation is relevant.';
@@ -251,14 +251,14 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
             const artifact: RAGArtifact = {
               type: this.detectArtifactType(attachment),
               url: attachment.url,
-              base64: attachment.base64 || attachment.data,
+              base64: attachment.base64 ?? attachment.data,
               content: attachment.content,
               metadata: {
                 messageId: msg.id,
                 senderName: msg.senderName,
                 timestamp: msg.timestamp,
                 filename: attachment.filename,
-                mimeType: attachment.mimeType || attachment.type,
+                mimeType: attachment.mimeType ?? attachment.type,
                 size: attachment.size
               }
             };
@@ -282,8 +282,8 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
   /**
    * Detect artifact type from attachment
    */
-  private detectArtifactType(attachment: any): RAGArtifact['type'] {
-    const mimeType = attachment.mimeType || attachment.type || '';
+  private detectArtifactType(attachment: { mimeType?: string; type?: string }): RAGArtifact['type'] {
+    const mimeType = attachment.mimeType ?? attachment.type ?? '';
 
     if (mimeType.startsWith('image/')) {
       return 'image';
@@ -298,9 +298,9 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
    * TODO: Implement persona memory storage (persona_memory collection)
    */
   private async loadPrivateMemories(
-    personaId: UUID,
-    roomId: UUID,
-    maxMemories: number
+    _personaId: UUID,
+    _roomId: UUID,
+    _maxMemories: number
   ): Promise<PersonaMemory[]> {
     // TODO: Query persona_memory collection when implemented
     // For now, return empty array
