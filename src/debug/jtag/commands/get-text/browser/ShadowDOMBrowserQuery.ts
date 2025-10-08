@@ -63,8 +63,8 @@ export class ShadowDOMBrowserQuery {
     // Extract text from main document matches
     if (searchResult.mainDocumentMatches) {
       for (const match of searchResult.mainDocumentMatches) {
-        if (match.text) {
-          allTexts.push(match.text);
+        if ('textContent' in match && match.textContent) {
+          allTexts.push(match.textContent);
         }
       }
     }

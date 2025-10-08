@@ -11,7 +11,7 @@
 export interface ShadowDOMSearchResult {
   found: boolean;
   elements: ShadowDOMElement[];
-  mainDocumentMatches?: any[];
+  mainDocumentMatches?: Element[];
   totalShadowRoots: number;
   searchPath: string;
   options?: ShadowDOMQueryOptions;
@@ -93,7 +93,7 @@ export interface WidgetInteractionResult {
   shadowRoot: ShadowRoot | null;
   interactiveElements: Element[];
   eventListeners: string[];
-  jtagConnection: any;
+  jtagConnection: unknown;
   renderingState: {
     isVisible: boolean;
     hasContent: boolean;
@@ -168,12 +168,13 @@ export function inspectWidgetInteractions(selector: string): WidgetInteractionRe
   }
   
   // Check JTAG connection state
-  let jtagConnection = null;
-  if ((window as any).jtag) {
-    jtagConnection = (window as any).jtag;
+  let jtagConnection: unknown = null;
+  const windowWithJTAG = window as Window & { jtag?: unknown; widgetDaemon?: unknown };
+  if (windowWithJTAG.jtag) {
+    jtagConnection = windowWithJTAG.jtag;
     console.log(`🔌 ShadowDOMUtils: JTAG connection found:`, jtagConnection);
-  } else if ((window as any).widgetDaemon) {
-    jtagConnection = (window as any).widgetDaemon;
+  } else if (windowWithJTAG.widgetDaemon) {
+    jtagConnection = windowWithJTAG.widgetDaemon;
     console.log(`🔌 ShadowDOMUtils: WidgetDaemon connection found:`, jtagConnection);
   } else {
     console.log(`❌ ShadowDOMUtils: No JTAG/Widget connection found on window`);
@@ -194,51 +195,57 @@ export function inspectWidgetInteractions(selector: string): WidgetInteractionRe
  * Test widget method accessibility - check if widget has working methods
  */
 export function testWidgetMethodAccessibility(selector: string): {
-  widgetInstance: any;
+  widgetInstance: Element | null;
   availableMethods: string[];
   jtagMethods: string[];
   errors: string[];
 } {
   console.log(`🧪 ShadowDOMUtils: Testing widget method accessibility for: ${selector}`);
   
-  const result = {
+  const result: {
+    widgetInstance: Element | null;
+    availableMethods: string[];
+    jtagMethods: string[];
+    errors: string[];
+  } = {
     widgetInstance: null,
-    availableMethods: [] as string[],
-    jtagMethods: [] as string[],
-    errors: [] as string[]
+    availableMethods: [],
+    jtagMethods: [],
+    errors: []
   };
   
   try {
     // Find widget element
-    const widgetElement = document.querySelector(selector) as any;
+    const widgetElement = document.querySelector(selector);
     if (!widgetElement) {
       result.errors.push(`Widget element not found: ${selector}`);
       return result;
     }
-    
+
     result.widgetInstance = widgetElement;
-    
+
     // Get available methods on widget
     const proto = Object.getPrototypeOf(widgetElement);
     if (proto) {
       result.availableMethods = Object.getOwnPropertyNames(proto)
-        .filter(name => typeof widgetElement[name] === 'function' && !name.startsWith('_'))
+        .filter(name => typeof (widgetElement as unknown as Record<string, unknown>)[name] === 'function' && !name.startsWith('_'))
         .filter(name => !['constructor', 'connectedCallback', 'disconnectedCallback'].includes(name));
     }
     
     console.log(`📋 ShadowDOMUtils: Available widget methods:`, result.availableMethods);
     
     // Check JTAG methods
-    if (widgetElement.jtagClient?.commands) {
-      result.jtagMethods = Object.keys(widgetElement.jtagClient.commands);
+    const widgetWithJTAG = widgetElement as Element & { jtagClient?: { commands?: Record<string, unknown> }; state?: unknown };
+    if (widgetWithJTAG.jtagClient?.commands) {
+      result.jtagMethods = Object.keys(widgetWithJTAG.jtagClient.commands);
       console.log(`⚡ ShadowDOMUtils: JTAG command methods:`, result.jtagMethods);
     } else {
       result.errors.push('Widget has no jtagClient.commands');
     }
-    
+
     // Test basic widget state
-    if (widgetElement.state) {
-      console.log(`📊 ShadowDOMUtils: Widget state:`, widgetElement.state);
+    if (widgetWithJTAG.state) {
+      console.log(`📊 ShadowDOMUtils: Widget state:`, widgetWithJTAG.state);
     } else {
       result.errors.push('Widget has no state property');
     }

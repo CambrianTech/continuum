@@ -11,7 +11,10 @@
 ```
 design/
 ├── architecture/
-│   └── CONTINUUM-ARCHITECTURE.md    # Master architecture document
+│   ├── CONTINUUM-ARCHITECTURE.md         # Master architecture document
+│   ├── GENOME-RUNTIME-ARCHITECTURE.md    # Genome execution & RTOS scheduling
+│   ├── SYSTEM-MONITOR-ARCHITECTURE.md    # AI-driven process lifecycle management
+│   └── FINAL-ARCH-DECISIONS.md           # 10 locked MVP decisions
 └── case-studies/
     ├── README.md                     # Case studies overview
     ├── RECIPE-PATTERN-OVERVIEW.md    # Universal recipe pattern
@@ -54,7 +57,7 @@ Complete technical architecture including:
 - Implementation roadmap (4 phases)
 - Biological evolution framing (artificial speciation)
 
-**`architecture/GENOME-RUNTIME-ARCHITECTURE.md`** (NEW - 1,500+ lines)
+**`architecture/GENOME-RUNTIME-ARCHITECTURE.md`** (1,500+ lines)
 
 Complete genome runtime system including:
 - Cosine similarity genome matching (trait-by-trait inheritance)
@@ -64,6 +67,19 @@ Complete genome runtime system including:
 - Distributed Thronglet architecture (MMO-style, stub/active/dormant)
 - Marketplace economics (alt-coin based resource allocation - future phase)
 - ThrongletManifest format and lazy-loading strategy
+
+**`architecture/SYSTEM-MONITOR-ARCHITECTURE.md`** (NEW - 1,000+ lines)
+
+AI-driven process lifecycle management:
+- **Container orchestration for minds** (Kubernetes + systemd + CloudWatch)
+- **AI-driven decisions** (not hardcoded thresholds - fuzzy intelligence)
+- **Process-per-persona** (crash isolation, resource limits, OS-level metrics)
+- **Time-slice allocation** (RTOS-style compute budgets, event-driven C++ inspired)
+- **Holistic monitoring** (resource + behavioral + anomaly metrics)
+- **Lifecycle actions** (continue, restart, hibernate, kill, throttle)
+- **Real-world validation** (fresh restart = faster responses, confirms need for intelligent lifecycle mgmt)
+
+**Core Philosophy**: "It takes a mind to manage minds" - unpredictable AI models require intelligent supervision.
 
 **`architecture/FINAL-ARCH-DECISIONS.md`** (ChatGPT bundle)
 
