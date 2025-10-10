@@ -18,6 +18,11 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
   async execute(params: AIShouldRespondParams): Promise<AIShouldRespondResult> {
     try {
+      // Validate ragContext for LLM strategy
+      if (!params.ragContext) {
+        throw new Error('ragContext is required for LLM strategy');
+      }
+
       // Build gating instruction
       const gatingInstruction = this.buildGatingInstruction(params);
 
@@ -28,7 +33,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           ...params.ragContext.conversationHistory,  // Already proper LLMMessage[] format
           { role: 'user', content: gatingInstruction }
         ],
-        model: params.model || 'llama3.2:3b',
+        model: params.model ?? 'llama3.2:3b',
         temperature: 0.3,
         maxTokens: 200,
         preferredProvider: 'ollama'
@@ -38,7 +43,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
       const response = await AIProviderDaemon.generateText(request);
 
       if (!response.text) {
-        throw new Error(response.error || 'AI generation failed');
+        throw new Error(response.error ?? 'AI generation failed');
       }
 
       const parsed = this.parseGatingResponse(response.text);
@@ -66,10 +71,10 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
       return {
         context: params.context,
         sessionId: params.sessionId,
-        shouldRespond: parsed.shouldRespond || false,
+        shouldRespond: parsed.shouldRespond ?? false,
         confidence,
-        reason: parsed.reason || 'No reason provided',
-        factors: parsed.factors || {
+        reason: parsed.reason ?? 'No reason provided',
+        factors: parsed.factors ?? {
           mentioned: false,
           questionAsked: false,
           domainRelevant: false,

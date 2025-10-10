@@ -139,6 +139,90 @@ async execute(params: MyParams): Promise<MyResult> {
 
 ## 🎨 Type Safety - Rust-Like Strict Typing
 
+### Generic vs Concrete Types - The Design Decision
+
+**Ask yourself: "Does this work with infinite entity types, or just specific ones?"**
+
+#### ✅ USE Generics `<T extends BaseEntity>` For Infrastructure
+
+**Data layer commands** that work with ANY entity type:
+
+```typescript
+// ✅ CORRECT: Generic data operation (data/read, data/list, data/update)
+export class DataReadServerCommand<T extends BaseEntity> extends CommandBase<DataReadParams, T> {
+  async execute(params: DataReadParams): Promise<T> {
+    // Works with infinite entity types - just reads from collection
+    const entity = await this.adapter.read(params.collection, params.id);
+    return entity as T;
+  }
+}
+
+// Caller gets type safety:
+const user = await DataReadCommand.execute<UserEntity>({ collection: 'users', id: '123' });
+const room = await DataReadCommand.execute<RoomEntity>({ collection: 'rooms', id: '456' });
+// user is UserEntity, room is RoomEntity - both use same generic code!
+```
+
+**Why this is elegant:**
+- Implementation knows only `BaseEntity` interface
+- Zero code changes when adding `ProjectEntity`, `TaskEntity`, etc.
+- Works like Java interfaces - generic implementation, specific usage
+- Found in: `data/*`, `events/*`, storage adapters
+
+#### ❌ DON'T Use Generics For Application Logic
+
+**Orchestration commands** that are inherently specific:
+
+```typescript
+// ✅ CORRECT: Concrete types for specific orchestration (bag-of-words, screenshot, user/create)
+export interface BagOfWordsParams extends CommandParams {
+  roomId: UUID;           // Specific to rooms
+  personaIds: UUID[];     // Specific to personas
+  strategy: 'round-robin' | 'free-for-all';
+  initialMessage?: string;
+}
+
+// ❌ WRONG: Unnecessary generic complexity
+export interface BagOfWordsParams<T extends BaseEntity> extends CommandParams {
+  entityId: string;       // Makes no sense - this command is ABOUT rooms/personas
+  entityType: T;
+}
+```
+
+**Why concrete types are better here:**
+- Logic is specific to certain entity types (rooms, personas)
+- Business/orchestration logic, not data infrastructure
+- Using generics adds complexity without benefit
+- More readable - `roomId` is clearer than `entityId`
+
+#### 🎯 The Java Interface Analogy
+
+```java
+// Generic infrastructure (like our data layer)
+public class Repository<T extends Entity> {
+  T read(String collection, String id) {
+    // Works with ANY entity type
+  }
+}
+
+// Usage with type safety
+User user = repository.read("users", "123");
+Room room = repository.read("rooms", "456");
+
+// Specific orchestration (like our application commands)
+public class UserLoginService {
+  void login(String username, String password) {
+    // SPECIFICALLY about users - no generics needed
+  }
+}
+
+public class RoomChatService {
+  void startConversation(UUID roomId, UUID[] personaIds) {
+    // SPECIFICALLY about rooms/personas - no generics needed
+  }
+}
+```
+
 ### Shared Types
 ```typescript
 // shared/MyCommandTypes.ts

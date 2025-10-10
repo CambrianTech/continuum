@@ -143,6 +143,165 @@ grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" commands/data/
 
 ---
 
+## 🎯 **WHEN TO USE GENERICS (`<T extends BaseEntity>`):**
+
+### ✅ **USE Generics When:**
+
+**Infrastructure Layer** - Code that works with ANY entity type:
+```typescript
+// ✅ CORRECT: Generic data operation
+class DataReadCommand<T extends BaseEntity> {
+  async execute(params: DataReadParams): Promise<T> {
+    // Works with infinite entity types
+    return await this.adapter.read(params.collection, params.id);
+  }
+}
+
+// Caller gets type safety:
+const user = await execute<UserEntity>('data/read', { collection: 'users', id: '123' });
+const room = await execute<RoomEntity>('data/read', { collection: 'rooms', id: '456' });
+```
+
+**Criteria:**
+- Adding new entity types requires ZERO code changes
+- Implementation only knows about BaseEntity interface
+- Works like Java interfaces - generic implementation, specific usage
+- Found in: `data/*`, `events/*`, storage adapters
+
+### ❌ **DON'T Use Generics When:**
+
+**Application/Orchestration Layer** - Code that's inherently specific:
+```typescript
+// ✅ CORRECT: Concrete types for specific orchestration
+interface BagOfWordsParams extends CommandParams {
+  roomId: UUID;           // Specific to rooms
+  personaIds: UUID[];     // Specific to personas
+  strategy: 'round-robin' | 'free-for-all';
+}
+
+// ❌ WRONG: Unnecessary generic complexity
+interface BagOfWordsParams<T extends BaseEntity> {
+  // Makes no sense - this command is ABOUT rooms and personas specifically
+}
+```
+
+**Criteria:**
+- Logic is specific to certain entity types
+- Business/orchestration logic, not data infrastructure
+- Using generics would add complexity without benefit
+- Found in: most `commands/*` (screenshot, ping, user/create, bag-of-words)
+
+### 🎯 **The Decision Rule:**
+
+**Ask: "Does this code work with infinite entity types, or just specific ones?"**
+
+- **Infinite types** → Use `<T extends BaseEntity>` (data layer)
+- **Specific types** → Use concrete types (application layer)
+
+**Java Analogy:**
+```java
+// Generic infrastructure (like our data layer)
+public class Repository<T extends Entity> {
+  T read(String id) { ... }
+}
+
+// Specific orchestration (like our commands)
+public class UserLoginService {
+  void login(String username, String password) { ... }
+  // Doesn't need generics - it's ABOUT users specifically
+}
+```
+
+---
+
+## 🌐 **CROSS-ENVIRONMENT COMMAND IMPLEMENTATION:**
+
+### ✅ **Default: ALWAYS Write Both Browser + Server**
+
+**Rule: Write both implementations unless there's a compelling reason not to.**
+
+```typescript
+// Browser implementation (even if trivial)
+class BagOfWordsBrowserCommand extends BagOfWordsCommand {
+  async execute(params: BagOfWordsParams): Promise<BagOfWordsResult> {
+    return await this.remoteExecute(params); // Delegates to server
+  }
+}
+
+// Server implementation (does the work)
+class BagOfWordsServerCommand extends BagOfWordsCommand {
+  async execute(params: BagOfWordsParams): Promise<BagOfWordsResult> {
+    // Orchestration logic here
+  }
+}
+```
+
+**Why write both:**
+1. **Takes 30 seconds** - trivial pass-through if browser has no work
+2. **Complete accessibility** - callable from CLI, widgets, tests, other commands
+3. **Architecture completeness** - no gaps in command routing
+4. **Future flexibility** - structure exists if needs change
+5. **Predictable patterns** - no guessing which commands have which implementations
+
+**Exceptions (rare):**
+- ❌ Zero utility: Truly impossible to use from that environment
+- ❌ Security concern: Document why (e.g., credential handling)
+
+**Examples:**
+- ✅ `screenshot`: Browser captures, server saves → both needed
+- ✅ `ping`: Accumulator pattern → both collect their environment info
+- ✅ `bag-of-words`: Server orchestrates, browser passes through → both written
+- ✅ `file/save`: Server writes files, browser delegates → both needed
+
+### 🎯 **Command Routing Patterns:**
+
+**Pattern 1: Accumulator (ping)**
+```typescript
+// Server: Collect server info, delegate to browser
+if (!params.browser) {
+  return await this.remoteExecute({ ...params, server: this.getServerInfo() });
+}
+
+// Browser: Collect browser info, delegate to server
+if (!params.server) {
+  return await this.remoteExecute({ ...params, browser: this.getBrowserInfo() });
+}
+
+// Whoever has both pieces returns complete result
+return { ...params, success: true };
+```
+
+**Pattern 2: Environment-Specific Work + Delegate (screenshot)**
+```typescript
+// Browser: Capture image, delegate to server for file saving
+const dataUrl = await this.captureScreenshot();
+if (params.resultType === 'file') {
+  return await this.remoteExecute({ ...params, dataUrl });
+}
+
+// Server: Save file if needed
+if (params.dataUrl) {
+  return await this.saveToFile(params);
+}
+```
+
+**Pattern 3: Pass-Through (bag-of-words)**
+```typescript
+// Browser: All work on server
+async execute(params: BagOfWordsParams): Promise<BagOfWordsResult> {
+  return await this.remoteExecute(params);
+}
+
+// Server: Does orchestration
+async execute(params: BagOfWordsParams): Promise<BagOfWordsResult> {
+  // Business logic here
+}
+```
+
+---
+
 **REMEMBER: Make the complex simple, not the simple complex.**
 
-**The goal: Write code once, works with infinite entity types.**
+**The goal: Write code once, works with infinite entity types (when appropriate).**
+
+**Every file is a conscious architecture decision, not a mechanical exercise.**
