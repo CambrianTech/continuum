@@ -17,6 +17,9 @@ import type { DataCreateParams, DataCreateResult } from '../../../../commands/da
 import type { DataReadParams, DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import type { DataDeleteParams, DataDeleteResult } from '../../../../commands/data/delete/shared/DataDeleteTypes';
+import type { DataQueryOpenParams, DataQueryOpenResult } from '../../../../commands/data/query-open/shared/QueryOpenTypes';
+import type { DataQueryNextParams, DataQueryNextResult } from '../../../../commands/data/query-next/shared/QueryNextTypes';
+import type { DataQueryCloseParams, DataQueryCloseResult } from '../../../../commands/data/query-close/shared/QueryCloseTypes';
 import type { StateCreateParams, StateCreateResult } from '../../../../commands/state/create/shared/StateCreateTypes';
 import type { StateGetParams, StateGetResult } from '../../../../commands/state/get/shared/StateGetTypes';
 import type { StateUpdateParams, StateUpdateResult } from '../../../../commands/state/update/shared/StateUpdateTypes';
@@ -57,6 +60,18 @@ export interface CommandRegistry {
   'data/delete': {
     params: DataDeleteParams;
     result: DataDeleteResult;
+  };
+  'data/query-open': {
+    params: DataQueryOpenParams;
+    result: DataQueryOpenResult;
+  };
+  'data/query-next': {
+    params: DataQueryNextParams;
+    result: DataQueryNextResult;
+  };
+  'data/query-close': {
+    params: DataQueryCloseParams;
+    result: DataQueryCloseResult;
   };
   'state/create': {
     params: StateCreateParams;

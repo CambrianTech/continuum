@@ -59,6 +59,9 @@ export interface EntityScroller<T extends BaseEntity> {
   // Smart real-time updates with auto-scroll
   readonly addWithAutoScroll: (entity: T) => void;
 
+  // Scroll control
+  readonly scrollToEnd: (behavior?: 'smooth' | 'instant') => void;
+
   // State queries
   readonly entities: () => readonly T[];
   readonly loading: () => boolean;
@@ -122,8 +125,9 @@ export function createScroller<T extends BaseEntity>(
   };
 
   // Efficient DOM operations using fragments - only add genuinely new entities
-  // ALWAYS appends to DOM end - CSS column-reverse handles visual positioning
-  const addEntitiesToDOM = (newEntities: readonly T[]): void => {
+  // For newest-first: initial load appends, loadMore prepends (older messages at top)
+  // For oldest-first: always appends
+  const addEntitiesToDOM = (newEntities: readonly T[], prepend: boolean = false): void => {
     const fragment = document.createDocumentFragment();
     const validEntities: T[] = [];
 
@@ -147,23 +151,44 @@ export function createScroller<T extends BaseEntity>(
       fragment.appendChild(element);
     });
 
-    // Always append to DOM end - CSS column-reverse handles visual positioning
+    // Insert position depends on direction and whether loading more
     if (validEntities.length > 0) {
-      container.appendChild(fragment);
+      if (prepend && config.direction === 'newest-first') {
+        // Insert older messages after sentinel (at visual top for newest-first)
+        const sentinel = container.querySelector('.entity-scroller-sentinel');
+        if (sentinel && sentinel.nextSibling) {
+          container.insertBefore(fragment, sentinel.nextSibling);
+        } else {
+          container.insertBefore(fragment, container.firstChild);
+        }
+      } else {
+        // Initial load or oldest-first: append to end
+        container.appendChild(fragment);
+      }
     }
   };
 
   // Intersection observer for infinite scroll
   const setupObserver = (): void => {
+    // Add scroll event listener to manually check sentinel visibility
+    // Needed because programmatic scrollTop changes don't always trigger IntersectionObserver
+    container.addEventListener('scroll', () => {
+      // For newest-first, sentinel is at DOM START (top)
+      // Check if we're near the top and should load more
+      if (config.direction === 'newest-first' && container.scrollTop < 100) {
+        if (hasMoreItems && !isLoading) {
+          console.log(`🔄 SCROLL-FALLBACK: Triggering loadMore() at scrollTop=${container.scrollTop}`);
+          scroller.loadMore();
+        }
+      }
+    });
+
     observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
-        console.log(`🔍 INTERSECTION: isIntersecting=${entry?.isIntersecting}, hasMore=${hasMoreItems}, isLoading=${isLoading}, target=${entry?.target?.className}`);
         if (entry?.isIntersecting && hasMoreItems && !isLoading) {
           console.log(`🔄 INTERSECTION: Triggering loadMore()`);
           scroller.loadMore();
-        } else if (entry?.isIntersecting) {
-          console.log(`⚠️ INTERSECTION: Blocked - hasMore=${hasMoreItems}, isLoading=${isLoading}`);
         }
       },
       {
@@ -178,20 +203,16 @@ export function createScroller<T extends BaseEntity>(
     sentinel = document.createElement('div');
     sentinel.className = 'entity-scroller-sentinel';
     sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0;';
-    console.log(`🔧 SENTINEL-SETUP: Created for ${config.direction}, hasMore=${hasMoreItems}`);
 
     // Discord/Slack pattern: newest at bottom, oldest at top
     // Sentinel at DOM START (top) - when user scrolls up, load older messages
     if (config.direction === 'newest-first') {
       container.insertBefore(sentinel, container.firstChild);
-      console.log(`🔧 SENTINEL-POSITION: Inserted at DOM START (top) for newest-first`);
     } else {
       container.appendChild(sentinel);
-      console.log(`🔧 SENTINEL-POSITION: Appended at DOM END (bottom) for oldest-first`);
     }
 
     observer.observe(sentinel);
-    console.log(`🔧 SENTINEL-OBSERVE: Observer attached, container scrollHeight=${container.scrollHeight}, clientHeight=${container.clientHeight}`);
   };
 
   // The clean API object
@@ -225,7 +246,6 @@ export function createScroller<T extends BaseEntity>(
             // For newest-first (chat), scroll to bottom to show latest messages
             if (config.direction === 'newest-first') {
               scrollToEnd('instant'); // Instant scroll on initial load
-              console.log(`🔧 CLAUDE-INITIAL-SCROLL: Scrolled to bottom after initial load`);
             }
           });
         } else {
@@ -256,7 +276,8 @@ export function createScroller<T extends BaseEntity>(
             ? [...result.items].reverse()
             : result.items;
 
-          addEntitiesToDOM(itemsToAdd);
+          // When loading more, prepend for newest-first (older messages go at top)
+          addEntitiesToDOM(itemsToAdd, true);
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
@@ -400,6 +421,11 @@ export function createScroller<T extends BaseEntity>(
       container.innerHTML = '';
       hasMoreItems = true;
       cursor = undefined;
+    },
+
+    // Scroll control - exposed publicly
+    scrollToEnd(behavior: 'smooth' | 'instant' = 'smooth'): void {
+      scrollToEnd(behavior);
     },
 
     // State queries - clean getters

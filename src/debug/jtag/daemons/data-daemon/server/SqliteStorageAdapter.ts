@@ -1210,6 +1210,23 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       }
     }
 
+    // Add cursor-based pagination filter (before sorting)
+    if (query.cursor) {
+      const cursorColumn = SqlNamingConverter.toSnakeCase(query.cursor.field);
+      const operator = query.cursor.direction === 'after' ? '>' : '<';
+      const cursorCondition = `${cursorColumn} ${operator} ?`;
+
+      // Add to WHERE clause or create one
+      if (whereClauses.length > 0) {
+        sql += ` AND ${cursorCondition}`;
+      } else {
+        sql += ` WHERE ${cursorCondition}`;
+      }
+
+      params.push(query.cursor.value);
+      console.log(`🔧 CURSOR-SQL: Added cursor condition: ${cursorColumn} ${operator} ${query.cursor.value}`);
+    }
+
     // Add sorting (translate field names to column names)
     if (query.sort && query.sort.length > 0) {
       const sortClauses = query.sort.map(s => {

@@ -51,12 +51,23 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
       const widgetState = WidgetAnalyzer.analyzeState(widgetRef.element);
       logs.push(`📊 Analyzed ${widgetState.methods.length} methods, ${Object.keys(widgetState.properties).length} properties`);
 
-      // Filter out heavy properties when extracting row data to prevent JSON truncation
-      if (params.extractRowData && widgetState.properties.templateCSS) {
-        widgetState.properties = { ...widgetState.properties };
-        widgetState.properties.templateCSS = '[CSS EXCLUDED FOR ROW EXTRACTION]';
-        logs.push(`🎨 CSS excluded to prevent JSON truncation during row extraction`);
+      // Filter out heavy properties to prevent JSON truncation
+      const filteredProperties = { ...widgetState.properties };
+
+      // Always exclude templateCSS (huge)
+      if (filteredProperties.templateCSS) {
+        delete filteredProperties.templateCSS;
       }
+
+      // Exclude messages array - use messageCount instead
+      if (Array.isArray(filteredProperties.messages)) {
+        const messageCount = filteredProperties.messages.length;
+        delete filteredProperties.messages;
+        filteredProperties.messageCount = messageCount;
+        logs.push(`📨 Excluded ${messageCount} messages from properties to prevent JSON truncation`);
+      }
+
+      widgetState.properties = filteredProperties;
 
       // Extract messages if requested
       let messages: Array<{ id: string; content?: Record<string, unknown>; [key: string]: unknown }> = [];
@@ -122,8 +133,8 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
         connectivity = WidgetConnectivityTester.testDataConnectivity(widgetRef.element);
       }
 
-      // Extract entities from scroller - access widget element directly, not analyzed state
-      let entities = [];
+      // Extract entity COUNT from scroller - don't include full entities (too large)
+      let entityCount = 0;
       const widget = widgetRef.element as any;
       if (widget.scroller && typeof widget.scroller === 'object') {
         // entities might be a getter function or array property
@@ -132,13 +143,31 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
           : widget.scroller.entities;
 
         if (Array.isArray(entitiesValue)) {
-          entities = entitiesValue;
-          logs.push(`📦 Extracted ${entities.length} entities from widget scroller`);
+          entityCount = entitiesValue.length;
+          logs.push(`📦 Found ${entityCount} entities in widget scroller (count only, not including full data)`);
         } else {
           logs.push(`⚠️ Widget has scroller but entities is not an array: ${typeof entitiesValue}`);
         }
       } else {
         logs.push(`⚠️ Widget does not have scroller or scroller is not an object: ${typeof widget.scroller}`);
+      }
+
+      // If countOnly, return minimal response with just entityCount
+      if (params.countOnly) {
+        return createWidgetStateDebugResult(this.context, this.context.uuid, {
+          success: true,
+          widgetFound: true,
+          widgetPath: widgetRef.path,
+          widgetType: widgetRef.type,
+          methods: [],
+          state: {
+            properties: {},
+            entityCount,
+          },
+          messages: [],
+          connectivity: WidgetConnectivityTester.testDataConnectivity(widgetRef.element),
+          debugging: { logs, warnings, errors }
+        });
       }
 
       return createWidgetStateDebugResult(this.context, this.context.uuid, {
@@ -151,7 +180,7 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
           properties: widgetState.properties,
           messageCount: widgetState.messageCount,
           currentRoomId: widgetState.currentRoomId,
-          entities,
+          entityCount,
         },
         messages,
         eventSystem,

@@ -90,6 +90,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       console.log(`🔧 CLAUDE-FIX-${Date.now()}: Loading messages for roomId="${this.currentRoomId}" with database-level filtering`);
       console.log(`🔍 DEBUG: currentRoomId type=${typeof this.currentRoomId}, value="${this.currentRoomId}"`);
+      console.log(`🔍 CURSOR-WIDGET-DEBUG: cursor param=${cursor}, limit=${limit}`);
 
       // CRITICAL: The filter MUST be applied at the database level, not client-side
       // This ensures we only get messages for THIS room, with proper paging/cursors
@@ -103,7 +104,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // Load NEWEST first
         limit: limit ?? 100, // Increased limit to catch recent messages
-        ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'after' } })
+        ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'before' } }) // 'before' = older than cursor for DESC queries
       });
 
       if (!result?.success || !result.items) {
@@ -128,11 +129,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.loadedMessageCount += validMessages.length;
       }
 
-      // WORKAROUND: Backend returns items.length as count, not total DB count
-      // If we got exactly the limit, assume there are more messages
-      // If we got less than limit, we've reached the end
-      const requestedLimit = limit ?? 100;
-      const hasMoreMessages = validMessages.length >= requestedLimit;
+      // Use backend's total count to determine if more records exist
+      const hasMoreMessages = this.loadedMessageCount < this.totalMessageCount;
 
       // For cursor-based pagination, use the oldest message's timestamp as next cursor
       let nextCursor: string | undefined;
@@ -142,7 +140,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         nextCursor = oldestMessage?.timestamp?.toString();
       }
 
-      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${requestedLimit}), nextCursor=${nextCursor}`);
+      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 100}), nextCursor=${nextCursor}`);
 
       return {
         items: validMessages,
@@ -476,6 +474,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         backend: 'server'
       });
       console.log('✅ Message sent successfully');
+
+      // Scroll to bottom after sending OWN message (not for other users' messages)
+      // This ensures user sees their sent message immediately
+      if (this.scroller) {
+        this.scroller.scrollToEnd();
+      }
     } catch (error) {
       console.error('❌ Failed to send message:', error);
       this.messageInput!.value = content; // Restore on error

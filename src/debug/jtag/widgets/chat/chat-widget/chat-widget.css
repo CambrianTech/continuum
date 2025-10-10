@@ -146,6 +146,37 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column; /* Normal order: oldest to newest, like Discord/Slack */
+
+  /* Hide scrollbar by default (Firefox) */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb-background, transparent) var(--scrollbar-track-background, transparent);
+}
+
+/* Show scrollbar on hover (Firefox) */
+.entity-list-body:hover {
+  scrollbar-color: var(--scrollbar-thumb-background-hover, rgba(0, 212, 255, 0.3)) var(--scrollbar-track-background, transparent);
+}
+
+/* Webkit browsers (Chrome, Safari, Edge) */
+.entity-list-body::-webkit-scrollbar {
+  width: var(--scrollbar-width, 8px);
+}
+
+.entity-list-body::-webkit-scrollbar-track {
+  background: var(--scrollbar-track-background, transparent);
+}
+
+.entity-list-body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-background, transparent);
+  border-radius: var(--scrollbar-thumb-border-radius, 4px);
+}
+
+.entity-list-body:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-background-hover, rgba(0, 212, 255, 0.3));
+}
+
+.entity-list-body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-background-active, rgba(0, 212, 255, 0.5));
 }
 
 .input-container {

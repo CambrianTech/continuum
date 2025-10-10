@@ -60,6 +60,30 @@ export abstract class BaseEntity {
   abstract validate(): { success: boolean; error?: string };
 
   /**
+   * Static pagination configuration - override in child entities
+   * Applied automatically by DataDaemon for consistent ordering/paging
+   *
+   * DataDaemon uses this when opening query handles to set defaults:
+   * - defaultSortField: Which field to sort by
+   * - defaultSortDirection: 'asc' or 'desc'
+   * - defaultPageSize: How many records per page
+   * - cursorField: Which field to use for cursor pagination (usually same as sort field)
+   */
+  static getPaginationConfig(): {
+    defaultSortField: string;
+    defaultSortDirection: 'asc' | 'desc';
+    defaultPageSize: number;
+    cursorField: string;
+  } {
+    return {
+      defaultSortField: 'createdAt',
+      defaultSortDirection: 'desc', // Newest first by default
+      defaultPageSize: 100,
+      cursorField: 'createdAt'
+    };
+  }
+
+  /**
    * Factory method to create entities with validation
    */
   static create<T extends BaseEntity>(

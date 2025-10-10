@@ -132,6 +132,20 @@ export class ChatMessageEntity extends BaseEntity {
     return ChatMessageEntity.collection;
   }
 
+  /**
+   * Override BaseEntity pagination config - use timestamp for chat messages
+   * Chat messages are sorted by timestamp DESC (newest first)
+   * DataDaemon will use these defaults when opening query handles
+   */
+  static override getPaginationConfig() {
+    return {
+      defaultSortField: 'timestamp',
+      defaultSortDirection: 'desc' as const,
+      defaultPageSize: 100,
+      cursorField: 'timestamp'
+    };
+  }
+
 
   /**
    * Implement BaseEntity abstract method - validate message data
