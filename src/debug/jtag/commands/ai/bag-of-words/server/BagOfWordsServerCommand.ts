@@ -1,8 +1,11 @@
 /**
  * Bag of Words Server Command
  *
- * Orchestrates multi-persona conversations in chat rooms.
- * Handles room setup, persona participation, and conversation flow.
+ * Generic coordination primitive for multi-agent interactions.
+ * Pure orchestration - no domain-specific logic (chat, game, etc).
+ *
+ * Classical ML/NLP term: collection of items interacting without fixed order.
+ * Strategies define interaction patterns, but implementation is generic.
  */
 
 import { BagOfWordsCommand } from '../shared/BagOfWordsCommand';
@@ -18,57 +21,41 @@ export class BagOfWordsServerCommand extends BagOfWordsCommand {
   }
 
   /**
-   * Execute bag-of-words conversation orchestration
+   * Execute bag-of-words coordination
+   *
+   * Pure orchestration - returns coordination metadata.
+   * Caller is responsible for implementing actual interaction logic.
    */
   async execute(params: BagOfWordsParams): Promise<BagOfWordsResult> {
-    const conversationId = generateUUID();
+    const sessionId = generateUUID();
     const startedAt = new Date();
 
-    // Validate parameters
+    // Validate
     if (!params.roomId) {
-      throw new Error('roomId is required for bag-of-words');
+      throw new Error('roomId (context) is required');
     }
-
     if (!params.personaIds || params.personaIds.length === 0) {
-      throw new Error('At least one personaId is required');
+      throw new Error('personaIds (participants) required');
     }
 
-    console.log(`🎭 BAG-OF-WORDS: Starting conversation in room ${params.roomId} with ${params.personaIds.length} personas`);
-
-    // Default values
     const strategy = params.strategy ?? 'free-for-all';
-    const responseDelay = params.responseDelay ?? 1000;
-    const includeHumanObserver = params.includeHumanObserver ?? true;
 
-    // TODO: Phase 1 - Room setup
-    // 1. Verify room exists
-    // 2. Add personas as participants
-    // 3. Optionally add human as observer
-
-    // TODO: Phase 2 - Send initial message
-    if (params.initialMessage) {
-      console.log(`📨 BAG-OF-WORDS: Sending initial message: "${params.initialMessage}"`);
-      // Send initial message from system user
-      // This will trigger persona responses via existing chat/send → recipe system
-    }
-
-    // TODO: Phase 3 - Monitor conversation
-    // For now, just return success - actual conversation happens via recipe system
-    // Personas will respond naturally based on existing ai/should-respond logic
-
-    const participants = params.personaIds.map((personaId, index) => ({
-      personaId,
-      personaName: `Persona${index + 1}`, // TODO: Look up actual persona names
-      messagesCount: 0 // TODO: Track during conversation
-    }));
-
-    console.log(`✅ BAG-OF-WORDS: Conversation session ${conversationId} initialized`);
+    console.log(`🎯 BAG-OF-WORDS: Coordinating ${params.personaIds.length} participants`);
+    console.log(`   Context: ${params.roomId.slice(0, 8)}`);
     console.log(`   Strategy: ${strategy}`);
     console.log(`   Max turns: ${params.maxTurns ?? 'unlimited'}`);
-    console.log(`   Topic: ${params.topic ?? 'unspecified'}`);
 
-    return createBagOfWordsResult(params.context, conversationId, {
-      messageCount: 0, // TODO: Track during conversation
+    // Build participant metadata (generic - no entity lookups)
+    const participants = params.personaIds.map((personaId, index) => ({
+      personaId,
+      personaName: `Participant-${index + 1}`, // Generic naming
+      messagesCount: 0
+    }));
+
+    // Return coordination metadata
+    // Actual interaction logic handled by caller (recipe, chat command, etc)
+    return createBagOfWordsResult(params.context, sessionId, {
+      messageCount: 0,
       participants,
       status: 'active',
       startedAt

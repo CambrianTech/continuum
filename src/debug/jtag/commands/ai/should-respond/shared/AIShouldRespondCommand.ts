@@ -23,7 +23,7 @@ export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, 
    * 3. User: [This gating instruction]
    */
   protected buildGatingInstruction(params: AIShouldRespondParams): string {
-    const { personaName, triggerMessage } = params;
+    const { personaName } = params;
 
     return `**Your Task**: Decide if "${personaName}" should respond to the message marked with >>> arrows <<< above.
 
@@ -57,13 +57,18 @@ export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, 
   protected buildGatingPrompt(params: AIShouldRespondParams): string {
     const { personaName, ragContext, triggerMessage } = params;
 
+    // Validate ragContext
+    if (!ragContext) {
+      throw new Error('ragContext is required for buildGatingPrompt');
+    }
+
     // Extract conversation history from RAG context
     // IMPORTANT: Take more context to see past AI chatter, but highlight the trigger message
-    const recentMessages = ragContext.conversationHistory?.slice(-15) || [];
+    const recentMessages = ragContext.conversationHistory?.slice(-15) ?? [];
 
     // Build conversation text with the trigger message HIGHLIGHTED
     const conversationLines = recentMessages.map(msg => {
-      const line = `${msg.name || msg.role}: ${msg.content}`;
+      const line = `${msg.name ?? msg.role}: ${msg.content}`;
       // Check if this is the trigger message (match by content and sender)
       const isTrigger = msg.content === triggerMessage.content &&
                        msg.name === triggerMessage.senderName;
@@ -83,7 +88,7 @@ export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, 
     const conversationText = conversationLines.join('\n');
 
     // Extract persona identity for context
-    const members = `${ragContext.identity?.name || personaName} and others`;
+    const members = `${ragContext.identity?.name ?? personaName} and others`;
 
     return `You are a conversation coordinator for a multi-party chat room.
 
@@ -129,10 +134,10 @@ ${conversationText}
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         return {
-          shouldRespond: parsed.shouldRespond || false,
-          confidence: parsed.confidence || 0.5,
-          reason: parsed.reason || 'No reason provided',
-          factors: parsed.factors || {
+          shouldRespond: parsed.shouldRespond ?? false,
+          confidence: parsed.confidence ?? 0.5,
+          reason: parsed.reason ?? 'No reason provided',
+          factors: parsed.factors ?? {
             mentioned: false,
             questionAsked: false,
             domainRelevant: false,
