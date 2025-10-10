@@ -176,22 +176,9 @@ export function createScroller<T extends BaseEntity>(
 
   // Intersection observer for infinite scroll
   const setupObserver = (): void => {
-    // Add scroll event listener to manually check sentinel visibility
-    // Needed because programmatic scrollTop changes don't always trigger IntersectionObserver
-    container.addEventListener('scroll', () => {
-      // For newest-first, sentinel is at DOM START (top)
-      // Trigger when within 20% of viewport height from top (dynamic based on container size)
-      const triggerDistance = container.clientHeight * 0.2;
-      if (config.direction === 'newest-first' && container.scrollTop < triggerDistance) {
-        if (hasMoreItems && !isLoading) {
-          console.log(`🔄 SCROLL-FALLBACK: Triggering loadMore() at scrollTop=${container.scrollTop} (threshold=${triggerDistance.toFixed(0)}px)`);
-          scroller.loadMore();
-        }
-      }
-    });
-
-    // Calculate rootMargin as 15% of container height for smooth loading before reaching top
-    const rootMarginPx = Math.max(100, container.clientHeight * 0.15);
+    // Calculate rootMargin as 20% of container height for smooth loading before reaching top
+    // This provides enough buffer to trigger loading before user reaches the sentinel
+    const rootMarginPx = Math.max(100, container.clientHeight * 0.2);
     const rootMarginStr = `${rootMarginPx}px`;
 
     observer = new IntersectionObserver(
@@ -204,7 +191,7 @@ export function createScroller<T extends BaseEntity>(
       },
       {
         root: container,
-        // Use percentage-based rootMargin (15% of viewport, min 100px)
+        // Use percentage-based rootMargin (20% of viewport, min 100px)
         rootMargin: config.rootMargin ?? rootMarginStr,
         threshold: config.threshold ?? 0.1
       }
