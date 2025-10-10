@@ -31,6 +31,10 @@ import { getRegisteredEntity } from '../server/SqliteStorageAdapter';
 import { Events } from '../../../system/core/shared/Events';
 import { getDataEventName, DATA_EVENTS } from '../../../system/core/shared/EventConstants';
 
+// Import paginated query management
+import { PaginatedQueryManager } from './PaginatedQuery';
+import type { OpenPaginatedQueryParams, PaginatedQueryHandle, PaginatedQueryPage } from './PaginatedQuery';
+
 // Removed complex decorator dependency - using simple field validation instead
 
 /**
@@ -95,10 +99,12 @@ export class DataDaemon {
   private adapter: DataStorageAdapter;
   private config: StorageStrategyConfig;
   private isInitialized: boolean = false;
+  private paginatedQueryManager: PaginatedQueryManager;
 
   constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter) {
     this.config = config;
     this.adapter = adapter;
+    this.paginatedQueryManager = new PaginatedQueryManager();
   }
   
   /**
@@ -474,6 +480,143 @@ export class DataDaemon {
     return { success: true };
   }
 
+  // =============================================
+  // PAGINATED QUERY INTERFACE
+  // =============================================
+
+  /**
+   * Open a paginated query and get a handle
+   *
+   * Uses entity's pagination config for defaults:
+   * - Sorting field and direction
+   * - Page size
+   * - Cursor field
+   */
+  async openPaginatedQuery(params: OpenPaginatedQueryParams): Promise<PaginatedQueryHandle> {
+    await this.ensureInitialized();
+
+    // Get entity class to read pagination config
+    const EntityClass = getRegisteredEntity(params.collection) as EntityConstructor;
+    if (!EntityClass) {
+      throw new Error(`No entity class registered for collection "${params.collection}"`);
+    }
+
+    const paginationConfig = EntityClass.getPaginationConfig();
+
+    // Use entity defaults if not provided
+    const orderBy = params.orderBy ?? [{
+      field: paginationConfig.defaultSortField,
+      direction: paginationConfig.defaultSortDirection
+    }];
+    const pageSize = params.pageSize ?? paginationConfig.defaultPageSize;
+
+    // Get total count
+    const countQuery: StorageQuery = {
+      collection: params.collection,
+      filters: params.filter
+    };
+    const countResult = await this.adapter.query(countQuery);
+    const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
+
+    // Open query handle
+    const handle = this.paginatedQueryManager.openQuery({
+      collection: params.collection,
+      filter: params.filter,
+      orderBy,
+      pageSize
+    }, totalCount);
+
+    console.log(`📖 DataDaemon: Opened paginated query ${handle.queryId} for ${params.collection} (${totalCount} total records)`);
+
+    return handle;
+  }
+
+  /**
+   * Get next page from paginated query
+   */
+  async getNextPage<T extends BaseEntity>(queryId: UUID): Promise<PaginatedQueryPage<T>> {
+    await this.ensureInitialized();
+
+    const state = this.paginatedQueryManager.getQueryState(queryId);
+    if (!state) {
+      throw new Error(`Query handle ${queryId} not found`);
+    }
+
+    if (!state.hasMore) {
+      // Return empty page if no more data
+      return {
+        items: [],
+        pageNumber: state.currentPage,
+        hasMore: false,
+        totalCount: state.totalCount
+      };
+    }
+
+    // Get entity class to read pagination config
+    const EntityClass = getRegisteredEntity(state.collection) as EntityConstructor;
+    if (!EntityClass) {
+      throw new Error(`No entity class registered for collection "${state.collection}"`);
+    }
+    const paginationConfig = EntityClass.getPaginationConfig();
+
+    // Build query with cursor if we have one
+    const query: StorageQuery = {
+      collection: state.collection,
+      filters: state.filter,
+      sort: state.orderBy?.map(o => ({ field: o.field, direction: o.direction })),
+      limit: state.pageSize,
+      ...(state.currentCursor && {
+        cursor: {
+          field: paginationConfig.cursorField,
+          value: state.currentCursor,
+          direction: state.orderBy?.[0]?.direction === 'desc' ? 'before' : 'after'
+        }
+      })
+    };
+
+    const result = await this.adapter.query<T>(query);
+    if (!result.success || !result.data) {
+      throw new Error(`Failed to query ${state.collection}: ${result.error}`);
+    }
+
+    const items = result.data.map(record => record.data);
+    const hasMore = items.length === state.pageSize && (state.currentPage + 1) * state.pageSize < state.totalCount;
+
+    // Update cursor from last item - keep native type for storage adapter
+    let nextCursor: any;
+    if (items.length > 0) {
+      const lastItem = items[items.length - 1];
+      nextCursor = (lastItem as any)[paginationConfig.cursorField];
+      // Don't convert to string - let storage adapter handle native comparison
+    }
+
+    // Update state
+    this.paginatedQueryManager.updateQueryState(queryId, nextCursor, hasMore);
+
+    console.log(`📄 DataDaemon: Fetched page ${state.currentPage} from query ${queryId} (${items.length} items, hasMore=${hasMore})`);
+
+    return {
+      items,
+      pageNumber: state.currentPage,
+      hasMore,
+      totalCount: state.totalCount
+    };
+  }
+
+  /**
+   * Close paginated query and free resources
+   */
+  closePaginatedQuery(queryId: UUID): void {
+    this.paginatedQueryManager.closeQuery(queryId);
+    console.log(`🔒 DataDaemon: Closed paginated query ${queryId}`);
+  }
+
+  /**
+   * Get active query handles (for debugging)
+   */
+  getActiveQueries(): UUID[] {
+    return this.paginatedQueryManager.getActiveQueries();
+  }
 
   // =============================================
   // CLEAN DOMAIN-OWNED STATIC INTERFACE
@@ -670,6 +813,62 @@ export class DataDaemon {
     }
 
     return await DataDaemon.sharedInstance.batch(operations, DataDaemon.context);
+  }
+
+  /**
+   * Open paginated query with automatic context injection - CLEAN INTERFACE
+   *
+   * @example
+   * const handle = await DataDaemon.openPaginatedQuery({
+   *   collection: 'chat_messages',
+   *   filter: { roomId: 'abc123' }
+   * });
+   */
+  static async openPaginatedQuery(params: OpenPaginatedQueryParams): Promise<PaginatedQueryHandle> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.openPaginatedQuery(params);
+  }
+
+  /**
+   * Get next page from paginated query - CLEAN INTERFACE
+   *
+   * @example
+   * const page = await DataDaemon.getNextPage<ChatMessageEntity>(queryHandle);
+   */
+  static async getNextPage<T extends BaseEntity>(queryId: UUID): Promise<PaginatedQueryPage<T>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.getNextPage<T>(queryId);
+  }
+
+  /**
+   * Close paginated query - CLEAN INTERFACE
+   *
+   * @example
+   * DataDaemon.closePaginatedQuery(queryHandle);
+   */
+  static closePaginatedQuery(queryId: UUID): void {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    DataDaemon.sharedInstance.closePaginatedQuery(queryId);
+  }
+
+  /**
+   * Get active query handles (for debugging) - CLEAN INTERFACE
+   */
+  static getActiveQueries(): UUID[] {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return DataDaemon.sharedInstance.getActiveQueries();
   }
 }
 

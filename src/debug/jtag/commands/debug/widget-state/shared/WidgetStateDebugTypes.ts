@@ -18,6 +18,7 @@ export interface WidgetStateDebugParams extends CommandParams {
   includeDomInfo?: boolean;
   extractRowData?: boolean;
   rowSelector?: string;
+  countOnly?: boolean; // Return only entityCount, no heavy data
 }
 
 export interface WidgetStateDebugResult extends CommandResult {
@@ -32,6 +33,7 @@ export interface WidgetStateDebugResult extends CommandResult {
     properties: Record<string, unknown>;
     messageCount?: number;
     currentRoomId?: string;
+    entityCount?: number;
     entities?: Array<{ id: string; name?: string; displayName?: string }>;
   };
 

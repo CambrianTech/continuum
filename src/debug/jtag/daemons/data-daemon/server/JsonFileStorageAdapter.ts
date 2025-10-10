@@ -190,6 +190,7 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
   }
 
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+    console.debug(`🔍 STORAGE-QUERY: collection=${query.collection}, cursor=${query.cursor ? JSON.stringify(query.cursor) : 'NONE'}, limit=${query.limit}, sort=${JSON.stringify(query.sort)}`);
     try {
       let records = await this.loadCollection<T>(query.collection);
 
@@ -203,7 +204,10 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
 
       // Apply cursor pagination
       if (query.cursor) {
+        console.log(`🔧 CURSOR-QUERY: Cursor exists in query:`, JSON.stringify(query.cursor));
         records = this.applyCursor(records, query.cursor);
+      } else {
+        console.log(`🔧 CURSOR-QUERY: NO CURSOR in query`);
       }
 
       // Apply offset
@@ -714,6 +718,7 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
 
   /**
    * Compare two values with specific operator
+   * Handles native type comparison (Date, number, string) at storage level
    */
   private compareValues(recordValue: RecordFieldValue, filterValue: FilterValue, operator: QueryOperatorType): boolean {
     // Handle null/undefined values
@@ -726,6 +731,36 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
       return operator === QUERY_OPERATORS.EQUAL ? false : false;
     }
 
+    // Handle Date comparisons natively (including ISO string dates from JSON)
+    const recordIsDate = recordValue instanceof Date;
+    const filterIsDate = filterValue instanceof Date;
+    const recordIsISOString = typeof recordValue === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(recordValue);
+    const filterIsISOString = typeof filterValue === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(filterValue);
+
+    if ((recordIsDate || recordIsISOString) && (filterIsDate || filterIsISOString)) {
+      // Convert to timestamps for comparison
+      const recordTime = recordIsDate ? (recordValue as Date).getTime() : new Date(recordValue as string).getTime();
+      const filterTime = filterIsDate ? (filterValue as Date).getTime() : new Date(filterValue as string).getTime();
+
+      console.log(`🔧 DATE-COMPARE: recordTime=${recordTime} (${new Date(recordTime).toISOString()}), filterTime=${filterTime} (${new Date(filterTime).toISOString()}), operator=${operator}`);
+
+      switch (operator) {
+        case QUERY_OPERATORS.EQUAL:
+          return recordTime === filterTime;
+        case QUERY_OPERATORS.GREATER_THAN:
+          return recordTime > filterTime;
+        case QUERY_OPERATORS.GREATER_THAN_OR_EQUAL:
+          return recordTime >= filterTime;
+        case QUERY_OPERATORS.LESS_THAN:
+          return recordTime < filterTime;
+        case QUERY_OPERATORS.LESS_THAN_OR_EQUAL:
+          return recordTime <= filterTime;
+        default:
+          return false;
+      }
+    }
+
+    // Handle other ComparableValue types (string, number, boolean)
     switch (operator) {
       case QUERY_OPERATORS.EQUAL:
         return recordValue === filterValue;
@@ -842,7 +877,8 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
    * Apply cursor-based pagination
    */
   private applyCursor<T extends RecordData>(records: DataRecord<T>[], cursor: { field: string; value: ComparableValue; direction: 'before' | 'after' }): DataRecord<T>[] {
-    return records.filter(record => {
+    console.log(`🔧 CURSOR-APPLY: Filtering ${records.length} records with cursor field="${cursor.field}" value="${cursor.value}" direction="${cursor.direction}"`);
+    const filtered = records.filter(record => {
       const fieldValue = this.getFieldValue(record, cursor.field);
 
       // Skip null/undefined values
@@ -850,16 +886,18 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
         return false;
       }
 
-      if (typeof fieldValue !== typeof cursor.value) {
-        return false; // Type mismatch
-      }
+      // Ask adapter to compare values - adapter decides HOW to compare based on types
+      const isMatch = cursor.direction === 'after'
+        ? this.compareValues(fieldValue, cursor.value, QUERY_OPERATORS.GREATER_THAN)
+        : this.compareValues(fieldValue, cursor.value, QUERY_OPERATORS.LESS_THAN);
 
-      if (cursor.direction === 'after') {
-        return this.compareValues(fieldValue, cursor.value, QUERY_OPERATORS.GREATER_THAN);
-      } else {
-        return this.compareValues(fieldValue, cursor.value, QUERY_OPERATORS.LESS_THAN);
+      if (records.length < 10) { // Only log for small result sets to avoid spam
+        console.log(`🔍 CURSOR-COMPARE: fieldValue="${fieldValue}" ${cursor.direction === 'after' ? '>' : '<'} cursor.value="${cursor.value}" = ${isMatch}`);
       }
+      return isMatch;
     });
+    console.log(`✅ CURSOR-RESULT: ${filtered.length} records passed cursor filter`);
+    return filtered;
   }
 
   /**

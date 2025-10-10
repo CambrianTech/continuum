@@ -102,4 +102,12 @@
   --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.4);
   --shadow-glow: 0 0 20px rgba(0, 212, 255, 0.3);
+
+  /* === SCROLLBAR === */
+  --scrollbar-width: 8px;
+  --scrollbar-track-background: transparent;
+  --scrollbar-thumb-background: transparent;
+  --scrollbar-thumb-background-hover: rgba(0, 212, 255, 0.3);
+  --scrollbar-thumb-background-active: rgba(0, 212, 255, 0.5);
+  --scrollbar-thumb-border-radius: 4px;
 }

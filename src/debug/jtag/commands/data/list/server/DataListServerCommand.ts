@@ -41,7 +41,16 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
-      // Use enhanced DataDaemon with field extraction - same as DataCreateCommand
+      // FIRST: Get total count with same filters (no limit, no cursor)
+      const countQuery = {
+        collection,
+        filters: params.filter
+      };
+      const countResult = await DataDaemon.query<BaseEntity>(countQuery);
+      const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
+      console.debug(`📊 DATA SERVER: Total count for ${collection}: ${totalCount}`);
+
+      // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {
         collection,
         filters: params.filter,
@@ -49,8 +58,10 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
           field: order.field,
           direction: order.direction
         })),
+        cursor: params.cursor,
         limit
       };
+      console.debug(`🔧 CURSOR-DEBUG: Received cursor from client: ${params.cursor ? JSON.stringify(params.cursor) : 'NONE'}`);
 
       const result = await DataDaemon.query<BaseEntity>(storageQuery);
 
@@ -78,7 +89,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       return createDataListResultFromParams(params, {
         success: true,
         items,
-        count: items.length
+        count: totalCount // Use separate count query result
       });
 
     } catch (error: unknown) {
