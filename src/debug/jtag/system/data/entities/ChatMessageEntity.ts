@@ -11,17 +11,52 @@ import type { UserType } from './UserEntity';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
 export type MessagePriority = 'low' | 'normal' | 'high' | 'urgent';
 
+export interface MessageAttachment {
+  type: string;
+  url?: string;
+  name?: string;
+  // RAG builder fields
+  base64?: string;
+  data?: string;
+  content?: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+}
+
 export interface MessageContent {
   text: string;
-  attachments: readonly any[];
+  attachments: readonly MessageAttachment[];
+}
+
+export interface EditHistoryEntry {
+  editedAt: Date;
+  previousText: string;
+}
+
+export interface DeliveryReceipt {
+  userId: string;
+  deliveredAt: Date;
 }
 
 export interface MessageMetadata {
   source: 'user' | 'system' | 'bot' | 'webhook';
   deviceType?: string;
   clientVersion?: string;
-  editHistory?: readonly any[];
-  deliveryReceipts?: readonly any[];
+  editHistory?: readonly EditHistoryEntry[];
+  deliveryReceipts?: readonly DeliveryReceipt[];
+}
+
+export interface MessageReaction {
+  emoji: string;
+  userId: string;
+  timestamp: Date;
+}
+
+export interface MessageThread {
+  threadId: UUID;
+  replyCount: number;
+  lastReplyAt: Date;
 }
 
 // Constants and utility functions that were in the domain file
@@ -55,7 +90,6 @@ export function processMessageFormatting(content: MessageContent): MessageConten
 }
 
 import {
-  PrimaryField,
   TextField,
   DateField,
   EnumField,
@@ -101,10 +135,10 @@ export class ChatMessageEntity extends BaseEntity {
   editedAt?: Date;
 
   @JsonField()
-  reactions: readonly any[];
+  reactions: readonly MessageReaction[];
 
   @JsonField({ nullable: true })
-  thread?: any;
+  thread?: MessageThread;
 
   @TextField({ nullable: true })
   replyToId?: UUID;
@@ -137,7 +171,12 @@ export class ChatMessageEntity extends BaseEntity {
    * Chat messages are sorted by timestamp DESC (newest first)
    * DataDaemon will use these defaults when opening query handles
    */
-  static override getPaginationConfig() {
+  static override getPaginationConfig(): {
+    defaultSortField: string;
+    defaultSortDirection: 'asc' | 'desc';
+    defaultPageSize: number;
+    cursorField: string;
+  } {
     return {
       defaultSortField: 'timestamp',
       defaultSortDirection: 'desc' as const,
