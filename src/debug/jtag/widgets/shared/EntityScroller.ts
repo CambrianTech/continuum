@@ -174,14 +174,19 @@ export function createScroller<T extends BaseEntity>(
     // Needed because programmatic scrollTop changes don't always trigger IntersectionObserver
     container.addEventListener('scroll', () => {
       // For newest-first, sentinel is at DOM START (top)
-      // Check if we're near the top and should load more
-      if (config.direction === 'newest-first' && container.scrollTop < 100) {
+      // Trigger when within 20% of viewport height from top (dynamic based on container size)
+      const triggerDistance = container.clientHeight * 0.2;
+      if (config.direction === 'newest-first' && container.scrollTop < triggerDistance) {
         if (hasMoreItems && !isLoading) {
-          console.log(`🔄 SCROLL-FALLBACK: Triggering loadMore() at scrollTop=${container.scrollTop}`);
+          console.log(`🔄 SCROLL-FALLBACK: Triggering loadMore() at scrollTop=${container.scrollTop} (threshold=${triggerDistance.toFixed(0)}px)`);
           scroller.loadMore();
         }
       }
     });
+
+    // Calculate rootMargin as 15% of container height for smooth loading before reaching top
+    const rootMarginPx = Math.max(100, container.clientHeight * 0.15);
+    const rootMarginStr = `${rootMarginPx}px`;
 
     observer = new IntersectionObserver(
       (entries) => {
@@ -193,8 +198,8 @@ export function createScroller<T extends BaseEntity>(
       },
       {
         root: container,
-        // Use standard positive rootMargin for all scroll directions
-        rootMargin: config.rootMargin || '50px',
+        // Use percentage-based rootMargin (15% of viewport, min 100px)
+        rootMargin: config.rootMargin || rootMarginStr,
         threshold: config.threshold || 0.1
       }
     );

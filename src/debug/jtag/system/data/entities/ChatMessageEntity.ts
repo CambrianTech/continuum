@@ -141,7 +141,7 @@ export class ChatMessageEntity extends BaseEntity {
     return {
       defaultSortField: 'timestamp',
       defaultSortDirection: 'desc' as const,
-      defaultPageSize: 100,
+      defaultPageSize: 30,
       cursorField: 'timestamp'
     };
   }
