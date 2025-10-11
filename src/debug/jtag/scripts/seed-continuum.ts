@@ -428,6 +428,32 @@ async function createStateRecord(collection: string, data: any, id: string, user
 }
 
 /**
+ * Update persona configuration for intelligent resource management
+ */
+async function updatePersonaConfig(userId: string, config: any): Promise<boolean> {
+  const configArg = JSON.stringify(config).replace(/'/g, `'"'"'`);
+  const updateData = { personaConfig: config };
+  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag data/update --collection=users --id=${userId} --data='${dataArg}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const result = JSON.parse(stdout);
+
+    if (result.success) {
+      console.log(`  ✅ Updated persona config for user ${userId.slice(0, 8)}...`);
+      return true;
+    } else {
+      console.error(`  ❌ Failed to update persona config: ${result.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`  ❌ Failed to update persona config: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Create a user via user/create command (proper factory-based creation)
  * Returns the UserEntity if successful, null otherwise
  */
@@ -604,6 +630,39 @@ async function seedViaJTAG() {
     if (users.length !== 6 || !humanUser || !claudeUser || !generalAIUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
       throw new Error('❌ Failed to create all required users');
     }
+
+    // Configure persona AI response settings (intelligent resource management)
+    console.log('🔧 Configuring persona AI response settings...');
+    await Promise.all([
+      updatePersonaConfig(helperPersona.id, {
+        domainKeywords: ['help', 'question', 'what', 'how', 'why', 'explain', 'support', 'assist'],
+        responseThreshold: 50,
+        alwaysRespondToMentions: true,
+        cooldownSeconds: 30,
+        maxResponsesPerSession: 50,
+        gatingModel: 'deterministic',
+        responseModel: 'llama3.2:3b'
+      }),
+      updatePersonaConfig(teacherPersona.id, {
+        domainKeywords: ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson', 'tutorial', 'guide'],
+        responseThreshold: 50,
+        alwaysRespondToMentions: true,
+        cooldownSeconds: 30,
+        maxResponsesPerSession: 50,
+        gatingModel: 'deterministic',
+        responseModel: 'llama3.2:3b'
+      }),
+      updatePersonaConfig(codeReviewPersona.id, {
+        domainKeywords: ['code', 'programming', 'function', 'bug', 'typescript', 'javascript', 'review', 'refactor'],
+        responseThreshold: 50,
+        alwaysRespondToMentions: true,
+        cooldownSeconds: 30,
+        maxResponsesPerSession: 50,
+        gatingModel: 'deterministic',
+        responseModel: 'llama3.2:3b'
+      })
+    ]);
+    console.log('✅ Persona configurations applied');
 
     // Create rooms using actual generated user entity
     const generalRoom = createRoom(
