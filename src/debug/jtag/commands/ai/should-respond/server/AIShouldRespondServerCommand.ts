@@ -39,7 +39,15 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
         preferredProvider: 'ollama'
       };
 
-      console.log(`🤖 AI Should-Respond: Calling LLM for ${params.personaName} with ${params.ragContext.conversationHistory.length} context messages...`);
+      // Debug: Show last 3 messages in context to verify sequential evaluation
+      const lastMessages = params.ragContext.conversationHistory.slice(-3);
+      console.log(`🤖 AI Should-Respond: Calling LLM for ${params.personaName} with ${params.ragContext.conversationHistory.length} context messages`);
+      console.log(`   Last 3 messages in context:`);
+      lastMessages.forEach((msg, i) => {
+        const preview = msg.content.substring(0, 60).replace(/\n/g, ' ');
+        console.log(`     ${i + 1}. ${msg.name || msg.role}: "${preview}${msg.content.length > 60 ? '...' : ''}"`);
+      });
+
       const response = await AIProviderDaemon.generateText(request);
 
       if (!response.text) {

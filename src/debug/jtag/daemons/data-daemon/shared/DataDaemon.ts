@@ -195,9 +195,43 @@ export class DataDaemon {
     _context: DataOperationContext // TODO: use context for read consistency
   ): Promise<StorageResult<DataRecord<T>>> {
     await this.ensureInitialized();
-    return await this.adapter.read<T>(collection, id);
+    const result = await this.adapter.read<T>(collection, id);
+
+    // Deserialize entity at the boundary (create new object to avoid readonly mutation)
+    if (result.success && result.data) {
+      return {
+        ...result,
+        data: {
+          ...result.data,
+          data: this.deserializeEntity(result.data.data)
+        }
+      };
+    }
+
+    return result;
   }
-  
+
+  /**
+   * Deserialize entity - convert storage types to domain types at boundary
+   * SQLite stores timestamps as strings, but domain expects Date objects
+   */
+  private deserializeEntity<T extends BaseEntity>(entity: T): T {
+    const deserialized: any = { ...entity };
+
+    // Convert timestamp fields from string to Date
+    if ('timestamp' in deserialized && typeof deserialized.timestamp === 'string') {
+      deserialized.timestamp = new Date(deserialized.timestamp);
+    }
+    if ('createdAt' in deserialized && typeof deserialized.createdAt === 'string') {
+      deserialized.createdAt = new Date(deserialized.createdAt);
+    }
+    if ('updatedAt' in deserialized && typeof deserialized.updatedAt === 'string') {
+      deserialized.updatedAt = new Date(deserialized.updatedAt);
+    }
+
+    return deserialized as T;
+  }
+
   /**
    * Query with complex filters - SQL WHERE clauses or NoSQL queries
    */
@@ -206,7 +240,20 @@ export class DataDaemon {
     _context: DataOperationContext // TODO: use context for query consistency
   ): Promise<StorageResult<DataRecord<T>[]>> {
     await this.ensureInitialized();
-    return await this.adapter.query<T>(query);
+    const result = await this.adapter.query<T>(query);
+
+    // Deserialize entities at the boundary (create new array to avoid readonly mutation)
+    if (result.success && result.data) {
+      return {
+        ...result,
+        data: result.data.map(record => ({
+          ...record,
+          data: this.deserializeEntity(record.data)
+        }))
+      };
+    }
+
+    return result;
   }
   
   /**

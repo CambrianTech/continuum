@@ -31,6 +31,9 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   /** Active thought streams by messageId */
   private streams: Map<string, ThoughtStream> = new Map();
 
+  /** Sequential evaluation queue - ensures personas evaluate one at a time */
+  private evaluationQueue: Map<string, Promise<void>> = new Map();
+
   /** Cleanup timer */
   private cleanupInterval: NodeJS.Timeout;
 
@@ -46,6 +49,45 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     if (this.config.enableLogging) {
       console.log('🧠 ThoughtStreamCoordinator: Initialized', this.config);
     }
+  }
+
+  /**
+   * Request evaluation turn (ensures sequential evaluation with random ordering)
+   * Brain-like: One persona thinks at a time, but order is randomized for fairness
+   *
+   * Usage:
+   *   const releaseTurn = await coordinator.requestEvaluationTurn(messageId, personaId);
+   *   try {
+   *     await evaluateAndRespond();
+   *   } finally {
+   *     releaseTurn();
+   *   }
+   */
+  async requestEvaluationTurn(messageId: string, personaId: UUID): Promise<() => void> {
+    // Wait for any previous evaluation on this message to complete
+    const existingEvaluation = this.evaluationQueue.get(messageId);
+    if (existingEvaluation) {
+      await existingEvaluation;
+    }
+
+    // Create promise for this evaluation (others will wait for it)
+    let resolveEvaluation: () => void;
+    const evaluationPromise = new Promise<void>((resolve) => {
+      resolveEvaluation = resolve;
+    });
+
+    this.evaluationQueue.set(messageId, evaluationPromise);
+
+    // Add small random delay (10-100ms) to simulate neural timing variance
+    const randomDelay = Math.random() * 90 + 10;
+    await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+    if (this.config.enableLogging) {
+      console.log(`🎲 ${personaId.slice(0, 8)}: Got evaluation turn (after ${randomDelay.toFixed(0)}ms delay)`);
+    }
+
+    // Return resolver so caller can release the turn when done
+    return resolveEvaluation!;
   }
 
   /**
@@ -78,8 +120,22 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       this.emit(`thought:${messageId}`, thought);
       this.emit('thought', messageId, thought);
 
-      // Check if we can decide now
+      // Schedule decision after intention window (if not already scheduled)
+      if (!stream.decisionTimer) {
+        stream.decisionTimer = setTimeout(async () => {
+          if (stream.phase === 'gathering') {
+            if (this.config.enableLogging) {
+              console.log(`⏰ Intention window expired for ${messageId.slice(0, 8)}, making decision...`);
+            }
+            await this.makeDecision(stream);
+          }
+        }, this.config.intentionWindowMs);
+      }
+
+      // Early decision only if ALL personas have responded (optimization)
       if (this.canDecide(stream)) {
+        clearTimeout(stream.decisionTimer);
+        stream.decisionTimer = undefined;
         await this.makeDecision(stream);
       }
 
@@ -299,12 +355,28 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   }
 
   /**
-   * Get or create thought stream
+   * Get probabilistic maxResponders (per-message, not fixed)
+   * - 70% chance: 1 responder (focused)
+   * - 25% chance: 2 responders (discussion)
+   * - 5% chance: 3 responders (lively debate)
+   */
+  private getProbabilisticMaxResponders(): number {
+    const rand = Math.random();
+    if (rand < 0.70) return 1;  // 70% - focused
+    if (rand < 0.95) return 2;  // 25% - discussion
+    return 3;                    // 5% - lively
+  }
+
+  /**
+   * Get or create thought stream (with dynamic slot allocation)
    */
   private getOrCreateStream(messageId: string, contextId: UUID): ThoughtStream {
     let stream = this.streams.get(messageId);
 
     if (!stream) {
+      // Probabilistic slot allocation per message
+      const maxResponders = this.getProbabilisticMaxResponders();
+
       stream = {
         messageId,
         contextId,
@@ -312,14 +384,14 @@ export class ThoughtStreamCoordinator extends EventEmitter {
         thoughts: [],
         considerations: new Map(),
         startTime: Date.now(),
-        availableSlots: this.config.maxResponders,
+        availableSlots: maxResponders,
         claimedBy: new Set()
       };
 
       this.streams.set(messageId, stream);
 
       if (this.config.enableLogging) {
-        console.log(`🧠 Stream: Created for message ${messageId.slice(0, 8)}`);
+        console.log(`🧠 Stream: Created for message ${messageId.slice(0, 8)} (slots=${maxResponders})`);
       }
     }
 
