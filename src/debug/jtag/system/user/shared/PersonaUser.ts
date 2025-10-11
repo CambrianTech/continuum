@@ -474,17 +474,21 @@ export class PersonaUser extends AIUser {
 
   /**
    * Get domain keywords for this persona
-   * Phase 2: Will come from PersonaEntity configuration
-   * Phase 1: Return defaults based on displayName
+   * Reads from UserEntity.personaConfig if available, otherwise infers from name
    */
   private getPersonaDomainKeywords(): string[] {
-    // Simple heuristic based on persona name
+    // Read from entity configuration if available
+    if (this.entity?.personaConfig?.domainKeywords?.length) {
+      return [...this.entity.personaConfig.domainKeywords];
+    }
+
+    // Fallback: infer from persona name (temporary until all personas configured)
     const nameLower = this.displayName.toLowerCase();
 
     if (nameLower.includes('teacher') || nameLower.includes('academy')) {
       return ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson'];
     }
-    if (nameLower.includes('code') || nameLower.includes('dev')) {
+    if (nameLower.includes('code') || nameLower.includes('dev') || nameLower.includes('review')) {
       return ['code', 'programming', 'function', 'bug', 'typescript', 'javascript'];
     }
     if (nameLower.includes('plan') || nameLower.includes('architect')) {

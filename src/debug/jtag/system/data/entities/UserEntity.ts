@@ -24,6 +24,33 @@ export interface UserCapabilities {
   canAccessPersonas: boolean;
 }
 
+/**
+ * Persona Response Configuration
+ * Controls intelligent resource management for AI response gating
+ * Part of multi-stage escalation: Fast → Small Model → Full Model → Specialized
+ */
+export interface PersonaResponseConfig {
+  // Domain expertise keywords for fast bag-of-words gating
+  domainKeywords: readonly string[];
+
+  // Scoring thresholds
+  responseThreshold: number;              // Min score to respond (default: 50)
+  alwaysRespondToMentions: boolean;       // Auto-respond if @mentioned (default: true)
+
+  // Resource management
+  cooldownSeconds: number;                // Min seconds between responses per room
+  maxResponsesPerSession: number;         // Session limit to prevent infinite loops
+
+  // AI model selection (intelligent escalation)
+  gatingModel?: 'deterministic' | 'small' | 'full';  // Stage 1: Fast path (default)
+  responseModel?: string;                             // Stage 3: Full response (e.g., 'llama3.2:3b')
+  escalationModel?: string;                           // Stage 4: Complex tasks (e.g., 'llama3.2:7b')
+
+  // Future: Genome/LoRA configuration
+  genomeId?: UUID;                         // Linked genome for LoRA adaptation
+  trainingMode?: 'inference' | 'learning'; // Whether persona is actively learning
+}
+
 import {
   PrimaryField,
   TextField,
@@ -74,6 +101,11 @@ export class UserEntity extends BaseEntity {
 
   @JsonField()
   sessionsActive: readonly UUID[];
+
+  // Persona-specific configuration (only for type='persona')
+  // Controls intelligent resource management and AI model selection
+  @JsonField({ nullable: true })
+  personaConfig?: PersonaResponseConfig;
 
   // ✨ DECORATOR-DRIVEN AUTO-JOIN: Profile always included (future: @JoinField decorator)
   // For now, manually joined - decorator system will automate this
