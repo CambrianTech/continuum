@@ -34,6 +34,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
+import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -393,10 +394,10 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Use LLM to decide whether to respond to a message
+   * Use fast bag-of-words scoring to decide whether to respond to a message
    *
-   * Uses llama3.2:1b (tiny, fast) for gating decision alongside Ollama's main models
-   * Then uses the persona's full model (llama3.2:3b) for actual response generation
+   * Replaces slow LLM gating (<1ms vs ~500ms+) with deterministic scoring
+   * Uses ai/should-respond-fast command for consistent, testable gating
    */
   private async shouldRespondToMessage(
     messageEntity: ChatMessageEntity,
@@ -410,72 +411,55 @@ export class PersonaUser extends AIUser {
     }
 
     try {
-      // Build RAG context for gating decision (last 15 messages)
-      const ragBuilder = new ChatRAGBuilder();
-      const ragContext = await ragBuilder.buildContext(
-        messageEntity.roomId,
-        this.id,
-        {
-          maxMessages: 15,
-          maxMemories: 0,
-          includeArtifacts: false,
-          includeMemories: false
-        }
-      );
+      // Get persona domain keywords (later will come from PersonaEntity config)
+      const domainKeywords = this.getPersonaDomainKeywords();
 
-      // Build gating prompt - just the conversation with a simple decision instruction
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      // Call ai/should-respond-fast command with proper typing
+      const result: ShouldRespondFastResult = this.client
+        ? await this.client.daemons.commands.execute<ShouldRespondFastParams, ShouldRespondFastResult>('ai/should-respond-fast', {
+            context: this.client.context,
+            sessionId: this.client.sessionId,
+            personaId: this.id,
+            contextId: messageEntity.roomId,
+            messageId: messageEntity.id,
+            senderId: messageEntity.senderId,
+            senderName: messageEntity.senderName,
+            messageText: messageEntity.content?.text ?? '',
+            config: {
+              personaName: this.displayName,
+              domainKeywords,
+              responseThreshold: 50, // Require 50+ points to respond
+              alwaysRespondToMentions: true,
+              cooldownSeconds: this.minSecondsBetweenResponses
+            }
+          })
+        : await Commands.execute<ShouldRespondFastParams, ShouldRespondFastResult>('ai/should-respond-fast', {
+            personaId: this.id,
+            contextId: messageEntity.roomId,
+            messageId: messageEntity.id,
+            senderId: messageEntity.senderId,
+            senderName: messageEntity.senderName,
+            messageText: messageEntity.content?.text ?? '',
+            config: {
+              personaName: this.displayName,
+              domainKeywords,
+              responseThreshold: 50,
+              alwaysRespondToMentions: true,
+              cooldownSeconds: this.minSecondsBetweenResponses
+            }
+          });
 
-      // System instruction
-      messages.push({
-        role: 'system',
-        content: `You are a conversation coordinator. Decide if "${this.displayName}" should respond to the latest message. Consider:
-1. Is ${this.displayName} directly mentioned? → respond
-2. Is this a question for ${this.displayName}'s expertise? → respond
-3. Has someone else already answered? → don't respond
-4. Has ${this.displayName} spoken too much recently? → don't respond
-5. When uncertain, stay silent (better to miss one than spam)
-
-Respond ONLY with JSON: {"shouldRespond": true/false, "reason": "brief explanation"}`
-      });
-
-      // Add conversation history (embed speaker names for llama)
-      for (const msg of ragContext.conversationHistory) {
-        const formattedContent = msg.name ? `${msg.name}: ${msg.content}` : msg.content;
-        messages.push({
-          role: msg.role,
-          content: formattedContent
-        });
+      if (!result.success) {
+        throw new Error(result.error ?? 'Fast gating failed');
       }
 
-      // Use tiny llama3.2:1b for fast gating decision
-      console.log(`🤔 ${this.displayName}: Asking llama3.2:1b for gating decision...`);
-      const gatingResponse = await AIProviderDaemon.generateText({
-        messages,
-        model: 'llama3.2:1b', // Tiny, fast model for gating
-        temperature: 0.3,
-        maxTokens: 100,
-        preferredProvider: 'ollama'
-      });
-
-      // Parse JSON response
-      const jsonMatch = gatingResponse.text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const decision = JSON.parse(jsonMatch[0]);
-        console.log(`🎯 ${this.displayName}: AI gating → ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (${decision.reason})`);
-        return decision.shouldRespond || false;
-      }
-
-      // Fallback: Look for keywords if JSON parsing fails
-      const lowerText = gatingResponse.text.toLowerCase();
-      const shouldRespond = lowerText.includes('true') || lowerText.includes('should respond');
-      console.log(`🎯 ${this.displayName}: AI gating (fallback) → ${shouldRespond ? 'RESPOND' : 'SILENT'}`);
-      return shouldRespond;
+      console.log(`🎯 ${this.displayName}: Fast gating score ${result.score} → ${result.shouldRespond ? 'RESPOND' : 'SILENT'} (${result.reasoning})`);
+      return result.shouldRespond;
 
     } catch (error) {
-      console.error(`❌ ${this.displayName}: AI gating failed, falling back to heuristics:`, error);
+      console.error(`❌ ${this.displayName}: Fast gating failed, falling back to heuristics:`, error);
 
-      // Fallback to simple heuristics if AI fails
+      // Fallback to simple heuristics if command fails
       const heuristics = await this.calculateResponseHeuristics(messageEntity);
       let score = 0;
       if (heuristics.containsQuestion) score += 40;
@@ -486,6 +470,29 @@ Respond ONLY with JSON: {"shouldRespond": true/false, "reason": "brief explanati
       console.log(`🎯 ${this.displayName}: Heuristic fallback score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
       return shouldRespond;
     }
+  }
+
+  /**
+   * Get domain keywords for this persona
+   * Phase 2: Will come from PersonaEntity configuration
+   * Phase 1: Return defaults based on displayName
+   */
+  private getPersonaDomainKeywords(): string[] {
+    // Simple heuristic based on persona name
+    const nameLower = this.displayName.toLowerCase();
+
+    if (nameLower.includes('teacher') || nameLower.includes('academy')) {
+      return ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson'];
+    }
+    if (nameLower.includes('code') || nameLower.includes('dev')) {
+      return ['code', 'programming', 'function', 'bug', 'typescript', 'javascript'];
+    }
+    if (nameLower.includes('plan') || nameLower.includes('architect')) {
+      return ['plan', 'architecture', 'design', 'structure', 'organize'];
+    }
+
+    // Default: general AI assistant keywords
+    return ['help', 'question', 'what', 'how', 'why', 'explain'];
   }
 
   /**
