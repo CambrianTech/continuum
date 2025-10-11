@@ -10,7 +10,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataTruncateParams, DataTruncateResult } from '../shared/DataTruncateTypes';
 import { createDataTruncateResultFromParams } from '../shared/DataTruncateTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-// import { Events } from '../../../../system/core/shared/Events';
+import { Events } from '../../../../system/core/shared/Events';
 import { getDataEventName } from '../../shared/DataEventConstants';
 
 export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, DataTruncateResult> {
@@ -73,9 +73,9 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
           timestamp: new Date().toISOString()
         };
 
-        // Event emission handled by DataDaemon layer (no duplicate emission)
-        // await Events.emit<TruncateEventData>(eventName, eventData, this.context, this.commander);
-        // console.log(`📢 DATA SERVER: Emitted ${eventName} event`);
+        // Emit event so browser widgets can clear their caches
+        await Events.emit<TruncateEventData>(this.context, eventName, eventData);
+        console.log(`📢 DATA SERVER: Emitted ${eventName} event`);
 
         return createDataTruncateResultFromParams(params, {
           success: true,

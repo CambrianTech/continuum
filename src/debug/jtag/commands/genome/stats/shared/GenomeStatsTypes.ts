@@ -8,13 +8,13 @@
  * ./jtag genome/stats --format=json      # Machine-readable output
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Genome Stats Request Parameters
  */
-export interface GenomeStatsParams extends CommandParams {
+export interface GenomeStatsParams extends JTAGPayload {
   // Optional filters
   genomeId?: UUID;           // Stats for specific genome
   personaId?: UUID;          // Stats for specific persona's genome
@@ -164,12 +164,68 @@ export interface SystemStats {
 /**
  * Genome Stats Result
  */
-export interface GenomeStatsResult extends CommandResult {
-  // System-wide stats (always included)
-  system: SystemStats;
+export interface GenomeStatsResult extends JTAGPayload {
+  success: boolean;
+  error?: string;
+  // Timestamp of stats collection
+  timestamp: number;
+
+  // System overview
+  systemOverview: {
+    totalProcesses: number;
+    activeInferences: number;
+    queuedRequests: number;
+    totalGenomes: number;
+    loadedGenomes: number;
+    totalLayers: number;
+    cachedLayers: number;
+    cacheHitRate: number;
+    systemHealthy: boolean;
+    uptime: number; // milliseconds
+  };
+
+  // Pool statistics
+  poolStats: {
+    hot: PoolStats;
+    warm: PoolStats;
+    cold: PoolStats;
+  };
+
+  // Performance metrics
+  performanceMetrics: PerformanceMetrics;
+
+  // Thrashing detection
+  thrashingMetrics: ThrashingMetrics;
 
   // Per-genome stats (if genomeId specified)
-  genome?: GenomeStats;
+  genomeSpecific?: {
+    genomeId: UUID;
+    genomeName: string;
+    layerCount: number;
+    totalSizeMB: number;
+    loadedInPool: 'hot' | 'warm' | 'cold' | 'none';
+    lastUsed: number; // timestamp
+    useCount: number;
+    avgInferenceTime: number;
+    successRate: number;
+  };
+
+  // Per-persona stats (if personaId specified)
+  personaSpecific?: {
+    personaId: UUID;
+    personaName: string;
+    genomeId?: UUID;
+    requestsTotal: number;
+    requestsPending: number;
+    requestsProcessed: number;
+    requestsFailed: number;
+    avgWaitTime: number;
+    avgProcessingTime: number;
+    queueHealth: 'healthy' | 'degraded' | 'critical';
+  };
+
+  // Warnings
+  warnings?: string[];
 
   // Historical data (if includeHistory=true)
   history?: HistoricalMetrics;

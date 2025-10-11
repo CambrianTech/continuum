@@ -141,6 +141,9 @@ export interface RAGBuildOptions {
   triggeringMessageId?: UUID;  // The specific message that triggered this context build
   triggeringTimestamp?: number;  // Cutoff - exclude messages AFTER this (race condition protection)
 
+  // Current message being responded to (if not yet persisted to database)
+  currentMessage?: LLMMessage;  // Include this message even if not in database yet
+
   // NEW: Model capability-aware processing
   modelCapabilities?: ModelCapabilities;  // Target model's capabilities
   preprocessImages?: boolean;  // Force preprocessing even for vision models (default: auto-detect)

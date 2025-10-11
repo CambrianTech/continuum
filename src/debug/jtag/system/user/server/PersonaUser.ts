@@ -12,7 +12,7 @@
  * - Dedicated SQLite storage per persona
  */
 
-import { AIUser } from './AIUser';
+import { AIUser } from '../shared/AIUser';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { UserStateEntity } from '../../data/entities/UserStateEntity';
 import type { IUserStateStorage } from '../storage/IUserStateStorage';
@@ -28,6 +28,8 @@ import type { UserCreateParams } from '../../../commands/user/create/shared/User
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
+import type { Thought, ThoughtType } from '../../conversation/shared/ConversationCoordinationTypes';
+import { getThoughtStreamCoordinator } from '../../conversation/server/ThoughtStreamCoordinator';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
@@ -110,16 +112,9 @@ export class PersonaUser extends AIUser {
       await this.loadMyRooms();
       console.log(`✅ PersonaUser ${this.displayName}: Reloaded, now in ${this.myRoomIds.size} rooms`);
 
-      // CRITICAL: Subscribe to events if not already done
-      // PersonaUsers might be created and initialized before having a client
-      if (!this.eventsSubscribed && this.client) {
-        console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions (deferred)`);
-        this.subscribeToChatEvents(this.handleChatMessage.bind(this));
-        this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
-        this.eventsSubscribed = true;
-      } else {
-        console.log(`⏭️ PersonaUser ${this.displayName}: Skipping subscription (eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client})`);
-      }
+      // ✅ FIX: Do NOT re-subscribe - event handlers persist across reinit
+      // Re-subscribing creates duplicate handlers (memory leak)
+      console.log(`✅ PersonaUser ${this.displayName}: Keeping existing event subscriptions (eventsSubscribed=${this.eventsSubscribed})`);
       return;
     }
 
@@ -128,10 +123,13 @@ export class PersonaUser extends AIUser {
     // STEP 1: Base initialization (loads state + rooms)
     await super.initialize();
 
-    // STEP 2: Subscribe to chat events using BaseUser helper (only if client available)
+    // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
-      console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions (first init)`);
-      this.subscribeToChatEvents(this.handleChatMessage.bind(this));
+      console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions for ${this.myRoomIds.size} rooms (first init)`);
+      // Subscribe to each room individually
+      for (const roomId of this.myRoomIds) {
+        this.subscribeToRoomChat(roomId, this.handleChatMessage.bind(this));
+      }
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
       this.eventsSubscribed = true;
     }
@@ -141,8 +139,8 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Handle incoming chat message
-   * Decides whether to respond based on room membership and other factors
+   * Handle incoming chat message - THOUGHT STREAM COORDINATION
+   * RTOS-inspired: Broadcast thoughts, observe others, coordinate naturally
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
     console.log(`📨 ${this.displayName}: Message from ${messageEntity.senderName}`);
@@ -186,24 +184,53 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // STEP 5: Use LLM judgment to decide whether to respond
-    // This implements the 8-rule protocol: mentioned, direct-question, concluded, just-spoke, etc.
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: About to call shouldRespondToMessage for ${this.displayName}`);
-    const shouldRespond = await this.shouldRespondToMessage(messageEntity, senderIsHuman, isMentioned);
+    // === THOUGHT STREAM: Evaluate and broadcast initial thought (SIGNAL) ===
+    const confidence = await this.evaluateConfidence(messageEntity, senderIsHuman, isMentioned);
 
-    if (!shouldRespond) {
-      this.logAIDecision('SILENT', 'LLM gating decided not to respond', {
-        message: messageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId,
-        mentioned: isMentioned,
-        humanSender: senderIsHuman
+    if (confidence < 50) {
+      // Not confident enough - broadcast 'observing' thought
+      await this.broadcastThought(messageEntity.id, {
+        personaId: this.id,
+        type: 'observing',
+        confidence,
+        reasoning: `Low confidence (${confidence})`,
+        timestamp: new Date()
       });
       return;
     }
 
-    // STEP 6: We should respond!
-    this.logAIDecision('RESPOND', 'LLM gating approved', {
+    // Broadcast 'claiming' thought (triggers coordinator decision)
+    await this.broadcastThought(messageEntity.id, {
+      personaId: this.id,
+      type: 'claiming',
+      confidence,
+      reasoning: `Claiming response slot (conf=${confidence}, mentioned=${isMentioned})`,
+      timestamp: new Date()
+    });
+
+    // === WAIT FOR DECISION (CONDITION VARIABLE) ===
+    const coordinator = getThoughtStreamCoordinator();
+    const decision = await coordinator.waitForDecision(messageEntity.id, 5000);
+
+    if (!decision || !decision.granted.includes(this.id)) {
+      // Not granted - broadcast 'deferring' thought
+      await this.broadcastThought(messageEntity.id, {
+        personaId: this.id,
+        type: 'deferring',
+        confidence,
+        reasoning: `Coordination denied or timeout`,
+        timestamp: new Date()
+      });
+      this.logAIDecision('SILENT', `Deferred (conf=${confidence})`, {
+        message: messageText,
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId
+      });
+      return;
+    }
+
+    // === GRANTED: Respond (MUTEX ACQUIRED) ===
+    this.logAIDecision('RESPOND', `Granted permission (conf=${confidence})`, {
       message: messageText,
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
@@ -240,6 +267,13 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Convert timestamp to number (handles Date or number from JSON serialization)
+   */
+  private timestampToNumber(timestamp: Date | number): number {
+    return timestamp instanceof Date ? timestamp.getTime() : timestamp;
+  }
+
+  /**
    * Generate and post a response to a chat message
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
@@ -254,7 +288,14 @@ export class PersonaUser extends AIUser {
           maxMessages: 20,
           maxMemories: 10,
           includeArtifacts: false, // Skip artifacts for now (image attachments)
-          includeMemories: false    // Skip private memories for now
+          includeMemories: false,   // Skip private memories for now
+          // ✅ FIX: Include current message even if not yet persisted to database
+          currentMessage: {
+            role: 'user',
+            content: originalMessage.content.text,
+            name: originalMessage.senderName,
+            timestamp: this.timestampToNumber(originalMessage.timestamp)
+          }
         }
       );
 
@@ -830,6 +871,47 @@ export class PersonaUser extends AIUser {
     // STEP 5: Create PersonaUser instance (client injected by UserDaemon)
     const storage = new MemoryStateBackend();
     return new PersonaUser(storedEntity, storedState, storage, undefined);
+  }
+
+  /**
+   * === THOUGHT STREAM COORDINATION METHODS ===
+   * RTOS-inspired: Signal, mutex, semaphore, condition variable primitives
+   */
+
+  /**
+   * Evaluate confidence (lightweight, no LLM)
+   */
+  private async evaluateConfidence(
+    message: ChatMessageEntity,
+    senderIsHuman: boolean,
+    isMentioned: boolean
+  ): Promise<number> {
+    // Call existing scoring logic
+    await this.shouldRespondToMessage(message, senderIsHuman, isMentioned);
+
+    // Get relevance score from last evaluation (stored by shouldRespondToMessage)
+    let confidence = (this as any).lastRelevanceScore || 50;
+
+    // Boost confidence for mentions
+    if (isMentioned) {
+      confidence = Math.min(100, confidence + 50);
+    }
+
+    return confidence;
+  }
+
+  /**
+   * Broadcast thought to stream (SIGNAL primitive)
+   */
+  private async broadcastThought(messageId: string, thought: Thought): Promise<void> {
+    try {
+      const coordinator = getThoughtStreamCoordinator();
+      await coordinator.broadcastThought(messageId, thought);
+      console.log(`🧠 ${this.displayName}: Broadcast ${thought.type} (conf=${thought.confidence})`);
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Failed to broadcast thought (non-fatal):`, error);
+      // Non-fatal: continue without coordination
+    }
   }
 
 }

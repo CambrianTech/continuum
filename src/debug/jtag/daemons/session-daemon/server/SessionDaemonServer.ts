@@ -13,7 +13,7 @@ import type { UserCreateParams } from '../../../commands/user/create/shared/User
 import { UserFactory } from '../../../system/user/shared/UserFactory';
 import { HumanUser } from '../../../system/user/shared/HumanUser';
 import { AgentUser } from '../../../system/user/shared/AgentUser';
-import { PersonaUser } from '../../../system/user/shared/PersonaUser';
+import { PersonaUser } from '../../../system/user/server/PersonaUser';
 import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
 import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
 import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
