@@ -1,0 +1,174 @@
+{
+  "uniqueId": "multi-persona-chat",
+  "name": "Multi-Persona Collaborative Chat",
+  "displayName": "Multi-Persona Chat",
+  "description": "Organic multi-persona conversations with intelligent resource management. Uses fast bag-of-words gating (<1ms), domain expertise matching, and multi-stage AI escalation for natural collaboration without artificial limitations.",
+  "version": 1,
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 30,
+        "includeParticipants": true,
+        "includeRoomStrategy": true,
+        "includePersonaDomains": true,
+        "analyzeConversationFlow": true
+      },
+      "outputTo": "ragContext",
+      "comment": "Build conversation context with persona domain expertise and flow analysis"
+    },
+    {
+      "command": "conversation/analyze-loop-risk",
+      "params": {
+        "ragContext": "$ragContext",
+        "personaId": "$personaId",
+        "lastNMessages": 5
+      },
+      "outputTo": "loopRisk",
+      "comment": "LOOP PREVENTION: Analyze if responding would create AI-to-AI loop"
+    },
+    {
+      "command": "ai/should-respond-fast",
+      "params": {
+        "ragContext": "$ragContext",
+        "personaConfig": "$personaConfig",
+        "loopRiskPenalty": "$loopRisk.penaltyPoints"
+      },
+      "outputTo": "fastGating",
+      "condition": "loopRisk.shouldBlock === false",
+      "comment": "Stage 1: Fast deterministic gating (<1ms) with loop penalty applied"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "collaborative",
+        "model": "$personaConfig.gatingModel",
+        "loopRiskContext": "$loopRisk"
+      },
+      "outputTo": "decision",
+      "condition": "loopRisk.shouldBlock === false && fastGating.score >= 40 && fastGating.score < 80",
+      "comment": "Stage 2: Small model decision (~500ms) for borderline cases, aware of loop risk"
+    },
+    {
+      "command": "genome/check-training-mode",
+      "params": {
+        "personaConfig": "$personaConfig",
+        "conversationSubject": "$ragContext.dominantTopics"
+      },
+      "outputTo": "trainingMode",
+      "comment": "Check if persona is in learning mode for this subject (teacher/student LoRA training)"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7,
+        "model": "$personaConfig.responseModel",
+        "systemPrompt": "$personaConfig.systemPrompt",
+        "genomeId": "$personaConfig.genomeId",
+        "captureForTraining": "$trainingMode.isLearning"
+      },
+      "outputTo": "response",
+      "condition": "loopRisk.shouldBlock === false && (fastGating.score >= 80 || decision.shouldRespond === true)",
+      "comment": "Stage 3: Full model response (~2-5s) with optional LoRA layer and training capture"
+    },
+    {
+      "command": "genome/record-interaction",
+      "params": {
+        "personaId": "$personaId",
+        "genomeId": "$personaConfig.genomeId",
+        "conversationSubject": "$ragContext.dominantTopics",
+        "userMessage": "$ragContext.lastMessage",
+        "aiResponse": "$response.text",
+        "feedback": null
+      },
+      "outputTo": "trainingRecord",
+      "condition": "trainingMode.isLearning === true && response !== null",
+      "comment": "Record interaction for future LoRA training on conversation subject"
+    },
+    {
+      "command": "chat/send",
+      "params": {
+        "content": "$response.text",
+        "metadata": {
+          "gatingStage": "$fastGating.score >= 80 ? 'fast' : 'small-model'",
+          "domainMatch": "$fastGating.domainMatches",
+          "responseTime": "$response.durationMs",
+          "loopRiskScore": "$loopRisk.riskScore",
+          "trainingMode": "$trainingMode.isLearning",
+          "genomeApplied": "$personaConfig.genomeId !== null"
+        }
+      },
+      "condition": "response !== null",
+      "comment": "Send response with execution metadata including loop prevention and training status"
+    },
+    {
+      "command": "conversation/update-cooldown",
+      "params": {
+        "personaId": "$personaId",
+        "baseSeconds": "$personaConfig.cooldownSeconds",
+        "consecutiveAIResponses": "$loopRisk.consecutiveAICount",
+        "exponentialBackoff": true
+      },
+      "outputTo": "updatedCooldown",
+      "condition": "response !== null && loopRisk.consecutiveAICount > 1",
+      "comment": "LOOP PREVENTION: Increase cooldown exponentially after AI-to-AI responses"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 30,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": true
+    },
+    "roomMetadata": true,
+    "custom": {
+      "personaDomains": true,
+      "conversationTemperature": true,
+      "participationRatios": true
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Use fast gating (Stage 1) to eliminate irrelevant responses instantly",
+      "Escalate to small model (Stage 2) for borderline domain matches",
+      "Use full model (Stage 3) only when confident response is valuable",
+      "Domain expertise drives response priority (code keywords → CodeReview AI)",
+      "Multiple personas can respond organically - no artificial limits",
+      "Cooldown periods prevent individual persona spam (configurable per persona)",
+      "Always respond if @mentioned regardless of gating score",
+      "Natural conversation flow > rigid turn-taking",
+      "LOOP PREVENTION: If last 3 messages are all AI → REQUIRE human message",
+      "LOOP PREVENTION: Max 2 AI responses per human message (first responders win)",
+      "LOOP PREVENTION: Penalize gating score if persona just responded to another AI",
+      "LOOP PREVENTION: Increase cooldown exponentially after consecutive AI-to-AI responses"
+    ],
+    "decisionCriteria": [
+      "Does message match persona's domain keywords? (fast gating)",
+      "Is message complexity appropriate for persona's expertise?",
+      "Has persona responded recently? (cooldown check)",
+      "Is conversation temperature conducive to response?",
+      "Would response add value vs redundancy?",
+      "Is this a question requiring domain expertise?",
+      "Are other personas better suited to respond?",
+      "Is conversation naturally flowing or needs guidance?",
+      "CRITICAL: Is last message from human or AI? (AI-to-AI penalized)",
+      "CRITICAL: How many consecutive AI messages? (>3 = block all)",
+      "CRITICAL: How many AI responses to this human message already? (>2 = block)",
+      "CRITICAL: Would response create conversation loop? (predictive analysis)"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["chat", "multi-persona", "collaborative", "intelligent-gating", "resource-management"]
+}
