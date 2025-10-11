@@ -454,7 +454,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     const tableName = SqlNamingConverter.toTableName(collectionName);
 
     if (this.createdTables.has(tableName)) {
-      return; // Already created
+      return; // Already processed this session
     }
 
     const entityClass = ENTITY_REGISTRY.get(collectionName);
@@ -463,20 +463,128 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       return;
     }
 
-    console.log(`🏗️ Creating table for entity: ${collectionName} -> ${tableName}`);
+    console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
 
-    // Create table
-    const createTableSql = this.generateCreateTableSql(collectionName, entityClass);
-    await this.runSql(createTableSql);
+    // Check if table exists
+    const tableExists = await this.tableExists(tableName);
 
-    // Create indexes
+    if (tableExists) {
+      // Migrate schema: add missing columns
+      await this.migrateTableSchema(collectionName, tableName, entityClass);
+    } else {
+      // Create new table
+      const createTableSql = this.generateCreateTableSql(collectionName, entityClass);
+      await this.runSql(createTableSql);
+      console.log(`✅ Table created: ${tableName}`);
+    }
+
+    // Create indexes (will skip if they already exist due to IF NOT EXISTS)
     const indexSqls = this.generateCreateIndexSql(collectionName, entityClass);
     for (const indexSql of indexSqls) {
       await this.runSql(indexSql);
     }
 
     this.createdTables.add(tableName);
-    console.log(`✅ Table created: ${tableName} with ${indexSqls.length} indexes`);
+    console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
+  }
+
+  /**
+   * Check if a table exists in the database
+   */
+  private async tableExists(tableName: string): Promise<boolean> {
+    const result = await this.runSql(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [tableName]
+    );
+    return result.length > 0;
+  }
+
+  /**
+   * Get existing columns for a table
+   */
+  private async getTableColumns(tableName: string): Promise<Set<string>> {
+    const result = await this.runSql(`PRAGMA table_info(${tableName})`);
+    return new Set(result.map((row: { name: string }) => row.name));
+  }
+
+  /**
+   * Migrate table schema by adding missing columns
+   * SQLite only supports adding columns, not modifying or removing them
+   * This runs automatically every time the server starts, ensuring schema stays in sync with entity definitions
+   */
+  private async migrateTableSchema(
+    collectionName: string,
+    tableName: string,
+    entityClass: EntityConstructor
+  ): Promise<void> {
+    // Get existing columns
+    const existingColumns = await this.getTableColumns(tableName);
+
+    // Get expected columns from entity metadata
+    const fieldMetadata = getFieldMetadata(entityClass);
+    const missingColumns: string[] = [];
+
+    for (const [fieldName, metadata] of fieldMetadata.entries()) {
+      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+
+      if (!existingColumns.has(columnName)) {
+        missingColumns.push(columnName);
+
+        // Generate ALTER TABLE statement
+        const sqlType = this.mapFieldTypeToSql(metadata.fieldType, metadata.options);
+        const nullable = metadata.options?.nullable !== false;
+        const defaultValue = metadata.options?.default;
+
+        let alterSql = `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}`;
+
+        if (!nullable) {
+          // For NOT NULL columns on existing tables, we must provide a default
+          if (defaultValue !== undefined) {
+            alterSql += ` DEFAULT ${this.formatDefaultValue(defaultValue, sqlType)}`;
+          } else {
+            // Provide sensible defaults for required columns
+            alterSql += ` DEFAULT ${this.getDefaultForType(sqlType)}`;
+          }
+          alterSql += ' NOT NULL';
+        }
+
+        console.log(`   🔄 Adding column: ${columnName} (${sqlType})`);
+        await this.runSql(alterSql);
+      }
+    }
+
+    if (missingColumns.length > 0) {
+      console.log(`✅ Migrated ${tableName}: added ${missingColumns.length} new columns`);
+    } else {
+      console.log(`✅ Schema up-to-date: ${tableName}`);
+    }
+  }
+
+  /**
+   * Format default value for SQL
+   */
+  private formatDefaultValue(value: unknown, sqlType: string): string {
+    if (value === null) return 'NULL';
+    if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+    if (typeof value === 'number') return String(value);
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    if (sqlType === 'TEXT') return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+    return 'NULL';
+  }
+
+  /**
+   * Get sensible default value for SQL type
+   */
+  private getDefaultForType(sqlType: string): string {
+    switch (sqlType) {
+      case 'INTEGER':
+      case 'REAL':
+        return '0';
+      case 'TEXT':
+        return "''";
+      default:
+        return 'NULL';
+    }
   }
 
   /**
