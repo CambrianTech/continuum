@@ -11,7 +11,7 @@ import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { BaseUser } from './BaseUser';
-import { PersonaUser } from './PersonaUser';
+import { PersonaUser } from '../server/PersonaUser';
 import { AgentUser } from './AgentUser';
 import { HumanUser } from './HumanUser';
 

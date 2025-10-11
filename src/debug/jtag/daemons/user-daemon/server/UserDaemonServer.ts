@@ -8,7 +8,7 @@
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { UserDaemon } from '../shared/UserDaemon';
-import { PersonaUser } from '../../../system/user/shared/PersonaUser';
+import { PersonaUser } from '../../../system/user/server/PersonaUser';
 import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';

@@ -62,6 +62,12 @@ export class ChatRAGBuilder extends RAGBuilder {
       maxMessages
     );
 
+    // 2.5. Append current message if provided (for messages not yet persisted)
+    if (options?.currentMessage) {
+      conversationHistory.push(options.currentMessage);
+      console.log(`🔧 ChatRAGBuilder: Added current message to context (not yet in database)`);
+    }
+
     // 3. Extract image attachments from messages (for vision models)
     const artifacts = includeArtifacts
       ? await this.extractArtifacts(contextId, maxMessages)
