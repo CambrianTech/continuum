@@ -19,6 +19,7 @@ import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } fro
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
 import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
+import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLInputElement;
@@ -29,6 +30,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private totalMessageCount: number = 0; // Total messages in database (not just loaded)
   private loadedMessageCount: number = 0; // Number of messages actually loaded so far
   private adapterRegistry: AdapterRegistry; // Selects adapters per message based on content
+  private inputEnhancer?: MessageInputEnhancer; // Markdown shortcuts for message input
 
   constructor() {
     super({
@@ -318,6 +320,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Cache input element after DOM is rendered
     this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLInputElement;
     this.setupMessageInputHandlers();
+
+    // Enable markdown shortcuts for message input (Cmd+B for bold, etc.)
+    if (this.messageInput) {
+      this.inputEnhancer = new MessageInputEnhancer(this.messageInput, {
+        enableShortcuts: true,
+        enableAutoFormat: true, // Auto-complete ``` to code blocks
+        enablePreview: false // Preview can be added later if needed
+      });
+    }
   }
 
   // Setup input event listeners - the ONLY unique ChatWidget functionality
