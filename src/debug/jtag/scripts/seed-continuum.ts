@@ -428,6 +428,33 @@ async function createStateRecord(collection: string, data: any, id: string, user
 }
 
 /**
+ * Update persona bio via shortDescription field (profile is separate entity)
+ */
+async function updatePersonaProfile(userId: string, profile: { bio: string; speciality: string }): Promise<boolean> {
+  const updateData = {
+    shortDescription: profile.bio  // Use shortDescription which is on UserEntity directly
+  };
+  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag data/update --collection=users --id=${userId} --data='${dataArg}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const result = JSON.parse(stdout);
+
+    if (result.success) {
+      console.log(`  ✅ Updated persona bio for user ${userId.slice(0, 8)}...`);
+      return true;
+    } else {
+      console.error(`  ❌ Failed to update persona bio: ${result.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`  ❌ Failed to update persona bio: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Update persona configuration for intelligent resource management
  */
 async function updatePersonaConfig(userId: string, config: any): Promise<boolean> {
@@ -630,6 +657,24 @@ async function seedViaJTAG() {
     if (users.length !== 6 || !humanUser || !claudeUser || !generalAIUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
       throw new Error('❌ Failed to create all required users');
     }
+
+    // Update persona profiles with distinct personalities
+    console.log('🎭 Updating persona profiles with distinct personalities...');
+    await Promise.all([
+      updatePersonaProfile(helperPersona.id, {
+        bio: 'A friendly, concise assistant who provides quick practical help and actionable solutions',
+        speciality: 'practical-assistance'
+      }),
+      updatePersonaProfile(teacherPersona.id, {
+        bio: 'An educational mentor who explains concepts thoroughly with examples and patient guidance',
+        speciality: 'education-mentoring'
+      }),
+      updatePersonaProfile(codeReviewPersona.id, {
+        bio: 'A critical analyst who evaluates code quality, security, and best practices with constructive feedback',
+        speciality: 'code-analysis'
+      })
+    ]);
+    console.log('✅ Persona profiles updated with personalities');
 
     // Configure persona AI response settings (intelligent resource management)
     console.log('🔧 Configuring persona AI response settings...');
