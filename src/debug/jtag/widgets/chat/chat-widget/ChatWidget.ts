@@ -17,6 +17,8 @@ import { Events } from '../../../system/core/shared/Events';
 import { UI_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
+import { AdapterRegistry } from '../adapters/AdapterRegistry';
+import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLInputElement;
@@ -26,6 +28,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private roomMembers: Map<UUID, UserEntity> = new Map(); // Map of userId -> UserEntity
   private totalMessageCount: number = 0; // Total messages in database (not just loaded)
   private loadedMessageCount: number = 0; // Number of messages actually loaded so far
+  private adapterRegistry: AdapterRegistry; // Selects adapters per message based on content
 
   constructor() {
     super({
@@ -38,6 +41,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       enableScreenshots: false
     });
 
+    // Initialize adapter registry for per-message adapter selection
+    this.adapterRegistry = new AdapterRegistry();
   }
 
   // Static property required by widget registration system
@@ -55,6 +60,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const isCurrentUser = message.senderId === DEFAULT_USERS.HUMAN;
       const senderName = message.senderName || 'Unknown';
 
+      // Select adapter based on message content (text, image, video, etc.)
+      const adapter = this.adapterRegistry.selectAdapter(message);
+      const contentHtml = adapter
+        ? adapter.renderMessage(message, DEFAULT_USERS.HUMAN)
+        : `<p>${message.content?.text || '(no content)'}</p>`;
+
       const messageElement = globalThis.document.createElement('div');
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
@@ -66,7 +77,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
             <span class="message-time">${new Date(message.timestamp).toLocaleString()}</span>
           </div>
           <div class="message-content">
-            <p class="text-content">${message.content?.text || ''}</p>
+            ${contentHtml}
           </div>
         </div>
       `;
@@ -298,6 +309,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   // Override to setup message input after EntityScroller initialization
   protected override async renderWidget(): Promise<void> {
     await super.renderWidget();
+
+    // Inject ALL adapter CSS into shadow DOM (once per widget, not per message)
+    if (this.shadowRoot) {
+      AbstractMessageAdapter.injectAdapterStyles(this.shadowRoot, this.adapterRegistry.getAllAdapters());
+    }
 
     // Cache input element after DOM is rendered
     this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLInputElement;
