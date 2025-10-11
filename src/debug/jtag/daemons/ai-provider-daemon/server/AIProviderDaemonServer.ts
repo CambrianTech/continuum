@@ -16,6 +16,7 @@ import { AIProviderDaemon } from '../shared/AIProviderDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { ProcessPool } from '../../../system/genome/server/ProcessPool';
+import { initializeSecrets } from '../../../system/secrets/SecretManager';
 import * as path from 'path';
 
 export class AIProviderDaemonServer extends AIProviderDaemon {
@@ -37,6 +38,11 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    * Initializes base daemon, ProcessPool, and registers static interface
    */
   protected async initialize(): Promise<void> {
+    // Initialize SecretManager FIRST (adapters depend on it)
+    console.log('🔐 AIProviderDaemonServer: Initializing SecretManager...');
+    await initializeSecrets();
+    console.log('✅ AIProviderDaemonServer: SecretManager initialized');
+
     await super['initialize']();
 
     // Initialize ProcessPool for genome inference workers
