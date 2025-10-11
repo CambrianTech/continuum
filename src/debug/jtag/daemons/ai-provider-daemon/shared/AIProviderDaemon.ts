@@ -34,7 +34,7 @@ import type {
   HealthStatus,
   ProviderRegistration,
 } from './AIProviderTypes';
-import { AIProviderError } from './AIProviderTypes';
+import { AIProviderError, chatMessagesToPrompt } from './AIProviderTypes';
 import { OllamaAdapter } from './OllamaAdapter';
 
 // AI Provider Payloads
@@ -63,6 +63,14 @@ export class AIProviderDaemon extends DaemonBase {
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('AIProviderDaemon', context, router);
+  }
+
+  /**
+   * Get ProcessPool instance (server-side only, overridden in server subclass)
+   * Returns undefined in shared/browser contexts
+   */
+  protected getProcessPoolInstance(): unknown | undefined {
+    return undefined;
   }
 
   protected async initialize(): Promise<void> {
@@ -116,8 +124,11 @@ export class AIProviderDaemon extends DaemonBase {
 
   /**
    * Generate text using AI provider
+   * Routes through ProcessPool if available (server-side), otherwise uses adapter directly (browser/fallback)
    */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: AIProviderDaemon.generateText() - checking for ProcessPool routing`);
+
     if (!this.initialized) {
       throw new AIProviderError(
         'AIProviderDaemon is not initialized',
@@ -137,7 +148,51 @@ export class AIProviderDaemon extends DaemonBase {
       );
     }
 
-    // Generate text
+    // Check if ProcessPool is available (server-side only)
+    const processPool = this.getProcessPoolInstance() as any;
+    if (processPool && typeof processPool.executeInference === 'function') {
+      console.log(`🏊 AIProviderDaemon: Routing ${adapter.providerId} inference through ProcessPool`);
+
+      try {
+        // Convert chat messages to prompt
+        const { prompt } = chatMessagesToPrompt(request.messages);
+
+        // Route through ProcessPool
+        const startTime = Date.now();
+        const output = await processPool.executeInference({
+          prompt,
+          provider: adapter.providerId,
+          model: request.model || 'phi3:mini',
+          temperature: request.temperature,
+          maxTokens: request.maxTokens,
+          config: {}, // Adapter will use defaults
+        });
+
+        const responseTime = Date.now() - startTime;
+
+        // Return formatted response
+        return {
+          text: output,
+          finishReason: 'stop',
+          model: request.model || 'phi3:mini',
+          provider: adapter.providerId,
+          usage: {
+            inputTokens: 0, // Worker should track this
+            outputTokens: 0,
+            totalTokens: 0,
+            estimatedCost: 0,
+          },
+          responseTime,
+          requestId: request.requestId || `req-${Date.now()}`,
+        };
+      } catch (error) {
+        console.error(`❌ AIProviderDaemon: ProcessPool inference failed, falling back to direct adapter call`);
+        // Fall through to direct adapter call
+      }
+    }
+
+    // Direct adapter call (browser-side or fallback)
+    console.log(`🤖 AIProviderDaemon: Using direct ${adapter.providerId} adapter call (no ProcessPool)`);
     try {
       const response = await adapter.generateText(request);
       return response;
@@ -410,5 +465,26 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     return AIProviderDaemon.sharedInstance.getAvailableProviders();
+  }
+
+  /**
+   * Get genome ProcessPool with automatic instance injection - CLEAN INTERFACE
+   *
+   * @example
+   * const pool = AIProviderDaemon.getProcessPool();
+   * const stats = pool.getStats();
+   */
+  static getProcessPool(): unknown {
+    if (!AIProviderDaemon.sharedInstance) {
+      throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
+    }
+
+    const pool = AIProviderDaemon.sharedInstance.getProcessPoolInstance();
+
+    if (!pool) {
+      throw new Error('ProcessPool not initialized - only available on server side');
+    }
+
+    return pool;
   }
 }

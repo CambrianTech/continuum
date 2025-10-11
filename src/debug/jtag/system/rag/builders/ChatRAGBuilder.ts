@@ -198,9 +198,17 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       // Reverse to get oldest-first (LLMs expect chronological order)
       const orderedMessages = messages.reverse();
 
-      // Convert to LLM message format
+      // Convert to LLM message format with question/answer markers
       return orderedMessages.map(msg => {
         const isOwnMessage = msg.senderId === personaId;
+        const messageText = msg.content?.text || '';
+
+        // Detect if this is a question (ends with ? or contains question words)
+        const isQuestion = messageText.trim().endsWith('?') ||
+                          /\b(how|what|why|when|where|who|which|can|could|would|should|is|are|does|do)\b/i.test(messageText.substring(0, 50));
+
+        // Add explicit markers to help LLM distinguish questions from answers
+        const markedContent = isQuestion ? `[QUESTION] ${messageText}` : messageText;
 
         // Convert timestamp to number (milliseconds) if needed
         let timestampMs: number | undefined;
@@ -216,7 +224,7 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
 
         return {
           role: isOwnMessage ? 'assistant' as const : 'user' as const,
-          content: msg.content?.text || '',  // Raw message text only (name field identifies speaker)
+          content: markedContent,  // Message text with [QUESTION] marker if applicable
           name: msg.senderName,  // Speaker identity (LLM API uses this for multi-party conversation)
           timestamp: timestampMs
         };

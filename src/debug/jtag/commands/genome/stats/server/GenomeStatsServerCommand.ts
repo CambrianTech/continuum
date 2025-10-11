@@ -14,6 +14,8 @@ import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-da
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { GenomeStatsParams, GenomeStatsResult } from '../shared/GenomeStatsTypes';
 import { GENOME_STATS_CONSTANTS } from '../shared/GenomeStatsTypes';
+import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import type { ProcessPool } from '../../../../system/genome/server/ProcessPool';
 
 export class GenomeStatsServerCommand extends CommandBase<GenomeStatsParams, GenomeStatsResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -24,41 +26,81 @@ export class GenomeStatsServerCommand extends CommandBase<GenomeStatsParams, Gen
     const statsParams = params as GenomeStatsParams;
 
     try {
-      // Phase 2.1: Return placeholder stats until ProcessPool is implemented
-      // TODO: Replace with actual ProcessPool stats once implemented
+      // Get ProcessPool from AIProviderDaemon
+      let pool: ProcessPool;
+      let poolStats: ReturnType<ProcessPool['getStats']>;
 
+      try {
+        pool = AIProviderDaemon.getProcessPool() as ProcessPool;
+        poolStats = pool.getStats();
+      } catch (error) {
+        // ProcessPool not available (might be on browser side or not initialized)
+        console.warn('⚠️  GenomeStatsServerCommand: ProcessPool not available, returning placeholder data');
+
+        const systemStats: GenomeStatsResult = {
+          ...statsParams,
+          success: true,
+          timestamp: Date.now(),
+          systemOverview: {
+            totalProcesses: 0,
+            activeInferences: 0,
+            queuedRequests: 0,
+            totalGenomes: 0,
+            loadedGenomes: 0,
+            totalLayers: 0,
+            cachedLayers: 0,
+            cacheHitRate: 0,
+            systemHealthy: true,
+            uptime: process.uptime() * 1000,
+          },
+          poolStats: this.generatePlaceholderPoolStats(),
+          performanceMetrics: this.generatePlaceholderPerformanceMetrics(),
+          thrashingMetrics: {
+            isThrashing: false,
+            assemblyToInferenceRatio: 0,
+            cacheChurnRate: 0,
+            recommendations: [
+              'ProcessPool not available - check server initialization',
+            ],
+          },
+          warnings: [
+            error instanceof Error ? error.message : 'ProcessPool not available',
+          ],
+        };
+
+        return systemStats;
+      }
+
+      // Map ProcessPool stats to GenomeStatsResult format
       const systemStats: GenomeStatsResult = {
         ...statsParams,
         success: true,
         timestamp: Date.now(),
         systemOverview: {
-          totalProcesses: 0,
-          activeInferences: 0,
-          queuedRequests: 0,
-          totalGenomes: 0,
-          loadedGenomes: 0,
-          totalLayers: 0,
-          cachedLayers: 0,
-          cacheHitRate: 0,
-          systemHealthy: true,
+          totalProcesses: poolStats.total,
+          activeInferences: poolStats.byState.busy || 0,
+          queuedRequests: 0, // TODO: Add queue tracking in Phase 2.3
+          totalGenomes: 0, // TODO: Query from database
+          loadedGenomes: 0, // TODO: Track loaded genomes
+          totalLayers: 0, // TODO: Query from database
+          cachedLayers: 0, // TODO: Add layer cache tracking in Phase 2.2
+          cacheHitRate: 0, // TODO: Add cache hit rate tracking
+          systemHealthy: poolStats.byState.unhealthy === 0,
           uptime: process.uptime() * 1000,
         },
-        poolStats: this.generatePlaceholderPoolStats(),
-        performanceMetrics: this.generatePlaceholderPerformanceMetrics(),
+        poolStats: {
+          hot: this.mapPoolTierStats('hot', poolStats),
+          warm: this.mapPoolTierStats('warm', poolStats),
+          cold: this.mapPoolTierStats('cold', poolStats),
+        },
+        performanceMetrics: this.generatePlaceholderPerformanceMetrics(), // TODO: Add real metrics in Phase 2.3
         thrashingMetrics: {
           isThrashing: false,
-          assemblyToInferenceRatio: 0,
-          cacheChurnRate: 0,
-          recommendations: [
-            'System initialized - no data yet',
-            'Run inference requests to collect metrics',
-            'Phase 2.1: ProcessPool implementation in progress',
-          ],
+          assemblyToInferenceRatio: 0, // TODO: Calculate in Phase 2.2
+          cacheChurnRate: 0, // TODO: Track in Phase 2.2
+          recommendations: this.generateRecommendations(poolStats),
         },
-        warnings: [
-          'Phase 2.1: ProcessPool not yet implemented',
-          'Showing placeholder data until genome inference system is active',
-        ],
+        warnings: this.generateWarnings(poolStats),
       };
 
       // If specific genome requested, add genome-specific stats
@@ -203,5 +245,77 @@ export class GenomeStatsServerCommand extends CommandBase<GenomeStatsParams, Gen
       systemHealthy: false,
       uptime: 0,
     };
+  }
+
+  /**
+   * Map ProcessPool stats by tier to GenomeStatsResult format
+   */
+  private mapPoolTierStats(tier: 'hot' | 'warm' | 'cold', poolStats: ReturnType<ProcessPool['getStats']>) {
+    return {
+      poolType: tier,
+      maxSize: tier === 'hot' ? GENOME_STATS_CONSTANTS.POOL.HOT_SIZE :
+               tier === 'warm' ? GENOME_STATS_CONSTANTS.POOL.WARM_SIZE : 999,
+      currentSize: poolStats.byTier[tier] || 0,
+      idleCount: tier === 'hot' ? poolStats.byState.idle : 0, // TODO: Track per-tier idle count
+      activeCount: tier === 'hot' ? poolStats.byState.busy : 0, // TODO: Track per-tier active count
+      hitRate: 0, // TODO: Track hit rate in Phase 2.2
+      evictionCount: 0, // TODO: Track evictions
+      evictionRate: 0, // TODO: Calculate eviction rate
+      healthyProcesses: poolStats.total - (poolStats.byState.unhealthy || 0),
+      unhealthyProcesses: poolStats.byState.unhealthy || 0,
+      crashCount: 0, // TODO: Track crashes
+      crashRate: 0, // TODO: Calculate crash rate
+    };
+  }
+
+  /**
+   * Generate recommendations based on pool stats
+   */
+  private generateRecommendations(poolStats: ReturnType<ProcessPool['getStats']>): string[] {
+    const recommendations: string[] = [];
+
+    if (poolStats.total === 0) {
+      recommendations.push('No processes in pool - inference requests will trigger cold starts');
+    }
+
+    if (poolStats.byState.unhealthy > 0) {
+      recommendations.push(`${poolStats.byState.unhealthy} unhealthy processes detected - check logs for errors`);
+    }
+
+    if (poolStats.total < GENOME_STATS_CONSTANTS.POOL.MIN_PROCESSES) {
+      recommendations.push(`Pool below minimum size (${poolStats.total}/${GENOME_STATS_CONSTANTS.POOL.MIN_PROCESSES}) - consider increasing minProcesses`);
+    }
+
+    if (poolStats.total >= GENOME_STATS_CONSTANTS.POOL.MAX_PROCESSES) {
+      recommendations.push('Pool at maximum capacity - consider increasing maxProcesses for better concurrency');
+    }
+
+    if (recommendations.length === 0) {
+      recommendations.push('ProcessPool operating normally');
+      recommendations.push('Phase 2.1 complete - ready for Phase 2.2 (genome loading)');
+    }
+
+    return recommendations;
+  }
+
+  /**
+   * Generate warnings based on pool stats
+   */
+  private generateWarnings(poolStats: ReturnType<ProcessPool['getStats']>): string[] {
+    const warnings: string[] = [];
+
+    if (poolStats.byState.unhealthy > 0) {
+      warnings.push(`⚠️  ${poolStats.byState.unhealthy} unhealthy processes`);
+    }
+
+    if (poolStats.totalErrors > 0) {
+      warnings.push(`⚠️  ${poolStats.totalErrors} total errors recorded`);
+    }
+
+    // Phase 2 warnings
+    warnings.push('ℹ️  Phase 2.2 features (genome loading) not yet implemented');
+    warnings.push('ℹ️  Phase 2.3 features (actual inference) not yet implemented');
+
+    return warnings;
   }
 }
