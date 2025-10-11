@@ -126,10 +126,9 @@ export class PersonaUser extends AIUser {
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
       console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions for ${this.myRoomIds.size} rooms (first init)`);
-      // Subscribe to each room individually
-      for (const roomId of this.myRoomIds) {
-        this.subscribeToRoomChat(roomId, this.handleChatMessage.bind(this));
-      }
+      // ✅ FIX: Subscribe to ALL chat events once (not per-room)
+      // subscribeToChatEvents() filters by this.myRoomIds internally
+      this.subscribeToChatEvents(this.handleChatMessage.bind(this));
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
       this.eventsSubscribed = true;
     }
