@@ -27,6 +27,7 @@ import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
@@ -35,6 +36,7 @@ import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIP
 import type { TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
+import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -611,6 +613,82 @@ export class PersonaUser extends AIUser {
    */
   getPersonaDatabasePath(): string {
     return `.continuum/personas/${this.entity.id}/state.sqlite`;
+  }
+
+  /**
+   * Get genome for this persona (Phase 1.2)
+   * Loads the genome entity from database if genomeId is set
+   * Returns null if no genome is assigned
+   */
+  async getGenome(): Promise<GenomeEntity | null> {
+    if (!this.entity.genomeId) {
+      return null;
+    }
+
+    if (!this.client) {
+      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot load genome - no client`);
+      return null;
+    }
+
+    try {
+      const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeEntity>>('data/read', {
+        collection: 'genomes',
+        id: this.entity.genomeId,
+        context: this.client.context,
+        sessionId: this.client.sessionId,
+        backend: 'server'
+      });
+
+      if (!result.success || !result.found || !result.data) {
+        console.warn(`⚠️  PersonaUser ${this.displayName}: Genome ${this.entity.genomeId} not found`);
+        return null;
+      }
+
+      console.log(`🧬 PersonaUser ${this.displayName}: Loaded genome "${result.data.name}"`);
+      return result.data;
+
+    } catch (error) {
+      console.error(`❌ PersonaUser ${this.displayName}: Error loading genome:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Set genome for this persona (Phase 1.2)
+   * Updates the genomeId field and persists to database
+   */
+  async setGenome(genomeId: UUID): Promise<boolean> {
+    if (!this.client) {
+      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot set genome - no client`);
+      return false;
+    }
+
+    try {
+      // Update entity
+      this.entity.genomeId = genomeId;
+
+      // Persist to database
+      const result = await this.client.daemons.commands.execute<DataUpdateParams<UserEntity>, DataUpdateResult<UserEntity>>('data/update', {
+        collection: COLLECTIONS.USERS,
+        id: this.entity.id,
+        data: { genomeId },
+        context: this.client.context,
+        sessionId: this.client.sessionId,
+        backend: 'server'
+      });
+
+      if (!result.success) {
+        console.error(`❌ PersonaUser ${this.displayName}: Failed to update genome: ${result.error}`);
+        return false;
+      }
+
+      console.log(`🧬 PersonaUser ${this.displayName}: Genome set to ${genomeId}`);
+      return true;
+
+    } catch (error) {
+      console.error(`❌ PersonaUser ${this.displayName}: Error setting genome:`, error);
+      return false;
+    }
   }
 
   /**

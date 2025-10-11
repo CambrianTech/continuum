@@ -107,6 +107,11 @@ export class UserEntity extends BaseEntity {
   @JsonField({ nullable: true })
   personaConfig?: PersonaResponseConfig;
 
+  // Genome reference for PersonaUser (Phase 1.2)
+  // Links persona to their LoRA-adapted genome for specialized behavior
+  @ForeignKeyField({ references: 'genomes.id', nullable: true })
+  genomeId?: UUID;
+
   // ✨ DECORATOR-DRIVEN AUTO-JOIN: Profile always included (future: @JoinField decorator)
   // For now, manually joined - decorator system will automate this
   profile?: UserProfileEntity;
