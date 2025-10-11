@@ -447,14 +447,14 @@ export class SessionDaemonServer extends SessionDaemon {
       // Use UserFactory to create user (same as user/create command - ensures proper logic + AI enrichment)
       console.log(`📝 SessionDaemon: Creating ${userType} user via UserFactory: ${params.displayName}`);
 
-      // uniqueId is REQUIRED - caller must provide it
-      if (!params.connectionContext) {
-        throw new Error(`connectionContext is required for user creation. displayName: ${params.displayName}, type: ${userType}`);
-      }
-
-      const uniqueId = params.connectionContext.uniqueId;
-      if (!uniqueId) {
-        throw new Error(`uniqueId is required for user creation. displayName: ${params.displayName}, type: ${userType}`);
+      // uniqueId is REQUIRED - generate synthetic one for ephemeral CLI clients if missing
+      let uniqueId: string;
+      if (!params.connectionContext || !params.connectionContext.uniqueId) {
+        // Generate synthetic connectionContext for ephemeral clients (CLI, etc.)
+        uniqueId = `cli-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+        console.log(`🔧 SessionDaemon: Generated synthetic uniqueId for ephemeral client: ${uniqueId}`);
+      } else {
+        uniqueId = params.connectionContext.uniqueId;
       }
 
       const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {

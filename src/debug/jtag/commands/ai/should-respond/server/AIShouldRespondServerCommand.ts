@@ -33,7 +33,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           ...params.ragContext.conversationHistory,  // Already proper LLMMessage[] format
           { role: 'user', content: gatingInstruction }
         ],
-        model: params.model ?? 'llama3.2:3b',
+        model: params.model ?? 'llama3.2:3b',  // Instruction-tuned model
         temperature: 0.3,
         maxTokens: 200,
         preferredProvider: 'ollama'
@@ -58,6 +58,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
       const confidence = parsed.confidence ?? 0.5;
       console.log(`✅ AI Should-Respond: ${params.personaName} → ${parsed.shouldRespond ? 'RESPOND' : 'SILENT'} (${(confidence * 100).toFixed(0)}% confidence)`);
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Should-respond now distinguishes meta-commentary from actual answers`);
 
       // Build debug output if verbose mode enabled
       let debugOutput: AIShouldRespondResult['debug'] = undefined;

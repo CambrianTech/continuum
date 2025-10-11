@@ -18,6 +18,12 @@
  * Phase 2.3: Actual inference execution
  */
 
+import type { AIProviderAdapter, TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import { OllamaAdapter } from '../../../daemons/ai-provider-daemon/shared/OllamaAdapter';
+// TODO: Import additional adapters when implemented:
+// import { ClaudeAdapter } from '../../../daemons/ai-provider-daemon/shared/ClaudeAdapter';
+// import { OpenAIAdapter } from '../../../daemons/ai-provider-daemon/shared/OpenAIAdapter';
+
 /**
  * Worker state
  */
@@ -34,7 +40,16 @@ interface WorkerState {
  */
 type ParentMessage =
   | { type: 'load-genome'; genomeId: string; layers: string[] }
-  | { type: 'infer'; prompt: string; genomeId: string }
+  | {
+      type: 'infer';
+      prompt: string;
+      provider: string;
+      model: string;
+      temperature?: number;
+      maxTokens?: number;
+      config?: Record<string, any>;
+      genomeId?: string;
+    }
   | { type: 'shutdown' }
   | { type: 'health-check' };
 
@@ -48,6 +63,14 @@ type WorkerMessage =
   | { type: 'error'; error: string }
   | { type: 'health'; memoryMB: number; uptime: number };
 
+/**
+ * IPC message from parent (generic unknown type until parsed)
+ */
+interface IPCMessage {
+  type: string;
+  [key: string]: unknown;
+}
+
 // Initialize worker state
 const state: WorkerState = {
   processId: process.env.PROCESS_ID || 'unknown',
@@ -55,6 +78,10 @@ const state: WorkerState = {
   isReady: false,
   requestCount: 0,
 };
+
+// Keep-alive interval to prevent process from exiting
+// Declared at module level so shutdown handler can access it
+let keepAliveInterval: NodeJS.Timeout;
 
 console.log(
   `🔧 InferenceWorker: Starting (PID: ${process.pid}, ID: ${state.processId}, Tier: ${state.poolTier})`
@@ -74,15 +101,23 @@ function sendToParent(message: WorkerMessage): void {
 /**
  * Handle messages from parent
  */
-process.on('message', async (message: ParentMessage) => {
+process.on('message', async (rawMessage: unknown) => {
   try {
+    // Type guard: ensure message is an object with a type property
+    if (!rawMessage || typeof rawMessage !== 'object' || !('type' in rawMessage)) {
+      console.warn('⚠️  InferenceWorker: Invalid message received:', rawMessage);
+      return;
+    }
+
+    const message = rawMessage as ParentMessage;
+
     switch (message.type) {
       case 'load-genome':
         await handleLoadGenome(message.genomeId, message.layers);
         break;
 
       case 'infer':
-        await handleInference(message.prompt, message.genomeId);
+        await handleInference(message);
         break;
 
       case 'health-check':
@@ -96,7 +131,7 @@ process.on('message', async (message: ParentMessage) => {
       default:
         console.warn(
           `⚠️  InferenceWorker: Unknown message type:`,
-          (message as any).type
+          (message as IPCMessage).type
         );
     }
   } catch (error) {
@@ -132,34 +167,99 @@ async function handleLoadGenome(
 }
 
 /**
- * Handle inference request
+ * Handle inference request - generic adapter-agnostic implementation
  */
-async function handleInference(prompt: string, genomeId: string): Promise<void> {
+async function handleInference(message: {
+  prompt: string;
+  provider: string;
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  config?: Record<string, unknown>;
+  genomeId?: string;
+}): Promise<void> {
+  console.log(`🔧 CLAUDE-FIX-${Date.now()}: InferenceWorker handling generic ${message.provider} inference`);
   console.log(
-    `🔄 InferenceWorker: Running inference (genome: ${genomeId}, prompt length: ${prompt.length})`
+    `🔄 InferenceWorker: Running inference (provider: ${message.provider}, model: ${message.model}, prompt length: ${message.prompt.length})`
   );
 
-  if (state.loadedGenomeId !== genomeId) {
-    throw new Error(
-      `Genome mismatch: loaded=${state.loadedGenomeId}, requested=${genomeId}`
+  try {
+    // Load and initialize the appropriate adapter (imported at top)
+    const adapter = await loadProviderAdapter(message.provider, message.config);
+
+    // Build inference request
+    const request: TextGenerationRequest = {
+      messages: [{ role: 'user', content: message.prompt }],
+      model: message.model,
+      temperature: message.temperature,
+      maxTokens: message.maxTokens,
+    };
+
+    // Execute inference through adapter
+    const response = await adapter.generateText(request);
+
+    state.requestCount++;
+    console.log(
+      `✅ InferenceWorker: Inference complete (total requests: ${state.requestCount})`
     );
+
+    sendToParent({ type: 'result', output: response.text });
+  } catch (error) {
+    console.error(`❌ InferenceWorker: Inference failed:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Cache for initialized adapters (avoid re-initializing)
+ */
+const adapterCache = new Map<string, AIProviderAdapter>();
+
+/**
+ * Load and initialize AI provider adapter (adapters imported at top)
+ * Supports: ollama, claude, openai, etc.
+ */
+async function loadProviderAdapter(
+  provider: string,
+  config?: Record<string, unknown>
+): Promise<AIProviderAdapter> {
+  const cacheKey = `${provider.toLowerCase()}-${JSON.stringify(config ?? {})}`;
+
+  // Return cached adapter if available
+  if (adapterCache.has(cacheKey)) {
+    console.log(`♻️  InferenceWorker: Using cached ${provider} adapter`);
+    return adapterCache.get(cacheKey)!;
   }
 
-  // Phase 2.1: Placeholder implementation
-  // Phase 2.2: Actual inference execution
-  // Phase 2.3: Streaming response support
+  console.log(`🔄 InferenceWorker: Loading ${provider} adapter...`);
 
-  // Simulate inference
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  let adapter: AIProviderAdapter;
 
-  const result = `[Phase 2.1 Placeholder] Inference result for: "${prompt.substring(0, 50)}..."`;
+  switch (provider.toLowerCase()) {
+    case 'ollama':
+      adapter = new OllamaAdapter(config);
+      break;
 
-  state.requestCount++;
-  console.log(
-    `✅ InferenceWorker: Inference complete (total requests: ${state.requestCount})`
-  );
+    // TODO: Add when adapters are implemented
+    // case 'claude':
+    //   adapter = new ClaudeAdapter(config);
+    //   break;
+    //
+    // case 'openai':
+    //   adapter = new OpenAIAdapter(config);
+    //   break;
 
-  sendToParent({ type: 'result', output: result });
+    default:
+      throw new Error(`Unknown AI provider: ${provider} (only 'ollama' currently supported)`);
+  }
+
+  // Initialize adapter (lazy initialization happens here, not at worker startup)
+  await adapter.initialize();
+
+  // Cache for future requests
+  adapterCache.set(cacheKey, adapter);
+
+  return adapter;
 }
 
 /**
@@ -194,6 +294,10 @@ async function handleShutdown(): Promise<void> {
     `✅ InferenceWorker: Shutdown complete (processed ${state.requestCount} requests)`
   );
 
+  // Clear keep-alive interval before exiting
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+  }
   process.exit(0);
 }
 
@@ -221,11 +325,26 @@ process.on('unhandledRejection', (reason) => {
     // Phase 2.2: Initialize inference engine
     // Phase 2.3: Warm up model
 
+    // Start keep-alive interval to prevent process from exiting
+    keepAliveInterval = setInterval(() => {
+      // Do nothing - just keep event loop alive
+    }, 30000); // Every 30 seconds
+
     state.isReady = true;
     console.log(`✅ InferenceWorker: Ready (PID: ${process.pid})`);
     sendToParent({ type: 'ready' });
   } catch (error) {
     console.error(`❌ InferenceWorker: Initialization failed:`, error);
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
+    }
     process.exit(1);
   }
 })();
+
+// Clean up keep-alive on shutdown
+process.on('beforeExit', () => {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+  }
+});

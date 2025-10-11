@@ -69,13 +69,47 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           }
         );
 
-        // Convert to messages array (SAME as PersonaUser line 207-216)
+        // Convert to messages array with timestamps + gaps (SAME as PersonaUser.ts:376-415)
         const messages: TextGenerationRequest['messages'] = [];
         messages.push({
           role: 'system',
           content: ragContext.identity.systemPrompt
         });
-        messages.push(...ragContext.conversationHistory);
+
+        // Add conversation history with timestamp formatting + gap detection
+        let lastTimestamp: number | undefined;
+        for (const msg of ragContext.conversationHistory) {
+          let timePrefix = '';
+          if (msg.timestamp) {
+            const date = new Date(msg.timestamp);
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            timePrefix = `[${hours}:${minutes}] `;
+
+            // Detect significant time gaps (> 1 hour)
+            if (lastTimestamp && (msg.timestamp - lastTimestamp > 3600000)) {
+              const gapHours = Math.floor((msg.timestamp - lastTimestamp) / 3600000);
+              messages.push({
+                role: 'system',
+                content: `⏱️ ${gapHours} hour${gapHours > 1 ? 's' : ''} passed - conversation resumed`
+              });
+            }
+            lastTimestamp = msg.timestamp;
+          }
+
+          messages.push({
+            role: msg.role,
+            content: msg.name ? `${timePrefix}${msg.name}: ${msg.content}` : `${timePrefix}${msg.content}`
+          });
+        }
+
+        // Identity reminder with current time
+        const now = new Date();
+        const currentTime = `${now.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+        messages.push({
+          role: 'system',
+          content: `IDENTITY REMINDER: You are ${ragContext.identity.name}. Respond naturally with JUST your message - NO name prefix.\n\nCURRENT TIME: ${currentTime}\n\nIMPORTANT: Pay attention to timestamps [HH:MM]. If messages are from hours ago but current question is recent, topic likely changed. Focus on MOST RECENT message.`
+        });
 
         // Build request
         request = {

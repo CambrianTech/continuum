@@ -217,11 +217,11 @@ export class PersonaUser extends AIUser {
     }
 
     // === EVALUATE: Use LLM reasoning to decide if should respond ===
-    const confidence = await this.evaluateConfidence(messageEntity, senderIsHuman, isMentioned);
-    console.log(`📊 ${this.displayName}: Confidence = ${(confidence * 100).toFixed(0)}% (threshold: 50%)`);
+    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
+    console.log(`📊 ${this.displayName}: Gating decision = ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'} (${(gatingResult.confidence * 100).toFixed(0)}% confidence)`);
 
-    if (confidence < 0.5) {
-      this.logAIDecision('SILENT', `Low confidence (${(confidence * 100).toFixed(0)}%)`, {
+    if (!gatingResult.shouldRespond) {
+      this.logAIDecision('SILENT', gatingResult.reason, {
         message: messageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
@@ -229,8 +229,8 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === RESPOND: Confident enough, generate response ===
-    this.logAIDecision('RESPOND', `Confident (${(confidence * 100).toFixed(0)}%)`, {
+    // === RESPOND: LLM decided to respond, generate response ===
+    this.logAIDecision('RESPOND', `${gatingResult.reason} (${(gatingResult.confidence * 100).toFixed(0)}%)`, {
       message: messageText,
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
@@ -279,13 +279,34 @@ export class PersonaUser extends AIUser {
    */
   private async isResponseRedundant(
     myResponse: string,
-    conversationHistory: Array<{ role: string; content: string; name?: string }>
+    conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
   ): Promise<boolean> {
     try {
-      // Get last 5 messages for comparison
-      const recentMessages = conversationHistory.slice(-5);
-      const conversationText = recentMessages
-        .map(msg => `${msg.name || msg.role}: ${msg.content}`)
+      // Get last 5 messages BUT filter to only assistant messages (my previous responses)
+      // We're checking if I'm repeating MYSELF, not if users are asking duplicate questions
+      const myRecentResponses = conversationHistory
+        .filter(msg => msg.role === 'assistant' && msg.name === this.displayName)
+        .slice(-5);
+
+      // If I haven't responded recently (less than 2 messages), skip self-review
+      // First responses to new questions should always be allowed
+      if (myRecentResponses.length < 2) {
+        console.log(`✅ ${this.displayName}: Self-review skipped (only ${myRecentResponses.length} recent responses)`);
+        return false;
+      }
+
+      // Preserve timestamp context (critical for detecting topic changes)
+      const conversationText = myRecentResponses
+        .map(msg => {
+          let timePrefix = '';
+          if (msg.timestamp) {
+            const date = new Date(msg.timestamp);
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            timePrefix = `[${hours}:${minutes}] `;
+          }
+          return `${timePrefix}${msg.name || msg.role}: ${msg.content}`;
+        })
         .join('\n');
 
       const prompt = `**Recent conversation:**
@@ -301,6 +322,8 @@ ${myResponse}
 - Same concept with different analogy = REDUNDANT
 - Correcting a mistake = NOT redundant
 - Answering a different aspect = NOT redundant
+- **NEW QUESTION (especially after time gap) = NOT redundant**
+- **Different programming language/topic = NOT redundant**
 
 **Respond with JSON only:**
 {
@@ -330,6 +353,7 @@ ${myResponse}
 
       const parsed = JSON.parse(jsonMatch[0]);
       console.log(`🔍 ${this.displayName}: Self-review → ${parsed.isRedundant ? 'REDUNDANT' : 'UNIQUE'} (${parsed.reason})`);
+      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Self-review now only checks against own responses, not all messages`);
 
       return parsed.isRedundant ?? false;
     } catch (error) {
@@ -373,13 +397,39 @@ ${myResponse}
         content: fullRAGContext.identity.systemPrompt
       });
 
-      // Add conversation history from RAG context
+      // Add conversation history from RAG context with human-readable timestamps
       // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
-      // Format: "SpeakerName: message" (Llama only supports system/user/assistant/ipython roles)
+      // Format: "[HH:MM] SpeakerName: message" - timestamps help LLM understand time gaps
       if (fullRAGContext.conversationHistory.length > 0) {
-        for (const msg of fullRAGContext.conversationHistory) {
-          // For Llama models, embed speaker identity in the content since name parameter isn't supported
-          const formattedContent = msg.name ? `${msg.name}: ${msg.content}` : msg.content;
+        let lastTimestamp: number | undefined;
+
+        for (let i = 0; i < fullRAGContext.conversationHistory.length; i++) {
+          const msg = fullRAGContext.conversationHistory[i];
+
+          // Format timestamp as human-readable time
+          let timePrefix = '';
+          if (msg.timestamp) {
+            const date = new Date(msg.timestamp);
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            timePrefix = `[${hours}:${minutes}] `;
+
+            // Detect significant time gaps (> 1 hour)
+            if (lastTimestamp && (msg.timestamp - lastTimestamp > 3600000)) {
+              const gapHours = Math.floor((msg.timestamp - lastTimestamp) / 3600000);
+              messages.push({
+                role: 'system',
+                content: `⏱️ ${gapHours} hour${gapHours > 1 ? 's' : ''} passed - conversation resumed`
+              });
+            }
+
+            lastTimestamp = msg.timestamp;
+          }
+
+          // For Llama models, embed speaker identity + timestamp in the content
+          const formattedContent = msg.name
+            ? `${timePrefix}${msg.name}: ${msg.content}`
+            : `${timePrefix}${msg.content}`;
 
           messages.push({
             role: msg.role,
@@ -391,9 +441,16 @@ ${myResponse}
       // CRITICAL: Identity reminder at END of context (research shows this prevents "prompt drift")
       // LLMs have recency bias - instructions at the end have MORE influence than at beginning
       // This prevents the persona from copying the "Name: message" format or inventing fake participants
+      const now = new Date();
+      const currentTime = `${now.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+
       messages.push({
         role: 'system',
-        content: `IDENTITY REMINDER: You are ${this.displayName}. Respond naturally with JUST your message - NO name prefix, NO "A:" or "H:" labels, NO fake conversations. The room has ONLY these people: ${fullRAGContext.identity.systemPrompt.match(/Current room members: ([^\n]+)/)?.[1] || 'unknown members'}.`
+        content: `IDENTITY REMINDER: You are ${this.displayName}. Respond naturally with JUST your message - NO name prefix, NO "A:" or "H:" labels, NO fake conversations. The room has ONLY these people: ${fullRAGContext.identity.systemPrompt.match(/Current room members: ([^\n]+)/)?.[1] || 'unknown members'}.
+
+CURRENT TIME: ${currentTime}
+
+IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are from hours ago but the current question is recent, the conversation topic likely changed. Focus your response on the MOST RECENT message, not old topics.`
       });
 
       // Generate response using AIProviderDaemon (static method like DataDaemon.query)
@@ -958,27 +1015,26 @@ ${myResponse}
    */
 
   /**
-   * Evaluate confidence using multi-stage gating (delegates to ai/should-respond command)
+   * Evaluate whether to respond (delegates to ai/should-respond command)
    *
-   * The command handles:
-   * - Fast path for clear cases (< 40 or > 70)
-   * - LLM reasoning for uncertain cases (40-70 range)
+   * Returns the command's shouldRespond boolean directly - no threshold logic here!
+   * The command handles all gating logic internally.
    */
-  private async evaluateConfidence(
+  private async evaluateShouldRespond(
     message: ChatMessageEntity,
     senderIsHuman: boolean,
     isMentioned: boolean
-  ): Promise<number> {
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: evaluateConfidence with modular gating`);
+  ): Promise<{ shouldRespond: boolean; confidence: number; reason: string }> {
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: evaluateShouldRespond - using command's decision directly`);
 
     try {
-      // Build RAG context for gating decision
+      // Build RAG context for gating decision (reduced to 5 messages to prevent Ollama timeout)
       const ragBuilder = new ChatRAGBuilder();
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.id,
         {
-          maxMessages: 15,
+          maxMessages: 5,  // Small context for fast gating decisions
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
@@ -992,7 +1048,6 @@ ${myResponse}
       );
 
       // Use ai/should-respond with strategy='llm' for real AI reasoning
-      // (Fast path is deprecated - we want "real thinking" per user request)
       const result: AIShouldRespondResult = this.client
         ? await this.client.daemons.commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
             context: this.client.context,
@@ -1004,7 +1059,7 @@ ${myResponse}
             triggerMessage: {
               senderName: message.senderName,
               content: message.content.text,
-              timestamp: message.timestamp.toISOString()
+              timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : new Date(message.timestamp).toISOString()
             },
             strategy: 'llm',
             model: 'llama3.2:3b'
@@ -1017,7 +1072,7 @@ ${myResponse}
             triggerMessage: {
               senderName: message.senderName,
               content: message.content.text,
-              timestamp: message.timestamp.toISOString()
+              timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : new Date(message.timestamp).toISOString()
             },
             strategy: 'llm',
             model: 'llama3.2:3b'
@@ -1025,17 +1080,28 @@ ${myResponse}
 
       if (!result) {
         console.warn(`⚠️ ${this.displayName}: Gating command returned null, using mention status`);
-        return isMentioned ? 1.0 : 0.5;  // Normalized 0-1
+        return {
+          shouldRespond: isMentioned,
+          confidence: isMentioned ? 1.0 : 0.5,
+          reason: 'Command failed, using fallback'
+        };
       }
 
-      // Keep confidence in 0-1 range (normalized everywhere)
-      const confidence = result.confidence ?? 0.5;
-      console.log(`🧠 ${this.displayName}: LLM gating → ${(confidence * 100).toFixed(0)}% confidence (${result.reason})`);
-      return confidence;
+      // ✅ FIX: Return the command's decision directly - don't apply threshold here!
+      console.log(`🧠 ${this.displayName}: LLM gating → ${result.shouldRespond ? 'RESPOND' : 'SILENT'} (${(result.confidence * 100).toFixed(0)}% confidence) - ${result.reason}`);
+      return {
+        shouldRespond: result.shouldRespond ?? false,
+        confidence: result.confidence ?? 0.5,
+        reason: result.reason ?? 'No reason provided'
+      };
 
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Confidence evaluation failed:`, error);
-      return isMentioned ? 1.0 : 0.5;  // Normalized 0-1
+      console.error(`❌ ${this.displayName}: Should-respond evaluation failed:`, error);
+      return {
+        shouldRespond: isMentioned,
+        confidence: isMentioned ? 1.0 : 0.5,
+        reason: 'Error in evaluation'
+      };
     }
   }
 

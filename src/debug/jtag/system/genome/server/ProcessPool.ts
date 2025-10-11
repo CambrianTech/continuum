@@ -14,7 +14,7 @@
  * Phase 2.3: Auto-scaling + eviction strategies
  */
 
-import { ChildProcess, fork } from 'child_process';
+import { ChildProcess, fork, spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
@@ -153,14 +153,33 @@ export class ProcessPool extends EventEmitter {
     console.log(`🔄 ProcessPool: Spawning ${tier} process ${processId}...`);
 
     try {
-      const childProcess = fork(this.workerScriptPath, [], {
-        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-        env: {
-          ...process.env,
-          PROCESS_ID: processId,
-          POOL_TIER: tier,
-        },
-      });
+      // Support TypeScript files using tsx loader with fork()
+      const isTsFile = this.workerScriptPath.endsWith('.ts');
+
+      let childProcess: ChildProcess;
+      if (isTsFile) {
+        // For TypeScript files, use fork with tsx loader
+        // This properly sets up IPC channel while executing TypeScript
+        childProcess = fork(this.workerScriptPath, [], {
+          execArgv: ['--import', 'tsx'],
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+          env: {
+            ...process.env,
+            PROCESS_ID: processId,
+            POOL_TIER: tier,
+          },
+        });
+      } else {
+        // For JS files, use fork normally
+        childProcess = fork(this.workerScriptPath, [], {
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+          env: {
+            ...process.env,
+            PROCESS_ID: processId,
+            POOL_TIER: tier,
+          },
+        });
+      }
 
       if (!childProcess.pid) {
         throw new Error('Failed to get PID from spawned process');
@@ -275,6 +294,104 @@ export class ProcessPool extends EventEmitter {
     await Promise.all(terminationPromises);
 
     console.log('✅ ProcessPool: Shutdown complete');
+  }
+
+  /**
+   * Execute inference request through process pool
+   * Generic method that works with any AI provider adapter
+   */
+  async executeInference(request: {
+    prompt: string;
+    provider: string; // 'ollama', 'claude', 'openai', etc.
+    model: string;
+    temperature?: number;
+    maxTokens?: number;
+    config?: Record<string, any>;
+  }): Promise<string> {
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: ProcessPool.executeInference() - generic adapter-agnostic inference`);
+
+    // Get or spawn an idle process
+    let managedProcess: ManagedProcess | null | undefined = Array.from(this.processes.values()).find(
+      p => p.state === 'idle' || p.state === 'ready'
+    );
+
+    if (!managedProcess) {
+      console.log('🔄 ProcessPool: No idle process, spawning new one...');
+      managedProcess = await this.spawnProcess('warm');
+      if (!managedProcess) {
+        throw new Error('Failed to spawn inference process');
+      }
+    }
+
+    // Mark as busy
+    managedProcess.state = 'busy';
+    managedProcess.lastUsed = Date.now();
+    this.emit('process-busy', managedProcess);
+
+    try {
+      // Send inference request via IPC
+      const result = await this.sendInferenceRequest(managedProcess, request);
+
+      // Update stats
+      managedProcess.requestCount++;
+      managedProcess.state = 'idle';
+      this.emit('process-idle', managedProcess);
+
+      return result;
+    } catch (error) {
+      managedProcess.errorCount++;
+      managedProcess.state = 'idle';
+
+      console.error(`❌ ProcessPool: Inference failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Send inference request to worker and wait for response
+   */
+  private sendInferenceRequest(
+    managedProcess: ManagedProcess,
+    request: {
+      prompt: string;
+      provider: string;
+      model: string;
+      temperature?: number;
+      maxTokens?: number;
+      config?: Record<string, any>;
+    }
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Inference request timeout'));
+      }, this.config.processTimeoutMs);
+
+      // Listen for response
+      const messageHandler = (message: any) => {
+        if (message.type === 'result') {
+          clearTimeout(timeout);
+          managedProcess.process.off('message', messageHandler);
+          resolve(message.output);
+        } else if (message.type === 'error') {
+          clearTimeout(timeout);
+          managedProcess.process.off('message', messageHandler);
+          reject(new Error(message.error));
+        }
+      };
+
+      managedProcess.process.on('message', messageHandler);
+
+      // Send request
+      managedProcess.process.send({
+        type: 'infer',
+        prompt: request.prompt,
+        provider: request.provider,
+        model: request.model,
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        config: request.config,
+      });
+    });
   }
 
   /**

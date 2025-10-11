@@ -37,6 +37,7 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
     // console.log(`✅ DataUpdateServerCommand: Emitted ${eventName}`);
 
     return createDataUpdateResultFromParams(params, {
+      success: Boolean(entity),
       found: Boolean(entity),
       data: entity,
     });
