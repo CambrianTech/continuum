@@ -27,19 +27,42 @@ export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, 
 
     return `**Your Task**: Decide if "${personaName}" should respond to the message marked with >>> arrows <<< above.
 
-**Decision Rules**:
-1. If ${personaName} is directly mentioned by name → respond
-2. If this is a question and ${personaName} has unique expertise → respond
-3. If someone else JUST answered the same question → DON'T respond (avoid spam)
-4. If ${personaName} has spoken in 3+ of last 5 messages → DON'T respond (dominating)
-5. If message is off-topic for ${personaName}'s expertise → DON'T respond
-6. When in doubt, err on the side of SILENCE (better to miss one than spam)
+**Think like a human in a group chat**:
+- If someone already answered the question → Stay quiet (even if you'd phrase it differently)
+- If you'd just be repeating the same idea → Stay quiet
+- Only speak if you have genuinely NEW information
+
+**Critical Decision Rules**:
+1. **Have I ALREADY responded to this?**
+   - If YES → confidence = 0.0 (STAY SILENT - don't repeat yourself!)
+
+2. **Has someone else answered this?**
+   - If YES and answer is complete → confidence = 0.0 (STAY SILENT)
+   - If YES but answer is WRONG → confidence = 0.9 (CORRECT IT)
+   - If NO → Continue to rule 3
+
+2. **Would I just be rephrasing what was said?**
+   - Same explanation, different words? → confidence = 0.0
+   - Same concept, different analogy? → confidence = 0.0
+   - Adding minor details to complete answer? → confidence = 0.0
+
+3. **Do I have TRULY unique information?**
+   - Answering a different part of the question? → confidence = 0.7
+   - Providing a missing critical detail? → confidence = 0.7
+   - My unique expertise adds something new? → confidence = 0.7
+
+4. **Mentioned by name?** → confidence = 0.9 (respond even if redundant)
+
+**Examples**:
+- Question: "What is X?" → Helper AI explains X clearly → You would also explain X → **STAY SILENT (0.0)**
+- Question: "What is X?" → Helper AI says "X is Y" (WRONG) → You know X is Z → **CORRECT IT (0.9)**
+- Question: "What is X and why use it?" → Helper AI explains what X is → You explain WHY to use it → **ADD VALUE (0.7)**
 
 **Response Format** (JSON only):
 {
   "shouldRespond": true/false,
   "confidence": 0.0-1.0,
-  "reason": "brief explanation",
+  "reason": "brief explanation including: have I answered? what unique value?",
   "factors": {
     "mentioned": true/false,
     "questionAsked": true/false,

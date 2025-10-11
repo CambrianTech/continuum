@@ -150,10 +150,36 @@ export interface CoordinationConfig {
 /**
  * Default coordination configuration
  */
+/**
+ * Get probabilistic maxResponders (more natural than fixed)
+ * - 70% chance: 1 responder (focused)
+ * - 25% chance: 2 responders (discussion)
+ * - 5% chance: 3 responders (lively debate)
+ */
+export function getProbabilisticMaxResponders(): number {
+  const rand = Math.random();
+  if (rand < 0.70) return 1;  // 70% - focused
+  if (rand < 0.95) return 2;  // 25% - discussion
+  return 3;                    // 5% - lively
+}
+
+/**
+ * Get probabilistic minConfidence (vary the bar)
+ * - Usually 0.7 (70%)
+ * - Sometimes lower (0.6) for quiet rooms
+ * - Sometimes higher (0.8) for active rooms
+ */
+export function getProbabilisticMinConfidence(): number {
+  const rand = Math.random();
+  if (rand < 0.15) return 0.3;  // 15% - lower bar (for testing)
+  if (rand < 0.85) return 0.5;  // 70% - normal
+  return 0.6;                    // 15% - higher bar
+}
+
 export const DEFAULT_COORDINATION_CONFIG: CoordinationConfig = {
   intentionWindowMs: 2000,        // 2 second window to collect intentions
-  maxResponders: 2,               // Max 2 personas per message
-  minConfidence: 50,              // Need 50+ confidence to respond
+  maxResponders: getProbabilisticMaxResponders(),  // Probabilistic 1-3
+  minConfidence: getProbabilisticMinConfidence(),  // Probabilistic 0.6-0.8 (normalized 0-1)
   alwaysAllowMentioned: true,     // Mentioned personas always respond
   confidenceWeight: 0.7,          // 70% confidence, 30% urgency
   enableLogging: true
@@ -194,6 +220,9 @@ export interface ThoughtStream {
   /** Condition variable - notify waiters when decision made */
   decisionSignal?: Promise<CoordinationDecision>;
   signalResolver?: (decision: CoordinationDecision) => void;
+
+  /** Timer for intention window enforcement */
+  decisionTimer?: NodeJS.Timeout;
 }
 
 /**

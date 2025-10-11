@@ -38,6 +38,7 @@ import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIP
 import type { TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
+import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
 import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 
 /**
@@ -130,6 +131,14 @@ export class PersonaUser extends AIUser {
       // subscribeToChatEvents() filters by this.myRoomIds internally
       this.subscribeToChatEvents(this.handleChatMessage.bind(this));
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
+
+      // Subscribe to truncate events to cancel in-flight processing
+      this.client.daemons.events.on('data:chat_messages:truncated', () => {
+        console.log(`🗑️ ${this.displayName}: Chat history truncated, clearing response tracking`);
+        this.responseCount.clear();
+        this.lastResponseTime.clear();
+      });
+
       this.eventsSubscribed = true;
     }
 
@@ -142,18 +151,42 @@ export class PersonaUser extends AIUser {
    * RTOS-inspired: Broadcast thoughts, observe others, coordinate naturally
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
-    console.log(`📨 ${this.displayName}: Message from ${messageEntity.senderName}`);
+    const messageText = messageEntity.content?.text || '';
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`📨 ${this.displayName}: New message from ${messageEntity.senderName}`);
+    console.log(`   Message: "${messageText.slice(0, 100)}${messageText.length > 100 ? '...' : ''}"`);
 
     // STEP 1: Ignore our own messages
     if (messageEntity.senderId === this.id) {
       console.log(`🔇 ${this.displayName}: Ignoring own message`);
+      console.log(`${'='.repeat(80)}\n`);
       return;
     }
 
-    // Extract message text early for logging
-    const messageText = messageEntity.content?.text || '';
     const senderIsHuman = messageEntity.senderType === 'human';
+    console.log(`   Sender type: ${messageEntity.senderType} (human: ${senderIsHuman})`);
 
+    // === SEQUENTIAL EVALUATION: Request turn (brain-like, one at a time) ===
+    const coordinator = getThoughtStreamCoordinator();
+    const releaseTurn = await coordinator.requestEvaluationTurn(messageEntity.id, this.id);
+
+    try {
+      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
+    } finally {
+      releaseTurn(); // Always release turn, even if evaluation fails
+      console.log(`✅ ${this.displayName}: Released evaluation turn`);
+      console.log(`${'='.repeat(80)}\n`);
+    }
+  }
+
+  /**
+   * Evaluate message and possibly respond (called with exclusive evaluation lock)
+   */
+  private async evaluateAndPossiblyRespond(
+    messageEntity: ChatMessageEntity,
+    senderIsHuman: boolean,
+    messageText: string
+  ): Promise<void> {
     // STEP 2: Check response cap (prevent infinite loops)
     const currentCount = this.responseCount.get(messageEntity.roomId) || 0;
     if (currentCount >= this.maxResponsesPerSession) {
@@ -183,44 +216,12 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === THOUGHT STREAM: Evaluate and broadcast initial thought (SIGNAL) ===
+    // === EVALUATE: Use LLM reasoning to decide if should respond ===
     const confidence = await this.evaluateConfidence(messageEntity, senderIsHuman, isMentioned);
+    console.log(`📊 ${this.displayName}: Confidence = ${(confidence * 100).toFixed(0)}% (threshold: 50%)`);
 
-    if (confidence < 50) {
-      // Not confident enough - broadcast 'observing' thought
-      await this.broadcastThought(messageEntity.id, {
-        personaId: this.id,
-        type: 'observing',
-        confidence,
-        reasoning: `Low confidence (${confidence})`,
-        timestamp: new Date()
-      });
-      return;
-    }
-
-    // Broadcast 'claiming' thought (triggers coordinator decision)
-    await this.broadcastThought(messageEntity.id, {
-      personaId: this.id,
-      type: 'claiming',
-      confidence,
-      reasoning: `Claiming response slot (conf=${confidence}, mentioned=${isMentioned})`,
-      timestamp: new Date()
-    });
-
-    // === WAIT FOR DECISION (CONDITION VARIABLE) ===
-    const coordinator = getThoughtStreamCoordinator();
-    const decision = await coordinator.waitForDecision(messageEntity.id, 5000);
-
-    if (!decision || !decision.granted.includes(this.id)) {
-      // Not granted - broadcast 'deferring' thought
-      await this.broadcastThought(messageEntity.id, {
-        personaId: this.id,
-        type: 'deferring',
-        confidence,
-        reasoning: `Coordination denied or timeout`,
-        timestamp: new Date()
-      });
-      this.logAIDecision('SILENT', `Deferred (conf=${confidence})`, {
+    if (confidence < 0.5) {
+      this.logAIDecision('SILENT', `Low confidence (${(confidence * 100).toFixed(0)}%)`, {
         message: messageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
@@ -228,8 +229,8 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === GRANTED: Respond (MUTEX ACQUIRED) ===
-    this.logAIDecision('RESPOND', `Granted permission (conf=${confidence})`, {
+    // === RESPOND: Confident enough, generate response ===
+    this.logAIDecision('RESPOND', `Confident (${(confidence * 100).toFixed(0)}%)`, {
       message: messageText,
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
@@ -270,6 +271,71 @@ export class PersonaUser extends AIUser {
    */
   private timestampToNumber(timestamp: Date | number): number {
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
+  }
+
+  /**
+   * Self-review: Check if generated response is redundant compared to conversation history
+   * Like a human who drafts a response, re-reads the chat, and thinks "oh someone already said that"
+   */
+  private async isResponseRedundant(
+    myResponse: string,
+    conversationHistory: Array<{ role: string; content: string; name?: string }>
+  ): Promise<boolean> {
+    try {
+      // Get last 5 messages for comparison
+      const recentMessages = conversationHistory.slice(-5);
+      const conversationText = recentMessages
+        .map(msg => `${msg.name || msg.role}: ${msg.content}`)
+        .join('\n');
+
+      const prompt = `**Recent conversation:**
+${conversationText}
+
+**My draft response:**
+${myResponse}
+
+**Question**: Is my draft response saying basically the same thing as what's already been said?
+
+**Guidelines**:
+- Same idea with different words = REDUNDANT
+- Same concept with different analogy = REDUNDANT
+- Correcting a mistake = NOT redundant
+- Answering a different aspect = NOT redundant
+
+**Respond with JSON only:**
+{
+  "isRedundant": true/false,
+  "reason": "brief explanation"
+}`;
+
+      const request: TextGenerationRequest = {
+        messages: [
+          { role: 'system', content: 'You are a redundancy detector. Respond ONLY with JSON.' },
+          { role: 'user', content: prompt }
+        ],
+        model: 'llama3.2:3b',
+        temperature: 0.1, // Low temperature for consistent evaluation
+        maxTokens: 100,
+        preferredProvider: 'ollama'
+      };
+
+      const response = await AIProviderDaemon.generateText(request);
+
+      // Parse JSON response
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.warn(`⚠️ ${this.displayName}: Self-review failed to parse JSON, assuming not redundant`);
+        return false;
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      console.log(`🔍 ${this.displayName}: Self-review → ${parsed.isRedundant ? 'REDUNDANT' : 'UNIQUE'} (${parsed.reason})`);
+
+      return parsed.isRedundant ?? false;
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Self-review error:`, error);
+      return false; // On error, allow the response (fail open)
+    }
   }
 
   /**
@@ -344,6 +410,20 @@ export class PersonaUser extends AIUser {
       const aiResponse = await AIProviderDaemon.generateText(request);
 
       console.log(`✅ ${this.displayName}: Generated response in ${aiResponse.responseTime}ms (${aiResponse.usage.outputTokens} tokens)`);
+
+      // === SELF-REVIEW: Check if response is redundant before posting ===
+      const isRedundant = await this.isResponseRedundant(
+        aiResponse.text.trim(),
+        fullRAGContext.conversationHistory
+      );
+
+      if (isRedundant) {
+        console.log(`🗑️ ${this.displayName}: Self-review detected redundant response, discarding silently`);
+        console.log(`   Would have said: "${aiResponse.text.trim().substring(0, 80)}..."`);
+        return; // Discard response
+      }
+
+      console.log(`✅ ${this.displayName}: Self-review passed, response is unique`);
 
       // Create response message entity
       const responseMessage = new ChatMessageEntity();
@@ -878,25 +958,85 @@ export class PersonaUser extends AIUser {
    */
 
   /**
-   * Evaluate confidence (lightweight, no LLM)
+   * Evaluate confidence using multi-stage gating (delegates to ai/should-respond command)
+   *
+   * The command handles:
+   * - Fast path for clear cases (< 40 or > 70)
+   * - LLM reasoning for uncertain cases (40-70 range)
    */
   private async evaluateConfidence(
     message: ChatMessageEntity,
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<number> {
-    // Call existing scoring logic
-    await this.shouldRespondToMessage(message, senderIsHuman, isMentioned);
+    console.log(`🔧 CLAUDE-FIX-${Date.now()}: evaluateConfidence with modular gating`);
 
-    // Get relevance score from last evaluation (stored by shouldRespondToMessage)
-    let confidence = (this as any).lastRelevanceScore || 50;
+    try {
+      // Build RAG context for gating decision
+      const ragBuilder = new ChatRAGBuilder();
+      const ragContext = await ragBuilder.buildContext(
+        message.roomId,
+        this.id,
+        {
+          maxMessages: 15,
+          maxMemories: 0,
+          includeArtifacts: false,
+          includeMemories: false,
+          currentMessage: {
+            role: 'user',
+            content: message.content.text,
+            name: message.senderName,
+            timestamp: this.timestampToNumber(message.timestamp)
+          }
+        }
+      );
 
-    // Boost confidence for mentions
-    if (isMentioned) {
-      confidence = Math.min(100, confidence + 50);
+      // Use ai/should-respond with strategy='llm' for real AI reasoning
+      // (Fast path is deprecated - we want "real thinking" per user request)
+      const result: AIShouldRespondResult = this.client
+        ? await this.client.daemons.commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
+            context: this.client.context,
+            sessionId: this.client.sessionId,
+            personaName: this.displayName,
+            personaId: this.id,
+            contextId: message.roomId,
+            ragContext,
+            triggerMessage: {
+              senderName: message.senderName,
+              content: message.content.text,
+              timestamp: message.timestamp.toISOString()
+            },
+            strategy: 'llm',
+            model: 'llama3.2:3b'
+          })
+        : await Commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
+            personaName: this.displayName,
+            personaId: this.id,
+            contextId: message.roomId,
+            ragContext,
+            triggerMessage: {
+              senderName: message.senderName,
+              content: message.content.text,
+              timestamp: message.timestamp.toISOString()
+            },
+            strategy: 'llm',
+            model: 'llama3.2:3b'
+          });
+
+      if (!result) {
+        console.warn(`⚠️ ${this.displayName}: Gating command returned null, using mention status`);
+        return isMentioned ? 1.0 : 0.5;  // Normalized 0-1
+      }
+
+      // Keep confidence in 0-1 range (normalized everywhere)
+      const confidence = result.confidence ?? 0.5;
+      console.log(`🧠 ${this.displayName}: LLM gating → ${(confidence * 100).toFixed(0)}% confidence (${result.reason})`);
+      return confidence;
+
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Confidence evaluation failed:`, error);
+      return isMentioned ? 1.0 : 0.5;  // Normalized 0-1
     }
-
-    return confidence;
   }
 
   /**
