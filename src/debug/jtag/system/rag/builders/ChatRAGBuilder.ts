@@ -143,7 +143,8 @@ export class ChatRAGBuilder extends RAGBuilder {
    */
   private async buildSystemPrompt(user: UserEntity, roomId: UUID): Promise<string> {
     const name = user.displayName;
-    const bio = user.profile?.bio ?? '';
+    // Use profile.bio if available, fallback to shortDescription, then empty
+    const bio = user.profile?.bio ?? user.shortDescription ?? '';
     const capabilities = user.capabilities?.autoResponds
       ? 'You respond naturally to conversations.'
       : 'You participate when mentioned or when the conversation is relevant.';
