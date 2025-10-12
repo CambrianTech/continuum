@@ -22,7 +22,6 @@
  */
 
 import type {
-  AIProviderAdapter,
   ModelCapability,
   ModelInfo,
   TextGenerationRequest,
@@ -35,6 +34,7 @@ import type {
   UsageMetrics,
 } from '../AIProviderTypesV2';
 import { AIProviderError } from '../AIProviderTypesV2';
+import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
 
 export interface OpenAICompatibleConfig {
   providerId: string;
@@ -51,7 +51,7 @@ export interface OpenAICompatibleConfig {
  * Base adapter for OpenAI-compatible APIs
  * Subclasses only need to provide config and optionally override pricing
  */
-export abstract class BaseOpenAICompatibleAdapter implements AIProviderAdapter {
+export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter {
   readonly providerId: string;
   readonly providerName: string;
   readonly supportedCapabilities: ModelCapability[];
@@ -60,13 +60,14 @@ export abstract class BaseOpenAICompatibleAdapter implements AIProviderAdapter {
   protected isInitialized = false;
 
   constructor(config: OpenAICompatibleConfig) {
+    super();
     this.config = config;
     this.providerId = config.providerId;
     this.providerName = config.providerName;
     this.supportedCapabilities = config.supportedCapabilities;
   }
 
-  async initialize(): Promise<void> {
+  protected async initializeProvider(): Promise<void> {
     console.log(`🔌 ${this.providerName}: Initializing...`);
 
     // Verify API key is set
@@ -336,9 +337,19 @@ export abstract class BaseOpenAICompatibleAdapter implements AIProviderAdapter {
     }
   }
 
-  async shutdown(): Promise<void> {
+  protected async shutdownProvider(): Promise<void> {
     console.log(`🔄 ${this.providerName}: Shutting down (API adapter, no cleanup needed)`);
     this.isInitialized = false;
+  }
+
+  /**
+   * Restart API connection (default: clear state and reconnect)
+   */
+  protected async restartProvider(): Promise<void> {
+    console.log(`🔄 ${this.providerName}: Restarting API connection...`);
+    this.isInitialized = false;
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    await this.initializeProvider();
   }
 
   // ========================

@@ -104,6 +104,7 @@
 .messages-container {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--spacing-md) var(--spacing-lg);
   display: flex;
   flex-direction: column;
@@ -144,6 +145,7 @@
 .entity-list-body {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column; /* Normal order: oldest to newest, like Discord/Slack */
 
