@@ -86,7 +86,12 @@ export abstract class UserDaemon extends DaemonBase {
     await this.subscribeToUserEvents();
 
     // Ensure all existing PersonaUsers have client instances
-    await this.ensurePersonaClients();
+    // (non-critical during init, will be loaded on-demand)
+    try {
+      await this.ensurePersonaClients();
+    } catch (error) {
+      console.log(`ℹ️  UserDaemon: Deferring persona client initialization (DataDaemon not ready yet)`);
+    }
 
     // Start continuous monitoring loops
     this.startMonitoringLoops();

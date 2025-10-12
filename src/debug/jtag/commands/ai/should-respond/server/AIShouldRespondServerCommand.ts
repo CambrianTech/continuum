@@ -58,7 +58,6 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
       const confidence = parsed.confidence ?? 0.5;
       console.log(`✅ AI Should-Respond: ${params.personaName} → ${parsed.shouldRespond ? 'RESPOND' : 'SILENT'} (${(confidence * 100).toFixed(0)}% confidence)`);
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Should-respond now distinguishes meta-commentary from actual answers`);
 
       // Build debug output if verbose mode enabled
       let debugOutput: AIShouldRespondResult['debug'] = undefined;

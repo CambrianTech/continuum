@@ -449,7 +449,6 @@ async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: 
     tmuxCheck.on('close', (code) => resolve(code === 0));
   });
   
-  // 🔧 CLAUDE-FIX-2024-08-27-B: Use centralized config for port detection
   const instanceConfig = loadInstanceConfigForContext();
   const wsPort = instanceConfig.ports.websocket_server;
   const httpPort = instanceConfig.ports.http_server;
@@ -503,7 +502,6 @@ async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: 
 }
 
 /**
- * 🔧 CLAUDE-FIX-2024-08-27-B: Automated port takeover for dual-system prevention
  * Force kill processes using the configured ports to prevent conflicts
  */
 async function forcePortTakeover(): Promise<void> {
@@ -586,7 +584,6 @@ async function main(): Promise<void> {
       
       // Development mode: show status and exit if healthy
       if (serverStatus.isHealthy && !CONFIG.forceRestart && behavior.exitOnHealthy) {
-        // 🔧 CLAUDE-FIX-2024-08-27-B: Use configured ports in success message
         const instanceConfig = loadInstanceConfigForContext();
         const wsPort = instanceConfig.ports.websocket_server;
         const httpPort = instanceConfig.ports.http_server;
@@ -624,7 +621,6 @@ async function main(): Promise<void> {
           });
         }
         
-        // 🔧 CLAUDE-FIX-2024-08-27-B: Force port takeover to prevent dual-system conflicts
         if (serverStatus.portsActive) {
           await forcePortTakeover();
         } else {

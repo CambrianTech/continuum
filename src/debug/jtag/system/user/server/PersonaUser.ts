@@ -353,7 +353,6 @@ ${myResponse}
 
       const parsed = JSON.parse(jsonMatch[0]);
       console.log(`🔍 ${this.displayName}: Self-review → ${parsed.isRedundant ? 'REDUNDANT' : 'UNIQUE'} (${parsed.reason})`);
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Self-review now only checks against own responses, not all messages`);
 
       return parsed.isRedundant ?? false;
     } catch (error) {
@@ -455,6 +454,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
       // Generate response using AIProviderDaemon (static method like DataDaemon.query)
       console.log(`🤖 ${this.displayName}: Generating AI response with ${messages.length} context messages...`);
+      console.log(`📋 ${this.displayName}: Last 3 messages:`, JSON.stringify(messages.slice(-3), null, 2).substring(0, 500));
 
       const request: TextGenerationRequest = {
         messages,
@@ -1025,7 +1025,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<{ shouldRespond: boolean; confidence: number; reason: string }> {
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: evaluateShouldRespond - using command's decision directly`);
 
     try {
       // Build RAG context for gating decision (reduced to 5 messages to prevent Ollama timeout)

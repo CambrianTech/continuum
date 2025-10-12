@@ -19,10 +19,8 @@
  */
 
 import type { AIProviderAdapter, TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
-import { OllamaAdapter } from '../../../daemons/ai-provider-daemon/shared/OllamaAdapter';
-// TODO: Import additional adapters when implemented:
-// import { ClaudeAdapter } from '../../../daemons/ai-provider-daemon/shared/ClaudeAdapter';
-// import { OpenAIAdapter } from '../../../daemons/ai-provider-daemon/shared/OpenAIAdapter';
+// NOTE: Adapters are dynamically imported in loadProviderAdapter() to avoid
+// ESM/CJS compatibility issues (node-llama-cpp uses top-level await)
 
 /**
  * Worker state
@@ -99,45 +97,58 @@ function sendToParent(message: WorkerMessage): void {
 }
 
 /**
+ * Send log message to parent (for debugging)
+ */
+function logToParent(message: string): void {
+  if (process.send) {
+    process.send({ type: 'log', message });
+  }
+}
+
+/**
  * Handle messages from parent
  */
 process.on('message', async (rawMessage: unknown) => {
   try {
+    logToParent(`📥 Received message: ${JSON.stringify(rawMessage).substring(0, 200)}`);
+
     // Type guard: ensure message is an object with a type property
     if (!rawMessage || typeof rawMessage !== 'object' || !('type' in rawMessage)) {
-      console.warn('⚠️  InferenceWorker: Invalid message received:', rawMessage);
+      logToParent(`⚠️  Invalid message received: ${JSON.stringify(rawMessage)}`);
       return;
     }
 
     const message = rawMessage as ParentMessage;
+    logToParent(`📨 Message type: ${message.type}`);
 
     switch (message.type) {
       case 'load-genome':
+        logToParent(`🔄 Loading genome ${message.genomeId}...`);
         await handleLoadGenome(message.genomeId, message.layers);
         break;
 
       case 'infer':
+        logToParent(`🎯 Handling inference request (provider: ${message.provider}, model: ${message.model})`);
         await handleInference(message);
         break;
 
       case 'health-check':
+        logToParent(`💊 Health check requested`);
         handleHealthCheck();
         break;
 
       case 'shutdown':
+        logToParent(`🛑 Shutdown requested`);
         await handleShutdown();
         break;
 
       default:
-        console.warn(
-          `⚠️  InferenceWorker: Unknown message type:`,
-          (message as IPCMessage).type
-        );
+        logToParent(`⚠️  Unknown message type: ${(message as IPCMessage).type}`);
     }
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error';
-    console.error(`❌ InferenceWorker: Error handling message:`, error);
+    logToParent(`❌ Error handling message: ${errorMessage}`);
     sendToParent({ type: 'error', error: errorMessage });
   }
 });
@@ -178,14 +189,13 @@ async function handleInference(message: {
   config?: Record<string, unknown>;
   genomeId?: string;
 }): Promise<void> {
-  console.log(`🔧 CLAUDE-FIX-${Date.now()}: InferenceWorker handling generic ${message.provider} inference`);
-  console.log(
-    `🔄 InferenceWorker: Running inference (provider: ${message.provider}, model: ${message.model}, prompt length: ${message.prompt.length})`
-  );
+  logToParent(`🔄 Running inference (provider: ${message.provider}, model: ${message.model}, prompt length: ${message.prompt.length})`);
 
   try {
     // Load and initialize the appropriate adapter (imported at top)
+    logToParent(`📦 Loading provider adapter: ${message.provider}`);
     const adapter = await loadProviderAdapter(message.provider, message.config);
+    logToParent(`✅ Adapter loaded successfully`);
 
     // Build inference request
     const request: TextGenerationRequest = {
@@ -195,17 +205,18 @@ async function handleInference(message: {
       maxTokens: message.maxTokens,
     };
 
+    logToParent(`🎯 Calling adapter.generateText()...`);
     // Execute inference through adapter
     const response = await adapter.generateText(request);
+    logToParent(`✅ Adapter returned response: ${response.text.substring(0, 50)}...`);
 
     state.requestCount++;
-    console.log(
-      `✅ InferenceWorker: Inference complete (total requests: ${state.requestCount})`
-    );
+    logToParent(`✅ Inference complete (total requests: ${state.requestCount})`);
 
     sendToParent({ type: 'result', output: response.text });
   } catch (error) {
-    console.error(`❌ InferenceWorker: Inference failed:`, error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    logToParent(`❌ Inference failed: ${errorMsg}`);
     throw error;
   }
 }
@@ -216,7 +227,7 @@ async function handleInference(message: {
 const adapterCache = new Map<string, AIProviderAdapter>();
 
 /**
- * Load and initialize AI provider adapter (adapters imported at top)
+ * Load and initialize AI provider adapter using dynamic imports
  * Supports: ollama, claude, openai, etc.
  */
 async function loadProviderAdapter(
@@ -237,20 +248,31 @@ async function loadProviderAdapter(
 
   switch (provider.toLowerCase()) {
     case 'ollama':
+      // Use native llama.cpp bindings for true parallel inference (no HTTP)
+      // Dynamic import to avoid ESM/CJS issues with node-llama-cpp
+      const { LlamaCppAdapter } = await import('../../../daemons/ai-provider-daemon/shared/LlamaCppAdapter.js');
+      adapter = new LlamaCppAdapter(config);
+      break;
+
+    case 'ollama-http':
+      // Fallback: HTTP-based Ollama adapter (useful for debugging)
+      const { OllamaAdapter } = await import('../../../daemons/ai-provider-daemon/shared/OllamaAdapter.js');
       adapter = new OllamaAdapter(config);
       break;
 
     // TODO: Add when adapters are implemented
     // case 'claude':
+    //   const { ClaudeAdapter } = await import('../../../daemons/ai-provider-daemon/shared/ClaudeAdapter.js');
     //   adapter = new ClaudeAdapter(config);
     //   break;
     //
     // case 'openai':
+    //   const { OpenAIAdapter } = await import('../../../daemons/ai-provider-daemon/shared/OpenAIAdapter.js');
     //   adapter = new OpenAIAdapter(config);
     //   break;
 
     default:
-      throw new Error(`Unknown AI provider: ${provider} (only 'ollama' currently supported)`);
+      throw new Error(`Unknown AI provider: ${provider} (supported: 'ollama', 'ollama-http')`);
   }
 
   // Initialize adapter (lazy initialization happens here, not at worker startup)
@@ -322,6 +344,8 @@ process.on('unhandledRejection', (reason) => {
 // Initialize and signal ready
 (async () => {
   try {
+    logToParent(`🚀 Initializing worker (PID: ${process.pid}, ID: ${state.processId}, Tier: ${state.poolTier})`);
+
     // Phase 2.2: Initialize inference engine
     // Phase 2.3: Warm up model
 
@@ -331,10 +355,11 @@ process.on('unhandledRejection', (reason) => {
     }, 30000); // Every 30 seconds
 
     state.isReady = true;
-    console.log(`✅ InferenceWorker: Ready (PID: ${process.pid})`);
+    logToParent(`✅ Worker ready, sending 'ready' message to parent`);
     sendToParent({ type: 'ready' });
   } catch (error) {
-    console.error(`❌ InferenceWorker: Initialization failed:`, error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    logToParent(`❌ Initialization failed: ${errorMsg}`);
     if (keepAliveInterval) {
       clearInterval(keepAliveInterval);
     }

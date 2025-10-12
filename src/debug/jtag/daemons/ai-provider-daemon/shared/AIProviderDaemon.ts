@@ -127,7 +127,6 @@ export class AIProviderDaemon extends DaemonBase {
    * Routes through ProcessPool if available (server-side), otherwise uses adapter directly (browser/fallback)
    */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: AIProviderDaemon.generateText() - checking for ProcessPool routing`);
 
     if (!this.initialized) {
       throw new AIProviderError(

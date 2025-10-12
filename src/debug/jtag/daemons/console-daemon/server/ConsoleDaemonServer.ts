@@ -128,7 +128,6 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       const symlinkPath = path.join(continuumPath, 'jtag', 'currentUser');
       const targetPath = `sessions/${category}/${sessionId}`;
       
-      // 🔧 CLAUDE-FIX-1757736695: Symlink validation + UNKNOWN_SESSION exclusion
       // CRITICAL FIX: Always check current symlink target FIRST, regardless of cache
       // This prevents unnecessary work when symlink already points to correct target
       try {

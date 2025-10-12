@@ -63,7 +63,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       maxMemoryMB: 2048,
       maxRequestsPerProcess: 1000,
       maxErrorsBeforeTerminate: 5,
-      processTimeoutMs: 30000,
+      processTimeoutMs: 30000
     });
 
     await this.processPool.initialize();

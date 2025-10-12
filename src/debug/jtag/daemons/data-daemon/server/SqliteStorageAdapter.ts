@@ -750,7 +750,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   private async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
     // If already in a transaction, just execute the operation without nesting
     if (this.inTransaction) {
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Already in transaction, skipping nested BEGIN`);
       return await operation();
     }
 
@@ -761,7 +760,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     try {
       const result = await operation();
       await this.commitTransaction();
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Transaction committed successfully`);
       return result;
     } catch (error) {
       await this.rollbackTransaction();
@@ -777,7 +775,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Creating ${record.collection}/${record.id} in entity-specific table`);
 
       // Ensure entity table exists
       await this.ensureEntityTable(record.collection);
@@ -965,7 +962,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Reading ${collection}/${id} from entity-specific table`);
 
       const entityClass = ENTITY_REGISTRY.get(collection);
 
@@ -1656,12 +1652,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       ...updatedData           // Apply partial updates
     };
 
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: Merging update data for ${collection}/${id}`, {
-      existingData: existingRecord.data,
-      updatedData,
-      mergedData
-    });
-
     const updatedRecord: DataRecord<T> = {
       ...existingRecord,
       data: mergedData as T,   // Use merged data to preserve all fields including id
@@ -1687,7 +1677,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
     try {
-      console.log(`🗑️ CLAUDE-FIX-${Date.now()}: Deleting ${collection}/${id} with atomic transaction`);
 
       // Execute delete operation in transaction for atomic consistency
       const deletedCount = await this.withTransaction(async () => {
