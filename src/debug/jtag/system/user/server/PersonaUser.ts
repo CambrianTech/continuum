@@ -216,12 +216,12 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === EVALUATE: Use LLM reasoning to decide if should respond ===
-    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
-    console.log(`📊 ${this.displayName}: Gating decision = ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'} (${(gatingResult.confidence * 100).toFixed(0)}% confidence)`);
+    // === EVALUATE: Use FAST bag-of-words to decide if should respond (no LLM) ===
+    const shouldRespond = await this.shouldRespondToMessage(messageEntity, senderIsHuman, isMentioned);
+    console.log(`📊 ${this.displayName}: Gating decision = ${shouldRespond ? 'RESPOND' : 'SILENT'}`);
 
-    if (!gatingResult.shouldRespond) {
-      this.logAIDecision('SILENT', gatingResult.reason, {
+    if (!shouldRespond) {
+      this.logAIDecision('SILENT', 'Fast bag-of-words gating', {
         message: messageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
@@ -229,8 +229,8 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === RESPOND: LLM decided to respond, generate response ===
-    this.logAIDecision('RESPOND', `${gatingResult.reason} (${(gatingResult.confidence * 100).toFixed(0)}%)`, {
+    // === RESPOND: Fast gating decided to respond, generate response ===
+    this.logAIDecision('RESPOND', 'Fast bag-of-words gating passed', {
       message: messageText,
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
@@ -282,21 +282,21 @@ export class PersonaUser extends AIUser {
     conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
   ): Promise<boolean> {
     try {
-      // Get last 5 messages BUT filter to only assistant messages (my previous responses)
-      // We're checking if I'm repeating MYSELF, not if users are asking duplicate questions
-      const myRecentResponses = conversationHistory
-        .filter(msg => msg.role === 'assistant' && msg.name === this.displayName)
+      // Get last 5 ASSISTANT messages (ALL personas, not just mine)
+      // We're checking if ANYONE already covered this, not just if I'm repeating myself
+      const recentAssistantResponses = conversationHistory
+        .filter(msg => msg.role === 'assistant')
         .slice(-5);
 
-      // If I haven't responded recently (less than 2 messages), skip self-review
-      // First responses to new questions should always be allowed
-      if (myRecentResponses.length < 2) {
-        console.log(`✅ ${this.displayName}: Self-review skipped (only ${myRecentResponses.length} recent responses)`);
+      // If no recent assistant responses, skip self-review
+      // First response to a question should always be allowed
+      if (recentAssistantResponses.length === 0) {
+        console.log(`✅ ${this.displayName}: Self-review skipped (no recent assistant responses)`);
         return false;
       }
 
       // Preserve timestamp context (critical for detecting topic changes)
-      const conversationText = myRecentResponses
+      const conversationText = recentAssistantResponses
         .map(msg => {
           let timePrefix = '';
           if (msg.timestamp) {
