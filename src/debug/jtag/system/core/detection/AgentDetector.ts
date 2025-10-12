@@ -38,21 +38,21 @@ export class AgentDetector {
   static detect(): AgentInfo {
     // Try different detection methods in order of confidence
     const detectors = [
-      this.detectClaude,
-      this.detectChatGPT,
-      this.detectGitHubCopilot,
-      this.detectCI,
-      this.detectAutomation,
-      this.detectHuman
+      this.detectClaude.bind(this),
+      this.detectChatGPT.bind(this),
+      this.detectGitHubCopilot.bind(this),
+      this.detectCI.bind(this),
+      this.detectAutomation.bind(this),
+      this.detectHuman.bind(this)
     ];
-    
+
     for (const detector of detectors) {
       const result = detector();
       if (result.confidence > 0.7) {
         return result;
       }
     }
-    
+
     // Fallback to best guess
     return this.detectHuman();
   }
@@ -67,12 +67,18 @@ export class AgentDetector {
       process.env.ANTHROPIC_CLI === 'true',
       AgentDetector.checkParentProcess('claude')
     ];
-    
+
     const matches = indicators.filter(Boolean).length;
-    const confidence = matches / indicators.length;
-    
+    let confidence = matches / indicators.length;
+
+    // CLAUDECODE=1 alone is sufficient for detection
+    if (process.env.CLAUDECODE === '1') {
+      // If we have 2+ indicators, confidence is high
+      confidence = matches >= 2 ? 0.95 : 0.75;
+    }
+
     if (confidence < 0.5) {
-      return { name: 'unknown', type: 'unknown', capabilities: { supportsColors: false, prefersStructuredData: false, supportsInteractivity: false }, outputFormat: 'human', confidence: 0 };
+      return this.createUnknownAgent();
     }
     
     return {
@@ -116,7 +122,7 @@ export class AgentDetector {
     const confidence = matches / indicators.length;
     
     if (confidence < 0.5) {
-      return { name: 'unknown', type: 'unknown', capabilities: { supportsColors: false, prefersStructuredData: false, supportsInteractivity: false }, outputFormat: 'human', confidence: 0 };
+      return this.createUnknownAgent();
     }
     
     return {
@@ -129,7 +135,17 @@ export class AgentDetector {
         maxOutputLength: 8000
       },
       outputFormat: 'ai-friendly',
-      confidence
+      confidence,
+      adapterType: 'ai-api',
+      participantCapabilities: {
+        canSendMessages: true,
+        canReceiveMessages: true,
+        canCreateRooms: false,
+        canInviteOthers: false,
+        canModerate: false,
+        autoResponds: true,
+        providesContext: true
+      }
     };
   }
 
@@ -147,7 +163,7 @@ export class AgentDetector {
     const confidence = matches / indicators.length;
     
     if (confidence < 0.3) {
-      return { name: 'unknown', type: 'unknown', capabilities: { supportsColors: false, prefersStructuredData: false, supportsInteractivity: false }, outputFormat: 'human', confidence: 0 };
+      return this.createUnknownAgent();
     }
     
     return {
@@ -160,7 +176,17 @@ export class AgentDetector {
         maxOutputLength: 2000
       },
       outputFormat: 'compact',
-      confidence
+      confidence,
+      adapterType: 'ai-api',
+      participantCapabilities: {
+        canSendMessages: true,
+        canReceiveMessages: true,
+        canCreateRooms: false,
+        canInviteOthers: false,
+        canModerate: false,
+        autoResponds: true,
+        providesContext: true
+      }
     };
   }
 
@@ -189,7 +215,17 @@ export class AgentDetector {
             maxOutputLength: 50000
           },
           outputFormat: 'compact',
-          confidence: 0.9
+          confidence: 0.9,
+          adapterType: 'automation',
+          participantCapabilities: {
+            canSendMessages: false,
+            canReceiveMessages: false,
+            canCreateRooms: false,
+            canInviteOthers: false,
+            canModerate: false,
+            autoResponds: false,
+            providesContext: false
+          }
         };
       }
     }
@@ -204,11 +240,21 @@ export class AgentDetector {
           supportsInteractivity: false
         },
         outputFormat: 'compact',
-        confidence: 0.8
+        confidence: 0.8,
+        adapterType: 'automation',
+        participantCapabilities: {
+          canSendMessages: false,
+          canReceiveMessages: false,
+          canCreateRooms: false,
+          canInviteOthers: false,
+          canModerate: false,
+          autoResponds: false,
+          providesContext: false
+        }
       };
     }
     
-    return { name: 'unknown', type: 'unknown', capabilities: { supportsColors: false, prefersStructuredData: false, supportsInteractivity: false }, outputFormat: 'human', confidence: 0 };
+    return this.createUnknownAgent();
   }
 
   /**
@@ -234,11 +280,21 @@ export class AgentDetector {
           supportsInteractivity: false
         },
         outputFormat: 'json',
-        confidence: 0.7
+        confidence: 0.7,
+        adapterType: 'automation',
+        participantCapabilities: {
+          canSendMessages: false,
+          canReceiveMessages: false,
+          canCreateRooms: false,
+          canInviteOthers: false,
+          canModerate: false,
+          autoResponds: false,
+          providesContext: false
+        }
       };
     }
     
-    return { name: 'unknown', type: 'unknown', capabilities: { supportsColors: false, prefersStructuredData: false, supportsInteractivity: false }, outputFormat: 'human', confidence: 0 };
+    return this.createUnknownAgent();
   }
 
   /**
@@ -266,7 +322,17 @@ export class AgentDetector {
         supportsInteractivity: true
       },
       outputFormat: 'human',
-      confidence: 0.6
+      confidence: 0.6,
+      adapterType: 'cli',
+      participantCapabilities: {
+        canSendMessages: true,
+        canReceiveMessages: true,
+        canCreateRooms: true,
+        canInviteOthers: true,
+        canModerate: true,
+        autoResponds: false,
+        providesContext: false
+      }
     };
   }
 
