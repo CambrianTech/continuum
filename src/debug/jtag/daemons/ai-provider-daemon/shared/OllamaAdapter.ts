@@ -33,6 +33,66 @@ import {
 import { BaseAIProviderAdapter } from './BaseAIProviderAdapter';
 import { spawn } from 'child_process';
 
+/**
+ * Request queue for Ollama API
+ * Prevents overload by limiting concurrent requests to Ollama's actual capacity (2)
+ */
+interface QueuedRequest {
+  executor: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  requestId: string;
+}
+
+class OllamaRequestQueue {
+  private queue: Array<QueuedRequest> = [];
+  private activeRequests = 0;
+  private readonly maxConcurrent = 2;  // Ollama's actual capacity
+
+  async enqueue<T>(executor: () => Promise<T>, requestId: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.queue.push({
+        executor: executor as () => Promise<unknown>,
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        requestId
+      });
+      console.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      this.processQueue();
+    });
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.activeRequests >= this.maxConcurrent || this.queue.length === 0) {
+      return;
+    }
+
+    this.activeRequests++;
+    const request = this.queue.shift()!;
+
+    console.log(`▶️  Ollama Queue: Starting request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+
+    try {
+      const result = await request.executor();
+      request.resolve(result);
+    } catch (error) {
+      request.reject(error as Error);
+    } finally {
+      this.activeRequests--;
+      console.log(`✅ Ollama Queue: Completed request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      this.processQueue();  // Process next request in queue
+    }
+  }
+
+  getStats(): { queueSize: number; activeRequests: number; maxConcurrent: number } {
+    return {
+      queueSize: this.queue.length,
+      activeRequests: this.activeRequests,
+      maxConcurrent: this.maxConcurrent
+    };
+  }
+}
+
 export class OllamaAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'ollama';
   readonly providerName = 'Ollama';
@@ -40,6 +100,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   private config: ProviderConfiguration;
   private healthCache: { status: HealthStatus; timestamp: number } | null = null;
   private readonly healthCacheTTL = 30000; // 30 seconds
+  private readonly requestQueue = new OllamaRequestQueue();
 
   constructor(config?: Partial<ProviderConfiguration>) {
     super();
@@ -233,41 +294,48 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   }
 
   /**
-   * Make HTTP request to Ollama API with retry logic
+   * Make HTTP request to Ollama API with retry logic and queue management
    */
   private async makeRequest<T>(
     endpoint: string,
     body?: unknown,
-    attempt = 1
+    attempt = 1,
+    requestId?: string
   ): Promise<T> {
-    const url = `${this.config.apiEndpoint}${endpoint}`;
+    const reqId = requestId || createRequestId();
 
-    try {
-      const response = await fetch(url, {
-        method: body ? 'POST' : 'GET',
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.config.timeout),
-      });
+    // Wrap the actual request in queue to prevent overload
+    return this.requestQueue.enqueue(async () => {
+      const url = `${this.config.apiEndpoint}${endpoint}`;
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      try {
+        const response = await fetch(url, {
+          method: body ? 'POST' : 'GET',
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: AbortSignal.timeout(this.config.timeout),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        return (await response.json()) as T;
+      } catch (error) {
+        // Retry logic
+        if (attempt < this.config.retryAttempts) {
+          console.log(`⚠️  ${this.providerName}: Request failed (attempt ${attempt}/${this.config.retryAttempts}), retrying...`);
+
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, this.config.retryDelay));
+
+          // Note: Retry will re-enter the queue
+          return this.makeRequest<T>(endpoint, body, attempt + 1, reqId);
+        }
+
+        // All retries exhausted
+        throw error;
       }
-
-      return (await response.json()) as T;
-    } catch (error) {
-      // Retry logic
-      if (attempt < this.config.retryAttempts) {
-        console.log(`⚠️  ${this.providerName}: Request failed (attempt ${attempt}/${this.config.retryAttempts}), retrying...`);
-
-        // Wait before retry
-        await new Promise(resolve => setTimeout(resolve, this.config.retryDelay));
-
-        return this.makeRequest<T>(endpoint, body, attempt + 1);
-      }
-
-      // All retries exhausted
-      throw error;
-    }
+    }, reqId);
   }
 }
