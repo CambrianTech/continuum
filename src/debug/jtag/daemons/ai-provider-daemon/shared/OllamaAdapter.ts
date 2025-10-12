@@ -15,7 +15,6 @@
  */
 
 import type {
-  AIProviderAdapter,
   TextGenerationRequest,
   TextGenerationResponse,
   HealthStatus,
@@ -31,8 +30,10 @@ import {
   createRequestId,
   AIProviderError,
 } from './AIProviderTypes';
+import { BaseAIProviderAdapter } from './BaseAIProviderAdapter';
+import { spawn } from 'child_process';
 
-export class OllamaAdapter implements AIProviderAdapter {
+export class OllamaAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'ollama';
   readonly providerName = 'Ollama';
 
@@ -41,6 +42,7 @@ export class OllamaAdapter implements AIProviderAdapter {
   private readonly healthCacheTTL = 30000; // 30 seconds
 
   constructor(config?: Partial<ProviderConfiguration>) {
+    super();
     this.config = {
       apiEndpoint: 'http://localhost:11434',
       timeout: 30000,
@@ -53,9 +55,10 @@ export class OllamaAdapter implements AIProviderAdapter {
     };
   }
 
-  async initialize(): Promise<void> {
-    console.log(`🤖 ${this.providerName}: Initializing...`);
-
+  /**
+   * Ollama-specific initialization
+   */
+  protected async initializeProvider(): Promise<void> {
     // Check Ollama is available
     const health = await this.healthCheck();
     if (!health.apiAvailable) {
@@ -69,13 +72,24 @@ export class OllamaAdapter implements AIProviderAdapter {
 
     // Log available models
     const models = await this.getAvailableModels();
-    console.log(`✅ ${this.providerName}: Initialized with ${models.length} models available`);
-    console.log(`   Models: ${models.join(', ')}`);
+    console.log(`   ${models.length} models available: ${models.join(', ')}`);
   }
 
-  async shutdown(): Promise<void> {
-    console.log(`🔄 ${this.providerName}: Shutting down...`);
+  /**
+   * Ollama-specific shutdown
+   */
+  protected async shutdownProvider(): Promise<void> {
     this.healthCache = null;
+  }
+
+  /**
+   * Restart frozen Ollama service
+   */
+  protected async restartProvider(): Promise<void> {
+    spawn('killall', ['ollama']);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' }).unref();
+    await new Promise(resolve => setTimeout(resolve, 3000));
   }
 
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {

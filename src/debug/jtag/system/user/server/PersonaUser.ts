@@ -216,12 +216,12 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === EVALUATE: Use FAST bag-of-words to decide if should respond (no LLM) ===
-    const shouldRespond = await this.shouldRespondToMessage(messageEntity, senderIsHuman, isMentioned);
-    console.log(`📊 ${this.displayName}: Gating decision = ${shouldRespond ? 'RESPOND' : 'SILENT'}`);
+    // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
+    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
+    console.log(`📊 ${this.displayName}: Gating decision = ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'} (${(gatingResult.confidence * 100).toFixed(0)}% confidence)`);
 
-    if (!shouldRespond) {
-      this.logAIDecision('SILENT', 'Fast bag-of-words gating', {
+    if (!gatingResult.shouldRespond) {
+      this.logAIDecision('SILENT', gatingResult.reason, {
         message: messageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
@@ -229,8 +229,8 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === RESPOND: Fast gating decided to respond, generate response ===
-    this.logAIDecision('RESPOND', 'Fast bag-of-words gating passed', {
+    // === RESPOND: LLM gating decided to respond, generate response ===
+    this.logAIDecision('RESPOND', gatingResult.reason, {
       message: messageText,
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
@@ -1027,13 +1027,14 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
   ): Promise<{ shouldRespond: boolean; confidence: number; reason: string }> {
 
     try {
-      // Build RAG context for gating decision (reduced to 5 messages to prevent Ollama timeout)
+      // Build RAG context for gating decision (recent messages only, max 5 minutes old)
+      // Include recent context BUT filter out old messages from different conversation windows
       const ragBuilder = new ChatRAGBuilder();
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.id,
         {
-          maxMessages: 5,  // Small context for fast gating decisions
+          maxMessages: 10,  // Fetch up to 10 recent messages
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
@@ -1046,7 +1047,39 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         }
       );
 
-      // Use ai/should-respond with strategy='llm' for real AI reasoning
+      // Filter conversation history to only include REAL messages (not system/welcome)
+      // Also filter to last 5 minutes to prevent temporal confusion
+      const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+      const recentHistory = ragContext.conversationHistory.filter(msg => {
+        const msgTime = msg.timestamp ?? 0;
+        const isRecent = msgTime >= fiveMinutesAgo;
+
+        // Exclude system messages (welcome, announcements) from gating context
+        // These confuse the AI into thinking there's an active conversation
+        const isSystemMessage = msg.role === 'system' ||
+                                msg.name === 'System' ||
+                                msg.content.startsWith('Welcome to') ||
+                                msg.content.includes('I\'m Claude Code');
+
+        return isRecent && !isSystemMessage;
+      });
+
+      // Use filtered context for gating decision
+      const filteredRagContext = {
+        ...ragContext,
+        conversationHistory: recentHistory
+      };
+
+      // Get gating model from persona config (defaults to llama3.2:1b = smallest/fastest)
+      const gatingModelMap = {
+        'deterministic': null,  // Use bag-of-words (not implemented yet)
+        'small': 'llama3.2:1b',  // Fast gating (~150-200ms)
+        'full': 'llama3.2:3b'   // More accurate but slower (~400-500ms)
+      };
+      const gatingModelKey = this.entity?.personaConfig?.gatingModel ?? 'small';
+      const gatingModel = gatingModelMap[gatingModelKey] ?? 'llama3.2:1b';
+
+      // Use ai/should-respond with strategy='llm' + configurable small model
       const result: AIShouldRespondResult = this.client
         ? await this.client.daemons.commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
             context: this.client.context,
@@ -1054,27 +1087,27 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
             personaName: this.displayName,
             personaId: this.id,
             contextId: message.roomId,
-            ragContext,
+            ragContext: filteredRagContext,  // Use filtered context (last 5 minutes only)
             triggerMessage: {
               senderName: message.senderName,
               content: message.content.text,
               timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : new Date(message.timestamp).toISOString()
             },
             strategy: 'llm',
-            model: 'llama3.2:3b'
+            model: gatingModel
           })
         : await Commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
             personaName: this.displayName,
             personaId: this.id,
             contextId: message.roomId,
-            ragContext,
+            ragContext: filteredRagContext,  // Use filtered context (last 5 minutes only)
             triggerMessage: {
               senderName: message.senderName,
               content: message.content.text,
               timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : new Date(message.timestamp).toISOString()
             },
             strategy: 'llm',
-            model: 'llama3.2:3b'
+            model: gatingModel
           });
 
       if (!result) {

@@ -15,11 +15,12 @@
  */
 
 import type {
-  AIProviderAdapter,
   TextGenerationRequest,
   TextGenerationResponse,
   HealthStatus,
 } from '../AIProviderTypes';
+import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
+import { spawn } from 'child_process';
 
 export interface LocalServerConfig {
   baseUrl: string;
@@ -29,7 +30,7 @@ export interface LocalServerConfig {
   timeout: number;
 }
 
-export abstract class BaseLocalAdapter implements AIProviderAdapter {
+export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
   abstract readonly providerId: string;
   abstract readonly providerName: string;
 
@@ -37,10 +38,11 @@ export abstract class BaseLocalAdapter implements AIProviderAdapter {
   protected isInitialized = false;
 
   constructor(config: LocalServerConfig) {
+    super();
     this.config = config;
   }
 
-  async initialize(): Promise<void> {
+  protected async initializeProvider(): Promise<void> {
     console.log(`🔌 ${this.providerName}: Initializing local adapter...`);
 
     // Check if local server is running
@@ -124,9 +126,17 @@ export abstract class BaseLocalAdapter implements AIProviderAdapter {
    */
   abstract generateText(request: TextGenerationRequest): Promise<TextGenerationResponse>;
 
-  async shutdown(): Promise<void> {
+  protected async shutdownProvider(): Promise<void> {
     console.log(`🔄 ${this.providerName}: Shutting down (local adapter, no cleanup needed)`);
     this.isInitialized = false;
+  }
+
+  /**
+   * Restart local server (override in subclass for provider-specific restart)
+   */
+  protected async restartProvider(): Promise<void> {
+    console.log(`⚠️  ${this.providerName}: No restart logic implemented for this local provider`);
+    console.log(`   Please manually restart the server at ${this.config.baseUrl}`);
   }
 
   /**
