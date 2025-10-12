@@ -153,7 +153,6 @@ export function getAbsolutePosition(element: Element): { x: number; y: number } 
 
 /**
  * Calculate crop coordinates for screenshot
- * 🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation
  */
 export function calculateCropCoordinates(
   element: Element, 
@@ -165,7 +164,6 @@ export function calculateCropCoordinates(
     throw new Error('calculateCropCoordinates only available in browser environment');
   }
   
-  console.log('🔧 CLAUDE-FIX-2024-08-27-D: Modular, testable coordinate calculation');
   
   // Step 1: Get viewport coordinates
   const viewportCoords = getViewportCoordinates(element);

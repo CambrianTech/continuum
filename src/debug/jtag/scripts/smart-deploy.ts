@@ -123,7 +123,7 @@ function smartDeploy(): void {
   
   if (!fs.existsSync(tarballName)) {
     console.log('📦 Tarball missing - creating without version bump...');
-    execSync('npm pack', { stdio: 'inherit' });
+    execSync('npm pack --silent 2>&1 | grep -v "^npm notice"', { stdio: 'inherit', shell: '/bin/bash' });
     if (!fs.existsSync(tarballName)) {
       console.log('❌ Failed to create tarball');
       process.exit(1);

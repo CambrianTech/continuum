@@ -145,31 +145,25 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
           add: (entity: T) => {
             // CRITICAL: Allow subclass to filter which entities should be added
             if (this.shouldAddEntity(entity)) {
-              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} adding entity:`, entity.id);
               this.scroller?.add(entity);
               this.updateEntityCount();
             } else {
-              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out entity:`, entity.id);
             }
           },
           update: (id: string, entity: T) => {
             // CRITICAL: Allow subclass to filter which entities should be updated
             if (this.shouldUpdateEntity(id, entity)) {
-              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} updating entity:`, id);
               this.scroller?.update(id, entity);
               this.updateEntityCount();
             } else {
-              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out update:`, id);
             }
           },
           remove: (id: string) => {
             // CRITICAL: Allow subclass to filter which entities should be removed
             if (this.shouldRemoveEntity(id)) {
-              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} removing entity:`, id);
               this.scroller?.remove(id);
               this.updateEntityCount();
             } else {
-              console.log(`🔧 CLAUDE-FIX-${Date.now()}: ${this.constructor.name} filtered out removal:`, id);
             }
           },
           clear: () => {

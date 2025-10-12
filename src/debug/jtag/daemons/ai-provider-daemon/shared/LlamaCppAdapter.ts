@@ -1,0 +1,305 @@
+/**
+ * LlamaCpp Adapter - Native llama.cpp Bindings
+ * ============================================
+ *
+ * Adapter for native llama.cpp inference via node-llama-cpp.
+ * Provides true parallel inference without HTTP bottlenecks.
+ *
+ * Features:
+ * - Native C++ bindings (no HTTP overhead)
+ * - True parallel inference across worker processes
+ * - Uses Ollama's downloaded GGUF models
+ * - Metal/CUDA/Vulkan acceleration support
+ * - Privacy-first (data never leaves machine)
+ *
+ * Architecture:
+ * - Each worker loads its own model instance
+ * - Workers run in parallel without blocking
+ * - No shared state between workers
+ */
+
+import type {
+  AIProviderAdapter,
+  TextGenerationRequest,
+  TextGenerationResponse,
+  HealthStatus,
+  ProviderConfiguration,
+  UsageMetrics,
+} from './AIProviderTypes';
+import {
+  chatMessagesToPrompt,
+  estimateTokenCount,
+  createRequestId,
+  AIProviderError,
+} from './AIProviderTypes';
+import { getLlama, LlamaChatSession, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+/**
+ * Resolve Ollama model name to GGUF file path
+ */
+function resolveOllamaModelPath(modelName: string): string | null {
+  const ollamaDir = path.join(os.homedir(), '.ollama', 'models');
+  const manifestPath = path.join(ollamaDir, 'manifests', 'registry.ollama.ai', 'library', modelName.replace(':', '/'));
+
+  if (!fs.existsSync(manifestPath)) {
+    return null;
+  }
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const modelLayer = manifest.layers?.find((layer: any) => 
+      layer.mediaType === 'application/vnd.ollama.image.model'
+    );
+
+    if (!modelLayer) {
+      return null;
+    }
+
+    const digest = modelLayer.digest.replace('sha256:', 'sha256-');
+    const blobPath = path.join(ollamaDir, 'blobs', digest);
+
+    return fs.existsSync(blobPath) ? blobPath : null;
+  } catch (error) {
+    console.error(`Failed to resolve Ollama model ${modelName}:`, error);
+    return null;
+  }
+}
+
+export class LlamaCppAdapter implements AIProviderAdapter {
+  readonly providerId = 'llama-cpp';
+  readonly providerName = 'LlamaCpp';
+  readonly supportedCapabilities = ['text-generation', 'chat'] as const;
+
+  private config: ProviderConfiguration;
+  private llama: Llama | null = null;
+  private model: LlamaModel | null = null;
+  private context: LlamaContext | null = null;
+  private session: LlamaChatSession | null = null;
+  private currentModelName: string | null = null;
+
+  constructor(config?: Partial<ProviderConfiguration>) {
+    this.config = {
+      apiEndpoint: '', // Not used for native bindings
+      timeout: 60000, // Longer timeout for native inference
+      retryAttempts: 1,
+      retryDelay: 1000,
+      defaultModel: 'llama3.2:3b',
+      defaultTemperature: 0.7,
+      logRequests: true,
+      ...config,
+    };
+  }
+
+  async initialize(): Promise<void> {
+    console.log(`🤖 ${this.providerName}: Initializing native llama.cpp bindings...`);
+
+    try {
+      this.llama = await getLlama();
+      console.log(`✅ ${this.providerName}: llama.cpp bindings loaded`);
+
+      // Pre-load default model
+      const modelPath = resolveOllamaModelPath(this.config.defaultModel);
+      if (modelPath) {
+        console.log(`🔄 ${this.providerName}: Pre-loading default model ${this.config.defaultModel}...`);
+        await this.loadModel(this.config.defaultModel);
+        console.log(`✅ ${this.providerName}: Default model loaded and ready`);
+      } else {
+        console.warn(`⚠️  ${this.providerName}: Default model ${this.config.defaultModel} not found`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      throw new AIProviderError(
+        `Failed to initialize llama.cpp: ${errorMsg}`,
+        'adapter',
+        'LLAMACPP_INIT_FAILED',
+        { error: errorMsg }
+      );
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    console.log(`🔄 ${this.providerName}: Shutting down...`);
+
+    // Cleanup resources
+    this.session = null;
+    this.context = null;
+    this.model = null;
+    this.llama = null;
+    this.currentModelName = null;
+
+    console.log(`✅ ${this.providerName}: Shutdown complete`);
+  }
+
+  private async loadModel(modelName: string): Promise<void> {
+    // Skip if already loaded
+    if (this.currentModelName === modelName && this.model && this.context && this.session) {
+      return;
+    }
+
+    const modelPath = resolveOllamaModelPath(modelName);
+    if (!modelPath) {
+      throw new AIProviderError(
+        `Model ${modelName} not found in Ollama storage`,
+        'adapter',
+        'MODEL_NOT_FOUND',
+        { modelName }
+      );
+    }
+
+    if (this.config.logRequests) {
+      console.log(`🔄 ${this.providerName}: Loading model from ${modelPath}...`);
+    }
+
+    try {
+      if (!this.llama) {
+        throw new Error('llama.cpp not initialized');
+      }
+
+      this.model = await this.llama.loadModel({ modelPath });
+      this.context = await this.model.createContext();
+      this.session = new LlamaChatSession({
+        contextSequence: this.context.getSequence()
+      });
+      this.currentModelName = modelName;
+
+      if (this.config.logRequests) {
+        console.log(`✅ ${this.providerName}: Model ${modelName} loaded successfully`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      throw new AIProviderError(
+        `Failed to load model ${modelName}: ${errorMsg}`,
+        'adapter',
+        'MODEL_LOAD_FAILED',
+        { modelName, modelPath, error: errorMsg }
+      );
+    }
+  }
+
+  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+    const startTime = Date.now();
+    const requestId = request.requestId || createRequestId();
+
+    try {
+      const modelName = request.model || this.config.defaultModel;
+
+      // Load model if needed
+      await this.loadModel(modelName);
+
+      if (!this.session) {
+        throw new Error('Chat session not initialized');
+      }
+
+      // Convert chat messages to prompt
+      const { prompt } = chatMessagesToPrompt(request.messages);
+
+      if (this.config.logRequests) {
+        console.log(`🤖 ${this.providerName}: Generating text with model ${modelName}`);
+        console.log(`   Request ID: ${requestId}`);
+        console.log(`   Prompt length: ${prompt.length} chars`);
+      }
+
+      // Generate response using native llama.cpp
+      const response = await this.session.prompt(prompt, {
+        temperature: request.temperature ?? this.config.defaultTemperature,
+        maxTokens: request.maxTokens,
+      });
+
+      const responseTime = Date.now() - startTime;
+
+      // Calculate usage metrics
+      const usage: UsageMetrics = {
+        inputTokens: estimateTokenCount(prompt),
+        outputTokens: estimateTokenCount(response),
+        totalTokens: 0,
+        estimatedCost: 0, // Local inference is free
+      };
+      usage.totalTokens = usage.inputTokens + usage.outputTokens;
+
+      if (this.config.logRequests) {
+        console.log(`✅ ${this.providerName}: Generated response in ${responseTime}ms`);
+        console.log(`   Output length: ${response.length} chars`);
+        console.log(`   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
+      }
+
+      return {
+        text: response,
+        finishReason: 'stop',
+        model: modelName,
+        provider: this.providerId,
+        usage,
+        responseTime,
+        requestId,
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`❌ ${this.providerName}: Text generation failed:`, error);
+
+      throw new AIProviderError(
+        `Text generation failed: ${errorMsg}`,
+        'adapter',
+        'GENERATION_FAILED',
+        { requestId, error: errorMsg }
+      );
+    }
+  }
+
+  async getAvailableModels(): Promise<string[]> {
+    const ollamaDir = path.join(os.homedir(), '.ollama', 'models', 'manifests', 'registry.ollama.ai', 'library');
+
+    if (!fs.existsSync(ollamaDir)) {
+      return [];
+    }
+
+    const models: string[] = [];
+
+    try {
+      const entries = fs.readdirSync(ollamaDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const modelName = entry.name;
+          const variantsDir = path.join(ollamaDir, modelName);
+          const variants = fs.readdirSync(variantsDir);
+
+          for (const variant of variants) {
+            models.push(`${modelName}:${variant}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to list models:`, error);
+    }
+
+    return models;
+  }
+
+  async healthCheck(): Promise<HealthStatus> {
+    try {
+      const models = await this.getAvailableModels();
+
+      return {
+        status: models.length > 0 ? 'healthy' : 'degraded',
+        apiAvailable: this.llama !== null,
+        responseTime: 0,
+        errorRate: 0,
+        lastChecked: Date.now(),
+        message: models.length > 0 
+          ? `${models.length} models available` 
+          : 'No models found',
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        apiAvailable: false,
+        responseTime: 0,
+        errorRate: 1,
+        lastChecked: Date.now(),
+        message: error instanceof Error ? error.message : 'Health check failed',
+      };
+    }
+  }
+}

@@ -308,7 +308,6 @@ export class ProcessPool extends EventEmitter {
     maxTokens?: number;
     config?: Record<string, any>;
   }): Promise<string> {
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: ProcessPool.executeInference() - generic adapter-agnostic inference`);
 
     // Get or spawn an idle process
     let managedProcess: ManagedProcess | null | undefined = Array.from(this.processes.values()).find(
@@ -340,7 +339,15 @@ export class ProcessPool extends EventEmitter {
       return result;
     } catch (error) {
       managedProcess.errorCount++;
-      managedProcess.state = 'idle';
+
+      // CRITICAL: If inference timed out, the worker is likely frozen/deadlocked
+      // Terminate it instead of marking idle, so we don't try to reuse a broken worker
+      if (error instanceof Error && error.message.includes('timeout')) {
+        console.error(`❌ ProcessPool: Worker ${managedProcess.id} timed out, terminating...`);
+        await this.terminateProcess(managedProcess.id, 'inference-timeout');
+      } else {
+        managedProcess.state = 'idle';
+      }
 
       console.error(`❌ ProcessPool: Inference failed:`, error);
       throw error;
@@ -382,7 +389,7 @@ export class ProcessPool extends EventEmitter {
       managedProcess.process.on('message', messageHandler);
 
       // Send request
-      managedProcess.process.send({
+      const ipcMessage = {
         type: 'infer',
         prompt: request.prompt,
         provider: request.provider,
@@ -390,7 +397,10 @@ export class ProcessPool extends EventEmitter {
         temperature: request.temperature,
         maxTokens: request.maxTokens,
         config: request.config,
-      });
+      };
+
+      console.log(`📤 ProcessPool: Sending IPC message to worker ${managedProcess.id} (PID: ${managedProcess.pid}):`, ipcMessage.type);
+      managedProcess.process.send(ipcMessage);
     });
   }
 
@@ -430,8 +440,31 @@ export class ProcessPool extends EventEmitter {
   private setupProcessHandlers(managedProcess: ManagedProcess): void {
     const { process: childProcess, id } = managedProcess;
 
+    // Capture stdout from worker (console.log statements)
+    if (childProcess.stdout) {
+      childProcess.stdout.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output) {
+          console.log(`[Worker ${id}] ${output}`);
+        }
+      });
+    }
+
+    // Capture stderr from worker (console.error statements)
+    if (childProcess.stderr) {
+      childProcess.stderr.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output) {
+          console.error(`[Worker ${id}] ${output}`);
+        }
+      });
+    }
+
     childProcess.on('message', (message: any) => {
-      if (message.type === 'ready') {
+      // Log ALL messages from worker for debugging
+      if (message.type === 'log') {
+        console.log(`[Worker ${id}] ${message.message}`);
+      } else if (message.type === 'ready') {
         managedProcess.state = 'idle';
         this.emit('process-ready', managedProcess);
       } else if (message.type === 'error') {
@@ -472,16 +505,16 @@ export class ProcessPool extends EventEmitter {
         reject(new Error('Process ready timeout'));
       }, this.config.processTimeoutMs);
 
-      const onReady = () => {
-        clearTimeout(timeout);
-        resolve();
+      const messageHandler = (message: any) => {
+        if (message.type === 'ready') {
+          clearTimeout(timeout);
+          managedProcess.process.off('message', messageHandler);
+          resolve();
+        }
+        // Ignore other message types (like 'log') and keep listening for 'ready'
       };
 
-      managedProcess.process.once('message', (message: any) => {
-        if (message.type === 'ready') {
-          onReady();
-        }
-      });
+      managedProcess.process.on('message', messageHandler);
     });
   }
 

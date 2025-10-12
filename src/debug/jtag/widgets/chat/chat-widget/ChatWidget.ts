@@ -93,7 +93,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     return async (cursor, limit) => {
       // CRITICAL: If no roomId is selected, return 0 messages immediately
       if (!this.currentRoomId) {
-        console.log(`🔧 CLAUDE-FIX-${Date.now()}: No roomId selected, returning 0 messages`);
         return {
           items: [],
           hasMore: false,
@@ -101,7 +100,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         };
       }
 
-      console.log(`🔧 CLAUDE-FIX-${Date.now()}: Loading messages for roomId="${this.currentRoomId}" with database-level filtering`);
       console.log(`🔍 DEBUG: currentRoomId type=${typeof this.currentRoomId}, value="${this.currentRoomId}"`);
       console.log(`🔍 CURSOR-WIDGET-DEBUG: cursor param=${cursor}, limit=${limit}`);
 
@@ -187,13 +185,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   protected override shouldAddEntity(entity: ChatMessageEntity): boolean {
     // Only add messages that belong to the current room
     const shouldAdd = !!(this.currentRoomId && entity.roomId === this.currentRoomId);
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: ChatWidget filtering ADD - entity.roomId="${entity.roomId}", currentRoomId="${this.currentRoomId}", shouldAdd=${shouldAdd}`);
 
     // CRITICAL: Increment total count when new message is accepted via events
     if (shouldAdd) {
       this.totalMessageCount++;
       this.loadedMessageCount++;
-      console.log(`🔧 CLAUDE-COUNT-UPDATE: Total messages now: ${this.totalMessageCount}`);
     }
 
     return shouldAdd;
@@ -202,7 +198,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   protected override shouldUpdateEntity(id: string, entity: ChatMessageEntity): boolean {
     // Only update messages that belong to the current room
     const shouldUpdate = !!(this.currentRoomId && entity.roomId === this.currentRoomId);
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: ChatWidget filtering UPDATE - entity.roomId="${entity.roomId}", currentRoomId="${this.currentRoomId}", shouldUpdate=${shouldUpdate}`);
     return shouldUpdate;
   }
 
@@ -211,7 +206,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // We need to check if the message exists in our current scroller (which means it belongs to current room)
     const currentEntities = this.scroller?.entities() || [];
     const shouldRemove = currentEntities.some(entity => entity.id === id);
-    console.log(`🔧 CLAUDE-FIX-${Date.now()}: ChatWidget filtering REMOVE - id="${id}", shouldRemove=${shouldRemove}`);
     return shouldRemove;
   }
 
