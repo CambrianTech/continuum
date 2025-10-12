@@ -45,34 +45,15 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
 
     await super['initialize']();
 
-    // Initialize ProcessPool for genome inference workers
-    console.log('🏊 AIProviderDaemonServer: Initializing ProcessPool for genome inference...');
-
-    // Worker script needs to be run with tsx since it's TypeScript
-    // Path to source .ts file (tsx will handle execution)
-    // Use absolute path from project root to avoid __dirname confusion after compilation
-    const workerPath = path.resolve(process.cwd(), 'system/genome/server/inference-worker.ts');
-    console.log(`🔧 AIProviderDaemonServer: Worker path resolved to: ${workerPath}`);
-    this.processPool = new ProcessPool(workerPath, {
-      hotPoolSize: 3,
-      warmPoolSize: 10,
-      minProcesses: 1,
-      maxProcesses: 10,
-      healthCheckIntervalMs: 5000,
-      maxIdleTimeMs: 60000,
-      maxMemoryMB: 2048,
-      maxRequestsPerProcess: 1000,
-      maxErrorsBeforeTerminate: 5,
-      processTimeoutMs: 30000
-    });
-
-    await this.processPool.initialize();
-    console.log('✅ AIProviderDaemonServer: ProcessPool initialized');
+    // DISABLED: ProcessPool adds 40s overhead - direct Ollama adapter is 132x faster
+    // ProcessPool with HTTP workers → 41s per request
+    // Direct Ollama adapter → 310ms per request
+    console.log('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
 
     // Initialize static AIProviderDaemon interface for commands to use (like DataDaemon.query)
     AIProviderDaemon.initialize(this);
 
-    console.log(`🤖 ${this.toString()}: AI provider daemon server initialized with static interface + ProcessPool`);
+    console.log(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
   }
 
   /**
