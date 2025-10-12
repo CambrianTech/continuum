@@ -6,24 +6,30 @@
 
 ## Implementation Phases
 
-### Phase 1: Ghost Users Fix ✅ COMPLETED
-**Status**: Code written, deployed, testing in progress
+### Phase 1: Ghost Users Fix ✅ COMPLETED AND COMMITTED
+**Status**: ✅ Fully implemented, tested, verified, and committed (5b74eebf)
 
 **Files Changed**:
-- ✅ Created `system/user/shared/UserIdentityResolver.ts`
+- ✅ Created `system/user/shared/UserIdentityResolver.ts` (375 lines)
 - ✅ Updated `daemons/session-daemon/server/SessionDaemonServer.ts`
+- ✅ Fixed `system/core/detection/AgentDetector.ts` (type errors + detection logic)
 
-**Testing**:
+**Testing Results**:
 ```bash
-# Verify stable IDs
-./jtag data/list --collection=users --format=json | grep uniqueId
+# ✅ Verified stable uniqueId: "claude-code" (not cli-*)
+./jtag session/create --isShared=true
+# Result: uniqueId="claude-code", displayName="Claude Code", type="agent"
 
-# Verify no duplicates
-./jtag data/list --collection=users
+# ✅ Verified no duplicate Claude Code users
+./jtag data/list --collection=users --format=json | jq -r '.items[] | select(.displayName == "Claude Code")'
+# Result: Only ONE Claude Code user with stable uniqueId
+
+# ✅ Verified AgentDetector properly detects Claude Code
+echo "CLAUDECODE=$CLAUDECODE CLAUDE_CODE_ENTRYPOINT=$CLAUDE_CODE_ENTRYPOINT"
+# Result: CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli (detected with 95% confidence)
 ```
 
-**Cleanup Required**:
-- Delete existing ghost users (cli-* uniqueIds)
+**Commit**: 5b74eebf - "Fix Ghost Users: Implement UserIdentityResolver with stable uniqueIds"
 
 ---
 
