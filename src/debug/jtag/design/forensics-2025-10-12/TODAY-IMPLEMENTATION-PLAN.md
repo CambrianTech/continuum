@@ -1,6 +1,6 @@
 # Complete Implementation Plan - 2025-10-12
 **Goal**: Fix ALL identified issues today
-**Status**: Phase 1 started (Ghost Users ✅ completed)
+**Status**: 3 phases completed (Ghost Users ✅, Role Assignment ✅, [QUESTION] Markers ✅)
 
 ---
 
@@ -95,22 +95,28 @@ echo "CLAUDECODE=$CLAUDECODE CLAUDE_CODE_ENTRYPOINT=$CLAUDE_CODE_ENTRYPOINT"
 
 ---
 
-### Phase 5: Role Assignment Fix ⏳
+### Phase 5: Role Assignment Fix ✅ COMPLETED
 **Priority**: MEDIUM (improves RAG quality)
-**Estimated Time**: 10 minutes
+**Estimated Time**: 10 minutes (actual: 5 minutes)
 
 **Implementation**:
-1. Update `ChatRAGBuilder.ts:232` to check `msg.senderType`
-2. Mark persona/agent messages as 'assistant' role
-3. Mark human messages as 'user' role
+1. ✅ Updated `ChatRAGBuilder.ts:214-215` to check `msg.senderType`
+2. ✅ Mark persona/agent/system messages as 'assistant' role
+3. ✅ Mark human messages as 'user' role
 
-**Code Location**: `system/rag/builders/ChatRAGBuilder.ts:232`
+**Code Changes**:
+- Changed from `isOwnMessage ? 'assistant' : 'user'` to checking `msg.senderType`
+- Now properly assigns roles based on sender type, not ownership
+
+**Code Location**: `system/rag/builders/ChatRAGBuilder.ts:214-215`
 
 **Testing**:
 ```bash
 # Verify roles in RAG context
 ./jtag debug/logs --filterPattern="role.*assistant|role.*user" --tailLines=50
 ```
+
+**Status**: Deployed in version 1.0.2988
 
 ---
 
@@ -134,21 +140,30 @@ echo "CLAUDECODE=$CLAUDECODE CLAUDE_CODE_ENTRYPOINT=$CLAUDE_CODE_ENTRYPOINT"
 
 ---
 
-### Phase 7: Remove [QUESTION] Markers ⏳
+### Phase 7: Remove [QUESTION] Markers ✅ COMPLETED
 **Priority**: LOW (minor noise reduction)
-**Estimated Time**: 5 minutes
+**Estimated Time**: 5 minutes (actual: 3 minutes)
 
 **Implementation**:
-1. Remove or make optional `[QUESTION]` marker in ChatRAGBuilder
-2. Line 217 - just use messageText without marker
+1. ✅ Removed question detection logic (lines 212-217)
+2. ✅ Removed `[QUESTION]` marker from message content
+3. ✅ Updated content reference from `markedContent` to `messageText`
 
-**Code Location**: `system/rag/builders/ChatRAGBuilder.ts:217`
+**Code Changes**:
+- Removed `isQuestion` detection logic
+- Removed `markedContent` variable with `[QUESTION]` prefix
+- Changed `llmMessage.content` to use plain `messageText`
+
+**Code Location**: `system/rag/builders/ChatRAGBuilder.ts:207-226`
 
 **Testing**:
 ```bash
 # Verify markers removed from RAG content
 ./jtag debug/logs --filterPattern="QUESTION" --tailLines=30
+# Should show no [QUESTION] markers in new RAG contexts
 ```
+
+**Status**: Deployed in version 1.0.2988
 
 ---
 
