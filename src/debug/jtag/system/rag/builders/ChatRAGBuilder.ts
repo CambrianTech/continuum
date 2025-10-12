@@ -198,8 +198,14 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       // Reverse to get oldest-first (LLMs expect chronological order)
       const orderedMessages = messages.reverse();
 
+      // 🔍 FORENSIC: Log complete RAG context for debugging
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`📚 RAG-CONTEXT for persona ${personaId.slice(0, 8)} in room ${roomId.slice(0, 8)}`);
+      console.log(`   Messages loaded: ${orderedMessages.length}`);
+      console.log(`   Time range: ${orderedMessages[0]?.timestamp || 'unknown'} to ${orderedMessages[orderedMessages.length - 1]?.timestamp || 'unknown'}`);
+
       // Convert to LLM message format with question/answer markers
-      return orderedMessages.map(msg => {
+      const llmMessages = orderedMessages.map(msg => {
         const isOwnMessage = msg.senderId === personaId;
         const messageText = msg.content?.text || '';
 
@@ -222,13 +228,21 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
           }
         }
 
-        return {
+        const llmMessage = {
           role: isOwnMessage ? 'assistant' as const : 'user' as const,
           content: markedContent,  // Message text with [QUESTION] marker if applicable
           name: msg.senderName,  // Speaker identity (LLM API uses this for multi-party conversation)
           timestamp: timestampMs
         };
+
+        // 🔍 FORENSIC: Log each message in RAG context
+        console.log(`   - [${msg.senderName}] (${new Date(msg.timestamp).toLocaleTimeString()}) role=${llmMessage.role}: "${messageText.slice(0, 80)}${messageText.length > 80 ? '...' : ''}"`);
+
+        return llmMessage;
       });
+
+      console.log(`${'='.repeat(80)}\n`);
+      return llmMessages;
     } catch (error) {
       console.error(`❌ ChatRAGBuilder: Error loading conversation history:`, error);
       return [];

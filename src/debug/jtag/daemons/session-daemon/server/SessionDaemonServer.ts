@@ -20,6 +20,7 @@ import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
+import { UserIdentityResolver } from '../../../system/user/shared/UserIdentityResolver';
 import {  
   type SessionMetadata, 
   type CreateSessionParams, 
@@ -426,42 +427,35 @@ export class SessionDaemonServer extends SessionDaemon {
 
     /**
      * Create User object with entity and state
-     * Uses UserFactory to ensure proper factory logic and AI enrichment
+     * Uses UserIdentityResolver + UserFactory to detect, lookup, or create user
      */
     private async createUser(params: CreateSessionParams): Promise<BaseUser> {
-      // Enhanced agent detection using connectionContext
-      const agentInfo = params.connectionContext?.agentInfo;
-      const isDetectedAgent = agentInfo?.detected && agentInfo.confidence > 0.5;
+      // Use UserIdentityResolver to detect identity and lookup existing user BEFORE creating
+      console.log(`🔍 SessionDaemon: Resolving user identity via AgentDetector...`);
+      const resolvedIdentity = await UserIdentityResolver.resolve();
 
-      // Determine actual user type (may override category if agent detected)
-      let userType: 'human' | 'agent' | 'persona';
-      if (params.category === 'persona') {
-        userType = 'persona';
-      } else if (params.category === 'agent' || isDetectedAgent) {
-        userType = 'agent';
-        console.log(`🤖 SessionDaemon: Detected AI agent: ${agentInfo?.name ?? 'Unknown'} (confidence: ${agentInfo?.confidence ?? 0})`);
-      } else {
-        userType = 'human';
+      console.log(`📋 SessionDaemon: Resolved identity - ${resolvedIdentity.displayName} (${resolvedIdentity.type})`);
+      console.log(`   uniqueId: ${resolvedIdentity.uniqueId}`);
+      console.log(`   exists: ${resolvedIdentity.exists}`);
+      console.log(`   agent: ${resolvedIdentity.agentInfo.name} (${Math.round(resolvedIdentity.agentInfo.confidence * 100)}%)`);
+
+      // If user already exists, return it (prevent ghost users!)
+      if (resolvedIdentity.exists && resolvedIdentity.userId) {
+        console.log(`✅ SessionDaemon: Found existing user, reusing: ${resolvedIdentity.displayName}`);
+        return await this.getUserById(resolvedIdentity.userId);
       }
 
-      // Use UserFactory to create user (same as user/create command - ensures proper logic + AI enrichment)
-      console.log(`📝 SessionDaemon: Creating ${userType} user via UserFactory: ${params.displayName}`);
-
-      // uniqueId is REQUIRED - generate synthetic one for ephemeral CLI clients if missing
-      let uniqueId: string;
-      if (!params.connectionContext || !params.connectionContext.uniqueId) {
-        // Generate synthetic connectionContext for ephemeral clients (CLI, etc.)
-        uniqueId = `cli-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
-        console.log(`🔧 SessionDaemon: Generated synthetic uniqueId for ephemeral client: ${uniqueId}`);
-      } else {
-        uniqueId = params.connectionContext.uniqueId;
-      }
+      // User doesn't exist - create new one with resolved identity
+      console.log(`📝 SessionDaemon: Creating new ${resolvedIdentity.type} user via UserFactory: ${resolvedIdentity.displayName}`);
 
       const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
-        type: userType,
-        displayName: params.displayName,
-        uniqueId: uniqueId, // REQUIRED - caller must provide
-        provider: agentInfo?.name // Pass agent name as provider for agent users
+        type: resolvedIdentity.type,
+        displayName: resolvedIdentity.displayName,
+        uniqueId: resolvedIdentity.uniqueId, // Stable uniqueId from resolver
+        shortName: resolvedIdentity.shortName,
+        bio: resolvedIdentity.bio,
+        avatar: resolvedIdentity.avatar,
+        provider: resolvedIdentity.agentInfo.name // Pass agent name as provider
       });
 
       // UserFactory.create() handles everything:
@@ -471,7 +465,7 @@ export class SessionDaemonServer extends SessionDaemon {
       // - Loads initial state
       const user: BaseUser = await UserFactory.create(createParams, this.context, this.router);
 
-      console.log(`✅ SessionDaemon: Created ${userType} user: ${user.entity.displayName} (${user.entity.id.slice(0, 8)}...)`);
+      console.log(`✅ SessionDaemon: Created ${resolvedIdentity.type} user: ${user.entity.displayName} (${user.entity.id.slice(0, 8)}...)`);
 
       return user;
     }
