@@ -204,17 +204,15 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       console.log(`   Messages loaded: ${orderedMessages.length}`);
       console.log(`   Time range: ${orderedMessages[0]?.timestamp || 'unknown'} to ${orderedMessages[orderedMessages.length - 1]?.timestamp || 'unknown'}`);
 
-      // Convert to LLM message format with question/answer markers
+      // Convert to LLM message format
       const llmMessages = orderedMessages.map(msg => {
-        const isOwnMessage = msg.senderId === personaId;
         const messageText = msg.content?.text || '';
 
-        // Detect if this is a question (ends with ? or contains question words)
-        const isQuestion = messageText.trim().endsWith('?') ||
-                          /\b(how|what|why|when|where|who|which|can|could|would|should|is|are|does|do)\b/i.test(messageText.substring(0, 50));
-
-        // Add explicit markers to help LLM distinguish questions from answers
-        const markedContent = isQuestion ? `[QUESTION] ${messageText}` : messageText;
+        // Determine role based on senderType (not isOwnMessage)
+        // AI types (agent, persona, system) → 'assistant'
+        // Human type → 'user'
+        const isAIMessage = msg.senderType === 'agent' || msg.senderType === 'persona' || msg.senderType === 'system';
+        const role = isAIMessage ? 'assistant' as const : 'user' as const;
 
         // Convert timestamp to number (milliseconds) if needed
         let timestampMs: number | undefined;
@@ -229,8 +227,8 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
         }
 
         const llmMessage = {
-          role: isOwnMessage ? 'assistant' as const : 'user' as const,
-          content: markedContent,  // Message text with [QUESTION] marker if applicable
+          role,
+          content: messageText,  // Clean message text without markers
           name: msg.senderName,  // Speaker identity (LLM API uses this for multi-party conversation)
           timestamp: timestampMs
         };
