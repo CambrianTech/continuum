@@ -77,7 +77,8 @@ export class AIProviderDaemon extends DaemonBase {
     console.log('🤖 AIProviderDaemon: Initializing...');
 
     // Register Ollama adapter (local, free, private)
-    await this.registerAdapter(new OllamaAdapter(), {
+    // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
+    await this.registerAdapter(new OllamaAdapter({ maxConcurrent: 4 }), {
       priority: 100, // Highest priority - free and local
       enabled: true,
     });

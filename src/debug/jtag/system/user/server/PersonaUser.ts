@@ -560,10 +560,11 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         preferredProvider: 'ollama'
       };
 
-      // Wrap generation call with timeout (90s - allows for 60s fetch timeout + retries)
-      const GENERATION_TIMEOUT_MS = 90000;
+      // Wrap generation call with timeout (120s - allows for 60s fetch timeout + Ollama queue wait + retries)
+      // Increased from 90s to 120s to handle Ollama queue bottleneck when multiple AIs generate simultaneously
+      const GENERATION_TIMEOUT_MS = 120000;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('AI generation timeout after 90 seconds')), GENERATION_TIMEOUT_MS);
+        setTimeout(() => reject(new Error('AI generation timeout after 120 seconds')), GENERATION_TIMEOUT_MS);
       });
 
       let aiResponse: TextGenerationResponse;
@@ -599,6 +600,14 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       }
 
       // === SUB-PHASE 3.4: SELF-REVIEW: Check if response is redundant before posting ===
+      // DISABLED: Redundancy checking via LLM is too flaky (false positives like C++ vs JavaScript questions)
+      // It adds AI unreliability on top of AI unreliability, leading to valid responses being discarded
+      // TODO: Replace with simple heuristics (exact text match, time-based deduplication)
+      console.log(`⏭️  ${this.displayName}: [PHASE 3.4] Redundancy check DISABLED (too flaky), proceeding to post`);
+      const isRedundant = false; // Disabled
+
+      // Old flaky code (commented out):
+      /*
       console.log(`🔧 ${this.displayName}: [PHASE 3.4] Checking redundancy...`);
       // Emit CHECKING_REDUNDANCY event
       if (this.client) {
@@ -618,9 +627,26 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         originalMessage.roomId,
         fullRAGContext.conversationHistory
       );
+      */
 
       if (isRedundant) {
         console.log(`⚠️ ${this.displayName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
+
+        // Emit DECIDED_SILENT event to clear AI status indicator
+        if (this.client) {
+          (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.DECIDED_SILENT, {
+            personaId: this.id,
+            personaName: this.displayName,
+            roomId: originalMessage.roomId,
+            messageId: originalMessage.id,
+            isHumanMessage: originalMessage.senderType === 'human',
+            timestamp: Date.now(),
+            confidence: 0.5,
+            reason: 'Response was redundant with previous answers',
+            gatingModel: 'redundancy-check'
+          } as AIDecidedSilentEventData);
+        }
+
         return; // Discard response
       }
       console.log(`✅ ${this.displayName}: [PHASE 3.4] Response not redundant, proceeding to post`);

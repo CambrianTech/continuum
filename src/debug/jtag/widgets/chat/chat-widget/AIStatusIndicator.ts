@@ -131,8 +131,12 @@ export class AIStatusIndicator {
    * Handle POSTED - AI posted response, remove status after delay
    */
   onPosted(data: AIPostedEventData): void {
+    console.log(`🔧 AIStatusIndicator: onPosted called for ${data.personaName} (${data.personaId})`);
+    console.log(`🔧 AIStatusIndicator: Current active statuses:`, Array.from(this.activeStatuses.keys()));
+
     // Auto-remove immediately (message will appear in chat)
     setTimeout(() => {
+      console.log(`🔧 AIStatusIndicator: Removing status for ${data.personaName} after ${this.removeTimeout}ms`);
       this.removeStatus(data.personaId);
     }, this.removeTimeout);
   }
@@ -186,16 +190,20 @@ export class AIStatusIndicator {
    */
   private removeStatus(personaId: UUID): void {
     const status = this.activeStatuses.get(personaId);
+    console.log(`🔧 AIStatusIndicator: removeStatus called for ${personaId}, found status:`, !!status);
 
     if (status?.element) {
+      console.log(`🔧 AIStatusIndicator: Removing element for ${status.personaName}`);
       // Fade out animation
       status.element.style.opacity = '0';
       setTimeout(() => {
         status.element?.remove();
+        console.log(`✅ AIStatusIndicator: Element removed for ${status.personaName}`);
       }, 300);
     }
 
     this.activeStatuses.delete(personaId);
+    console.log(`🔧 AIStatusIndicator: Deleted from activeStatuses. Remaining count: ${this.activeStatuses.size}`);
   }
 
   /**

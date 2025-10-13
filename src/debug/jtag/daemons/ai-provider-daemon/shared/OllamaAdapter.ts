@@ -35,31 +35,69 @@ import { spawn } from 'child_process';
 
 /**
  * Request queue for Ollama API
- * Prevents overload by limiting concurrent requests to Ollama's actual capacity (2)
+ * Prevents overload by limiting concurrent requests and supports cancellation
  */
 interface QueuedRequest {
   executor: () => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   requestId: string;
+  abortController?: AbortController;  // For timeout cancellation
 }
 
 class OllamaRequestQueue {
   private queue: Array<QueuedRequest> = [];
   private activeRequests = 0;
-  private readonly maxConcurrent = 2;  // Ollama's actual capacity
+  private readonly maxConcurrent: number;
+  private activeRequestIds: Set<string> = new Set();
 
-  async enqueue<T>(executor: () => Promise<T>, requestId: string): Promise<T> {
+  constructor(maxConcurrent: number = 4) {
+    this.maxConcurrent = maxConcurrent;
+    console.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}`);
+  }
+
+  async enqueue<T>(executor: () => Promise<T>, requestId: string, abortController?: AbortController): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({
+      const queuedRequest: QueuedRequest = {
         executor: executor as () => Promise<unknown>,
         resolve: resolve as (value: unknown) => void,
         reject,
-        requestId
-      });
+        requestId,
+        abortController
+      };
+
+      this.queue.push(queuedRequest);
       console.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+
+      // Setup abort handler
+      if (abortController) {
+        abortController.signal.addEventListener('abort', () => {
+          this.cancelRequest(requestId);
+        });
+      }
+
       this.processQueue();
     });
+  }
+
+  /**
+   * Cancel a specific request (removes from queue or aborts if active)
+   */
+  cancelRequest(requestId: string): void {
+    // Remove from queue if not yet active
+    const queueIndex = this.queue.findIndex(req => req.requestId === requestId);
+    if (queueIndex !== -1) {
+      const request = this.queue[queueIndex];
+      this.queue.splice(queueIndex, 1);
+      request.reject(new Error('Request cancelled while queued'));
+      console.log(`❌ Ollama Queue: Cancelled queued request ${requestId} (queue size: ${this.queue.length})`);
+      return;
+    }
+
+    // If active, AbortController already handles cancellation
+    if (this.activeRequestIds.has(requestId)) {
+      console.log(`⚠️  Ollama Queue: Request ${requestId} is active, aborting via AbortController`);
+    }
   }
 
   private async processQueue(): Promise<void> {
@@ -69,6 +107,7 @@ class OllamaRequestQueue {
 
     this.activeRequests++;
     const request = this.queue.shift()!;
+    this.activeRequestIds.add(request.requestId);
 
     console.log(`▶️  Ollama Queue: Starting request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
 
@@ -79,6 +118,7 @@ class OllamaRequestQueue {
       request.reject(error as Error);
     } finally {
       this.activeRequests--;
+      this.activeRequestIds.delete(request.requestId);
       console.log(`✅ Ollama Queue: Completed request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
       this.processQueue();  // Process next request in queue
     }
@@ -100,7 +140,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   private config: ProviderConfiguration;
   private healthCache: { status: HealthStatus; timestamp: number } | null = null;
   private readonly healthCacheTTL = 30000; // 30 seconds
-  private readonly requestQueue = new OllamaRequestQueue();
+  private readonly requestQueue: OllamaRequestQueue;
 
   constructor(config?: Partial<ProviderConfiguration>) {
     super();
@@ -112,8 +152,12 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       defaultModel: 'phi3:mini',
       defaultTemperature: 0.7,
       logRequests: true,
+      maxConcurrent: 4, // Increased from 2 to handle multiple AI personas responding simultaneously
       ...config,
     };
+
+    // Initialize queue with configured maxConcurrent
+    this.requestQueue = new OllamaRequestQueue(this.config.maxConcurrent || 4);
   }
 
   /**
