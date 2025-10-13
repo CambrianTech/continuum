@@ -161,13 +161,8 @@ export class UserDaemonServer extends UserDaemon {
 
       // STEP 2: Check if persona client already exists
       if (this.personaClients.has(userEntity.id)) {
-        const existingPersona = this.personaClients.get(userEntity.id);
-        console.log(`✅ UserDaemon: Persona ${userEntity.displayName} already has client, reinitializing...`);
-        // ✅ Re-initialize persona to set up event subscriptions (happens on system restart)
-        if (existingPersona) {
-          await existingPersona.initialize();
-        }
-        return;
+        console.log(`✅ UserDaemon: Persona ${userEntity.displayName} already has active instance, skipping...`);
+        return; // Don't recreate - instance already exists and is subscribed
       }
 
       // STEP 3: Create PersonaUser client instance

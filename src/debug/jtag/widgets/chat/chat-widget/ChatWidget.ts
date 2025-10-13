@@ -122,7 +122,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         throw new Error(`Failed to load messages for room ${this.currentRoomId}: ${result?.error ?? 'Unknown error'}`);
       }
 
-      console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
+      // Reduce log spam
+      // console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
 
       // Store total count from database (not just loaded items)
       this.totalMessageCount = result.count ?? result.items.length;
@@ -151,7 +152,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         nextCursor = oldestMessage?.timestamp?.toString();
       }
 
-      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 100}), nextCursor=${nextCursor}`);
+      // console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 100}), nextCursor=${nextCursor}`);
 
       return {
         items: validMessages,

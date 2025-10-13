@@ -479,7 +479,8 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       isShared: true, // All clients use shared sessions by default
       connectionContext: enhancedConnectionContext // Pass enhanced context with uniqueId for agent detection
     };
-    console.log(`🔍 JTAGClient: Sending session/create with params:`, JSON.stringify(sessionParams, null, 2));
+    // Reduce log spam - massive config dump not needed
+    // console.log(`🔍 JTAGClient: Sending session/create with params:`, JSON.stringify(sessionParams, null, 2));
     const result = await this.connection.executeCommand('session/create', sessionParams);
     const sessionResult = result as SessionCreateResult;
     const session = sessionResult.session;

@@ -25,15 +25,16 @@ export const jtag = {
   
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
-    console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
+    // Reduce log spam
+    // console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
 
     // Register widgets dynamically from generated registry
-    console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
+    // console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
     BROWSER_WIDGETS.forEach(widget => {
       if (!customElements.get(widget.tagName)) {
         try {
           customElements.define(widget.tagName, widget.widgetClass);
-          console.debug(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
+          // console.debug(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
         } catch (error) {
           console.warn(`⚠️ Failed to register widget ${widget.tagName}: ${error}`);
           console.warn(`⚠️ This usually means the constructor has already been used with this registry`);

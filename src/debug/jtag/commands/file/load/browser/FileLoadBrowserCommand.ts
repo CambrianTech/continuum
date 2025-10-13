@@ -14,13 +14,14 @@ export class FileLoadBrowserCommand extends FileLoadCommand {
    * Browser delegates file operations to server
    */
   async execute(params: FileLoadParams): Promise<FileLoadResult> {
-    console.log(`📖 BROWSER: File load → delegating to server`);
+    // Reduce log spam - only log errors
+    // console.log(`📖 BROWSER: File load → delegating to server`);
 
     try {
       // Browser always delegates file I/O to server
-      console.log(`🔀 BROWSER: Need filesystem access → delegating to server`);
-      console.log(`📂 BROWSER: Loading "${params.filepath}"`);
-      
+      // console.log(`🔀 BROWSER: Need filesystem access → delegating to server`);
+      // console.log(`📂 BROWSER: Loading "${params.filepath}"`);
+
       return await this.remoteExecute(params);
 
     } catch (error: any) {

@@ -32,10 +32,11 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
 
-    console.log(`🔥 CLAUDE-BROWSER-DAEMON-DEBUG-${Date.now()}: EventsDaemonBrowser constructor called!`);
-    console.log(`🔥 Context: ${context.environment}/${context.uuid}`);
-    console.log(`🔥 ENDPOINT-DEBUG: EventsDaemonBrowser.subpath = "${this.subpath}"`);
-    console.log(`🔥 ENDPOINT-DEBUG: Expected browser endpoint should be "browser/${this.subpath}"`);
+    // Reduce log spam - debug logs removed
+    // console.log(`🔥 CLAUDE-BROWSER-DAEMON-DEBUG-${Date.now()}: EventsDaemonBrowser constructor called!`);
+    // console.log(`🔥 Context: ${context.environment}/${context.uuid}`);
+    // console.log(`🔥 ENDPOINT-DEBUG: EventsDaemonBrowser.subpath = "${this.subpath}"`);
+    // console.log(`🔥 ENDPOINT-DEBUG: Expected browser endpoint should be "browser/${this.subpath}"`);
 
     // Setup DOM event bridge for widget communication
     this.domEventBridge = new DOMEventBridge(this.eventManager);

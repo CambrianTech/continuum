@@ -26,11 +26,25 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
       // Build gating instruction
       const gatingInstruction = this.buildGatingInstruction(params);
 
-      // Build proper messages array: system + conversation history + gating instruction
+      // Mark the trigger message in conversation history with >>> arrows <<<
+      const markedHistory = params.ragContext.conversationHistory.map(msg => {
+        const isTrigger = msg.content === params.triggerMessage.content &&
+                         msg.name === params.triggerMessage.senderName;
+
+        if (isTrigger) {
+          return {
+            ...msg,
+            content: `>>> ${msg.content} <<<`
+          };
+        }
+        return msg;
+      });
+
+      // Build proper messages array: system + conversation history (with marked trigger) + gating instruction
       const request: TextGenerationRequest = {
         messages: [
           { role: 'system', content: 'You are a conversation coordinator. Respond ONLY with JSON.' },
-          ...params.ragContext.conversationHistory,  // Already proper LLMMessage[] format
+          ...markedHistory,  // Conversation with trigger message marked
           { role: 'user', content: gatingInstruction }
         ],
         model: params.model ?? 'llama3.2:3b',  // Instruction-tuned model
