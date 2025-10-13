@@ -297,8 +297,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     });
 
     Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: any) => {
+      console.log(`🔧 ChatWidget: Received POSTED event for ${data.personaName}, roomId: ${data.roomId}, currentRoomId: ${this.currentRoomId}`);
       if (data.roomId === this.currentRoomId) {
+        console.log(`✅ ChatWidget: Room matches, calling aiStatusIndicator.onPosted`);
         this.aiStatusIndicator.onPosted(data);
+      } else {
+        console.log(`⚠️ ChatWidget: Room doesn't match, ignoring POSTED event`);
       }
     });
 

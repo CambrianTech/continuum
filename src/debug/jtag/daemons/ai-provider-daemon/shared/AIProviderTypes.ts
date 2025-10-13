@@ -100,6 +100,7 @@ export interface ProviderConfiguration {
   timeout: number;                       // milliseconds (default: 30000)
   retryAttempts: number;                 // Number of retries (default: 3)
   retryDelay: number;                    // milliseconds (default: 1000)
+  maxConcurrent?: number;                // Maximum concurrent requests (Ollama-specific, default: 4)
 
   // Quality settings
   defaultModel: string;
