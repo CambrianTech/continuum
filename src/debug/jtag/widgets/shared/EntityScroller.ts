@@ -127,35 +127,16 @@ export function createScroller<T extends BaseEntity>(
     }
   };
 
-  // Handle container resize - if user was at bottom, keep them at bottom
+  // Handle container resize - always scroll to bottom on resize
   let resizeObserver: ResizeObserver | undefined;
-  let wasAtBottomBeforeResize = false;
-
-  // Track scroll position to detect if user is at bottom
-  const updateScrollPosition = (): void => {
-    wasAtBottomBeforeResize = isNearEnd(100);
-  };
-
-  const handleResize = (): void => {
-    if (!config.autoScroll?.enabled) return;
-
-    // If user was at bottom before resize, keep them there
-    if (wasAtBottomBeforeResize) {
-      requestAnimationFrame(() => {
-        scrollToEnd('instant'); // Instant scroll on resize to avoid jank
-        wasAtBottomBeforeResize = true; // Keep at bottom for next resize
-      });
-    }
-  };
 
   // Setup ResizeObserver for container (works inside shadow DOM)
   if (config.autoScroll?.enabled) {
-    // Update on scroll - will set initial value after first scroll to bottom
-    container.addEventListener('scroll', updateScrollPosition);
-
-    // Handle resize
     resizeObserver = new ResizeObserver(() => {
-      handleResize();
+      // Always scroll to bottom on resize (user request: simpler behavior)
+      requestAnimationFrame(() => {
+        scrollToEnd('instant'); // Instant scroll on resize to avoid jank
+      });
     });
     resizeObserver.observe(container);
   }
@@ -471,9 +452,6 @@ export function createScroller<T extends BaseEntity>(
       resizeObserver?.disconnect();
       sentinel?.remove();
       entityManager.clear();
-      if (config.autoScroll?.enabled) {
-        container.removeEventListener('scroll', updateScrollPosition);
-      }
     }
   };
 
