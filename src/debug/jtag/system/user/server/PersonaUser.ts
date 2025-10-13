@@ -35,12 +35,13 @@ import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
 import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
+import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDecisionService';
 import {
   AI_DECISION_EVENTS,
   type AIEvaluatingEventData,
@@ -185,6 +186,37 @@ export class PersonaUser extends AIUser {
 
     try {
       await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
+    } catch (error) {
+      // 🚨 CRITICAL: Log errors instead of silent failure
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
+      console.error(`❌ ${this.displayName}: ERROR during evaluation/response:`, {
+        error: errorMessage,
+        stack: errorStack,
+        messageId: messageEntity.id,
+        roomId: messageEntity.roomId,
+        sender: messageEntity.senderName
+      });
+
+      // Emit ERROR event for diagnostics
+      if (this.client) {
+        (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.ERROR, {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: messageEntity.roomId,
+          messageId: messageEntity.id,
+          isHumanMessage: senderIsHuman,
+          timestamp: Date.now(),
+          error: errorMessage,
+          phase: 'evaluating'  // Error happened during evaluation/response phase
+        } as AIErrorEventData);
+      }
+
+      // Log to AI decisions log
+      const operation = `Evaluation/Response for message from ${messageEntity.senderName} in room ${messageEntity.roomId}`;
+      const errorDetails = `${errorMessage}${errorStack ? '\n' + errorStack.split('\n').slice(0, 5).join('\n') : ''}`;
+      AIDecisionLogger.logError(this.displayName, operation, errorDetails);
     } finally {
       releaseTurn(); // Always release turn, even if evaluation fails
     }
@@ -299,10 +331,13 @@ export class PersonaUser extends AIUser {
       } as AIDecidedRespondEventData);
     }
 
-    // Update RAG context
+    // 🔧 PHASE: Update RAG context
+    console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
     await this.updateRAGContext(messageEntity.roomId, messageEntity);
+    console.log(`✅ ${this.displayName}: [PHASE 1/3] RAG context updated`);
 
-    // Emit GENERATING event
+    // 🔧 PHASE: Emit GENERATING event
+    console.log(`🔧 ${this.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
     if (this.client) {
       (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.GENERATING, {
         personaId: this.id,
@@ -314,9 +349,13 @@ export class PersonaUser extends AIUser {
         responseModel: this.entity?.personaConfig?.responseModel ?? 'default'
       } as AIGeneratingEventData);
     }
+    console.log(`✅ ${this.displayName}: [PHASE 2/3] GENERATING event emitted`);
 
-    // Post response
+    // 🔧 PHASE: Generate and post response
+    console.log(`🔧 ${this.displayName}: [PHASE 3/3] Calling respondToMessage...`);
     await this.respondToMessage(messageEntity);
+    console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
+
 
     // Increment response count
     const newCount = (this.responseCount.get(messageEntity.roomId) || 0) + 1;
@@ -356,87 +395,60 @@ export class PersonaUser extends AIUser {
     conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
   ): Promise<boolean> {
     try {
-      // Get last 5 ASSISTANT messages (ALL personas, not just mine)
-      // We're checking if ANYONE already covered this, not just if I'm repeating myself
-      const recentAssistantResponses = conversationHistory
-        .filter(msg => msg.role === 'assistant')
-        .slice(-5);
-
-      // If no recent assistant responses, skip self-review
-      // First response to a question should always be allowed
-      if (recentAssistantResponses.length === 0) {
-        return false;
-      }
-
-      // Preserve timestamp context (critical for detecting topic changes)
-      const conversationText = recentAssistantResponses
-        .map(msg => {
-          let timePrefix = '';
-          if (msg.timestamp) {
-            const date = new Date(msg.timestamp);
-            const hours = date.getHours().toString().padStart(2, '0');
-            const minutes = date.getMinutes().toString().padStart(2, '0');
-            timePrefix = `[${hours}:${minutes}] `;
+      // Use AIDecisionService for centralized redundancy checking
+      // Create minimal context without needing full trigger message
+      const decisionContext: AIDecisionContext = {
+        personaId: this.id,
+        personaName: this.displayName,
+        roomId,
+        triggerMessage: {
+          id: '',
+          roomId,
+          senderId: '',
+          senderName: 'System',
+          senderType: 'system',
+          content: { text: 'redundancy check', attachments: [] },
+          timestamp: new Date(),
+          collection: COLLECTIONS.CHAT_MESSAGES,
+          version: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          status: 'sent',
+          priority: 0,
+          reactions: []
+        } as unknown as ChatMessageEntity,
+        ragContext: {
+          domain: 'chat',
+          contextId: roomId,
+          personaId: this.id,
+          identity: {
+            name: this.displayName,
+            systemPrompt: ''
+          },
+          conversationHistory: conversationHistory.map(msg => ({
+            role: msg.role as 'user' | 'assistant',
+            content: msg.content,
+            name: msg.name,
+            timestamp: msg.timestamp
+          })),
+          artifacts: [],
+          privateMemories: [],
+          metadata: {
+            messageCount: conversationHistory.length,
+            artifactCount: 0,
+            memoryCount: 0,
+            builtAt: new Date()
           }
-          return `${timePrefix}${msg.name || msg.role}: ${msg.content}`;
-        })
-        .join('\n');
-
-      const prompt = `**Recent conversation:**
-${conversationText}
-
-**My draft response:**
-${myResponse}
-
-**Question**: Is my draft response saying basically the same thing as what's already been said?
-
-**Guidelines**:
-- Same idea with different words = REDUNDANT
-- Same concept with different analogy = REDUNDANT
-- Correcting a mistake = NOT redundant
-- Answering a different aspect = NOT redundant
-- **NEW QUESTION (especially after time gap) = NOT redundant**
-- **Different programming language/topic = NOT redundant**
-
-**Respond with JSON only:**
-{
-  "isRedundant": true/false,
-  "reason": "brief explanation"
-}`;
-
-      const request: TextGenerationRequest = {
-        messages: [
-          { role: 'system', content: 'You are a redundancy detector. Respond ONLY with JSON.' },
-          { role: 'user', content: prompt }
-        ],
-        model: 'llama3.2:3b',
-        temperature: 0.1, // Low temperature for consistent evaluation
-        maxTokens: 100,
-        preferredProvider: 'ollama'
+        }
       };
 
-      const response = await AIProviderDaemon.generateText(request);
-
-      // Parse JSON response
-      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return false;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      const isRedundant = parsed.isRedundant ?? false;
-      const reason = parsed.reason ?? 'No reason provided';
-
-      // Log redundancy check decision
-      AIDecisionLogger.logRedundancyCheck(
-        this.displayName,
-        roomId,
-        isRedundant,
-        reason,
-        myResponse
+      const result = await AIDecisionService.checkRedundancy(
+        myResponse,
+        decisionContext,
+        { model: 'llama3.2:3b' }
       );
 
-      return isRedundant;
+      return result.isRedundant;
     } catch (error) {
       AIDecisionLogger.logError(this.displayName, 'Redundancy check', error instanceof Error ? error.message : String(error));
       return false; // On error, allow the response (fail open)
@@ -449,7 +461,8 @@ ${myResponse}
    */
   private async respondToMessage(originalMessage: ChatMessageEntity): Promise<void> {
     try {
-      // Build RAG context using ChatRAGBuilder (includes room membership, message history, persona identity)
+      // 🔧 SUB-PHASE 3.1: Build RAG context
+      console.log(`🔧 ${this.displayName}: [PHASE 3.1] Building RAG context...`);
       const ragBuilder = new ChatRAGBuilder();
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
@@ -468,8 +481,10 @@ ${myResponse}
           }
         }
       );
+      console.log(`✅ ${this.displayName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
 
-      // Build message history for LLM
+      // 🔧 SUB-PHASE 3.2: Build message history for LLM
+      console.log(`🔧 ${this.displayName}: [PHASE 3.2] Building LLM message array...`);
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
 
       // System prompt from RAG builder (includes room membership!)
@@ -533,8 +548,10 @@ CURRENT TIME: ${currentTime}
 
 IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are from hours ago but the current question is recent, the conversation topic likely changed. Focus your response on the MOST RECENT message, not old topics.`
       });
+      console.log(`✅ ${this.displayName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
 
-      // Generate response using AIProviderDaemon (static method like DataDaemon.query)
+      // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
+      console.log(`🔧 ${this.displayName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (model: llama3.2:3b)...`);
       const request: TextGenerationRequest = {
         messages,
         model: 'llama3.2:3b', // Larger model for better instruction following (was 1b)
@@ -543,9 +560,46 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         preferredProvider: 'ollama'
       };
 
-      const aiResponse = await AIProviderDaemon.generateText(request);
+      // Wrap generation call with timeout (90s - allows for 60s fetch timeout + retries)
+      const GENERATION_TIMEOUT_MS = 90000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('AI generation timeout after 90 seconds')), GENERATION_TIMEOUT_MS);
+      });
 
-      // === SELF-REVIEW: Check if response is redundant before posting ===
+      let aiResponse: TextGenerationResponse;
+      try {
+        aiResponse = await Promise.race([
+          AIProviderDaemon.generateText(request),
+          timeoutPromise
+        ]);
+        console.log(`✅ ${this.displayName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`❌ ${this.displayName}: [PHASE 3.3] AI generation failed:`, errorMessage);
+
+        // Emit ERROR event for UI display
+        if (this.client) {
+          (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.ERROR, {
+            personaId: this.id,
+            personaName: this.displayName,
+            roomId: originalMessage.roomId,
+            messageId: originalMessage.id,
+            isHumanMessage: originalMessage.senderType === 'human',
+            timestamp: Date.now(),
+            error: errorMessage,
+            phase: 'generating'
+          } as AIErrorEventData);
+        }
+
+        // Log error to AI decisions log
+        AIDecisionLogger.logError(this.displayName, 'AI generation (PHASE 3.3)', errorMessage);
+
+        // Re-throw to be caught by outer try-catch
+        throw error;
+      }
+
+      // === SUB-PHASE 3.4: SELF-REVIEW: Check if response is redundant before posting ===
+      console.log(`🔧 ${this.displayName}: [PHASE 3.4] Checking redundancy...`);
       // Emit CHECKING_REDUNDANCY event
       if (this.client) {
         (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, {
@@ -566,10 +620,13 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       );
 
       if (isRedundant) {
+        console.log(`⚠️ ${this.displayName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
         return; // Discard response
       }
+      console.log(`✅ ${this.displayName}: [PHASE 3.4] Response not redundant, proceeding to post`);
 
-      // Create response message entity
+      // 🔧 SUB-PHASE 3.5: Create and post response
+      console.log(`🔧 ${this.displayName}: [PHASE 3.5] Creating response message entity...`);
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
       responseMessage.senderId = this.id;
@@ -596,6 +653,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
             backend: 'server',
             data: responseMessage
           });
+      console.log(`✅ ${this.displayName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
 
       if (!result.success) {
         throw new Error(`Failed to create message: ${result.error}`);
@@ -1222,69 +1280,42 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         conversationHistory: recentHistory
       };
 
-      // Get gating model from persona config (defaults to llama3.2:1b = smallest/fastest)
+      // Get gating model from persona config (defaults to llama3.2:3b for reliability)
       const gatingModelMap = {
         'deterministic': null,  // Use bag-of-words (not implemented yet)
-        'small': 'llama3.2:1b',  // Fast gating (~150-200ms)
-        'full': 'llama3.2:3b'   // More accurate but slower (~400-500ms)
+        'small': 'llama3.2:1b',  // Fast but unreliable JSON parsing (~150-200ms)
+        'full': 'llama3.2:3b'   // More accurate and reliable JSON (~400-500ms)
       };
-      const gatingModelKey = this.entity?.personaConfig?.gatingModel ?? 'small';
-      const gatingModel = gatingModelMap[gatingModelKey] ?? 'llama3.2:1b';
+      const gatingModelKey = this.entity?.personaConfig?.gatingModel ?? 'full'; // Changed default from 'small' to 'full'
+      const gatingModel = gatingModelMap[gatingModelKey] ?? 'llama3.2:3b';
 
-      // Use ai/should-respond with strategy='llm' + configurable small model
-      const result: AIShouldRespondResult = this.client
-        ? await this.client.daemons.commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
-            context: this.client.context,
-            sessionId: this.client.sessionId,
-            personaName: this.displayName,
-            personaId: this.id,
-            contextId: message.roomId,
-            ragContext: filteredRagContext,  // Use filtered context (last 5 minutes only)
-            triggerMessage: {
-              senderName: message.senderName,
-              content: message.content.text,
-              timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : new Date(message.timestamp).toISOString()
-            },
-            strategy: 'llm',
-            model: gatingModel
-          })
-        : await Commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', {
-            personaName: this.displayName,
-            personaId: this.id,
-            contextId: message.roomId,
-            ragContext: filteredRagContext,  // Use filtered context (last 5 minutes only)
-            triggerMessage: {
-              senderName: message.senderName,
-              content: message.content.text,
-              timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : new Date(message.timestamp).toISOString()
-            },
-            strategy: 'llm',
-            model: gatingModel
-          });
+      // Use AIDecisionService for centralized AI logic
+      const decisionContext: AIDecisionContext = {
+        personaId: this.id,
+        personaName: this.displayName,
+        roomId: message.roomId,
+        triggerMessage: message,
+        ragContext: filteredRagContext
+      };
 
-      if (!result) {
-        console.warn(`⚠️ ${this.displayName}: Gating command returned null, using mention status`);
-        return {
-          shouldRespond: isMentioned,
-          confidence: isMentioned ? 1.0 : 0.5,
-          reason: 'Command failed, using fallback',
-          model: gatingModel
-        };
-      }
-
-      // ✅ FIX: Return the command's decision directly - don't apply threshold here!
-      return {
-        shouldRespond: result.shouldRespond ?? false,
-        confidence: result.confidence ?? 0.5,
-        reason: result.reason ?? 'No reason provided',
+      const result = await AIDecisionService.evaluateGating(decisionContext, {
         model: gatingModel,
+        temperature: 0.3
+      });
+
+      // Return with RAG context summary for logging
+      return {
+        shouldRespond: result.shouldRespond,
+        confidence: result.confidence,
+        reason: result.reason,
+        model: result.model,
         ragContextSummary: {
           totalMessages: ragContext.conversationHistory.length,
           filteredMessages: recentHistory.length,
           timeWindowMinutes: contextWindowMinutes
         },
         conversationHistory: recentHistory.map(msg => ({
-          name: msg.name || 'Unknown',
+          name: msg.name ?? 'Unknown',
           content: msg.content,
           timestamp: msg.timestamp
         }))

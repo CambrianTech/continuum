@@ -10,6 +10,9 @@ import { AIReportCommand } from '../shared/AIReportCommand';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIReportParams, AIReportResult } from '../shared/AIReportTypes';
+import { AIDecisionService, type AIDecisionContext } from '../../../../system/ai/server/AIDecisionService';
+import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
+import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 
 interface ParsedDecision {
   timestamp: string;
@@ -31,6 +34,20 @@ interface ParsedDecision {
     content: string;
     timestamp?: number;
   }>;
+}
+
+interface PersonaStats {
+  decisions: number;
+  responses: number;
+  silences: number;
+  avgConfidence: number;
+  confidences?: number[];  // Optional because we delete it after calculating avgConfidence
+}
+
+interface RoomStats {
+  decisions: number;
+  responses: number;
+  silences: number;
 }
 
 export class AIReportServerCommand extends AIReportCommand {
@@ -59,6 +76,27 @@ export class AIReportServerCommand extends AIReportCommand {
       // Parse log file
       const decisions = this.parseLogFile(logPath);
 
+      // Handle persona filtering
+      // Note: AI decision logs only contain persona display names, not IDs
+      // For personaId/personaUniqueId filtering, we would need to:
+      // 1. Load user records from database
+      // 2. Map persona IDs/uniqueIds to display names
+      // 3. Filter logs by mapped display names
+      // For now, these parameters are accepted but not yet implemented
+      const personaNameFilter: string | undefined = params.personaName;
+
+      if (params.personaId ?? params.personaUniqueId) {
+        // TODO: Implement personaId/uniqueId filtering by loading user data
+        // and mapping to persona display names
+        return {
+          context: params.context,
+          sessionId: params.sessionId,
+          success: false,
+          error: 'Filtering by personaId/personaUniqueId not yet implemented. Use personaName instead.',
+          summary: this.getEmptySummary()
+        };
+      }
+
       // Apply filters
       let filteredDecisions = decisions;
 
@@ -66,8 +104,8 @@ export class AIReportServerCommand extends AIReportCommand {
         filteredDecisions = filteredDecisions.filter(d => d.roomId.startsWith(params.roomId!));
       }
 
-      if (params.personaName) {
-        filteredDecisions = filteredDecisions.filter(d => d.persona === params.personaName);
+      if (personaNameFilter) {
+        filteredDecisions = filteredDecisions.filter(d => d.persona === personaNameFilter);
       }
 
       if (filteredDecisions.length === 0) {
@@ -109,7 +147,7 @@ export class AIReportServerCommand extends AIReportCommand {
 
       // Recreate specific decision (if requested)
       const recreatedDecision = params.recreateDecision
-        ? this.recreateDecision(decisions, params.recreateDecision)
+        ? await this.recreateDecision(decisions, params.recreateDecision)
         : undefined;
 
       return {
@@ -166,7 +204,7 @@ export class AIReportServerCommand extends AIReportCommand {
         currentDecision = {
           timestamp,
           persona: persona.trim(),
-          decision: decision as any,
+          decision: decision as ParsedDecision['decision'],
           roomId: '',
           reason: ''
         };
@@ -179,17 +217,17 @@ export class AIReportServerCommand extends AIReportCommand {
           currentDecision.confidence = parseFloat(confidenceMatch[1]);
         }
 
-        const modelMatch = details.match(/Model:\s+([^\|]+)/);
+        const modelMatch = details.match(/Model:\s+([^|]+)/);
         if (modelMatch) {
           currentDecision.model = modelMatch[1].trim();
         }
 
-        const roomMatch = details.match(/Room:\s+([^\|]+)/);
+        const roomMatch = details.match(/Room:\s+([^|]+)/);
         if (roomMatch) {
           currentDecision.roomId = roomMatch[1].trim();
         }
 
-        const reasonMatch = details.match(/Reason:\s+([^\|]+)/);
+        const reasonMatch = details.match(/Reason:\s+([^|]+)/);
         if (reasonMatch) {
           currentDecision.reason = reasonMatch[1].trim();
         }
@@ -199,7 +237,7 @@ export class AIReportServerCommand extends AIReportCommand {
           currentDecision.message = messageMatch[1];
         }
 
-        const senderMatch = details.match(/Sender:\s+([^\|]+)/);
+        const senderMatch = details.match(/Sender:\s+([^|]+)/);
         if (senderMatch) {
           currentDecision.sender = senderMatch[1].trim();
         }
@@ -292,17 +330,15 @@ export class AIReportServerCommand extends AIReportCommand {
       ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length
       : 0;
 
-    const personaBreakdown: Record<string, any> = {};
+    const personaBreakdown: Record<string, PersonaStats> = {};
     for (const decision of roomDecisions) {
-      if (!personaBreakdown[decision.persona]) {
-        personaBreakdown[decision.persona] = {
-          decisions: 0,
-          responses: 0,
-          silences: 0,
-          avgConfidence: 0,
-          confidences: []
-        };
-      }
+      personaBreakdown[decision.persona] ??= {
+        decisions: 0,
+        responses: 0,
+        silences: 0,
+        avgConfidence: 0,
+        confidences: []
+      };
 
       personaBreakdown[decision.persona].decisions++;
       if (decision.decision === 'RESPOND') {
@@ -312,14 +348,14 @@ export class AIReportServerCommand extends AIReportCommand {
       }
 
       if (decision.confidence !== undefined) {
-        personaBreakdown[decision.persona].confidences.push(decision.confidence);
+        personaBreakdown[decision.persona].confidences?.push(decision.confidence);
       }
     }
 
     // Calculate average confidences
     for (const persona in personaBreakdown) {
       const confidences = personaBreakdown[persona].confidences;
-      personaBreakdown[persona].avgConfidence = confidences.length > 0
+      personaBreakdown[persona].avgConfidence = (confidences && confidences.length > 0)
         ? confidences.reduce((sum: number, c: number) => sum + c, 0) / confidences.length
         : 0;
       delete personaBreakdown[persona].confidences;
@@ -350,15 +386,13 @@ export class AIReportServerCommand extends AIReportCommand {
     };
 
     // Room breakdown
-    const roomBreakdown: Record<string, any> = {};
+    const roomBreakdown: Record<string, RoomStats> = {};
     for (const decision of personaDecisions) {
-      if (!roomBreakdown[decision.roomId]) {
-        roomBreakdown[decision.roomId] = {
-          decisions: 0,
-          responses: 0,
-          silences: 0
-        };
-      }
+      roomBreakdown[decision.roomId] ??= {
+        decisions: 0,
+        responses: 0,
+        silences: 0
+      };
 
       roomBreakdown[decision.roomId].decisions++;
       if (decision.decision === 'RESPOND') {
@@ -372,7 +406,7 @@ export class AIReportServerCommand extends AIReportCommand {
     const modelUsage: Record<string, number> = {};
     for (const decision of personaDecisions) {
       if (decision.model) {
-        modelUsage[decision.model] = (modelUsage[decision.model] || 0) + 1;
+        modelUsage[decision.model] = (modelUsage[decision.model] ?? 0) + 1;
       }
     }
 
@@ -398,14 +432,14 @@ export class AIReportServerCommand extends AIReportCommand {
       };
     }
 
-    const avgMessagesAvailable = decisionsWithContext.reduce((sum, d) => sum + (d.ragContext?.totalMessages || 0), 0) / decisionsWithContext.length;
-    const avgMessagesFiltered = decisionsWithContext.reduce((sum, d) => sum + (d.ragContext?.filteredMessages || 0), 0) / decisionsWithContext.length;
+    const avgMessagesAvailable = decisionsWithContext.reduce((sum, d) => sum + (d.ragContext?.totalMessages ?? 0), 0) / decisionsWithContext.length;
+    const avgMessagesFiltered = decisionsWithContext.reduce((sum, d) => sum + (d.ragContext?.filteredMessages ?? 0), 0) / decisionsWithContext.length;
 
-    const insufficientContextCount = decisionsWithContext.filter(d => (d.ragContext?.filteredMessages || 0) < 2).length;
+    const insufficientContextCount = decisionsWithContext.filter(d => (d.ragContext?.filteredMessages ?? 0) < 2).length;
 
     const timeWindowIssues = decisionsWithContext.filter(d => {
-      const filtered = d.ragContext?.filteredMessages || 0;
-      const total = d.ragContext?.totalMessages || 0;
+      const filtered = d.ragContext?.filteredMessages ?? 0;
+      const total = d.ragContext?.totalMessages ?? 0;
       return total > 0 && (filtered / total) < 0.2; // Less than 20% of messages survived filtering
     }).length;
 
@@ -424,7 +458,7 @@ export class AIReportServerCommand extends AIReportCommand {
         timestamp: d.timestamp,
         persona: d.persona,
         decision: d.decision as 'RESPOND' | 'SILENT',
-        confidence: d.confidence || 0,
+        confidence: d.confidence ?? 0,
         reason: d.reason,
         roomId: d.roomId
       }));
@@ -464,13 +498,65 @@ export class AIReportServerCommand extends AIReportCommand {
     };
   }
 
-  private recreateDecision(decisions: ParsedDecision[], timestamp: string): AIReportResult['recreatedDecision'] | undefined {
+  private async recreateDecision(decisions: ParsedDecision[], timestamp: string): Promise<AIReportResult['recreatedDecision'] | undefined> {
     const decision = decisions.find(d => d.timestamp.includes(timestamp));
     if (!decision) {
       return undefined;
     }
 
-    // Reconstruct the prompt that would have been sent to the gating model
+    // Build AIDecisionContext using the same structure as PersonaUser
+    const decisionContext: AIDecisionContext = {
+      personaId: 'unknown', // Log doesn't contain persona ID
+      personaName: decision.persona,
+      roomId: decision.roomId,
+      triggerMessage: {
+        id: '',
+        roomId: decision.roomId,
+        senderId: '',
+        senderName: decision.sender ?? 'Unknown',
+        senderType: 'user',
+        content: { text: decision.message ?? '', attachments: [] },
+        timestamp: new Date(decision.timestamp),
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        version: 1,
+        createdAt: new Date(decision.timestamp),
+        updatedAt: new Date(decision.timestamp),
+        status: 'sent',
+        priority: 0,
+        reactions: []
+      } as unknown as ChatMessageEntity,
+      ragContext: {
+        domain: 'chat',
+        contextId: decision.roomId,
+        personaId: 'unknown',
+        identity: {
+          name: decision.persona,
+          systemPrompt: ''
+        },
+        conversationHistory: (decision.conversationHistory ?? []).map(msg => ({
+          role: msg.name === decision.persona ? 'assistant' : 'user',
+          content: msg.content,
+          name: msg.name,
+          timestamp: msg.timestamp
+        })),
+        artifacts: [],
+        privateMemories: [],
+        metadata: {
+          messageCount: decision.conversationHistory?.length ?? 0,
+          artifactCount: 0,
+          memoryCount: 0,
+          builtAt: new Date()
+        }
+      }
+    };
+
+    // Use AIDecisionService to recreate the decision (same code path as PersonaUser)
+    const result = await AIDecisionService.evaluateGating(decisionContext, {
+      model: decision.model ?? 'llama3.2:1b',
+      temperature: 0.3
+    });
+
+    // Reconstruct debug prompt for manual testing
     const conversationContext = decision.conversationHistory
       ? decision.conversationHistory.map(msg => `${msg.name}: ${msg.content}`).join('\n')
       : '';
@@ -491,12 +577,12 @@ Answer with "RESPOND" or "SILENT" and explain why.`;
     return {
       timestamp: decision.timestamp,
       persona: decision.persona,
-      decision: decision.decision as 'RESPOND' | 'SILENT',
-      confidence: decision.confidence || 0,
-      reason: decision.reason,
-      model: decision.model || 'unknown',
-      conversationHistory: decision.conversationHistory || [],
-      ragContextSummary: decision.ragContext || {
+      decision: result.shouldRespond ? 'RESPOND' : 'SILENT',
+      confidence: result.confidence,
+      reason: result.reason,
+      model: result.model,
+      conversationHistory: decision.conversationHistory ?? [],
+      ragContextSummary: decision.ragContext ?? {
         totalMessages: 0,
         filteredMessages: 0
       },
