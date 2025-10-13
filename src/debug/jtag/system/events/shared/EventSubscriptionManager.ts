@@ -129,14 +129,12 @@ export class EventSubscriptionManager {
     // ✅ FIX: Check if identical handler already exists (prevent duplicates)
     for (const [existingId, existingSub] of eventSubs.entries()) {
       if (existingSub.handler === handler) {
-        console.log(`⚠️ EventSubscriptionManager: Handler already subscribed to '${eventName}', returning existing unsubscribe (${existingId})`);
         // Return the existing unsubscribe function
         return () => {
           eventSubs.delete(existingId);
           if (eventSubs.size === 0) {
             this.subscriptions.delete(eventName);
           }
-          console.log(`🔌 EventSubscriptionManager: Unsubscribed from '${eventName}' (${existingId})`);
         };
       }
     }
@@ -147,15 +145,12 @@ export class EventSubscriptionManager {
       eventName
     });
 
-    console.log(`🎧 EventSubscriptionManager: Subscribed to exact event '${eventName}' (${subscriptionId})`);
-
     // Return unsubscribe function
     return () => {
       eventSubs.delete(subscriptionId);
       if (eventSubs.size === 0) {
         this.subscriptions.delete(eventName);
       }
-      console.log(`🔌 EventSubscriptionManager: Unsubscribed from '${eventName}' (${subscriptionId})`);
     };
   }
 
@@ -178,12 +173,9 @@ export class EventSubscriptionManager {
       originalPattern: pattern
     });
 
-    console.log(`🎧 EventSubscriptionManager: Subscribed to wildcard pattern '${pattern}' (${subscriptionId})`);
-
     // Return unsubscribe function
     return () => {
       this.wildcardSubscriptions.delete(subscriptionId);
-      console.log(`🔌 EventSubscriptionManager: Unsubscribed from wildcard '${pattern}' (${subscriptionId})`);
     };
   }
 
@@ -207,12 +199,9 @@ export class EventSubscriptionManager {
       originalPattern: pattern
     });
 
-    console.log(`🎧 EventSubscriptionManager: Subscribed to elegant pattern '${pattern}' (${subscriptionId})`);
-
     // Return unsubscribe function
     return () => {
       this.elegantSubscriptions.delete(subscriptionId);
-      console.log(`🔌 EventSubscriptionManager: Unsubscribed from elegant pattern '${pattern}' (${subscriptionId})`);
     };
   }
 
@@ -251,17 +240,14 @@ export class EventSubscriptionManager {
    * @param data - Event data
    */
   public trigger(eventName: string, data: any): void {
-    let totalTriggered = 0;
-
     // 1. Exact match subscriptions
     const exactSubs = this.subscriptions.get(eventName);
     if (exactSubs && exactSubs.size > 0) {
       exactSubs.forEach((subscription) => {
         try {
           subscription.handler(data);
-          totalTriggered++;
         } catch (error) {
-          console.error(`❌ EventSubscriptionManager: Handler error for '${eventName}' (${subscription.id}):`, error);
+          console.error(`❌ EventSubscriptionManager: Handler error for '${eventName}':`, error);
         }
       });
     }
@@ -271,11 +257,9 @@ export class EventSubscriptionManager {
       this.wildcardSubscriptions.forEach((subscription) => {
         if (subscription.pattern.test(eventName)) {
           try {
-            console.log(`🎯 EventSubscriptionManager: Wildcard match! '${subscription.originalPattern}' matches '${eventName}'`);
             subscription.handler(data);
-            totalTriggered++;
           } catch (error) {
-            console.error(`❌ EventSubscriptionManager: Wildcard handler error for '${subscription.originalPattern}' (${subscription.id}):`, error);
+            console.error(`❌ EventSubscriptionManager: Wildcard handler error:`, error);
           }
         }
       });
@@ -285,28 +269,16 @@ export class EventSubscriptionManager {
     if (this.elegantSubscriptions.size > 0) {
       this.elegantSubscriptions.forEach((subscription) => {
         try {
-          // Check if event name matches pattern
           if (ElegantSubscriptionParser.matchesPattern(eventName, subscription.pattern)) {
-            // Check if event data matches filter
             if (ElegantSubscriptionParser.matchesFilter(data, subscription.filter)) {
-              console.log(`🎯 EventSubscriptionManager: Elegant match! '${subscription.originalPattern}' matches '${eventName}'`);
-
-              // Create enhanced event data with action metadata
               const enhancedEvent = ElegantSubscriptionParser.createEnhancedEvent(eventName, data);
               subscription.handler(enhancedEvent);
-              totalTriggered++;
-            } else {
-              console.log(`🔍 EventSubscriptionManager: Pattern matched but filter rejected for '${subscription.originalPattern}'`);
             }
           }
         } catch (error) {
-          console.error(`❌ EventSubscriptionManager: Elegant handler error for '${subscription.originalPattern}' (${subscription.id}):`, error);
+          console.error(`❌ EventSubscriptionManager: Elegant handler error:`, error);
         }
       });
-    }
-
-    if (totalTriggered > 0) {
-      console.log(`✅ EventSubscriptionManager: Triggered ${totalTriggered} handler(s) for '${eventName}'`);
     }
   }
 

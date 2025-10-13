@@ -19,6 +19,7 @@ import { DATA_EVENTS, getDataEventName } from '../../../system/core/shared/Event
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { getDefaultPreferencesForType } from '../../../system/user/config/UserCapabilitiesDefaults';
 import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientServer';
+import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
 
 export class UserDaemonServer extends UserDaemon {
   private monitoringInterval?: ReturnType<typeof setInterval>;
@@ -27,6 +28,10 @@ export class UserDaemonServer extends UserDaemon {
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize AI decision logger for persona decision-making
+    AIDecisionLogger.initialize('00000000-0000-0000-0000-000000000000'); // System session ID
+
     this.setupEventSubscriptions().catch((error: Error) => {
       console.error('❌ UserDaemon: Failed to setup event subscriptions:', error);
     });
@@ -55,15 +60,12 @@ export class UserDaemonServer extends UserDaemon {
     });
     this.unsubscribeFunctions.push(unsubDeleted);
 
-    console.log('📡 UserDaemon: Subscribed to user lifecycle events via universal Events system');
   }
 
   /**
    * Handle user created event
    */
   private async handleUserCreated(userEntity: UserEntity): Promise<void> {
-    console.log(`🆕 UserDaemon: User created - ${userEntity.type} ${userEntity.displayName}`);
-
     try {
       // Ensure user has UserState
       await this.ensureUserHasState(userEntity.id);
@@ -84,8 +86,6 @@ export class UserDaemonServer extends UserDaemon {
    * Handle user updated event
    */
   private async handleUserUpdated(userEntity: UserEntity): Promise<void> {
-    console.log(`🔄 UserDaemon: User updated - ${userEntity.type} ${userEntity.displayName}`);
-
     // For personas, might need to reload state or update client
     if (userEntity.type === 'persona' && this.personaClients.has(userEntity.id)) {
       // TODO: Notify persona client of update
@@ -96,14 +96,11 @@ export class UserDaemonServer extends UserDaemon {
    * Handle user deleted event
    */
   private async handleUserDeleted(userEntity: UserEntity): Promise<void> {
-    console.log(`🗑️ UserDaemon: User deleted - ${userEntity.type} ${userEntity.displayName}`);
-
     try {
       // For personas, cleanup client instance
       if (userEntity.type === 'persona' && this.personaClients.has(userEntity.id)) {
         // TODO: Shutdown persona client properly
         this.personaClients.delete(userEntity.id);
-        console.log(`✅ UserDaemon: Removed persona client for ${userEntity.displayName}`);
       }
 
       // Delete UserState (cascade)
@@ -135,7 +132,6 @@ export class UserDaemonServer extends UserDaemon {
         ...r.data,
         id: r.id
       } as UserEntity));
-      console.log(`🔍 UserDaemon: Found ${personas.length} PersonaUsers`);
 
       // Ensure each persona has correct state
       for (const persona of personas) {
@@ -161,7 +157,6 @@ export class UserDaemonServer extends UserDaemon {
 
       // STEP 2: Check if persona client already exists
       if (this.personaClients.has(userEntity.id)) {
-        console.log(`✅ UserDaemon: Persona ${userEntity.displayName} already has active instance, skipping...`);
         return; // Don't recreate - instance already exists and is subscribed
       }
 
@@ -207,8 +202,6 @@ export class UserDaemonServer extends UserDaemon {
       // Register in our client registry
       this.personaClients.set(userEntity.id, personaUser);
 
-      console.log(`✅ UserDaemon: Created and initialized PersonaUser for ${userEntity.displayName}`);
-
     } catch (error) {
       console.error(`❌ UserDaemon: Failed to create persona client for ${userEntity.displayName}:`, error);
     }
@@ -227,7 +220,6 @@ export class UserDaemonServer extends UserDaemon {
       }
 
       // UserState doesn't exist - create it
-      console.log(`💾 UserDaemon: Creating UserState for user ${userId}`);
       return await this.createUserState(userId);
 
     } catch (error) {
@@ -263,12 +255,7 @@ export class UserDaemonServer extends UserDaemon {
         userState
       );
 
-      if (storeResult) {
-        console.log(`✅ UserDaemon: Created UserState for ${user.type} ${user.displayName}`);
-        return true;
-      }
-
-      return false;
+      return !!storeResult;
 
     } catch (error) {
       console.error(`❌ UserDaemon: Failed to create UserState:`, error);
@@ -295,7 +282,6 @@ export class UserDaemonServer extends UserDaemon {
       });
     }, 30000);
 
-    console.log('🔄 UserDaemon: Started monitoring loops');
     return true;
   }
 
@@ -354,18 +340,13 @@ export class UserDaemonServer extends UserDaemon {
         id: r.id  // Add id from DataRecord to entity
       } as UserEntity));
 
-      console.log(`🔍 UserDaemon: Found ${personas.length} persona(s) in database`);
-
       for (const persona of personas) {
-        console.log(`🔍 UserDaemon: Checking persona - id: ${persona?.id}, displayName: ${persona?.displayName}, type: ${persona?.type}`);
-
         if (!persona || !persona.id) {
           console.error(`❌ UserDaemon: Invalid persona data:`, persona);
           continue;
         }
 
         if (!this.personaClients.has(persona.id)) {
-          console.warn(`🚀 UserDaemon: Starting missing persona client: ${persona.displayName}`);
           await this.createPersonaClient(persona);
         }
       }
@@ -396,10 +377,6 @@ export class UserDaemonServer extends UserDaemon {
       stopped = true;
     }
 
-    if (stopped) {
-      console.log('⏸️ UserDaemon: Stopped monitoring loops');
-    }
-
     return stopped;
   }
 
@@ -414,11 +391,9 @@ export class UserDaemonServer extends UserDaemon {
       unsubscribe();
     }
     this.unsubscribeFunctions = [];
-    console.log('📡 UserDaemon: Unsubscribed from all events');
 
     // Shutdown all persona clients
     for (const userId of this.personaClients.keys()) {
-      console.log(`👋 UserDaemon: Shutting down persona client ${userId}`);
       // TODO: Add shutdown method to PersonaUser
     }
 

@@ -50,8 +50,6 @@ export class ChatRAGBuilder extends RAGBuilder {
     const includeArtifacts = options?.includeArtifacts ?? true;
     const includeMemories = options?.includeMemories ?? true;
 
-    console.log(`📚 ChatRAGBuilder: Building context for room ${contextId.slice(0, 8)} (persona: ${personaId.slice(0, 8)})`);
-
     // 1. Load persona identity (with room context for system prompt)
     const identity = await this.loadPersonaIdentity(personaId, contextId);
 
@@ -65,7 +63,6 @@ export class ChatRAGBuilder extends RAGBuilder {
     // 2.5. Append current message if provided (for messages not yet persisted)
     if (options?.currentMessage) {
       conversationHistory.push(options.currentMessage);
-      console.log(`🔧 ChatRAGBuilder: Added current message to context (not yet in database)`);
     }
 
     // 3. Extract image attachments from messages (for vision models)
@@ -93,8 +90,6 @@ export class ChatRAGBuilder extends RAGBuilder {
         builtAt: new Date()
       }
     };
-
-    console.log(`✅ ChatRAGBuilder: Built context with ${conversationHistory.length} messages, ${artifacts.length} artifacts, ${privateMemories.length} memories`);
 
     return ragContext;
   }
@@ -187,7 +182,6 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       });
 
       if (!result.success || !result.data || result.data.length === 0) {
-        console.log(`ℹ️ ChatRAGBuilder: No messages found in room ${roomId.slice(0, 8)}`);
         return [];
       }
 
@@ -197,12 +191,6 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
 
       // Reverse to get oldest-first (LLMs expect chronological order)
       const orderedMessages = messages.reverse();
-
-      // 🔍 FORENSIC: Log complete RAG context for debugging
-      console.log(`\n${'='.repeat(80)}`);
-      console.log(`📚 RAG-CONTEXT for persona ${personaId.slice(0, 8)} in room ${roomId.slice(0, 8)}`);
-      console.log(`   Messages loaded: ${orderedMessages.length}`);
-      console.log(`   Time range: ${orderedMessages[0]?.timestamp || 'unknown'} to ${orderedMessages[orderedMessages.length - 1]?.timestamp || 'unknown'}`);
 
       // Convert to LLM message format
       const llmMessages = orderedMessages.map(msg => {
@@ -226,20 +214,14 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
           }
         }
 
-        const llmMessage = {
+        return {
           role,
           content: messageText,  // Clean message text without markers
           name: msg.senderName,  // Speaker identity (LLM API uses this for multi-party conversation)
           timestamp: timestampMs
         };
-
-        // 🔍 FORENSIC: Log each message in RAG context
-        console.log(`   - [${msg.senderName}] (${new Date(msg.timestamp).toLocaleTimeString()}) role=${llmMessage.role}: "${messageText.slice(0, 80)}${messageText.length > 80 ? '...' : ''}"`);
-
-        return llmMessage;
       });
 
-      console.log(`${'='.repeat(80)}\n`);
       return llmMessages;
     } catch (error) {
       console.error(`❌ ChatRAGBuilder: Error loading conversation history:`, error);
@@ -295,10 +277,6 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
         }
       }
 
-      if (artifacts.length > 0) {
-        console.log(`📎 ChatRAGBuilder: Extracted ${artifacts.length} artifacts from messages`);
-      }
-
       return artifacts;
     } catch (error) {
       console.error(`❌ ChatRAGBuilder: Error extracting artifacts:`, error);
@@ -348,7 +326,6 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
 
       const room = roomResult.data.data;
       if (!room.members || room.members.length === 0) {
-        console.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no members`);
         return [];
       }
 
@@ -361,7 +338,6 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
         }
       }
 
-      console.log(`👥 ChatRAGBuilder: Loaded ${memberNames.length} room members: ${memberNames.join(', ')}`);
       return memberNames;
     } catch (error) {
       console.error(`❌ ChatRAGBuilder: Error loading room members:`, error);

@@ -41,6 +41,10 @@ export interface PersonaResponseConfig {
   cooldownSeconds: number;                // Min seconds between responses per room
   maxResponsesPerSession: number;         // Session limit to prevent infinite loops
 
+  // RAG context control
+  contextWindowMinutes?: number;          // Time window for context filtering (default: 30 minutes)
+  minContextMessages?: number;            // Minimum messages to include regardless of time (default: 3)
+
   // AI model selection (intelligent escalation)
   gatingModel?: 'deterministic' | 'small' | 'full';  // Stage 1: Fast path (default)
   responseModel?: string;                             // Stage 3: Full response (e.g., 'llama3.2:3b')

@@ -9,7 +9,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (e918c5a6-d573-49aa-84d8-c4a180a9f040) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (df71f66f-3f8d-41bb-90ef-d8aa02e5908d) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -23,142 +23,22 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli-client" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-🔍 JTAGClient: Sending session/create with params: {
-  "context": {
-    "uuid": "d2e2eeb0-5f0b-41a9-bba2-e2d4a462a50e",
-    "environment": "server",
-    "config": {
-      "instance": {
-        "name": "@continuum/jtag-widget-ui",
-        "description": "JTAG Widget UI - Standalone Widget Development Environment",
-        "ports": {
-          "http_server": 9003,
-          "websocket_server": 9002
-        },
-        "paths": {
-          "directory": "examples/widget-ui",
-          "html_file": "index.html",
-          "build_output": "dist"
-        },
-        "capabilities": {}
-      },
-      "server": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws",
-          "bind_interface": "127.0.0.1",
-          "max_connections": 100,
-          "enable_cors": false
-        },
-        "paths": {
-          "logs": ".continuum/jtag/logs",
-          "screenshots": ".continuum/jtag/screenshots",
-          "data_directory": ".continuum/jtag/data",
-          "pid_file": ".continuum/jtag/server.pid"
-        },
-        "security": {
-          "enable_authentication": false,
-          "session_timeout_ms": 3600000,
-          "rate_limiting": {
-            "enabled": false,
-            "requests_per_minute": 60
-          }
-        },
-        "environment": {
-          "log_level": "info",
-          "debug_mode": false
-        },
-        "storage": {
-          "strategy": "sql",
-          "backend": "sqlite",
-          "paths": {
-            "data": ".continuum/jtag/data",
-            "backups": ".continuum/jtag/backups"
-          },
-          "options": {
-            "basePath": ".continuum/jtag/data",
-            "dbPath": ".continuum/jtag/data/database.sqlite"
-          },
-          "features": {
-            "enableTransactions": true,
-            "enableIndexing": true,
-            "enableReplication": false,
-            "enableSharding": false,
-            "enableCaching": true
-          }
-        }
-      },
-      "client": {
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http",
-          "auto_connect": true,
-          "reconnect_attempts": 3
-        },
-        "browser": {
-          "headless": false,
-          "devtools": true,
-          "width": 1200,
-          "height": 800,
-          "user_agent": "JTAG-TestBrowser/1.0"
-        },
-        "ui": {
-          "theme": "dark",
-          "enable_animations": true,
-          "show_debug_panel": false
-        }
-      },
-      "test": {
-        "server": {
-          "port": 9002,
-          "host": "localhost",
-          "protocol": "ws"
-        },
-        "client": {
-          "ui_port": 9003,
-          "host": "localhost",
-          "protocol": "http"
-        },
-        "test_settings": {
-          "timeout_ms": 30000,
-          "retry_attempts": 3,
-          "screenshot_on_failure": true,
-          "cleanup_after_test": true
-        },
-        "environment": {
-          "test_mode": true,
-          "verbose_logging": true,
-          "isolated_sessions": true
-        }
-      }
-    }
-  },
-  "sessionId": "deadbeef-cafe-4bad-8ace-5e551000c0de",
-  "category": "user",
-  "displayName": "CLI Client",
-  "isShared": true,
-  "connectionContext": {
-    "uniqueId": "cli-client"
-  }
-}
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1760333922536_nqeuc9p9
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1760337741101_deqn4mmd
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333922536_nqeuc9p9
-✅ JTAGClient: Completed correlation client_1760333922536_nqeuc9p9
+🔗 JTAGClient: Processing response for correlation client_1760337741101_deqn4mmd
+✅ JTAGClient: Completed correlation client_1760337741101_deqn4mmd
 🏷️ JTAGClientServer: Session updated to: 8ba2db75-5590-4811-83b6-5aa0d8d753cb (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1760333922543_g6trsps1
+📤 RemoteConnection: Sending command 'list' with correlation client_1760337741107_kjw9gfvg
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333922543_g6trsps1
-✅ JTAGClient: Completed correlation client_1760333922543_g6trsps1
+🔗 JTAGClient: Processing response for correlation client_1760337741107_kjw9gfvg
+✅ JTAGClient: Completed correlation client_1760337741107_kjw9gfvg
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1760333922545_ulzaebag
+📤 RemoteConnection: Sending command 'list' with correlation client_1760337741108_luc0vgsz
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333922545_ulzaebag
-✅ JTAGClient: Completed correlation client_1760333922545_ulzaebag
+🔗 JTAGClient: Processing response for correlation client_1760337741108_luc0vgsz
+✅ JTAGClient: Completed correlation client_1760337741108_luc0vgsz
 ✅ JTAGClient: Bootstrap complete! Discovered 60 commands
 ✅ Server: JTAGClient connected with 60 commands
 ✅ Connected
@@ -166,304 +46,308 @@
 🧪 CRUD TEST: users → user-list-widget
 
 📋 VERIFY after BEFORE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333924548_z1umjqvm
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337743111_x44k540j
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333924548_z1umjqvm
-✅ JTAGClient: Completed correlation client_1760333924548_z1umjqvm
+🔗 JTAGClient: Processing response for correlation client_1760337743111_x44k540j
+✅ JTAGClient: Completed correlation client_1760337743111_x44k540j
   🎨 Widget: ✅ Baseline
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333924562_f1cm5y04
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337743126_wr4f9yop
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333924562_f1cm5y04
-✅ JTAGClient: Completed correlation client_1760333924562_f1cm5y04
+🔗 JTAGClient: Processing response for correlation client_1760337743126_wr4f9yop
+✅ JTAGClient: Completed correlation client_1760337743126_wr4f9yop
   📸 Screenshot: user-before.png
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1760333926244_hufongth
-📥 JTAGClient: Transport message received (type: event)
-🌉 JTAGClient: Delegating event to server router (client doesn't route)
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1760337745090_ey2rszgx
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333926244_hufongth
-✅ JTAGClient: Completed correlation client_1760333926244_hufongth
-✅ CREATE: 1760333926245-uxassgbgr
+🔗 JTAGClient: Processing response for correlation client_1760337745090_ey2rszgx
+✅ JTAGClient: Completed correlation client_1760337745090_ey2rszgx
+✅ CREATE: 1760337745092-07b2x7ja7
 
 📋 VERIFY after CREATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1760333928264_svqmsc0i
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1760337747107_tc4tg0sv
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333928264_svqmsc0i
-✅ JTAGClient: Completed correlation client_1760333928264_svqmsc0i
+🔗 JTAGClient: Processing response for correlation client_1760337747107_tc4tg0sv
+✅ JTAGClient: Completed correlation client_1760337747107_tc4tg0sv
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333928268_d3l4pv69
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337747113_97d3ylgm
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333928268_d3l4pv69
-✅ JTAGClient: Completed correlation client_1760333928268_d3l4pv69
+🔗 JTAGClient: Processing response for correlation client_1760337747113_97d3ylgm
+✅ JTAGClient: Completed correlation client_1760337747113_97d3ylgm
   🎨 Widget: ❌ Not found
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333928280_1l0duser
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337747124_u1gn9a2c
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333928280_1l0duser
-✅ JTAGClient: Completed correlation client_1760333928280_1l0duser
+🔗 JTAGClient: Processing response for correlation client_1760337747124_u1gn9a2c
+✅ JTAGClient: Completed correlation client_1760337747124_u1gn9a2c
   📸 Screenshot: user-create.png
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1760333929896_texuzm0c
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1760337748984_lztjmsyq
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333929896_texuzm0c
-✅ JTAGClient: Completed correlation client_1760333929896_texuzm0c
+🔗 JTAGClient: Processing response for correlation client_1760337748984_lztjmsyq
+✅ JTAGClient: Completed correlation client_1760337748984_lztjmsyq
 ✅ UPDATE: Modified
 
 📋 VERIFY after UPDATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1760333931914_medl5ptw
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1760337750998_moqgfcj8
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333931914_medl5ptw
-✅ JTAGClient: Completed correlation client_1760333931914_medl5ptw
+🔗 JTAGClient: Processing response for correlation client_1760337750998_moqgfcj8
+✅ JTAGClient: Completed correlation client_1760337750998_moqgfcj8
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333931919_kxa3nuld
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337751002_108p7y90
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333931919_kxa3nuld
-✅ JTAGClient: Completed correlation client_1760333931919_kxa3nuld
+🔗 JTAGClient: Processing response for correlation client_1760337751002_108p7y90
+✅ JTAGClient: Completed correlation client_1760337751002_108p7y90
   🎨 Widget: ❌ Not found
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333931931_9iqp926j
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337751019_c0kf32zn
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333931931_9iqp926j
-✅ JTAGClient: Completed correlation client_1760333931931_9iqp926j
+🔗 JTAGClient: Processing response for correlation client_1760337751019_c0kf32zn
+✅ JTAGClient: Completed correlation client_1760337751019_c0kf32zn
   📸 Screenshot: user-update.png
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1760333933517_pqs5dmwg
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1760337752885_9h10axib
+📥 JTAGClient: Transport message received (type: event)
+🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333933517_pqs5dmwg
-✅ JTAGClient: Completed correlation client_1760333933517_pqs5dmwg
+🔗 JTAGClient: Processing response for correlation client_1760337752885_9h10axib
+✅ JTAGClient: Completed correlation client_1760337752885_9h10axib
 ✅ DELETE: Removed
 
 📋 VERIFY after DELETE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333935533_sma2u73b
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337754902_ry9cn3ly
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333935533_sma2u73b
-✅ JTAGClient: Completed correlation client_1760333935533_sma2u73b
+🔗 JTAGClient: Processing response for correlation client_1760337754902_ry9cn3ly
+✅ JTAGClient: Completed correlation client_1760337754902_ry9cn3ly
   🎨 Widget: ✅ Baseline
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333935545_8sphzr72
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337754912_1i2xkbbc
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333935545_8sphzr72
-✅ JTAGClient: Completed correlation client_1760333935545_8sphzr72
+🔗 JTAGClient: Processing response for correlation client_1760337754912_1i2xkbbc
+✅ JTAGClient: Completed correlation client_1760337754912_1i2xkbbc
   📸 Screenshot: user-delete.png
 
 🧪 CRUD TEST: rooms → room-list-widget
 
 📋 VERIFY after BEFORE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333939136_tuhlu4wr
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337758783_l8lwpz0u
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333939136_tuhlu4wr
-✅ JTAGClient: Completed correlation client_1760333939136_tuhlu4wr
+🔗 JTAGClient: Processing response for correlation client_1760337758783_l8lwpz0u
+✅ JTAGClient: Completed correlation client_1760337758783_l8lwpz0u
   🎨 Widget: ✅ Baseline
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333939151_xtzrso35
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337758796_q4s0zokq
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333939151_xtzrso35
-✅ JTAGClient: Completed correlation client_1760333939151_xtzrso35
+🔗 JTAGClient: Processing response for correlation client_1760337758796_q4s0zokq
+✅ JTAGClient: Completed correlation client_1760337758796_q4s0zokq
   📸 Screenshot: room-before.png
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1760333940739_0ht3glyy
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1760337760712_ks1nzkrq
+📥 JTAGClient: Transport message received (type: event)
+🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333940739_0ht3glyy
-✅ JTAGClient: Completed correlation client_1760333940739_0ht3glyy
-✅ CREATE: 1760333940740-ybvz4g3qc
+🔗 JTAGClient: Processing response for correlation client_1760337760712_ks1nzkrq
+✅ JTAGClient: Completed correlation client_1760337760712_ks1nzkrq
+✅ CREATE: 1760337760713-vzed878ai
 
 📋 VERIFY after CREATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1760333942760_xkxi5gib
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1760337762729_hvvg190l
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333942760_xkxi5gib
-✅ JTAGClient: Completed correlation client_1760333942760_xkxi5gib
+🔗 JTAGClient: Processing response for correlation client_1760337762729_hvvg190l
+✅ JTAGClient: Completed correlation client_1760337762729_hvvg190l
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333942767_dyq1k0n7
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337762733_ga8b8g45
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333942767_dyq1k0n7
-✅ JTAGClient: Completed correlation client_1760333942767_dyq1k0n7
+🔗 JTAGClient: Processing response for correlation client_1760337762733_ga8b8g45
+✅ JTAGClient: Completed correlation client_1760337762733_ga8b8g45
   🎨 Widget: ❌ Not found
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333942779_8yndyr6m
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337762745_oz0agbx0
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333942779_8yndyr6m
-✅ JTAGClient: Completed correlation client_1760333942779_8yndyr6m
+🔗 JTAGClient: Processing response for correlation client_1760337762745_oz0agbx0
+✅ JTAGClient: Completed correlation client_1760337762745_oz0agbx0
   📸 Screenshot: room-create.png
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1760333944378_1kihoces
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1760337764611_rcx9ai5q
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333944378_1kihoces
-✅ JTAGClient: Completed correlation client_1760333944378_1kihoces
+🔗 JTAGClient: Processing response for correlation client_1760337764611_rcx9ai5q
+✅ JTAGClient: Completed correlation client_1760337764611_rcx9ai5q
 ✅ UPDATE: Modified
 
 📋 VERIFY after UPDATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1760333946399_imx51hdx
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1760337766624_lt72bp22
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333946399_imx51hdx
-✅ JTAGClient: Completed correlation client_1760333946399_imx51hdx
+🔗 JTAGClient: Processing response for correlation client_1760337766624_lt72bp22
+✅ JTAGClient: Completed correlation client_1760337766624_lt72bp22
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333946412_8ao6bgjy
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337766628_vf8h2ba6
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333946412_8ao6bgjy
-✅ JTAGClient: Completed correlation client_1760333946412_8ao6bgjy
+🔗 JTAGClient: Processing response for correlation client_1760337766628_vf8h2ba6
+✅ JTAGClient: Completed correlation client_1760337766628_vf8h2ba6
   🎨 Widget: ❌ Not found
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333946422_xggyvict
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337766639_2a8co02p
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333946422_xggyvict
-✅ JTAGClient: Completed correlation client_1760333946422_xggyvict
+🔗 JTAGClient: Processing response for correlation client_1760337766639_2a8co02p
+✅ JTAGClient: Completed correlation client_1760337766639_2a8co02p
   📸 Screenshot: room-update.png
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1760333948018_glwu3zst
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1760337768483_nryx2py9
+📥 JTAGClient: Transport message received (type: event)
+🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333948018_glwu3zst
-✅ JTAGClient: Completed correlation client_1760333948018_glwu3zst
+🔗 JTAGClient: Processing response for correlation client_1760337768483_nryx2py9
+✅ JTAGClient: Completed correlation client_1760337768483_nryx2py9
 ✅ DELETE: Removed
 
 📋 VERIFY after DELETE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333950037_a2izosy4
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337770501_9rd4zwg6
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333950037_a2izosy4
-✅ JTAGClient: Completed correlation client_1760333950037_a2izosy4
+🔗 JTAGClient: Processing response for correlation client_1760337770501_9rd4zwg6
+✅ JTAGClient: Completed correlation client_1760337770501_9rd4zwg6
   🎨 Widget: ✅ Baseline
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333950050_fi4t44d4
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337770517_l23nmtc2
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333950050_fi4t44d4
-✅ JTAGClient: Completed correlation client_1760333950050_fi4t44d4
+🔗 JTAGClient: Processing response for correlation client_1760337770517_l23nmtc2
+✅ JTAGClient: Completed correlation client_1760337770517_l23nmtc2
   📸 Screenshot: room-delete.png
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1760333951643_nq57tu2r
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1760337772328_yob54apd
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333951643_nq57tu2r
-✅ JTAGClient: Completed correlation client_1760333951643_nq57tu2r
+🔗 JTAGClient: Processing response for correlation client_1760337772328_yob54apd
+✅ JTAGClient: Completed correlation client_1760337772328_yob54apd
 
 🧪 CRUD TEST: chat_messages → chat-widget
 
 📋 VERIFY after BEFORE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333953654_0mxjo6ih
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337774335_7fu3de39
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333953654_0mxjo6ih
-✅ JTAGClient: Completed correlation client_1760333953654_0mxjo6ih
+🔗 JTAGClient: Processing response for correlation client_1760337774335_7fu3de39
+✅ JTAGClient: Completed correlation client_1760337774335_7fu3de39
   🎨 Widget: ✅ Baseline
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333953673_xapnuczl
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337774350_vp4wgia2
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333953673_xapnuczl
-✅ JTAGClient: Completed correlation client_1760333953673_xapnuczl
+🔗 JTAGClient: Processing response for correlation client_1760337774350_vp4wgia2
+✅ JTAGClient: Completed correlation client_1760337774350_vp4wgia2
   📸 Screenshot: message-before.png
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1760333955329_o42uqy8w
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1760337776236_rthcpgx7
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333955329_o42uqy8w
-✅ JTAGClient: Completed correlation client_1760333955329_o42uqy8w
-✅ CREATE: 1760333955330-nkoq5fsq9
+🔗 JTAGClient: Processing response for correlation client_1760337776236_rthcpgx7
+✅ JTAGClient: Completed correlation client_1760337776236_rthcpgx7
+✅ CREATE: 1760337776237-jihf81sly
 
 📋 VERIFY after CREATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1760333957349_ypfbuydg
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1760337778251_6hi2xb20
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333957349_ypfbuydg
-✅ JTAGClient: Completed correlation client_1760333957349_ypfbuydg
+🔗 JTAGClient: Processing response for correlation client_1760337778251_6hi2xb20
+✅ JTAGClient: Completed correlation client_1760337778251_6hi2xb20
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333957358_aghmqsu6
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337778253_jy9xejh8
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333957358_aghmqsu6
-✅ JTAGClient: Completed correlation client_1760333957358_aghmqsu6
+🔗 JTAGClient: Processing response for correlation client_1760337778253_jy9xejh8
+✅ JTAGClient: Completed correlation client_1760337778253_jy9xejh8
   🎨 Widget: ❌ Not found
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333957368_y9mkhm9x
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337778265_4mm5nd2p
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333957368_y9mkhm9x
-✅ JTAGClient: Completed correlation client_1760333957368_y9mkhm9x
+🔗 JTAGClient: Processing response for correlation client_1760337778265_4mm5nd2p
+✅ JTAGClient: Completed correlation client_1760337778265_4mm5nd2p
   📸 Screenshot: message-create.png
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1760333959020_k6tnglsu
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1760337780142_2u9l8aky
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333959020_k6tnglsu
-✅ JTAGClient: Completed correlation client_1760333959020_k6tnglsu
+🔗 JTAGClient: Processing response for correlation client_1760337780142_2u9l8aky
+✅ JTAGClient: Completed correlation client_1760337780142_2u9l8aky
 ✅ UPDATE: Modified
 
 📋 VERIFY after UPDATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1760333961042_42kdprbb
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1760337782154_zmhpeu78
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333961042_42kdprbb
-✅ JTAGClient: Completed correlation client_1760333961042_42kdprbb
+🔗 JTAGClient: Processing response for correlation client_1760337782154_zmhpeu78
+✅ JTAGClient: Completed correlation client_1760337782154_zmhpeu78
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333961048_u5pf9f0q
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337782158_0hbr3xuc
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333961048_u5pf9f0q
-✅ JTAGClient: Completed correlation client_1760333961048_u5pf9f0q
+🔗 JTAGClient: Processing response for correlation client_1760337782158_0hbr3xuc
+✅ JTAGClient: Completed correlation client_1760337782158_0hbr3xuc
   🎨 Widget: ❌ Not found
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333961058_33r1q099
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337782168_n2gbyury
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333961058_33r1q099
-✅ JTAGClient: Completed correlation client_1760333961058_33r1q099
+🔗 JTAGClient: Processing response for correlation client_1760337782168_n2gbyury
+✅ JTAGClient: Completed correlation client_1760337782168_n2gbyury
   📸 Screenshot: message-update.png
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1760333962714_1njqswe6
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1760337784058_gsy9fr90
 📥 JTAGClient: Transport message received (type: event)
 🌉 JTAGClient: Delegating event to server router (client doesn't route)
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333962714_1njqswe6
-✅ JTAGClient: Completed correlation client_1760333962714_1njqswe6
+🔗 JTAGClient: Processing response for correlation client_1760337784058_gsy9fr90
+✅ JTAGClient: Completed correlation client_1760337784058_gsy9fr90
 ✅ DELETE: Removed
 
 📋 VERIFY after DELETE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760333964731_8k40suq0
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1760337786076_jkzbk5ky
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333964731_8k40suq0
-✅ JTAGClient: Completed correlation client_1760333964731_8k40suq0
+🔗 JTAGClient: Processing response for correlation client_1760337786076_jkzbk5ky
+✅ JTAGClient: Completed correlation client_1760337786076_jkzbk5ky
   🎨 Widget: ✅ Baseline
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760333964747_n33k5lz6
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1760337786086_vef2sjpr
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1760333964747_n33k5lz6
-✅ JTAGClient: Completed correlation client_1760333964747_n33k5lz6
+🔗 JTAGClient: Processing response for correlation client_1760337786086_vef2sjpr
+✅ JTAGClient: Completed correlation client_1760337786086_vef2sjpr
   📸 Screenshot: message-delete.png
 
 🎉 ALL CRUD TESTS PASSED (3 entities × 4 operations = 12 screenshots)

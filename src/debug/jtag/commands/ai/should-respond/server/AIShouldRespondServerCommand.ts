@@ -53,15 +53,6 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
         preferredProvider: 'ollama'
       };
 
-      // Debug: Show last 3 messages in context to verify sequential evaluation
-      const lastMessages = params.ragContext.conversationHistory.slice(-3);
-      console.log(`🤖 AI Should-Respond: Calling LLM for ${params.personaName} with ${params.ragContext.conversationHistory.length} context messages`);
-      console.log(`   Last 3 messages in context:`);
-      lastMessages.forEach((msg, i) => {
-        const preview = msg.content.substring(0, 60).replace(/\n/g, ' ');
-        console.log(`     ${i + 1}. ${msg.name || msg.role}: "${preview}${msg.content.length > 60 ? '...' : ''}"`);
-      });
-
       const response = await AIProviderDaemon.generateText(request);
 
       if (!response.text) {
@@ -71,7 +62,6 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
       const parsed = this.parseGatingResponse(response.text);
 
       const confidence = parsed.confidence ?? 0.5;
-      console.log(`✅ AI Should-Respond: ${params.personaName} → ${parsed.shouldRespond ? 'RESPOND' : 'SILENT'} (${(confidence * 100).toFixed(0)}% confidence)`);
 
       // Build debug output if verbose mode enabled
       let debugOutput: AIShouldRespondResult['debug'] = undefined;

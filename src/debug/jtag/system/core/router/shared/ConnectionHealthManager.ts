@@ -112,7 +112,6 @@ export class ConnectionHealthManager {
    */
   setTransport(transport: JTAGTransport): void {
     this.transport = transport;
-    console.log(`🔗 HealthManager[${this.context.environment}]: Transport set`);
   }
 
   /**
@@ -121,8 +120,6 @@ export class ConnectionHealthManager {
   startMonitoring(): void {
     if (this.pingTimer) return;
 
-    console.log(`💓 HealthManager[${this.context.environment}]: Started health monitoring`);
-    
     this.pingTimer = setInterval(() => {
       this.performHealthCheck();
     }, this.config.pingInterval);
@@ -144,16 +141,12 @@ export class ConnectionHealthManager {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
-
-    console.log(`⏹️ HealthManager[${this.context.environment}]: Stopped health monitoring`);
   }
 
   /**
    * Handle connection established
    */
   onConnected(): void {
-    console.log(`✅ HealthManager[${this.context.environment}]: Connection established`);
-    
     this.health.state = ConnectionState.CONNECTED;
     this.health.reconnectAttempts = 0;
     this.connectionStartTime = Date.now();
@@ -167,8 +160,6 @@ export class ConnectionHealthManager {
    * Handle connection lost
    */
   onDisconnected(): void {
-    console.log(`❌ HealthManager[${this.context.environment}]: Connection lost`);
-    
     if (this.health.state === ConnectionState.CONNECTED) {
       this.health.state = ConnectionState.DISCONNECTED;
       this.scheduleReconnection();
@@ -190,7 +181,6 @@ export class ConnectionHealthManager {
    * Force reconnection attempt
    */
   forceReconnect(): void {
-    console.log(`🔄 HealthManager[${this.context.environment}]: Forcing reconnection`);
     this.health.reconnectAttempts = 0;
     this.scheduleReconnection();
   }
@@ -244,8 +234,6 @@ export class ConnectionHealthManager {
       const latency = Date.now() - pingStart;
       this.recordHealthCheck(latency, true);
       this.health.lastSeen = Date.now();
-
-      console.log(`💓 HealthManager: Ping successful (${latency}ms)`);
 
     } catch (error) {
       // Record failed ping
@@ -343,8 +331,6 @@ export class ConnectionHealthManager {
       this.config.maxReconnectDelay
     );
 
-    console.log(`🔄 HealthManager[${this.context.environment}]: Reconnecting in ${delay}ms (attempt ${this.health.reconnectAttempts})`);
-
     this.reconnectTimer = setTimeout(() => {
       this.attemptReconnection();
     }, delay);
@@ -360,14 +346,11 @@ export class ConnectionHealthManager {
 
     // Server transports should not attempt reconnection - only clients reconnect to servers
     if (this.context.environment === 'server') {
-      console.log(`🚫 HealthManager[${this.context.environment}]: Servers do not reconnect - clients should reconnect to server`);
       this.health.state = ConnectionState.FAILED;
       return;
     }
 
     try {
-      console.log(`🔌 HealthManager[${this.context.environment}]: Attempting reconnection...`);
-      
       // Attempt to reconnect transport (only for client environments)
       await this.transport.reconnect?.();
       

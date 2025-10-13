@@ -160,15 +160,11 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     
     // Initialize transport and enhancement strategies using shared config logic
     this.initializeStrategies(config);
-    
-    console.debug(`🚀 ${this.toString()}: Initialized with request-response correlation and queuing`);
   }
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
-    
-    console.debug(`🔧 ${this.toString()}: Initializing with transport and health monitoring...`);
-    
+
     // Initialize transport
     await this.initializeTransport();
 
@@ -182,9 +178,8 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     
     // Start message queue processing
     this.messageQueue.startProcessing(this.flushQueuedMessages.bind(this));
-    
+
     this.isInitialized = true;
-    console.debug(`✅ ${this.toString()}: Initialization complete`);
   }
 
   /**
@@ -197,9 +192,8 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
                        (typeof process !== 'undefined' && process.env?.[ENV_JTAG_FORCE_LEGACY] === 'true');
     
     const useDynamicTransport = !forceLegacy; // Dynamic by default
-    
+
     if (useDynamicTransport) {
-      console.debug(`🚀 ${this.toString()}: Using dynamic transport strategy (P2P ready)`);
       this.transportStrategy = new DynamicTransportStrategy(this.transports, config.transport?.enableP2P ?? true);
       // Use minimal enhancements with dynamic strategy (following JTAGRouterDynamic pattern)
       this.enhancementStrategy = new MinimalEnhancementStrategy();
@@ -330,12 +324,10 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    * Route message to remote P2P node using UDP multicast transport
    */
   private async routeToRemoteNode(
-    message: JTAGMessage, 
+    message: JTAGMessage,
     remoteInfo: { nodeId: string; targetPath: string }
   ): Promise<RouterResult> {
     const { nodeId, targetPath } = remoteInfo;
-
-    console.debug(`🌐 ${this.toString()}: Routing to remote node ${nodeId} -> ${targetPath}`);
 
     const p2pTransport = this.transports.get(TRANSPORT_TYPES.P2P);
 
@@ -354,18 +346,15 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     try {
       if (JTAGMessageTypes.isRequest(remoteMessage)) {
         // For requests, we need to wait for response through P2P network
-        console.debug(`🎯 ${this.toString()}: Sending P2P request to ${nodeId}`);
         const responsePromise = this.responseCorrelator.createRequest(remoteMessage.correlationId);
-        
+
         await p2pTransport.send(remoteMessage);
         const response = await responsePromise;
-        
-        console.debug(`✅ ${this.toString()}: P2P response received from ${nodeId}`);
+
         return { success: true, resolved: true, response };
-        
+
       } else {
         // For events, fire-and-forget through P2P network
-        console.debug(`📢 ${this.toString()}: Sending P2P event to ${nodeId}`);
         await p2pTransport.send(remoteMessage);
         return { success: true, delivered: true };
       }
@@ -384,8 +373,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       throw new Error('Expected request message');
     }
 
-    //console.debug(`🎯 ${this.toString()}: Sending request ${message.correlationId} to ${message.endpoint}`);
-
     // Create pending request that will resolve when response arrives
     const responsePromise = this.responseCorrelator.createRequest(message.correlationId);
 
@@ -396,11 +383,9 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       }
       // Send message immediately (requests need immediate delivery)
       await crossContextTransport.send(message);
-      //console.debug(`📤 ${this.toString()}: Request sent, awaiting response...`);
 
       // Await the correlated response
       const response = await responsePromise;
-      //console.debug(`✅ ${this.toString()}: Response received for ${message.correlationId}`);
       return { success: true, resolved: true, response };
 
     } catch (error) {
@@ -468,8 +453,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       throw new Error('Expected response message');
     }
 
-    //console.debug(`📤 ${this.toString()}: Sending response ${message.correlationId} to ${message.endpoint}`);
-
     try {
       // Send response immediately (responses are critical)
       const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
@@ -477,7 +460,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
         throw new Error('No cross-context transport available for response');
       }
       await crossContextTransport.send(message);
-      //console.debug(`✅ ${this.toString()}: Response sent for ${message.correlationId}`);
       return { success: true, delivered: true };
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to send response:`, error);
@@ -499,7 +481,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
     const health = this.healthManager.getHealth();
     if (!health.isHealthy) {
-      console.debug(`⏸️ ${this.toString()}: Skipping flush - connection unhealthy (${health.state})`);
       return messages; // All failed, will retry
     }
 
@@ -508,7 +489,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     for (const queuedItem of messages) {
       try {
         await crossContextTransport.send(queuedItem.item);
-        //console.debug(`✅ ${this.toString()}: Delivered queued message ${queuedItem.id}`);
       } catch (error) {
         console.warn(`❌ ${this.toString()}: Failed to deliver ${queuedItem.id}`, error);
         failedMessages.push(queuedItem);
@@ -583,7 +563,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       const correlationId = this.externalClientDetector.getCorrelationId(message);
       if (correlationId) {
         this.externalClientDetector.registerExternal(correlationId);
-        // console.debug(`🔗 ${this.toString()}: Registered external client correlation ${correlationId}`);
 
         // NOTE: Do NOT create correlations here - that's the sender's job
         // Incoming requests should only handle routing and response creation
@@ -593,12 +572,9 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
     // Route to subscriber and handle response creation
     const result = await this.routeToSubscriber(message);
-    
-    console.debug(`🔍 ${this.toString()}: Request result for ${message.correlationId}: success=${result.success}, hasHandlerResult=${!!result.handlerResult}`);
-    
+
     // Create and send response for request messages
     if (result.success && result.handlerResult) {
-      //console.debug(`✅ ${this.toString()}: Creating response for ${message.correlationId}`);
       await this.createAndSendResponse(message, result.handlerResult);
     } else {
       console.warn(`⚠️ ${this.toString()}: No response created for ${message.correlationId} - success=${result.success}, handlerResult=${!!result.handlerResult}`);
@@ -616,8 +592,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       return;
     }
 
-    // console.debug(`📡 ${this.toString()}: Routing external response ${message.correlationId} back via WebSocket`);
-    
     const webSocketTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
     if (!webSocketTransport) {
       console.warn(`⚠️ ${this.toString()}: No WebSocket transport available for external response ${message.correlationId}`);
@@ -626,16 +600,13 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
     try {
       await webSocketTransport.send(message);
-      // console.debug(`✅ ${this.toString()}: External response sent via WebSocket for ${message.correlationId}`);
-      
+
       // INTELLIGENCE: Clean up external correlation after successful response
       this.externalClientDetector.removeCorrelation(message.correlationId);
-      // console.debug(`🧹 ${this.toString()}: Cleaned up external correlation ${message.correlationId}`);
     } catch (error) {
       console.error(`❌ ${this.toString()}: Failed to send external response ${message.correlationId}:`, error);
       // Still clean up on error to prevent memory leaks
       this.externalClientDetector.removeCorrelation(message.correlationId);
-      // console.debug(`🧹 ${this.toString()}: Cleaned up external correlation ${message.correlationId} (after error)`);
     }
   }
 
@@ -738,8 +709,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    */
   async initializeTransport(config?: Partial<TransportConfig>): Promise<void> {
     // TODO: Use config parameter to override defaults if provided
-    console.debug(`🔗 ${this.toString()}: Initializing transport with strategy pattern`);
-    
+
     // Create cross-context transport using router configuration
     const ctxTransportConfig: TransportConfig = { 
       protocol: this.config.transport.preferred,
@@ -773,7 +743,6 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
         transport.setMessageHandler((message: JTAGMessage) => {
           this.postMessage(message).catch(console.error);
         });
-        console.debug(`✅ ${this.toString()}: Transport ready: ${transport.name}`);
       }
     }
   }
@@ -782,14 +751,10 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
    * Shutdown all transports (TransportEndpoint interface implementation)
    */
   async shutdownTransports(): Promise<void> {
-    console.debug(`🔄 ${this.toString()}: Shutting down transports...`);
-
     for (const transport of this.transports.values()) {
       await transport.disconnect();
     }
     this.transports.clear();
-
-    console.debug(`✅ ${this.toString()}: Transport shutdown complete`);
   }
 
   /**
@@ -927,18 +892,14 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
   }
 
   async shutdown(): Promise<void> {
-    console.debug(`🔄 ${this.toString()}: Shutting down with cleanup...`);
-    
     // Stop bus-level systems
     this.healthManager.stopMonitoring();
     this.messageQueue.stopProcessing();
-    
+
     // Shutdown transports using interface method
     await this.shutdownTransports();
-    
-    this.endpointMatcher.clear();
 
-    console.debug(`✅ ${this.toString()}: Shutdown complete`);
+    this.endpointMatcher.clear();
   }
 
 
