@@ -342,10 +342,15 @@ async function main() {
       console.log(`⏭️ Skipping session storage - already had existing session or no client sessionId`);
     }
     
-    // Execute command with timeout for autonomous development
+    // Execute command with command-specific timeout
     try {
-      const commandTimeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`Command '${command}' timed out after 10 seconds`)), 10000)
+      // AI commands need longer timeout due to queue + generation time
+      const isAICommand = command.startsWith('ai/');
+      const timeoutMs = isAICommand ? 60000 : 10000; // 60s for AI, 10s for others
+      const timeoutSeconds = timeoutMs / 1000;
+
+      const commandTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Command '${command}' timed out after ${timeoutSeconds} seconds`)), timeoutMs)
       );
       
       // Special parameter transformation for exec command
