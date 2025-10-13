@@ -93,12 +93,13 @@ export class ScopedEventSystem {
   private readonly subscriptions = new Map<UUID, ScopedEventSubscription>();
   private readonly scopeSubscriptions = new Map<string, Set<UUID>>(); // scope-key -> subscription IDs
   private readonly crossContextBridge: EventBridge;
-  
+
   constructor(
     private readonly router: JTAGRouter,
-    private readonly sessionId: UUID
+    private readonly sessionId: UUID,
+    private readonly context: any // Using 'any' to avoid circular imports with JTAGContext
   ) {
-    this.crossContextBridge = new EventBridge(router, sessionId);
+    this.crossContextBridge = new EventBridge(router, sessionId, context);
   }
 
   /**
@@ -350,7 +351,8 @@ export class ScopedEventSystem {
 export class EventBridge {
   constructor(
     private readonly router: JTAGRouter,
-    private readonly sessionId: UUID
+    private readonly sessionId: UUID,
+    private readonly context: any // Using 'any' to avoid circular imports with JTAGContext
   ) {}
 
   /**
@@ -368,28 +370,22 @@ export class EventBridge {
           data,
           originSessionId: this.sessionId,
           timestamp: new Date().toISOString(),
-          // Required JTAGPayload fields  
-          context: (() => {
-            const { createServerContext } = require('../../core/context/SecureJTAGContext');
-            return createServerContext();
-          })(),
+          // Required JTAGPayload fields
+          context: this.context,
           sessionId: this.sessionId
         };
-        
+
         // Route via existing transport system using proper message factory
-        // Import secure context creation
-        const { createServerContext } = require('../../core/context/SecureJTAGContext');
-        const eventContext = createServerContext();
-        
+        // Note: endpoint is 'events' (routes to EventsDaemon), payload type is 'event-bridge'
         const eventMessage = JTAGMessageFactory.createEvent(
-          eventContext,
+          this.context,
           'EventsDaemon',
-          'event-bridge',
+          'events',
           bridgeMessage
         );
-        
+
         await this.router.postMessage(eventMessage);
-        
+
       } catch (error) {
         console.warn(`⚠️ Event bridge failed for ${eventName}:`, error);
       }
@@ -404,17 +400,22 @@ export class EventBridge {
     if (scope.type === 'system') {
       return true;
     }
-    
+
     // Room events for chat should be bridged
     if (scope.type === 'room' && eventName.includes('chat')) {
       return true;
     }
-    
+
+    // AI decision and response events should be bridged (for UI status indicators)
+    if (scope.type === 'room' && (eventName.includes('ai:decision') || eventName.includes('ai:response'))) {
+      return true;
+    }
+
     // Session/user events should be bridged
     if (scope.type === 'user' && eventName.includes('session')) {
       return true;
     }
-    
+
     return false;
   }
 }

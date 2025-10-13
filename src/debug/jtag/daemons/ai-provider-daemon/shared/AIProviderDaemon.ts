@@ -258,7 +258,7 @@ export class AIProviderDaemon extends DaemonBase {
         providerId: adapter.providerId,
         adapter: adapter,
         configuration: {
-          timeout: 30000,
+          timeout: 60000, // 60s - increased from 30s to handle large prompts with llama3.2:3b
           retryAttempts: 3,
           retryDelay: 1000,
           defaultModel: '',
@@ -279,7 +279,7 @@ export class AIProviderDaemon extends DaemonBase {
         providerId: adapter.providerId,
         adapter: adapter,
         configuration: {
-          timeout: 30000,
+          timeout: 60000, // 60s - increased from 30s to handle large prompts with llama3.2:3b
           retryAttempts: 3,
           retryDelay: 1000,
           defaultModel: '',

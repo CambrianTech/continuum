@@ -12,7 +12,9 @@ export interface AIReportParams extends CommandParams {
 
   // Filtering
   roomId?: string;                    // Analyze specific room
-  personaName?: string;                // Analyze specific persona
+  personaName?: string;                // Analyze specific persona by display name
+  personaId?: string;                  // Analyze specific persona by user ID
+  personaUniqueId?: string;            // Analyze specific persona by unique ID
   since?: string;                      // Time range start (ISO or relative like "1h", "today")
   until?: string;                      // Time range end
 

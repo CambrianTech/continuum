@@ -355,12 +355,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Inject ALL adapter CSS into shadow DOM (once per widget, not per message)
     if (this.shadowRoot) {
       AbstractMessageAdapter.injectAdapterStyles(this.shadowRoot, this.adapterRegistry.getAllAdapters());
-
-      // Inject AI status indicator CSS
-      const aiStatusStyle = document.createElement('link');
-      aiStatusStyle.rel = 'stylesheet';
-      aiStatusStyle.href = this.resolveResourcePath('ai-status-indicator.css');
-      this.shadowRoot.appendChild(aiStatusStyle);
     }
 
     // Cache AI status container and wire up to status indicator

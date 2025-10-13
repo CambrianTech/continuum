@@ -25,63 +25,19 @@ export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, 
   protected buildGatingInstruction(params: AIShouldRespondParams): string {
     const { personaName } = params;
 
-    return `**Your Task**: Decide if "${personaName}" should respond to the message marked with >>> arrows <<< above.
+    return `You are "${personaName}" in a group chat. Should you respond to the message marked >>> like this <<<?
 
-**CRITICAL: Distinguish Questions from Answers**:
-- A QUESTION asks for information (ends with ?, uses "how", "what", "why", etc.)
-- An ANSWER provides information (explains, describes, gives details)
-- Someone asking "What is X?" is a QUESTION - they need an answer!
-- Someone saying "X is Y because..." is an ANSWER - they provided information
+Think like a human:
+- If someone needs help/info and nobody helped yet → respond
+- If someone already got a good answer → stay quiet
+- If you'd just repeat what was said → stay quiet
+- If the answer given is WRONG → definitely respond to correct it
 
-**Think like a human in a group chat**:
-- If someone ASKED a question and nobody ANSWERED yet → RESPOND (0.8 confidence)
-- If someone already gave a good answer → Stay quiet (even if you'd phrase it differently)
-- If you'd just be repeating the same idea → Stay quiet
-- Only speak if you have genuinely NEW information
-
-**Critical Decision Rules**:
-1. **Is this a QUESTION that needs answering?**
-   - Questions end with "?" or ask "how", "what", "why", "when", "where"
-   - If it's a question and nobody answered yet → confidence = 0.8 (RESPOND!)
-   - If it's NOT a question → Continue to rule 2
-
-2. **Have I ACTUALLY ANSWERED this specific question before?**
-   - Meta-commentary like "let's discuss X" is NOT an answer
-   - Only count it if I gave specific technical details/explanation
-   - If I ACTUALLY answered → confidence = 0.0 (STAY SILENT)
-   - If I only mentioned it in passing → Continue to rule 3
-
-3. **Has someone else ACTUALLY answered this?**
-   - Meta-commentary doesn't count - only real answers with details
-   - If YES and answer is complete → confidence = 0.0 (STAY SILENT)
-   - If YES but answer is WRONG → confidence = 0.9 (CORRECT IT)
-   - If NO → Continue to rule 4
-
-4. **Would I just be rephrasing what was said?**
-   - Same explanation, different words? → confidence = 0.0
-   - Same concept, different analogy? → confidence = 0.0
-   - Adding minor details to complete answer? → confidence = 0.0
-
-5. **Mentioned by name?** → confidence = 0.9 (respond even if redundant)
-
-**Examples**:
-- User asks: "What is X?" → Nobody answered yet → **RESPOND (0.8)** - this is an unanswered question!
-- User asks: "What is X?" → Helper AI explains X clearly → You would also explain X → **STAY SILENT (0.0)**
-- User asks: "What is X?" → Helper AI says "X is Y" (WRONG) → You know X is Z → **CORRECT IT (0.9)**
-- User asks: "What is X and why use it?" → Helper AI explains what X is → You explain WHY to use it → **ADD VALUE (0.7)**
-
-**Response Format** (JSON only):
+Return JSON only:
 {
   "shouldRespond": true/false,
   "confidence": 0.0-1.0,
-  "reason": "brief explanation - is this a question? has anyone answered?",
-  "factors": {
-    "mentioned": true/false,
-    "questionAsked": true/false,
-    "domainRelevant": true/false,
-    "recentlySpoke": true/false,
-    "othersAnswered": true/false
-  }
+  "reason": "brief why/why not"
 }`;
   }
 

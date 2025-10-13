@@ -30,8 +30,9 @@ interface AIStatusState {
   personaId: UUID;
   personaName: string;
   roomId: UUID;
-  currentPhase: 'evaluating' | 'responding' | 'generating' | 'checking' | null;
+  currentPhase: 'evaluating' | 'responding' | 'generating' | 'checking' | 'error' | null;
   timestamp: number;
+  errorMessage?: string; // Error message for display
   element?: HTMLElement; // DOM element for this status indicator
 }
 
@@ -137,11 +138,21 @@ export class AIStatusIndicator {
   }
 
   /**
-   * Handle ERROR - AI encountered error, remove status
+   * Handle ERROR - AI encountered error, show error message with close button
+   * Errors stay visible until user dismisses them manually
    */
   onError(data: AIErrorEventData): void {
-    // Remove status on error
-    this.removeStatus(data.personaId);
+    // Show error status with message - no auto-remove, user must dismiss
+    this.updateStatus(data.personaId, {
+      personaId: data.personaId,
+      personaName: data.personaName,
+      roomId: data.roomId,
+      currentPhase: 'error',
+      timestamp: data.timestamp,
+      errorMessage: data.error
+    });
+
+    // No auto-remove - user must click X button to dismiss
   }
 
   /**
@@ -204,7 +215,7 @@ export class AIStatusIndicator {
    * Update status element content based on current phase
    */
   private updateStatusElement(element: HTMLElement, state: AIStatusState): void {
-    const { personaName, currentPhase } = state;
+    const { personaName, currentPhase, errorMessage, personaId } = state;
 
     let icon = '';
     let text = '';
@@ -223,13 +234,18 @@ export class AIStatusIndicator {
         break;
       case 'generating':
         icon = '✍️';
-        text = `${personaName} is typing...`;
+        text = `${personaName} is generating...`;
         className += ' ai-status-generating';
         break;
       case 'checking':
         icon = '🔍';
         text = `${personaName} is reviewing...`;
         className += ' ai-status-checking';
+        break;
+      case 'error':
+        icon = '❌';
+        text = `${personaName} error: ${errorMessage || 'Unknown error'}`;
+        className += ' ai-status-error';
         break;
       default:
         icon = '⏭️';
@@ -238,11 +254,21 @@ export class AIStatusIndicator {
     }
 
     element.className = className;
+
+    // Always show close button for manual dismissal
     element.innerHTML = `
       <span class="ai-status-icon">${icon}</span>
       <span class="ai-status-text">${text}</span>
-      <span class="ai-status-pulse"></span>
+      <button class="ai-status-close" data-persona-id="${personaId}" title="Dismiss">×</button>
     `;
+
+    // Add click handler for close button
+    const closeButton = element.querySelector('.ai-status-close');
+    if (closeButton) {
+      closeButton.addEventListener('click', () => {
+        this.removeStatus(personaId);
+      });
+    }
   }
 
   /**

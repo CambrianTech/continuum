@@ -106,7 +106,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     super();
     this.config = {
       apiEndpoint: 'http://localhost:11434',
-      timeout: 30000,
+      timeout: 60000, // 60s - increased from 30s to handle large prompts with llama3.2:3b
       retryAttempts: 3,
       retryDelay: 1000,
       defaultModel: 'phi3:mini',
