@@ -145,9 +145,8 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
           add: (entity: T) => {
             // CRITICAL: Allow subclass to filter which entities should be added
             if (this.shouldAddEntity(entity)) {
-              this.scroller?.add(entity);
+              this.scroller?.addWithAutoScroll(entity); // Use addWithAutoScroll for smart auto-scroll behavior
               this.updateEntityCount();
-            } else {
             }
           },
           update: (id: string, entity: T) => {
@@ -155,7 +154,6 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
             if (this.shouldUpdateEntity(id, entity)) {
               this.scroller?.update(id, entity);
               this.updateEntityCount();
-            } else {
             }
           },
           remove: (id: string) => {
@@ -163,7 +161,6 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
             if (this.shouldRemoveEntity(id)) {
               this.scroller?.remove(id);
               this.updateEntityCount();
-            } else {
             }
           },
           clear: () => {

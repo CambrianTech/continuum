@@ -5,7 +5,7 @@
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
-import { RoomEntity, type RoomMember } from '../../../system/data/entities/RoomEntity';
+import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
@@ -14,7 +14,7 @@ import type { DataReadParams, DataReadResult } from '../../../commands/data/read
 import { Commands } from '../../../system/core/shared/Commands';
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { Events } from '../../../system/core/shared/Events';
-import { UI_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
+import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
@@ -37,7 +37,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       widgetId: 'chat-widget',
       widgetName: 'ChatWidget',
       styles: 'chat-widget.css',
-      enableAI: false,
+      enableAI: true,
       enableDatabase: true,
       enableRouterEvents: false,
       enableScreenshots: false
@@ -210,7 +210,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   // Required by EntityScrollerWidget - title for header
-  protected getEntityTitle(entity?: ChatMessageEntity): string {
+  protected getEntityTitle(_entity?: ChatMessageEntity): string {
     return this.currentRoomName; // Show the current room name
   }
 
@@ -234,43 +234,27 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.currentRoomId = eventData.roomId as UUID;
       this.currentRoomName = eventData.roomName;
 
-      // Load room data and members
-      await this.loadRoomData(this.currentRoomId);
+      // Reset counters for new room
+      this.totalMessageCount = 0;
+      this.loadedMessageCount = 0;
 
-      // Refresh the EntityScroller to load messages for new room
-      if (this.scroller) {
-        this.scroller.refresh();
-      }
-
-      // Update the header to show new room members
+      // Update header immediately to show new room name (count will be 0 initially)
       this.updateHeader();
+
+      // Load room data and members, then refresh messages asynchronously
+      Promise.all([
+        this.loadRoomData(this.currentRoomId),
+        this.scroller?.refresh()
+      ]).then(() => {
+        // Update header again with correct message count after refresh completes
+        this.updateHeader();
+      });
     });
 
-    // MANUAL ChatMessage creation handling since automatic events don't work properly
-    Events.subscribe(getDataEventName('ChatMessage', 'created'), (eventData: ChatMessageEntity) => {
-      console.log(`📨 ChatWidget: Received ChatMessage created event`, eventData);
+    // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
+    // No manual subscription needed - filtering happens in shouldAddEntity()
 
-      // Validate event data structure - the entity comes directly, not wrapped
-      if (!eventData || !eventData.roomId) {
-        console.warn(`🚫 ChatWidget: Invalid event data - missing roomId`, eventData);
-        return;
-      }
-
-      // Only add messages for our current room
-      if (eventData.roomId !== this.currentRoomId) {
-        console.log(`🚫 ChatWidget: Ignoring message for different room ${eventData.roomId} (current: ${this.currentRoomId})`);
-        return;
-      }
-
-      console.log(`✅ ChatWidget: Adding new message to scroller for room ${this.currentRoomId}`);
-
-      // Trigger a refresh to reload messages including the new one
-      if (this.scroller) {
-        this.scroller.refresh();
-      }
-    });
-
-    console.log(`✅ ChatWidget: Initialized with room selection and manual ChatMessage events`);
+    console.log(`✅ ChatWidget: Initialized with room selection and automatic CRUD events`);
   }
 
   // Note: We receive ALL ChatMessage events, but EntityScroller will filter them
@@ -329,7 +313,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private setupMessageInputHandlers(): void {
     if (!this.messageInput) return;
 
-    const keydownHandler = (e: KeyboardEvent) => {
+    const keydownHandler = (e: KeyboardEvent): void => {
       if (e.key === 'Enter') {
         e.preventDefault();
         this.sendMessage();
@@ -337,7 +321,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     };
 
     const sendButton = this.shadowRoot?.getElementById('sendButton');
-    const clickHandler = () => this.sendMessage();
+    const clickHandler = (): void => { this.sendMessage(); };
 
     this.messageInput.addEventListener('keydown', keydownHandler);
     sendButton?.addEventListener('click', clickHandler);

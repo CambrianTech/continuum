@@ -548,26 +548,25 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
    * TODO Phase 2: Use dedicated mention/directive events instead of text parsing
    */
   private isPersonaMentioned(messageText: string): boolean {
+    const messageTextLower = messageText.toLowerCase();
     const displayNameLower = this.displayName.toLowerCase();
     const uniqueIdLower = this.entity.uniqueId?.toLowerCase() || '';
 
-    // Check for @mentions: "@PersonaName" or "@uniqueid"
-    const mentionPatterns = [
-      `@${displayNameLower}`,
-      `@${uniqueIdLower}`,
-      // Also support space after @ for natural language: "@ PersonaName"
-      `@ ${displayNameLower}`,
-      `@ ${uniqueIdLower}`
-    ];
-
-    for (const pattern of mentionPatterns) {
-      if (messageText.includes(pattern)) {
-        return true;
-      }
+    // Check for @mentions ANYWHERE in message: "@PersonaName" or "@uniqueid"
+    // Works like Discord/Slack - @ can be at start, middle, or end
+    if (messageTextLower.includes(`@${displayNameLower}`) ||
+        messageTextLower.includes(`@${uniqueIdLower}`)) {
+      return true;
     }
 
-    // Check for channel/directive patterns (if needed)
-    // TODO: Add channel directive support when that feature exists
+    // Check for direct address at START: "PersonaName," or "PersonaName:"
+    // e.g. "Teacher AI, explain closures" or "teacher-ai: what's up"
+    if (messageTextLower.startsWith(displayNameLower + ',') ||
+        messageTextLower.startsWith(displayNameLower + ':') ||
+        messageTextLower.startsWith(uniqueIdLower + ',') ||
+        messageTextLower.startsWith(uniqueIdLower + ':')) {
+      return true;
+    }
 
     return false;
   }
@@ -1027,6 +1026,16 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
   ): Promise<{ shouldRespond: boolean; confidence: number; reason: string }> {
 
     try {
+      // FAST-PATH: If directly mentioned by name, always respond (skip expensive LLM call)
+      if (isMentioned) {
+        console.log(`⚡ ${this.displayName}: Fast-path RESPOND (directly mentioned)`);
+        return {
+          shouldRespond: true,
+          confidence: 1.0,
+          reason: 'Directly mentioned by name'
+        };
+      }
+
       // Build RAG context for gating decision (recent messages only, max 5 minutes old)
       // Include recent context BUT filter out old messages from different conversation windows
       const ragBuilder = new ChatRAGBuilder();

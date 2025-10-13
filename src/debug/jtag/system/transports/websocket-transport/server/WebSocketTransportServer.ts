@@ -128,7 +128,6 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
               const correlationId = (message as any).correlationId;
               if (correlationId) {
                 this.responseRouter.registerCorrelation(correlationId, clientId);
-                console.log(`🔗 WebSocketTransportServer: Registered correlation ${correlationId} for client ${clientId}`);
               }
             }
             

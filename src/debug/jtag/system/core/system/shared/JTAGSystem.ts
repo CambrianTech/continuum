@@ -186,10 +186,7 @@ export abstract class JTAGSystem extends JTAGBase {
           // Register CommandDaemon to globalThis for server-side Commands.execute() routing
           if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
             (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
-            console.log(`🔗 Registered CommandDaemon to globalThis for server-side routing`);
           }
-
-          console.log(`📦 Registered server daemon: ${daemon.constructor.name}`);
           return daemon;
         }
         return null;
@@ -245,7 +242,6 @@ export abstract class JTAGSystem extends JTAGBase {
     if (consoleDaemon && this.sessionId) {
       // Use session provider pattern - daemon gets session ID from system
       consoleDaemon.setSessionIdProvider(() => this.sessionId);
-      console.log(`🏷️ ${this.toString()}: Updated ConsoleDaemon session provider to return ${this.sessionId}`);
     }
   }
 
@@ -254,8 +250,6 @@ export abstract class JTAGSystem extends JTAGBase {
    */
   register(daemon: DaemonBase): void {
     this.daemons.push(daemon);
-    const version = this.getVersionString();
-    console.log(`🎯 JTAG System v${version}: Registered daemon '${daemon.constructor.name}'`);
   }
 
   /**
