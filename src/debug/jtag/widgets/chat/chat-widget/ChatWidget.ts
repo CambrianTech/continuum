@@ -20,6 +20,8 @@ import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/Defau
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
 import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
+import { AIStatusIndicator } from './AIStatusIndicator';
+import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLInputElement;
@@ -31,6 +33,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private loadedMessageCount: number = 0; // Number of messages actually loaded so far
   private adapterRegistry: AdapterRegistry; // Selects adapters per message based on content
   private inputEnhancer?: MessageInputEnhancer; // Markdown shortcuts for message input
+  private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
+  private aiStatusContainer?: HTMLElement; // Container for AI status indicators
 
   constructor() {
     super({
@@ -45,6 +49,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Initialize adapter registry for per-message adapter selection
     this.adapterRegistry = new AdapterRegistry();
+
+    // Initialize AI status indicator manager
+    this.aiStatusIndicator = new AIStatusIndicator();
   }
 
   // Static property required by widget registration system
@@ -239,6 +246,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.totalMessageCount = 0;
       this.loadedMessageCount = 0;
 
+      // Clear AI status indicators for previous room
+      this.aiStatusIndicator.clearAll();
+
       // Update header immediately to show new room name (count will be 0 initially)
       this.updateHeader();
 
@@ -252,21 +262,72 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       });
     });
 
+    // Subscribe to AI decision events for real-time thinking/responding indicators
+    // Note: We subscribe globally and filter by room ID in handlers
+    console.log(`🤖 ChatWidget: Subscribing to AI decision events`);
+
+    Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onEvaluating(data);
+      }
+    });
+
+    Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onDecidedRespond(data);
+      }
+    });
+
+    Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onDecidedSilent(data);
+      }
+    });
+
+    Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onGenerating(data);
+      }
+    });
+
+    Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onCheckingRedundancy(data);
+      }
+    });
+
+    Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onPosted(data);
+      }
+    });
+
+    Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onError(data);
+      }
+    });
+
+    console.log(`✅ ChatWidget: AI decision event subscriptions active`);
+
     // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
     // No manual subscription needed - filtering happens in shouldAddEntity()
 
-    console.log(`✅ ChatWidget: Initialized with room selection and automatic CRUD events`);
+    console.log(`✅ ChatWidget: Initialized with room selection, AI status indicators, and automatic CRUD events`);
   }
 
   // Note: We receive ALL ChatMessage events, but EntityScroller will filter them
   // during refresh() calls using our room-specific getLoadFunction()
   // This is inefficient but works with current event system limitations
 
-  // Override template to include message input footer
+  // Override template to include AI status container and message input footer
   protected renderTemplate(): string {
     return `
       <div class="entity-list-container">
         ${this.renderHeader()}
+
+        <!-- AI Status Indicators Container (sticky above messages) -->
+        <div class="ai-status-container" id="aiStatusContainer"></div>
 
         <div class="entity-list-body messages-container">
           <!-- EntityScroller will populate this container -->
@@ -294,6 +355,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Inject ALL adapter CSS into shadow DOM (once per widget, not per message)
     if (this.shadowRoot) {
       AbstractMessageAdapter.injectAdapterStyles(this.shadowRoot, this.adapterRegistry.getAllAdapters());
+
+      // Inject AI status indicator CSS
+      const aiStatusStyle = document.createElement('link');
+      aiStatusStyle.rel = 'stylesheet';
+      aiStatusStyle.href = this.resolveResourcePath('ai-status-indicator.css');
+      this.shadowRoot.appendChild(aiStatusStyle);
+    }
+
+    // Cache AI status container and wire up to status indicator
+    this.aiStatusContainer = this.shadowRoot?.getElementById('aiStatusContainer') as HTMLElement;
+    if (this.aiStatusContainer) {
+      this.aiStatusIndicator.setContainer(this.aiStatusContainer);
+      console.log(`✅ ChatWidget: AI status container ready`);
     }
 
     // Cache input element after DOM is rendered

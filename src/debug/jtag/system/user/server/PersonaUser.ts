@@ -41,6 +41,17 @@ import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
 import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
+import {
+  AI_DECISION_EVENTS,
+  type AIEvaluatingEventData,
+  type AIDecidedRespondEventData,
+  type AIDecidedSilentEventData,
+  type AIGeneratingEventData,
+  type AICheckingRedundancyEventData,
+  type AIPostedEventData,
+  type AIErrorEventData
+} from '../../events/shared/AIDecisionEvents';
+import type { ScopedEventsInterface } from '../../events/shared/ScopedEventSystem';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -215,6 +226,20 @@ export class PersonaUser extends AIUser {
     }
 
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
+    // Emit EVALUATING event for real-time feedback
+    if (this.client) {
+      (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.EVALUATING, {
+        personaId: this.id,
+        personaName: this.displayName,
+        roomId: messageEntity.roomId,
+        messageId: messageEntity.id,
+        isHumanMessage: senderIsHuman,
+        timestamp: Date.now(),
+        messagePreview: messageText.slice(0, 100),
+        senderName: messageEntity.senderName
+      } as AIEvaluatingEventData);
+    }
+
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
 
     if (!gatingResult.shouldRespond) {
@@ -227,6 +252,22 @@ export class PersonaUser extends AIUser {
         ragContextSummary: gatingResult.ragContextSummary,
         conversationHistory: gatingResult.conversationHistory
       });
+
+      // Emit DECIDED_SILENT event
+      if (this.client) {
+        (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.DECIDED_SILENT, {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: messageEntity.roomId,
+          messageId: messageEntity.id,
+          isHumanMessage: senderIsHuman,
+          timestamp: Date.now(),
+          confidence: gatingResult.confidence ?? 0.5,
+          reason: gatingResult.reason,
+          gatingModel: gatingResult.model ?? 'unknown'
+        } as AIDecidedSilentEventData);
+      }
+
       return;
     }
 
@@ -243,8 +284,36 @@ export class PersonaUser extends AIUser {
       conversationHistory: gatingResult.conversationHistory
     });
 
+    // Emit DECIDED_RESPOND event
+    if (this.client) {
+      (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.DECIDED_RESPOND, {
+        personaId: this.id,
+        personaName: this.displayName,
+        roomId: messageEntity.roomId,
+        messageId: messageEntity.id,
+        isHumanMessage: senderIsHuman,
+        timestamp: Date.now(),
+        confidence: gatingResult.confidence ?? 0.5,
+        reason: gatingResult.reason,
+        gatingModel: gatingResult.model ?? 'unknown'
+      } as AIDecidedRespondEventData);
+    }
+
     // Update RAG context
     await this.updateRAGContext(messageEntity.roomId, messageEntity);
+
+    // Emit GENERATING event
+    if (this.client) {
+      (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.GENERATING, {
+        personaId: this.id,
+        personaName: this.displayName,
+        roomId: messageEntity.roomId,
+        messageId: messageEntity.id,
+        isHumanMessage: senderIsHuman,
+        timestamp: Date.now(),
+        responseModel: this.entity?.personaConfig?.responseModel ?? 'default'
+      } as AIGeneratingEventData);
+    }
 
     // Post response
     await this.respondToMessage(messageEntity);
@@ -477,6 +546,19 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       const aiResponse = await AIProviderDaemon.generateText(request);
 
       // === SELF-REVIEW: Check if response is redundant before posting ===
+      // Emit CHECKING_REDUNDANCY event
+      if (this.client) {
+        (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: originalMessage.roomId,
+          messageId: originalMessage.id,
+          isHumanMessage: originalMessage.senderType === 'human',
+          timestamp: Date.now(),
+          responseLength: aiResponse.text.trim().length
+        } as AICheckingRedundancyEventData);
+      }
+
       const isRedundant = await this.isResponseRedundant(
         aiResponse.text.trim(),
         originalMessage.roomId,
@@ -526,6 +608,20 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         aiResponse.text.trim()
       );
 
+      // Emit POSTED event
+      if (this.client && result.data) {
+        (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.POSTED, {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: originalMessage.roomId,
+          messageId: originalMessage.id,
+          isHumanMessage: originalMessage.senderType === 'human',
+          timestamp: Date.now(),
+          responseMessageId: result.data.id,
+          passedRedundancyCheck: !isRedundant
+        } as AIPostedEventData);
+      }
+
     } catch (error) {
       // Fail silently - real people don't send canned error messages, they just stay quiet
       AIDecisionLogger.logError(
@@ -533,6 +629,20 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         'Response generation/posting',
         error instanceof Error ? error.message : String(error)
       );
+
+      // Emit ERROR event
+      if (this.client) {
+        (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.ERROR, {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: originalMessage.roomId,
+          messageId: originalMessage.id,
+          isHumanMessage: originalMessage.senderType === 'human',
+          timestamp: Date.now(),
+          error: error instanceof Error ? error.message : String(error),
+          phase: 'generating'
+        } as AIErrorEventData);
+      }
     }
   }
 

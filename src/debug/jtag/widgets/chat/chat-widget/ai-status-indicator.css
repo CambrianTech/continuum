@@ -1,0 +1,155 @@
+/**
+ * AI Status Indicator Styles
+ * Subtle, temporary status rows showing AI thinking/responding
+ */
+
+.ai-status-container {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 0.5rem 1rem;
+  background: var(--bg-secondary, #f5f5f5);
+  border-bottom: 1px solid var(--border-color, #ddd);
+}
+
+.ai-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  margin: 0.25rem 0;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ai-status-icon {
+  font-size: 1.2rem;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.ai-status-text {
+  flex: 1;
+  color: var(--text-secondary, #666);
+  font-style: italic;
+}
+
+.ai-status-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: pulseCircle 1.5s ease-in-out infinite;
+}
+
+@keyframes pulseCircle {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 0.5;
+  }
+}
+
+/* Phase-specific styles */
+.ai-status-thinking {
+  background: rgba(100, 149, 237, 0.1);
+  border-left: 3px solid #6495ed;
+}
+
+.ai-status-thinking .ai-status-pulse {
+  background: #6495ed;
+}
+
+.ai-status-responding {
+  background: rgba(50, 205, 50, 0.1);
+  border-left: 3px solid #32cd32;
+}
+
+.ai-status-responding .ai-status-pulse {
+  background: #32cd32;
+}
+
+.ai-status-generating {
+  background: rgba(255, 165, 0, 0.1);
+  border-left: 3px solid #ffa500;
+}
+
+.ai-status-generating .ai-status-pulse {
+  background: #ffa500;
+}
+
+.ai-status-checking {
+  background: rgba(138, 43, 226, 0.1);
+  border-left: 3px solid #8a2be2;
+}
+
+.ai-status-checking .ai-status-pulse {
+  background: #8a2be2;
+}
+
+.ai-status-silent {
+  background: rgba(128, 128, 128, 0.1);
+  border-left: 3px solid #808080;
+  opacity: 0.7;
+}
+
+.ai-status-silent .ai-status-pulse {
+  background: #808080;
+  animation: none;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .ai-status-container {
+    background: var(--bg-secondary, #2a2a2a);
+    border-bottom-color: var(--border-color, #444);
+  }
+
+  .ai-status-text {
+    color: var(--text-secondary, #aaa);
+  }
+
+  .ai-status-thinking {
+    background: rgba(100, 149, 237, 0.2);
+  }
+
+  .ai-status-responding {
+    background: rgba(50, 205, 50, 0.2);
+  }
+
+  .ai-status-generating {
+    background: rgba(255, 165, 0, 0.2);
+  }
+
+  .ai-status-checking {
+    background: rgba(138, 43, 226, 0.2);
+  }
+
+  .ai-status-silent {
+    background: rgba(128, 128, 128, 0.2);
+  }
+}
