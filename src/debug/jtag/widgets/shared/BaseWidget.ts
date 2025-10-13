@@ -153,29 +153,30 @@ export abstract class BaseWidget extends HTMLElement {
 
   async connectedCallback(): Promise<void> {
     try {
-      console.log(`🎨 ${this.config.widgetName}: BaseWidget initialization starting...`);
-      
+      // Reduce log spam - only log errors
+      // console.log(`🎨 ${this.config.widgetName}: BaseWidget initialization starting...`);
+
       // 1. Connect to daemon systems (abstracted) WAS DEAD CODE
       //await this.initializeDaemonConnections();
-      
+
       // 3. Restore persisted state (abstracted) - removed unused persistence system
-      
+
       // 4. Load external resources (template & styles)
       await this.loadResources();
-      
+
       // 5. Let subclass initialize its specific logic
       await this.onWidgetInitialize();
-      
+
       // 6. Render UI (subclass-specific but with base support)
       await this.renderWidget();
-      
+
       // 7. Setup event coordination (abstracted) 3600000
       //await this.initializeEventSystem();
-      
+
       this.state.isInitialized = true;
       this.state.isConnected = true;
-      
-      console.log(`✅ ${this.config.widgetName}: BaseWidget initialization complete`);
+
+      // console.log(`✅ ${this.config.widgetName}: BaseWidget initialization complete`);
       
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Initialization failed:`, error);

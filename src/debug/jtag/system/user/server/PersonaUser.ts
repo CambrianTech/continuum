@@ -467,12 +467,15 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       const aiResponse = await AIProviderDaemon.generateText(request);
 
       console.log(`✅ ${this.displayName}: Generated response in ${aiResponse.responseTime}ms (${aiResponse.usage.outputTokens} tokens)`);
+      console.log(`📝 ${this.displayName}: Generated text: "${aiResponse.text.trim().substring(0, 150)}..."`);
 
       // === SELF-REVIEW: Check if response is redundant before posting ===
+      console.log(`🔍 ${this.displayName}: Starting self-review check...`);
       const isRedundant = await this.isResponseRedundant(
         aiResponse.text.trim(),
         fullRAGContext.conversationHistory
       );
+      console.log(`🔍 ${this.displayName}: Self-review completed, isRedundant=${isRedundant}`);
 
       if (isRedundant) {
         console.log(`🗑️ ${this.displayName}: Self-review detected redundant response, discarding silently`);
@@ -483,6 +486,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       console.log(`✅ ${this.displayName}: Self-review passed, response is unique`);
 
       // Create response message entity
+      console.log(`📤 ${this.displayName}: Creating message entity...`);
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
       responseMessage.senderId = this.id;
@@ -496,6 +500,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
       // ✅ Post response via JTAGClient - universal Commands API
       // Prefer this.client if available (set by UserDaemon), fallback to shared instance
+      console.log(`📤 ${this.displayName}: Posting response to chat via data/create command...`);
       const result = this.client
         ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
             context: this.client.context,
@@ -510,6 +515,8 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
             data: responseMessage
           });
 
+      console.log(`📤 ${this.displayName}: data/create returned, success=${result.success}, error=${result.error || 'none'}`);
+
       if (!result.success) {
         throw new Error(`Failed to create message: ${result.error}`);
       }
@@ -518,7 +525,8 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
     } catch (error) {
       // Fail silently - real people don't send canned error messages, they just stay quiet
-      console.error(`❌ PersonaUser ${this.displayName}: Failed to generate response, staying silent:`, error);
+      console.error(`❌ PersonaUser ${this.displayName}: Failed to generate/post response, staying silent:`, error);
+      console.error(`❌ PersonaUser ${this.displayName}: Error stack:`, error instanceof Error ? error.stack : 'no stack');
     }
   }
 

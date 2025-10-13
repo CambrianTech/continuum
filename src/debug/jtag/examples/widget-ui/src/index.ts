@@ -2,7 +2,8 @@
  * Continuum Widget UI - Simplified Interface
  */
 
-console.log('🚀 Widget UI: Loading...');
+// Reduce log spam
+// console.log('🚀 Widget UI: Loading...');
 
 // Import JTAG (browser build will automatically use browser-index via package.json)
 import { jtag } from '@continuum/jtag';
@@ -12,7 +13,7 @@ import type { JTAGClient } from '@continuum/jtag/dist/system/core/client/shared/
 import './components/ContinuumEmoter.js';
 import './components/SidebarResizer.js';
 
-console.log('✅ Widget UI: JTAG imported:', typeof jtag);
+// console.log('✅ Widget UI: JTAG imported:', typeof jtag);
 
 // Cross-platform environment detection
 const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
@@ -34,19 +35,19 @@ let jtagClient: JTAGClient | null = null;
 // Initialize the widget UI when page loads (only in browser)
 if (isBrowser) {
   document.addEventListener('DOMContentLoaded', async () => {
-    console.log('🎪 Widget UI: Page loaded');
-    
+    // console.log('🎪 Widget UI: Page loaded');
+
     try {
       // Connect to JTAG client and get status
       const connectionResult = await jtag.connect();
       jtagClient = connectionResult.client;
       jtagConnected = true;
-      
+
       // Set up global window.jtag for backwards compatibility with tests
       (window as any).jtag = jtagClient;
 
-      
-      console.log('✅ Widget UI: JTAG Client connected successfully');
+
+      // console.log('✅ Widget UI: JTAG Client connected successfully');
     } catch (error) {
       console.error('❌ Widget UI: Failed to connect to JTAG Client:', error);
       jtagConnected = false;

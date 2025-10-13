@@ -101,8 +101,9 @@ export abstract class JTAGBase extends JTAGModule {
 
           const fullParams = command.withDefaults(params ?? {}, sessionIdToUse, contextToUse);
 
-          console.log(`Executing command '${commandName}' with params:`, fullParams);
-          
+          // Reduce log spam - only log errors
+          // console.log(`Executing command '${commandName}' with params:`, fullParams);
+
           // Execute the command directly with proper typing
           return await command.execute(fullParams);
         };

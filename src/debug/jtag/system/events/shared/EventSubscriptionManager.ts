@@ -125,6 +125,22 @@ export class EventSubscriptionManager {
     }
 
     const eventSubs = this.subscriptions.get(eventName)!;
+
+    // ✅ FIX: Check if identical handler already exists (prevent duplicates)
+    for (const [existingId, existingSub] of eventSubs.entries()) {
+      if (existingSub.handler === handler) {
+        console.log(`⚠️ EventSubscriptionManager: Handler already subscribed to '${eventName}', returning existing unsubscribe (${existingId})`);
+        // Return the existing unsubscribe function
+        return () => {
+          eventSubs.delete(existingId);
+          if (eventSubs.size === 0) {
+            this.subscriptions.delete(eventName);
+          }
+          console.log(`🔌 EventSubscriptionManager: Unsubscribed from '${eventName}' (${existingId})`);
+        };
+      }
+    }
+
     eventSubs.set(subscriptionId, {
       id: subscriptionId,
       handler,

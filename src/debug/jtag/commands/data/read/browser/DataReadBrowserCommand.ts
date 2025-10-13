@@ -19,7 +19,8 @@ export class DataReadBrowserCommand extends DataReadCommand<BaseEntity> {
   }
 
   protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult<BaseEntity>> {
-    console.log(`🗄️ BROWSER: Reading ${params.collection}/${params.id} from localStorage`);
+    // Reduce log spam - only log errors
+    // console.log(`🗄️ BROWSER: Reading ${params.collection}/${params.id} from localStorage`);
 
     try {
       const result = await LocalStorageDataBackend.read(params.collection, params.id);
