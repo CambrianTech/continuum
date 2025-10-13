@@ -32,7 +32,6 @@ export class WebSocketResponseRouter {
     };
 
     this.clientIdToConnection.set(clientId, connection);
-    console.log(`🔗 WebSocketResponseRouter: Registered client ${clientId}`);
   }
 
   /**

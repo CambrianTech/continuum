@@ -131,6 +131,10 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       );
     }
 
+    // Clear Ollama context for consistent results
+    console.log('🧹 Ollama: Clearing loaded models for fresh state...');
+    await this.clearLoadedModels();
+
     // Log available models
     const models = await this.getAvailableModels();
     console.log(`   ${models.length} models available: ${models.join(', ')}`);
@@ -279,6 +283,35 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
       this.healthCache = { status, timestamp: Date.now() };
       return status;
+    }
+  }
+
+  /**
+   * Clear all loaded models from Ollama memory
+   * This ensures fresh, consistent state for each server restart
+   */
+  private async clearLoadedModels(): Promise<void> {
+    try {
+      const { execSync } = await import('child_process');
+      // Get model names from ollama ps and stop each one
+      const psOutput = execSync('ollama ps', { encoding: 'utf-8' });
+      const lines = psOutput.split('\n').slice(1); // Skip header
+
+      for (const line of lines) {
+        const modelName = line.trim().split(/\s+/)[0];
+        if (modelName && modelName !== 'NAME') {
+          try {
+            execSync(`ollama stop ${modelName}`, { stdio: 'ignore', timeout: 2000 });
+            console.log(`🧹 Ollama: Unloaded ${modelName}`);
+          } catch (e) {
+            // Individual model stop failed, continue
+          }
+        }
+      }
+      console.log('✅ Ollama: All models unloaded for fresh state');
+    } catch (error) {
+      // Non-critical - log but continue
+      console.log('⚠️  Ollama: Could not unload models (non-critical)');
     }
   }
 

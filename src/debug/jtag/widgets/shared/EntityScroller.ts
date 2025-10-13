@@ -92,7 +92,7 @@ export function createScroller<T extends BaseEntity>(
   const entityManager = new EntityManager<T>({
     name: `Scroller-${config.direction}`,
     maxSize: config.pageSize * 10, // Reasonable limit to prevent memory issues
-    debugMode: true
+    debugMode: false // Disable to reduce console spam
   });
   let isLoading = false;
   let hasMoreItems = true;
@@ -123,12 +123,42 @@ export function createScroller<T extends BaseEntity>(
     if (!config.autoScroll?.enabled) return;
 
     if (isNearEnd()) {
-      console.log(`📍 EntityScroller: User near new content area, auto-scrolling`);
       scrollToEnd();
-    } else {
-      console.log(`📍 EntityScroller: User reading away from new content area, not auto-scrolling`);
     }
   };
+
+  // Handle container resize - if user was at bottom, keep them at bottom
+  let resizeObserver: ResizeObserver | undefined;
+  let wasAtBottomBeforeResize = false;
+
+  // Track scroll position to detect if user is at bottom
+  const updateScrollPosition = (): void => {
+    wasAtBottomBeforeResize = isNearEnd(100);
+  };
+
+  const handleResize = (): void => {
+    if (!config.autoScroll?.enabled) return;
+
+    // If user was at bottom before resize, keep them there
+    if (wasAtBottomBeforeResize) {
+      requestAnimationFrame(() => {
+        scrollToEnd('instant'); // Instant scroll on resize to avoid jank
+        wasAtBottomBeforeResize = true; // Keep at bottom for next resize
+      });
+    }
+  };
+
+  // Setup ResizeObserver for container (works inside shadow DOM)
+  if (config.autoScroll?.enabled) {
+    // Update on scroll - will set initial value after first scroll to bottom
+    container.addEventListener('scroll', updateScrollPosition);
+
+    // Handle resize
+    resizeObserver = new ResizeObserver(() => {
+      handleResize();
+    });
+    resizeObserver.observe(container);
+  }
 
   // Efficient DOM operations using fragments - only add genuinely new entities
   // For newest-first: initial load appends, loadMore prepends (older messages at top)
@@ -335,7 +365,6 @@ export function createScroller<T extends BaseEntity>(
 
       // Add entity - always appends to DOM end, CSS handles visual positioning
       addEntitiesToDOM([entity]);
-      console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.add() processed entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
     },
 
     // Smart real-time updates with auto-scroll
@@ -372,14 +401,19 @@ export function createScroller<T extends BaseEntity>(
       // Track count before attempting add
       const initialCount = entityManager.count();
 
+      // CHECK SCROLL POSITION BEFORE ADDING (critical: must check before DOM changes)
+      const wasAtBottom = config.autoScroll?.enabled && isNearEnd();
+
       // Add entity - always appends to DOM end, CSS handles visual positioning
       addEntitiesToDOM([entity]);
-      console.log(`🔧 CLAUDE-SCROLLER-DEBUG: EntityScroller.addWithAutoScroll() processed entity with ID: ${entityId}, total entities now: ${entityManager.count()}`);
 
-      // Auto-scroll only if entity was genuinely added
-      if (entityManager.count() > initialCount) {
+      // Auto-scroll only if entity was genuinely added AND user was at bottom
+      if (entityManager.count() > initialCount && wasAtBottom) {
+        // Double RAF to ensure DOM has been laid out and scrollHeight is updated
         requestAnimationFrame(() => {
-          smartScrollToNewContent();
+          requestAnimationFrame(() => {
+            scrollToEnd();
+          });
         });
       }
     },
@@ -434,8 +468,12 @@ export function createScroller<T extends BaseEntity>(
     // Cleanup
     destroy(): void {
       observer?.disconnect();
+      resizeObserver?.disconnect();
       sentinel?.remove();
       entityManager.clear();
+      if (config.autoScroll?.enabled) {
+        container.removeEventListener('scroll', updateScrollPosition);
+      }
     }
   };
 
