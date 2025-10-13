@@ -176,7 +176,6 @@ export class DataDaemon {
       if (DataDaemon.jtagContext) {
         const eventName = getDataEventName(collection, 'created');
         await Events.emit(DataDaemon.jtagContext, eventName, entity);
-        console.log(`✅ DataDaemon: Emitted ${eventName}`);
       }
 
       // Return the complete entity (already includes proper ID)
@@ -275,7 +274,6 @@ export class DataDaemon {
       if (DataDaemon.jtagContext) {
         const eventName = getDataEventName(collection, 'updated');
         await Events.emit(DataDaemon.jtagContext, eventName, entity);
-        console.log(`✅ DataDaemon: Emitted ${eventName}`);
       }
 
       return entity;
@@ -304,7 +302,6 @@ export class DataDaemon {
     if (result.success && entity && DataDaemon.jtagContext) {
       const eventName = getDataEventName(collection, 'deleted');
       await Events.emit(DataDaemon.jtagContext, eventName, entity);
-      console.log(`✅ DataDaemon: Emitted ${eventName}`);
     }
 
     return result;
@@ -363,10 +360,8 @@ export class DataDaemon {
         // For create/update, emit with entity data
         if (operation.type === 'create' || operation.type === 'update') {
           await Events.emit(DataDaemon.jtagContext, eventName, operationResult);
-          console.log(`✅ DataDaemon: Emitted ${eventName} (batch ${operation.type} ${i + 1}/${operations.length})`);
         } else if (operation.type === 'delete') {
           await Events.emit(DataDaemon.jtagContext, eventName, { id: operation.id });
-          console.log(`✅ DataDaemon: Emitted ${eventName} (batch delete ${i + 1}/${operations.length})`);
         }
       }
     }
@@ -384,7 +379,6 @@ export class DataDaemon {
     // Emit cleared event if successful
     if (result.success && DataDaemon.jtagContext) {
       await Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, { all: true });
-      console.log(`✅ DataDaemon: Emitted ${DATA_EVENTS.ALL.CLEARED}`);
     }
 
     return result;
@@ -404,7 +398,6 @@ export class DataDaemon {
         tablesCleared: result.data.tablesCleared,
         recordsDeleted: result.data.recordsDeleted
       });
-      console.log(`✅ DataDaemon: Emitted ${DATA_EVENTS.ALL.CLEARED} (${result.data.tablesCleared.length} tables, ${result.data.recordsDeleted} records)`);
     }
 
     return result;
@@ -421,7 +414,6 @@ export class DataDaemon {
     if (result.success && DataDaemon.jtagContext) {
       const eventName = getDataEventName(collection, 'truncated');
       await Events.emit(DataDaemon.jtagContext, eventName, { collection });
-      console.log(`✅ DataDaemon: Emitted ${eventName}`);
     }
 
     return result;
@@ -523,7 +515,6 @@ export class DataDaemon {
       return { success: false, errors: [entityResult.error || 'Entity creation failed'] };
     }
 
-    console.log(`✅ DataDaemon: Entity validation passed for "${collection}"`);
     return { success: true };
   }
 
@@ -572,8 +563,6 @@ export class DataDaemon {
       orderBy,
       pageSize
     }, totalCount);
-
-    console.log(`📖 DataDaemon: Opened paginated query ${handle.queryId} for ${params.collection} (${totalCount} total records)`);
 
     return handle;
   }
@@ -640,8 +629,6 @@ export class DataDaemon {
     // Update state
     this.paginatedQueryManager.updateQueryState(queryId, nextCursor, hasMore);
 
-    console.log(`📄 DataDaemon: Fetched page ${state.currentPage} from query ${queryId} (${items.length} items, hasMore=${hasMore})`);
-
     return {
       items,
       pageNumber: state.currentPage,
@@ -655,7 +642,6 @@ export class DataDaemon {
    */
   closePaginatedQuery(queryId: UUID): void {
     this.paginatedQueryManager.closeQuery(queryId);
-    console.log(`🔒 DataDaemon: Closed paginated query ${queryId}`);
   }
 
   /**

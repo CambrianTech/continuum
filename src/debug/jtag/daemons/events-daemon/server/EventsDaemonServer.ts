@@ -16,10 +16,12 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
   protected eventManager = new EventManager();
   private subscriptionManager = new EventSubscriptionManager();
 
+  // ✅ FIX: Deduplicate event processing (same event emitted multiple times via different paths)
+  private recentEvents = new Map<string, number>(); // eventKey → timestamp
+  private readonly dedupeWindowMs = 100; // Consider events within 100ms as duplicates
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
-    console.log('🎧 EventsDaemonServer: Unified subscription manager initialized');
-    console.log('🤖 EventsDaemonServer: AI agents can now subscribe to events like human users');
   }
 
   /**
@@ -35,7 +37,29 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
    * ALWAYS called for server events, even if origin context matches (PersonaUsers need this!)
    */
   protected handleLocalEventBridge(eventName: string, eventData: unknown): void {
-    console.log(`📢 EventsDaemonServer: handleLocalEventBridge called for '${eventName}'`);
+    // ✅ FIX: Deduplicate - same event can arrive via multiple paths (WebSocket broadcast, local emit, etc.)
+    const entityId = (eventData as { id?: string })?.id || 'unknown';
+    const eventKey = `${eventName}:${entityId}`;
+    const now = Date.now();
+
+    // Check if we recently processed this exact event
+    const lastProcessed = this.recentEvents.get(eventKey);
+    if (lastProcessed && (now - lastProcessed) < this.dedupeWindowMs) {
+      return; // Skip duplicate
+    }
+
+    // Record this event
+    this.recentEvents.set(eventKey, now);
+
+    // Cleanup old entries (every 100 events to avoid memory leak)
+    if (this.recentEvents.size > 100) {
+      const cutoff = now - this.dedupeWindowMs;
+      for (const [key, timestamp] of this.recentEvents.entries()) {
+        if (timestamp < cutoff) {
+          this.recentEvents.delete(key);
+        }
+      }
+    }
 
     // 1. Emit to local event system (legacy EventManager)
     this.eventManager.events.emit(eventName, eventData);
@@ -43,8 +67,6 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
     // 2. Trigger unified subscription manager (NEW!)
     // This is critical for AI agents to receive events
     this.subscriptionManager.trigger(eventName, eventData);
-
-    console.log(`📢 EventsDaemonServer: Event '${eventName}' triggered for server-side subscribers`);
   }
 
   /**
@@ -53,7 +75,6 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
    */
   async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
     const payload = message.payload as EventBridgePayload;
-    console.log(`🔧 EventsDaemonServer.handleMessage: endpoint=${message.endpoint}, type=${payload.type}`);
 
     const result = await super.handleMessage(message);
 
@@ -62,7 +83,6 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
     // they never receive events (isOriginContext check in parent skips emission)
     // Check payload type only (endpoint is now 'events', not 'event-bridge')
     if (payload.type === 'event-bridge') {
-      console.log(`🔧 EventsDaemonServer: Forcing local emission for ${payload.eventName}`);
       this.handleLocalEventBridge(payload.eventName, payload.data);
     }
 

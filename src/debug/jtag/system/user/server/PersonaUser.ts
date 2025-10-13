@@ -40,6 +40,7 @@ import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
 import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
+import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -85,19 +86,36 @@ export class PersonaUser extends AIUser {
     client?: JTAGClient
   ) {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
-    if (client) {
-      console.log(`🔌 PersonaUser ${this.displayName}: Client injected and passed to BaseUser`);
-      console.log(`📦 PersonaUser ${this.displayName}: ArtifactsAPI available via client.daemons`);
-    }
   }
 
   /**
    * Log AI decision to dedicated AI log (separate from general system logs)
-   * Uses prefix "🤖 AI-DECISION:" so it can be easily filtered
+   * Uses AIDecisionLogger to write to .continuum/jtag/sessions/system/{sessionId}/logs/ai-decisions.log
    */
-  private logAIDecision(decision: 'RESPOND' | 'SILENT', reason: string, context: { message: string; sender: string; roomId: string; mentioned?: boolean; humanSender?: boolean }): void {
-    const logMessage = `🤖 AI-DECISION: ${this.displayName} → ${decision} | Room: ${context.roomId.slice(0, 8)} | Reason: ${reason} | Message: "${context.message.slice(0, 80)}..." | Sender: ${context.sender}${context.mentioned ? ' | MENTIONED' : ''}${context.humanSender !== undefined ? ` | Human: ${context.humanSender}` : ''}`;
-    console.log(logMessage);
+  private logAIDecision(
+    decision: 'RESPOND' | 'SILENT',
+    reason: string,
+    context: {
+      message: string;
+      sender: string;
+      roomId: string;
+      mentioned?: boolean;
+      humanSender?: boolean;
+      confidence?: number;
+      model?: string;
+      ragContextSummary?: {
+        totalMessages: number;
+        filteredMessages: number;
+        timeWindowMinutes?: number;
+      };
+      conversationHistory?: Array<{
+        name: string;
+        content: string;
+        timestamp?: number;
+      }>;
+    }
+  ): void {
+    AIDecisionLogger.logDecision(this.displayName, decision, reason, context);
   }
 
   /**
@@ -106,35 +124,27 @@ export class PersonaUser extends AIUser {
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
-      console.log(`ℹ️ PersonaUser ${this.displayName}: Already initialized, reloading rooms...`);
-      console.log(`🔍 DEBUG: eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client}`);
       // CRITICAL: Reload rooms even when already initialized
       // PersonaUsers might be created before rooms exist, so we need to refresh membership
       await this.loadMyRooms();
-      console.log(`✅ PersonaUser ${this.displayName}: Reloaded, now in ${this.myRoomIds.size} rooms`);
 
       // ✅ FIX: Do NOT re-subscribe - event handlers persist across reinit
       // Re-subscribing creates duplicate handlers (memory leak)
-      console.log(`✅ PersonaUser ${this.displayName}: Keeping existing event subscriptions (eventsSubscribed=${this.eventsSubscribed})`);
       return;
     }
-
-    console.log(`🤖 PersonaUser ${this.displayName}: Initializing...`);
 
     // STEP 1: Base initialization (loads state + rooms)
     await super.initialize();
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
-      console.log(`🔧 PersonaUser ${this.displayName}: Setting up event subscriptions for ${this.myRoomIds.size} rooms (first init)`);
-      // ✅ FIX: Subscribe to ALL chat events once (not per-room)
+      // Subscribe to ALL chat events once (not per-room)
       // subscribeToChatEvents() filters by this.myRoomIds internally
       this.subscribeToChatEvents(this.handleChatMessage.bind(this));
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
 
       // Subscribe to truncate events to cancel in-flight processing
       this.client.daemons.events.on('data:chat_messages:truncated', () => {
-        console.log(`🗑️ ${this.displayName}: Chat history truncated, clearing response tracking`);
         this.responseCount.clear();
         this.lastResponseTime.clear();
       });
@@ -143,7 +153,6 @@ export class PersonaUser extends AIUser {
     }
 
     this.isInitialized = true;
-    console.log(`✅ PersonaUser ${this.displayName}: Initialized with ${this.myRoomIds.size} rooms, eventsSubscribed=${this.eventsSubscribed}`);
   }
 
   /**
@@ -151,20 +160,13 @@ export class PersonaUser extends AIUser {
    * RTOS-inspired: Broadcast thoughts, observe others, coordinate naturally
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
-    const messageText = messageEntity.content?.text || '';
-    console.log(`\n${'='.repeat(80)}`);
-    console.log(`📨 ${this.displayName}: New message from ${messageEntity.senderName}`);
-    console.log(`   Message: "${messageText.slice(0, 100)}${messageText.length > 100 ? '...' : ''}"`);
-
     // STEP 1: Ignore our own messages
     if (messageEntity.senderId === this.id) {
-      console.log(`🔇 ${this.displayName}: Ignoring own message`);
-      console.log(`${'='.repeat(80)}\n`);
       return;
     }
 
     const senderIsHuman = messageEntity.senderType === 'human';
-    console.log(`   Sender type: ${messageEntity.senderType} (human: ${senderIsHuman})`);
+    const messageText = messageEntity.content?.text || '';
 
     // === SEQUENTIAL EVALUATION: Request turn (brain-like, one at a time) ===
     const coordinator = getThoughtStreamCoordinator();
@@ -174,8 +176,6 @@ export class PersonaUser extends AIUser {
       await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
     } finally {
       releaseTurn(); // Always release turn, even if evaluation fails
-      console.log(`✅ ${this.displayName}: Released evaluation turn`);
-      console.log(`${'='.repeat(80)}\n`);
     }
   }
 
@@ -198,10 +198,8 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // STEP 3: Check if sender is human or AI (use denormalized field!)
+    // STEP 3: Check if mentioned
     const isMentioned = this.isPersonaMentioned(messageText);
-
-    console.log(`🔍 ${this.displayName}: Sender type is "${messageEntity.senderType}" (human: ${senderIsHuman})`);
 
     // STEP 4: Check rate limiting (before expensive LLM call)
     if (this.isRateLimited(messageEntity.roomId)) {
@@ -218,13 +216,16 @@ export class PersonaUser extends AIUser {
 
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
-    console.log(`📊 ${this.displayName}: Gating decision = ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'} (${(gatingResult.confidence * 100).toFixed(0)}% confidence)`);
 
     if (!gatingResult.shouldRespond) {
       this.logAIDecision('SILENT', gatingResult.reason, {
         message: messageText,
         sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
+        roomId: messageEntity.roomId,
+        confidence: gatingResult.confidence,
+        model: gatingResult.model,
+        ragContextSummary: gatingResult.ragContextSummary,
+        conversationHistory: gatingResult.conversationHistory
       });
       return;
     }
@@ -235,7 +236,11 @@ export class PersonaUser extends AIUser {
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
       mentioned: isMentioned,
-      humanSender: senderIsHuman
+      humanSender: senderIsHuman,
+      confidence: gatingResult.confidence,
+      model: gatingResult.model,
+      ragContextSummary: gatingResult.ragContextSummary,
+      conversationHistory: gatingResult.conversationHistory
     });
 
     // Update RAG context
@@ -247,7 +252,6 @@ export class PersonaUser extends AIUser {
     // Increment response count
     const newCount = (this.responseCount.get(messageEntity.roomId) || 0) + 1;
     this.responseCount.set(messageEntity.roomId, newCount);
-    console.log(`📊 ${this.displayName}: Response ${newCount}/${this.maxResponsesPerSession} in room ${messageEntity.roomId.slice(0, 8)}`);
 
     // Track response time for rate limiting
     this.lastResponseTime.set(messageEntity.roomId, new Date());
@@ -279,6 +283,7 @@ export class PersonaUser extends AIUser {
    */
   private async isResponseRedundant(
     myResponse: string,
+    roomId: UUID,
     conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
   ): Promise<boolean> {
     try {
@@ -291,7 +296,6 @@ export class PersonaUser extends AIUser {
       // If no recent assistant responses, skip self-review
       // First response to a question should always be allowed
       if (recentAssistantResponses.length === 0) {
-        console.log(`✅ ${this.displayName}: Self-review skipped (no recent assistant responses)`);
         return false;
       }
 
@@ -347,16 +351,25 @@ ${myResponse}
       // Parse JSON response
       const jsonMatch = response.text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        console.warn(`⚠️ ${this.displayName}: Self-review failed to parse JSON, assuming not redundant`);
         return false;
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
-      console.log(`🔍 ${this.displayName}: Self-review → ${parsed.isRedundant ? 'REDUNDANT' : 'UNIQUE'} (${parsed.reason})`);
+      const isRedundant = parsed.isRedundant ?? false;
+      const reason = parsed.reason ?? 'No reason provided';
 
-      return parsed.isRedundant ?? false;
+      // Log redundancy check decision
+      AIDecisionLogger.logRedundancyCheck(
+        this.displayName,
+        roomId,
+        isRedundant,
+        reason,
+        myResponse
+      );
+
+      return isRedundant;
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Self-review error:`, error);
+      AIDecisionLogger.logError(this.displayName, 'Redundancy check', error instanceof Error ? error.message : String(error));
       return false; // On error, allow the response (fail open)
     }
   }
@@ -453,9 +466,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       });
 
       // Generate response using AIProviderDaemon (static method like DataDaemon.query)
-      console.log(`🤖 ${this.displayName}: Generating AI response with ${messages.length} context messages...`);
-      console.log(`📋 ${this.displayName}: Last 3 messages:`, JSON.stringify(messages.slice(-3), null, 2).substring(0, 500));
-
       const request: TextGenerationRequest = {
         messages,
         model: 'llama3.2:3b', // Larger model for better instruction following (was 1b)
@@ -466,27 +476,18 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
       const aiResponse = await AIProviderDaemon.generateText(request);
 
-      console.log(`✅ ${this.displayName}: Generated response in ${aiResponse.responseTime}ms (${aiResponse.usage.outputTokens} tokens)`);
-      console.log(`📝 ${this.displayName}: Generated text: "${aiResponse.text.trim().substring(0, 150)}..."`);
-
       // === SELF-REVIEW: Check if response is redundant before posting ===
-      console.log(`🔍 ${this.displayName}: Starting self-review check...`);
       const isRedundant = await this.isResponseRedundant(
         aiResponse.text.trim(),
+        originalMessage.roomId,
         fullRAGContext.conversationHistory
       );
-      console.log(`🔍 ${this.displayName}: Self-review completed, isRedundant=${isRedundant}`);
 
       if (isRedundant) {
-        console.log(`🗑️ ${this.displayName}: Self-review detected redundant response, discarding silently`);
-        console.log(`   Would have said: "${aiResponse.text.trim().substring(0, 80)}..."`);
         return; // Discard response
       }
 
-      console.log(`✅ ${this.displayName}: Self-review passed, response is unique`);
-
       // Create response message entity
-      console.log(`📤 ${this.displayName}: Creating message entity...`);
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
       responseMessage.senderId = this.id;
@@ -500,7 +501,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
       // ✅ Post response via JTAGClient - universal Commands API
       // Prefer this.client if available (set by UserDaemon), fallback to shared instance
-      console.log(`📤 ${this.displayName}: Posting response to chat via data/create command...`);
       const result = this.client
         ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
             context: this.client.context,
@@ -515,18 +515,24 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
             data: responseMessage
           });
 
-      console.log(`📤 ${this.displayName}: data/create returned, success=${result.success}, error=${result.error || 'none'}`);
-
       if (!result.success) {
         throw new Error(`Failed to create message: ${result.error}`);
       }
 
-      console.log(`✅ PersonaUser ${this.displayName}: Posted AI response: "${aiResponse.text.slice(0, 100)}${aiResponse.text.length > 100 ? '...' : ''}"`);
+      // ✅ Log successful response posting
+      AIDecisionLogger.logResponse(
+        this.displayName,
+        originalMessage.roomId,
+        aiResponse.text.trim()
+      );
 
     } catch (error) {
       // Fail silently - real people don't send canned error messages, they just stay quiet
-      console.error(`❌ PersonaUser ${this.displayName}: Failed to generate/post response, staying silent:`, error);
-      console.error(`❌ PersonaUser ${this.displayName}: Error stack:`, error instanceof Error ? error.stack : 'no stack');
+      AIDecisionLogger.logError(
+        this.displayName,
+        'Response generation/posting',
+        error instanceof Error ? error.message : String(error)
+      );
     }
   }
 
@@ -541,11 +547,9 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
     if (isMember && !wasInRoom) {
       // Added to room
       this.myRoomIds.add(roomEntity.id);
-      console.log(`✅ PersonaUser ${this.displayName}: Added to room "${roomEntity.name}"`);
     } else if (!isMember && wasInRoom) {
       // Removed from room
       this.myRoomIds.delete(roomEntity.id);
-      console.log(`➖ PersonaUser ${this.displayName}: Removed from room "${roomEntity.name}"`);
     }
   }
 
@@ -592,7 +596,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
   ): Promise<boolean> {
     // Rule 1: Always respond if @mentioned (highest priority - forced response)
     if (isMentioned) {
-      console.log(`📣 ${this.displayName}: Mentioned - FORCED RESPONSE`);
       return true;
     }
 
@@ -639,7 +642,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         throw new Error(result.error ?? 'Fast gating failed');
       }
 
-      console.log(`🎯 ${this.displayName}: Fast gating score ${result.score} → ${result.shouldRespond ? 'RESPOND' : 'SILENT'} (${result.reasoning})`);
       return result.shouldRespond;
 
     } catch (error) {
@@ -652,9 +654,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       if (heuristics.conversationTemp === 'HOT') score += 30;
       if (heuristics.myParticipationRatio < 0.3) score += 20;
 
-      const shouldRespond = score >= 50;
-      console.log(`🎯 ${this.displayName}: Heuristic fallback score ${score}/100 -> ${shouldRespond ? 'RESPOND' : 'WAIT'}`);
-      return shouldRespond;
+      return score >= 50;
     }
   }
 
@@ -781,10 +781,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       }
 
       const senderType = result.data.type;
-      const isHuman = senderType === 'human';
-
-      console.log(`🔍 PersonaUser ${this.displayName}: Sender ${senderId} type is "${senderType}" (human: ${isHuman})`);
-      return isHuman;
+      return senderType === 'human';
 
     } catch (error) {
       console.error(`❌ PersonaUser ${this.displayName}: Error checking sender type, BLOCKING response:`, error);
@@ -828,7 +825,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         return null;
       }
 
-      console.log(`🧬 PersonaUser ${this.displayName}: Loaded genome "${result.data.name}"`);
       return result.data;
 
     } catch (error) {
@@ -866,7 +862,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         return false;
       }
 
-      console.log(`🧬 PersonaUser ${this.displayName}: Genome set to ${genomeId}`);
       return true;
 
     } catch (error) {
@@ -890,7 +885,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
     // TODO Phase 2: Use artifacts daemon when commands are implemented
     // await this.client.daemons.artifacts.writeJSON(...)
-    console.log(`📝 PersonaUser ${this.displayName}: RAG context stored (in-memory) for room ${roomId}`);
   }
 
   /**
@@ -908,7 +902,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
     // TODO Phase 2: Use artifacts daemon when commands are implemented
     // return await this.client.daemons.artifacts.readJSON<PersonaRAGContext>(...)
-    console.log(`📭 PersonaUser ${this.displayName}: No RAG context for room ${roomId} (not yet implemented)`);
     return null;
   }
 
@@ -997,9 +990,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
 
     // STEP 3: Auto-join "general" room (all users start here)
     try {
-      console.log(`🚪 PersonaUser.create: Adding ${params.displayName} to general room...`);
       await this.addToGeneralRoom(storedEntity.id, params.displayName);
-      console.log(`✅ PersonaUser.create: Successfully added ${params.displayName} to general room`);
     } catch (error) {
       console.error(`❌ PersonaUser.create: Failed to add to general room:`, error);
     }
@@ -1031,16 +1022,31 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
     message: ChatMessageEntity,
     senderIsHuman: boolean,
     isMentioned: boolean
-  ): Promise<{ shouldRespond: boolean; confidence: number; reason: string }> {
+  ): Promise<{
+    shouldRespond: boolean;
+    confidence: number;
+    reason: string;
+    model?: string;
+    ragContextSummary?: {
+      totalMessages: number;
+      filteredMessages: number;
+      timeWindowMinutes?: number;
+    };
+    conversationHistory?: Array<{
+      name: string;
+      content: string;
+      timestamp?: number;
+    }>;
+  }> {
 
     try {
       // FAST-PATH: If directly mentioned by name, always respond (skip expensive LLM call)
       if (isMentioned) {
-        console.log(`⚡ ${this.displayName}: Fast-path RESPOND (directly mentioned)`);
         return {
           shouldRespond: true,
           confidence: 1.0,
-          reason: 'Directly mentioned by name'
+          reason: 'Directly mentioned by name',
+          model: 'fast-path'
         };
       }
 
@@ -1051,7 +1057,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         message.roomId,
         this.id,
         {
-          maxMessages: 10,  // Fetch up to 10 recent messages
+          maxMessages: 30,  // Fetch more messages since we filter heavily (system messages + 5min window)
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
@@ -1064,13 +1070,18 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         }
       );
 
-      // Filter conversation history to only include REAL messages (not system/welcome)
-      // Also filter to last 5 minutes to prevent temporal confusion
-      const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
-      const recentHistory = ragContext.conversationHistory.filter(msg => {
-        const msgTime = msg.timestamp ?? 0;
-        const isRecent = msgTime >= fiveMinutesAgo;
+      // FIX 1: Configurable time window per persona (default 30 minutes instead of 5)
+      // Smarter models might not need as much context, smaller models need more
+      const contextWindowMinutes = this.entity?.personaConfig?.contextWindowMinutes ?? 30;
+      const contextWindowMs = contextWindowMinutes * 60 * 1000;
+      const cutoffTime = Date.now() - contextWindowMs;
 
+      // FIX 2: Configurable minimum messages per persona
+      // Always include at least N messages for context, regardless of time window
+      const minContextMessages = this.entity?.personaConfig?.minContextMessages ?? 3;
+
+      // Filter conversation history to only include REAL messages (not system/welcome)
+      const nonSystemMessages = ragContext.conversationHistory.filter(msg => {
         // Exclude system messages (welcome, announcements) from gating context
         // These confuse the AI into thinking there's an active conversation
         const isSystemMessage = msg.role === 'system' ||
@@ -1078,8 +1089,22 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
                                 msg.content.startsWith('Welcome to') ||
                                 msg.content.includes('I\'m Claude Code');
 
-        return isRecent && !isSystemMessage;
+        return !isSystemMessage;
       });
+
+      // Apply time window filter
+      const timeFilteredHistory = nonSystemMessages.filter(msg => {
+        const msgTime = msg.timestamp ?? 0;
+        return msgTime >= cutoffTime;
+      });
+
+      // FIX 3: Ensure minimum messages regardless of time window
+      // If time filtering removed too many messages, include older ones to meet minimum
+      let recentHistory = timeFilteredHistory;
+      if (recentHistory.length < minContextMessages && nonSystemMessages.length >= minContextMessages) {
+        recentHistory = nonSystemMessages.slice(-minContextMessages);
+        console.log(`⚠️ ${this.displayName}: Time window too restrictive (${recentHistory.length}/${minContextMessages}), using last ${minContextMessages} messages`);
+      }
 
       // Use filtered context for gating decision
       const filteredRagContext = {
@@ -1132,16 +1157,27 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         return {
           shouldRespond: isMentioned,
           confidence: isMentioned ? 1.0 : 0.5,
-          reason: 'Command failed, using fallback'
+          reason: 'Command failed, using fallback',
+          model: gatingModel
         };
       }
 
       // ✅ FIX: Return the command's decision directly - don't apply threshold here!
-      console.log(`🧠 ${this.displayName}: LLM gating → ${result.shouldRespond ? 'RESPOND' : 'SILENT'} (${(result.confidence * 100).toFixed(0)}% confidence) - ${result.reason}`);
       return {
         shouldRespond: result.shouldRespond ?? false,
         confidence: result.confidence ?? 0.5,
-        reason: result.reason ?? 'No reason provided'
+        reason: result.reason ?? 'No reason provided',
+        model: gatingModel,
+        ragContextSummary: {
+          totalMessages: ragContext.conversationHistory.length,
+          filteredMessages: recentHistory.length,
+          timeWindowMinutes: contextWindowMinutes
+        },
+        conversationHistory: recentHistory.map(msg => ({
+          name: msg.name || 'Unknown',
+          content: msg.content,
+          timestamp: msg.timestamp
+        }))
       };
 
     } catch (error) {
@@ -1149,7 +1185,8 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
       return {
         shouldRespond: isMentioned,
         confidence: isMentioned ? 1.0 : 0.5,
-        reason: 'Error in evaluation'
+        reason: 'Error in evaluation',
+        model: 'error'
       };
     }
   }
@@ -1161,7 +1198,6 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
     try {
       const coordinator = getThoughtStreamCoordinator();
       await coordinator.broadcastThought(messageId, thought);
-      console.log(`🧠 ${this.displayName}: Broadcast ${thought.type} (conf=${thought.confidence})`);
     } catch (error) {
       console.error(`❌ ${this.displayName}: Failed to broadcast thought (non-fatal):`, error);
       // Non-fatal: continue without coordination
