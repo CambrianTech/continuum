@@ -33,7 +33,8 @@
     "shared/**/*.ts",
     "daemons/**/*.ts",
     "commands/**/*.ts",
-    "widgets/**/*.ts"
+    "widgets/**/*.ts",
+    "tests/workers/**/*.ts"
   ],
   "exclude": [
     "node_modules",

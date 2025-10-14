@@ -15,7 +15,7 @@
  * Once this passes, everything else is easy normal code.
  */
 
-import { PersonaWorkerThread } from '../../../../../system/conversation/worker/PersonaWorkerThread';
+import { PersonaWorkerThread } from '../../shared/workers/PersonaWorkerThread';
 
 interface TestResult {
   scenario: string;
