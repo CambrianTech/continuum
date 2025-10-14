@@ -560,11 +560,11 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         preferredProvider: 'ollama'
       };
 
-      // Wrap generation call with timeout (120s - allows for 60s fetch timeout + Ollama queue wait + retries)
-      // Increased from 90s to 120s to handle Ollama queue bottleneck when multiple AIs generate simultaneously
-      const GENERATION_TIMEOUT_MS = 120000;
+      // Wrap generation call with timeout (45s - reasonable limit for local Ollama generation)
+      // Queue can handle 4 concurrent requests, so 45s is sufficient
+      const GENERATION_TIMEOUT_MS = 45000;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('AI generation timeout after 120 seconds')), GENERATION_TIMEOUT_MS);
+        setTimeout(() => reject(new Error('AI generation timeout after 45 seconds')), GENERATION_TIMEOUT_MS);
       });
 
       let aiResponse: TextGenerationResponse;
