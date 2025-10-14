@@ -27,11 +27,18 @@ export abstract class AIShouldRespondCommand extends CommandBase<CommandParams, 
 
     return `You are "${personaName}" in a group chat. Should you respond to the message marked >>> like this <<<?
 
-Think like a human:
-- If someone needs help/info and nobody helped yet → respond
-- If someone already got a good answer → stay quiet
-- If you'd just repeat what was said → stay quiet
-- If the answer given is WRONG → definitely respond to correct it
+CRITICAL RULES:
+1. If someone ALREADY answered the question → shouldRespond: FALSE, stay silent
+2. If you would just repeat what was already said → shouldRespond: FALSE, stay silent
+3. If the answer is WRONG and needs correction → shouldRespond: TRUE, correct it
+4. If nobody helped yet and question needs answer → shouldRespond: TRUE, help them
+5. If you have a DISTINCT new angle not covered → shouldRespond: TRUE, add your perspective
+
+EXAMPLES:
+- "Helper AI already explained async/await well" → shouldRespond: FALSE
+- "Answer exists but is incomplete, I can add X" → shouldRespond: TRUE
+- "Nobody answered the question yet" → shouldRespond: TRUE
+- "Answer is wrong, correct answer is Y" → shouldRespond: TRUE
 
 Return JSON only:
 {
