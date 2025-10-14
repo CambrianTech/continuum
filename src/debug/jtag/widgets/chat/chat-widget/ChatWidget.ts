@@ -121,7 +121,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           status: 'sent' // Only show successfully sent messages
         },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // Load NEWEST first
-        limit: limit ?? 100, // Increased limit to catch recent messages
+        limit: limit ?? 30, // Default page size matches SCROLLER_PRESETS.CHAT
         ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'before' } }) // 'before' = older than cursor for DESC queries
       });
 
@@ -159,7 +159,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         nextCursor = oldestMessage?.timestamp?.toString();
       }
 
-      // console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 100}), nextCursor=${nextCursor}`);
+      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 30}), nextCursor=${nextCursor}`);
 
       return {
         items: validMessages,

@@ -96,9 +96,12 @@ export class AIDecisionLogger {
       this.writeLog(`    💬 Conversation History (${context.conversationHistory.length} messages):`);
       context.conversationHistory.forEach((msg, idx) => {
         const msgPreview = msg.content.slice(0, 60);
-        const timeAgo = msg.timestamp
-          ? `${Math.floor((Date.now() - msg.timestamp) / 1000)}s ago`
-          : 'unknown time';
+        // Defensive handling for undefined/invalid timestamps
+        let timeAgo = 'unknown time';
+        if (msg.timestamp && typeof msg.timestamp === 'number' && !isNaN(msg.timestamp)) {
+          const secondsAgo = Math.floor((Date.now() - msg.timestamp) / 1000);
+          timeAgo = !isNaN(secondsAgo) ? `${secondsAgo}s ago` : 'invalid time';
+        }
         this.writeLog(`       ${idx + 1}. [${timeAgo}] ${msg.name}: "${msgPreview}${msg.content.length > 60 ? '...' : ''}"`);
       });
     }

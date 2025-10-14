@@ -61,8 +61,18 @@ export class ChatRAGBuilder extends RAGBuilder {
     );
 
     // 2.5. Append current message if provided (for messages not yet persisted)
+    // Check for duplicates by comparing content + name of most recent message
     if (options?.currentMessage) {
-      conversationHistory.push(options.currentMessage);
+      const lastMessage = conversationHistory[conversationHistory.length - 1];
+      const isDuplicate = lastMessage &&
+        lastMessage.content === options.currentMessage.content &&
+        lastMessage.name === options.currentMessage.name;
+
+      if (!isDuplicate) {
+        conversationHistory.push(options.currentMessage);
+      } else {
+        console.log(`⚠️ ChatRAGBuilder: Skipping duplicate currentMessage (already in history)`);
+      }
     }
 
     // 3. Extract image attachments from messages (for vision models)

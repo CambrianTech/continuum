@@ -303,7 +303,7 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // === RESPOND: LLM gating decided to respond, generate response ===
+    // === RESPOND: LLM gating decided to respond, coordinate with other AIs ===
     this.logAIDecision('RESPOND', gatingResult.reason, {
       message: messageText,
       sender: messageEntity.senderName,
@@ -330,6 +330,34 @@ export class PersonaUser extends AIUser {
         gatingModel: gatingResult.model ?? 'unknown'
       } as AIDecidedRespondEventData);
     }
+
+    // === COORDINATION: Broadcast "claiming" thought and wait for permission ===
+    const coordinator = getThoughtStreamCoordinator();
+    const thought: Thought = {
+      personaId: this.id,
+      type: 'claiming',
+      confidence: gatingResult.confidence ?? 0.5,
+      reasoning: gatingResult.reason,
+      timestamp: new Date()
+    };
+
+    await this.broadcastThought(messageEntity.id, thought);
+
+    // Wait for coordinator decision (fast: typically <100ms with early exit rules)
+    const decision = await coordinator.waitForDecision(messageEntity.id, 3000);
+
+    // Check if we were granted permission to respond
+    if (!decision || !decision.granted.includes(this.id)) {
+      this.logAIDecision('SILENT', 'ThoughtStreamCoordinator denied (higher confidence AI responding)', {
+        message: messageText,
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId,
+        confidence: gatingResult.confidence
+      });
+      return; // Don't generate - let higher confidence AI respond
+    }
+
+    console.log(`✅ ${this.displayName}: Granted permission by coordinator (conf=${gatingResult.confidence})`);
 
     // 🔧 PHASE: Update RAG context
     console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
@@ -379,9 +407,12 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Convert timestamp to number (handles Date or number from JSON serialization)
+   * Convert timestamp to number (handles Date, number, or undefined from JSON serialization)
    */
-  private timestampToNumber(timestamp: Date | number): number {
+  private timestampToNumber(timestamp: Date | number | undefined): number {
+    if (timestamp === undefined) {
+      return Date.now(); // Use current time if timestamp missing
+    }
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
   }
 

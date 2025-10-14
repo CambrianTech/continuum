@@ -285,11 +285,43 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     const denied: UUID[] = [];
     const reasoning: string[] = [];
 
-    for (let i = 0; i < Math.min(sortedClaims.length, this.config.maxResponders); i++) {
-      const claim = sortedClaims[i];
-      if (claim.confidence >= this.config.minConfidence) {
-        granted.push(claim.personaId);
-        reasoning.push(`${claim.personaId.slice(0, 8)} claimed (conf=${claim.confidence})`);
+    // FIX 1: If only one claimant, ALWAYS grant (regardless of confidence)
+    if (sortedClaims.length === 1) {
+      const claim = sortedClaims[0];
+      granted.push(claim.personaId);
+      reasoning.push(`${claim.personaId.slice(0, 8)} is only claimant (conf=${claim.confidence.toFixed(2)}) - auto-granted`);
+
+      if (this.config.enableLogging) {
+        console.log(`✅ Decision: Only one claimant, auto-granting ${claim.personaId.slice(0, 8)}`);
+      }
+    }
+    // FIX 2: If NO claimants but some personas evaluated, lower the bar and check deferrals
+    else if (sortedClaims.length === 0) {
+      if (this.config.enableLogging) {
+        console.log(`⚠️  Decision: No claimants - all personas deferred or went silent`);
+      }
+      reasoning.push('No personas claimed - all went silent');
+    }
+    // Normal case: Multiple claimants
+    else {
+      // FIX 3: Dynamic minConfidence based on context
+      // - If many high-confidence claims: use normal threshold
+      // - If all low confidence: lower the threshold
+      const avgConfidence = sortedClaims.reduce((sum, c) => sum + c.confidence, 0) / sortedClaims.length;
+      const dynamicMinConfidence = avgConfidence < 0.4 ? 0.2 : this.config.minConfidence;
+
+      if (this.config.enableLogging && dynamicMinConfidence !== this.config.minConfidence) {
+        console.log(`🎚️  Decision: Lowered minConfidence ${this.config.minConfidence} → ${dynamicMinConfidence} (avg conf=${avgConfidence.toFixed(2)})`);
+      }
+
+      for (let i = 0; i < Math.min(sortedClaims.length, this.config.maxResponders); i++) {
+        const claim = sortedClaims[i];
+        if (claim.confidence >= dynamicMinConfidence) {
+          granted.push(claim.personaId);
+          reasoning.push(`${claim.personaId.slice(0, 8)} claimed (conf=${claim.confidence.toFixed(2)})`);
+        } else {
+          reasoning.push(`${claim.personaId.slice(0, 8)} below threshold (conf=${claim.confidence.toFixed(2)} < ${dynamicMinConfidence.toFixed(2)})`);
+        }
       }
     }
 
