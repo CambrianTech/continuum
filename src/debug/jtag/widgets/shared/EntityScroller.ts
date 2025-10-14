@@ -461,7 +461,7 @@ export function createScroller<T extends BaseEntity>(
 // Convenient presets
 export const SCROLLER_PRESETS = {
   CHAT: {
-    pageSize: 100,
+    pageSize: 30,
     direction: 'newest-first' as const,
     threshold: 0.1,
     rootMargin: '50px',

@@ -139,7 +139,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
   private config: ProviderConfiguration;
   private healthCache: { status: HealthStatus; timestamp: number } | null = null;
-  private readonly healthCacheTTL = 30000; // 30 seconds
+  private readonly healthCacheTTL = 5000; // 5 seconds - reduced from 30s to detect degradation faster
   private readonly requestQueue: OllamaRequestQueue;
 
   constructor(config?: Partial<ProviderConfiguration>) {
@@ -275,46 +275,126 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   async healthCheck(): Promise<HealthStatus> {
     // Return cached health if recent
     if (this.healthCache && Date.now() - this.healthCache.timestamp < this.healthCacheTTL) {
+      const cacheAge = Math.floor((Date.now() - this.healthCache.timestamp) / 1000);
+      console.log(`🔍 Ollama Health: Returning cached ${this.healthCache.status.status} (${cacheAge}s old)`);
       return this.healthCache.status;
     }
 
+    console.log(`🔍 Ollama Health: Running actual health check...`);
     const startTime = Date.now();
 
     try {
-      // Try to list models (lightweight health check)
-      const response = await fetch(`${this.config.apiEndpoint}/api/tags`, {
+      // Step 1: Check API availability (lightweight check)
+      const apiResponse = await fetch(`${this.config.apiEndpoint}/api/tags`, {
         method: 'GET',
-        signal: AbortSignal.timeout(5000), // 5 second timeout for health check
+        signal: AbortSignal.timeout(5000), // 5 second timeout for API check
       });
 
-      const responseTime = Date.now() - startTime;
-
-      if (!response.ok) {
+      if (!apiResponse.ok) {
+        const message = `Ollama API returned ${apiResponse.status}`;
         const status: HealthStatus = {
           status: 'unhealthy',
           apiAvailable: false,
-          responseTime,
+          responseTime: Date.now() - startTime,
           errorRate: 1.0,
           lastChecked: Date.now(),
-          message: `Ollama API returned ${response.status}`,
+          message,
         };
         this.healthCache = { status, timestamp: Date.now() };
+        console.log(`❌ Ollama Health: ${message}`);
         return status;
       }
 
-      const status: HealthStatus = {
-        status: responseTime < 1000 ? 'healthy' : 'degraded',
-        apiAvailable: true,
-        responseTime,
-        errorRate: 0,
-        lastChecked: Date.now(),
-        message: responseTime < 1000 ? 'Ollama is responding normally' : 'Ollama is slow',
-      };
+      // Step 2: Test actual generation performance (detect degraded state)
+      const genStartTime = Date.now();
+      try {
+        const testRequest: OllamaGenerateRequest = {
+          model: this.config.defaultModel,
+          prompt: 'Hi', // Minimal prompt for health check
+          stream: false,
+        };
 
-      this.healthCache = { status, timestamp: Date.now() };
-      return status;
+        const genResponse = await fetch(`${this.config.apiEndpoint}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(testRequest),
+          signal: AbortSignal.timeout(10000), // 10 second timeout for generation test
+        });
+
+        const genTime = Date.now() - genStartTime;
+
+        if (!genResponse.ok) {
+          const message = `Ollama generation failed: ${genResponse.status}`;
+          const status: HealthStatus = {
+            status: 'unhealthy',
+            apiAvailable: true,
+            responseTime: genTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message,
+          };
+          this.healthCache = { status, timestamp: Date.now() };
+          console.log(`❌ Ollama Health: ${message}`);
+          return status;
+        }
+
+        // Determine health based on generation time
+        let healthStatus: 'healthy' | 'degraded' | 'unhealthy';
+        let message: string;
+
+        if (genTime < 3000) {
+          healthStatus = 'healthy';
+          message = `Ollama generating normally (${genTime}ms)`;
+        } else if (genTime < 8000) {
+          healthStatus = 'degraded';
+          message = `Ollama is slow (${genTime}ms, expected <3s)`;
+        } else {
+          healthStatus = 'unhealthy';
+          message = `Ollama severely degraded (${genTime}ms, expected <3s)`;
+        }
+
+        const status: HealthStatus = {
+          status: healthStatus,
+          apiAvailable: true,
+          responseTime: genTime,
+          errorRate: healthStatus === 'unhealthy' ? 1.0 : 0,
+          lastChecked: Date.now(),
+          message,
+        };
+
+        this.healthCache = { status, timestamp: Date.now() };
+
+        // Log result based on status
+        if (healthStatus === 'healthy') {
+          console.log(`✅ Ollama Health: ${message}`);
+        } else if (healthStatus === 'degraded') {
+          console.log(`⚠️  Ollama Health: ${message}`);
+        } else {
+          console.log(`❌ Ollama Health: ${message}`);
+        }
+
+        return status;
+
+      } catch (genError) {
+        // Generation test failed (timeout or error)
+        const genTime = Date.now() - genStartTime;
+        const message = `Ollama generation timeout/error after ${genTime}ms: ${genError instanceof Error ? genError.message : String(genError)}`;
+        const status: HealthStatus = {
+          status: 'unhealthy',
+          apiAvailable: true,
+          responseTime: genTime,
+          errorRate: 1.0,
+          lastChecked: Date.now(),
+          message,
+        };
+        this.healthCache = { status, timestamp: Date.now() };
+        console.log(`❌ Ollama Health: ${message}`);
+        return status;
+      }
+
     } catch (error) {
       const responseTime = Date.now() - startTime;
+      const message = `Ollama is not available: ${error instanceof Error ? error.message : String(error)}`;
 
       const status: HealthStatus = {
         status: 'unhealthy',
@@ -322,10 +402,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         responseTime,
         errorRate: 1.0,
         lastChecked: Date.now(),
-        message: `Ollama is not available: ${error instanceof Error ? error.message : String(error)}`,
+        message,
       };
 
       this.healthCache = { status, timestamp: Date.now() };
+      console.log(`❌ Ollama Health: ${message}`);
       return status;
     }
   }
