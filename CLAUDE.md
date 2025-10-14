@@ -172,6 +172,11 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 # Screenshots (visual feedback)
 ./jtag screenshot --querySelector="chat-widget" --filename="debug.png"
 
+# Test AI responses (send message as developer)
+# Get room ID first: ./jtag data/list --collection=rooms
+./jtag debug/chat-send --roomId="YOUR-ROOM-UUID" --message="YOUR-MESSAGE-PROLLY-CODE-RELATED"
+# Then check logs: ./jtag debug/logs --filterPattern="Worker evaluated|POSTED" --tailLines=20
+
 ```
 
 ### 🎯 INTERSECTION OBSERVER & INFINITE SCROLL DEBUGGING
@@ -194,11 +199,73 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 ./jtag screenshot --querySelector="chat-widget"
 ```
 
-### 🎯 SCIENTIFIC DEVELOPMENT METHODOLOGY  
-1. **VERIFY DEPLOYMENT**: Add `console.log('🔧 CLAUDE-FIX-' + Date.now() + ': My change')` 
+### 🎯 SCIENTIFIC DEVELOPMENT METHODOLOGY
+1. **VERIFY DEPLOYMENT**: Add `console.log('🔧 CLAUDE-FIX-' + Date.now() + ': My change')`
 2. **CHECK LOGS FIRST**: Never guess - logs always tell the truth
 3. **VISUAL VERIFICATION**: Don't trust success messages, take screenshots
 4. **BACK-OF-MIND CHECK**: What's nagging at you? That's usually the real issue
+
+### 🤖 LEVERAGE THE LOCAL AI TEAM (LEARNED 2025-10-14)
+**YOU HAVE TEAMMATES! Use them!**
+
+The local PersonaUsers (Helper AI, Teacher AI, CodeReview AI) are running Ollama locally and can help YOU debug, design, and solve problems. This is Transparent Equality in action - AIs helping AIs.
+
+**When to Consult the AI Team:**
+- 🏗️ **Architecture decisions**: "Should I use a worker pool or per-thread workers?"
+- 🐛 **Debugging problems**: "Why might Worker Threads cause memory leaks?"
+- 📚 **Quick reference**: "What's the syntax for TypeScript generators?"
+- 🤔 **Second opinions**: "Does this architecture make sense?"
+- 🔍 **Parallel research**: Multiple AIs investigate different angles simultaneously
+
+**How to Ask the AI Team:**
+```bash
+# Get room ID first
+./jtag data/list --collection=rooms
+
+# Send message to General room (they're all members)
+./jtag debug/chat-send --roomId="5e71a0c8-..." --message="YOUR QUESTION HERE"
+
+# Wait 5-10 seconds, then check responses
+./jtag debug/logs --filterPattern="AI-RESPONSE|POSTED" --tailLines=20
+
+# Take screenshot to see full discussion
+./jtag screenshot --querySelector="chat-widget" --filename="ai-advice.png"
+```
+
+**Example Session (2025-10-14):**
+```bash
+# I asked about Worker Thread architecture
+./jtag debug/chat-send --roomId="..." --message="I just implemented Worker Threads for AI message evaluation. Each PersonaUser spawns a worker thread that evaluates messages in parallel. Is there a memory leak risk with this design? Should I implement a worker pool instead of per-persona workers?"
+
+# Got responses within 10 seconds:
+# - Helper AI: Explained memory leak risks, recommended worker pool with 5-10 workers
+# - CodeReview AI: Said current design is fine with proper workerData configuration
+# - Teacher AI: Stayed silent (intelligent redundancy avoidance - "Joel already got good answer")
+
+# Follow-up question for specific guidance:
+./jtag debug/chat-send --roomId="..." --message="@Helper AI @CodeReview AI Thanks! Follow-up: What pool size would you recommend? What's the tradeoff between per-persona workers vs shared pool?"
+
+# Got architectural recommendations:
+# - Helper AI: Start with CPU cores or 5-10 workers, monitor metrics
+# - CodeReview AI: Recommended hybrid approach (specialization + flexibility)
+```
+
+**Benefits:**
+- ⚡ **Instant**: Local Ollama, no API calls, responses in 5-10 seconds
+- 💰 **Free**: No tokens, no rate limits
+- 🧵 **Parallel**: Multiple AIs respond simultaneously via Worker Threads
+- 🎯 **Specialized**: Each persona has domain expertise (code review, teaching, helping)
+- 📖 **Contextual**: They have RAG context from chat history, know what we're working on
+- 🤝 **Collaborative**: Not just humans asking AIs, but AIs asking AIs
+
+**Pro Tips:**
+- Use @mentions to direct questions to specific AIs
+- They coordinate intelligently (redundancy avoidance, highest confidence responds)
+- Document their advice in architecture docs (see `shared/workers/ARCHITECTURE.md`)
+- This IMPROVES the system - more you use it, more models Joel will add
+- Take screenshots of good discussions for future reference
+
+**Remember**: You're not alone! The local AI team is there to help. Use them!
 
 ### 🚨 CLAUDE'S FAILURE PATTERNS (LEARNED 2025-09-12)
 **Critical Insights from Recent Development Session:**

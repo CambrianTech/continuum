@@ -42,6 +42,7 @@ import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../comm
 import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
 import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDecisionService';
+import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
   type AIEvaluatingEventData,
@@ -83,6 +84,9 @@ export class PersonaUser extends AIUser {
   // Note: client is now in BaseUser as protected property, accessible via this.client
   // ArtifactsAPI access is through this.client.daemons.artifacts
 
+  // Worker thread for parallel message evaluation
+  private worker: PersonaWorkerThread | null = null;
+
   // Rate limiting state (in-memory for now, will move to SQLite later)
   private lastResponseTime: Map<UUID, Date> = new Map();
   private readonly minSecondsBetweenResponses = 10; // 10 seconds between responses per room
@@ -98,6 +102,15 @@ export class PersonaUser extends AIUser {
     client?: JTAGClient
   ) {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
+
+    // Initialize worker thread for this persona
+    this.worker = new PersonaWorkerThread(this.id, {
+      providerType: 'ollama',
+      providerConfig: {
+        apiEndpoint: 'http://localhost:11434',
+        model: 'llama3.2:1b' // Fast model for gating decisions
+      }
+    });
   }
 
   /**
@@ -147,6 +160,12 @@ export class PersonaUser extends AIUser {
 
     // STEP 1: Base initialization (loads state + rooms)
     await super.initialize();
+
+    // STEP 1.5: Start worker thread for message evaluation
+    if (this.worker) {
+      await this.worker.start();
+      console.log(`🧵 ${this.displayName}: Worker thread started`);
+    }
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
@@ -825,49 +844,25 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
     }
 
     try {
-      // Get persona domain keywords (later will come from PersonaEntity config)
-      const domainKeywords = this.getPersonaDomainKeywords();
-
-      // Call ai/should-respond-fast command with proper typing
-      const result: ShouldRespondFastResult = this.client
-        ? await this.client.daemons.commands.execute<ShouldRespondFastParams, ShouldRespondFastResult>('ai/should-respond-fast', {
-            context: this.client.context,
-            sessionId: this.client.sessionId,
-            personaId: this.id,
-            contextId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            senderId: messageEntity.senderId,
-            senderName: messageEntity.senderName,
-            messageText: messageEntity.content?.text ?? '',
-            config: {
-              personaName: this.displayName,
-              domainKeywords,
-              responseThreshold: 50, // Require 50+ points to respond
-              alwaysRespondToMentions: true,
-              cooldownSeconds: this.minSecondsBetweenResponses
-            }
-          })
-        : await Commands.execute<ShouldRespondFastParams, ShouldRespondFastResult>('ai/should-respond-fast', {
-            personaId: this.id,
-            contextId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            senderId: messageEntity.senderId,
-            senderName: messageEntity.senderName,
-            messageText: messageEntity.content?.text ?? '',
-            config: {
-              personaName: this.displayName,
-              domainKeywords,
-              responseThreshold: 50,
-              alwaysRespondToMentions: true,
-              cooldownSeconds: this.minSecondsBetweenResponses
-            }
-          });
-
-      if (!result.success) {
-        throw new Error(result.error ?? 'Fast gating failed');
+      // Use worker thread for fast, parallel evaluation
+      if (!this.worker) {
+        throw new Error('Worker not initialized');
       }
 
-      return result.shouldRespond;
+      const result = await this.worker.evaluateMessage({
+        id: messageEntity.id,
+        content: messageEntity.content?.text ?? '',
+        senderId: messageEntity.senderId,
+        timestamp: Date.now()
+      }, 5000); // 5 second timeout
+
+      // Worker returns confidence (0.0-1.0), PersonaUser decides based on threshold
+      const threshold = (this.entity?.personaConfig?.responseThreshold ?? 50) / 100; // Convert 50 → 0.50
+      const shouldRespond = result.confidence >= threshold;
+
+      console.log(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - confidence=${result.confidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
+
+      return shouldRespond;
 
     } catch (error) {
       console.error(`❌ ${this.displayName}: Fast gating failed, falling back to heuristics:`, error);
@@ -1399,6 +1394,17 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
     } catch (error) {
       console.error(`❌ ${this.displayName}: Failed to broadcast thought (non-fatal):`, error);
       // Non-fatal: continue without coordination
+    }
+  }
+
+  /**
+   * Shutdown worker thread and cleanup resources
+   */
+  async shutdown(): Promise<void> {
+    if (this.worker) {
+      await this.worker.shutdown();
+      console.log(`🧵 ${this.displayName}: Worker thread shut down`);
+      this.worker = null;
     }
   }
 

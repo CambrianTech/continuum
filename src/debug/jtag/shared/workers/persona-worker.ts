@@ -11,69 +11,73 @@
  */
 
 import { parentPort, workerData } from 'worker_threads';
-import { OllamaAdapter } from '../../../src/debug/jtag/dist/daemons/ai-provider-daemon/shared/OllamaAdapter.js';
+import { OllamaAdapter } from '../../daemons/ai-provider-daemon/shared/OllamaAdapter.js';
+import type { BaseAIProviderAdapter } from '../../daemons/ai-provider-daemon/shared/BaseAIProviderAdapter.js';
 
 if (!parentPort) {
   throw new Error('This file must be run as a Worker Thread');
 }
 
-const personaId = workerData.personaId;
-const providerType = workerData.providerType || 'mock';
-const providerConfig = workerData.providerConfig || {};
+const personaId: string = workerData.personaId;
+const providerType: string = workerData.providerType || 'mock';
+const providerConfig: Record<string, unknown> = workerData.providerConfig || {};
 
 console.log(`🧵 PersonaWorker[${personaId}]: Starting...`);
 console.log(`🧵 PersonaWorker[${personaId}]: Provider type: ${providerType}`);
 
 // Initialize provider (if not mock)
-let provider = null;
+let provider: BaseAIProviderAdapter | null = null;
 
-async function initializeProvider() {
+async function initializeProvider(): Promise<void> {
   if (providerType === 'ollama') {
     console.log(`🧵 PersonaWorker[${personaId}]: Initializing OllamaAdapter...`);
+
     provider = new OllamaAdapter({
-      baseUrl: providerConfig.baseUrl || 'http://localhost:11434',
-      maxConcurrent: providerConfig.maxConcurrent || 1
+      apiEndpoint: (providerConfig.apiEndpoint as string) || 'http://localhost:11434',
+      defaultModel: (providerConfig.model as string) || 'llama3.2:1b'
     });
     await provider.initialize();
     console.log(`✅ PersonaWorker[${personaId}]: OllamaAdapter initialized`);
   }
 }
 
-// Initialize provider before signaling ready
-await initializeProvider();
+// Main async initialization
+(async () => {
+  // Initialize provider before signaling ready
+  await initializeProvider();
 
-// Listen for messages from main thread
-parentPort.on('message', async (msg) => {
-  const receiveTime = Date.now();
+  // Listen for messages from main thread
+  parentPort!.on('message', async (msg) => {
+    const receiveTime = Date.now();
 
-  console.log(`🧵 PersonaWorker[${personaId}]: Received message type=${msg.type}`);
+    console.log(`🧵 PersonaWorker[${personaId}]: Received message type=${msg.type}`);
 
-  if (msg.type === 'ping') {
-    // Echo back immediately - prove bidirectional communication works
-    parentPort.postMessage({
-      type: 'pong',
-      timestamp: Date.now(),
-      receivedAt: msg.timestamp,
-      latency: receiveTime - msg.timestamp
-    });
+    if (msg.type === 'ping') {
+      // Echo back immediately - prove bidirectional communication works
+      parentPort!.postMessage({
+        type: 'pong',
+        timestamp: Date.now(),
+        receivedAt: msg.timestamp,
+        latency: receiveTime - msg.timestamp
+      });
 
-    console.log(`🏓 PersonaWorker[${personaId}]: Pong sent (latency=${receiveTime - msg.timestamp}ms)`);
-  }
-  else if (msg.type === 'evaluate') {
-    const startTime = Date.now();
-    console.log(`🤔 PersonaWorker[${personaId}]: Evaluating message ${msg.message.id}`);
+      console.log(`🏓 PersonaWorker[${personaId}]: Pong sent (latency=${receiveTime - msg.timestamp}ms)`);
+    }
+    else if (msg.type === 'evaluate') {
+      const startTime = Date.now();
+      console.log(`🤔 PersonaWorker[${personaId}]: Evaluating message ${msg.message.id}`);
 
-    let confidence = 0;
-    let shouldRespond = false;
-    let reasoning = '';
-    let processingTime = 0;
+      let confidence = 0;
+      let shouldRespond = false;
+      let reasoning = '';
+      let processingTime = 0;
 
-    try {
-      if (provider) {
-        // Real Ollama inference (Phase 3)
-        console.log(`🧠 PersonaWorker[${personaId}]: Using real Ollama inference...`);
+      try {
+        if (provider) {
+          // Real Ollama inference (Phase 3)
+          console.log(`🧠 PersonaWorker[${personaId}]: Using real Ollama inference...`);
 
-        const prompt = `You are evaluating whether you should respond to a message in a conversation.
+          const prompt = `You are evaluating whether you should respond to a message in a conversation.
 
 Message: "${msg.message.content}"
 Sender: ${msg.message.senderId}
@@ -88,12 +92,14 @@ Format your response as:
 CONFIDENCE: <number between 0.0 and 1.0>
 REASONING: <brief explanation>`;
 
-        const result = await provider.generateText({
-          prompt: prompt,
-          model: providerConfig.model || 'llama3.2:1b',
-          temperature: 0.7,
-          maxTokens: 200
-        });
+          const result = await provider.generateText({
+            messages: [
+              { role: 'user', content: prompt }
+            ],
+            model: (providerConfig.model as string) || 'llama3.2:1b',
+            temperature: 0.7,
+            maxTokens: 200
+          });
 
         // Parse confidence from AI response
         const confidenceMatch = result.text.match(/CONFIDENCE:\s*([0-9.]+)/i);
@@ -134,7 +140,7 @@ REASONING: <brief explanation>`;
       }
 
       // Send result back to main thread
-      parentPort.postMessage({
+      parentPort!.postMessage({
         type: 'result',
         timestamp: Date.now(),
         data: {
@@ -151,7 +157,7 @@ REASONING: <brief explanation>`;
     } catch (error) {
       // Send error back to main thread
       console.error(`❌ PersonaWorker[${personaId}]: Evaluation failed:`, error);
-      parentPort.postMessage({
+      parentPort!.postMessage({
         type: 'error',
         timestamp: Date.now(),
         data: {
@@ -165,13 +171,17 @@ REASONING: <brief explanation>`;
     console.log(`🛑 PersonaWorker[${personaId}]: Shutdown requested`);
     // Worker will exit naturally when process ends
   }
-});
+  });
 
-// Signal ready to main thread
-parentPort.postMessage({
-  type: 'ready',
-  personaId: personaId,
-  timestamp: Date.now()
-});
+  // Signal ready to main thread
+  parentPort!.postMessage({
+    type: 'ready',
+    personaId: personaId,
+    timestamp: Date.now()
+  });
 
-console.log(`✅ PersonaWorker[${personaId}]: Initialized and ready`);
+  console.log(`✅ PersonaWorker[${personaId}]: Initialized and ready`);
+})().catch((error) => {
+  console.error(`❌ PersonaWorker[${personaId}]: Initialization failed:`, error);
+  process.exit(1);
+});

@@ -15,6 +15,7 @@
 import { Worker } from 'worker_threads';
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 interface WorkerMessage {
   type: 'ping' | 'evaluate' | 'shutdown';
@@ -32,8 +33,7 @@ interface WorkerResponse {
 }
 
 interface ProviderConfig {
-  baseUrl?: string;
-  maxConcurrent?: number;
+  apiEndpoint?: string; // Changed from baseUrl to match worker implementation
   model?: string;
 }
 
@@ -78,8 +78,9 @@ export class PersonaWorkerThread extends EventEmitter {
    * Times out after 5 seconds if worker doesn't signal ready.
    */
   async start(): Promise<void> {
-    // Resolve worker script path relative to this file
-    const workerPath = path.join(__dirname, 'persona-worker.js');
+    // Load JS worker (pragmatic: one small JS file, imports from compiled TS)
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    const workerPath = path.join(currentDir, 'persona-worker.js');
 
     console.log(`🧵 Starting worker for persona ${this.personaId}`);
     console.log(`   Worker script: ${workerPath}`);
@@ -91,6 +92,7 @@ export class PersonaWorkerThread extends EventEmitter {
         providerType: this.config.providerType,
         providerConfig: this.config.providerConfig
       }
+      // No execArgv needed - worker is compiled JS importing compiled JS
     });
 
     // Listen for messages from worker
