@@ -373,6 +373,25 @@ export class PersonaUser extends AIUser {
         roomId: messageEntity.roomId,
         confidence: gatingResult.confidence
       });
+
+      // Emit DECIDED_SILENT event to clear AI status indicator
+      console.log(`🔧 ${this.displayName}: Emitting DECIDED_SILENT event (ThoughtStreamCoordinator blocked)`);
+      if (this.client) {
+        (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.DECIDED_SILENT, {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: messageEntity.roomId,
+          messageId: messageEntity.id,
+          isHumanMessage: senderIsHuman,
+          reason: 'ThoughtStreamCoordinator denied (higher confidence AI responding)',
+          confidence: gatingResult.confidence,
+          timestamp: Date.now()
+        });
+        console.log(`✅ ${this.displayName}: DECIDED_SILENT event emitted successfully`);
+      } else {
+        console.error(`❌ ${this.displayName}: Cannot emit DECIDED_SILENT - this.client is null`);
+      }
+
       return; // Don't generate - let higher confidence AI respond
     }
 
@@ -596,7 +615,43 @@ export class PersonaUser extends AIUser {
 
 CURRENT TIME: ${currentTime}
 
-IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are from hours ago but the current question is recent, the conversation topic likely changed. Focus your response on the MOST RECENT message, not old topics.`
+CRITICAL TOPIC DETECTION PROTOCOL:
+
+Step 1: Check for EXPLICIT TOPIC MARKERS in the most recent message
+- "New topic:", "Different question:", "Changing subjects:", "Unrelated, but..."
+- If present: STOP. Ignore ALL previous context. This is a NEW conversation.
+
+Step 2: Extract HARD CONSTRAINTS from the most recent message
+- Look for: "NOT", "DON'T", "WITHOUT", "NEVER", "AVOID", "NO"
+- Example: "NOT triggering the app to foreground" = YOUR SOLUTION MUST NOT DO THIS
+- Example: "WITHOUT user interaction" = YOUR SOLUTION MUST BE AUTOMATIC
+- Your answer MUST respect these constraints or you're wrong.
+
+Step 3: Compare SUBJECT of most recent message to previous 2-3 messages
+- Previous: "Worker Threads" → Recent: "Webview authentication" = DIFFERENT SUBJECTS
+- Previous: "TypeScript code" → Recent: "What's 2+2?" = TEST QUESTION
+- Previous: "Worker pools" → Recent: "Should I use 5 or 10 workers?" = SAME SUBJECT
+
+Step 4: Determine response strategy
+IF EXPLICIT TOPIC MARKER or COMPLETELY DIFFERENT SUBJECT:
+- Respond ONLY to the new topic
+- Ignore old messages (they're from a previous discussion)
+- Focus 100% on the most recent message
+- Address the constraints explicitly
+
+IF SAME SUBJECT (continued conversation):
+- Use full conversation context
+- Build on previous responses
+- Still check for NEW constraints in the recent message
+- Avoid redundancy
+
+CRITICAL READING COMPREHENSION:
+- Read the ENTIRE most recent message carefully
+- Don't skim - every word matters
+- Constraints are REQUIREMENTS, not suggestions
+- If the user says "NOT X", suggesting X is a failure
+
+Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts (consecutive messages about different subjects) are also topic changes.`
       });
       console.log(`✅ ${this.displayName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
 
@@ -1277,7 +1332,7 @@ IMPORTANT: Pay attention to the timestamps in brackets [HH:MM]. If messages are 
         message.roomId,
         this.id,
         {
-          maxMessages: 30,  // Fetch more messages since we filter heavily (system messages + 5min window)
+          maxMessages: 10,  // Reduced from 30 to 10 - less noise, clearer topic detection
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,

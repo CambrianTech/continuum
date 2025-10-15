@@ -1,29 +1,29 @@
 {
-  "timestamp": "2025-10-14T17:01:19.990Z",
+  "timestamp": "2025-10-15T16:41:06.862Z",
   "phase": "Phase 3: Real Ollama Inference",
   "passRate": "100%",
   "passed": 3,
   "total": 3,
   "metrics": {
-    "avgLatency": "2.28s"
+    "avgLatency": "1.28s"
   },
   "details": [
     {
       "scenario": "Single Real Inference",
       "passed": true,
       "metrics": {
-        "latency": 3168
+        "latency": 1263
       },
-      "notes": "✅ Real inference completed in 3.2s with conf=0.20"
+      "notes": "✅ Real inference completed in 1.3s with conf=0.20"
     },
     {
       "scenario": "Sequential Real Inferences",
       "passed": true,
       "metrics": {
-        "latency": 1399,
-        "throughput": 0.7147962830593281
+        "latency": 1303,
+        "throughput": 0.7674597083653109
       },
-      "notes": "✅ Processed 3 messages, avg 1.4s each"
+      "notes": "✅ Processed 3 messages, avg 1.3s each"
     },
     {
       "scenario": "Real AI Confidence Variation",
@@ -31,7 +31,7 @@
       "metrics": {
         "accuracy": 1
       },
-      "notes": "✅ Real AI confidence varies: 0.20, 0.50"
+      "notes": "✅ Real AI confidence varies: 0.20, 0.80"
     }
   ]
 }

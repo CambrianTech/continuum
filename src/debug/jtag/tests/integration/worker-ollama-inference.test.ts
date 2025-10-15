@@ -101,8 +101,8 @@ async function testScenario_SingleRealInference(): Promise<TestResult> {
       typeof result.reasoning === 'string' &&
       typeof result.processingTime === 'number';
 
-    // Real inference should take 3-30s
-    const reasonableTime = latency >= 1000 && latency <= 30000;
+    // Real inference should take 100ms-30s (lower bound allows fast models like llama3.2:1b)
+    const reasonableTime = latency >= 100 && latency <= 30000;
 
     const passed = hasCorrectStructure && reasonableTime;
 
@@ -173,8 +173,8 @@ async function testScenario_SequentialRealInferences(): Promise<TestResult> {
       result.messageId === messages[i].id
     );
 
-    // Real inference: each should take 3-30s
-    const reasonableAvg = avgTime >= 1000 && avgTime <= 30000;
+    // Real inference: each should take 100ms-30s (lower bound allows fast models like llama3.2:1b)
+    const reasonableAvg = avgTime >= 100 && avgTime <= 30000;
 
     const passed = allCorrect && reasonableAvg;
 
