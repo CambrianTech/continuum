@@ -1,24 +1,24 @@
 /**
- * PersonaUser Worker Thread - Minimal standalone JS worker
- * Supports mock and real Ollama inference without TS dependencies
+ * Generic AI Worker - Dumb Router
+ * Just forwards requests to AI provider and returns raw responses
+ * NO business logic, NO parsing, NO decisions
  */
 import { parentPort, workerData, threadId } from 'worker_threads';
 
 if (!parentPort) throw new Error('Must run as Worker Thread');
 
-const { personaId, providerType = 'mock', providerConfig = {} } = workerData;
+const { providerType = 'mock', providerConfig = {} } = workerData;
 
-// PROOF: Log worker thread ID (different from main thread)
-console.log(`🧵 [WORKER-${threadId}] PersonaWorker[${personaId}]: Starting in worker thread ${threadId}`);
+console.log(`🧵 [WORKER-${threadId}] AI Worker starting (provider: ${providerType})`);
 
-// Minimal Ollama API call (no dependencies)
-async function callOllama(prompt, model, temperature = 0.7, maxTokens = 200) {
+// Minimal Ollama API call - just forward request, return response
+async function callOllama(prompt, model, temperature, maxTokens) {
   const apiEndpoint = providerConfig.apiEndpoint || 'http://localhost:11434';
   const response = await fetch(`${apiEndpoint}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: model || 'llama3.2:1b',
+      model: model,
       prompt: prompt,
       temperature: temperature,
       num_predict: maxTokens,
@@ -31,87 +31,73 @@ async function callOllama(prompt, model, temperature = 0.7, maxTokens = 200) {
   }
 
   const result = await response.json();
-  return result.response; // Extract text from Ollama response
+  return result.response; // Raw text from Ollama
+}
+
+// Mock provider - simulates delay and returns fake AI response
+async function callMock(prompt, model, temperature, maxTokens) {
+  const thinkTime = 100 + Math.random() * 400;
+  await new Promise(r => setTimeout(r, thinkTime));
+
+  // Simulate varied AI responses (dumb router just returns text)
+  const confidence = 0.3 + Math.random() * 0.6;
+  return `CONFIDENCE: ${confidence.toFixed(2)}\nREASONING: Mock AI response after ${thinkTime.toFixed(0)}ms`;
 }
 
 (async () => {
   parentPort.on('message', async (msg) => {
     if (msg.type === 'ping') {
-      console.log(`🏓 [WORKER-${threadId}] Received ping, sending pong from worker thread ${threadId}`);
       parentPort.postMessage({
         type: 'pong',
         timestamp: Date.now(),
-        receivedAt: msg.timestamp,
-        latency: Date.now() - msg.timestamp
+        receivedAt: msg.timestamp
       });
     }
-    else if (msg.type === 'evaluate') {
-      console.log(`🤔 [WORKER-${threadId}] Evaluating message ${msg.message.id} in worker thread ${threadId}`);
+    else if (msg.type === 'generate') {
+      // Generic AI text generation - just forward to provider
       const startTime = Date.now();
-      let confidence, shouldRespond, reasoning, processingTime;
 
       try {
+        let responseText;
+
         if (providerType === 'ollama') {
-          // Real Ollama inference (minimal HTTP call)
-          console.log(`🧠 [WORKER-${threadId}] Calling Ollama API from worker thread ${threadId}...`);
-          const prompt = `Evaluate if you should respond to this message.
-
-Message: "${msg.message.content}"
-Sender: ${msg.message.senderId}
-
-Respond with:
-CONFIDENCE: <number between 0.0 and 1.0>
-REASONING: <brief explanation>`;
-
-          const model = providerConfig.model || 'llama3.2:1b';
-          const responseText = await callOllama(prompt, model, 0.7, 200);
-          console.log(`✅ [WORKER-${threadId}] Ollama responded in ${Date.now() - startTime}ms from worker thread ${threadId}`);
-
-          // Parse confidence from AI response (just return data, don't decide)
-          const confMatch = responseText.match(/CONFIDENCE:\s*([0-9.]+)/i);
-          confidence = confMatch ? parseFloat(confMatch[1]) : 0.5;
-          confidence = Math.max(0, Math.min(1, confidence)); // Clamp 0-1
-          reasoning = responseText.substring(0, 200);
-          processingTime = Date.now() - startTime;
-
-          // Worker is pure computation - PersonaUser decides shouldRespond
+          responseText = await callOllama(
+            msg.prompt,
+            msg.model || providerConfig.model || 'llama3.2:1b',
+            msg.temperature || 0.7,
+            msg.maxTokens || 200
+          );
         } else {
-          // Mock evaluation (Phase 2 fallback)
-          const thinkTime = 100 + Math.random() * 400;
-          await new Promise(r => setTimeout(r, thinkTime));
-          const content = msg.message.content.toLowerCase();
-          confidence = 0.3 + Math.random() * 0.6;
-          if (content.includes('test')) confidence *= 0.3;
-          if (content.includes('?')) confidence = Math.min(confidence * 1.3, 0.95);
-          reasoning = `Mock (${thinkTime.toFixed(0)}ms)`;
-          processingTime = Date.now() - startTime;
+          // Mock fallback
+          responseText = await callMock(
+            msg.prompt,
+            msg.model,
+            msg.temperature,
+            msg.maxTokens
+          );
         }
 
-        // Return evaluation data only - PersonaUser decides shouldRespond based on threshold
+        // Return raw response - caller does ALL parsing/logic
         parentPort.postMessage({
           type: 'result',
+          requestId: msg.requestId,
           timestamp: Date.now(),
           data: {
-            messageId: msg.message.id,
-            confidence,    // 0.0-1.0 score
-            reasoning,     // Why this confidence level
-            processingTime // Milliseconds to evaluate
-            // NO shouldRespond - that's business logic, not computation
+            text: responseText,              // Raw text from provider
+            processingTime: Date.now() - startTime
           }
         });
       } catch (error) {
         parentPort.postMessage({
           type: 'error',
+          requestId: msg.requestId,
           timestamp: Date.now(),
-          data: {
-            messageId: msg.message.id,
-            error: error.message
-          }
+          error: error.message
         });
       }
     }
   });
 
-  console.log(`✅ [WORKER-${threadId}] PersonaWorker[${personaId}]: Ready in worker thread ${threadId}`);
-  parentPort.postMessage({ type: 'ready', personaId, timestamp: Date.now() });
+  console.log(`✅ [WORKER-${threadId}] AI Worker ready`);
+  parentPort.postMessage({ type: 'ready', timestamp: Date.now() });
 })();

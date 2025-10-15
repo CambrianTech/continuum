@@ -1,29 +1,29 @@
 {
-  "timestamp": "2025-10-14T15:10:19.549Z",
+  "timestamp": "2025-10-15T15:27:03.912Z",
   "phase": "Phase 2: Mock Evaluation",
   "passRate": "100%",
   "passed": 4,
   "total": 4,
   "metrics": {
-    "avgLatency": "239.00"
+    "avgLatency": "329.20"
   },
   "details": [
     {
       "scenario": "Single Evaluation",
       "passed": true,
       "metrics": {
-        "latency": 212
+        "latency": 198
       },
-      "notes": "✅ Evaluation returned correct structure in 212ms"
+      "notes": "✅ Evaluation returned correct structure in 198ms"
     },
     {
       "scenario": "Sequential Evaluations",
       "passed": true,
       "metrics": {
-        "latency": 280,
-        "throughput": 3.5714285714285716
+        "latency": 316.6,
+        "throughput": 3.158559696778269
       },
-      "notes": "✅ Processed 5 messages, avg 280ms each"
+      "notes": "✅ Processed 5 messages, avg 317ms each"
     },
     {
       "scenario": "Confidence Variation",
@@ -31,15 +31,15 @@
       "metrics": {
         "accuracy": 1
       },
-      "notes": "✅ Confidence varies naturally: 0.15, 0.47, 0.86"
+      "notes": "✅ Confidence varies naturally: 0.57, 0.33, 0.30"
     },
     {
       "scenario": "Timeout Handling",
       "passed": true,
       "metrics": {
-        "latency": 225
+        "latency": 473
       },
-      "notes": "✅ Completed within timeout (225ms)"
+      "notes": "✅ Completed within timeout (473ms)"
     }
   ]
 }

@@ -30,6 +30,7 @@ interface WorkerResponse {
   receivedAt?: number;
   latency?: number;
   data?: unknown;
+  error?: string;
 }
 
 interface ProviderConfig {
@@ -240,31 +241,67 @@ export class PersonaWorkerThread extends EventEmitter {
 
     const startTime = Date.now();
     this.messageCount++;
+    const requestId = `eval-${message.id}-${Date.now()}`;
 
+    // Build prompt (business logic - not in worker)
+    const prompt = `Evaluate if you should respond to this message.
+
+Message: "${message.content}"
+Sender: ${message.senderId}
+
+Respond with:
+CONFIDENCE: <number between 0.0 and 1.0>
+REASONING: <brief explanation>`;
+
+    // Send generic generate request to worker (worker is dumb router)
     this.worker.postMessage({
-      type: 'evaluate',
-      message: message,
+      type: 'generate',
+      requestId: requestId,
+      prompt: prompt,
+      model: this.config.providerConfig?.model || 'llama3.2:1b',
+      temperature: 0.7,
+      maxTokens: 200,
       timestamp: startTime
     });
 
-    // Wait for result (with timeout)
+    // Wait for result and parse it (parsing logic - not in worker)
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error(`Worker ${this.personaId} did not respond to evaluate within ${timeoutMs}ms`));
+        reject(new Error(`Worker ${this.personaId} did not respond within ${timeoutMs}ms`));
       }, timeoutMs);
 
       const handler = (msg: WorkerResponse) => {
-        if (msg.type === 'result' && msg.data) {
+        if (msg.type === 'result') {
           const data = msg.data as any;
-          if (data.messageId === message.id) {
-            clearTimeout(timeout);
-            this.removeListener('message', handler);
 
-            const totalLatency = Date.now() - startTime;
-            console.log(`📊 Worker ${this.personaId}: Evaluation complete in ${totalLatency}ms`);
+          clearTimeout(timeout);
+          this.removeListener('message', handler);
 
-            resolve(data);
-          }
+          const totalLatency = Date.now() - startTime;
+          console.log(`📊 Worker ${this.personaId}: Evaluation complete in ${totalLatency}ms`);
+
+          // Parse raw response text (business logic - not in worker)
+          const responseText = data.text || '';
+          const confMatch = responseText.match(/CONFIDENCE:\s*([0-9.]+)/i);
+          const reasoningMatch = responseText.match(/REASONING:\s*(.+)/is);
+
+          const confidence = confMatch ? parseFloat(confMatch[1]) : 0.5;
+          const clampedConfidence = Math.max(0, Math.min(1, confidence));
+          const shouldRespond = clampedConfidence > 0.5;
+          const reasoning = reasoningMatch ? reasoningMatch[1].trim().substring(0, 200) : responseText.substring(0, 200);
+
+          resolve({
+            messageId: message.id,
+            confidence: clampedConfidence,
+            shouldRespond: shouldRespond,
+            reasoning: reasoning,
+            processingTime: data.processingTime
+          });
+        }
+        else if (msg.type === 'error') {
+          clearTimeout(timeout);
+          this.removeListener('message', handler);
+          reject(new Error(`Worker error: ${msg.error || 'Unknown error'}`));
         }
       };
 
