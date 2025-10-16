@@ -97,7 +97,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
     }
   }
 
-  async getAvailableModels(): Promise<string[]> {
+  async getAvailableModels(): Promise<import('../AIProviderTypesV2').ModelInfo[]> {
     try {
       const response = await fetch(`${this.config.baseUrl}${this.config.modelsEndpoint}`, {
         method: 'GET',
@@ -119,7 +119,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
   /**
    * Parse models response - override in subclass for provider-specific format
    */
-  protected abstract parseModelsResponse(data: any): string[];
+  protected abstract parseModelsResponse(data: any): import('../AIProviderTypesV2').ModelInfo[];
 
   /**
    * Generate text - override in subclass for provider-specific API

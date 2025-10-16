@@ -27,6 +27,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import { DataEventNames } from '../../events/shared/EventSystemConstants';
+import { Events } from '../../core/shared/Events';
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 
 /**
@@ -54,65 +55,10 @@ export abstract class BaseUser {
     // Load rooms this user is a member of
     await this.loadMyRooms();
 
-    // Auto-join "general" room if not already a member (all users start here)
-    await this.ensureInGeneralRoom();
+    // Note: Auto-join to rooms is now handled by RoomMembershipDaemon via events
+    // User creation → Event emitted → Daemon subscribes → Daemon adds user to rooms
 
     console.log(`✅ BaseUser ${this.displayName}: Base initialization complete`);
-  }
-
-  /**
-   * Ensure user is in "general" room - all users should be here
-   * Called during initialization to handle users created before this feature
-   */
-  private async ensureInGeneralRoom(): Promise<void> {
-    console.log(`🔍 ${this.constructor.name} ${this.displayName}: Checking general room membership...`);
-    try {
-      // Query general room
-      console.log(`🔍 ${this.constructor.name} ${this.displayName}: Querying for general room...`);
-      const roomsResult = await DataDaemon.query<RoomEntity>({
-        collection: COLLECTIONS.ROOMS,
-        filters: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
-      });
-      console.log(`🔍 ${this.constructor.name} ${this.displayName}: Query result success=${roomsResult.success}, count=${roomsResult.data?.length}`);
-
-      if (!roomsResult.success || !roomsResult.data || roomsResult.data.length === 0) {
-        console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: General room not found`);
-        return;
-      }
-
-      const generalRoomRecord = roomsResult.data[0];
-      const generalRoom = generalRoomRecord.data || generalRoomRecord;
-
-      // Check if already a member
-      if (generalRoom.members.some((m: { userId: UUID }) => m.userId === this.id)) {
-        console.log(`✅ ${this.constructor.name} ${this.displayName}: Already in general room`);
-        this.myRoomIds.add(generalRoom.id);
-        return;
-      }
-
-      // Not a member yet - add them
-      console.log(`🚪 ${this.constructor.name} ${this.displayName}: Auto-joining general room...`);
-      const updatedMembers = [
-        ...generalRoom.members,
-        {
-          userId: this.id,
-          role: 'member' as const,
-          joinedAt: new Date()
-        }
-      ];
-
-      await DataDaemon.update<RoomEntity>(
-        COLLECTIONS.ROOMS,
-        generalRoom.id,
-        { members: updatedMembers }
-      );
-
-      this.myRoomIds.add(generalRoom.id);
-      console.log(`✅ ${this.constructor.name} ${this.displayName}: Added to general room`);
-
-    } catch (error) {
-      console.error(`❌ ${this.constructor.name} ${this.displayName}: Failed to ensure in general room:`, error);
-    }
   }
 
   /**
@@ -198,52 +144,16 @@ export abstract class BaseUser {
     // ✅ Type-safe event name using DataEventNames utility
     const eventName = DataEventNames.created(COLLECTIONS.CHAT_MESSAGES);
 
-    if (this.client) {
-      // ✅ Use shared EventManager via JTAGClient when available (PersonaUsers)
-      console.log(`🔍 SUBSCRIBE-START: ${this.constructor.name} ${this.displayName} subscribing to '${eventName}'`);
-      console.log(`🔍 CLIENT-CHECK: this.client exists=${!!this.client}, this.client.daemons exists=${!!this.client.daemons}, this.client.daemons.events exists=${!!this.client.daemons?.events}`);
+    // Subscribe to each room separately with filter - only receive messages for rooms we're in
+    console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribing to chat events for ${this.myRoomIds.size} room(s)`);
 
-      if (!this.client.daemons?.events) {
-        console.error(`❌ CRITICAL: ${this.constructor.name} ${this.displayName} - client.daemons.events is undefined!`);
-        return;
-      }
+    for (const roomId of this.myRoomIds) {
+      // ✅ Use Events.subscribe() with filter parameter - event system handles filtering
+      Events.subscribe(eventName, async (messageData: any) => {
+        await handler(messageData);
+      }, { where: { roomId } });
 
-      this.client.daemons.events.on(eventName, async (messageData: any) => {
-        try {
-          console.log(`🔧 EVENT-HANDLER-START: ${this.constructor.name} ${this.displayName}`);
-
-          // Capture IDs safely (they might be getters that can fail)
-          const myId = this.id || 'undefined-id';
-          const roomIdShort = messageData.roomId?.slice(0,8) || 'no-room';
-          const senderIdShort = messageData.senderId?.slice(0,8) || 'no-sender';
-          const myRoomIdsArray = Array.from(this.myRoomIds || []);
-
-          console.log(`🔧 EVENT-HANDLER: ${this.constructor.name} ${this.displayName} (id=${typeof myId === 'string' ? myId.slice(0,8) : 'invalid'}), myRoomIds.size=${this.myRoomIds?.size || 0}`);
-          console.log(`🔧 EVENT-DATA: messageData.roomId=${roomIdShort}, senderId=${senderIdShort}`);
-          console.log(`🔧 MY-ROOM-IDS: ${JSON.stringify(myRoomIdsArray)}`);
-
-          // Only handle messages in rooms we're a member of
-          if (this.myRoomIds && this.myRoomIds.has(messageData.roomId)) {
-            console.log(`✅ ROOM-CHECK-PASS: ${this.constructor.name} ${this.displayName} calling handler for room ${roomIdShort}`);
-            await handler(messageData);
-          } else {
-            console.log(`❌ ROOM-CHECK-FAIL: ${this.constructor.name} ${this.displayName} NOT in room ${roomIdShort}, has ${myRoomIdsArray.length} rooms`);
-          }
-        } catch (error) {
-          console.error(`❌ EVENT-HANDLER-ERROR: ${this.constructor.name} ${this.displayName}:`, error);
-        }
-      });
-      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to all chat events via client.daemons.events`);
-    } else {
-      // ❌ FALLBACK: Create isolated EventManager (won't receive events, but won't crash)
-      const { EventManager } = require('../../events/shared/JTAGEventSystem');
-      const eventManager = new EventManager();
-      eventManager.events.on(eventName, async (messageData: any) => {
-        if (this.myRoomIds.has(messageData.roomId)) {
-          await handler(messageData);
-        }
-      });
-      console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: No client available, using isolated EventManager (events won't work)`);
+      console.log(`✅ ${this.constructor.name} ${this.displayName}: Subscribed to room ${roomId.slice(0,8)}`);
     }
   }
 

@@ -690,6 +690,7 @@ export class DataDaemon {
 
     // ✨ Universal event emission - works anywhere!
     const eventName = BaseEntity.getEventName(collection, 'created');
+    console.log(`🔔 DataDaemon.store: Emitting event ${eventName} for ${collection}`);
     await Events.emit(DataDaemon.jtagContext, eventName, entity);
 
     return entity;

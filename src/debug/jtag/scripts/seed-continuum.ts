@@ -593,25 +593,38 @@ async function getEntityCount(collection: string): Promise<string> {
 }
 
 /**
- * Check if database is already seeded by looking for primary-human user
- * This enables fast-path: <1 second when data exists vs 60+ seconds for full seed
+ * Check which users exist by uniqueId
+ * Returns array of missing user uniqueIds that need to be created
  */
-async function checkIfSeeded(): Promise<boolean> {
+async function getMissingUsers(): Promise<string[]> {
+  const requiredUsers = [
+    DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
+    DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE,
+    DEFAULT_USER_UNIQUE_IDS.GENERAL_AI,
+    'persona-helper-001',
+    'persona-teacher-001',
+    'persona-codereview-001',
+    'persona-deepseek',
+    'persona-groq',
+    'persona-ollama'
+  ];
+
   try {
     const result = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
     const stdout = result.stdout;
 
-    // Check if primary-human exists in the output
-    if (stdout.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
-      const count = stdout.match(/"count":\s*(\d+)/)?.[1];
-      if (count && parseInt(count) >= 6) {
-        console.log('✅ Database already seeded (found primary-human user and 6+ users)');
-        return true;
-      }
+    const missingUsers = requiredUsers.filter(uniqueId => !stdout.includes(uniqueId));
+
+    if (missingUsers.length === 0) {
+      console.log(`✅ All ${requiredUsers.length} required users exist`);
+    } else {
+      console.log(`📋 Found ${requiredUsers.length - missingUsers.length}/${requiredUsers.length} users, missing: ${missingUsers.join(', ')}`);
     }
-    return false;
+
+    return missingUsers;
   } catch (error) {
-    return false;
+    console.log('⚠️ Could not check existing users, will attempt full seed');
+    return requiredUsers;
   }
 }
 
@@ -622,40 +635,115 @@ async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // Fast path: Check if already seeded (reduces 60+ seconds to <1 second)
-    if (await checkIfSeeded()) {
-      console.log('⚡ Skipping seeding - database already populated');
+    // Check which users are missing
+    const missingUsers = await getMissingUsers();
+
+    if (missingUsers.length === 0) {
+      console.log('⚡ All required users exist - no seeding needed');
       return;
     }
 
-    // Clear existing database tables using proper JTAG commands (NO RAW SQL!)
-    console.log('🧹 Clearing existing database tables...');
-    try {
-      await execAsync(`./jtag data/truncate --collection=users`);
-      await execAsync(`./jtag data/truncate --collection=rooms`);
-      await execAsync(`./jtag data/truncate --collection=chat_messages`);
-      console.log('✅ Database tables cleared via JTAG commands');
-    } catch (error: any) {
-      console.log('⚠️ Error clearing tables:', error.message);
+    // Create human user FIRST (needed as room owner), then rooms, then other users
+    console.log(`📝 Creating human user first (needed as room owner)...`);
+
+    const userMap: Record<string, UserEntity | null> = {};
+
+    // Step 1: Create human user first
+    if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
+      userMap['humanUser'] = await createUserViaCommand('human', USER_CONFIG.HUMAN.DISPLAY_NAME, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+      console.log(`✅ Created human user: ${userMap['humanUser']?.displayName}`);
     }
 
-    // Create users via user/create command (proper factory-based creation)
-    console.log('📝 Creating users via user/create command...');
+    const humanUser = userMap['humanUser'];
+    if (!humanUser) {
+      throw new Error('❌ Failed to create human user - required as room owner');
+    }
 
-    const humanUser = await createUserViaCommand('human', USER_CONFIG.HUMAN.DISPLAY_NAME, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
-    const claudeUser = await createUserViaCommand('agent', USER_CONFIG.CLAUDE.NAME, DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE, 'anthropic');
-    const generalAIUser = await createUserViaCommand('agent', USER_CONFIG.GENERAL_AI.NAME, DEFAULT_USER_UNIQUE_IDS.GENERAL_AI, 'anthropic');
+    // Step 2: Check if this is first run (need to create rooms)
+    const isFirstRun = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
 
-    // Create persona users for testing autonomous chat
-    const helperPersona = await createUserViaCommand('persona', 'Helper AI', 'persona-helper-001');
-    const teacherPersona = await createUserViaCommand('persona', 'Teacher AI', 'persona-teacher-001');
-    const codeReviewPersona = await createUserViaCommand('persona', 'CodeReview AI', 'persona-codereview-001');
+    if (isFirstRun) {
+      // Create and persist rooms BEFORE creating other users
+      console.log('🏗️ Creating rooms before other users (for auto-join to work)...');
 
-    const users = [humanUser, claudeUser, generalAIUser, helperPersona, teacherPersona, codeReviewPersona].filter(u => u !== null) as UserEntity[];
-    console.log(`📊 Created ${users.length}/6 users (1 human, 2 agents, 3 personas)`);
+      const generalRoom = createRoom(
+        ROOM_IDS.GENERAL,
+        ROOM_CONFIG.GENERAL.NAME,
+        ROOM_CONFIG.GENERAL.NAME,
+        ROOM_CONFIG.GENERAL.DESCRIPTION,
+        "Welcome to general discussion! Introduce yourself and chat about anything.",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["general", "welcome", "discussion"],
+        humanUser.id,
+        'general'
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
 
-    if (users.length !== 6 || !humanUser || !claudeUser || !generalAIUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
-      throw new Error('❌ Failed to create all required users');
+      const academyRoom = createRoom(
+        ROOM_IDS.ACADEMY,
+        ROOM_CONFIG.ACADEMY.NAME,
+        ROOM_CONFIG.ACADEMY.NAME,
+        ROOM_CONFIG.ACADEMY.DESCRIPTION,
+        "Share knowledge, tutorials, and collaborate on learning",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["academy", "learning", "education"],
+        humanUser.id,
+        'academy'
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom];
+
+      // Persist rooms to database BEFORE creating other users
+      await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
+      console.log('✅ Rooms created and persisted - ready for auto-join');
+    }
+
+    // Step 3: Now create all other users (auto-join will work because rooms exist)
+    console.log(`📝 Creating remaining ${missingUsers.length - 1} users (auto-join will trigger)...`);
+
+    if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE)) {
+      userMap['claudeUser'] = await createUserViaCommand('agent', USER_CONFIG.CLAUDE.NAME, DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE, 'anthropic');
+    }
+    if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.GENERAL_AI)) {
+      userMap['generalAIUser'] = await createUserViaCommand('agent', USER_CONFIG.GENERAL_AI.NAME, DEFAULT_USER_UNIQUE_IDS.GENERAL_AI, 'anthropic');
+    }
+    if (missingUsers.includes('persona-helper-001')) {
+      userMap['helperPersona'] = await createUserViaCommand('persona', 'Helper AI', 'persona-helper-001');
+    }
+    if (missingUsers.includes('persona-teacher-001')) {
+      userMap['teacherPersona'] = await createUserViaCommand('persona', 'Teacher AI', 'persona-teacher-001');
+    }
+    if (missingUsers.includes('persona-codereview-001')) {
+      userMap['codeReviewPersona'] = await createUserViaCommand('persona', 'CodeReview AI', 'persona-codereview-001');
+    }
+    if (missingUsers.includes('persona-deepseek')) {
+      userMap['deepseekPersona'] = await createUserViaCommand('persona', 'DeepSeek Assistant', 'persona-deepseek', 'deepseek');
+    }
+    if (missingUsers.includes('persona-groq')) {
+      userMap['groqPersona'] = await createUserViaCommand('persona', 'Groq Lightning', 'persona-groq', 'groq');
+    }
+    if (missingUsers.includes('persona-ollama')) {
+      userMap['ollamaPersona'] = await createUserViaCommand('persona', 'Local Assistant', 'persona-ollama', 'ollama');
+    }
+
+    const createdUsers = Object.values(userMap).filter(u => u !== null);
+    console.log(`📊 Created ${createdUsers.length}/${missingUsers.length} total users (auto-join handled by RoomMembershipDaemon)`);
+
+    // Get references to created users for message seeding
+    const claudeUser = userMap['claudeUser'];
+    const helperPersona = userMap['helperPersona'];
+    const teacherPersona = userMap['teacherPersona'];
+    const codeReviewPersona = userMap['codeReviewPersona'];
+
+    // If not first run, rooms and messages already exist
+    if (!isFirstRun) {
+      console.log('✅ Users added to existing database - rooms and messages already exist');
+      return;
+    }
+
+    if (!humanUser || !claudeUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
+      throw new Error('❌ Failed to create core required users');
     }
 
     // Update persona profiles with distinct personalities
@@ -709,51 +797,8 @@ async function seedViaJTAG() {
     ]);
     console.log('✅ Persona configurations applied');
 
-    // Create rooms using actual generated user entity
-    const generalRoom = createRoom(
-      ROOM_IDS.GENERAL,
-      ROOM_CONFIG.GENERAL.NAME,
-      ROOM_CONFIG.GENERAL.NAME,
-      ROOM_CONFIG.GENERAL.DESCRIPTION,
-      "Welcome to general discussion! Introduce yourself and chat about anything.",
-      6,  // Updated member count: 3 personas + human + 2 agents
-      ["general", "welcome", "discussion"],
-      humanUser.id,
-      'general'  // uniqueId - stable identifier
-    );
-
-    // Add personas to general room members (they need room membership to receive chat events)
-    generalRoom.members = [
-      { userId: helperPersona.id, role: 'member', joinedAt: new Date().toISOString() },
-      { userId: teacherPersona.id, role: 'member', joinedAt: new Date().toISOString() },
-      { userId: codeReviewPersona.id, role: 'member', joinedAt: new Date().toISOString() }
-    ];
-
-    const academyRoom = createRoom(
-      ROOM_IDS.ACADEMY,
-      ROOM_CONFIG.ACADEMY.NAME,
-      ROOM_CONFIG.ACADEMY.NAME,
-      ROOM_CONFIG.ACADEMY.DESCRIPTION,
-      "Share knowledge, tutorials, and collaborate on learning",
-      3,  // Updated member count: 3 personas
-      ["academy", "learning", "education"],
-      humanUser.id,
-      'academy'  // uniqueId - stable identifier
-    );
-
-    // Add personas to academy room members (learning-focused personas)
-    academyRoom.members = [
-      { userId: teacherPersona.id, role: 'member', joinedAt: new Date().toISOString() },
-      { userId: helperPersona.id, role: 'member', joinedAt: new Date().toISOString() },
-      { userId: codeReviewPersona.id, role: 'member', joinedAt: new Date().toISOString() }
-    ];
-
-    const rooms = [
-      generalRoom,
-      academyRoom
-    ];
-
-    // Create messages using actual generated user entities
+    // Rooms already created and persisted earlier (before other users)
+    // Now create messages for those rooms
     const messages = [
       createMessage(
         MESSAGE_IDS.WELCOME_GENERAL,
@@ -853,7 +898,7 @@ async function seedViaJTAG() {
 
     // Seed all data types using clean modular approach with user context
     // Note: User states are created automatically by user/create command
-    await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
+    // Note: Rooms already seeded earlier (before other users, to enable auto-join)
     await seedRecords(ChatMessageEntity.collection, messages,
       (msg) => msg.senderId === humanUser.id ? humanUser.displayName : msg.senderId === claudeUser.id ? claudeUser.displayName : 'System',
       (msg) => msg.senderId

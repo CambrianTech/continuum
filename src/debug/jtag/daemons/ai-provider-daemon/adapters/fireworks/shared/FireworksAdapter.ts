@@ -10,8 +10,8 @@
  * Just 20 lines thanks to BaseOpenAICompatibleAdapter!
  */
 
-import { BaseOpenAICompatibleAdapter } from './BaseOpenAICompatibleAdapter';
-import { getSecret } from '../../../../system/secrets/SecretManager';
+import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
+import { getSecret } from '../../../../../system/secrets/SecretManager';
 
 export class FireworksAdapter extends BaseOpenAICompatibleAdapter {
   constructor(apiKey?: string) {

@@ -33,9 +33,8 @@ import type {
   TextGenerationResponse,
   HealthStatus,
   ProviderRegistration,
-} from './AIProviderTypes';
-import { AIProviderError, chatMessagesToPrompt } from './AIProviderTypes';
-import { OllamaAdapter } from './OllamaAdapter';
+} from './AIProviderTypesV2';
+import { AIProviderError, chatMessagesToPrompt } from './AIProviderTypesV2';
 
 // AI Provider Payloads
 export interface AIProviderPayload extends JTAGPayload {
@@ -74,20 +73,8 @@ export class AIProviderDaemon extends DaemonBase {
   }
 
   protected async initialize(): Promise<void> {
-    console.log('🤖 AIProviderDaemon: Initializing...');
-
-    // Register Ollama adapter (local, free, private)
-    // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
-    await this.registerAdapter(new OllamaAdapter({ maxConcurrent: 4 }), {
-      priority: 100, // Highest priority - free and local
-      enabled: true,
-    });
-
-    // TODO: Register OpenAI adapter (if API key available)
-    // TODO: Register Anthropic adapter (if API key available)
-
+    console.log('🤖 AIProviderDaemon: Base initialization (adapters registered by subclass)');
     this.initialized = true;
-    console.log('✅ AIProviderDaemon: Initialized successfully');
   }
 
   /**
@@ -193,6 +180,15 @@ export class AIProviderDaemon extends DaemonBase {
 
     // Direct adapter call (browser-side or fallback)
     console.log(`🤖 AIProviderDaemon: Using direct ${adapter.providerId} adapter call (no ProcessPool)`);
+
+    if (!adapter.generateText) {
+      throw new AIProviderError(
+        `Adapter ${adapter.providerId} does not support text generation`,
+        'adapter',
+        'UNSUPPORTED_OPERATION'
+      );
+    }
+
     try {
       const response = await adapter.generateText(request);
       return response;
@@ -243,8 +239,9 @@ export class AIProviderDaemon extends DaemonBase {
 
   /**
    * Register a new AI provider adapter
+   * Protected so server subclass can register adapters
    */
-  private async registerAdapter(
+  protected async registerAdapter(
     adapter: AIProviderAdapter,
     options: { priority: number; enabled: boolean }
   ): Promise<void> {

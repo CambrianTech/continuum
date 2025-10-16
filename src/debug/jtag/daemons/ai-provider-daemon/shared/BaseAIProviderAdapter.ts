@@ -2,8 +2,10 @@ import type {
   AIProviderAdapter,
   TextGenerationRequest,
   TextGenerationResponse,
-  HealthStatus
-} from './AIProviderTypes';
+  HealthStatus,
+  ModelCapability,
+  ModelInfo
+} from './AIProviderTypesV2';
 
 /**
  * Abstract base class for all AI provider adapters
@@ -20,6 +22,7 @@ import type {
 export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   abstract readonly providerId: string;
   abstract readonly providerName: string;
+  abstract readonly supportedCapabilities: ModelCapability[];
 
   // Health monitoring state
   private healthMonitorInterval?: ReturnType<typeof setInterval>;
@@ -31,7 +34,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   // Abstract methods subclasses MUST implement
   abstract generateText(request: TextGenerationRequest): Promise<TextGenerationResponse>;
   abstract healthCheck(): Promise<HealthStatus>;
-  abstract getAvailableModels(): Promise<any>; // string[] or ModelInfo[] depending on adapter
+  abstract getAvailableModels(): Promise<ModelInfo[]>;
 
   /**
    * Provider-specific restart logic

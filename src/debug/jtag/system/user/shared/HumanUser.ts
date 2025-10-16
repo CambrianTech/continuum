@@ -82,8 +82,8 @@ export class HumanUser extends BaseUser {
       userState
     );
 
-    // STEP 3: Auto-join "general" room (all users start here)
-    await this.addToGeneralRoom(storedEntity.id, params.displayName);
+    // STEP 3: Room membership now handled by RoomMembershipDaemon via events
+    // User creation → data:users:created event → RoomMembershipDaemon auto-joins user
 
     // STEP 4: Add to additional rooms if specified
     if (params.addToRooms && params.addToRooms.length > 0) {

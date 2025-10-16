@@ -54,6 +54,8 @@ import {
   type AIErrorEventData
 } from '../../events/shared/AIDecisionEvents';
 import type { ScopedEventsInterface } from '../../events/shared/ScopedEventSystem';
+import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -161,6 +163,8 @@ export class PersonaUser extends AIUser {
     // STEP 1: Base initialization (loads state + rooms)
     await super.initialize();
 
+    // Note: General room auto-join handled by UserDaemonServer on user creation (Discord-style)
+
     // STEP 1.5: Start worker thread for message evaluation
     if (this.worker) {
       await this.worker.start();
@@ -184,6 +188,72 @@ export class PersonaUser extends AIUser {
     }
 
     this.isInitialized = true;
+  }
+
+  /**
+   * Auto-join general room if not already a member
+   *
+   * NOTE: This is a simple add to room.members array, NOT event subscriptions
+   * Event subscriptions happen once in initialize() - this just updates membership
+   *
+   * TODO: Replace with event-driven architecture (listener on data:users:created)
+   * Current limitation: If general room doesn't exist yet, this will fail silently
+   */
+  private async autoJoinGeneralRoom(): Promise<void> {
+    if (!this.client) {
+      console.warn(`⚠️ ${this.displayName}: Cannot auto-join general room - no client available`);
+      return;
+    }
+
+    try {
+      // Query for general room using DataDaemon.query (server-side only)
+      const queryResult = await DataDaemon.query<RoomEntity>({
+        collection: COLLECTIONS.ROOMS,
+        filters: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
+      });
+
+      if (!queryResult.success || !queryResult.data?.length) {
+        console.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
+        return;
+      }
+
+      const generalRoomRecord = queryResult.data[0];
+      if (!generalRoomRecord) {
+        return;
+      }
+
+      const generalRoom = generalRoomRecord.data;
+
+      // Check if already a member
+      const isMember = generalRoom.members?.some((m: { userId: UUID }) => m.userId === this.id);
+      if (isMember) {
+        console.log(`✅ ${this.displayName}: Already member of general room`);
+        return;
+      }
+
+      // Add self to members (just updating the entity, not adding subscriptions)
+      const updatedMembers = [
+        ...(generalRoom.members ?? []),
+        {
+          userId: this.id,
+          role: 'member' as const,
+          joinedAt: new Date()
+        }
+      ];
+
+      // Update room with new member using DataDaemon.update
+      await DataDaemon.update<RoomEntity>(
+        COLLECTIONS.ROOMS,
+        generalRoom.id,
+        { members: updatedMembers }
+      );
+
+      console.log(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
+      // Reload my rooms to pick up the change
+      await this.loadMyRooms();
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error auto-joining general room:`, error);
+    }
   }
 
   /**
@@ -1263,12 +1333,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       userState
     );
 
-    // STEP 3: Auto-join "general" room (all users start here)
-    try {
-      await this.addToGeneralRoom(storedEntity.id, params.displayName);
-    } catch (error) {
-      console.error(`❌ PersonaUser.create: Failed to add to general room:`, error);
-    }
+    // STEP 3: Room membership now handled by RoomMembershipDaemon via events
+    // User creation → data:users:created event → RoomMembershipDaemon auto-joins user
 
     // STEP 4: Add persona to additional rooms if specified
     if (params.addToRooms && params.addToRooms.length > 0) {
