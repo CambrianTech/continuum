@@ -40,7 +40,7 @@ export interface TextGenerationRequest {
   requestId?: string;
 
   // Preferences
-  preferredProvider?: 'ollama' | 'openai' | 'anthropic';
+  preferredProvider?: 'ollama' | 'openai' | 'anthropic' | 'groq' | 'deepseek' | 'together' | 'fireworks';
 }
 
 export interface TextGenerationResponse {

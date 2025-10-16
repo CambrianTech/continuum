@@ -25,8 +25,11 @@ export type UserType = 'human' | 'agent' | 'persona';
  */
 export interface ModelConfig {
   readonly model?: string;
+  readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, ollama)
   readonly temperature?: number;
   readonly maxTokens?: number;
+  readonly systemPrompt?: string;       // Custom system prompt for persona
+  readonly capabilities?: readonly string[];  // Model capabilities
 }
 
 /**
