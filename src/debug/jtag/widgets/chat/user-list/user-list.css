@@ -1,25 +1,42 @@
+/* Professional User List - Discord/Teams Style */
+
+:host {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  max-height: calc((100vh - 30px - var(--spacing-md, 12px)) / 2);
+  overflow: hidden;
+}
+
 .entity-list-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   background: var(--widget-surface-solid);
   border-radius: var(--radius-lg);
-  padding: var(--spacing-lg);
+  padding: var(--spacing-md);
   color: var(--content-primary);
   font-family: var(--font-primary);
-  min-height: 200px;
   border: 1px solid var(--widget-border);
+  overflow: hidden;
 }
 
 .entity-list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--spacing-lg);
+  margin-bottom: var(--spacing-sm);
   border-bottom: 1px solid var(--border-subtle);
-  padding-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  flex-shrink: 0;
 }
 
 .entity-list-header h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--content-secondary);
   text-transform: uppercase;
@@ -30,33 +47,35 @@
   color: var(--content-primary);
   font-weight: 600;
   font-size: 0.85em;
-  text-transform: capitalize;
   letter-spacing: 0.5px;
 }
 
 .user-count {
-  background: var(--content-accent);
-  color: var(--button-primary-text);
-  padding: var(--spacing-xs) var(--spacing-sm);
-  border-radius: var(--radius-xl);
-  font-size: 12px;
-  font-weight: 500;
+  background: var(--border-subtle);
+  color: var(--content-secondary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .user-search {
-  margin-bottom: var(--spacing-lg);
+  margin-bottom: var(--spacing-sm);
+  flex-shrink: 0;
 }
 
 .search-input {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   background: var(--input-background);
   border: 1px solid var(--input-border);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
   color: var(--input-text);
-  font-size: 14px;
+  font-size: 13px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.15s;
 }
 
 .search-input::placeholder {
@@ -71,121 +90,157 @@
 .user-list {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-sm);
+  gap: 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Minimal scrollbar */
+.user-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.user-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.user-list::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 2px;
+}
+
+.user-list::-webkit-scrollbar-thumb:hover {
+  background: var(--content-secondary);
 }
 
 .user-item {
   display: flex;
   align-items: center;
-  padding: var(--spacing-md);
-  background: var(--widget-content-background);
-  border-radius: var(--radius-lg);
+  padding: 8px 10px;
+  background: transparent;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
-  border: 1px solid var(--border-subtle);
-  gap: var(--spacing-sm);
+  transition: background 0.1s;
+  gap: 12px;
+  flex-shrink: 0;
+  min-height: 56px;
 }
 
 .user-item:hover {
-  background: var(--widget-surface-solid);
-  border-color: var(--border-accent);
-  box-shadow: var(--shadow-glow);
+  background: var(--widget-content-background);
 }
 
 .user-item.selected {
-  background: var(--content-accent);
-  border-color: var(--content-accent);
-  box-shadow: 0 0 0 2px var(--content-accent);
+  background: var(--widget-content-background);
 }
 
-.user-item.selected .user-name {
-  color: var(--button-primary-text);
-  font-weight: 600;
-}
-
-.user-item.online {
-  border-left: 3px solid var(--status-online);
-}
-
-.user-item.offline {
-  border-left: 3px solid var(--status-offline);
-}
-
+/* Avatar circle - Discord style with image support */
 .user-avatar {
-  font-size: 18px;
-  margin-right: var(--spacing-md);
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
   flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-avatar.has-image {
+  background: transparent;
 }
 
 .user-info {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
-  min-width: 0; /* Allow text truncation */
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .user-name-row {
   display: flex;
   align-items: center;
-  gap: var(--spacing-xs);
+  gap: 6px;
 }
 
 .user-name {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 500;
   color: var(--content-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
+/* AI status emoji (subtle, inline) */
 .user-ai-status {
-  font-size: 12px;
+  font-size: 10px;
   flex-shrink: 0;
+  opacity: 0.7;
 }
 
 .user-meta {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
+/* Subtle type badge */
 .user-type-badge {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  color: var(--button-primary-text);
-  background: var(--content-accent);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
+  color: var(--content-secondary);
+  background: transparent;
+  padding: 0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-.user-type {
-  font-size: 12px;
-  color: var(--content-secondary);
-  text-transform: capitalize;
+  flex-shrink: 0;
+  opacity: 0.6;
 }
 
 .user-speciality {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--content-secondary);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-style: italic;
 }
 
 .user-last-active {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--content-secondary);
-  opacity: 0.7;
+  opacity: 0.6;
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin-left: auto;
 }
 
+/* Hover controls - minimal */
 .user-controls {
   display: flex;
-  gap: var(--spacing-xs);
+  gap: 4px;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity 0.1s;
+  flex-shrink: 0;
 }
 
 .user-item:hover .user-controls {
@@ -198,28 +253,24 @@
   border: none;
   color: var(--content-secondary);
   cursor: pointer;
-  padding: var(--spacing-xs);
+  padding: 4px;
   border-radius: var(--radius-sm);
-  font-size: 14px;
-  transition: all 0.2s;
+  font-size: 12px;
+  transition: all 0.1s;
   line-height: 1;
 }
 
 .user-favorite-btn:hover,
 .user-action-btn:hover {
-  background: var(--widget-surface-solid);
-  color: var(--content-accent);
-  transform: scale(1.1);
+  background: var(--border-subtle);
+  color: var(--content-primary);
 }
 
-.user-favorite-btn:active,
-.user-action-btn:active {
-  transform: scale(0.95);
-}
-
+/* Status indicator - subtle dot */
 .user-status {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .status-indicator {
@@ -227,45 +278,34 @@
   height: 8px;
   border-radius: 50%;
   background: var(--status-offline);
-  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
 }
 
 .user-item.online .status-indicator {
   background: var(--status-online);
-  box-shadow: 0 0 8px var(--status-online);
 }
 
-.user-item.offline .status-indicator {
-  background: var(--status-offline);
-}
-
-/* Empty State Styling */
+/* Empty state */
 .no-users-message {
-  padding: var(--spacing-xl) var(--spacing-lg);
+  padding: var(--spacing-xl);
   text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacing-md);
   color: var(--content-secondary);
 }
 
 .no-content-icon {
-  font-size: 36px;
-  opacity: 0.5;
+  font-size: 32px;
+  opacity: 0.3;
   margin-bottom: var(--spacing-sm);
 }
 
 .no-content-text {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--content-primary);
-  margin: 0;
+  margin: 0 0 var(--spacing-xs) 0;
 }
 
 .no-content-hint {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--content-secondary);
-  font-style: italic;
   margin: 0;
 }
