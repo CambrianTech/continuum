@@ -17,7 +17,7 @@ interface AdapterTest {
 
 const ADAPTERS: AdapterTest[] = [
   { name: 'DeepSeek', keyName: 'DEEPSEEK_API_KEY', adapterPath: '../../daemons/ai-provider-daemon/adapters/deepseek/shared/DeepSeekAdapter', defaultModel: 'deepseek-chat' },
-  { name: 'Groq', keyName: 'GROQ_API_KEY', adapterPath: '../../daemons/ai-provider-daemon/adapters/groq/shared/GroqAdapter', defaultModel: 'llama-3.1-70b-versatile' },
+  { name: 'Groq', keyName: 'GROQ_API_KEY', adapterPath: '../../daemons/ai-provider-daemon/adapters/groq/shared/GroqAdapter', defaultModel: 'llama-3.1-8b-instant' },
   { name: 'OpenAI', keyName: 'OPENAI_API_KEY', adapterPath: '../../daemons/ai-provider-daemon/adapters/openai/shared/OpenAIAdapter', defaultModel: 'gpt-4' },
   { name: 'Anthropic', keyName: 'ANTHROPIC_API_KEY', adapterPath: '../../daemons/ai-provider-daemon/adapters/anthropic/shared/AnthropicAdapter', defaultModel: 'claude-3-5-sonnet-20241022' },
   { name: 'Together', keyName: 'TOGETHER_API_KEY', adapterPath: '../../daemons/ai-provider-daemon/adapters/together/shared/TogetherAIAdapter', defaultModel: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' },

@@ -48,17 +48,8 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           supportsFunctions: false
         },
         {
-          id: 'llama-3.1-70b-versatile',
-          name: 'Llama 3.1 70B (Default)',
-          provider: 'groq',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 8192,
-          supportsStreaming: true,
-          supportsFunctions: false
-        },
-        {
           id: 'llama-3.1-8b-instant',
-          name: 'Llama 3.1 8B (Fastest)',
+          name: 'Llama 3.1 8B (Default)',
           provider: 'groq',
           capabilities: ['text-generation', 'chat'],
           contextWindow: 8192,

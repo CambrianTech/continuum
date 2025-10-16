@@ -254,7 +254,7 @@ export class UserDataSeed {
       preferences: {},
       isOnline: true,
       modelConfig: {
-        model: 'llama-3.1-70b-versatile',
+        model: 'llama-3.1-8b-instant',
         provider: 'groq',
         maxTokens: 2000,
         temperature: 0.8,
