@@ -9,11 +9,11 @@ import type { HtmlInspectorParams, HtmlInspectorResult } from '../shared/HtmlIns
 import { createHtmlInspectorResult } from '../shared/HtmlInspectorTypes';
 
 export class HtmlInspectorBrowserCommand extends CommandBase<HtmlInspectorParams, HtmlInspectorResult> {
-  
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('html-inspector', context, subpath, commander);
   }
-  
+
   async execute(params: HtmlInspectorParams): Promise<HtmlInspectorResult> {
     const { selector, includeStyles = false, maxDepth = 5 } = params;
     
@@ -33,6 +33,34 @@ export class HtmlInspectorBrowserCommand extends CommandBase<HtmlInspectorParams
       const html = this.getElementHTML(element, includeStyles);
       const text = element.textContent || '';
 
+      // Get computed styles and dimensions
+      const rect = element.getBoundingClientRect();
+      const computed = window.getComputedStyle(element);
+
+      const dimensions = {
+        width: rect.width,
+        height: rect.height,
+        top: rect.top,
+        left: rect.left,
+        bottom: rect.bottom,
+        right: rect.right
+      };
+
+      const computedStyles = {
+        display: computed.display,
+        position: computed.position,
+        flexDirection: computed.flexDirection,
+        height: computed.height,
+        minHeight: computed.minHeight,
+        maxHeight: computed.maxHeight,
+        overflow: computed.overflow,
+        overflowY: computed.overflowY,
+        flex: computed.flex,
+        flexGrow: computed.flexGrow,
+        flexShrink: computed.flexShrink,
+        flexBasis: computed.flexBasis
+      };
+
       return createHtmlInspectorResult(params.context, params.sessionId, {
         success: true,
         html,
@@ -40,7 +68,9 @@ export class HtmlInspectorBrowserCommand extends CommandBase<HtmlInspectorParams
         structure,
         tagName: element.tagName,
         className: element.className,
-        id: element.id
+        id: element.id,
+        dimensions,
+        computedStyles
       });
 
     } catch (error) {

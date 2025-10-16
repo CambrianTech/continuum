@@ -16,6 +16,7 @@ export interface WidgetStateDebugParams extends CommandParams {
   roomId?: string;
   includeEventListeners?: boolean;
   includeDomInfo?: boolean;
+  includeDimensions?: boolean;
   extractRowData?: boolean;
   rowSelector?: string;
   countOnly?: boolean; // Return only entityCount, no heavy data
@@ -56,6 +57,19 @@ export interface WidgetStateDebugResult extends CommandResult {
     visibleText: string;
     cssClasses: string[];
     hasShadowRoot: boolean;
+  };
+
+  // Widget dimensions and computed styles
+  dimensions?: {
+    width: number;
+    height: number;
+    scrollHeight: number;
+    clientHeight: number;
+    hasScrollbar: boolean;
+    computedHeight: string;
+    computedDisplay: string;
+    computedFlex: string;
+    computedOverflow: string;
   };
 
   // Row data extraction (e.g., room items, user items)

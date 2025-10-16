@@ -185,21 +185,20 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       const statusClass = user.status === 'online' ? 'online' : 'offline';
       const isSelected = this.selectedUserId === user.id;
 
-      // ✨ BEAUTIFUL: Intelligent avatar defaults based on user type
-      const avatar = user.profile?.visualIdentity?.avatar ??
-        (user.type === 'human' ? '👤' :
-         user.type === 'agent' ? '🤖' :
-         user.type === 'persona' ? '⭐' :
-         user.type === 'system' ? '⚙️' : '❓');
+      // Avatar fallback by type (profile not loaded in list view)
+      const avatar = user.type === 'human' ? '👤' :
+                    user.type === 'agent' ? '🤖' :
+                    user.type === 'persona' ? '⭐' :
+                    user.type === 'system' ? '⚙️' : '❓';
 
-      const speciality = user.profile?.speciality ?? null;
+      const speciality = user.speciality; // UserEntity getter
       const aiStatusEmoji = this.getStatusEmoji(user.id);
 
       // Format last active timestamp
       const lastActive = user.lastActiveAt ? this.formatTimestamp(user.lastActiveAt) : null;
 
-      // User type badge
-      const typeBadge = user.type === 'persona' ? 'SOTA' : user.type.toUpperCase();
+      // User type badge - uses UserType from UserEntity (CSS handles uppercase)
+      const typeBadge = user.type;
 
       const userElement = globalThis.document.createElement('div');
       userElement.className = `user-item ${statusClass} ${isSelected ? 'selected' : ''}`;

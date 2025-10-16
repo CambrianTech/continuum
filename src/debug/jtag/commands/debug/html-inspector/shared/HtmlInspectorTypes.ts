@@ -21,6 +21,28 @@ export interface HtmlInspectorResult extends CommandResult {
   tagName?: string;
   className?: string;
   id?: string;
+  dimensions?: {
+    width: number;
+    height: number;
+    top: number;
+    left: number;
+    bottom: number;
+    right: number;
+  };
+  computedStyles?: {
+    display: string;
+    position: string;
+    flexDirection: string;
+    height: string;
+    minHeight: string;
+    maxHeight: string;
+    overflow: string;
+    overflowY: string;
+    flex: string;
+    flexGrow: string;
+    flexShrink: string;
+    flexBasis: string;
+  };
 }
 
 export const createHtmlInspectorResult = (
