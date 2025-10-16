@@ -144,7 +144,7 @@ export class PersonaUser extends AIUser {
       },
       'groq': {
         provider: 'groq',
-        model: 'llama-3.1-70b-versatile',
+        model: 'llama-3.1-8b-instant',
         temperature: 0.8,
         maxTokens: 2000
       },
@@ -174,7 +174,7 @@ export class PersonaUser extends AIUser {
       },
       'fireworks': {
         provider: 'fireworks',
-        model: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+        model: 'accounts/fireworks/models/deepseek-v3p1',
         temperature: 0.7,
         maxTokens: 2000
       },

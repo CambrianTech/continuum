@@ -1,13 +1,16 @@
 /**
  * FireworksAdapter - Fireworks AI API (OpenAI-compatible)
  *
- * Supports:
- * - Llama 3, Mixtral, DeepSeek
- * - Custom fine-tuning
- * - Fast inference with LoRA
- * - Function calling
+ * Fireworks AI provides fast inference with diverse open models:
+ * - DeepSeek V3.1 (reasoning model)
+ * - Llama, Mixtral, Qwen models
+ * - Function calling & structured outputs
+ * - Vision models (Qwen2.5-VL)
+ * - Custom fine-tuning with LoRA
  *
- * Just 20 lines thanks to BaseOpenAICompatibleAdapter!
+ * API: OpenAI-compatible format
+ * Base URL: https://api.fireworks.ai/inference/v1
+ * Docs: https://docs.fireworks.ai/
  */
 
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
@@ -19,8 +22,8 @@ export class FireworksAdapter extends BaseOpenAICompatibleAdapter {
       providerId: 'fireworks',
       providerName: 'Fireworks AI',
       apiKey: apiKey || getSecret('FIREWORKS_API_KEY', 'FireworksAdapter') || '',
-      baseUrl: 'https://api.fireworks.ai',
-      defaultModel: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+      baseUrl: 'https://api.fireworks.ai/inference',
+      defaultModel: 'accounts/fireworks/models/deepseek-v3p1',
       timeout: 60000,
       supportedCapabilities: ['text-generation', 'chat', 'embeddings'],
       // Fireworks provides models via API, no need to hardcode
