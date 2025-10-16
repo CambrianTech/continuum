@@ -606,6 +606,11 @@ async function getMissingUsers(): Promise<string[]> {
     'persona-codereview-001',
     'persona-deepseek',
     'persona-groq',
+    'persona-anthropic',
+    'persona-openai',
+    'persona-xai',
+    'persona-together',
+    'persona-fireworks',
     'persona-ollama'
   ];
 
@@ -722,6 +727,21 @@ async function seedViaJTAG() {
     }
     if (missingUsers.includes('persona-groq')) {
       userMap['groqPersona'] = await createUserViaCommand('persona', 'Groq Lightning', 'persona-groq', 'groq');
+    }
+    if (missingUsers.includes('persona-anthropic')) {
+      userMap['anthropicPersona'] = await createUserViaCommand('persona', 'Claude Assistant', 'persona-anthropic', 'anthropic');
+    }
+    if (missingUsers.includes('persona-openai')) {
+      userMap['openaiPersona'] = await createUserViaCommand('persona', 'GPT Assistant', 'persona-openai', 'openai');
+    }
+    if (missingUsers.includes('persona-xai')) {
+      userMap['xaiPersona'] = await createUserViaCommand('persona', 'Grok', 'persona-xai', 'xai');
+    }
+    if (missingUsers.includes('persona-together')) {
+      userMap['togetherPersona'] = await createUserViaCommand('persona', 'Together Assistant', 'persona-together', 'together');
+    }
+    if (missingUsers.includes('persona-fireworks')) {
+      userMap['fireworksPersona'] = await createUserViaCommand('persona', 'Fireworks AI', 'persona-fireworks', 'fireworks');
     }
     if (missingUsers.includes('persona-ollama')) {
       userMap['ollamaPersona'] = await createUserViaCommand('persona', 'Local Assistant', 'persona-ollama', 'ollama');
