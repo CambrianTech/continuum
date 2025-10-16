@@ -111,6 +111,18 @@ export class UserEntity extends BaseEntity {
   @JsonField({ nullable: true })
   personaConfig?: PersonaResponseConfig;
 
+  // AI model configuration (for AI users: agents and personas)
+  // Stores provider (anthropic, openai, groq, etc.) and model settings
+  @JsonField({ nullable: true })
+  modelConfig?: {
+    model?: string;
+    provider?: string;
+    temperature?: number;
+    maxTokens?: number;
+    systemPrompt?: string;
+    capabilities?: readonly string[];
+  };
+
   // Genome reference for PersonaUser (Phase 1.2)
   // Links persona to their LoRA-adapted genome for specialized behavior
   @ForeignKeyField({ references: 'genomes.id', nullable: true })

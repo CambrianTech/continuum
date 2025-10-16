@@ -24,7 +24,7 @@ import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstant
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
-import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
+import type { UserCreateParams, ModelConfig } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
@@ -89,6 +89,9 @@ export class PersonaUser extends AIUser {
   // Worker thread for parallel message evaluation
   private worker: PersonaWorkerThread | null = null;
 
+  // AI model configuration (provider, model, temperature, etc.)
+  private modelConfig: ModelConfig;
+
   // Rate limiting state (in-memory for now, will move to SQLite later)
   private lastResponseTime: Map<UUID, Date> = new Map();
   private readonly minSecondsBetweenResponses = 10; // 10 seconds between responses per room
@@ -105,9 +108,21 @@ export class PersonaUser extends AIUser {
   ) {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
 
+    // Extract modelConfig from entity (stored via Object.assign during creation)
+    // Default to Ollama if not configured
+    this.modelConfig = (entity as any).modelConfig || {
+      provider: 'ollama',
+      model: 'llama3.2:3b',
+      temperature: 0.7,
+      maxTokens: 150
+    };
+
+    console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}`);
+
     // Initialize worker thread for this persona
+    // Worker uses fast small model for gating decisions (should-respond check)
     this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'ollama',
+      providerType: 'ollama',  // Always use Ollama for fast gating (1b model)
       providerConfig: {
         apiEndpoint: 'http://localhost:11434',
         model: 'llama3.2:1b' // Fast model for gating decisions
@@ -726,13 +741,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       console.log(`✅ ${this.displayName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
 
       // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
-      console.log(`🔧 ${this.displayName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (model: llama3.2:3b)...`);
+      console.log(`🔧 ${this.displayName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
       const request: TextGenerationRequest = {
         messages,
-        model: 'llama3.2:3b', // Larger model for better instruction following (was 1b)
-        temperature: 0.7,
-        maxTokens: 150, // Keep responses concise
-        preferredProvider: 'ollama'
+        model: this.modelConfig.model || 'llama3.2:3b',  // Use persona's configured model
+        temperature: this.modelConfig.temperature ?? 0.7,
+        maxTokens: this.modelConfig.maxTokens ?? 150,    // Keep responses concise
+        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider']
       };
 
       // Wrap generation call with timeout (45s - reasonable limit for local Ollama generation)
