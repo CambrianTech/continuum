@@ -131,6 +131,59 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Build default ModelConfig from provider string
+   * Used when seed script passes --provider instead of full --modelConfig
+   */
+  private static buildModelConfigFromProvider(provider: string): ModelConfig {
+    const defaultConfigs: Record<string, ModelConfig> = {
+      'ollama': {
+        provider: 'ollama',
+        model: 'llama3.2:3b',
+        temperature: 0.7,
+        maxTokens: 150
+      },
+      'groq': {
+        provider: 'groq',
+        model: 'llama-3.1-70b-versatile',
+        temperature: 0.8,
+        maxTokens: 2000
+      },
+      'deepseek': {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        temperature: 0.7,
+        maxTokens: 2000
+      },
+      'anthropic': {
+        provider: 'anthropic',
+        model: 'claude-3-5-sonnet-20241022',
+        temperature: 0.7,
+        maxTokens: 2000
+      },
+      'openai': {
+        provider: 'openai',
+        model: 'gpt-4',
+        temperature: 0.7,
+        maxTokens: 3000
+      },
+      'together': {
+        provider: 'together',
+        model: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
+        temperature: 0.7,
+        maxTokens: 2000
+      },
+      'fireworks': {
+        provider: 'fireworks',
+        model: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+        temperature: 0.7,
+        maxTokens: 2000
+      }
+    };
+
+    return defaultConfigs[provider] || defaultConfigs['ollama'];  // Default to Ollama if unknown
+  }
+
+  /**
    * Log AI decision to dedicated AI log (separate from general system logs)
    * Uses AIDecisionLogger to write to .continuum/jtag/sessions/system/{sessionId}/logs/ai-decisions.log
    */
@@ -1328,9 +1381,14 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     userEntity.lastActiveAt = new Date();
     userEntity.capabilities = params.capabilities ?? getDefaultCapabilitiesForType('persona');
     userEntity.sessionsActive = [];
+
     // Optional extended fields for personas
+    // Build modelConfig from either full modelConfig or simple provider param
     if (params.modelConfig) {
-      Object.assign(userEntity, { modelConfig: params.modelConfig });
+      userEntity.modelConfig = params.modelConfig;  // Explicit assignment triggers @JsonField decorator
+    } else if (params.provider) {
+      // Build default ModelConfig from provider string
+      userEntity.modelConfig = PersonaUser.buildModelConfigFromProvider(params.provider);
     }
     // createdAt, updatedAt, version, id handled by constructor
 
