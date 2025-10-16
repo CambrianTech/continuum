@@ -30,17 +30,28 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
       console.log(`🎯 BROWSER EXEC: Executing JavaScript in browser`);
 
       try {
-        // Simple execution with DOM access
+        // Simple execution with DOM access - wrap in IIFE and return
         const func = new Function(`
-          ${sourceCode}
+          return (function() {
+            ${sourceCode}
+          })();
         `);
 
         const result = func();
 
         console.log(`✅ BROWSER EXEC: Success - result:`, result);
 
-        // Browser exec always returns result directly - no cross-context delegation
-        // (unlike screenshot which needs to send data back to requester)
+        // If called from server, send result back via remoteExecute pattern
+        if (params.context.environment === 'server') {
+          return await this.remoteExecute({
+            ...params,
+            result,
+            executedAt: Date.now(),
+            executedIn: 'browser'
+          }) as ExecCommandResult;
+        }
+
+        // Direct browser call
         return createExecSuccessResult(result, 'browser', params, Date.now());
 
       } catch (error) {

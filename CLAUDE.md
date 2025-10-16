@@ -769,3 +769,26 @@ if (widgetEntities.length < totalMessagesInDatabase) {
 2. **Preserve everything** - No information loss, only improved clarity
 3. **Elegant compression** - More efficient understanding, not simpler
 4. **Coherent evolution** - Each update enhances future session understanding
+
+### 📖 Dogfood Documentation (2025-10-16)
+
+**Location**: `src/debug/jtag/design/dogfood/css-debugging-visual-collaboration/`
+
+**Purpose**: Document real sessions where we (Claude Code + AI team + Joel) collaborate, showing the messy reality of problem-solving, not polished demos.
+
+**Current Documentation**:
+1. **transparent-equality-css-debugging-2025-10-16.md** - Narrative story of AI-helping-AI debugging CSS overflow with local AI team consultation
+2. **technical-deep-dive-ai-css-debugging.md** - Technical analysis including AI mistakes, corrections, and coordination
+
+**Image Organization**:
+- Images stored in `images/` subdirectory
+- Named simply: `image-1.png`, `image-2.png`, etc. (in chronological order)
+- Referenced in markdown as: `![Description](images/image-N.png)`
+- Only include images that are relevant to the story - delete unused ones
+
+**Documentation Philosophy**:
+- Show the REAL workflow, not cleaned-up demos
+- Include mistakes made by AIs and how they were corrected
+- Document AI decision logs and performance metrics (`./jtag ai/logs`, `./jtag ai/report`)
+- Capture screenshots showing full IDE context (terminal + chat + logs)
+- This is historical evidence of Transparent Equality in action
