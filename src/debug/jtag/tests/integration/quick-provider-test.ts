@@ -97,6 +97,7 @@ async function main(): Promise<void> {
   const providers = [
     { name: 'DeepSeek', keyName: 'DEEPSEEK_API_KEY', path: '../../daemons/ai-provider-daemon/adapters/deepseek/shared/DeepSeekAdapter', model: 'deepseek-chat' },
     { name: 'Groq', keyName: 'GROQ_API_KEY', path: '../../daemons/ai-provider-daemon/adapters/groq/shared/GroqAdapter', model: 'llama-3.1-70b-versatile' },
+    { name: 'XAI', keyName: 'XAI_API_KEY', path: '../../daemons/ai-provider-daemon/adapters/xai/shared/XAIAdapter', model: 'grok-4' },
     { name: 'OpenAI', keyName: 'OPENAI_API_KEY', path: '../../daemons/ai-provider-daemon/adapters/openai/shared/OpenAIAdapter', model: 'gpt-4' },
     { name: 'Anthropic', keyName: 'ANTHROPIC_API_KEY', path: '../../daemons/ai-provider-daemon/adapters/anthropic/shared/AnthropicAdapter', model: 'claude-3-5-sonnet-20241022' },
     { name: 'Fireworks', keyName: 'FIREWORKS_API_KEY', path: '../../daemons/ai-provider-daemon/adapters/fireworks/shared/FireworksAdapter', model: 'accounts/fireworks/models/llama-v3p1-70b-instruct' },
