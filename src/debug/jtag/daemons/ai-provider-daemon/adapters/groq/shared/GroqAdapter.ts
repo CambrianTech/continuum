@@ -32,7 +32,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
       providerId: 'groq',
       providerName: 'Groq',
       apiKey: apiKey,
-      baseUrl: 'https://api.groq.com/openai/v1',
+      baseUrl: 'https://api.groq.com/openai',
       defaultModel: 'llama-3.1-70b-versatile',
       timeout: 60000,
       supportedCapabilities: ['text-generation', 'chat'],

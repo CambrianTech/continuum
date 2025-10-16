@@ -26,7 +26,7 @@ export class DeepSeekAdapter extends BaseOpenAICompatibleAdapter {
       providerId: 'deepseek',
       providerName: 'DeepSeek',
       apiKey: apiKey,
-      baseUrl: 'https://api.deepseek.com/v1',
+      baseUrl: 'https://api.deepseek.com',
       defaultModel: 'deepseek-chat',
       timeout: 120000,
       supportedCapabilities: ['text-generation', 'chat'],
