@@ -161,6 +161,7 @@ export class AIStatusIndicator {
 
   /**
    * Update or create status indicator for AI
+   * Only creates full banners for ERROR states - other states tracked for header emoji display
    */
   private updateStatus(personaId: UUID, state: AIStatusState): void {
     const existing = this.activeStatuses.get(personaId);
@@ -169,15 +170,28 @@ export class AIStatusIndicator {
       // Update existing status
       existing.currentPhase = state.currentPhase;
       existing.timestamp = state.timestamp;
+      existing.errorMessage = state.errorMessage;
 
-      if (existing.element) {
-        this.updateStatusElement(existing.element, state);
+      // Only update element if it's an error (or remove element if changing from error to non-error)
+      if (state.currentPhase === 'error') {
+        if (existing.element) {
+          this.updateStatusElement(existing.element, state);
+        } else if (this.container) {
+          // Create error banner if it doesn't exist
+          const element = this.createStatusElement(state);
+          existing.element = element;
+          this.container.appendChild(element);
+        }
+      } else if (existing.element) {
+        // Remove banner element for non-error states
+        existing.element.remove();
+        existing.element = undefined;
       }
     } else {
-      // Create new status
+      // Create new status (only create banner element for errors)
       this.activeStatuses.set(personaId, state);
 
-      if (this.container) {
+      if (state.currentPhase === 'error' && this.container) {
         const element = this.createStatusElement(state);
         state.element = element;
         this.container.appendChild(element);
@@ -293,5 +307,36 @@ export class AIStatusIndicator {
    */
   getActiveCount(): number {
     return this.activeStatuses.size;
+  }
+
+  /**
+   * Get status emoji for a specific persona (for header display)
+   * Returns null if no active status
+   */
+  getStatusEmoji(personaId: UUID): string | null {
+    const status = this.activeStatuses.get(personaId);
+    if (!status || !status.currentPhase) return null;
+
+    switch (status.currentPhase) {
+      case 'evaluating':
+        return '🤔';
+      case 'responding':
+        return '💭';
+      case 'generating':
+        return '✍️';
+      case 'checking':
+        return '🔍';
+      case 'error':
+        return '❌';
+      default:
+        return '⏭️'; // passed/silent
+    }
+  }
+
+  /**
+   * Get all current AI statuses (for debugging or bulk operations)
+   */
+  getAllStatuses(): Map<UUID, AIStatusState> {
+    return new Map(this.activeStatuses);
   }
 }

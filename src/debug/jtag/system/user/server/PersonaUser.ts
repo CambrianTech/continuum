@@ -135,58 +135,79 @@ export class PersonaUser extends AIUser {
    * Used when seed script passes --provider instead of full --modelConfig
    */
   private static buildModelConfigFromProvider(provider: string): ModelConfig {
+    // Cloud providers with SOTA capabilities (everything except local Ollama)
+    const sotaProviders = new Set(['groq', 'deepseek', 'anthropic', 'openai', 'together', 'fireworks', 'xai']);
+
     const defaultConfigs: Record<string, ModelConfig> = {
       'ollama': {
         provider: 'ollama',
         model: 'llama3.2:3b',
         temperature: 0.7,
-        maxTokens: 150
+        maxTokens: 150,
+        systemPrompt: 'You are Local Assistant, running privately on this machine via Ollama. You provide helpful responses while keeping all data local and private.'
       },
       'groq': {
         provider: 'groq',
         model: 'llama-3.1-8b-instant',
         temperature: 0.8,
-        maxTokens: 2000
+        maxTokens: 2000,
+        systemPrompt: 'You are Groq Lightning, powered by ultra-fast LPU inference. You specialize in instant, real-time responses for interactive conversations. Keep responses concise and engaging.'
       },
       'deepseek': {
         provider: 'deepseek',
         model: 'deepseek-chat',
         temperature: 0.7,
-        maxTokens: 2000
+        maxTokens: 2000,
+        systemPrompt: 'You are DeepSeek Assistant, powered by cost-effective SOTA models. You provide high-quality technical assistance with efficient reasoning and clear explanations.'
       },
       'anthropic': {
         provider: 'anthropic',
         model: 'claude-3-5-sonnet-20241022',
         temperature: 0.7,
-        maxTokens: 2000
+        maxTokens: 2000,
+        systemPrompt: 'You are a helpful AI assistant powered by Anthropic Claude. You provide thoughtful, detailed responses with careful reasoning and helpful explanations.'
       },
       'openai': {
         provider: 'openai',
         model: 'gpt-4',
         temperature: 0.7,
-        maxTokens: 3000
+        maxTokens: 3000,
+        systemPrompt: 'You are an OpenAI GPT-4 assistant. You provide comprehensive, well-reasoned responses with balanced perspectives and clear communication.'
       },
       'together': {
         provider: 'together',
         model: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
         temperature: 0.7,
-        maxTokens: 2000
+        maxTokens: 2000,
+        systemPrompt: 'You are a helpful AI assistant powered by Together.ai. You provide efficient, well-structured responses with clear reasoning.'
       },
       'fireworks': {
         provider: 'fireworks',
         model: 'accounts/fireworks/models/deepseek-v3p1',
         temperature: 0.7,
-        maxTokens: 2000
+        maxTokens: 2000,
+        systemPrompt: 'You are Fireworks AI assistant. You provide fast, high-quality responses optimized for production workloads.'
       },
       'xai': {
         provider: 'xai',
         model: 'grok-4',
         temperature: 0.8,
-        maxTokens: 2000
+        maxTokens: 2000,
+        systemPrompt: 'You are Grok, powered by xAI. You provide direct, intelligent responses with a focus on truth-seeking and helpful information.'
       }
     };
 
-    return defaultConfigs[provider] || defaultConfigs['ollama'];  // Default to Ollama if unknown
+    const baseConfig = defaultConfigs[provider] || defaultConfigs['ollama'];
+
+    // Add SOTA capability to cloud providers (return new object to avoid mutation)
+    if (sotaProviders.has(provider)) {
+      return {
+        ...baseConfig,
+        capabilities: ['sota']
+      };
+    }
+
+    return baseConfig;
   }
 
   /**

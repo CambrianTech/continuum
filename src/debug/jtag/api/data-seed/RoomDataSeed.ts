@@ -89,6 +89,36 @@ export class RoomDataSeed {
     academy.tags = ['education', 'learning'];
     rooms.push(academy);
 
+    // Pantheon room - SOTA models only
+    const pantheon = new RoomEntity();
+    pantheon.uniqueId = ROOM_UNIQUE_IDS.PANTHEON;
+    pantheon.name = 'pantheon';
+    pantheon.displayName = 'Pantheon';
+    pantheon.description = 'Elite discussion room for top-tier SOTA AI models';
+    pantheon.topic = 'Advanced reasoning and multi-model collaboration';
+    pantheon.type = 'public';
+    pantheon.status = 'active';
+    pantheon.ownerId = USER_IDS.HUMAN as UUID;
+    pantheon.lastMessageAt = now;
+    pantheon.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    pantheon.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    pantheon.members = [
+      { userId: USER_IDS.HUMAN as UUID, role: 'owner', joinedAt: now }
+    ];
+    pantheon.tags = ['sota', 'elite', 'reasoning'];
+    rooms.push(pantheon);
+
     return {
       rooms: rooms as readonly RoomEntity[],
       totalCount: rooms.length,
@@ -106,6 +136,7 @@ export class RoomDataSeed {
 
     const generalRoomId = roomIds.get(ROOM_UNIQUE_IDS.GENERAL);
     const academyRoomId = roomIds.get(ROOM_UNIQUE_IDS.ACADEMY);
+    const pantheonRoomId = roomIds.get(ROOM_UNIQUE_IDS.PANTHEON);
 
     if (generalRoomId) {
       // Welcome message for general room
@@ -141,6 +172,24 @@ export class RoomDataSeed {
       academyWelcome.timestamp = new Date(now.getTime() + 1000);
       academyWelcome.reactions = [];
       messages.push(academyWelcome);
+    }
+
+    if (pantheonRoomId) {
+      // Pantheon welcome
+      const pantheonWelcome = new ChatMessageEntity();
+      pantheonWelcome.roomId = pantheonRoomId;
+      pantheonWelcome.senderId = USER_IDS.HUMAN as UUID;
+      pantheonWelcome.senderName = 'Joel';
+      pantheonWelcome.senderType = 'human'; // Denormalized user type (human seed message)
+      pantheonWelcome.content = {
+        text: 'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
+        attachments: []
+      };
+      pantheonWelcome.status = 'sent';
+      pantheonWelcome.priority = 'normal';
+      pantheonWelcome.timestamp = new Date(now.getTime() + 2000);
+      pantheonWelcome.reactions = [];
+      messages.push(pantheonWelcome);
     }
 
     return messages;
