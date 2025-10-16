@@ -177,6 +177,12 @@ export class PersonaUser extends AIUser {
         model: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
         temperature: 0.7,
         maxTokens: 2000
+      },
+      'xai': {
+        provider: 'xai',
+        model: 'grok-4',
+        temperature: 0.8,
+        maxTokens: 2000
       }
     };
 

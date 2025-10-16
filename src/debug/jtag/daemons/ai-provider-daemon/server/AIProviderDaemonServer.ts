@@ -80,6 +80,17 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       console.log('✅ AIProviderDaemonServer: Groq adapter registered');
     }
 
+    // X.AI: Grok models with advanced reasoning
+    const xaiKey = await getSecret('XAI_API_KEY');
+    if (xaiKey) {
+      const { XAIAdapter } = await import('../adapters/xai/shared/XAIAdapter');
+      await this.registerAdapter(new XAIAdapter(xaiKey), {
+        priority: 83,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
+    }
+
     // OpenAI: Premium quality (GPT-4, expensive)
     const openaiKey = await getSecret('OPENAI_API_KEY');
     if (openaiKey) {
