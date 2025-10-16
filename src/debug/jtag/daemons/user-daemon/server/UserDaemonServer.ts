@@ -64,6 +64,7 @@ export class UserDaemonServer extends UserDaemon {
 
   /**
    * Handle user created event
+   * Note: Room membership handled by RoomMembershipDaemon (Discord-style auto-join)
    */
   private async handleUserCreated(userEntity: UserEntity): Promise<void> {
     try {

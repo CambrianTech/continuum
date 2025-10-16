@@ -11,8 +11,8 @@
  * Together AI uses OpenAI's API format, so we inherit everything.
  */
 
-import { BaseOpenAICompatibleAdapter } from './BaseOpenAICompatibleAdapter';
-import { getSecret } from '../../../../system/secrets/SecretManager';
+import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
+import { getSecret } from '../../../../../system/secrets/SecretManager';
 
 export class TogetherAIAdapter extends BaseOpenAICompatibleAdapter {
   constructor(apiKey?: string) {

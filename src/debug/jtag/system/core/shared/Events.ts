@@ -140,10 +140,12 @@ export class Events {
       // Route event through discovered router
       await router.postMessage(eventMessage);
 
-      // Also trigger wildcard/pattern subscriptions and DOM events if running in browser
-      if (isBrowserRuntime) {
-        this.checkWildcardSubscriptions(eventName, eventData);
+      // Trigger local wildcard/pattern/elegant subscriptions (server + browser)
+      // checkWildcardSubscriptions() handles both wildcard AND elegant subscriptions
+      this.checkWildcardSubscriptions(eventName, eventData);
 
+      // Also dispatch DOM events if running in browser
+      if (isBrowserRuntime) {
         // Dispatch DOM event for direct listeners
         const domEvent = new CustomEvent(eventName, {
           detail: eventData,
@@ -299,9 +301,25 @@ export class Events {
           console.log(`🔌 Events: Unsubscribed from ${patternOrEventName}`);
         };
       } else {
-        // Server environment - subscriptions handled via EventsDaemon
-        console.warn(`⚠️ Events.subscribe: Direct DOM subscriptions not available in server environment. Use EventsDaemon for server-side subscriptions.`);
-        return () => {}; // No-op unsubscribe
+        // Server environment - store exact-match subscriptions in map
+        const subscriptionId = `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+        if (!this.exactMatchSubscriptions) {
+          this.exactMatchSubscriptions = new Map();
+        }
+
+        this.exactMatchSubscriptions.set(subscriptionId, {
+          eventName: patternOrEventName,
+          listener,
+          filter
+        });
+
+        console.log(`✅ Events: Added exact-match server subscription for ${patternOrEventName} (${subscriptionId})`);
+
+        return () => {
+          this.exactMatchSubscriptions?.delete(subscriptionId);
+          console.log(`🔌 Events: Unsubscribed from ${patternOrEventName} (${subscriptionId})`);
+        };
       }
     } catch (error) {
       console.error(`❌ Events: Failed to subscribe to ${patternOrEventName}:`, error);
@@ -318,6 +336,13 @@ export class Events {
     filter?: SubscriptionFilter;
     listener: (data: any) => void;
     originalPattern: string;
+  }>;
+
+  // Storage for exact-match server subscriptions
+  private static exactMatchSubscriptions?: Map<string, {
+    eventName: string;
+    listener: (data: any) => void;
+    filter?: SubscriptionFilter;
   }>;
 
   /**
@@ -362,6 +387,26 @@ export class Events {
           }
         } catch (error) {
           console.error(`❌ Events: Elegant subscription error for ${subscriptionId}:`, error);
+        }
+      });
+    }
+
+    // Check exact-match server subscriptions
+    if (this.exactMatchSubscriptions && this.exactMatchSubscriptions.size > 0) {
+      this.exactMatchSubscriptions.forEach((subscription, subscriptionId) => {
+        if (subscription.eventName === eventName) {
+          try {
+            // Check if event data matches filters
+            if (ElegantSubscriptionParser.matchesFilter(eventData, subscription.filter)) {
+              console.log(`🎯 Events: Exact-match server subscription triggered for ${eventName} (${subscriptionId})`);
+              subscription.listener(eventData);
+              totalMatchCount++;
+            } else {
+              console.log(`🔍 Events: Exact-match matched but filter rejected for ${eventName}`);
+            }
+          } catch (error) {
+            console.error(`❌ Events: Exact-match subscription error for ${subscriptionId}:`, error);
+          }
         }
       });
     }

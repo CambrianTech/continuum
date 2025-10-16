@@ -10,9 +10,9 @@
  * Just 30 lines of code thanks to BaseOpenAICompatibleAdapter!
  */
 
-import { BaseOpenAICompatibleAdapter } from './BaseOpenAICompatibleAdapter';
-import type { ModelInfo } from '../AIProviderTypesV2';
-import { getSecret } from '../../../../system/secrets/SecretManager';
+import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
+import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
+import { getSecret } from '../../../../../system/secrets/SecretManager';
 
 export class OpenAIAdapter extends BaseOpenAICompatibleAdapter {
   constructor(apiKey?: string) {

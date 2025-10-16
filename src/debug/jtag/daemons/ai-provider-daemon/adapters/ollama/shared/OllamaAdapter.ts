@@ -23,14 +23,14 @@ import type {
   OllamaGenerateRequest,
   OllamaGenerateResponse,
   OllamaListResponse,
-} from './AIProviderTypes';
+} from '../../../shared/AIProviderTypes';
 import {
   chatMessagesToPrompt,
   estimateTokenCount,
   createRequestId,
   AIProviderError,
-} from './AIProviderTypes';
-import { BaseAIProviderAdapter } from './BaseAIProviderAdapter';
+} from '../../../shared/AIProviderTypes';
+import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { spawn } from 'child_process';
 
 /**
@@ -136,6 +136,7 @@ class OllamaRequestQueue {
 export class OllamaAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'ollama';
   readonly providerName = 'Ollama';
+  readonly supportedCapabilities = ['text-generation' as const, 'chat' as const];
 
   private config: ProviderConfiguration;
   private healthCache: { status: HealthStatus; timestamp: number } | null = null;
@@ -440,10 +441,18 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     }
   }
 
-  async getAvailableModels(): Promise<string[]> {
+  async getAvailableModels(): Promise<import('../../../shared/AIProviderTypesV2').ModelInfo[]> {
     try {
       const response = await this.makeRequest<OllamaListResponse>('/api/tags');
-      return response.models.map(m => m.name);
+      return response.models.map(m => ({
+        id: m.name,
+        name: m.name,
+        provider: 'ollama',
+        capabilities: ['text-generation' as const, 'chat' as const],
+        contextWindow: 4096, // Default, Ollama doesn't expose this
+        supportsStreaming: true,
+        supportsFunctions: false
+      }));
     } catch (error) {
       console.error(`❌ ${this.providerName}: Failed to list models`);
       console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);

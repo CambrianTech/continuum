@@ -18,9 +18,9 @@ import type {
   TextGenerationRequest,
   TextGenerationResponse,
   HealthStatus,
-} from '../AIProviderTypesV2';
-import { AIProviderError } from '../AIProviderTypesV2';
-import { getSecret } from '../../../../system/secrets/SecretManager';
+} from '../../../shared/AIProviderTypesV2';
+import { AIProviderError } from '../../../shared/AIProviderTypesV2';
+import { getSecret } from '../../../../../system/secrets/SecretManager';
 
 export class AnthropicAdapter implements AIProviderAdapter {
   readonly providerId = 'anthropic';

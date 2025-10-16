@@ -11,8 +11,8 @@
  */
 
 import { parentPort, workerData } from 'worker_threads';
-import { OllamaAdapter } from '../../daemons/ai-provider-daemon/shared/OllamaAdapter.js';
-import type { BaseAIProviderAdapter } from '../../daemons/ai-provider-daemon/shared/BaseAIProviderAdapter.js';
+import { OllamaAdapter } from '../../daemons/ai-provider-daemon/adapters/ollama/shared/OllamaAdapter';
+import type { BaseAIProviderAdapter } from '../../daemons/ai-provider-daemon/shared/BaseAIProviderAdapter';
 
 if (!parentPort) {
   throw new Error('This file must be run as a Worker Thread');
@@ -32,11 +32,12 @@ async function initializeProvider(): Promise<void> {
   if (providerType === 'ollama') {
     console.log(`🧵 PersonaWorker[${personaId}]: Initializing OllamaAdapter...`);
 
-    provider = new OllamaAdapter({
+    const adapter = new OllamaAdapter({
       apiEndpoint: (providerConfig.apiEndpoint as string) || 'http://localhost:11434',
       defaultModel: (providerConfig.model as string) || 'llama3.2:1b'
     });
-    await provider.initialize();
+    await adapter.initialize();
+    provider = adapter;
     console.log(`✅ PersonaWorker[${personaId}]: OllamaAdapter initialized`);
   }
 }

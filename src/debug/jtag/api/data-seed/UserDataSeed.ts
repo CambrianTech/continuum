@@ -208,6 +208,105 @@ export class UserDataSeed {
     };
     const autoRoute = new AgentUser(autoRouteAgentData);
 
+    // DeepSeek Persona - Cost-effective SOTA model ($0.27/M tokens)
+    const deepseekPersonaData: PersonaUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'DeepSeek Assistant',
+      citizenType: 'ai',
+      aiType: 'persona',
+      capabilities: ['general-assistance', 'reasoning', 'code-generation'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'deepseek-chat',
+        provider: 'deepseek',
+        maxTokens: 4000,
+        temperature: 0.7,
+        systemPrompt: 'You are DeepSeek Assistant, a helpful AI powered by DeepSeek\'s cost-effective SOTA models. You provide high-quality assistance at industry-leading efficiency.',
+        capabilities: ['general-assistance', 'reasoning', 'code-generation']
+      },
+      personaStyle: 'efficient-expert',
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: 'professional', formality: 'balanced' },
+        domainKnowledge: ['general-knowledge', 'coding', 'reasoning', 'analysis']
+      },
+      adaptivePersonality: true,
+      emotionalIntelligence: 80,
+      conversationalDepth: 'deep'
+    };
+    const deepseekPersona = new PersonaUser(deepseekPersonaData);
+
+    // Groq Persona - Ultra-fast LPU inference (<100ms latency)
+    const groqPersonaData: PersonaUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'Groq Lightning',
+      citizenType: 'ai',
+      aiType: 'persona',
+      capabilities: ['real-time-assistance', 'quick-responses', 'interactive-chat'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'llama-3.1-70b-versatile',
+        provider: 'groq',
+        maxTokens: 2000,
+        temperature: 0.8,
+        systemPrompt: 'You are Groq Lightning, powered by the world\'s fastest LPU inference. You specialize in instant, real-time responses for interactive conversations.',
+        capabilities: ['real-time-assistance', 'quick-responses', 'interactive-chat']
+      },
+      personaStyle: 'fast-responsive',
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: 'energetic', formality: 'casual' },
+        domainKnowledge: ['real-time-chat', 'quick-help', 'interactive-assistance']
+      },
+      adaptivePersonality: true,
+      emotionalIntelligence: 75,
+      conversationalDepth: 'moderate'
+    };
+    const groqPersona = new PersonaUser(groqPersonaData);
+
+    // Local Ollama Persona - Privacy-first local inference
+    const ollamaPersonaData: PersonaUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'Local Assistant',
+      citizenType: 'ai',
+      aiType: 'persona',
+      capabilities: ['private-assistance', 'offline-help', 'local-inference'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: 'llama3.2:3b',
+        provider: 'ollama',
+        maxTokens: 2000,
+        temperature: 0.7,
+        systemPrompt: 'You are Local Assistant, running privately on this machine via Ollama. You provide help while keeping all data local and private.',
+        capabilities: ['private-assistance', 'offline-help', 'local-inference']
+      },
+      personaStyle: 'privacy-conscious',
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: 'trustworthy', formality: 'friendly' },
+        domainKnowledge: ['general-help', 'privacy-focus', 'local-processing']
+      },
+      adaptivePersonality: true,
+      emotionalIntelligence: 70,
+      conversationalDepth: 'moderate'
+    };
+    const ollamaPersona = new PersonaUser(ollamaPersonaData);
+
     // System Users - For automated messages and announcements
     const welcomeBot = SystemUser.createWelcomeBot({
       displayName: 'Welcome Bot',
@@ -226,6 +325,9 @@ export class UserDataSeed {
       codeAI,
       plannerAI,
       autoRoute,
+      deepseekPersona,
+      groqPersona,
+      ollamaPersona,
       welcomeBot,
       helpBot
     ] as const;
