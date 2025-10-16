@@ -100,6 +100,26 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
         logs.push(`🌐 DOM: ${domInfo.elementCount} elements, ${domInfo.cssClasses.length} CSS classes`);
       }
 
+      // Get dimensions and computed styles
+      let dimensions;
+      if (params.includeDimensions) {
+        const element = widgetRef.element;
+        const rect = element.getBoundingClientRect();
+        const computed = window.getComputedStyle(element);
+        dimensions = {
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          scrollHeight: element.scrollHeight,
+          clientHeight: element.clientHeight,
+          hasScrollbar: element.scrollHeight > element.clientHeight,
+          computedHeight: computed.height,
+          computedDisplay: computed.display,
+          computedFlex: computed.flex,
+          computedOverflow: computed.overflow
+        };
+        logs.push(`📐 Dimensions: ${dimensions.width}x${dimensions.height}, scrollable: ${dimensions.hasScrollbar}`);
+      }
+
       // Extract row data if requested
       let rowData;
       if (params.extractRowData) {
@@ -185,6 +205,7 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
         messages,
         eventSystem,
         domInfo,
+        dimensions,
         rowData,
         dataTest,
         connectivity,
