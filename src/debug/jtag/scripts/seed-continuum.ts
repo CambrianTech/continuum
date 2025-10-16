@@ -697,7 +697,20 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom];
+      const pantheonRoom = createRoom(
+        'pantheon-room-id',  // ID for pantheon
+        'pantheon',
+        'Pantheon',
+        'Elite discussion room for top-tier SOTA AI models',
+        "Advanced reasoning and multi-model collaboration",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["sota", "elite", "reasoning"],
+        humanUser.id,
+        'pantheon'
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
@@ -843,6 +856,14 @@ async function seedViaJTAG() {
         'System',
         MESSAGE_CONTENT.WELCOME_ACADEMY,
         'system'  // senderType
+      ),
+      createMessage(
+        'pantheon-welcome-msg-id',
+        'pantheon-room-id',
+        humanUser.id,
+        'Joel',
+        'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
+        'human'  // senderType
       )
     ];
 

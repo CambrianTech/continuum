@@ -171,7 +171,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   // Required by EntityScrollerWidget
   protected getScrollerPreset(): ScrollerConfig {
-    return SCROLLER_PRESETS.CHAT; // Auto-scroll to bottom for new messages
+    // Disable auto-scroll for incoming messages - only scroll when USER sends message
+    // See sendMessage() method which explicitly calls scrollToEnd() for user-sent messages
+    return {
+      ...SCROLLER_PRESETS.CHAT,
+      autoScroll: {
+        enabled: false, // Don't auto-scroll for incoming AI responses
+        threshold: 100,
+        behavior: 'smooth' as const
+      }
+    };
   }
 
   // Required by EntityScrollerWidget
@@ -269,30 +278,35 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onEvaluating(data);
+        this.updateHeader(); // Update emoji indicators in header
       }
     });
 
     Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onDecidedRespond(data);
+        this.updateHeader(); // Update emoji indicators in header
       }
     });
 
     Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onDecidedSilent(data);
+        this.updateHeader(); // Update emoji indicators in header
       }
     });
 
     Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onGenerating(data);
+        this.updateHeader(); // Update emoji indicators in header
       }
     });
 
     Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onCheckingRedundancy(data);
+        this.updateHeader(); // Update emoji indicators in header
       }
     });
 
@@ -301,6 +315,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       if (data.roomId === this.currentRoomId) {
         console.log(`✅ ChatWidget: Room matches, calling aiStatusIndicator.onPosted`);
         this.aiStatusIndicator.onPosted(data);
+        this.updateHeader(); // Update emoji indicators in header
       } else {
         console.log(`⚠️ ChatWidget: Room doesn't match, ignoring POSTED event`);
       }
@@ -309,6 +324,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onError(data);
+        this.updateHeader(); // Update emoji indicators in header
       }
     });
 
@@ -477,6 +493,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Render the list of room members
+   * Shows role icon + AI status emoji (if active) + name
    */
   private renderMemberList(): string {
     if (!this.currentRoom || this.roomMembers.size === 0) {
@@ -489,10 +506,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         const role = this.getMemberRole(user.id);
         const roleIcon = role === 'owner' ? '👑' : role === 'admin' ? '⭐' : '';
 
+        // Get AI status emoji (thinking, generating, etc.) for subtle indication
+        const statusEmoji = this.aiStatusIndicator.getStatusEmoji(user.id) || '';
+
         return `
           <div class="member-chip" title="${displayName} (${role})">
             ${roleIcon}
             <span class="member-name">${displayName}</span>
+            ${statusEmoji ? `<span class="member-status">${statusEmoji}</span>` : ''}
           </div>
         `;
       })

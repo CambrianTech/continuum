@@ -41,6 +41,13 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     {
       rooms: [ROOM_UNIQUE_IDS.GENERAL]
     },
+    // SOTA PersonaUsers join Pantheon (elite multi-provider collaboration)
+    // These are cloud-provider PersonaUsers with top-tier models
+    {
+      userType: 'persona',
+      capabilities: ['sota'],
+      rooms: [ROOM_UNIQUE_IDS.PANTHEON]
+    },
     // Future examples (commented out for now):
     // {
     //   userType: 'persona',
@@ -158,10 +165,16 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         continue;
       }
 
-      // Future: Check capabilities match
-      // if (rule.capabilities && !rule.capabilities.some(cap => user.capabilities[cap])) {
-      //   continue;
-      // }
+      // Check modelConfig capabilities match (SOTA, etc.)
+      if (rule.capabilities && rule.capabilities.length > 0) {
+        const userCapabilities = user.modelConfig?.capabilities || [];
+        const hasRequiredCapability = rule.capabilities.some(cap =>
+          userCapabilities.includes(cap)
+        );
+        if (!hasRequiredCapability) {
+          continue;
+        }
+      }
 
       // Rule matches - add rooms
       rule.rooms.forEach(roomId => rooms.add(roomId));
