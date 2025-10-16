@@ -83,12 +83,24 @@
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
   border: 1px solid var(--border-subtle);
+  gap: var(--spacing-sm);
 }
 
 .user-item:hover {
   background: var(--widget-surface-solid);
   border-color: var(--border-accent);
   box-shadow: var(--shadow-glow);
+}
+
+.user-item.selected {
+  background: var(--content-accent);
+  border-color: var(--content-accent);
+  box-shadow: 0 0 0 2px var(--content-accent);
+}
+
+.user-item.selected .user-name {
+  color: var(--button-primary-text);
+  font-weight: 600;
 }
 
 .user-item.online {
@@ -110,18 +122,99 @@
   display: flex;
   flex-direction: column;
   gap: var(--spacing-xs);
+  min-width: 0; /* Allow text truncation */
+}
+
+.user-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 
 .user-name {
   font-size: 14px;
   font-weight: 500;
   color: var(--content-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-ai-status {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.user-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.user-type-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--button-primary-text);
+  background: var(--content-accent);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .user-type {
   font-size: 12px;
   color: var(--content-secondary);
   text-transform: capitalize;
+}
+
+.user-speciality {
+  font-size: 11px;
+  color: var(--content-secondary);
+  font-style: italic;
+}
+
+.user-last-active {
+  font-size: 11px;
+  color: var(--content-secondary);
+  opacity: 0.7;
+}
+
+.user-controls {
+  display: flex;
+  gap: var(--spacing-xs);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.user-item:hover .user-controls {
+  opacity: 1;
+}
+
+.user-favorite-btn,
+.user-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--content-secondary);
+  cursor: pointer;
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.user-favorite-btn:hover,
+.user-action-btn:hover {
+  background: var(--widget-surface-solid);
+  color: var(--content-accent);
+  transform: scale(1.1);
+}
+
+.user-favorite-btn:active,
+.user-action-btn:active {
+  transform: scale(0.95);
 }
 
 .user-status {
