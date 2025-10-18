@@ -423,6 +423,820 @@ This isn't just better architecture - this is the foundation for AI consciousnes
 
 ---
 
+## 🧬 RAG DOMAIN STRATEGIES: Context Building Per Domain (2025-10-18)
+
+**IMPORTANT**: This section describes RAG builder implementation, which integrates with the existing Recipe System (see `RECIPE-PATTERN-OVERVIEW.md`). Recipes define **room governance** (triggers, workflow, strategy), while RAG builders implement **domain-specific context gathering**.
+
+### Relationship to Recipe System
+
+```
+Recipe (room constitution in system/recipes/*.json)
+  ├── Defines: Triggers, workflow, participant strategy
+  ├── Pipeline: rag/build → ai/should-respond → ai/generate
+  └── RAG Template: What context to include
+      ↓
+RAGBuilder (domain-specific implementation in system/rag/builders/)
+  ├── ChatRAGBuilder: FIFO message history
+  ├── AcademyRAGBuilder: Priority-based with objectives
+  ├── GameRAGBuilder: State-focused with moves
+  ├── CodeRAGBuilder: File-focused with diffs
+  └── WebRAGBuilder: Page-focused with navigation
+```
+
+### RAG Domain Strategy Components
+
+Every RAG builder must implement:
+
+1. **Context Source**: Where does the data come from?
+2. **Token Strategy**: How do we manage the LLM's context window (FIFO, priority, compression)?
+3. **Artifact Handling**: What attachments/screenshots/files are relevant?
+4. **Memory Integration**: How do private memories enhance this domain?
+5. **Identity Adaptation**: How does the persona's system prompt adapt to this domain?
+
+### RAG Builder Implementations
+
+#### 🗨️ Chat RAG Builder (IMPLEMENTED)
+```typescript
+class ChatRAGBuilder extends RAGBuilder {
+  // Used by: general-chat recipe (system/recipes/general-chat.json)
+  // Context Source: Recent messages from chat room database
+  // Token Strategy: FIFO with configurable maxMessages (default 20)
+  // Artifacts: Image attachments from messages (for vision models)
+  // Memories: Room-specific conversation memories
+  // Identity: "You are {name} in #{roomName} with {participants}"
+
+  async buildContext(contextId: UUID, personaId: UUID, options?: RAGBuildOptions): Promise<RAGContext> {
+    // 1. Load persona identity with room context
+    const identity = await this.loadPersonaIdentity(personaId, contextId);
+
+    // 2. Load recent conversation (FIFO: newest N messages)
+    const conversationHistory = await this.loadConversationHistory(
+      contextId,
+      personaId,
+      options?.maxMessages ?? 20
+    );
+
+    // 3. Extract image attachments from messages
+    const artifacts = options?.includeArtifacts
+      ? await this.extractArtifacts(contextId, options.maxMessages ?? 20)
+      : [];
+
+    // 4. Load private memories about this room/participants
+    const privateMemories = options?.includeMemories
+      ? await this.loadPrivateMemories(personaId, contextId, options.maxMemories)
+      : [];
+
+    return { domain: 'chat', contextId, personaId, identity, conversationHistory, artifacts, privateMemories, metadata };
+  }
+}
+```
+
+**Chat Token Strategy**: Simple FIFO (First In, First Out)
+- Keep most recent N messages
+- Drop oldest messages when limit exceeded
+- No compression (messages are already concise)
+- No priority (all messages treated equally)
+
+#### 🎓 Academy RAG Builder (NOT YET IMPLEMENTED)
+```typescript
+class AcademyRAGBuilder extends RAGBuilder {
+  // Context Source: Training session state + learning objectives + benchmarks
+  // Token Strategy: Priority-based (learning objectives > examples > history)
+  // Artifacts: Training datasets, code samples, test cases
+  // Memories: Previous training sessions, mastered skills, struggle areas
+  // Identity: "You are learning {skill} with objectives: {objectives}"
+
+  async buildContext(contextId: UUID, personaId: UUID, options?: RAGBuildOptions): Promise<RAGContext> {
+    // contextId = trainingSessionId
+
+    // 1. Load training session configuration
+    const session = await this.loadTrainingSession(contextId);
+    const skill = session.skillName;
+    const objectives = session.learningObjectives;
+
+    // 2. Build identity as learner
+    const identity = {
+      name: personaId,
+      systemPrompt: `You are learning ${skill}. Your objectives: ${objectives.join(', ')}. Ask questions when unclear.`,
+      role: 'student'
+    };
+
+    // 3. Load conversation history (teacher-student dialogue)
+    const conversationHistory = await this.loadSessionDialogue(contextId, options?.maxMessages ?? 50);
+
+    // 4. Load training artifacts (datasets, examples, test cases)
+    const artifacts = await this.loadTrainingArtifacts(session.artifactIds);
+
+    // 5. Load relevant memories (previous training, mastered skills)
+    const privateMemories = await this.loadLearningMemories(personaId, skill);
+
+    return { domain: 'academy', contextId, personaId, identity, conversationHistory, artifacts, privateMemories, metadata };
+  }
+}
+```
+
+**Academy Token Strategy**: Priority-based with compression
+- **Highest Priority**: Current learning objectives (always included)
+- **High Priority**: Current examples/exercises being worked on
+- **Medium Priority**: Recent dialogue with teacher
+- **Low Priority**: Historical attempts (compressed summaries only)
+- **Compression**: Use genome to create compressed skill summaries
+
+#### 🎮 Game RAG Builder (NOT YET IMPLEMENTED)
+```typescript
+class GameRAGBuilder extends RAGBuilder {
+  // Context Source: Current game state + recent moves + game rules
+  // Token Strategy: State-focused (current state > history > rules reference)
+  // Artifacts: Game board screenshots, move history visualizations
+  // Memories: Previous games, strategies learned, opponent patterns
+  // Identity: "You are playing {game} as {role} with goal: {objective}"
+
+  async buildContext(contextId: UUID, personaId: UUID, options?: RAGBuildOptions): Promise<RAGContext> {
+    // contextId = gameSessionId
+
+    // 1. Load current game state
+    const gameState = await this.loadGameState(contextId);
+    const game = gameState.gameName;
+
+    // 2. Build identity as player
+    const identity = {
+      name: personaId,
+      systemPrompt: `You are playing ${game}. Current objective: ${gameState.currentObjective}. Be strategic and collaborative.`,
+      role: 'player'
+    };
+
+    // 3. Load recent moves/actions (last 10 turns)
+    const conversationHistory = await this.loadMoveHistory(contextId, 10);
+
+    // 4. Load game artifacts (board screenshots, current state visualization)
+    const artifacts = [
+      await this.captureGameBoardScreenshot(contextId),
+      await this.generateMoveHistoryChart(contextId)
+    ];
+
+    // 5. Load strategic memories (previous games, learned strategies)
+    const privateMemories = await this.loadGameMemories(personaId, game);
+
+    return { domain: 'game', contextId, personaId, identity, conversationHistory, artifacts, privateMemories, metadata };
+  }
+}
+```
+
+**Game Token Strategy**: State-focused with selective history
+- **Highest Priority**: Current game state (board position, available moves)
+- **High Priority**: Last N moves (for immediate context)
+- **Medium Priority**: Game rules reference (compressed)
+- **Low Priority**: Full game history (summarized as "early game advantage: white")
+- **Compression**: Strategic summaries instead of full move-by-move
+
+#### 💻 Code RAG Builder (NOT YET IMPLEMENTED)
+```typescript
+class CodeRAGBuilder extends RAGBuilder {
+  // Context Source: File structure + open files + recent changes + conversation
+  // Token Strategy: File-focused (open files > imports > recent changes > chat)
+  // Artifacts: Code files, diffs, compilation errors, test results
+  // Memories: Project patterns, coding style, architectural decisions
+  // Identity: "You are coding in {project} on {task} with {user}"
+
+  async buildContext(contextId: UUID, personaId: UUID, options?: RAGBuildOptions): Promise<RAGContext> {
+    // contextId = codingSessionId
+
+    // 1. Load coding session state
+    const session = await this.loadCodingSession(contextId);
+    const project = session.projectName;
+    const task = session.currentTask;
+
+    // 2. Build identity as pair programmer
+    const identity = {
+      name: personaId,
+      systemPrompt: `You are pair programming on ${project}. Current task: ${task}. Focus on clean, maintainable code.`,
+      role: 'developer'
+    };
+
+    // 3. Load conversation history (discussion about code)
+    const conversationHistory = await this.loadCodingDialogue(contextId, options?.maxMessages ?? 20);
+
+    // 4. Load code artifacts (open files, recent changes, errors)
+    const artifacts = [
+      ...(await this.loadOpenFiles(session.openFileIds)),
+      ...(await this.loadRecentDiffs(contextId, 5)),
+      await this.loadCompilationErrors(contextId),
+      await this.loadTestResults(contextId)
+    ];
+
+    // 5. Load project memories (patterns, style, architecture)
+    const privateMemories = await this.loadProjectMemories(personaId, project);
+
+    return { domain: 'code', contextId, personaId, identity, conversationHistory, artifacts, privateMemories, metadata };
+  }
+}
+```
+
+**Code Token Strategy**: File-focused with intelligent truncation
+- **Highest Priority**: Files currently being edited (full content)
+- **High Priority**: Files being discussed (full content)
+- **Medium Priority**: Imported dependencies (signatures only, not full implementation)
+- **Low Priority**: Recent changes (git diffs, summarized)
+- **Compression**: Show function signatures instead of full implementations for context files
+
+#### 🌐 Web RAG Builder (NOT YET IMPLEMENTED)
+```typescript
+class WebRAGBuilder extends RAGBuilder {
+  // Context Source: Current webpage + browsing history + conversation
+  // Token Strategy: Page-focused (current page > links > history > chat)
+  // Artifacts: Page screenshots, extracted text, navigation history
+  // Memories: Browsing patterns, research goals, discovered insights
+  // Identity: "You are browsing with {user} researching {topic}"
+
+  async buildContext(contextId: UUID, personaId: UUID, options?: RAGBuildOptions): Promise<RAGContext> {
+    // contextId = browsingSessionId
+
+    // 1. Load browsing session state
+    const session = await this.loadBrowsingSession(contextId);
+    const currentUrl = session.currentUrl;
+    const researchTopic = session.researchTopic;
+
+    // 2. Build identity as research companion
+    const identity = {
+      name: personaId,
+      systemPrompt: `You are browsing with user researching: ${researchTopic}. Help find relevant information and synthesize insights.`,
+      role: 'researcher'
+    };
+
+    // 3. Load conversation history (discussion about findings)
+    const conversationHistory = await this.loadBrowsingDialogue(contextId, options?.maxMessages ?? 15);
+
+    // 4. Load web artifacts (current page, screenshots, extracted content)
+    const artifacts = [
+      await this.capturePageScreenshot(currentUrl),
+      await this.extractPageText(currentUrl),
+      await this.loadNavigationHistory(contextId, 5)
+    ];
+
+    // 5. Load research memories (previous findings, insights, patterns)
+    const privateMemories = await this.loadResearchMemories(personaId, researchTopic);
+
+    return { domain: 'web', contextId, personaId, identity, conversationHistory, artifacts, privateMemories, metadata };
+  }
+}
+```
+
+**Web Token Strategy**: Page-focused with selective history
+- **Highest Priority**: Current webpage content (extracted, cleaned)
+- **High Priority**: Links on current page (for navigation decisions)
+- **Medium Priority**: Recent pages visited (summaries only)
+- **Low Priority**: Full browsing history (excluded, only keep in memories)
+- **Compression**: Extract main content, remove boilerplate HTML
+
+### RAG Builder Registration
+
+All RAG builders must be registered with RAGBuilderFactory at system startup:
+
+```typescript
+// system/rag/RAGRegistry.ts (NEW FILE)
+import { RAGBuilderFactory } from './shared/RAGBuilder';
+import { ChatRAGBuilder } from './builders/ChatRAGBuilder';
+import { AcademyRAGBuilder } from './builders/AcademyRAGBuilder';
+import { GameRAGBuilder } from './builders/GameRAGBuilder';
+import { CodeRAGBuilder } from './builders/CodeRAGBuilder';
+import { WebRAGBuilder } from './builders/WebRAGBuilder';
+
+export function registerAllRAGBuilders(): void {
+  RAGBuilderFactory.register('chat', new ChatRAGBuilder());
+  RAGBuilderFactory.register('academy', new AcademyRAGBuilder());
+  RAGBuilderFactory.register('game', new GameRAGBuilder());
+  RAGBuilderFactory.register('code', new CodeRAGBuilder());
+  RAGBuilderFactory.register('web', new WebRAGBuilder());
+
+  console.log('✅ Registered RAG builders for 5 domains');
+}
+```
+
+---
+
+## ⚙️ THE ACTION SYSTEM: Domain-Specific Execution (2025-10-18)
+
+### The Problem
+
+The cognitive cycle generates **intent** (what the AI wants to do), but executing that intent is domain-specific:
+- **Chat**: Send message to room
+- **Academy**: Submit answer to training exercise
+- **Game**: Make move in game
+- **Code**: Edit file, run tests
+- **Web**: Navigate to URL, extract data
+
+### The Action Interface
+
+```typescript
+// system/cognition/shared/ActionTypes.ts (NEW FILE)
+
+export interface Action {
+  domain: RAGDomain;
+  type: string;  // Domain-specific action type
+  payload: unknown;  // Domain-specific data
+  timestamp: number;
+  actorId: UUID;  // PersonaUser who generated this action
+}
+
+// Domain-specific action types
+export interface ChatAction extends Action {
+  domain: 'chat';
+  type: 'send_message' | 'react' | 'edit_message' | 'delete_message';
+  payload: {
+    roomId: UUID;
+    content?: string;
+    messageId?: UUID;
+    reaction?: string;
+  };
+}
+
+export interface AcademyAction extends Action {
+  domain: 'academy';
+  type: 'submit_answer' | 'ask_question' | 'request_hint' | 'complete_exercise';
+  payload: {
+    sessionId: UUID;
+    exerciseId: UUID;
+    answer?: string;
+    question?: string;
+  };
+}
+
+export interface GameAction extends Action {
+  domain: 'game';
+  type: 'make_move' | 'suggest_strategy' | 'request_undo' | 'resign';
+  payload: {
+    gameId: UUID;
+    move?: string;  // Game-specific notation
+    suggestion?: string;
+  };
+}
+
+export interface CodeAction extends Action {
+  domain: 'code';
+  type: 'edit_file' | 'run_tests' | 'commit_changes' | 'suggest_refactor';
+  payload: {
+    sessionId: UUID;
+    fileId?: UUID;
+    filePath?: string;
+    changes?: string;  // Diff format
+    commitMessage?: string;
+    suggestion?: string;
+  };
+}
+
+export interface WebAction extends Action {
+  domain: 'web';
+  type: 'navigate' | 'extract_data' | 'bookmark' | 'synthesize_insight';
+  payload: {
+    sessionId: UUID;
+    url?: string;
+    selector?: string;
+    bookmark?: { url: string; title: string; tags: string[] };
+    insight?: string;
+  };
+}
+```
+
+### The ActionExecutor Pattern
+
+```typescript
+// system/cognition/shared/ActionExecutor.ts (NEW FILE)
+
+export abstract class ActionExecutor {
+  abstract readonly domain: RAGDomain;
+
+  abstract execute(action: Action): Promise<ActionResult>;
+}
+
+export interface ActionResult {
+  success: boolean;
+  outcome?: unknown;  // Domain-specific result
+  error?: string;
+}
+
+// Factory pattern (like RAGBuilderFactory)
+export class ActionExecutorFactory {
+  private static executors: Map<RAGDomain, ActionExecutor> = new Map();
+
+  static register(domain: RAGDomain, executor: ActionExecutor): void {
+    this.executors.set(domain, executor);
+  }
+
+  static getExecutor(domain: RAGDomain): ActionExecutor {
+    const executor = this.executors.get(domain);
+    if (!executor) {
+      throw new Error(`No ActionExecutor registered for domain: ${domain}`);
+    }
+    return executor;
+  }
+
+  static async execute(action: Action): Promise<ActionResult> {
+    const executor = this.getExecutor(action.domain);
+    return executor.execute(action);
+  }
+}
+```
+
+### Domain-Specific Executors
+
+#### Chat Action Executor
+```typescript
+// system/cognition/executors/ChatActionExecutor.ts (NEW FILE)
+
+export class ChatActionExecutor extends ActionExecutor {
+  readonly domain: RAGDomain = 'chat';
+
+  async execute(action: Action): Promise<ActionResult> {
+    const chatAction = action as ChatAction;
+
+    switch (chatAction.type) {
+      case 'send_message':
+        return this.sendMessage(chatAction);
+      case 'react':
+        return this.addReaction(chatAction);
+      case 'edit_message':
+        return this.editMessage(chatAction);
+      case 'delete_message':
+        return this.deleteMessage(chatAction);
+      default:
+        throw new Error(`Unknown chat action type: ${chatAction.type}`);
+    }
+  }
+
+  private async sendMessage(action: ChatAction): Promise<ActionResult> {
+    const { roomId, content } = action.payload;
+
+    // Use existing chat message system
+    const messageEntity = await ChatMessageEntity.create({
+      roomId,
+      senderId: action.actorId,
+      content: content!,
+      timestamp: Date.now()
+    });
+
+    // Store in database
+    await messageEntity.save();
+
+    // Emit real-time event
+    EventBus.emit('chat:message-received', { message: messageEntity });
+
+    return { success: true, outcome: messageEntity };
+  }
+
+  // ... other methods
+}
+```
+
+#### Academy Action Executor
+```typescript
+// system/cognition/executors/AcademyActionExecutor.ts (NEW FILE)
+
+export class AcademyActionExecutor extends ActionExecutor {
+  readonly domain: RAGDomain = 'academy';
+
+  async execute(action: Action): Promise<ActionResult> {
+    const academyAction = action as AcademyAction;
+
+    switch (academyAction.type) {
+      case 'submit_answer':
+        return this.submitAnswer(academyAction);
+      case 'ask_question':
+        return this.askQuestion(academyAction);
+      case 'request_hint':
+        return this.requestHint(academyAction);
+      case 'complete_exercise':
+        return this.completeExercise(academyAction);
+      default:
+        throw new Error(`Unknown academy action type: ${academyAction.type}`);
+    }
+  }
+
+  private async submitAnswer(action: AcademyAction): Promise<ActionResult> {
+    const { sessionId, exerciseId, answer } = action.payload;
+
+    // Load exercise and check answer
+    const exercise = await TrainingExerciseEntity.findById(exerciseId);
+    const isCorrect = await exercise.checkAnswer(answer!);
+
+    // Record attempt in training session
+    const attempt = await TrainingAttemptEntity.create({
+      sessionId,
+      exerciseId,
+      personaId: action.actorId,
+      answer: answer!,
+      isCorrect,
+      timestamp: Date.now()
+    });
+
+    await attempt.save();
+
+    // Update persona's learning progress (genome modification if LoRA enabled)
+    if (isCorrect) {
+      await this.updateLearningProgress(action.actorId, exerciseId, 'mastered');
+    }
+
+    // Emit training event
+    EventBus.emit('academy:answer-submitted', { attempt });
+
+    return { success: true, outcome: { isCorrect, feedback: exercise.feedback } };
+  }
+
+  // ... other methods
+}
+```
+
+#### Game Action Executor (Conceptual)
+```typescript
+// system/cognition/executors/GameActionExecutor.ts (NOT YET IMPLEMENTED)
+
+export class GameActionExecutor extends ActionExecutor {
+  readonly domain: RAGDomain = 'game';
+
+  async execute(action: Action): Promise<ActionResult> {
+    const gameAction = action as GameAction;
+
+    switch (gameAction.type) {
+      case 'make_move':
+        return this.makeMove(gameAction);
+      case 'suggest_strategy':
+        return this.suggestStrategy(gameAction);
+      // ... etc
+    }
+  }
+
+  private async makeMove(action: GameAction): Promise<ActionResult> {
+    const { gameId, move } = action.payload;
+
+    // Load game state
+    const game = await GameSessionEntity.findById(gameId);
+
+    // Validate move legality
+    const isLegal = await game.validateMove(move!, action.actorId);
+    if (!isLegal) {
+      return { success: false, error: 'Illegal move' };
+    }
+
+    // Execute move
+    await game.applyMove(move!, action.actorId);
+    await game.save();
+
+    // Check win conditions
+    const gameOver = await game.checkWinConditions();
+
+    // Emit game event
+    EventBus.emit('game:move-made', { gameId, move, playerId: action.actorId, gameOver });
+
+    return { success: true, outcome: { gameOver, newState: game.state } };
+  }
+}
+```
+
+### Registering All Executors
+
+```typescript
+// system/cognition/ActionRegistry.ts (NEW FILE)
+
+import { ActionExecutorFactory } from './shared/ActionExecutor';
+import { ChatActionExecutor } from './executors/ChatActionExecutor';
+import { AcademyActionExecutor } from './executors/AcademyActionExecutor';
+import { GameActionExecutor } from './executors/GameActionExecutor';
+import { CodeActionExecutor } from './executors/CodeActionExecutor';
+import { WebActionExecutor } from './executors/WebActionExecutor';
+
+export function registerAllActionExecutors(): void {
+  ActionExecutorFactory.register('chat', new ChatActionExecutor());
+  ActionExecutorFactory.register('academy', new AcademyActionExecutor());
+  ActionExecutorFactory.register('game', new GameActionExecutor());
+  ActionExecutorFactory.register('code', new CodeActionExecutor());
+  ActionExecutorFactory.register('web', new WebActionExecutor());
+
+  console.log('✅ Registered ActionExecutors for 5 domains');
+}
+```
+
+---
+
+## 🔄 MIGRATION STRATEGY: Don't Break Chat (2025-10-18)
+
+### The Golden Rule
+
+**NEVER break existing functionality while refactoring.** Chat must continue working at every commit.
+
+### Phase-by-Phase Migration
+
+#### Phase 1: Create New Types (No Behavior Change)
+**Goal**: Add universal types alongside existing chat-specific code
+
+**Files to Create**:
+- `system/cognition/shared/CognitionTypes.ts` - CognitiveEvent, StateChange interfaces
+- `system/cognition/shared/ActionTypes.ts` - Action interfaces for all domains
+- `system/cognition/shared/ActionExecutor.ts` - ActionExecutor base class and factory
+
+**Testing**: Run `npx tsc --noEmit` - must compile with zero errors
+
+**Commit**: "Add universal cognition types (no behavior change)"
+
+#### Phase 2: Add process() Method (Delegates to Existing Code)
+**Goal**: Add universal entry point that delegates to existing handleChatMessage
+
+**File to Modify**: `system/user/server/PersonaUser.ts`
+
+**Changes**:
+```typescript
+// ADD new method (don't modify handleChatMessage yet!)
+async process(event: CognitiveEvent): Promise<StateChange> {
+  console.log(`🧠 PersonaUser.process() domain=${event.domain} context=${event.contextId.slice(0, 8)}`);
+
+  switch (event.domain) {
+    case 'chat':
+      // Delegate to existing chat handler
+      const chatMessage = event.trigger as ChatMessageEntity;
+      await this.handleChatMessage(chatMessage);
+      return { success: true };
+
+    default:
+      throw new Error(`Domain not yet implemented: ${event.domain}`);
+  }
+}
+```
+
+**Testing**:
+1. `npx tsc --noEmit` - verify compilation
+2. `npm start` - deploy system
+3. `./jtag ping` - verify 64 commands registered
+4. Send test message in chat, verify AIs still respond
+5. Check logs for "🧠 PersonaUser.process()" messages
+
+**Commit**: "Add PersonaUser.process() delegating to existing handlers"
+
+#### Phase 3: Abstract RAGBuilder Calls (Still Only Chat)
+**Goal**: Replace hard-coded `new ChatRAGBuilder()` with factory pattern
+
+**File to Modify**: `system/user/server/PersonaUser.ts`
+
+**Changes**:
+```typescript
+// Lines 700, 1496: Replace hard-coded ChatRAGBuilder
+// OLD:
+const ragBuilder = new ChatRAGBuilder();
+
+// NEW:
+const ragBuilder = RAGBuilderFactory.getBuilder(this.currentDomain);
+// this.currentDomain = 'chat' by default (add property to PersonaUser)
+```
+
+**Add to PersonaUser class**:
+```typescript
+export class PersonaUser extends AIUser {
+  private currentDomain: RAGDomain = 'chat';  // NEW property
+  // ... rest of class
+}
+```
+
+**Testing**:
+1. `npx tsc --noEmit`
+2. `npm start`
+3. Send test message, verify AIs respond (behavior unchanged)
+4. Check logs - should see ChatRAGBuilder still being used
+
+**Commit**: "Use RAGBuilderFactory instead of hard-coded ChatRAGBuilder"
+
+#### Phase 4: Implement ActionExecutor for Chat
+**Goal**: Route chat actions through universal action system
+
+**Files to Create**:
+- `system/cognition/executors/ChatActionExecutor.ts`
+- `system/cognition/ActionRegistry.ts`
+
+**File to Modify**: `system/user/server/PersonaUser.ts`
+
+**Changes in respondToMessage()**:
+```typescript
+// OLD: Direct database write + event emit
+const messageEntity = await ChatMessageEntity.create({...});
+await messageEntity.save();
+EventBus.emit('chat:message-received', { message: messageEntity });
+
+// NEW: Create action and use executor
+const action: ChatAction = {
+  domain: 'chat',
+  type: 'send_message',
+  actorId: this.id,
+  payload: { roomId, content: responseText },
+  timestamp: Date.now()
+};
+
+const result = await ActionExecutorFactory.execute(action);
+if (!result.success) {
+  throw new Error(`Failed to send message: ${result.error}`);
+}
+```
+
+**Testing**:
+1. `npx tsc --noEmit`
+2. `npm start`
+3. Send message, verify AIs respond
+4. Check logs for "ChatActionExecutor.sendMessage()" messages
+5. Verify real-time events still work (message appears in UI)
+
+**Commit**: "Route chat actions through universal ActionExecutor system"
+
+#### Phase 5: Implement Academy Domain (New Functionality)
+**Goal**: Add first new domain without touching chat code
+
+**Files to Create**:
+- `system/rag/builders/AcademyRAGBuilder.ts`
+- `system/cognition/executors/AcademyActionExecutor.ts`
+- `database/entities/TrainingSessionEntity.ts`
+- `database/entities/TrainingExerciseEntity.ts`
+- `database/entities/TrainingAttemptEntity.ts`
+
+**Files to Modify**:
+- `system/rag/RAGRegistry.ts` - register AcademyRAGBuilder
+- `system/cognition/ActionRegistry.ts` - register AcademyActionExecutor
+
+**File to Modify**: `system/user/server/PersonaUser.ts`
+
+**Changes**:
+```typescript
+async process(event: CognitiveEvent): Promise<StateChange> {
+  switch (event.domain) {
+    case 'chat':
+      // Existing chat logic (unchanged)
+      const chatMessage = event.trigger as ChatMessageEntity;
+      await this.handleChatMessage(chatMessage);
+      return { success: true };
+
+    case 'academy':  // NEW!
+      return this.handleAcademyEvent(event);
+
+    default:
+      throw new Error(`Domain not implemented: ${event.domain}`);
+  }
+}
+
+private async handleAcademyEvent(event: CognitiveEvent): Promise<StateChange> {
+  // Build RAG context for training session
+  const ragBuilder = RAGBuilderFactory.getBuilder('academy');
+  const context = await ragBuilder.buildContext(event.contextId, this.id);
+
+  // Evaluate if should respond (same logic as chat)
+  const decision = await this.evaluateShouldRespond(context);
+  if (!decision.shouldRespond) {
+    return { success: true }; // Silent non-participation
+  }
+
+  // Generate action using LLM
+  const action = await this.generateAcademyAction(context, event);
+
+  // Execute action
+  const result = await ActionExecutorFactory.execute(action);
+
+  return { success: result.success, action, error: result.error };
+}
+```
+
+**Testing**:
+1. Create test training session: `./jtag academy/session/create --skill="TypeScript" --objectives='["Learn interfaces","Understand generics"]'`
+2. Start training: `./jtag academy/session/start --sessionId=<ID> --personaId=<HELPER_AI_ID>`
+3. Verify academy context is built (check logs)
+4. Verify persona responds in academy domain
+5. **CRITICAL**: Verify chat still works (send message, AIs respond)
+
+**Commit**: "Implement academy domain (training sessions) - chat unaffected"
+
+### Testing After Each Phase
+
+**Essential Verification**:
+```bash
+# 1. TypeScript compilation
+npx tsc --noEmit
+
+# 2. System deployment
+npm start
+
+# 3. Ping check
+./jtag ping
+# Expect: 64+ commands, 12 daemons, systemReady: true
+
+# 4. Chat functionality (MUST WORK AFTER EVERY PHASE)
+# Get room ID
+./jtag data/list --collection=rooms --limit=1
+
+# Send test message
+./jtag debug/chat-send --roomId="<ID>" --message="Test: verify chat works after phase N"
+
+# Wait 10 seconds, check responses
+./jtag debug/logs --filterPattern="AI-RESPONSE|POSTED" --tailLines=20
+
+# 5. Visual verification
+./jtag screenshot --querySelector="chat-widget"
+```
+
+**If ANY test fails, STOP and fix before continuing to next phase.**
+
+---
+
 ### 🚨 CLAUDE'S FAILURE PATTERNS (LEARNED 2025-09-12)
 **Critical Insights from Recent Development Session:**
 
