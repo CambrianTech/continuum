@@ -171,13 +171,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   // Required by EntityScrollerWidget
   protected getScrollerPreset(): ScrollerConfig {
-    // Disable auto-scroll for incoming messages - only scroll when USER sends message
-    // See sendMessage() method which explicitly calls scrollToEnd() for user-sent messages
+    // Enable auto-scroll when user is at bottom (within threshold)
+    // Preserves scroll position when user has scrolled up to read history
     return {
       ...SCROLLER_PRESETS.CHAT,
       autoScroll: {
-        enabled: false, // Don't auto-scroll for incoming AI responses
-        threshold: 100,
+        enabled: true, // Auto-scroll for new messages when at bottom
+        threshold: 100, // Only auto-scroll if within 100px of bottom
         behavior: 'smooth' as const
       }
     };
