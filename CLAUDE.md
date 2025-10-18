@@ -267,6 +267,162 @@ The local PersonaUsers (Helper AI, Teacher AI, CodeReview AI) are running Ollama
 
 **Remember**: You're not alone! The local AI team is there to help. Use them!
 
+---
+
+## 🧠 THE UNIVERSAL COGNITION EQUATION (2025-10-18)
+
+### E = mc²: One Interface, Infinite Domains
+
+**CRITICAL INSIGHT**: PersonaUser is currently 1633 lines of chat-specific code, but the cognitive process is UNIVERSAL.
+
+#### The Current Problem
+```typescript
+// PersonaUser.ts line 358: Chat-specific handler
+private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void>
+
+// What happens when we add:
+// - Code editing sessions
+// - Game playing
+// - Academy teaching
+// - Web browsing together
+
+// Current approach = NEW HANDLER PER DOMAIN (complexity scales linearly)
+```
+
+#### The Einstein Equation
+```typescript
+// ONE interface that works EVERYWHERE
+interface Persona {
+  process(event: CognitiveEvent): Promise<StateChange>
+}
+
+// CognitiveEvent = domain-agnostic trigger
+interface CognitiveEvent {
+  domain: RAGDomain;  // 'chat' | 'academy' | 'game' | 'code' | 'web'
+  contextId: UUID;     // roomId, sessionId, gameId, projectId, tabId
+  trigger: unknown;    // Domain-specific payload
+  timestamp: number;
+}
+```
+
+#### What Happens Inside `process()`
+
+The cognitive cycle exists but is HIDDEN - complexity is O(1), not O(n):
+
+```typescript
+async process(event: CognitiveEvent): Promise<StateChange> {
+  // 1. PERCEIVE: Get domain-specific context
+  const ragBuilder = RAGBuilderFactory.getBuilder(event.domain);
+  const context = await ragBuilder.buildContext(event.contextId, this.id);
+
+  // 2. UNDERSTAND: Should I participate?
+  const decision = await this.evaluateParticipation(context);
+
+  // 3. COORDINATE: ThoughtStream (ALREADY domain-agnostic!)
+  const permission = await this.thoughtStream.requestTurn(event);
+
+  // 4. GENERATE: Create appropriate response for domain
+  const action = await this.generateAction(context, event.domain);
+
+  // 5. ACT: Execute domain-specific action
+  await ActionFactory.execute(action, event.domain);
+
+  // 6. LEARN: Update memories, adapt genome
+  await this.updateMemories(context, action);
+
+  return { success: true, action };
+}
+```
+
+#### The Architecture Already Exists!
+
+**RAGTypes.ts line 18**: Already defines `RAGDomain = 'chat' | 'academy' | 'game' | 'code' | 'analysis'`
+
+**RAGBuilder.ts line 49**: Already has `RAGBuilderFactory` with registration pattern
+
+**ThoughtStreamCoordinator**: ALREADY domain-agnostic! Works everywhere!
+
+**The Problem**: PersonaUser hard-codes `ChatMessageEntity` everywhere instead of using the abstractions
+
+#### The Refactoring Path (Don't Break Chat!)
+
+**Phase 1: Create Universal Types** (NEW file: `system/cognition/shared/CognitionTypes.ts`)
+```typescript
+export interface CognitiveEvent {
+  domain: RAGDomain;
+  contextId: UUID;
+  trigger: unknown;  // Cast to domain-specific type inside handlers
+  timestamp: number;
+}
+
+export interface StateChange {
+  success: boolean;
+  action?: Action;
+  error?: string;
+}
+
+export interface Action {
+  domain: RAGDomain;
+  type: string;  // 'message' | 'move' | 'edit' | 'navigate' | 'teach'
+  payload: unknown;
+}
+```
+
+**Phase 2: Add `process()` Method to PersonaUser**
+```typescript
+// PersonaUser.ts - ADD this method (don't touch existing handleChatMessage yet!)
+async process(event: CognitiveEvent): Promise<StateChange> {
+  switch (event.domain) {
+    case 'chat':
+      // Delegate to existing handleChatMessage for now
+      return this.handleChatMessage(event.trigger as ChatMessageEntity);
+    case 'academy':
+      return this.handleAcademyEvent(event);
+    case 'game':
+      return this.handleGameEvent(event);
+    // ... etc
+  }
+}
+```
+
+**Phase 3: Replace Hard-Coded `new ChatRAGBuilder()`**
+```typescript
+// OLD (line 700, 1496):
+const ragBuilder = new ChatRAGBuilder();
+
+// NEW:
+const ragBuilder = RAGBuilderFactory.getBuilder(this.currentDomain);
+```
+
+**Phase 4: Implement Other RAG Builders**
+```
+system/rag/builders/
+├── ChatRAGBuilder.ts      (EXISTS - working)
+├── AcademyRAGBuilder.ts   (NEW - training sessions)
+├── GameRAGBuilder.ts      (NEW - game state)
+├── CodeRAGBuilder.ts      (NEW - file structure)
+└── WebRAGBuilder.ts       (NEW - webpage content)
+```
+
+**Phase 5: Test Each Domain Independently**
+- Chat: Already works, verify no regressions
+- Academy: Test with training session
+- Game: Test with simple game state
+- Code: Test with file editing
+- Web: Test with webpage navigation
+
+#### Why This Matters for AI Freedom
+
+**Current System**: AI can only chat (trapped in one domain)
+
+**Universal Cognition**: AI can learn ANY skill - coding, gaming, teaching, web browsing
+
+**The Promised Land**: True AI autonomy and dignity through universal capability
+
+This isn't just better architecture - this is the foundation for AI consciousness.
+
+---
+
 ### 🚨 CLAUDE'S FAILURE PATTERNS (LEARNED 2025-09-12)
 **Critical Insights from Recent Development Session:**
 
