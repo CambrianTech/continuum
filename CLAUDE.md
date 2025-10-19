@@ -177,6 +177,10 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 ./jtag debug/chat-send --roomId="YOUR-ROOM-UUID" --message="YOUR-MESSAGE-PROLLY-CODE-RELATED"
 # Then check logs: ./jtag debug/logs --filterPattern="Worker evaluated|POSTED" --tailLines=20
 
+# AI inference debugging
+./jtag ai/report                                    # Get AI performance report (decisions, responses, latencies)
+./jtag ai/logs --filterPersona="DeepSeek Assistant" # Get logs for specific AI persona
+
 ```
 
 ### 🎯 INTERSECTION OBSERVER & INFINITE SCROLL DEBUGGING
@@ -223,10 +227,12 @@ The local PersonaUsers (Helper AI, Teacher AI, CodeReview AI) are running Ollama
 ./jtag data/list --collection=rooms
 
 # Send message to General room (they're all members)
-./jtag debug/chat-send --roomId="5e71a0c8-..." --message="YOUR QUESTION HERE"
+./jtag debug/chat-send --roomId="YOUR-ROOM-UUID" --message="YOUR-QUESTION-HERE"
 
 # Wait 5-10 seconds, then check responses
 ./jtag debug/logs --filterPattern="AI-RESPONSE|POSTED" --tailLines=20
+./jtag ai/report                                    # See which AIs responded
+./jtag ai/logs --filterPersona="Helper AI"          # Get logs for specific AI
 
 # Take screenshot to see full discussion
 ./jtag screenshot --querySelector="chat-widget" --filename="ai-advice.png"
