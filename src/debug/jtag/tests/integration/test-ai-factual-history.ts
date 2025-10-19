@@ -18,11 +18,11 @@
  * 4. Confidence remains high (>0.7)
  */
 
-import { JTAGClient } from '../../system/core/client/JTAGClient';
-import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
-import type { RoomEntity } from '../../system/data/entities/RoomEntity';
-import type { ChatMessageEntity } from '../../system/data/entities/ChatMessageEntity';
-import { COLLECTIONS } from '../../system/data/shared/StorageConstants';
+import { JTAGClient } from '../../system/core/client/JTAGClient.js';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes.js';
+import type { RoomEntity } from '../../system/data/entities/RoomEntity.js';
+import type { ChatMessageEntity } from '../../system/data/entities/ChatMessageEntity.js';
+import { COLLECTIONS } from '../../system/data/shared/StorageConstants.js';
 
 interface AIDecisionLogEntry {
   timestamp: string;
