@@ -13,6 +13,7 @@ import type { AIReportParams, AIReportResult } from '../shared/AIReportTypes';
 import { AIDecisionService, type AIDecisionContext } from '../../../../system/ai/server/AIDecisionService';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
 
 interface ParsedDecision {
   timestamp: string;
@@ -63,13 +64,18 @@ export class AIReportServerCommand extends AIReportCommand {
         '.continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log'
       );
 
+      // Get coordination statistics (always available even without log file)
+      const coordinator = getThoughtStreamCoordinator();
+      const coordinationStats = coordinator.getCoordinationStats();
+
       if (!fs.existsSync(logPath)) {
         return {
           context: params.context,
           sessionId: params.sessionId,
           success: false,
           error: 'AI decision log not found',
-          summary: this.getEmptySummary()
+          summary: this.getEmptySummary(),
+          coordinationStats
         };
       }
 
@@ -160,7 +166,8 @@ export class AIReportServerCommand extends AIReportCommand {
         contextAnalysis,
         timeline,
         issues,
-        recreatedDecision
+        recreatedDecision,
+        coordinationStats
       };
 
     } catch (error) {

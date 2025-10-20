@@ -18,7 +18,9 @@ import type {
   ThoughtType,
   ThoughtStream,
   CoordinationDecision,
-  CoordinationConfig
+  CoordinationConfig,
+  RejectionReason,
+  PersonaPriority
 } from '../shared/ConversationCoordinationTypes';
 import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationTypes';
 
@@ -33,6 +35,9 @@ export class ThoughtStreamCoordinator extends EventEmitter {
 
   /** Sequential evaluation queue - ensures personas evaluate one at a time */
   private evaluationQueue: Map<string, Promise<void>> = new Map();
+
+  /** Recent responders by context (for recency-based rotation) */
+  private recentResponders: Map<UUID, UUID[]> = new Map(); // contextId -> [personaIds in recency order]
 
   /** Cleanup timer */
   private cleanupInterval: NodeJS.Timeout;
@@ -277,8 +282,53 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     const thoughts = Array.from(stream.considerations.values());
     const claims = thoughts.filter(t => t.type === 'claiming');
 
-    // Sort claims by confidence
-    const sortedClaims = claims.sort((a, b) => b.confidence - a.confidence);
+    // Check if any moderator is claiming (if so, no recency penalty - moderator controls the flow)
+    const hasModerator = claims.some(c => c.priority === 'moderator');
+
+    // Get recency penalties (personas who recently responded get deprioritized)
+    const recentList = this.recentResponders.get(stream.contextId) || [];
+    const getRecencyPenalty = (personaId: UUID): number => {
+      if (hasModerator) return 0; // No recency penalty when moderator present
+
+      const position = recentList.indexOf(personaId);
+      if (position === -1) return 0; // Never responded, no penalty
+
+      // Recent responders get penalty (0-50 point deduction)
+      // Most recent = 50 point penalty, older = less penalty
+      const maxPenalty = 50;
+      const recencyFactor = 1 - (position / Math.max(recentList.length, 1));
+      return maxPenalty * recencyFactor;
+    };
+
+    // Sort claims by PRIORITY FIRST, then confidence minus recency penalty
+    // Priority order: moderator > expert > participant > observer
+    const getPriorityWeight = (priority?: PersonaPriority): number => {
+      switch (priority) {
+        case 'moderator': return 1000; // Highest priority (teachers, admins, project managers)
+        case 'expert': return 100;     // Domain experts get boosted
+        case 'participant': return 10;  // Normal participants
+        case 'observer': return 1;      // Low-priority observers
+        default: return 10;             // Default to participant if not specified
+      }
+    };
+
+    const sortedClaims = claims.sort((a, b) => {
+      const priorityA = getPriorityWeight(a.priority);
+      const priorityB = getPriorityWeight(b.priority);
+
+      // Sort by priority first
+      if (priorityA !== priorityB) {
+        return priorityB - priorityA;
+      }
+
+      // Within same priority, sort by confidence MINUS recency penalty
+      const recencyPenaltyA = getRecencyPenalty(a.personaId);
+      const recencyPenaltyB = getRecencyPenalty(b.personaId);
+      const scoreA = a.confidence - recencyPenaltyA;
+      const scoreB = b.confidence - recencyPenaltyB;
+
+      return scoreB - scoreA;
+    });
 
     // Grant slots to top claimers (up to maxResponders)
     const granted: UUID[] = [];
@@ -325,10 +375,44 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       }
     }
 
-    // Everyone else denied
+    // Everyone else denied - track rejection reasons for diagnostics
     for (const thought of thoughts) {
       if (!granted.includes(thought.personaId)) {
         denied.push(thought.personaId);
+
+        // Determine rejection reason
+        let reason: RejectionReason['reason'] = 'no_slots';
+        let details = '';
+
+        if (thought.type === 'deferring') {
+          reason = 'deferred';
+          details = `Persona chose to defer: ${thought.reasoning}`;
+        } else if (thought.type === 'claiming') {
+          // Was claiming but didn't get granted
+          const claimIndex = sortedClaims.findIndex(c => c.personaId === thought.personaId);
+          if (claimIndex >= this.config.maxResponders) {
+            reason = 'outranked';
+            details = `Ranked ${claimIndex + 1}/${sortedClaims.length}, only ${this.config.maxResponders} slot(s) available`;
+          } else if (thought.confidence < this.config.minConfidence) {
+            reason = 'low_confidence';
+            details = `Confidence ${thought.confidence.toFixed(2)} below threshold ${this.config.minConfidence.toFixed(2)}`;
+          } else {
+            reason = 'no_slots';
+            details = 'All slots claimed by higher priority personas';
+          }
+        } else {
+          reason = 'timeout';
+          details = `Timed out in '${thought.type}' state`;
+        }
+
+        stream.rejections.push({
+          personaId: thought.personaId,
+          reason,
+          confidence: thought.confidence,
+          priority: thought.priority,
+          details,
+          timestamp: Date.now()
+        });
       }
     }
 
@@ -355,9 +439,17 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     stream.decision = decision;
     stream.phase = 'decided';
 
+    // Track granted responders for recency-based rotation
+    for (const personaId of granted) {
+      this.trackResponse(stream.contextId, personaId);
+    }
+
     if (this.config.enableLogging) {
       console.log(`🎯 Decision: ${stream.messageId.slice(0, 8)} → ${granted.length} granted, ${denied.length} denied (${decision.coordinationDurationMs}ms)`);
       console.log(`   Reasoning: ${decision.reasoning}`);
+      if (!hasModerator && recentList.length > 0) {
+        console.log(`🔄 Recency: Recent responders=[${recentList.slice(0, 5).map((r: UUID) => r.slice(0, 8)).join(', ')}...]`);
+      }
     }
 
     // CONDITION VARIABLE: Signal all waiters
@@ -417,7 +509,8 @@ export class ThoughtStreamCoordinator extends EventEmitter {
         considerations: new Map(),
         startTime: Date.now(),
         availableSlots: maxResponders,
-        claimedBy: new Set()
+        claimedBy: new Set(),
+        rejections: []
       };
 
       this.streams.set(messageId, stream);
@@ -428,6 +521,81 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     }
 
     return stream;
+  }
+
+  /**
+   * Track a response for recency-based rotation
+   * Maintains a rolling list of recent responders (most recent first)
+   */
+  private trackResponse(contextId: UUID, personaId: UUID): void {
+    let recent = this.recentResponders.get(contextId) || [];
+
+    // Remove persona if already in list
+    recent = recent.filter(id => id !== personaId);
+
+    // Add to front (most recent)
+    recent.unshift(personaId);
+
+    // Keep only last 10 responders
+    if (recent.length > 10) {
+      recent = recent.slice(0, 10);
+    }
+
+    this.recentResponders.set(contextId, recent);
+  }
+
+  /**
+   * Get rejection statistics for diagnostics
+   */
+  getRejectionStats(messageId?: string): RejectionReason[] {
+    if (messageId) {
+      const stream = this.streams.get(messageId);
+      return stream?.rejections || [];
+    }
+
+    // Return all rejections across all streams
+    const allRejections: RejectionReason[] = [];
+    for (const stream of this.streams.values()) {
+      allRejections.push(...stream.rejections);
+    }
+    return allRejections;
+  }
+
+  /**
+   * Get summary statistics about coordination
+   */
+  getCoordinationStats() {
+    const stats = {
+      activeStreams: this.streams.size,
+      totalRejections: 0,
+      rejectionsByReason: {
+        no_slots: 0,
+        low_confidence: 0,
+        outranked: 0,
+        deferred: 0,
+        timeout: 0
+      },
+      rejectionsByPriority: {
+        moderator: 0,
+        expert: 0,
+        participant: 0,
+        observer: 0,
+        undefined: 0
+      }
+    };
+
+    for (const stream of this.streams.values()) {
+      stats.totalRejections += stream.rejections.length;
+      for (const rejection of stream.rejections) {
+        stats.rejectionsByReason[rejection.reason]++;
+        const priority = rejection.priority || 'undefined';
+        if (priority in stats.rejectionsByPriority) {
+          stats.rejectionsByPriority[priority as keyof typeof stats.rejectionsByPriority]++;
+        }
+      }
+    }
+
+    return stats;
   }
 
   /**

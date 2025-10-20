@@ -362,6 +362,12 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // STEP 2: Skip resolved messages (moderator marked as no longer needing responses)
+    if (messageEntity.metadata?.resolved) {
+      console.log(`⏭️ ${this.displayName}: Skipping resolved message from ${messageEntity.senderName}`);
+      return;
+    }
+
     const senderIsHuman = messageEntity.senderType === 'human';
     const messageText = messageEntity.content?.text || '';
 
@@ -1007,6 +1013,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       responseMessage.priority = 'normal';
       responseMessage.timestamp = new Date();
       responseMessage.reactions = [];
+      responseMessage.replyToId = originalMessage.id; // Link response to trigger message
 
       // ✅ Post response via JTAGClient - universal Commands API
       // Prefer this.client if available (set by UserDaemon), fallback to shared instance
@@ -1166,11 +1173,23 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         timestamp: Date.now()
       }, 5000); // 5 second timeout
 
+      // Apply age-based penalty (prioritize newer messages)
+      const messageAgeMinutes = (Date.now() - messageEntity.timestamp.getTime()) / (1000 * 60);
+      let agePenalty = 0;
+
+      if (messageAgeMinutes > 5) {
+        // Messages 5-15 minutes old: Linear penalty from 0% to 30%
+        // Messages 15+ minutes old: Capped at 30% penalty
+        agePenalty = Math.min(0.30, (messageAgeMinutes - 5) / 10 * 0.30);
+      }
+
+      const adjustedConfidence = Math.max(0, result.confidence - agePenalty);
+
       // Worker returns confidence (0.0-1.0), PersonaUser decides based on threshold
       const threshold = (this.entity?.personaConfig?.responseThreshold ?? 50) / 100; // Convert 50 → 0.50
-      const shouldRespond = result.confidence >= threshold;
+      const shouldRespond = adjustedConfidence >= threshold;
 
-      console.log(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - confidence=${result.confidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
+      console.log(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - rawConfidence=${result.confidence.toFixed(2)}, agePenalty=${agePenalty.toFixed(2)} (${messageAgeMinutes.toFixed(1)}min old), adjustedConfidence=${adjustedConfidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
 
       return shouldRespond;
 
