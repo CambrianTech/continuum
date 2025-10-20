@@ -87,7 +87,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   }
 
   /**
-   * Update AI status and refresh the user item in the list
+   * Update AI status and update DOM directly to avoid animation restart
    */
   private updateAIStatus(personaId: string, phase: AIStatusState['currentPhase'], errorMessage?: string): void {
     if (phase === null) {
@@ -101,8 +101,23 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       });
     }
 
-    // Refresh the specific user item in the scroller
-    this.scroller?.refresh();
+    // Update DOM directly instead of full refresh to avoid restarting animations
+    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${personaId}"]`) as HTMLElement;
+    if (userElement) {
+      if (phase === null) {
+        // Remove data-ai-status attribute when status cleared
+        userElement.removeAttribute('data-ai-status');
+      } else {
+        // Set data-ai-status attribute to trigger CSS animation
+        userElement.dataset.aiStatus = phase;
+      }
+
+      // Update status emoji if present
+      const statusEmojiElement = userElement.querySelector('.user-ai-status');
+      if (statusEmojiElement) {
+        statusEmojiElement.textContent = this.getStatusEmoji(personaId);
+      }
+    }
   }
 
   /**
@@ -203,6 +218,13 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       const userElement = globalThis.document.createElement('div');
       userElement.className = `user-item ${statusClass} ${isSelected ? 'selected' : ''}`;
       userElement.dataset.userId = user.id;
+      userElement.dataset.userType = user.type; // For idle glow styling
+
+      // Set AI status data attribute for comet animation
+      const aiStatus = this.aiStatuses.get(user.id);
+      if (aiStatus?.currentPhase) {
+        userElement.dataset.aiStatus = aiStatus.currentPhase;
+      }
 
       userElement.innerHTML = `
         <span class="user-avatar">${avatar}</span>

@@ -3,14 +3,14 @@
 :host {
   display: block;
   width: 100%;
-  padding: 12px 16px;
+  padding: 7px 5px;
 }
 
 .emoter-container {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 16px;
+  gap: 10px;
 }
 
 /* Brand Section: Orb + continuum text */
@@ -90,7 +90,6 @@
 
 .status-message-item {
   display: flex;
-  gap: 6px;
   white-space: nowrap;
   opacity: 0;
   animation: fade-in-scroll-up 0.5s ease forwards;
@@ -108,16 +107,11 @@
   }
 }
 
-.status-time {
-  color: var(--content-tertiary, #5a5f6b);
-  opacity: 0.5;
-  font-size: 9px;
-}
-
 .status-text {
   color: var(--content-secondary, #8a92a5);
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 8px;
 }
 
 /* Orb States - Ring colors using currentColor with radial gradient */
