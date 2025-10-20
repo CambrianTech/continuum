@@ -1,6 +1,6 @@
-import type { JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
 
-export interface PingParams extends JTAGPayload {
+export interface PingParams extends CommandParams {
   server?: ServerEnvironmentInfo;
   browser?: BrowserEnvironmentInfo;
 }
@@ -41,7 +41,7 @@ export interface BrowserEnvironmentInfo {
   timestamp: string;
 }
 
-export interface PingResult extends JTAGPayload {
+export interface PingResult extends CommandResult {
   success: boolean;
   server?: ServerEnvironmentInfo;
   browser?: BrowserEnvironmentInfo;

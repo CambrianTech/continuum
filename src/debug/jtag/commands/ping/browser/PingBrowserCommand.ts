@@ -6,6 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { PingParams, PingResult, BrowserEnvironmentInfo } from '../shared/PingTypes';
 import { VERSION, PACKAGE_NAME } from '../../../shared/version';
 
@@ -21,12 +22,12 @@ export class PingBrowserCommand extends CommandBase<PingParams, PingResult> {
 
     // If server already collected its info, we're the final step
     if (pingParams.server) {
-      return {
-        ...pingParams,
+      return transformPayload(pingParams, {
         success: true,
+        server: pingParams.server,
         browser,
         timestamp: new Date().toISOString()
-      };
+      });
     }
 
     // No server info yet - delegate to server to collect it
