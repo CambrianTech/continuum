@@ -6,6 +6,7 @@
 
 import { JTAGSystemServer } from './system/core/system/server/JTAGSystemServer';
 import { JTAGClientServer } from './system/core/client/server/JTAGClientServer';
+import { JTAGClient } from './system/core/client/shared/JTAGClient';
 import { SYSTEM_SCOPES } from './system/core/types/SystemScopes';
 
 export const jtag = {
@@ -20,7 +21,10 @@ export const jtag = {
     });
     
     console.log(`✅ Server: JTAGClient connected with ${connectionResult.listResult.totalCount} commands`);
-    
+
+    // Register client in static registry for sharedInstance access
+    JTAGClient.registerClient('default', connectionResult.client);
+
     // Return the client with commands interface, not the full connection result
     return connectionResult.client;
   },
