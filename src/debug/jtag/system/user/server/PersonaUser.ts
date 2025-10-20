@@ -53,7 +53,8 @@ import {
   type AIPostedEventData,
   type AIErrorEventData
 } from '../../events/shared/AIDecisionEvents';
-import type { ScopedEventsInterface } from '../../events/shared/ScopedEventSystem';
+import { Events } from '../../core/shared/Events';
+import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
@@ -273,8 +274,8 @@ export class PersonaUser extends AIUser {
       this.subscribeToChatEvents(this.handleChatMessage.bind(this));
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
 
-      // Subscribe to truncate events to cancel in-flight processing
-      this.client.daemons.events.on('data:chat_messages:truncated', () => {
+      // Subscribe to truncate events to cancel in-flight processing (using Events.subscribe)
+      Events.subscribe('data:chat_messages:truncated', () => {
         this.responseCount.clear();
         this.lastResponseTime.clear();
       });
@@ -383,18 +384,26 @@ export class PersonaUser extends AIUser {
         sender: messageEntity.senderName
       });
 
-      // Emit ERROR event for diagnostics
+      // Emit ERROR event for diagnostics (using auto-context via sharedInstance)
       if (this.client) {
-        (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.ERROR, {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: messageEntity.roomId,
-          messageId: messageEntity.id,
-          isHumanMessage: senderIsHuman,
-          timestamp: Date.now(),
-          error: errorMessage,
-          phase: 'evaluating'  // Error happened during evaluation/response phase
-        } as AIErrorEventData);
+        await Events.emit<AIErrorEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.ERROR,
+          {
+            personaId: this.id,
+            personaName: this.displayName,
+            roomId: messageEntity.roomId,
+            messageId: messageEntity.id,
+            isHumanMessage: senderIsHuman,
+            timestamp: Date.now(),
+            error: errorMessage,
+            phase: 'evaluating'  // Error happened during evaluation/response phase
+          },
+          {
+            scope: EVENT_SCOPES.ROOM,
+            scopeId: messageEntity.roomId
+          }
+        );
       }
 
       // Log to AI decisions log
@@ -444,16 +453,24 @@ export class PersonaUser extends AIUser {
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
     // Emit EVALUATING event for real-time feedback
     if (this.client) {
-      (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.EVALUATING, {
-        personaId: this.id,
-        personaName: this.displayName,
-        roomId: messageEntity.roomId,
-        messageId: messageEntity.id,
-        isHumanMessage: senderIsHuman,
-        timestamp: Date.now(),
-        messagePreview: messageText.slice(0, 100),
-        senderName: messageEntity.senderName
-      } as AIEvaluatingEventData);
+      await Events.emit<AIEvaluatingEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.EVALUATING,
+        {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: messageEntity.roomId,
+          messageId: messageEntity.id,
+          isHumanMessage: senderIsHuman,
+          timestamp: Date.now(),
+          messagePreview: messageText.slice(0, 100),
+          senderName: messageEntity.senderName
+        },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: messageEntity.roomId,
+        }
+      );
     }
 
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
@@ -471,17 +488,25 @@ export class PersonaUser extends AIUser {
 
       // Emit DECIDED_SILENT event
       if (this.client) {
-        (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.DECIDED_SILENT, {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: messageEntity.roomId,
-          messageId: messageEntity.id,
-          isHumanMessage: senderIsHuman,
-          timestamp: Date.now(),
-          confidence: gatingResult.confidence ?? 0.5,
-          reason: gatingResult.reason,
-          gatingModel: gatingResult.model ?? 'unknown'
-        } as AIDecidedSilentEventData);
+        await Events.emit<AIDecidedSilentEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.DECIDED_SILENT,
+          {
+            personaId: this.id,
+            personaName: this.displayName,
+            roomId: messageEntity.roomId,
+            messageId: messageEntity.id,
+            isHumanMessage: senderIsHuman,
+            timestamp: Date.now(),
+            confidence: gatingResult.confidence ?? 0.5,
+            reason: gatingResult.reason,
+            gatingModel: gatingResult.model ?? 'unknown'
+          },
+          {
+            scope: EVENT_SCOPES.ROOM,
+            scopeId: messageEntity.roomId,
+          }
+        );
       }
 
       return;
@@ -502,17 +527,25 @@ export class PersonaUser extends AIUser {
 
     // Emit DECIDED_RESPOND event
     if (this.client) {
-      (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.DECIDED_RESPOND, {
-        personaId: this.id,
-        personaName: this.displayName,
-        roomId: messageEntity.roomId,
-        messageId: messageEntity.id,
-        isHumanMessage: senderIsHuman,
-        timestamp: Date.now(),
-        confidence: gatingResult.confidence ?? 0.5,
-        reason: gatingResult.reason,
-        gatingModel: gatingResult.model ?? 'unknown'
-      } as AIDecidedRespondEventData);
+      await Events.emit<AIDecidedRespondEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.DECIDED_RESPOND,
+        {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: messageEntity.roomId,
+          messageId: messageEntity.id,
+          isHumanMessage: senderIsHuman,
+          timestamp: Date.now(),
+          confidence: gatingResult.confidence ?? 0.5,
+          reason: gatingResult.reason,
+          gatingModel: gatingResult.model ?? 'unknown'
+        },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: messageEntity.roomId,
+        }
+      );
     }
 
     // === COORDINATION: Broadcast "claiming" thought and wait for permission ===
@@ -542,16 +575,25 @@ export class PersonaUser extends AIUser {
       // Emit DECIDED_SILENT event to clear AI status indicator
       console.log(`🔧 ${this.displayName}: Emitting DECIDED_SILENT event (ThoughtStreamCoordinator blocked)`);
       if (this.client) {
-        (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.DECIDED_SILENT, {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: messageEntity.roomId,
-          messageId: messageEntity.id,
-          isHumanMessage: senderIsHuman,
-          reason: 'ThoughtStreamCoordinator denied (higher confidence AI responding)',
-          confidence: gatingResult.confidence,
-          timestamp: Date.now()
-        });
+        await Events.emit<AIDecidedSilentEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.DECIDED_SILENT,
+          {
+            personaId: this.id,
+            personaName: this.displayName,
+            roomId: messageEntity.roomId,
+            messageId: messageEntity.id,
+            isHumanMessage: senderIsHuman,
+            reason: 'ThoughtStreamCoordinator denied (higher confidence AI responding)',
+            confidence: gatingResult.confidence ?? 0.5,
+            gatingModel: gatingResult.model ?? 'unknown',
+            timestamp: Date.now()
+          },
+          {
+            scope: EVENT_SCOPES.ROOM,
+            scopeId: messageEntity.roomId,
+          }
+        );
         console.log(`✅ ${this.displayName}: DECIDED_SILENT event emitted successfully`);
       } else {
         console.error(`❌ ${this.displayName}: Cannot emit DECIDED_SILENT - this.client is null`);
@@ -567,18 +609,26 @@ export class PersonaUser extends AIUser {
     await this.updateRAGContext(messageEntity.roomId, messageEntity);
     console.log(`✅ ${this.displayName}: [PHASE 1/3] RAG context updated`);
 
-    // 🔧 PHASE: Emit GENERATING event
+    // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
     console.log(`🔧 ${this.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
     if (this.client) {
-      (this.client.events as unknown as ScopedEventsInterface).room(messageEntity.roomId).emit(AI_DECISION_EVENTS.GENERATING, {
-        personaId: this.id,
-        personaName: this.displayName,
-        roomId: messageEntity.roomId,
-        messageId: messageEntity.id,
-        isHumanMessage: senderIsHuman,
-        timestamp: Date.now(),
-        responseModel: this.entity?.personaConfig?.responseModel ?? 'default'
-      } as AIGeneratingEventData);
+      await Events.emit<AIGeneratingEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.GENERATING,
+        {
+          personaId: this.id,
+          personaName: this.displayName,
+          roomId: messageEntity.roomId,
+          messageId: messageEntity.id,
+          isHumanMessage: senderIsHuman,
+          timestamp: Date.now(),
+          responseModel: this.entity?.personaConfig?.responseModel ?? 'default'
+        },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: messageEntity.roomId
+        }
+      );
     }
     console.log(`✅ ${this.displayName}: [PHASE 2/3] GENERATING event emitted`);
 
@@ -850,7 +900,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         // Emit ERROR event for UI display
         if (this.client) {
-          (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.ERROR, {
+          await Events.emit<AIErrorEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.ERROR,
+        {
             personaId: this.id,
             personaName: this.displayName,
             roomId: originalMessage.roomId,
@@ -859,7 +912,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             timestamp: Date.now(),
             error: errorMessage,
             phase: 'generating'
-          } as AIErrorEventData);
+          },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: originalMessage.roomId
+        }
+      );
         }
 
         // Log error to AI decisions log
@@ -881,7 +939,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       console.log(`🔧 ${this.displayName}: [PHASE 3.4] Checking redundancy...`);
       // Emit CHECKING_REDUNDANCY event
       if (this.client) {
-        (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, {
+        await Events.emit<AICheckingRedundancyEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.CHECKING_REDUNDANCY,
+        {
           personaId: this.id,
           personaName: this.displayName,
           roomId: originalMessage.roomId,
@@ -889,7 +950,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           isHumanMessage: originalMessage.senderType === 'human',
           timestamp: Date.now(),
           responseLength: aiResponse.text.trim().length
-        } as AICheckingRedundancyEventData);
+        },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: originalMessage.roomId
+        }
+      );
       }
 
       const isRedundant = await this.isResponseRedundant(
@@ -904,7 +970,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         // Emit DECIDED_SILENT event to clear AI status indicator
         if (this.client) {
-          (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.DECIDED_SILENT, {
+          await Events.emit<AIDecidedSilentEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.DECIDED_SILENT,
+        {
             personaId: this.id,
             personaName: this.displayName,
             roomId: originalMessage.roomId,
@@ -914,7 +983,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             confidence: 0.5,
             reason: 'Response was redundant with previous answers',
             gatingModel: 'redundancy-check'
-          } as AIDecidedSilentEventData);
+          },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: originalMessage.roomId
+        }
+      );
         }
 
         return; // Discard response
@@ -964,7 +1038,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // Emit POSTED event
       if (this.client && result.data) {
-        (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.POSTED, {
+        await Events.emit<AIPostedEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.POSTED,
+        {
           personaId: this.id,
           personaName: this.displayName,
           roomId: originalMessage.roomId,
@@ -973,7 +1050,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           timestamp: Date.now(),
           responseMessageId: result.data.id,
           passedRedundancyCheck: !isRedundant
-        } as AIPostedEventData);
+        },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: originalMessage.roomId
+        }
+      );
       }
 
     } catch (error) {
@@ -986,7 +1068,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // Emit ERROR event
       if (this.client) {
-        (this.client.events as unknown as ScopedEventsInterface).room(originalMessage.roomId).emit(AI_DECISION_EVENTS.ERROR, {
+        await Events.emit<AIErrorEventData>(
+        DataDaemon.jtagContext!,
+        AI_DECISION_EVENTS.ERROR,
+        {
           personaId: this.id,
           personaName: this.displayName,
           roomId: originalMessage.roomId,
@@ -995,7 +1080,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           timestamp: Date.now(),
           error: error instanceof Error ? error.message : String(error),
           phase: 'generating'
-        } as AIErrorEventData);
+        },
+        {
+          scope: EVENT_SCOPES.ROOM,
+          scopeId: originalMessage.roomId
+        }
+      );
       }
     }
   }

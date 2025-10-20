@@ -9,6 +9,7 @@ declare const customElements: CustomElementRegistry;
 
 import { JTAGSystemBrowser } from './system/core/system/browser/JTAGSystemBrowser';
 import { JTAGClientBrowser } from './system/core/client/browser/JTAGClientBrowser';
+import { JTAGClient } from './system/core/client/shared/JTAGClient';
 import { createJTAGClientServices } from './system/core/client/shared/services';
 
 // Import widget registry for dynamic registration
@@ -28,7 +29,17 @@ export const jtag = {
     // Reduce log spam
     // console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
 
-    // Register widgets dynamically from generated registry
+    // Connect client FIRST
+    const connectionResult = await JTAGClientBrowser.connectLocal();
+    const client = connectionResult.client;
+
+    // Set up global window.jtag for widgets and tests
+    (globalThis as any).jtag = client;
+
+    // Register client in static registry for sharedInstance access
+    JTAGClient.registerClient('default', client);
+
+    // NOW register widgets - after client is available for sharedInstance
     // console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
     BROWSER_WIDGETS.forEach(widget => {
       if (!customElements.get(widget.tagName)) {
@@ -44,13 +55,6 @@ export const jtag = {
         console.warn(`⚠️ Widget ${widget.tagName} already registered, skipping`);
       }
     });
-
-    const connectionResult = await JTAGClientBrowser.connectLocal();
-    const client = connectionResult.client;
-
-    // Set up global window.jtag for widgets and tests
-    (globalThis as any).jtag = client;
-
 
     // Enhance client with organized services - no globals needed
     const services = createJTAGClientServices(client);

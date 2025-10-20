@@ -25,6 +25,7 @@ import type { UserCapabilities } from '../../data/entities/UserEntity';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
+import type { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import { DataEventNames } from '../../events/shared/EventSystemConstants';
 import { Events } from '../../core/shared/Events';
@@ -110,24 +111,24 @@ export abstract class BaseUser {
    * Subscribe to chat events for a specific room
    * Helper method for subclasses to subscribe to room-specific chat events
    */
-  protected subscribeToRoomChat(roomId: UUID, handler: (message: any) => Promise<void>): void {
+  protected subscribeToRoomChat(roomId: UUID, handler: (message: ChatMessageEntity) => Promise<void>): void {
     // ✅ Type-safe event name using DataEventNames utility
     const eventName = DataEventNames.created(COLLECTIONS.CHAT_MESSAGES);
 
     if (this.client) {
-      // ✅ Use shared EventManager via JTAGClient when available (PersonaUsers)
-      this.client.daemons.events.on(eventName, async (messageData: any) => {
+      // ✅ Use Events.subscribe (works anywhere via sharedInstance)
+      Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
         // Only handle messages for this room
         if (messageData.roomId === roomId) {
           await handler(messageData);
         }
       });
-      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room chat via client.daemons.events`);
+      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room chat via Events.subscribe`);
     } else {
       // ❌ FALLBACK: Create isolated EventManager (won't receive events, but won't crash)
       const { EventManager } = require('../../events/shared/JTAGEventSystem');
       const eventManager = new EventManager();
-      eventManager.events.on(eventName, async (messageData: any) => {
+      eventManager.events.on(eventName, async (messageData: ChatMessageEntity) => {
         if (messageData.roomId === roomId) {
           await handler(messageData);
         }
@@ -140,7 +141,7 @@ export abstract class BaseUser {
    * Subscribe to all chat events (for users who want to handle all their rooms)
    * Subclasses can use this to listen to messages in any room they're a member of
    */
-  protected subscribeToChatEvents(handler: (message: any) => Promise<void>): void {
+  protected subscribeToChatEvents(handler: (message: ChatMessageEntity) => Promise<void>): void {
     // ✅ Type-safe event name using DataEventNames utility
     const eventName = DataEventNames.created(COLLECTIONS.CHAT_MESSAGES);
 
@@ -149,7 +150,7 @@ export abstract class BaseUser {
 
     for (const roomId of this.myRoomIds) {
       // ✅ Use Events.subscribe() with filter parameter - event system handles filtering
-      Events.subscribe(eventName, async (messageData: any) => {
+      Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
         await handler(messageData);
       }, { where: { roomId } });
 
@@ -161,20 +162,20 @@ export abstract class BaseUser {
    * Subscribe to room update events to handle dynamic membership changes
    * All user types need to track when they're added/removed from rooms
    */
-  protected subscribeToRoomUpdates(handler: (room: any) => Promise<void>): void {
+  protected subscribeToRoomUpdates(handler: (room: RoomEntity) => Promise<void>): void {
     const eventName = DataEventNames.updated(COLLECTIONS.ROOMS);
 
     if (this.client) {
-      // ✅ Use shared EventManager via JTAGClient when available
-      this.client.daemons.events.on(eventName, async (roomData: any) => {
+      // ✅ Use Events.subscribe (works anywhere via sharedInstance)
+      Events.subscribe(eventName, async (roomData: RoomEntity) => {
         await handler(roomData);
       });
-      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via client.daemons.events`);
+      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via Events.subscribe`);
     } else {
       // ❌ FALLBACK: Create isolated EventManager (won't receive events, but won't crash)
       const { EventManager } = require('../../events/shared/JTAGEventSystem');
       const eventManager = new EventManager();
-      eventManager.events.on(eventName, async (roomData: any) => {
+      eventManager.events.on(eventName, async (roomData: RoomEntity) => {
         await handler(roomData);
       });
       console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: No client available for room updates, using isolated EventManager (events won't work)`);

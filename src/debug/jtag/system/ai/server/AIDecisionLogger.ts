@@ -179,6 +179,12 @@ export class AIDecisionLogger {
     }
 
     try {
+      // Ensure directory exists before writing
+      const logDir = path.dirname(this.logPath);
+      if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true });
+      }
+
       fs.appendFileSync(this.logPath, line + '\n', 'utf-8');
     } catch (error) {
       console.error('❌ AIDecisionLogger: Failed to write log:', error);

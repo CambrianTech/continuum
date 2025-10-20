@@ -657,7 +657,7 @@ export class DataDaemon {
 
   private static sharedInstance: DataDaemon | undefined;
   private static context: DataOperationContext | undefined;
-  private static jtagContext: JTAGContext | undefined;
+  public static jtagContext: JTAGContext | undefined;
 
   /**
    * Initialize static DataDaemon context (called by system)

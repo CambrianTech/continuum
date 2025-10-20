@@ -182,6 +182,9 @@ export interface DynamicCommandsInterface {
 
 // TODO: Remove ITransportHandler - mixing client/server responsibilities (ISSUE 7)
 export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
+  // Static client registry for sharedInstance access (fixes server-side sharedInstance timeout)
+  private static clientRegistry: Map<string, JTAGClient> = new Map();
+
   protected systemTransport?: JTAGTransport;
   protected connection?: JTAGConnection;
   // TODO: Remove discoveredCommands - redundant with CommandsInterface (ISSUE 2)
@@ -803,21 +806,86 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
 
   /**
+   * Register a client in the static registry
+   * Used by browser-index.ts and server-index.ts after connection
+   */
+  static registerClient(key: string, client: JTAGClient): void {
+    this.clientRegistry.set(key, client);
+    console.log(`📝 JTAGClient: Registered '${key}' (${client.context.environment})`);
+  }
+
+  /**
+   * Unregister a client from the static registry
+   * Used during disconnect to prevent memory leaks
+   */
+  static unregisterClient(key: string): boolean {
+    return this.clientRegistry.delete(key);
+  }
+
+  /**
+   * Get a registered client from the static registry
+   * Private helper for sharedInstance getter
+   */
+  private static getRegisteredClient(key: string): JTAGClient | undefined {
+    return this.clientRegistry.get(key);
+  }
+
+  /**
    * Get shared instance from global context - works in browser and server
    * Browser: (window as WindowWithJTAG).jtag
    * Server: (globalThis as any).jtag
    */
   static get sharedInstance(): Promise<JTAGClient> {
-    return new Promise((resolve) => {
-      const checkReady = (): void => {
-        const jtag = (globalThis as any).jtag;
-        if (jtag?.commands) {
-          resolve(jtag);
-        } else {
-          setTimeout(checkReady, 50);
+    return new Promise((resolve, reject) => {
+      // Fast path: Check if already initialized
+      const registered = this.getRegisteredClient('default');
+      if (registered) {
+        resolve(registered);
+        return;
+      }
+
+      const jtag = (globalThis as any).jtag;
+      if (jtag?.commands) {
+        resolve(jtag);
+        return;
+      }
+
+      // Initialization race: Browser widgets may call this before connect() completes
+      // Poll briefly with timeout to handle startup race condition
+      let attempts = 0;
+      const maxAttempts = 100; // 5 seconds max (100 * 50ms)
+
+      const checkInitialization = (): void => {
+        attempts++;
+
+        // Check both registry and globalThis
+        const client = this.getRegisteredClient('default');
+        if (client) {
+          resolve(client);
+          return;
         }
+
+        const jtagNow = (globalThis as any).jtag;
+        if (jtagNow?.commands) {
+          resolve(jtagNow);
+          return;
+        }
+
+        // Timeout after max attempts
+        if (attempts >= maxAttempts) {
+          reject(new Error(
+            'JTAGClient initialization timeout (5s). ' +
+            'Server: connect() never completed or registerClient() not called. ' +
+            'Browser: connect() never completed or globalThis.jtag not set.'
+          ));
+          return;
+        }
+
+        setTimeout(checkInitialization, 50);
       };
-      checkReady();
+
+      // Start polling after brief delay
+      setTimeout(checkInitialization, 50);
     });
   }
 

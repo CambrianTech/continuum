@@ -18,6 +18,7 @@ import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { getDefaultPreferencesForType } from '../../../system/user/config/UserCapabilitiesDefaults';
+import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientServer';
 import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
 
@@ -193,6 +194,9 @@ export class UserDaemonServer extends UserDaemon {
         userId: userEntity.id,
         targetEnvironment: 'server'
       });
+
+      // Register client in static registry so Events.emit() can use sharedInstance
+      JTAGClient.registerClient(`persona-${userEntity.id}`, clientResult.client);
 
       // Create PersonaUser instance with client injected
       const personaUser = new PersonaUser(userEntity, userState, storage, clientResult.client);
