@@ -1,6 +1,7 @@
 /**
- * ContinuumEmoter - Connection status indicator with JTAG integration
- * Shows real-time system health and connection status
+ * ContinuumEmoter - HAL 9000 System Health + Activity Scroller
+ * Left: Glowing orb showing global system health
+ * Right: Auto-scrolling status feed showing AI activity
  */
 class ContinuumEmoter extends HTMLElement {
     constructor() {
@@ -9,16 +10,114 @@ class ContinuumEmoter extends HTMLElement {
         this.connectionStatus = 'initializing';
         this.health = 'unknown';
         this.lastUpdate = null;
+        this.statusMessages = []; // For scrolling feed
+        this.maxMessages = 10; // Keep last 10 messages
     }
 
     connectedCallback() {
         this.render();
         this.startHealthMonitoring();
+        this.subscribeToAIEvents();
     }
 
     disconnectedCallback() {
         if (this.healthInterval) {
             clearInterval(this.healthInterval);
+        }
+        this.unsubscribeFromAIEvents();
+    }
+
+    /**
+     * Subscribe to AI decision events for status feed
+     */
+    subscribeToAIEvents() {
+        if (window.jtag && window.jtag.events) {
+            console.log('🎭 ContinuumEmoter: Subscribing to AI events...');
+
+            // Subscribe to all AI decision events
+            const events = [
+                'ai:decision:evaluating',
+                'ai:decision:decided-respond',
+                'ai:decision:decided-silent',
+                'ai:response:generating',
+                'ai:decision:checking-redundancy',
+                'ai:response:posted',
+                'ai:decision:error'
+            ];
+
+            events.forEach(eventName => {
+                window.jtag.events.subscribe(eventName, (data) => {
+                    this.handleAIEvent(eventName, data);
+                });
+            });
+        }
+    }
+
+    unsubscribeFromAIEvents() {
+        // TODO: Implement unsubscribe if needed
+    }
+
+    /**
+     * Handle AI events and add to status feed
+     */
+    handleAIEvent(eventName, data) {
+        const personaName = data.personaName || data.personaId || 'AI';
+        let statusText = '';
+
+        // Format status message based on event type
+        if (eventName.includes('evaluating')) {
+            statusText = `${personaName}: thinking...`;
+        } else if (eventName.includes('decided-respond')) {
+            statusText = `${personaName}: responding`;
+        } else if (eventName.includes('decided-silent')) {
+            statusText = `${personaName}: passed`;
+        } else if (eventName.includes('generating')) {
+            statusText = `${personaName}: generating...`;
+        } else if (eventName.includes('checking')) {
+            statusText = `${personaName}: checking...`;
+        } else if (eventName.includes('posted')) {
+            statusText = `${personaName}: posted ✓`;
+        } else if (eventName.includes('error')) {
+            statusText = `${personaName}: error ✗`;
+        }
+
+        if (statusText) {
+            this.addStatusMessage(statusText);
+        }
+    }
+
+    /**
+     * Add a status message to the scrolling feed
+     */
+    addStatusMessage(message) {
+        const timestamp = new Date().toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+
+        this.statusMessages.unshift({ message, timestamp }); // Add to beginning
+
+        // Keep only last N messages
+        if (this.statusMessages.length > this.maxMessages) {
+            this.statusMessages.pop();
+        }
+
+        this.updateStatusScroller();
+    }
+
+    /**
+     * Update just the status scroller (not full re-render)
+     */
+    updateStatusScroller() {
+        const scroller = this.shadowRoot.querySelector('.status-scroller');
+        if (scroller) {
+            scroller.innerHTML = this.statusMessages.map(({ message, timestamp }) => `
+                <div class="status-message">
+                    <span class="status-time">${timestamp}</span>
+                    <span class="status-text">${message}</span>
+                </div>
+            `).join('');
         }
     }
 

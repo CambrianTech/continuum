@@ -1,0 +1,195 @@
+/* ContinuumEmoter - Clean System Status */
+
+:host {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+}
+
+.emoter-container {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+/* Brand Section: Orb + continuum text */
+.brand-section {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Status Orb - Ring with glowing orb behind it */
+.status-orb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all 0.3s ease;
+  margin-top: -1px;
+  position: relative;
+  background: transparent;
+  border: 2px solid currentColor;
+}
+
+/* Glowing orb inside the ring (behind it) */
+.status-orb::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.8;
+  z-index: -1;
+}
+
+/* Brand Text */
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand-name {
+  font-size: 24px;
+  font-weight: 600;
+  font-family: var(--font-sans, sans-serif);
+  color: var(--color-primary, #00d9ff);
+  letter-spacing: 0.5px;
+  line-height: 1;
+}
+
+.brand-subtitle {
+  font-size: 13px;
+  font-weight: 400;
+  font-family: var(--font-sans, sans-serif);
+  color: var(--content-secondary, #8a92a5);
+  opacity: 0.8;
+  line-height: 1.2;
+}
+
+/* Status Scroller - AI activity feed on the right */
+.status-scroller {
+  flex: 1;
+  max-height: 60px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  font-size: 9px;
+  font-family: var(--font-mono, monospace);
+  color: var(--content-secondary, #8a92a5);
+}
+
+.status-message-item {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  animation: fade-in-scroll-up 0.5s ease forwards;
+  padding: 2px 0;
+}
+
+@keyframes fade-in-scroll-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.status-time {
+  color: var(--content-tertiary, #5a5f6b);
+  opacity: 0.5;
+  font-size: 9px;
+}
+
+.status-text {
+  color: var(--content-secondary, #8a92a5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Orb States - Ring colors using currentColor with radial gradient */
+.status-orb.status-healthy {
+  color: var(--color-success, #00ff64);
+  box-shadow: 0 0 12px var(--color-success, rgba(0, 255, 100, 0.7)),
+              0 0 24px var(--color-success, rgba(0, 255, 100, 0.4));
+  animation: pulse-healthy 3s infinite;
+}
+
+.status-orb.status-warning {
+  color: var(--color-warning, #ffaa00);
+  box-shadow: 0 0 12px var(--color-warning, rgba(255, 170, 0, 0.7)),
+              0 0 24px var(--color-warning, rgba(255, 170, 0, 0.4));
+  animation: pulse-warning 2s infinite;
+}
+
+.status-orb.status-error {
+  color: var(--color-error, #ff0060);
+  box-shadow: 0 0 12px var(--color-error, rgba(255, 0, 96, 0.7)),
+              0 0 24px var(--color-error, rgba(255, 0, 96, 0.4));
+  animation: pulse-error 1s infinite;
+}
+
+.status-orb.status-initializing {
+  color: var(--color-primary, #00d9ff);
+  box-shadow: 0 0 12px var(--color-primary, rgba(0, 217, 255, 0.7)),
+              0 0 24px var(--color-primary, rgba(0, 217, 255, 0.4));
+  animation: pulse-initializing 2s infinite;
+}
+
+/* Pulse Animations */
+@keyframes pulse-healthy {
+  0%, 100% {
+    box-shadow: 0 0 12px var(--color-success, rgba(0, 255, 100, 0.7)),
+                0 0 24px var(--color-success, rgba(0, 255, 100, 0.4));
+  }
+  50% {
+    box-shadow: 0 0 18px var(--color-success, rgba(0, 255, 100, 0.9)),
+                0 0 36px var(--color-success, rgba(0, 255, 100, 0.6));
+  }
+}
+
+@keyframes pulse-warning {
+  0%, 100% {
+    box-shadow: 0 0 12px var(--color-warning, rgba(255, 170, 0, 0.7)),
+                0 0 24px var(--color-warning, rgba(255, 170, 0, 0.4));
+  }
+  50% {
+    box-shadow: 0 0 18px var(--color-warning, rgba(255, 170, 0, 0.9)),
+                0 0 36px var(--color-warning, rgba(255, 170, 0, 0.6));
+  }
+}
+
+@keyframes pulse-error {
+  0%, 100% {
+    box-shadow: 0 0 12px var(--color-error, rgba(255, 0, 96, 0.7)),
+                0 0 24px var(--color-error, rgba(255, 0, 96, 0.4));
+  }
+  50% {
+    box-shadow: 0 0 18px var(--color-error, rgba(255, 0, 96, 0.9)),
+                0 0 36px var(--color-error, rgba(255, 0, 96, 0.6));
+  }
+}
+
+@keyframes pulse-initializing {
+  0%, 100% {
+    box-shadow: 0 0 12px var(--color-primary, rgba(0, 217, 255, 0.7)),
+                0 0 24px var(--color-primary, rgba(0, 217, 255, 0.4));
+  }
+  50% {
+    box-shadow: 0 0 18px var(--color-primary, rgba(0, 217, 255, 0.9)),
+                0 0 36px var(--color-primary, rgba(0, 217, 255, 0.6));
+  }
+}
