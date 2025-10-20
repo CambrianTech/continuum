@@ -147,8 +147,66 @@
   justify-content: center;
   font-size: 22px;
   flex-shrink: 0;
-  overflow: hidden;
+  overflow: visible; /* Changed to show comet animation */
   position: relative;
+}
+
+/* Static idle glow for AI personas using box-shadow */
+.user-item[data-user-type="persona"] .user-avatar {
+  box-shadow: 0 0 12px rgba(100, 150, 255, 0.3);
+  transition: box-shadow 0.3s ease;
+}
+
+/* Active animation states - pulsing glow based on AI activity */
+.user-item[data-ai-status="evaluating"] .user-avatar {
+  animation: pulse-glow-purple 2s ease-in-out infinite;
+}
+
+.user-item[data-ai-status="responding"] .user-avatar {
+  animation: pulse-glow-blue 2s ease-in-out infinite;
+}
+
+.user-item[data-ai-status="generating"] .user-avatar {
+  animation: pulse-glow-green 2s ease-in-out infinite;
+}
+
+.user-item[data-ai-status="checking"] .user-avatar {
+  animation: pulse-glow-amber 2s ease-in-out infinite;
+}
+
+.user-item[data-ai-status="error"] .user-avatar {
+  animation: pulse-glow-red 1.5s ease-in-out infinite;
+}
+
+.user-item[data-ai-status="passed"] .user-avatar {
+  box-shadow: 0 0 8px rgba(156, 163, 175, 0.2);
+  animation: none;
+}
+
+/* Pulse glow animations */
+@keyframes pulse-glow-purple {
+  0%, 100% { box-shadow: 0 0 12px rgba(147, 51, 234, 0.4); }
+  50% { box-shadow: 0 0 24px rgba(147, 51, 234, 0.8); }
+}
+
+@keyframes pulse-glow-blue {
+  0%, 100% { box-shadow: 0 0 12px rgba(59, 130, 246, 0.4); }
+  50% { box-shadow: 0 0 24px rgba(59, 130, 246, 0.8); }
+}
+
+@keyframes pulse-glow-green {
+  0%, 100% { box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); }
+  50% { box-shadow: 0 0 24px rgba(16, 185, 129, 0.8); }
+}
+
+@keyframes pulse-glow-amber {
+  0%, 100% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 24px rgba(245, 158, 11, 0.8); }
+}
+
+@keyframes pulse-glow-red {
+  0%, 100% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 24px rgba(239, 68, 68, 0.8); }
 }
 
 .user-avatar img {
