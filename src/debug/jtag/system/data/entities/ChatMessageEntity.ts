@@ -45,6 +45,9 @@ export interface MessageMetadata {
   clientVersion?: string;
   editHistory?: readonly EditHistoryEntry[];
   deliveryReceipts?: readonly DeliveryReceipt[];
+  resolved?: boolean;  // Mark message as resolved (no further AI responses needed)
+  resolvedBy?: UUID;   // Who marked it resolved (moderator)
+  resolvedAt?: number; // When it was marked resolved
 }
 
 export interface MessageReaction {
@@ -143,6 +146,8 @@ export class ChatMessageEntity extends BaseEntity {
   @TextField({ nullable: true })
   replyToId?: UUID;
 
+  @JsonField({ nullable: true })
+  metadata?: Partial<MessageMetadata>;
 
   constructor() {
     super(); // Initialize BaseEntity fields (id, createdAt, updatedAt, version)

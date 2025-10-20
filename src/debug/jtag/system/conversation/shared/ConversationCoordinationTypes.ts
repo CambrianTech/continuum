@@ -35,6 +35,15 @@ export type ThoughtType =
   | 'collaborating'; // Suggesting joint response (semaphore sharing)
 
 /**
+ * Persona priority roles for quality-boost coordination
+ */
+export type PersonaPriority =
+  | 'moderator'    // Room moderator/facilitator (e.g., Academy teacher) - reserved slots
+  | 'expert'       // Domain expert - boosted priority
+  | 'participant'  // Regular participant - normal priority
+  | 'observer';    // Low-priority observer
+
+/**
  * Thought - A persona's broadcast signal in the thought stream
  */
 export interface Thought {
@@ -58,6 +67,9 @@ export interface Thought {
 
   /** Optional: Suggest collaboration */
   collaborateWith?: UUID[];
+
+  /** Priority role for quality-boost (default: 'participant') */
+  priority?: PersonaPriority;
 }
 
 /**
@@ -217,12 +229,27 @@ export interface ThoughtStream {
   /** Who has claimed slots (mutex holders) */
   claimedBy: Set<UUID>;
 
+  /** Rejection reasons for diagnostics */
+  rejections: RejectionReason[];
+
   /** Condition variable - notify waiters when decision made */
   decisionSignal?: Promise<CoordinationDecision>;
   signalResolver?: (decision: CoordinationDecision) => void;
 
   /** Timer for intention window enforcement */
   decisionTimer?: NodeJS.Timeout;
+}
+
+/**
+ * Rejection reason for diagnostic purposes
+ */
+export interface RejectionReason {
+  personaId: UUID;
+  reason: 'no_slots' | 'low_confidence' | 'outranked' | 'deferred' | 'timeout';
+  confidence: number;
+  priority?: PersonaPriority;
+  details: string;
+  timestamp: number;
 }
 
 /**

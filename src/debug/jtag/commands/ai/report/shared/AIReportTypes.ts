@@ -153,4 +153,24 @@ export interface AIReportResult {
     };
     debugPrompt: string;  // Reconstructed prompt to test in Ollama
   };
+
+  // Coordination statistics (quality-boost + recency rotation)
+  coordinationStats?: {
+    activeStreams: number;
+    totalRejections: number;
+    rejectionsByReason: {
+      no_slots: number;
+      low_confidence: number;
+      outranked: number;
+      deferred: number;
+      timeout: number;
+    };
+    rejectionsByPriority: {
+      moderator: number;
+      expert: number;
+      participant: number;
+      observer: number;
+      undefined: number;
+    };
+  };
 }
