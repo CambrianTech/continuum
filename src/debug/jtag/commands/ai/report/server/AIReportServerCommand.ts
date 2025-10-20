@@ -321,7 +321,9 @@ export class AIReportServerCommand extends AIReportCommand {
       timeRange: {
         start: new Date(startTime).toISOString(),
         end: new Date(endTime).toISOString()
-      }
+      },
+      totalCost: 0,
+      costByProvider: {}
     };
   }
 
@@ -607,7 +609,9 @@ Answer with "RESPOND" or "SILENT" and explain why.`;
       timeRange: {
         start: new Date().toISOString(),
         end: new Date().toISOString()
-      }
+      },
+      totalCost: 0,
+      costByProvider: {}
     };
   }
 }

@@ -46,6 +46,10 @@ export interface AIReportResult {
       start: string;
       end: string;
     };
+    totalCost: number;                 // Total estimated cost in USD
+    costByProvider: {                  // Cost breakdown by provider
+      [provider: string]: number;
+    };
   };
 
   // Room breakdown (if filtering by room or requested)

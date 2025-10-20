@@ -30,7 +30,9 @@ export class AIReportBrowserCommand extends AIReportCommand {
         timeRange: {
           start: new Date().toISOString(),
           end: new Date().toISOString()
-        }
+        },
+        totalCost: 0,
+        costByProvider: {}
       }
     };
   }

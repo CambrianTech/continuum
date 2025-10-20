@@ -886,11 +886,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider']
       };
 
-      // Wrap generation call with timeout (45s - reasonable limit for local Ollama generation)
-      // Queue can handle 4 concurrent requests, so 45s is sufficient
-      const GENERATION_TIMEOUT_MS = 45000;
+      // Wrap generation call with timeout (90s - generous limit for local Ollama generation)
+      // Queue can handle 4 concurrent requests, so 90s allows slower hardware to complete
+      const GENERATION_TIMEOUT_MS = 90000;
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('AI generation timeout after 45 seconds')), GENERATION_TIMEOUT_MS);
+        setTimeout(() => reject(new Error('AI generation timeout after 90 seconds')), GENERATION_TIMEOUT_MS);
       });
 
       let aiResponse: TextGenerationResponse;
