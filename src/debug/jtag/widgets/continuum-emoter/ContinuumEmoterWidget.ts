@@ -176,9 +176,8 @@ export class ContinuumEmoterWidget extends BaseWidget {
   private updateStatusScroller(): void {
     const scroller = this.shadowRoot?.querySelector('.status-scroller');
     if (scroller) {
-      scroller.innerHTML = this.statusMessages.map(({ message, timestamp }) => `
-        <div class="status-message">
-          <span class="status-time">${timestamp}</span>
+      scroller.innerHTML = this.statusMessages.map(({ message }) => `
+        <div class="status-message-item">
           <span class="status-text">${message}</span>
         </div>
       `).join('');
