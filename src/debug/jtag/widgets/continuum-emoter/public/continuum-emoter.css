@@ -4,6 +4,7 @@
   display: block;
   width: 100%;
   padding: 7px 5px;
+  --color-primary: #00d9ff;
 }
 
 .emoter-container {
@@ -17,9 +18,10 @@
 .brand-section {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
   position: relative;
+  margin-right: 0;
 }
 
 /* Status Orb - Ring with glowing orb behind it */
@@ -57,6 +59,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  align-items: flex-start;
 }
 
 .brand-name {
@@ -69,12 +72,14 @@
 }
 
 .brand-subtitle {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 400;
   font-family: var(--font-sans, sans-serif);
   color: var(--content-secondary, #8a92a5);
-  opacity: 0.8;
+  opacity: 0.7;
   line-height: 1.2;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
 }
 
 /* Status Scroller - AI activity feed on the right */
@@ -83,22 +88,38 @@
   max-height: 60px;
   overflow: hidden;
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
+  justify-content: flex-end;
   gap: 2px;
   font-size: 9px;
   font-family: var(--font-mono, monospace);
   color: var(--content-secondary, #8a92a5);
+  position: relative;
+}
+
+/* Fade gradient at top - angel going to heaven effect */
+.status-scroller::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: linear-gradient(to bottom, var(--surface-primary, #1a1d24) 0%, transparent 100%);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .status-message-item {
   display: flex;
   white-space: nowrap;
-  opacity: 0;
-  animation: fade-in-scroll-up 0.5s ease forwards;
+  animation: float-up 0.5s ease-out forwards;
   padding: 2px 0;
+  opacity: 1;
 }
 
-@keyframes fade-in-scroll-up {
+/* Float up from bottom, fade out at top */
+@keyframes float-up {
   from {
     opacity: 0;
     transform: translateY(10px);

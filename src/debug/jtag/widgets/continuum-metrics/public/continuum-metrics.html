@@ -1,0 +1,37 @@
+<!-- ContinuumMetrics - AI Performance Dashboard -->
+<div class="metrics-container">
+  <!-- Metric Header -->
+  <div class="metric-header">
+    <div class="metric-title">REQUESTS</div>
+    <div class="metric-value">39</div>
+  </div>
+
+  <!-- Chart Area (placeholder) -->
+  <div class="chart-area">
+    <svg class="chart-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
+      <!-- Fake line graph -->
+      <polyline
+        class="chart-line"
+        points="0,20 10,15 20,18 30,10 40,8 50,12 60,11 70,5 80,9 90,14 100,12"
+        fill="none"
+        stroke-width="1"
+      />
+    </svg>
+  </div>
+
+  <!-- Filter Controls -->
+  <div class="metric-controls">
+    <select class="metric-select">
+      <option value="requests">Requests</option>
+      <option value="tokens">Tokens/s</option>
+      <option value="latency">Latency</option>
+      <option value="cost">Cost</option>
+    </select>
+    <select class="time-select">
+      <option value="1h">1h</option>
+      <option value="6h">6h</option>
+      <option value="24h" selected>24h</option>
+      <option value="7d">7d</option>
+    </select>
+  </div>
+</div>

@@ -8,15 +8,9 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 
-interface StatusMessage {
-  message: string;
-  timestamp: string;
-}
-
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: 'initializing' | 'connected' | 'disconnected' = 'initializing';
   private health: 'unknown' | 'healthy' | 'warning' | 'error' = 'unknown';
-  private statusMessages: StatusMessage[] = [];
   private maxMessages = 10;
   private healthCheckInterval?: NodeJS.Timeout;
 
@@ -122,7 +116,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
       z-index: 2;
       pointer-events: none;
       opacity: 1;
-      transition: opacity 0.5s ease-out;
+      transition: opacity 0.5s ease-out, transform 0.5s ease-out;
     `;
 
     // Save current color and apply emotion color temporarily
@@ -130,9 +124,10 @@ export class ContinuumEmoterWidget extends BaseWidget {
     orb.style.color = color;
     orb.appendChild(emojiOverlay);
 
-    // Fade out before removing
+    // Fade out and float upward before removing
     setTimeout(() => {
       emojiOverlay.style.opacity = '0';
+      emojiOverlay.style.transform = 'translate(-50%, -70%)'; // Move up 20% while fading
     }, duration - 500);
 
     // Reset after duration
@@ -206,34 +201,21 @@ export class ContinuumEmoterWidget extends BaseWidget {
   private addStatusMessage(message: string): void {
     console.log('🎭 ContinuumEmoter: addStatusMessage called:', message);
 
-    const timestamp = new Date().toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-
-    this.statusMessages.unshift({ message, timestamp });
-    console.log('🎭 ContinuumEmoter: Status messages array:', this.statusMessages.length, 'messages');
-
-    // Keep only last N messages
-    if (this.statusMessages.length > this.maxMessages) {
-      this.statusMessages.pop();
-    }
-
-    this.updateStatusScroller();
-  }
-
-  /**
-   * Update just the status scroller (not full re-render)
-   */
-  private updateStatusScroller(): void {
     const scroller = this.shadowRoot?.querySelector('.status-scroller');
-    if (scroller) {
-      scroller.innerHTML = this.statusMessages.map(({ message }) => `
-        <div class="status-message-item">
-          <span class="status-text">${message}</span>
-        </div>
-      `).join('');
+    if (!scroller) return;
+
+    // Create DOM element
+    const messageItem = document.createElement('div');
+    messageItem.className = 'status-message-item';
+    messageItem.innerHTML = `<span class="status-text">${message}</span>`;
+
+    // Append to bottom (will flow up due to flex-direction: column + justify-content: flex-end)
+    scroller.appendChild(messageItem);
+
+    // Remove from top if over limit
+    const items = scroller.querySelectorAll('.status-message-item');
+    if (items.length > this.maxMessages) {
+      items[0].remove(); // Remove oldest (at top)
     }
   }
 
