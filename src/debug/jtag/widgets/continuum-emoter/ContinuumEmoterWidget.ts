@@ -38,6 +38,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
 
     await this.startHealthMonitoring();
     this.subscribeToAIEvents();
+    this.subscribeToEmotionEvents();
 
     // Add test message to verify scroller works
     console.log('🎭 ContinuumEmoter: Adding test message...');
@@ -87,6 +88,58 @@ export class ContinuumEmoterWidget extends BaseWidget {
     Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string; personaName?: string; error: string }) => {
       this.addStatusMessage(`${data.personaName || 'AI'}: error ✗`);
     });
+  }
+
+  /**
+   * Subscribe to emotion events (emoji + color overlay)
+   */
+  private subscribeToEmotionEvents(): void {
+    console.log('🎭 ContinuumEmoter: Subscribing to emotion events...');
+
+    Events.subscribe('continuum:emotion', (data: { emoji: string; color: string; duration: number }) => {
+      console.log('🎭 ContinuumEmoter: Received emotion event:', data);
+      this.showEmotion(data.emoji, data.color, data.duration);
+    });
+  }
+
+  /**
+   * Display emotion temporarily (emoji overlay + color glow)
+   */
+  private showEmotion(emoji: string, color: string, duration: number): void {
+    const orb = this.shadowRoot?.querySelector('.status-orb') as HTMLElement;
+    if (!orb) return;
+
+    // Create emoji overlay - positioned INSIDE the ring, ABOVE the orb, BELOW the ring border
+    const emojiOverlay = document.createElement('div');
+    emojiOverlay.className = 'emotion-emoji';
+    emojiOverlay.textContent = emoji;
+    emojiOverlay.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 24px;
+      z-index: 2;
+      pointer-events: none;
+      opacity: 1;
+      transition: opacity 0.5s ease-out;
+    `;
+
+    // Save current color and apply emotion color temporarily
+    const originalColor = orb.style.color;
+    orb.style.color = color;
+    orb.appendChild(emojiOverlay);
+
+    // Fade out before removing
+    setTimeout(() => {
+      emojiOverlay.style.opacity = '0';
+    }, duration - 500);
+
+    // Reset after duration
+    setTimeout(() => {
+      orb.style.color = originalColor;
+      emojiOverlay.remove();
+    }, duration);
   }
 
   /**

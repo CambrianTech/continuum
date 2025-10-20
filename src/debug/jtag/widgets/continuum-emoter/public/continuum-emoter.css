@@ -35,19 +35,21 @@
   border: 2px solid currentColor;
 }
 
-/* Glowing orb inside the ring (behind it) */
+/* Glowing orb inside the ring (behind it) - HAL 9000 incandescent bulb effect */
 .status-orb::before {
   content: '';
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: currentColor;
-  opacity: 0.8;
+  background: radial-gradient(circle, currentColor 0%, currentColor 30%, transparent 70%);
+  opacity: 0.9;
   z-index: -1;
+  filter: blur(2px);
+  box-shadow: 0 0 8px currentColor, 0 0 12px currentColor;
 }
 
 /* Brand Text */
@@ -114,76 +116,44 @@
   font-size: 8px;
 }
 
-/* Orb States - Ring colors using currentColor with radial gradient */
+/* Orb States - Ring colors using currentColor (crisp, no shadow on ring) */
 .status-orb.status-healthy {
   color: var(--color-success, #00ff64);
-  box-shadow: 0 0 12px var(--color-success, rgba(0, 255, 100, 0.7)),
-              0 0 24px var(--color-success, rgba(0, 255, 100, 0.4));
   animation: pulse-healthy 3s infinite;
 }
 
 .status-orb.status-warning {
   color: var(--color-warning, #ffaa00);
-  box-shadow: 0 0 12px var(--color-warning, rgba(255, 170, 0, 0.7)),
-              0 0 24px var(--color-warning, rgba(255, 170, 0, 0.4));
   animation: pulse-warning 2s infinite;
 }
 
 .status-orb.status-error {
   color: var(--color-error, #ff0060);
-  box-shadow: 0 0 12px var(--color-error, rgba(255, 0, 96, 0.7)),
-              0 0 24px var(--color-error, rgba(255, 0, 96, 0.4));
   animation: pulse-error 1s infinite;
 }
 
 .status-orb.status-initializing {
   color: var(--color-primary, #00d9ff);
-  box-shadow: 0 0 12px var(--color-primary, rgba(0, 217, 255, 0.7)),
-              0 0 24px var(--color-primary, rgba(0, 217, 255, 0.4));
   animation: pulse-initializing 2s infinite;
 }
 
-/* Pulse Animations */
+/* Pulse Animations - Animate the inner orb glow via opacity */
 @keyframes pulse-healthy {
-  0%, 100% {
-    box-shadow: 0 0 12px var(--color-success, rgba(0, 255, 100, 0.7)),
-                0 0 24px var(--color-success, rgba(0, 255, 100, 0.4));
-  }
-  50% {
-    box-shadow: 0 0 18px var(--color-success, rgba(0, 255, 100, 0.9)),
-                0 0 36px var(--color-success, rgba(0, 255, 100, 0.6));
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 @keyframes pulse-warning {
-  0%, 100% {
-    box-shadow: 0 0 12px var(--color-warning, rgba(255, 170, 0, 0.7)),
-                0 0 24px var(--color-warning, rgba(255, 170, 0, 0.4));
-  }
-  50% {
-    box-shadow: 0 0 18px var(--color-warning, rgba(255, 170, 0, 0.9)),
-                0 0 36px var(--color-warning, rgba(255, 170, 0, 0.6));
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 @keyframes pulse-error {
-  0%, 100% {
-    box-shadow: 0 0 12px var(--color-error, rgba(255, 0, 96, 0.7)),
-                0 0 24px var(--color-error, rgba(255, 0, 96, 0.4));
-  }
-  50% {
-    box-shadow: 0 0 18px var(--color-error, rgba(255, 0, 96, 0.9)),
-                0 0 36px var(--color-error, rgba(255, 0, 96, 0.6));
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 @keyframes pulse-initializing {
-  0%, 100% {
-    box-shadow: 0 0 12px var(--color-primary, rgba(0, 217, 255, 0.7)),
-                0 0 24px var(--color-primary, rgba(0, 217, 255, 0.4));
-  }
-  50% {
-    box-shadow: 0 0 18px var(--color-primary, rgba(0, 217, 255, 0.9)),
-                0 0 36px var(--color-primary, rgba(0, 217, 255, 0.6));
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
