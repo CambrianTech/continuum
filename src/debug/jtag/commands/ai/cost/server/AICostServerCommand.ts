@@ -95,18 +95,11 @@ export class AICostServerCommand extends AICostCommand {
 
       const topModels = params.includeTopModels ? this.getTopModels(finalGens, totalCost, params.includeTopModels) : undefined;
 
-      // Time-series data for graphing
-      const timeSeries = params.includeTimeSeries ? this.generateMockTimeSeries(startTime, endTime, params.interval || '1h') : undefined;
+      // Time-series data for graphing (use real data from generations)
+      const timeSeries = params.includeTimeSeries ? this.generateTimeSeries(finalGens, startTime, endTime, params.interval || '1h') : undefined;
 
-      // Latency metrics
-      const latency = params.includeLatency ? {
-        avgLatency: 1234,
-        minLatency: 450,
-        maxLatency: 3200,
-        p50: 1100,
-        p95: 2500,
-        p99: 3000
-      } : undefined;
+      // Latency metrics (calculate from real response times)
+      const latency = params.includeLatency ? this.calculateLatencyMetrics(finalGens) : undefined;
 
       // Format output
       if (params.format === 'text') {
@@ -223,9 +216,53 @@ export class AICostServerCommand extends AICostCommand {
   }
 
   /**
-   * Generate mock time-series data (TODO: replace with real database queries)
+   * Calculate latency metrics (percentiles) from response times
    */
-  private generateMockTimeSeries(startTime: number, endTime: number, interval: string): Array<{
+  private calculateLatencyMetrics(generations: AIGenerationEntity[]): {
+    avgLatency: number;
+    minLatency: number;
+    maxLatency: number;
+    p50: number;
+    p95: number;
+    p99: number;
+  } {
+    if (generations.length === 0) {
+      return { avgLatency: 0, minLatency: 0, maxLatency: 0, p50: 0, p95: 0, p99: 0 };
+    }
+
+    // Sort response times
+    const responseTimes = generations.map(g => g.responseTime).sort((a, b) => a - b);
+
+    const sum = responseTimes.reduce((acc, val) => acc + val, 0);
+    const avg = Math.round(sum / responseTimes.length);
+    const min = responseTimes[0];
+    const max = responseTimes[responseTimes.length - 1];
+
+    // Calculate percentiles
+    const getPercentile = (p: number): number => {
+      const index = Math.ceil((p / 100) * responseTimes.length) - 1;
+      return responseTimes[Math.max(0, index)];
+    };
+
+    return {
+      avgLatency: avg,
+      minLatency: min,
+      maxLatency: max,
+      p50: getPercentile(50),
+      p95: getPercentile(95),
+      p99: getPercentile(99)
+    };
+  }
+
+  /**
+   * Generate time-series data from actual generations grouped by interval
+   */
+  private generateTimeSeries(
+    generations: AIGenerationEntity[],
+    startTime: number,
+    endTime: number,
+    interval: string
+  ): Array<{
     timestamp: string;
     cost: number;
     generations: number;
@@ -233,15 +270,31 @@ export class AICostServerCommand extends AICostCommand {
     avgResponseTime: number;
   }> {
     const intervalMs = this.parseIntervalToMs(interval);
-    const points: Array<any> = [];
+    const buckets: Map<number, AIGenerationEntity[]> = new Map();
 
+    // Group generations into time buckets
+    for (const gen of generations) {
+      const bucketTime = Math.floor(gen.timestamp / intervalMs) * intervalMs;
+      if (!buckets.has(bucketTime)) {
+        buckets.set(bucketTime, []);
+      }
+      buckets.get(bucketTime)!.push(gen);
+    }
+
+    // Generate points for each bucket (including empty ones)
+    const points: Array<any> = [];
     for (let time = startTime; time < endTime; time += intervalMs) {
+      const bucketGens = buckets.get(time) || [];
+      const cost = bucketGens.reduce((sum, g) => sum + g.estimatedCost, 0);
+      const tokens = bucketGens.reduce((sum, g) => sum + g.totalTokens, 0);
+      const totalResponseTime = bucketGens.reduce((sum, g) => sum + g.responseTime, 0);
+
       points.push({
         timestamp: new Date(time).toISOString(),
-        cost: Math.random() * 0.5,
-        generations: Math.floor(Math.random() * 10) + 1,
-        tokens: Math.floor(Math.random() * 5000) + 1000,
-        avgResponseTime: Math.floor(Math.random() * 2000) + 500
+        cost,
+        generations: bucketGens.length,
+        tokens,
+        avgResponseTime: bucketGens.length > 0 ? Math.round(totalResponseTime / bucketGens.length) : 0
       });
     }
 
