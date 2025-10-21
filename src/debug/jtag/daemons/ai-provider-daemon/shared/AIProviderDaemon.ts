@@ -35,6 +35,10 @@ import type {
   ProviderRegistration,
 } from './AIProviderTypesV2';
 import { AIProviderError, chatMessagesToPrompt } from './AIProviderTypesV2';
+import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEntity';
+import { Commands } from '../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
+import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 
 // AI Provider Payloads
 export interface AIProviderPayload extends JTAGPayload {
@@ -191,12 +195,121 @@ export class AIProviderDaemon extends DaemonBase {
 
     try {
       const response = await adapter.generateText(request);
+
+      // Log successful generation to database for cost tracking
+      // This is the SINGLE source of truth - only daemon logs, not individual adapters
+      await this.logGeneration(response, request);
+
       return response;
     } catch (error) {
       console.error(`❌ AIProviderDaemon: Text generation failed with ${adapter.providerId}`);
 
+      // Log failed generation to database
+      await this.logFailedGeneration(
+        request.requestId || `req-${Date.now()}`,
+        request.model || 'unknown',
+        error,
+        request,
+        adapter.providerId
+      );
+
       // TODO: Implement failover to alternative providers
       throw error;
+    }
+  }
+
+  /**
+   * Log successful AI generation to database for cost tracking
+   * SINGLE source of truth - called only by AIProviderDaemon, not adapters
+   */
+  private async logGeneration(response: TextGenerationResponse, request: TextGenerationRequest): Promise<void> {
+    try {
+      const result = AIGenerationEntity.create({
+        timestamp: Date.now(),
+        requestId: response.requestId,
+        provider: response.provider,
+        model: response.model,
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        totalTokens: response.usage.totalTokens,
+        estimatedCost: response.usage.estimatedCost || 0,
+        responseTime: response.responseTime,
+        userId: request.userId,
+        roomId: request.roomId,
+        purpose: request.purpose || 'chat',
+        finishReason: response.finishReason,
+        success: true
+      });
+
+      if (!result.success || !result.entity) {
+        console.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity: ${result.error}`);
+        return;
+      }
+
+      // Persist to database using data/create command
+      await Commands.execute<DataCreateParams<AIGenerationEntity>, DataCreateResult<AIGenerationEntity>>(
+        DATA_COMMANDS.CREATE,
+        {
+          collection: 'ai_generations',
+          backend: 'server',
+          data: result.entity
+        }
+      );
+
+      console.log(`💾 AIProviderDaemon: Logged generation (${response.provider}/${response.model}, ${response.usage.totalTokens} tokens, $${(response.usage.estimatedCost || 0).toFixed(4)})`);
+    } catch (error) {
+      // Don't fail generation if logging fails - just warn
+      console.error(`❌ AIProviderDaemon: Failed to log generation:`, error);
+    }
+  }
+
+  /**
+   * Log failed AI generation to database
+   */
+  private async logFailedGeneration(
+    requestId: string,
+    model: string,
+    error: unknown,
+    request: TextGenerationRequest,
+    providerId: string
+  ): Promise<void> {
+    try {
+      const result = AIGenerationEntity.create({
+        timestamp: Date.now(),
+        requestId,
+        provider: providerId,
+        model,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        estimatedCost: 0,
+        responseTime: 0,
+        userId: request.userId,
+        roomId: request.roomId,
+        purpose: request.purpose || 'chat',
+        finishReason: 'error' as const,
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      if (!result.success || !result.entity) {
+        console.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity for error: ${result.error}`);
+        return;
+      }
+
+      // Persist to database
+      await Commands.execute<DataCreateParams<AIGenerationEntity>, DataCreateResult<AIGenerationEntity>>(
+        DATA_COMMANDS.CREATE,
+        {
+          collection: 'ai_generations',
+          backend: 'server',
+          data: result.entity
+        }
+      );
+
+      console.log(`💾 AIProviderDaemon: Logged failed generation (${providerId}/${model})`);
+    } catch (logError) {
+      console.error(`❌ AIProviderDaemon: Failed to log error:`, logError);
     }
   }
 

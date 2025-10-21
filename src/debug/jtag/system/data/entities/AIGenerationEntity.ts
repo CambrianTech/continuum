@@ -9,45 +9,81 @@
  */
 
 import { BaseEntity } from './BaseEntity';
+import { TextField, NumberField, BooleanField } from '../decorators/FieldDecorators';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
-export interface AIGenerationData {
-  id: UUID;
+export class AIGenerationEntity extends BaseEntity {
+  // Single source of truth for collection name
+  static readonly collection = 'ai_generations';
 
   // Generation metadata
-  timestamp: number;
-  requestId: string;
+  @NumberField()
+  timestamp!: number;
+
+  @TextField()
+  requestId!: string;
 
   // AI model info
-  provider: string;              // 'openai', 'anthropic', 'ollama', etc.
-  model: string;                 // 'gpt-4', 'claude-3-opus', 'deepseek-r1', etc.
+  @TextField()
+  provider!: string;              // 'openai', 'anthropic', 'ollama', etc.
+
+  @TextField()
+  model!: string;                 // 'gpt-4', 'claude-3-opus', 'deepseek-r1', etc.
 
   // Usage metrics
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  estimatedCost: number;         // USD
-  responseTime: number;          // milliseconds
+  @NumberField()
+  inputTokens!: number;
 
-  // Context
+  @NumberField()
+  outputTokens!: number;
+
+  @NumberField()
+  totalTokens!: number;
+
+  @NumberField()
+  estimatedCost!: number;         // USD
+
+  @NumberField()
+  responseTime!: number;          // milliseconds
+
+  // Context (optional)
+  @TextField({ nullable: true })
   userId?: UUID;                 // PersonaUser or HumanUser who requested
+
+  @TextField({ nullable: true })
   roomId?: UUID;                 // Chat room context (if applicable)
+
+  @TextField({ nullable: true })
   purpose?: string;              // 'chat', 'should-respond', 'generate-response', etc.
 
   // Result
-  finishReason: 'stop' | 'length' | 'error';
-  success: boolean;
+  @TextField()
+  finishReason!: 'stop' | 'length' | 'error';
+
+  @BooleanField()
+  success!: boolean;
+
+  @TextField({ nullable: true })
   error?: string;
 
-  // Versioning
-  version: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export class AIGenerationEntity extends BaseEntity<AIGenerationData> {
-  protected getCollectionName(): string {
+  get collection(): string {
     return 'ai_generations';
+  }
+
+  validate(): { success: boolean; error?: string } {
+    if (!this.requestId || !this.provider || !this.model) {
+      return { success: false, error: 'Missing required fields: requestId, provider, model' };
+    }
+
+    if (this.inputTokens < 0 || this.outputTokens < 0) {
+      return { success: false, error: 'Token counts cannot be negative' };
+    }
+
+    if (this.estimatedCost < 0) {
+      return { success: false, error: 'Cost cannot be negative' };
+    }
+
+    return { success: true };
   }
 
   /**
@@ -76,10 +112,8 @@ export class AIGenerationEntity extends BaseEntity<AIGenerationData> {
     }
   ): Promise<AIGenerationEntity> {
     const now = Date.now();
-    const entity = new AIGenerationEntity();
 
-    entity.data = {
-      id: entity.generateId(),
+    const result = AIGenerationEntity.create({
       timestamp: now,
       requestId: response.requestId,
       provider: response.provider,
@@ -94,13 +128,14 @@ export class AIGenerationEntity extends BaseEntity<AIGenerationData> {
       purpose: context.purpose,
       finishReason: response.finishReason,
       success: !response.error,
-      error: response.error,
-      version: 1,
-      createdAt: now,
-      updatedAt: now
-    };
+      error: response.error
+    });
 
-    return entity;
+    if (!result.success || !result.entity) {
+      throw new Error(`Failed to create AIGenerationEntity: ${result.error}`);
+    }
+
+    return result.entity;
   }
 
   /**
