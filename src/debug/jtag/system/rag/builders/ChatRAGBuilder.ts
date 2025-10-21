@@ -186,7 +186,7 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       // Query last N messages from this room, ordered by timestamp DESC
       const result = await DataDaemon.query<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
-        filters: { roomId },
+        filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: maxMessages
       });
@@ -248,7 +248,7 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       // Load messages with attachments
       const result = await DataDaemon.query<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
-        filters: { roomId },
+        filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
         limit: maxMessages
       });

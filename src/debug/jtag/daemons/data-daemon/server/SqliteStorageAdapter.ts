@@ -1212,15 +1212,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     // Build WHERE clause from filters
     const whereClauses: string[] = [];
 
-    // Legacy filters (backward compatibility)
-    if (query.filters) {
-      for (const [field, value] of Object.entries(query.filters)) {
-        const columnName = SqlNamingConverter.toSnakeCase(field);
-        whereClauses.push(`${columnName} = ?`);
-        params.push(value);
-      }
-    }
-
     // Universal filters with operators
     if (query.filter) {
       for (const [field, filter] of Object.entries(query.filter)) {
@@ -1297,6 +1288,12 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       sql += ` WHERE ${whereClauses.join(' AND ')}`;
     }
 
+    // DEBUG: Log generated SQL and params for range operator debugging
+    if (whereClauses.length > 0) {
+      console.log('🔍 SQL-DEBUG: WHERE clause:', sql.substring(sql.lastIndexOf('WHERE')));
+      console.log('🔍 SQL-DEBUG: Params:', params);
+    }
+
     // Add time range filter
     if (query.timeRange) {
       const timeFilters: string[] = [];
@@ -1309,8 +1306,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         params.push(query.timeRange.end);
       }
       if (timeFilters.length > 0) {
-        const whereClause = query.filters ? ' AND ' : ' WHERE ';
-        sql += whereClause + timeFilters.join(' AND ');
+        sql += ' WHERE ' + timeFilters.join(' AND ');
       }
     }
 
@@ -1362,18 +1358,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     const tableName = SqlNamingConverter.toTableName(query.collection);
     let sql = `SELECT * FROM ${tableName}`;
 
-    // Add basic filters using JSON_EXTRACT on data column
-    if (query.filters) {
-      const filterClauses: string[] = [];
-      for (const [field, value] of Object.entries(query.filters)) {
-        filterClauses.push(`JSON_EXTRACT(data, '$.${field}') = ?`);
-        params.push(value);
-      }
-      if (filterClauses.length > 0) {
-        sql += ` WHERE ${filterClauses.join(' AND ')}`;
-      }
-    }
-
     // Add time range filter
     if (query.timeRange) {
       const timeFilters: string[] = [];
@@ -1386,8 +1370,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
         params.push(query.timeRange.end);
       }
       if (timeFilters.length > 0) {
-        const whereClause = query.filters ? ' AND ' : ' WHERE ';
-        sql += whereClause + timeFilters.join(' AND ');
+        sql += ' WHERE ' + timeFilters.join(' AND ');
       }
     }
 
@@ -1435,14 +1418,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     const params: any[] = [];
     let sql = 'SELECT * FROM _data WHERE collection = ?';
     params.push(query.collection);
-
-    // Add basic filters
-    if (query.filters) {
-      for (const [field, value] of Object.entries(query.filters)) {
-        sql += ` AND JSON_EXTRACT(data, '$.${field}') = ?`;
-        params.push(value);
-      }
-    }
 
     // Add time range filter
     if (query.timeRange) {

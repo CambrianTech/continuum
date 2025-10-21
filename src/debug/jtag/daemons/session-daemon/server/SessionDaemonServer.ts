@@ -365,7 +365,7 @@ export class SessionDaemonServer extends SessionDaemon {
       // Query users by uniqueId (the single source of truth for citizen identity)
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
-        filters: { uniqueId }
+        filter: { uniqueId }
       });
 
       if (!result.success || !result.data || result.data.length === 0) {

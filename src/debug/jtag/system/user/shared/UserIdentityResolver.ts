@@ -159,7 +159,7 @@ export class UserIdentityResolver {
     try {
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
-        filters: { uniqueId },
+        filter: { uniqueId },
         limit: 1
       });
 

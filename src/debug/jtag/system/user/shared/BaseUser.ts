@@ -73,7 +73,7 @@ export abstract class BaseUser {
       // Query all rooms
       const roomsResult = await DataDaemon.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
-        filters: {}
+        filter: {}
       });
 
       if (!roomsResult.success || !roomsResult.data) {
@@ -263,7 +263,7 @@ export abstract class BaseUser {
     // Query room by uniqueId (stable identifier)
     const roomsResult = await DataDaemon.query<RoomEntity>({
       collection: COLLECTIONS.ROOMS,
-      filters: { uniqueId: roomUniqueId }
+      filter: { uniqueId: roomUniqueId }
     });
 
     console.log(`🔍 ${this.name}: Query result for uniqueId="${roomUniqueId}":`, JSON.stringify(roomsResult, null, 2).slice(0, 500));

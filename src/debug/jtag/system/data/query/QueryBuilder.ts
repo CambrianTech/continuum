@@ -342,8 +342,8 @@ export class DynamicQueryBuilder {
     const builder = new DynamicQueryBuilder(query.collection);
 
     // Add filters
-    if (query.filters) {
-      for (const [field, value] of Object.entries(query.filters)) {
+    if (query.filter) {
+      for (const [field, value] of Object.entries(query.filter)) {
         if (Array.isArray(value)) {
           builder.where(field, 'IN', value);
         } else if (value === null) {

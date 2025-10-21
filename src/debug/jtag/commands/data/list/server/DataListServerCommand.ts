@@ -44,7 +44,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       // FIRST: Get total count with same filters (no limit, no cursor)
       const countQuery = {
         collection,
-        filters: params.filter
+        filter: params.filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
       };
       const countResult = await DataDaemon.query<BaseEntity>(countQuery);
       const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
@@ -53,7 +53,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {
         collection,
-        filters: params.filter,
+        filter: params.filter,  // Use 'filter' (new) not 'filters' (legacy) for operator support
         sort: params.orderBy?.map(order => ({
           field: order.field,
           direction: order.direction

@@ -64,17 +64,6 @@ export class SqliteQueryBuilder {
       }
     }
 
-    // Legacy filters (backward compatibility)
-    if (query.filters) {
-      operations.push('FILTER with legacy filters:');
-      for (const [field, value] of Object.entries(query.filters)) {
-        const columnName = `JSON_EXTRACT(data, '$.${field}')`;
-        whereClauses.push(`${columnName} = ?`);
-        params.push(value);
-        operations.push(`  - field "${field}" equals ${JSON.stringify(value)}`);
-      }
-    }
-
     if (whereClauses.length > 0) {
       sql += ' WHERE ' + whereClauses.join(' AND ');
     }

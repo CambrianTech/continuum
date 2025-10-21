@@ -156,8 +156,8 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
       let records = Array.from(collectionMap.values()) as DataRecord<T>[];
       
       // Apply filters
-      if (query.filters) {
-        records = records.filter(record => this.matchesFilters(record, query.filters));
+      if (query.filter) {
+        records = records.filter(record => this.matchesFilters(record, query.filter));
       }
       
       // Apply time range filter

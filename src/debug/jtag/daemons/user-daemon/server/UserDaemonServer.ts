@@ -121,7 +121,7 @@ export class UserDaemonServer extends UserDaemon {
       // Query all PersonaUser entities from database
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
-        filters: { type: 'persona' }
+        filter: { type: 'persona' }
       });
 
       if (!result.success || !result.data) {
@@ -298,7 +298,7 @@ export class UserDaemonServer extends UserDaemon {
       // Query ALL users from database
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
-        filters: {} // ALL users
+        filter: {} // ALL users
       });
 
       if (!result.success || !result.data) {
@@ -332,7 +332,7 @@ export class UserDaemonServer extends UserDaemon {
       // Find personas that should have clients but don't
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
-        filters: { type: 'persona' }
+        filter: { type: 'persona' }
       });
 
       if (!result.success || !result.data) {

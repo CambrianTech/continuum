@@ -73,12 +73,11 @@ export interface UniversalFilter {
 }
 
 /**
- * Enhanced Storage Query Interface - Universal & Backward Compatible
+ * Enhanced Storage Query Interface - Universal Filter System
  */
 export interface StorageQuery {
   readonly collection: string;
-  readonly filters?: RecordData; // Legacy simple filters (backward compatibility)
-  readonly filter?: UniversalFilter; // New universal filter system
+  readonly filter?: UniversalFilter; // Universal filter system with operator support
   readonly sort?: { field: string; direction: 'asc' | 'desc' }[];
   readonly limit?: number;
   readonly offset?: number;

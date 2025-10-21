@@ -598,9 +598,9 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
    */
   private applyFilters<T extends RecordData>(records: DataRecord<T>[], query: StorageQuery): DataRecord<T>[] {
     // Legacy filters (backward compatibility)
-    if (query.filters) {
+    if (query.filter) {
       records = records.filter(record => {
-        for (const [field, value] of Object.entries(query.filters!)) {
+        for (const [field, value] of Object.entries(query.filter!)) {
           const recordValue = this.getFieldValue(record, field);
           if (recordValue !== value) return false;
         }
@@ -929,9 +929,9 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
       }
 
       // Legacy filters
-      if (query.filters) {
+      if (query.filter) {
         operations.push(`2. FILTER records (legacy) where:`);
-        for (const [field, value] of Object.entries(query.filters)) {
+        for (const [field, value] of Object.entries(query.filter)) {
           operations.push(`   - field "${field}" equals ${JSON.stringify(value)}`);
         }
       }
@@ -1039,8 +1039,8 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
       }
     }
 
-    if (query.filters) {
-      for (const value of Object.values(query.filters)) {
+    if (query.filter) {
+      for (const value of Object.values(query.filter)) {
         params.push(value);
       }
     }
