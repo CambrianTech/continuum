@@ -49,7 +49,8 @@ export class AICostServerCommand extends AICostCommand {
         {
           collection: 'ai_generations',
           filter,
-          orderBy: [{ field: 'timestamp', direction: 'desc' }]
+          orderBy: [{ field: 'timestamp', direction: 'desc' }],
+          limit: -1  // Get ALL records (no pagination for aggregate queries)
         }
       );
 
