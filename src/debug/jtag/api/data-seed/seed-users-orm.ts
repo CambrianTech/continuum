@@ -2,8 +2,8 @@
 /**
  * Simple User Seeding with UserRepository ORM
  *
- * Just focus on getting users working with the new ORM.
- * Forget rooms/messages for now - one thing at a time.
+ * Uses SystemIdentity for smart defaults based on environment.
+ * No hardcoded personal data - adapts to each developer's machine.
  */
 
 import { UserRepositoryFactory } from '../../domain/user/UserRepositoryFactory';
@@ -11,9 +11,10 @@ import { HumanUser } from '../../domain/user/HumanUser';
 import { AgentUser } from '../../domain/user/AgentUser';
 import { PersonaUser } from '../../domain/user/PersonaUser';
 import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
+import { SystemIdentity } from './SystemIdentity';
 
 async function seedUsers() {
-  console.log('🌱 SEEDING USERS - UserRepository ORM only');
+  console.log('🌱 SEEDING USERS - UserRepository ORM with SystemIdentity');
 
   try {
     // Get repositories for development (JSON files)
@@ -26,11 +27,15 @@ async function seedUsers() {
       source: 'user-seeder'
     };
 
-    // Create Joel (human)
-    const joelData = {
-      userId: generateUUID(),
+    // Get system identity (uses HOME dir / username)
+    const identity = SystemIdentity.getIdentity();
+    console.log(`📝 Using system identity: ${identity.displayName} (${identity.username})`);
+
+    // Create system owner (human) using dynamic identity
+    const humanData = {
+      userId: identity.userId, // Consistent ID based on username
       sessionId: generateUUID(),
-      displayName: "Joel",
+      displayName: identity.displayName,
       citizenType: 'human' as const,
       capabilities: ["chat", "human_interaction", "authentication", "admin"],
       createdAt: new Date().toISOString(),
@@ -41,10 +46,10 @@ async function seedUsers() {
         autoComplete: true
       },
       isOnline: true,
-      email: "joel@continuum.dev",
+      email: identity.email,
       profile: {
-        avatar: "👨‍💻",
-        bio: "Human user - repository owner and primary contributor",
+        avatar: identity.avatar,
+        bio: `System owner - ${identity.hostname}`,
         location: "Development Environment",
         socialLinks: {},
         privacySettings: {
@@ -55,13 +60,13 @@ async function seedUsers() {
       }
     };
 
-    const joel = new HumanUser(joelData);
-    const joelResult = await userRepository.createUser(joelData, context);
+    const human = new HumanUser(humanData);
+    const humanResult = await userRepository.createUser(humanData, context);
 
-    if (joelResult.success) {
-      console.log('👤 Created Joel (Human)');
+    if (humanResult.success) {
+      console.log(`👤 Created ${identity.displayName} (Human)`);
     } else {
-      console.error('❌ Failed to create Joel:', joelResult.error);
+      console.error(`❌ Failed to create ${identity.displayName}:`, humanResult.error);
     }
 
     // Create Claude Code (agent)

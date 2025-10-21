@@ -15,6 +15,7 @@
 
 import UserDataSeed from './UserDataSeed';
 import RoomDataSeed from './RoomDataSeed';
+import { SystemIdentity } from './SystemIdentity';
 
 // Rust-like branded types for strict typing
 export type CollectionName = string & { readonly __brand: 'CollectionName' };
@@ -107,7 +108,7 @@ export class DataSeeder {
   }
 
   /**
-   * Seed all users - joel + AI agents
+   * Seed all users - system owner + AI agents
    */
   private static async seedUsers(): Promise<void> {
     console.log('👥 Seeding users...');
@@ -142,7 +143,8 @@ export class DataSeeder {
   private static async seedChatRooms(): Promise<Map<string, string>> {
     console.log('🏠 Seeding chat rooms...');
 
-    const roomData = RoomDataSeed.generateSeedRooms();
+    const identity = SystemIdentity.getIdentity();
+    const roomData = RoomDataSeed.generateSeedRooms(identity.userId as any);
     const roomIdMap = new Map<string, string>();
 
     for (const room of roomData.rooms) {
@@ -178,7 +180,8 @@ export class DataSeeder {
   private static async seedInitialMessages(roomIdMap: Map<string, string>): Promise<void> {
     console.log('💬 Seeding initial messages...');
 
-    const messages = RoomDataSeed.generateSeedMessages(roomIdMap);
+    const identity = SystemIdentity.getIdentity();
+    const messages = RoomDataSeed.generateSeedMessages(roomIdMap, identity.userId as any, identity.displayName);
 
     for (const message of messages) {
       try {
@@ -257,7 +260,7 @@ export class DataSeeder {
       
       console.log('=='.repeat(40));
       console.log('🎉 COMPLETE! System ready with fresh data for new repo users');
-      console.log('👥 Users: joel + 5 AI agents (Claude Code, GeneralAI, CodeAI, PlannerAI, Auto Route)');
+      console.log('👥 Users: system owner + 5 AI agents (Claude Code, GeneralAI, CodeAI, PlannerAI, Auto Route)');
       console.log('🏠 Rooms: general (6 members), academy (3 members)');
       console.log('💬 Messages: Welcome messages in both rooms');
       console.log('✅ All data verified and ready for development');

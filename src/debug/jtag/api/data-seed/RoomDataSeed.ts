@@ -8,7 +8,6 @@
 import { RoomEntity } from '../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../system/data/entities/ChatMessageEntity';
 import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
-import { USER_IDS } from './SeedConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { COLLECTIONS } from '../../system/data/config/DatabaseConfig';
 
@@ -24,8 +23,9 @@ export class RoomDataSeed {
   
   /**
    * Generate seed rooms using RoomEntity structure with stable uniqueIds
+   * @param humanUserId - The userId of the system owner (from SystemIdentity)
    */
-  public static generateSeedRooms(): RoomSeedData {
+  public static generateSeedRooms(humanUserId: UUID): RoomSeedData {
     const now = new Date();
     const rooms: RoomEntity[] = [];
 
@@ -38,7 +38,7 @@ export class RoomDataSeed {
     general.topic = 'General chat and collaboration';
     general.type = 'public';
     general.status = 'active';
-    general.ownerId = USER_IDS.HUMAN as UUID;
+    general.ownerId = humanUserId;
     general.lastMessageAt = now;
     general.privacy = {
       isPublic: true,
@@ -54,7 +54,7 @@ export class RoomDataSeed {
       slowMode: 0
     };
     general.members = [
-      { userId: USER_IDS.HUMAN as UUID, role: 'owner', joinedAt: now }
+      { userId: humanUserId, role: 'owner', joinedAt: now }
     ];
     general.tags = ['general', 'chat'];
     rooms.push(general);
@@ -68,7 +68,7 @@ export class RoomDataSeed {
     academy.topic = 'Study, tutorials, and knowledge sharing';
     academy.type = 'public';
     academy.status = 'active';
-    academy.ownerId = USER_IDS.HUMAN as UUID;
+    academy.ownerId = humanUserId;
     academy.lastMessageAt = now;
     academy.privacy = {
       isPublic: true,
@@ -84,7 +84,7 @@ export class RoomDataSeed {
       slowMode: 0
     };
     academy.members = [
-      { userId: USER_IDS.HUMAN as UUID, role: 'owner', joinedAt: now }
+      { userId: humanUserId, role: 'owner', joinedAt: now }
     ];
     academy.tags = ['education', 'learning'];
     rooms.push(academy);
@@ -98,7 +98,7 @@ export class RoomDataSeed {
     pantheon.topic = 'Advanced reasoning and multi-model collaboration';
     pantheon.type = 'public';
     pantheon.status = 'active';
-    pantheon.ownerId = USER_IDS.HUMAN as UUID;
+    pantheon.ownerId = humanUserId;
     pantheon.lastMessageAt = now;
     pantheon.privacy = {
       isPublic: true,
@@ -114,7 +114,7 @@ export class RoomDataSeed {
       slowMode: 0
     };
     pantheon.members = [
-      { userId: USER_IDS.HUMAN as UUID, role: 'owner', joinedAt: now }
+      { userId: humanUserId, role: 'owner', joinedAt: now }
     ];
     pantheon.tags = ['sota', 'elite', 'reasoning'];
     rooms.push(pantheon);
@@ -129,8 +129,12 @@ export class RoomDataSeed {
   /**
    * Generate seed messages using ChatMessageEntity structure
    * Note: Room membership should be established before creating messages
+   *
+   * @param roomIds - Map of room unique IDs to their database IDs
+   * @param humanUserId - The userId of the system owner (from SystemIdentity)
+   * @param senderName - Name of the system owner (from SystemIdentity)
    */
-  public static generateSeedMessages(roomIds: Map<string, UUID>): ChatMessageEntity[] {
+  public static generateSeedMessages(roomIds: Map<string, UUID>, humanUserId: UUID, senderName: string = 'Human'): ChatMessageEntity[] {
     const messages: ChatMessageEntity[] = [];
     const now = new Date();
 
@@ -142,8 +146,8 @@ export class RoomDataSeed {
       // Welcome message for general room
       const welcome = new ChatMessageEntity();
       welcome.roomId = generalRoomId;
-      welcome.senderId = USER_IDS.HUMAN as UUID;
-      welcome.senderName = 'Joel';
+      welcome.senderId = humanUserId;
+      welcome.senderName = senderName;
       welcome.senderType = 'human'; // Denormalized user type (human seed message)
       welcome.content = {
         text: 'Welcome to the General room! This is where we discuss development, collaborate, and share ideas.',
@@ -160,8 +164,8 @@ export class RoomDataSeed {
       // Academy welcome
       const academyWelcome = new ChatMessageEntity();
       academyWelcome.roomId = academyRoomId;
-      academyWelcome.senderId = USER_IDS.HUMAN as UUID;
-      academyWelcome.senderName = 'Joel';
+      academyWelcome.senderId = humanUserId;
+      academyWelcome.senderName = senderName;
       academyWelcome.senderType = 'human'; // Denormalized user type (human seed message)
       academyWelcome.content = {
         text: 'Welcome to the Academy! This room is for learning, tutorials, and educational discussions.',
@@ -178,8 +182,8 @@ export class RoomDataSeed {
       // Pantheon welcome
       const pantheonWelcome = new ChatMessageEntity();
       pantheonWelcome.roomId = pantheonRoomId;
-      pantheonWelcome.senderId = USER_IDS.HUMAN as UUID;
-      pantheonWelcome.senderName = 'Joel';
+      pantheonWelcome.senderId = humanUserId;
+      pantheonWelcome.senderName = senderName;
       pantheonWelcome.senderType = 'human'; // Denormalized user type (human seed message)
       pantheonWelcome.content = {
         text: 'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
