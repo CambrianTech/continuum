@@ -35,6 +35,8 @@ import type {
 } from '../AIProviderTypesV2';
 import { AIProviderError } from '../AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
+import { PricingManager } from '../PricingManager';
+import { PricingFetcher } from '../PricingFetcher';
 
 export interface OpenAICompatibleConfig {
   providerId: string;
@@ -79,6 +81,9 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       );
     }
 
+    // Fetch live pricing if OpenRouter supports this provider
+    await this.fetchAndCachePricing();
+
     // Health check to verify connectivity
     const health = await this.healthCheck();
     if (health.status === 'unhealthy') {
@@ -87,6 +92,39 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
     this.isInitialized = true;
     console.log(`✅ ${this.providerName}: Initialized successfully`);
+  }
+
+  /**
+   * Fetch live pricing from API sources (OpenRouter, provider API, etc.)
+   * Override in subclass for provider-specific pricing sources
+   */
+  protected async fetchAndCachePricing(): Promise<void> {
+    try {
+      console.log(`💰 ${this.providerName}: Fetching live pricing...`);
+
+      // Try OpenRouter first (aggregates many providers)
+      const openRouterPricing = await PricingFetcher.fetchFromOpenRouter();
+
+      let pricingCached = 0;
+      const pricingManager = PricingManager.getInstance();
+
+      for (const [modelId, pricing] of openRouterPricing.entries()) {
+        // Parse OpenRouter model ID (e.g., "openai/gpt-4" → provider: "openai", model: "gpt-4")
+        const parsed = PricingFetcher.parseOpenRouterModelId(modelId);
+        if (parsed && parsed.provider === this.providerId) {
+          pricingManager.registerAdapterPricing(parsed.provider, parsed.model, pricing);
+          pricingCached++;
+        }
+      }
+
+      if (pricingCached > 0) {
+        console.log(`✅ ${this.providerName}: Cached live pricing for ${pricingCached} models from OpenRouter`);
+      } else {
+        console.log(`⚠️  ${this.providerName}: No live pricing found, falling back to static pricing`);
+      }
+    } catch (error) {
+      console.warn(`⚠️  ${this.providerName}: Failed to fetch live pricing, using static fallback:`, error);
+    }
   }
 
   /**
@@ -143,7 +181,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         throw new AIProviderError('No completion in response', 'provider', 'NO_COMPLETION');
       }
 
-      return {
+      const generationResponse: TextGenerationResponse = {
         text: choice.message?.content || '',
         finishReason: this.mapFinishReason(choice.finish_reason),
         model: response.model || model,
@@ -157,7 +195,12 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         responseTime,
         requestId,
       };
+
+      // Database logging handled by AIProviderDaemon (single source of truth)
+      return generationResponse;
     } catch (error) {
+      // Error logging handled by AIProviderDaemon
+
       throw new AIProviderError(
         `Text generation failed: ${error instanceof Error ? error.message : String(error)}`,
         'provider',
@@ -166,6 +209,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       );
     }
   }
+
 
   /**
    * Image generation using OpenAI images API (DALL-E)
@@ -357,12 +401,28 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
   // ========================
 
   /**
-   * Calculate cost based on usage and model
-   * Override in subclass for provider-specific pricing
+   * Calculate cost based on usage and model using PricingManager
+   * Override in subclass ONLY if provider has special cost calculation needs
    */
   protected calculateCost(usage: any, model: string): number {
-    // Default: $0 (override in subclass with actual pricing)
-    return 0;
+    if (!usage || (!usage.prompt_tokens && !usage.completion_tokens)) {
+      return 0;
+    }
+
+    const pricingManager = PricingManager.getInstance();
+    const pricing = pricingManager.getModelPricing(this.providerId, model);
+
+    if (!pricing) {
+      console.warn(`⚠️  ${this.providerName}: No pricing found for model ${model}, cost = $0`);
+      return 0;
+    }
+
+    // Use PricingManager's conservative rounding (always round UP)
+    return pricingManager.calculateCost(
+      usage.prompt_tokens || 0,
+      usage.completion_tokens || 0,
+      pricing
+    );
   }
 
   /**

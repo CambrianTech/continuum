@@ -107,6 +107,11 @@ export interface TextGenerationRequest {
   // Provider preference
   preferredProvider?: string;
   preferredCapabilities?: ModelCapability[];
+
+  // Cost tracking metadata (optional)
+  userId?: UUID;
+  roomId?: UUID;
+  purpose?: string;  // 'chat', 'should-respond', 'rag', 'embedding', etc.
 }
 
 export interface AudioGenerationRequest {

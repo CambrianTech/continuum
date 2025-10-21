@@ -69,18 +69,6 @@ export class OpenAIAdapter extends BaseOpenAICompatibleAdapter {
     });
   }
 
-  /**
-   * Override to calculate actual OpenAI costs
-   */
-  protected override calculateCost(usage: any, model: string): number {
-    if (!usage) return 0;
-
-    const modelConfig = this.config.models?.find(m => m.id === model);
-    if (!modelConfig?.costPer1kTokens) return 0;
-
-    const inputCost = (usage.prompt_tokens / 1000) * modelConfig.costPer1kTokens.input;
-    const outputCost = (usage.completion_tokens / 1000) * modelConfig.costPer1kTokens.output;
-
-    return inputCost + outputCost;
-  }
+  // Cost calculation now handled by BaseOpenAICompatibleAdapter using PricingManager
+  // No need to override unless OpenAI has special pricing logic
 }
