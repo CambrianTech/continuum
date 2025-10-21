@@ -46,41 +46,27 @@ else
     DEPLOY_PID=$!
 fi
 
-# Wait for COMPLETE system to be ready (with timeout) - skip if already running
+# Wait for system to be ready (with timeout) - skip if already running
 if [ "$SYSTEM_ALREADY_RUNNING" = true ]; then
-    echo "⚡ Skipping orchestration wait - system already healthy"
-    ORCHESTRATION_COMPLETE=true
+    echo "⚡ System already healthy - skipping startup wait"
 else
-    echo "⏳ Waiting for complete system orchestration..."
-    TIMEOUT=180  # 3 minutes for full system readiness
+    echo "⏳ Waiting for system to be ready..."
+    TIMEOUT=60  # 1 minute should be plenty for ping to succeed
     COUNTER=0
-    PING_SUCCESS=false
-    ORCHESTRATION_COMPLETE=false
 
     while [ $COUNTER -lt $TIMEOUT ]; do
-    # First check if ping works (basic connectivity)
-    if ./jtag ping >/dev/null 2>&1; then
-        PING_SUCCESS=true
-
-        # Then check if orchestration is complete (full system ready)
-        if tail -50 .continuum/jtag/system/logs/npm-start.log 2>/dev/null | grep -q "🎉 Orchestration complete"; then
-            ORCHESTRATION_COMPLETE=true
-            echo "✅ System deployment successful - orchestration complete"
-            echo "⏳ Allowing system to fully settle..."
-            sleep 5  # Give system time to fully stabilize
+        # Check if ping works (system is ready)
+        if ./jtag ping >/dev/null 2>&1; then
+            echo "✅ System deployment successful - ping responding"
+            echo "⏳ Allowing system to settle..."
+            sleep 3  # Brief settle time
             break
-        else
-            # System is up but still initializing
-            if [ $((COUNTER % 10)) -eq 0 ]; then
-                echo "   ... system responsive, waiting for orchestration ($COUNTER/${TIMEOUT}s)"
-            fi
         fi
-    else
-        # System not yet responsive
-        if [ $((COUNTER % 10)) -eq 0 ]; then
+
+        # Progress indicator every 5 seconds
+        if [ $((COUNTER % 5)) -eq 0 ]; then
             echo "   ... waiting for system startup ($COUNTER/${TIMEOUT}s)"
         fi
-    fi
 
         sleep 1
         COUNTER=$((COUNTER + 1))
@@ -88,10 +74,8 @@ else
 
     if [ $COUNTER -eq $TIMEOUT ]; then
         echo "❌ System deployment timed out after ${TIMEOUT}s"
-        if [ "$PING_SUCCESS" = true ] && [ "$ORCHESTRATION_COMPLETE" = false ]; then
-            echo "   System was responsive but orchestration never completed"
-            echo "   Check .continuum/jtag/system/logs/npm-start.log for details"
-        fi
+        echo "   ./jtag ping never succeeded"
+        echo "   Check .continuum/jtag/system/logs/npm-start.log for details"
         kill $DEPLOY_PID 2>/dev/null || true
         exit 1
     fi
