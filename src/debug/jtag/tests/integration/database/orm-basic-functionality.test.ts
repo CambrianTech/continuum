@@ -65,7 +65,7 @@ const mockDataDaemon = {
     return { success: true, data: undefined };
   },
   query: async (query: any, context: any) => {
-    console.log(`🔍 MockDataDaemon.query(${query.collection}):`, query.filters);
+    console.log(`🔍 MockDataDaemon.query(${query.collection}):`, query.filter);
     return {
       success: true,
       data: [{

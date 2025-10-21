@@ -92,7 +92,7 @@ export interface SchemaValidationResult {
  *
  * NEW PATTERN (domain-owned, auto-context):
  * const result = await DataDaemon.store<UserData>('users', userData);
- * const users = await DataDaemon.query<UserData>({ collection: 'users', filters: {...} });
+ * const users = await DataDaemon.query<UserData>({ collection: 'users', filter: {...} });
  * const success = await DataDaemon.remove('users', userId);
  */
 export class DataDaemon {
@@ -551,7 +551,7 @@ export class DataDaemon {
     // Get total count
     const countQuery: StorageQuery = {
       collection: params.collection,
-      filters: params.filter
+      filter: params.filter
     };
     const countResult = await this.adapter.query(countQuery);
     const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
@@ -598,7 +598,7 @@ export class DataDaemon {
     // Build query with cursor if we have one
     const query: StorageQuery = {
       collection: state.collection,
-      filters: state.filter,
+      filter: state.filter,
       sort: state.orderBy?.map(o => ({ field: o.field, direction: o.direction })),
       limit: state.pageSize,
       ...(state.currentCursor && {
@@ -700,10 +700,10 @@ export class DataDaemon {
    * Query data with automatic context injection - CLEAN INTERFACE
    *
    * @example
-   * const users = await DataDaemon.query<UserData>({ collection: 'users', filters: { active: true } });
+   * const users = await DataDaemon.query<UserData>({ collection: 'users', filter: { active: true } });
    * const messages = await DataDaemon.query<ChatMessageData>({
    *   collection: 'messages',
-   *   filters: { roomId: 'general' },
+   *   filter: { roomId: 'general' },
    *   sort: [{ field: 'timestamp', direction: 'desc' }],
    *   limit: 50
    * });

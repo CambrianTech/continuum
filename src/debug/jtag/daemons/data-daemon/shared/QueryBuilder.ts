@@ -653,11 +653,11 @@ export class QueryBuilder {
       legacyProps.offset = this.query.offset;
     }
 
-    // Convert advanced where to simple filters (best effort)
+    // Convert advanced where to simple filter (best effort)
     if (this.query.where && 'field' in this.query.where) {
       const condition = this.query.where as FilterCondition;
       if (condition.operator === 'eq') {
-        legacyProps.filters = { [condition.field]: condition.value };
+        legacyProps.filter = { [condition.field]: condition.value };
       }
     }
 

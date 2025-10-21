@@ -91,7 +91,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       // Query all users
       const queryResult = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
-        filters: {}
+        filter: {}
       });
 
       if (!queryResult.success || !queryResult.data?.length) {
@@ -196,7 +196,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         // Query for room
         const queryResult = await DataDaemon.query<RoomEntity>({
           collection: COLLECTIONS.ROOMS,
-          filters: { uniqueId: roomUniqueId }
+          filter: { uniqueId: roomUniqueId }
         });
 
         if (!queryResult.success || !queryResult.data?.length) {

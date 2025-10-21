@@ -305,7 +305,7 @@ export class PersonaUser extends AIUser {
       // Query for general room using DataDaemon.query (server-side only)
       const queryResult = await DataDaemon.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
-        filters: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
+        filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
       });
 
       if (!queryResult.success || !queryResult.data?.length) {

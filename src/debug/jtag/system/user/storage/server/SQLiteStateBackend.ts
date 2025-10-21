@@ -72,7 +72,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
       const result = await DataDaemon.query<UserStateEntity>({
         collection: UserStateEntity.collection,
-        filters: { userId, deviceId },
+        filter: { userId, deviceId },
         limit: 1
       });
 
@@ -96,7 +96,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
       const result = await DataDaemon.query<UserStateEntity>({
         collection: UserStateEntity.collection,
-        filters: { userId, deviceId },
+        filter: { userId, deviceId },
         limit: 1
       });
 

@@ -138,7 +138,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
               const content = await fs.readFile(path.join(collectionPath, file), 'utf-8');
               const record = JSON.parse(content) as DataRecord<T>;
               
-              if (this.matchesFilters(record, query.filters)) {
+              if (this.matchesFilters(record, query.filter)) {
                 records.push(record);
               }
             } catch (parseError) {

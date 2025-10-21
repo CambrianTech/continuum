@@ -43,7 +43,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
         if (!targetPersonaId) {
           const usersResult = await DataDaemon.query<UserEntity>({
             collection: UserEntity.collection,
-            filters: { type: 'persona' },
+            filter: { type: 'persona' },
             limit: 1
           });
 

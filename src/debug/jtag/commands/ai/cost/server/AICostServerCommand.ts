@@ -9,6 +9,10 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AICostParams, AICostResult } from '../shared/AICostTypes';
 import { AIGenerationEntity } from '../../../../system/data/entities/AIGenerationEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../../data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
+import { createDataListParams } from '../../../data/list/shared/DataListTypes';
 
 export class AICostServerCommand extends AICostCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -22,18 +26,60 @@ export class AICostServerCommand extends AICostCommand {
 
       console.log(`💰 ai/cost: Querying generations from ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()}`);
 
-      // TODO: Query AIGenerationEntity from database
-      // For now, return mock data to test command structure
+      // Build filter with range operators (SQLite adapter supports $gte, $lte, etc.)
+      const filter: Record<string, any> = {
+        timestamp: {
+          $gte: startTime,
+          $lte: endTime
+        }
+      };
+
+      if (params.provider) {
+        filter.provider = params.provider;
+      }
+
+      if (params.model) {
+        filter.model = params.model;
+      }
+
+      // Query AIGenerationEntity from database using data/list - let SQL do the filtering
+      const listParams = createDataListParams<AIGenerationEntity>(
+        params.context,
+        params.sessionId,
+        {
+          collection: 'ai_generations',
+          filter,
+          orderBy: [{ field: 'timestamp', direction: 'desc' }]
+        }
+      );
+
+      const listResult = await Commands.execute<DataListParams<AIGenerationEntity>, DataListResult<AIGenerationEntity>>(
+        DATA_COMMANDS.LIST,
+        listParams
+      );
+
+      if (!listResult.success || !listResult.items) {
+        throw new Error('Failed to query AI generations from database');
+      }
+
+      const finalGens = Array.from(listResult.items);
+
+      // Calculate aggregates
+      const totalCost = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.estimatedCost, 0);
+      const totalTokens = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.totalTokens, 0);
+      const inputTokens = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.inputTokens, 0);
+      const outputTokens = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.outputTokens, 0);
+      const totalResponseTime = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.responseTime, 0);
 
       const summary = {
-        totalCost: 2.45,
-        totalGenerations: 39,
-        totalTokens: 45000,
-        inputTokens: 25000,
-        outputTokens: 20000,
-        avgCostPerGeneration: 0.0628,
-        avgTokensPerGeneration: 1154,
-        avgResponseTime: 1234,
+        totalCost,
+        totalGenerations: finalGens.length,
+        totalTokens,
+        inputTokens,
+        outputTokens,
+        avgCostPerGeneration: finalGens.length > 0 ? totalCost / finalGens.length : 0,
+        avgTokensPerGeneration: finalGens.length > 0 ? totalTokens / finalGens.length : 0,
+        avgResponseTime: finalGens.length > 0 ? Math.round(totalResponseTime / finalGens.length) : 0,
         timeRange: {
           start: new Date(startTime).toISOString(),
           end: new Date(endTime).toISOString(),
@@ -42,91 +88,11 @@ export class AICostServerCommand extends AICostCommand {
       };
 
       // Build cost breakdowns
-      const costByProvider = params.includeBreakdown ? {
-        'openai': {
-          cost: 1.85,
-          generations: 25,
-          tokens: 30000,
-          avgCostPerGeneration: 0.074,
-          percentage: 75.5
-        },
-        'anthropic': {
-          cost: 0.45,
-          generations: 10,
-          tokens: 12000,
-          avgCostPerGeneration: 0.045,
-          percentage: 18.4
-        },
-        'ollama': {
-          cost: 0.00,
-          generations: 4,
-          tokens: 3000,
-          avgCostPerGeneration: 0.00,
-          percentage: 0.0
-        }
-      } : undefined;
+      const costByProvider = params.includeBreakdown ? this.aggregateByProvider(finalGens, totalCost) : undefined;
 
-      const costByModel = params.includeBreakdown ? {
-        'gpt-4-turbo': {
-          provider: 'openai',
-          cost: 1.20,
-          generations: 15,
-          tokens: 18000,
-          avgCostPerGeneration: 0.08,
-          percentage: 49.0
-        },
-        'gpt-4o': {
-          provider: 'openai',
-          cost: 0.65,
-          generations: 10,
-          tokens: 12000,
-          avgCostPerGeneration: 0.065,
-          percentage: 26.5
-        },
-        'claude-3-5-sonnet-20241022': {
-          provider: 'anthropic',
-          cost: 0.45,
-          generations: 10,
-          tokens: 12000,
-          avgCostPerGeneration: 0.045,
-          percentage: 18.4
-        },
-        'llama-3.2-vision': {
-          provider: 'ollama',
-          cost: 0.00,
-          generations: 4,
-          tokens: 3000,
-          avgCostPerGeneration: 0.00,
-          percentage: 0.0
-        }
-      } : undefined;
+      const costByModel = params.includeBreakdown ? this.aggregateByModel(finalGens, totalCost) : undefined;
 
-      const topModels = params.includeTopModels ? [
-        {
-          provider: 'openai',
-          model: 'gpt-4-turbo',
-          cost: 1.20,
-          generations: 15,
-          avgCostPerGeneration: 0.08,
-          percentage: 49.0
-        },
-        {
-          provider: 'openai',
-          model: 'gpt-4o',
-          cost: 0.65,
-          generations: 10,
-          avgCostPerGeneration: 0.065,
-          percentage: 26.5
-        },
-        {
-          provider: 'anthropic',
-          model: 'claude-3-5-sonnet-20241022',
-          cost: 0.45,
-          generations: 10,
-          avgCostPerGeneration: 0.045,
-          percentage: 18.4
-        }
-      ].slice(0, params.includeTopModels) : undefined;
+      const topModels = params.includeTopModels ? this.getTopModels(finalGens, totalCost, params.includeTopModels) : undefined;
 
       // Time-series data for graphing
       const timeSeries = params.includeTimeSeries ? this.generateMockTimeSeries(startTime, endTime, params.interval || '1h') : undefined;
@@ -300,6 +266,84 @@ export class AICostServerCommand extends AICostCommand {
     };
 
     return value * msPerUnit[unit];
+  }
+
+  /**
+   * Aggregate generations by provider
+   */
+  private aggregateByProvider(generations: AIGenerationEntity[], totalCost: number): Record<string, any> {
+    const byProvider: Record<string, { cost: number; generations: number; tokens: number }> = {};
+
+    for (const gen of generations) {
+      if (!byProvider[gen.provider]) {
+        byProvider[gen.provider] = { cost: 0, generations: 0, tokens: 0 };
+      }
+      byProvider[gen.provider].cost += gen.estimatedCost;
+      byProvider[gen.provider].generations += 1;
+      byProvider[gen.provider].tokens += gen.totalTokens;
+    }
+
+    const result: Record<string, any> = {};
+    for (const [provider, stats] of Object.entries(byProvider)) {
+      result[provider] = {
+        cost: stats.cost,
+        generations: stats.generations,
+        tokens: stats.tokens,
+        avgCostPerGeneration: stats.generations > 0 ? stats.cost / stats.generations : 0,
+        percentage: totalCost > 0 ? (stats.cost / totalCost) * 100 : 0
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Aggregate generations by model
+   */
+  private aggregateByModel(generations: AIGenerationEntity[], totalCost: number): Record<string, any> {
+    const byModel: Record<string, { provider: string; cost: number; generations: number; tokens: number }> = {};
+
+    for (const gen of generations) {
+      if (!byModel[gen.model]) {
+        byModel[gen.model] = { provider: gen.provider, cost: 0, generations: 0, tokens: 0 };
+      }
+      byModel[gen.model].cost += gen.estimatedCost;
+      byModel[gen.model].generations += 1;
+      byModel[gen.model].tokens += gen.totalTokens;
+    }
+
+    const result: Record<string, any> = {};
+    for (const [model, stats] of Object.entries(byModel)) {
+      result[model] = {
+        provider: stats.provider,
+        cost: stats.cost,
+        generations: stats.generations,
+        tokens: stats.tokens,
+        avgCostPerGeneration: stats.generations > 0 ? stats.cost / stats.generations : 0,
+        percentage: totalCost > 0 ? (stats.cost / totalCost) * 100 : 0
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Get top N models by cost
+   */
+  private getTopModels(generations: AIGenerationEntity[], totalCost: number, limit: number): Array<any> {
+    const byModel = this.aggregateByModel(generations, totalCost);
+
+    return Object.entries(byModel)
+      .map(([model, stats]) => ({
+        provider: stats.provider,
+        model,
+        cost: stats.cost,
+        generations: stats.generations,
+        avgCostPerGeneration: stats.avgCostPerGeneration,
+        percentage: stats.percentage
+      }))
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, limit);
   }
 
   /**
