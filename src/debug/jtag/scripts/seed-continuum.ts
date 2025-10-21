@@ -522,6 +522,29 @@ async function createUserViaCommand(type: 'human' | 'agent' | 'persona', display
 }
 
 /**
+ * Load an existing user by uniqueId using JTAG data/list command
+ */
+async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity | null> {
+  try {
+    const { stdout } = await execAsync(`./jtag data/list --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
+    const response = JSON.parse(stdout);
+
+    if (response.success && response.items && response.items.length > 0) {
+      const user = response.items[0];
+      console.log(`✅ Loaded existing user: ${user.displayName} (uniqueId: ${uniqueId}, ID: ${user.id.slice(0, 8)}...)`);
+      return user;
+    } else {
+      console.log(`⚠️ User with uniqueId ${uniqueId} not found in database`);
+      return null;
+    }
+  } catch (error: any) {
+    console.error(`❌ Failed to load user with uniqueId ${uniqueId}: ${error.message}`);
+    if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}`);
+    return null;
+  }
+}
+
+/**
  * Create a record via JTAG data/create command (server-side, no browser required) with proper shell escaping
  */
 async function createRecord(collection: string, data: any, id: string, displayName?: string, userId?: string): Promise<boolean> {
@@ -634,12 +657,57 @@ async function getMissingUsers(): Promise<string[]> {
 }
 
 /**
+ * Wait for JTAG system to be fully ready with commands registered
+ */
+async function waitForJTAGReady(maxWaitSeconds: number = 60): Promise<boolean> {
+  const startTime = Date.now();
+  let attempts = 0;
+
+  console.log('⏳ Waiting for JTAG system to be ready...');
+
+  while (Date.now() - startTime < maxWaitSeconds * 1000) {
+    try {
+      const { stdout } = await execAsync('./jtag ping');
+      const response = JSON.parse(stdout);
+
+      if (response.success &&
+          response.server?.health?.systemReady &&
+          response.server?.health?.commandsRegistered > 0) {
+        console.log(`✅ JTAG ready with ${response.server.health.commandsRegistered} commands registered`);
+        return true;
+      }
+
+      // Log progress every 5 attempts
+      if (attempts % 5 === 0 && attempts > 0) {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        console.log(`   Still waiting... (${elapsed}s elapsed, commands: ${response.server?.health?.commandsRegistered || 0})`);
+      }
+    } catch (error) {
+      // Server not ready yet, will retry
+    }
+
+    attempts++;
+    const waitMs = Math.min(500 * Math.pow(1.2, attempts), 2000); // Exponential backoff, max 2s
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  console.error(`❌ JTAG system did not become ready after ${maxWaitSeconds} seconds`);
+  return false;
+}
+
+/**
  * Main seeding function with idempotent behavior
  */
 async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
+    // CRITICAL: Wait for JTAG system to be ready before attempting any commands
+    const isReady = await waitForJTAGReady();
+    if (!isReady) {
+      throw new Error('❌ JTAG system not ready - commands not registered yet');
+    }
+
     // Check which users are missing
     const missingUsers = await getMissingUsers();
 
@@ -653,16 +721,25 @@ async function seedViaJTAG() {
 
     const userMap: Record<string, UserEntity | null> = {};
 
-    // Step 1: Create human user first
+    // Step 1: Create human user first (or use existing)
+    let humanUser: UserEntity | null = null;
+
     if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
-      userMap['humanUser'] = await createUserViaCommand('human', USER_CONFIG.HUMAN.DISPLAY_NAME, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
-      console.log(`✅ Created human user: ${userMap['humanUser']?.displayName}`);
+      // Create new human user
+      humanUser = await createUserViaCommand('human', USER_CONFIG.HUMAN.DISPLAY_NAME, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+      if (!humanUser) {
+        throw new Error('❌ Failed to create human user - required as room owner');
+      }
+      console.log(`✅ Created human user: ${humanUser.displayName}`);
+    } else {
+      // Human user already exists - load from database using uniqueId
+      humanUser = await loadUserByUniqueId(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+      if (!humanUser) {
+        throw new Error('❌ Failed to load existing human user - database inconsistency');
+      }
     }
 
-    const humanUser = userMap['humanUser'];
-    if (!humanUser) {
-      throw new Error('❌ Failed to create human user - required as room owner');
-    }
+    userMap['humanUser'] = humanUser;
 
     // Step 2: Check if this is first run (need to create rooms)
     const isFirstRun = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
@@ -760,8 +837,20 @@ async function seedViaJTAG() {
       userMap['ollamaPersona'] = await createUserViaCommand('persona', 'Local Assistant', 'persona-ollama', 'ollama');
     }
 
-    const createdUsers = Object.values(userMap).filter(u => u !== null);
-    console.log(`📊 Created ${createdUsers.length}/${missingUsers.length} total users (auto-join handled by RoomMembershipDaemon)`);
+    // Count only newly created users (users that were in missingUsers list)
+    const newUsersCreated = Object.values(userMap).filter((u, index, arr) => {
+      // Count only users that were successfully created (not null)
+      // Exclude human user if it was loaded (not in missingUsers)
+      const isHumanUser = u === humanUser;
+      const humanWasCreated = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+
+      if (isHumanUser && !humanWasCreated) {
+        return false;  // Don't count loaded human user
+      }
+
+      return u !== null;  // Count all other successfully created users
+    }).length;
+    console.log(`📊 Created ${newUsersCreated}/${missingUsers.length} users (auto-join handled by RoomMembershipDaemon)`);
 
     // Get references to created users for message seeding
     const claudeUser = userMap['claudeUser'];

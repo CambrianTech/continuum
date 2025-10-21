@@ -15,25 +15,11 @@ export class AIReportBrowserCommand extends AIReportCommand {
   }
 
   async execute(params: AIReportParams): Promise<AIReportResult> {
-    // AI reports are server-side only
-    return {
-      context: params.context,
-      sessionId: params.sessionId,
-      success: false,
-      error: 'AI reports are server-side only - command must be executed on server',
-      summary: {
-        totalDecisions: 0,
-        responseDecisions: 0,
-        silentDecisions: 0,
-        responseRate: 0,
-        avgConfidence: 0,
-        timeRange: {
-          start: new Date().toISOString(),
-          end: new Date().toISOString()
-        },
-        totalCost: 0,
-        costByProvider: {}
-      }
-    };
+    // AI reports are server-side only - route to server
+    return await this.remoteExecute({
+      ...params,
+      context: params.context ?? this.context,
+      sessionId: params.sessionId ?? ''
+    });
   }
 }

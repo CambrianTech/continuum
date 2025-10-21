@@ -18,6 +18,7 @@ const execAsync = promisify(exec);
 
 export class SystemMetricsCollector {
   private lastErrorKey?: string;
+  private browserReadyLogged: boolean = false;
 
   async collectSystemMetrics(): Promise<SystemReadySignal> {
     const metrics: Partial<SystemReadySignal> = {
@@ -330,8 +331,9 @@ export class SystemMetricsCollector {
           res.on('end', () => {
             // Check for Continuum in response (same logic, but no external process)
             const isReady = data.toLowerCase().includes('continuum');
-            if (isReady) {
+            if (isReady && !this.browserReadyLogged) {
               console.log('✅ Browser readiness confirmed via native HTTP (no curl cascading timeouts)');
+              this.browserReadyLogged = true;
             }
             resolve(isReady);
           });

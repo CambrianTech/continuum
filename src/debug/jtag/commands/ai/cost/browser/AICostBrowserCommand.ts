@@ -15,27 +15,11 @@ export class AICostBrowserCommand extends AICostCommand {
   }
 
   async execute(params: AICostParams): Promise<AICostResult> {
-    // Cost queries are server-side only - return empty result
-    return {
-      context: params.context,
-      sessionId: params.sessionId,
-      success: false,
-      error: 'AI cost queries are server-side only - command must be executed on server',
-      summary: {
-        totalCost: 0,
-        totalGenerations: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        avgCostPerGeneration: 0,
-        avgTokensPerGeneration: 0,
-        avgResponseTime: 0,
-        timeRange: {
-          start: new Date().toISOString(),
-          end: new Date().toISOString(),
-          duration: '0s'
-        }
-      }
-    };
+    // Cost queries are server-side only - route to server
+    return await this.remoteExecute({
+      ...params,
+      context: params.context ?? this.context,
+      sessionId: params.sessionId ?? ''
+    });
   }
 }
