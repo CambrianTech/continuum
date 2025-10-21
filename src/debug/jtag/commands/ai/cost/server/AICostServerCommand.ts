@@ -270,27 +270,27 @@ export class AICostServerCommand extends AICostCommand {
     avgResponseTime: number;
   }> {
     const intervalMs = this.parseIntervalToMs(interval);
-    const buckets: Map<number, AIGenerationEntity[]> = new Map();
+    const points: Array<{
+      timestamp: string;
+      cost: number;
+      generations: number;
+      tokens: number;
+      avgResponseTime: number;
+    }> = [];
 
-    // Group generations into time buckets
-    for (const gen of generations) {
-      const bucketTime = Math.floor(gen.timestamp / intervalMs) * intervalMs;
-      if (!buckets.has(bucketTime)) {
-        buckets.set(bucketTime, []);
-      }
-      buckets.get(bucketTime)!.push(gen);
-    }
+    // Generate points for each time bucket
+    for (let bucketStart = startTime; bucketStart < endTime; bucketStart += intervalMs) {
+      const bucketEnd = bucketStart + intervalMs;
 
-    // Generate points for each bucket (including empty ones)
-    const points: Array<any> = [];
-    for (let time = startTime; time < endTime; time += intervalMs) {
-      const bucketGens = buckets.get(time) || [];
+      // Find all generations that fall within this bucket
+      const bucketGens = generations.filter(g => g.timestamp >= bucketStart && g.timestamp < bucketEnd);
+
       const cost = bucketGens.reduce((sum, g) => sum + g.estimatedCost, 0);
       const tokens = bucketGens.reduce((sum, g) => sum + g.totalTokens, 0);
       const totalResponseTime = bucketGens.reduce((sum, g) => sum + g.responseTime, 0);
 
       points.push({
-        timestamp: new Date(time).toISOString(),
+        timestamp: new Date(bucketStart).toISOString(),
         cost,
         generations: bucketGens.length,
         tokens,
