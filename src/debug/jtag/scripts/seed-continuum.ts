@@ -17,6 +17,7 @@ import { UserStateEntity } from '../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
 import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
 import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
+import { SystemIdentity } from '../api/data-seed/SystemIdentity';
 
 const execAsync = promisify(exec);
 
@@ -719,14 +720,18 @@ async function seedViaJTAG() {
     // Create human user FIRST (needed as room owner), then rooms, then other users
     console.log(`📝 Creating human user first (needed as room owner)...`);
 
+    // Get system identity (HOME directory-based) - server-only, keep it here!
+    const systemIdentity = SystemIdentity.getIdentity();
+    console.log(`🔧 Using system identity: ${systemIdentity.displayName} (${systemIdentity.username})`);
+
     const userMap: Record<string, UserEntity | null> = {};
 
     // Step 1: Create human user first (or use existing)
     let humanUser: UserEntity | null = null;
 
     if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
-      // Create new human user
-      humanUser = await createUserViaCommand('human', USER_CONFIG.HUMAN.DISPLAY_NAME, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+      // Create new human user with dynamic name from system identity
+      humanUser = await createUserViaCommand('human', systemIdentity.displayName, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
       if (!humanUser) {
         throw new Error('❌ Failed to create human user - required as room owner');
       }
@@ -921,6 +926,7 @@ async function seedViaJTAG() {
 
     // Rooms already created and persisted earlier (before other users)
     // Now create messages for those rooms
+    // Use systemIdentity from top of function - don't recreate it
     const messages = [
       createMessage(
         MESSAGE_IDS.WELCOME_GENERAL,
@@ -950,7 +956,7 @@ async function seedViaJTAG() {
         'pantheon-welcome-msg-id',
         'pantheon-room-id',
         humanUser.id,
-        'Joel',
+        systemIdentity.displayName,
         'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
         'human'  // senderType
       )

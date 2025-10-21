@@ -58,10 +58,11 @@ export const DEFAULT_MESSAGES = {
 
 /**
  * User Configuration Data - Display names, types, etc.
+ * NOTE: HUMAN.DISPLAY_NAME is generic - actual name comes from SystemIdentity in server-only seeding code
  */
 export const USER_CONFIG = {
   HUMAN: {
-    DISPLAY_NAME: 'Developer',
+    DISPLAY_NAME: 'Developer',  // Generic fallback - seeding uses SystemIdentity.getDisplayName() instead
     TYPE: 'human' as const,
     AVATAR: '👤'
   },
