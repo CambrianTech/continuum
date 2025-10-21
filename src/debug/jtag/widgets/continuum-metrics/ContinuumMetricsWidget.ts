@@ -16,12 +16,20 @@ interface MetricsData {
   avgResponseTime: number;
   totalCost: number;
   timeRange: string;
+  timeSeries?: Array<{
+    timestamp: string;
+    cost: number;
+    generations: number;
+    tokens: number;
+    avgResponseTime: number;
+  }>;
 }
 
 export class ContinuumMetricsWidget extends BaseWidget {
   private currentMetric: string = 'requests';  // Match the default in template
   private currentTimeRange: string = '24h';
   private metricsData: MetricsData | null = null;
+  private chartInterval: string = '1h';  // Chart granularity
 
   constructor() {
     console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor called');
@@ -124,7 +132,8 @@ export class ContinuumMetricsWidget extends BaseWidget {
     try {
       const result = await Commands.execute<AICostParams, AICostResult>('ai/cost', {
         startTime: this.currentTimeRange,
-        includeTimeSeries: false,
+        includeTimeSeries: true,  // Request time-series data for chart
+        interval: this.chartInterval,
         includeBreakdown: false
       });
 
@@ -134,20 +143,57 @@ export class ContinuumMetricsWidget extends BaseWidget {
           totalTokens: result.summary.totalTokens,
           avgResponseTime: result.summary.avgResponseTime,
           totalCost: result.summary.totalCost,
-          timeRange: result.summary.timeRange?.duration || this.currentTimeRange
+          timeRange: result.summary.timeRange?.duration || this.currentTimeRange,
+          timeSeries: result.timeSeries  // Store time-series for chart rendering
         };
 
-        // Update DOM directly
-        const title = this.shadowRoot?.querySelector('.metric-title') as HTMLElement;
-        const value = this.shadowRoot?.querySelector('.metric-value') as HTMLElement;
+        // Update metric display
+        this.updateMetricDisplay();
 
-        if (title && value) {
-          title.textContent = 'REQUESTS';
-          value.textContent = this.metricsData.totalGenerations.toString();
-        }
+        // Render chart with time-series data
+        this.renderChart();
       }
     } catch (error) {
       console.error('❌ ContinuumMetrics: Failed to fetch data:', error);
+    }
+  }
+
+  /**
+   * Render SVG chart from time-series data
+   */
+  private renderChart(): void {
+    if (!this.metricsData?.timeSeries) return;
+
+    const chartSvg = this.shadowRoot?.querySelector('.chart-svg');
+    if (!chartSvg) return;
+
+    const timeSeries = this.metricsData.timeSeries;
+    const values = timeSeries.map(point => {
+      switch (this.currentMetric) {
+        case 'requests': return point.generations;
+        case 'tokens': return point.tokens;
+        case 'cost': return point.cost * 1000; // Scale up for visibility
+        case 'latency': return point.avgResponseTime / 1000; // Convert ms to seconds
+        default: return point.generations;
+      }
+    });
+
+    // Find min/max for scaling
+    const maxValue = Math.max(...values, 1);  // Avoid divide by zero
+    const minValue = Math.min(...values, 0);
+    const range = maxValue - minValue || 1;
+
+    // Generate SVG polyline points (x: 0-100, y: 0-30)
+    const points = values.map((value, index) => {
+      const x = (index / (values.length - 1 || 1)) * 100;
+      const y = 30 - ((value - minValue) / range) * 30;  // Invert Y axis
+      return `${x},${y}`;
+    }).join(' ');
+
+    // Update polyline
+    const polyline = chartSvg.querySelector('.chart-line');
+    if (polyline) {
+      polyline.setAttribute('points', points);
     }
   }
 
@@ -158,6 +204,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
     console.log('📊 ContinuumMetrics: Update metric:', metric);
     this.currentMetric = metric;
     this.updateMetricDisplay();
+    this.renderChart();  // Re-render chart for new metric
   }
 
   /**
