@@ -275,26 +275,26 @@ export function getWidgetByName(widgetName: string): Element | null {
       console.log(`✅ ShadowDOMUtils: Found ${widgetName} at depth ${depth}`);
       return element;
     }
-    
+
     // Search in shadow DOM
     if (element.shadowRoot) {
       const shadowElements = element.shadowRoot.querySelectorAll('*');
-      for (const shadowEl of shadowElements) {
+      for (const shadowEl of Array.from(shadowElements)) {
         const found = searchInElement(shadowEl, depth + 1, maxDepth);
         if (found) return found;
       }
     }
-    
+
     return null;
   }
   
   // Search starting from document
   const allElements = document.querySelectorAll('*');
-  for (const element of allElements) {
+  for (const element of Array.from(allElements)) {
     const found = searchInElement(element);
     if (found) return found;
   }
-  
+
   console.log(`❌ ShadowDOMUtils: Widget ${widgetName} not found`);
   return null;
 }
@@ -340,7 +340,7 @@ export function getAllWidgets(): Array<{
     // Search in shadow DOM
     if (element.shadowRoot) {
       const shadowElements = element.shadowRoot.querySelectorAll('*');
-      for (const shadowEl of shadowElements) {
+      for (const shadowEl of Array.from(shadowElements)) {
         searchInElement(shadowEl, path + element.tagName.toLowerCase() + ' → ', depth + 1);
       }
     }
@@ -348,7 +348,7 @@ export function getAllWidgets(): Array<{
   
   // Search starting from document
   const allElements = document.querySelectorAll('*');
-  for (const element of allElements) {
+  for (const element of Array.from(allElements)) {
     searchInElement(element);
   }
   

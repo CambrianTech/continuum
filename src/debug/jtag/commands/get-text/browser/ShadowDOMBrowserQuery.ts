@@ -18,9 +18,9 @@ export class ShadowDOMBrowserQuery {
     
     // Get all elements in the document
     const allElements = document.querySelectorAll('*');
-    
+
     // Traverse all Shadow DOM trees
-    for (const element of allElements) {
+    for (const element of Array.from(allElements)) {
       if (element.shadowRoot) {
         totalShadowRoots++;
         const shadowResults = this.traverseShadowRoot(element, options);
@@ -100,7 +100,7 @@ export class ShadowDOMBrowserQuery {
     if (options.querySelector) {
       try {
         const matches = shadowRoot.querySelectorAll(options.querySelector);
-        for (const match of matches) {
+        for (const match of Array.from(matches)) {
           hostInfo.matchingElements.push({
             tag: match.tagName.toLowerCase(),
             id: match.id || undefined,
@@ -118,7 +118,7 @@ export class ShadowDOMBrowserQuery {
     // Search by text content
     if (options.textContent) {
       const allElements = shadowRoot.querySelectorAll('*');
-      for (const el of allElements) {
+      for (const el of Array.from(allElements)) {
         if (el.textContent && el.textContent.includes(options.textContent)) {
           hostInfo.matchingElements.push({
             tag: el.tagName.toLowerCase(),
@@ -140,7 +140,7 @@ export class ShadowDOMBrowserQuery {
       
       try {
         const matches = shadowRoot.querySelectorAll(selector);
-        for (const match of matches) {
+        for (const match of Array.from(matches)) {
           hostInfo.matchingElements.push({
             tag: match.tagName.toLowerCase(),
             id: match.id || undefined,
@@ -162,7 +162,7 @@ export class ShadowDOMBrowserQuery {
     
     // Recursively search nested shadow DOM
     const nestedElements = shadowRoot.querySelectorAll('*');
-    for (const nested of nestedElements) {
+    for (const nested of Array.from(nestedElements)) {
       if (nested.shadowRoot) {
         results.push(...this.traverseShadowRoot(nested, options, depth + 1));
       }
@@ -182,7 +182,7 @@ export class ShadowDOMBrowserQuery {
     if (options.querySelector) {
       try {
         const matches = document.querySelectorAll(options.querySelector);
-        for (const match of matches) {
+        for (const match of Array.from(matches)) {
           results.push({
             tag: match.tagName.toLowerCase(),
             id: match.id || undefined,
@@ -205,7 +205,7 @@ export class ShadowDOMBrowserQuery {
    */
   private static getElementAttributes(element: Element): Record<string, string> {
     const attrs: Record<string, string> = {};
-    for (const attr of element.attributes) {
+    for (const attr of Array.from(element.attributes)) {
       attrs[attr.name] = attr.value;
     }
     return attrs;

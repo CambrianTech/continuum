@@ -414,7 +414,7 @@ export class WidgetDOMAnalyzer {
    */
   static extractDataAttributes(element: HTMLElement): Record<string, string> {
     const dataAttrs: Record<string, string> = {};
-    for (const attr of element.attributes) {
+    for (const attr of Array.from(element.attributes)) {
       if (attr.name.startsWith('data-')) {
         const key = attr.name.substring(5); // Remove 'data-' prefix
         dataAttrs[key] = attr.value;

@@ -253,7 +253,7 @@ function findInShadowDOM(root: Document | DocumentFragment | Element, selector: 
   
   // Recursively check all shadow roots
   const elements = root.querySelectorAll('*');
-  for (const el of elements) {
+  for (const el of Array.from(elements)) {
     if (el.shadowRoot) {
       const found = findInShadowDOM(el.shadowRoot, selector);
       if (found) return found;
