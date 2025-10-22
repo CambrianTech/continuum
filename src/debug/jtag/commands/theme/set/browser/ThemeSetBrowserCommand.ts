@@ -9,6 +9,7 @@ import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-da
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
 
 export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSetResult> {
@@ -186,7 +187,8 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
       }
 
       // Update existing UserState's preferences
-      await Commands.execute('data/update', {
+      const { DATA_COMMANDS } = await import('../../../data/shared/DataCommandConstants');
+      await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>(DATA_COMMANDS.UPDATE, {
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',
@@ -194,7 +196,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
           preferences: {
             theme: themeName
           },
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date()
         }
       });
 

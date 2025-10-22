@@ -5,9 +5,10 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, JTAGPayload, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { PingParams, PingResult, ServerEnvironmentInfo } from '../shared/PingTypes';
+import type { AIStatusParams, AIStatusResult } from '../../ai/status/shared/AIStatusTypes';
 
 export class PingServerCommand extends CommandBase<PingParams, PingResult> {
 
@@ -19,18 +20,62 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
     const pingParams = params as PingParams;
     const server = await this.getServerInfo();
 
+    // Collect AI status if verbose flag set
+    let aiStatus;
+    if (pingParams.verbose) {
+      const startTime = Date.now();
+      try {
+        // Get ai/status command from commander
+        interface CommandDaemonWithCommands {
+          commands: Map<string, CommandBase<CommandParams, CommandResult>>;
+        }
+        const commandDaemon = this.commander as unknown as CommandDaemonWithCommands;
+        const aiStatusCommand = commandDaemon.commands.get('ai/status');
+        if (aiStatusCommand) {
+          // Call ai/status with 2 second timeout
+          const statusParams: AIStatusParams = {
+            context: params.context,
+            sessionId: params.sessionId,
+            includeInactive: false,
+            timeout: 2000  // 2 second timeout for AI status check
+          };
+          const statusResult = await aiStatusCommand.execute(statusParams) as AIStatusResult;
+
+          const checkDuration = Date.now() - startTime;
+
+          if (statusResult.success) {
+            aiStatus = {
+              ...statusResult.summary,
+              checkDuration
+            };
+          }
+        }
+      } catch (error) {
+        // AI status check failed or timed out - include empty summary
+        aiStatus = {
+          total: 0,
+          healthy: 0,
+          starting: 0,
+          degraded: 0,
+          dead: 0,
+          checkDuration: Date.now() - startTime
+        };
+      }
+    }
+
     // If browser already collected its info, we're the final step
     if (pingParams.browser) {
       return transformPayload(pingParams, {
         success: true,
         server,
         browser: pingParams.browser,
+        aiStatus,
         timestamp: new Date().toISOString()
       });
     }
 
     // No browser info yet - delegate to browser to collect it
-    return await this.remoteExecute({ ...pingParams, server });
+    return await this.remoteExecute({ ...pingParams, server, aiStatus });
   }
 
   private async getServerInfo(): Promise<ServerEnvironmentInfo> {

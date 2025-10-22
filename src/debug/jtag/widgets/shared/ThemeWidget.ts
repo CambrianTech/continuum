@@ -14,7 +14,9 @@ import { THEME_COMMANDS } from '../../commands/theme/shared/ThemeCommandConstant
 import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry } from './themes/ThemeTypes';
-import type { DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { DataListResult, DataListParams } from '../../commands/data/list/shared/DataListTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
+import type { ThemeSetParams, ThemeSetResult } from '../../commands/theme/set/shared/ThemeSetTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { stringToUUID } from '../../system/core/types/CrossPlatformUUID';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
@@ -346,7 +348,7 @@ export class ThemeWidget extends BaseWidget {
         // Use the actual JTAG theme/set command for proper theme switching
         try {
           // Domain-owned: CommandDaemon handles theme switching with optimization
-          await Commands.execute(THEME_COMMANDS.SET, {
+          await Commands.execute<ThemeSetParams, ThemeSetResult>(THEME_COMMANDS.SET, {
             themeName: selectedTheme
           });
           console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via CommandDaemon`);
@@ -459,7 +461,7 @@ export class ThemeWidget extends BaseWidget {
       console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
 
       // Update existing UserState's preferences
-      await Commands.execute(DATA_COMMANDS.UPDATE, {
+      await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>(DATA_COMMANDS.UPDATE, {
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',
@@ -467,7 +469,7 @@ export class ThemeWidget extends BaseWidget {
           preferences: {
             theme: themeName
           },
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date()
         }
       });
 
@@ -504,16 +506,15 @@ export class ThemeWidget extends BaseWidget {
       console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
 
       // Find the user's UserState in localStorage (get most recent first)
-      const userStates = await Commands.execute(DATA_COMMANDS.LIST, {
+      const userStates = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: 'UserState',
         filter: {
           userId: identity.userId,
           deviceId: identity.deviceId
         },
-        backend: 'browser', // Use localStorage backend
         orderBy: [{ field: 'updatedAt', direction: 'desc' }],
         limit: 1
-      }) as DataListResult<UserStateEntity>;
+      } as Partial<DataListParams>);
 
       if (userStates.success && userStates.items && userStates.items.length > 0) {
         const userState = userStates.items[0];

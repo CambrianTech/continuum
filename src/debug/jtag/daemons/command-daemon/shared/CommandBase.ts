@@ -93,7 +93,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    */
   static async execute<TParams extends CommandParams, TResult extends CommandResult>(
     this: CommandConstructor,
-    params: Omit<TParams, 'context' | 'sessionId'>
+    params: Partial<TParams>
   ): Promise<TResult> {
     const { Commands } = await import('../../../system/core/shared/Commands');
     return await Commands.execute<TParams, TResult>(
