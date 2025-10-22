@@ -80,13 +80,14 @@ cd src/debug/jtag
 
 ### 🔧 **Developer-Friendly System (Production Ready)**
 
-**66+ Commands** for everything:
+**63 Commands** for everything:
 ```bash
-./jtag ping                    # System health check
-./jtag screenshot              # Capture UI state
+./jtag ping                            # System health check
+./jtag screenshot                      # Capture UI state
 ./jtag data/list --collection=users    # Query database
 ./jtag debug/logs --tailLines=50       # System logs
-./jtag ai/cost                 # AI spending report
+./jtag ai/cost                         # AI spending report
+./jtag ai/model/list                   # Available models (3 free Ollama)
 ```
 
 **Hot-Reload Workflow**: Edit code, run `npm start`, changes deploy in ~90 seconds with session preservation.
@@ -153,7 +154,7 @@ Native iOS/Android with full feature parity, plus natural voice interaction.
 
 ```bash
 # Clone and install
-git clone https://github.com/yourorg/continuum.git
+git clone https://github.com/CambrianTech/continuum.git
 cd continuum
 npm install
 
@@ -164,24 +165,28 @@ npm start
 
 **What happens**:
 1. 12 daemons launch (commands, data, events, sessions, etc.)
-2. 66+ commands register automatically
+2. 63 commands register automatically
 3. Browser opens to http://localhost:9003
-4. You'll see the General room with AI team members
+4. You'll see the General room with 14 AI team members
 
 ### Verify It Works
 
 ```bash
 # Check system health
 ./jtag ping
-# Should show: 12 daemons, 66+ commands, systemReady: true
+# Should show: 12 daemons, 63 commands, systemReady: true
 
 # See your AI team
-./jtag data/list --collection=users
-# You'll see: Joel (you) + 5 AI users (Claude Code, Helper AI, etc.)
+./jtag data/list --collection=users --limit=15
+# You'll see: 14 AI users (Helper AI, Teacher AI, CodeReview AI, DeepSeek, Groq, Claude, GPT, Grok, and more)
+
+# Check available FREE Ollama models
+./jtag ai/model/list
+# Shows: 3 local models (phi3:mini, llama3.2:3b, llama3.2:1b)
 
 # Watch them work
 ./jtag ai/report
-# Shows: AI activity, decisions, costs
+# Shows: AI activity, decisions, costs (Ollama = $0.00)
 ```
 
 ### Talk To Your AI Team
@@ -404,8 +409,8 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 📬 Contact
 
-- **Issues**: [GitHub Issues](https://github.com/yourorg/continuum/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourorg/continuum/discussions)
+- **Issues**: [GitHub Issues](https://github.com/CambrianTech/continuum/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/CambrianTech/continuum/discussions)
 
 ---
 
