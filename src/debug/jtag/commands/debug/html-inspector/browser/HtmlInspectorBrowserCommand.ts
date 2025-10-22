@@ -88,7 +88,7 @@ export class HtmlInspectorBrowserCommand extends CommandBase<HtmlInspectorParams
 
     // Search through all shadow DOMs
     const allElements = document.querySelectorAll('*');
-    for (const el of allElements) {
+    for (const el of Array.from(allElements)) {
       if (el.shadowRoot) {
         element = el.shadowRoot.querySelector(selector);
         if (element) return element;
@@ -104,7 +104,7 @@ export class HtmlInspectorBrowserCommand extends CommandBase<HtmlInspectorParams
 
   private searchNestedShadowDOM(root: ShadowRoot, selector: string): Element | null {
     const elements = root.querySelectorAll('*');
-    for (const el of elements) {
+    for (const el of Array.from(elements)) {
       if (el.shadowRoot) {
         const found = el.shadowRoot.querySelector(selector);
         if (found) return found;
@@ -130,7 +130,7 @@ export class HtmlInspectorBrowserCommand extends CommandBase<HtmlInspectorParams
     };
 
     // Get attributes
-    for (const attr of element.attributes) {
+    for (const attr of Array.from(element.attributes)) {
       structure.attributes[attr.name] = attr.value;
     }
 
