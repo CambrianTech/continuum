@@ -127,3 +127,4 @@ src/commands/**/*.js
 src/commands/**/*.js.map
 src/commands/**/*.d.ts
 /src/debug/jtag/.archive
+.tgz
