@@ -118,10 +118,27 @@ export abstract class CommandDaemon extends DaemonBase {
     }
 
     try {
+      // Check if timeout is specified in command params
+      const timeout = (message.payload as CommandParams).timeout;
+
       // Execute command with session context for dual logging
-      const result = await globalSessionContext.withSession(requestSessionId, async () => {
+      const executionPromise = globalSessionContext.withSession(requestSessionId, async () => {
         return await command.execute(message.payload);
       });
+
+      // Apply timeout if specified
+      let result: CommandResult;
+      if (timeout && timeout > 0) {
+        result = await Promise.race([
+          executionPromise,
+          new Promise<CommandResult>((_, reject) =>
+            setTimeout(() => reject(new Error(`Command '${commandName}' timed out after ${timeout}ms`)), timeout)
+          )
+        ]);
+      } else {
+        result = await executionPromise;
+      }
+
       // Wrap raw command results in CommandResponse - maintains session accountability
       return createCommandSuccessResponse(result, requestContext, undefined, requestSessionId);
     } catch (e) {

@@ -468,6 +468,13 @@ export class JTAGMessageUtils {
  */
 export interface CommandParams extends JTAGPayload {
   // Base command parameters - specific commands add specific fields
+
+  /**
+   * Optional execution timeout in milliseconds
+   * If command execution exceeds this timeout, it will be automatically aborted
+   * Default: No timeout (command runs until completion or error)
+   */
+  timeout?: number;
 }
 
 /**

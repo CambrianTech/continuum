@@ -11,9 +11,11 @@ import type { RecipeLoadParams, RecipeLoadResult } from '../shared/RecipeLoadTyp
 import type { RecipeDefinition } from '../../../../system/recipes/shared/RecipeTypes';
 import { RecipeEntity } from '../../../../system/data/entities/RecipeEntity';
 import type { DataListResult } from '../../../data/list/shared/DataListTypes';
-import type { DataCreateParams } from '../../../data/create/shared/DataCreateTypes';
-import type { DataUpdateParams } from '../../../data/update/shared/DataUpdateTypes';
+import type { DataListParams } from '../../../data/list/shared/DataListTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../data/update/shared/DataUpdateTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../../data/shared/DataCommandConstants';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
@@ -68,13 +70,10 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
           const definition: RecipeDefinition = JSON.parse(fileContent);
 
           // Check if recipe already exists
-          const existingResult = (await Commands.execute('data/list', {
-            context: params.context,
-            sessionId: params.sessionId,
+          const existingResult = await Commands.execute<DataListParams, DataListResult<RecipeEntity>>(DATA_COMMANDS.LIST, {
             collection: COLLECTION,
-            backend: 'server',
             filter: { uniqueId: definition.uniqueId }
-          })) as DataListResult<RecipeEntity>;
+          } as Partial<DataListParams>);
 
           const now = new Date();
 
@@ -82,9 +81,7 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
             // Recipe exists
             if (params.reload) {
               // Update existing recipe
-              const updateResult = await Commands.execute('data/update', {
-                context: params.context,
-                sessionId: params.sessionId,
+              const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<RecipeEntity>>(DATA_COMMANDS.UPDATE, {
                 backend: 'server',
                 collection: COLLECTION,
                 id: existingResult.items[0].id,
@@ -99,9 +96,11 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
                   tags: definition.tags,
                   lastUsedAt: now
                 }
-              } as DataUpdateParams);
+              });
 
-              loaded.push(updateResult.data! as RecipeEntity);
+              if (updateResult.data) {
+                loaded.push(updateResult.data);
+              }
               console.log(`🔄 Recipe updated: ${recipeId}`);
             } else {
               // Skip existing recipe
@@ -126,15 +125,15 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
               lastUsedAt: now
             });
 
-            const createResult = await Commands.execute('data/create', {
-              context: params.context,
-              sessionId: params.sessionId,
+            const createResult = await Commands.execute<DataCreateParams, DataCreateResult<RecipeEntity>>(DATA_COMMANDS.CREATE, {
               backend: 'server',
               collection: COLLECTION,
               data: entity
-            } as DataCreateParams);
+            });
 
-            loaded.push(createResult.data! as RecipeEntity);
+            if (createResult.data) {
+              loaded.push(createResult.data);
+            }
             console.log(`✅ Recipe created: ${recipeId}`);
           }
         } catch (error) {

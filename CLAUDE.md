@@ -42,6 +42,9 @@ That means if you are using a browser feature, it MUST be in a browser file. Sam
 
 When you see a pattern, something similar, especially in more than one file, turn it into a function or class.
 
+
+you need to pass `npm run build:ts` before you can use `npm start`, which you need for deployment before you can test your command or other api feature. Tests may be modified without deployment, and should, in order to save time. use npx to run them and follow a new tests/integration when writing one. Like when writing commands, look at what already exists, modify it or consolidate, for whatever you need to do. Break things down into modules.
+
 ### 🏛️ USER CITIZEN ARCHITECTURE
 Clean inheritance following Rust-like typing principles:
 ```

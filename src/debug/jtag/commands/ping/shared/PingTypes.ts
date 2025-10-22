@@ -3,6 +3,12 @@ import type { CommandParams, CommandResult } from '../../../system/core/types/JT
 export interface PingParams extends CommandParams {
   server?: ServerEnvironmentInfo;
   browser?: BrowserEnvironmentInfo;
+
+  /**
+   * Include detailed AI persona health status
+   * If true, calls ai/status with timeout and includes summary
+   */
+  verbose?: boolean;
 }
 
 export interface ServerEnvironmentInfo {
@@ -46,4 +52,16 @@ export interface PingResult extends CommandResult {
   server?: ServerEnvironmentInfo;
   browser?: BrowserEnvironmentInfo;
   timestamp: string;
+
+  /**
+   * AI persona health summary (if verbose=true)
+   */
+  aiStatus?: {
+    total: number;
+    healthy: number;
+    starting: number;
+    degraded: number;
+    dead: number;
+    checkDuration?: number;  // Milliseconds taken to check status
+  };
 }
