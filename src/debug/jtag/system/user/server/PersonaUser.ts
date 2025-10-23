@@ -732,6 +732,40 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Clean AI response by stripping any name prefixes the LLM added despite system prompt instructions
+   * LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
+   *
+   * CURRENT: Heuristic regex-based cleaning (defensive programming)
+   * FUTURE: Should become AI-powered via ThoughtStream adapter (like gating)
+   *         - An AI evaluates: "Does this response have formatting issues?"
+   *         - Returns cleaned version with confidence score
+   *         - Pluggable via recipe configuration
+   *
+   * Examples to strip:
+   * - "[11:59] GPT Assistant: Yes, Joel..." → "Yes, Joel..."
+   * - "GPT Assistant: Yes, Joel..." → "Yes, Joel..."
+   * - "[11:59] Yes, Joel..." → "Yes, Joel..."
+   */
+  private cleanAIResponse(response: string): string {
+    let cleaned = response.trim();
+
+    // Pattern 1: Strip "[HH:MM] Name: " prefix
+    // Matches: [11:59] GPT Assistant: message
+    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*/, '');
+
+    // Pattern 2: Strip "Name: " prefix at start
+    // Matches: GPT Assistant: message
+    // Only if it looks like a name (contains letters, spaces, and ends with colon)
+    cleaned = cleaned.replace(/^[A-Z][A-Za-z\s]+:\s*/, '');
+
+    // Pattern 3: Strip just "[HH:MM] " timestamp prefix
+    // Matches: [11:59] message
+    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s*/, '');
+
+    return cleaned.trim();
+  }
+
+  /**
    * Self-review: Check if generated response is redundant compared to conversation history
    * Like a human who drafts a response, re-reads the chat, and thinks "oh someone already said that"
    */
@@ -956,6 +990,16 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           timeoutPromise
         ]);
         console.log(`✅ ${this.displayName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
+
+        // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
+        // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
+        const cleanedResponse = this.cleanAIResponse(aiResponse.text.trim());
+        if (cleanedResponse !== aiResponse.text.trim()) {
+          console.log(`⚠️  ${this.displayName}: Stripped name prefix from AI response`);
+          console.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
+          console.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
+          aiResponse.text = cleanedResponse;
+        }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`❌ ${this.displayName}: [PHASE 3.3] AI generation failed:`, errorMessage);
