@@ -18,13 +18,15 @@ import type {
   LLMMessage,
   RAGArtifact,
   PersonaIdentity,
-  PersonaMemory
+  PersonaMemory,
+  RecipeStrategy
 } from '../shared/RAGTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { RoomEntity } from '../../data/entities/RoomEntity';
+import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 
 /**
  * Chat-specific RAG builder
@@ -85,11 +87,15 @@ export class ChatRAGBuilder extends RAGBuilder {
       ? await this.loadPrivateMemories(personaId, contextId, maxMemories)
       : [];
 
+    // 5. Load room's recipe strategy (conversation governance rules)
+    const recipeStrategy = await this.loadRecipeStrategy(contextId);
+
     const ragContext: RAGContext = {
       domain: 'chat',
       contextId,
       personaId,
       identity,
+      recipeStrategy,
       conversationHistory,
       artifacts,
       privateMemories,
@@ -97,7 +103,9 @@ export class ChatRAGBuilder extends RAGBuilder {
         messageCount: conversationHistory.length,
         artifactCount: artifacts.length,
         memoryCount: privateMemories.length,
-        builtAt: new Date()
+        builtAt: new Date(),
+        recipeId: recipeStrategy?.conversationPattern,
+        recipeName: recipeStrategy ? `${recipeStrategy.conversationPattern} conversation` : undefined
       }
     };
 
@@ -352,6 +360,44 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
     } catch (error) {
       console.error(`❌ ChatRAGBuilder: Error loading room members:`, error);
       return [];
+    }
+  }
+
+  /**
+   * Load recipe strategy from room's recipeId
+   */
+  private async loadRecipeStrategy(roomId: UUID): Promise<RecipeStrategy | undefined> {
+    try {
+      // 1. Load room to get recipeId
+      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+
+      if (!roomResult.success || !roomResult.data) {
+        console.warn(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe strategy`);
+        return undefined;
+      }
+
+      const room = roomResult.data.data;
+      const recipeId = room.recipeId;
+
+      if (!recipeId) {
+        console.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no recipeId, using default behavior`);
+        return undefined;
+      }
+
+      // 2. Load recipe definition from JSON file
+      const recipeLoader = RecipeLoader.getInstance();
+      const recipe = await recipeLoader.loadRecipe(recipeId);
+
+      if (!recipe || !recipe.strategy) {
+        console.warn(`⚠️ ChatRAGBuilder: Could not load recipe ${recipeId}, no strategy`);
+        return undefined;
+      }
+
+      console.log(`✅ ChatRAGBuilder: Loaded recipe strategy "${recipe.displayName}" (${recipeId})`);
+      return recipe.strategy;
+    } catch (error) {
+      console.error(`❌ ChatRAGBuilder: Error loading recipe strategy:`, error);
+      return undefined;
     }
   }
 }

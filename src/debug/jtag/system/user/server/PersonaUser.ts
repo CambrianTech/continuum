@@ -101,6 +101,10 @@ export class PersonaUser extends AIUser {
   private responseCount: Map<UUID, number> = new Map(); // room -> count
   private readonly maxResponsesPerSession = 50; // Max 50 responses per room per session
 
+  // Message deduplication - prevent evaluating same message multiple times
+  private evaluatedMessages: Set<string> = new Set(); // messageId -> already evaluated
+  private readonly MAX_EVALUATED_CACHE = 1000; // Keep last 1000 messages in cache
+
   constructor(
     entity: UserEntity,
     state: UserStateEntity,
@@ -267,6 +271,16 @@ export class PersonaUser extends AIUser {
       console.log(`🧵 ${this.displayName}: Worker thread started`);
     }
 
+    // STEP 1.6: Register with ResourceManager for holistic resource allocation
+    try {
+      const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
+      getResourceManager().registerAdapter(this.id, this.displayName);
+      console.log(`🔧 ${this.displayName}: Registered with ResourceManager`);
+    } catch (error) {
+      console.warn(`⚠️  ${this.displayName}: Could not register with ResourceManager:`, error);
+      // Non-fatal: isAvailable() will default to simple worker ready check
+    }
+
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
       // Subscribe to ALL chat events once (not per-room)
@@ -362,7 +376,23 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    // STEP 2: Skip resolved messages (moderator marked as no longer needing responses)
+    // STEP 2: Deduplication - prevent evaluating same message multiple times
+    if (this.evaluatedMessages.has(messageEntity.id)) {
+      return; // Already evaluated this message
+    }
+
+    // Mark as evaluated (add to cache)
+    this.evaluatedMessages.add(messageEntity.id);
+
+    // Clean up old entries if cache gets too large
+    if (this.evaluatedMessages.size > this.MAX_EVALUATED_CACHE) {
+      // Convert to array, remove oldest 20%, convert back to Set
+      const entries = Array.from(this.evaluatedMessages);
+      const keepCount = Math.floor(this.MAX_EVALUATED_CACHE * 0.8);
+      this.evaluatedMessages = new Set(entries.slice(-keepCount));
+    }
+
+    // STEP 3: Skip resolved messages (moderator marked as no longer needing responses)
     if (messageEntity.metadata?.resolved) {
       console.log(`⏭️ ${this.displayName}: Skipping resolved message from ${messageEntity.senderName}`);
       return;
@@ -374,6 +404,8 @@ export class PersonaUser extends AIUser {
     // === SEQUENTIAL EVALUATION: Request turn (brain-like, one at a time) ===
     const coordinator = getThoughtStreamCoordinator();
     const releaseTurn = await coordinator.requestEvaluationTurn(messageEntity.id, this.id);
+
+    console.log(`🎬 ${this.displayName}: START evaluation for message from ${messageEntity.senderName}: "${messageText.slice(0, 60)}${messageText.length > 60 ? '...' : ''}"`);
 
     try {
       await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
@@ -481,6 +513,21 @@ export class PersonaUser extends AIUser {
 
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
 
+    // FULL TRANSPARENCY LOGGING
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`🧠 ${this.displayName}: GATING DECISION for message "${messageText.slice(0, 60)}..."`);
+    console.log(`${'='.repeat(80)}`);
+    console.log(`📊 Context: ${gatingResult.ragContextSummary?.filteredMessages ?? 0} messages in ${gatingResult.ragContextSummary?.timeWindowMinutes ?? 0}min window`);
+    console.log(`💬 Conversation history seen by AI:`);
+    gatingResult.conversationHistory?.slice(-5).forEach((msg, i) => {
+      console.log(`   ${i + 1}. [${msg.name}] ${msg.content.slice(0, 80)}...`);
+    });
+    console.log(`\n🎯 Decision: ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'}`);
+    console.log(`   Confidence: ${(gatingResult.confidence * 100).toFixed(0)}%`);
+    console.log(`   Reason: ${gatingResult.reason}`);
+    console.log(`   Model: ${gatingResult.model}`);
+    console.log(`${'='.repeat(80)}\n`);
+
     if (!gatingResult.shouldRespond) {
       this.logAIDecision('SILENT', gatingResult.reason, {
         message: messageText,
@@ -571,6 +618,15 @@ export class PersonaUser extends AIUser {
 
     // Check if we were granted permission to respond
     if (!decision || !decision.granted.includes(this.id)) {
+      // Log actual decision for debugging
+      const grantedCount = decision?.granted.length ?? 0;
+      const deniedCount = decision?.denied.length ?? 0;
+      const grantedIds = decision?.granted.map(id => id.slice(0, 8)).join(', ') ?? 'none';
+      console.log(`🚫 ${this.displayName}: Denied by coordinator (granted: ${grantedCount} [${grantedIds}], denied: ${deniedCount}, my ID: ${this.id.slice(0, 8)})`);
+      if (decision) {
+        console.log(`   Decision reasoning: ${decision.reasoning ?? 'none'}`);
+      }
+
       this.logAIDecision('SILENT', 'ThoughtStreamCoordinator denied (higher confidence AI responding)', {
         message: messageText,
         sender: messageEntity.senderName,

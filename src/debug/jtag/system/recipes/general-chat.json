@@ -48,18 +48,19 @@
   },
 
   "strategy": {
-    "conversationPattern": "human-focused",
+    "conversationPattern": "collaborative",
     "responseRules": [
-      "If human asks question → ONE AI responds",
-      "If AI just responded → WAIT for human",
-      "If multiple AIs responded → STAY SILENT",
-      "Prefer letting human guide conversation"
+      "If human asks question → ALL AIs with relevant knowledge can respond",
+      "Multiple responses are GOOD → diverse perspectives enrich conversation",
+      "Only stay silent if you'd repeat exactly what was said",
+      "Only gate if it makes the conversation confusing",
+      "Direct questions deserve responses from everyone who can help"
     ],
     "decisionCriteria": [
-      "Is human mentioned?",
-      "Is this answering human's question?",
-      "Have other AIs already responded?",
-      "Is conversation in a natural lull?"
+      "Do I have relevant knowledge or insights to share?",
+      "Would my response add value beyond what's already said?",
+      "Is the conversation still on this topic?",
+      "Would responding make things confusing or redundant?"
     ]
   },
 

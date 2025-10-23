@@ -16,6 +16,8 @@ import { Worker } from 'worker_threads';
 import { EventEmitter } from 'events';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { getResourceManager } from '../../system/resources/shared/ResourceManager';
+import type { ResourceDecision } from '../../system/resources/shared/ResourceModerator';
 
 interface WorkerMessage {
   type: 'ping' | 'evaluate' | 'shutdown';
@@ -307,5 +309,33 @@ REASONING: <brief explanation>`;
 
       this.on('message', handler);
     });
+  }
+
+  /**
+   * Check if worker is available to accept new evaluation requests
+   *
+   * Uses ResourceManager to check:
+   * - Worker thread availability
+   * - GPU memory quota
+   * - Throttle status (failure rate)
+   *
+   * This is the mechanical boundary - adapters decide if they can evaluate
+   */
+  isAvailable(): boolean {
+    // Basic check: worker must be ready
+    if (!this.isReady || !this.worker) {
+      return false;
+    }
+
+    // Resource check: delegate to ResourceManager + ResourceModerator
+    try {
+      const resourceManager = getResourceManager();
+      return resourceManager.isAvailable(this.personaId);
+    } catch (error) {
+      // Graceful fallback: If ResourceManager not available, just check worker ready state
+      // This happens during early initialization before PersonaUser.initialize() runs
+      console.warn(`⚠️  Worker ${this.personaId.slice(0, 8)}: ResourceManager not available, using simple check`);
+      return true; // Default to available if resource system not initialized
+    }
   }
 }

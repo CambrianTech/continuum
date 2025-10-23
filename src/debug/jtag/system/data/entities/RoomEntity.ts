@@ -80,6 +80,9 @@ export class RoomEntity extends BaseEntity {
   @DateField({ index: true })
   lastMessageAt?: Date;
 
+  @TextField({ nullable: true })
+  recipeId?: string;
+
   // Complex objects stored as JSON blobs
   @JsonField()
   privacy: RoomPrivacy;
@@ -104,6 +107,7 @@ export class RoomEntity extends BaseEntity {
     this.status = 'active';
     this.ownerId = '' as UUID;
     this.lastMessageAt = new Date(); // FIX: Prevents NOT NULL constraint failure
+    this.recipeId = 'general-chat'; // Default recipe
     this.privacy = { isPublic: true, requiresInvite: false, allowGuestAccess: false, searchable: true };
     this.settings = { allowThreads: true, allowReactions: true, allowFileSharing: true, messageRetentionDays: 365, slowMode: 0 };
     // Stats removed - will be a relationship/join query
