@@ -25,7 +25,7 @@
  * - UUID correlation enables distributed debugging across contexts
  */
 
-import { type UUID } from './CrossPlatformUUID';
+import { type UUID, generateUUID } from './CrossPlatformUUID';
 
 // Re-export UUID for use in other modules
 export type { UUID };
@@ -407,10 +407,10 @@ export class JTAGMessageFactory {
 
 
   /**
-   * Generate unique correlation ID
+   * Generate unique correlation ID using proper UUID
    */
   static generateCorrelationId(): string {
-    return `corr_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+    return generateUUID();
   }
 };
 
