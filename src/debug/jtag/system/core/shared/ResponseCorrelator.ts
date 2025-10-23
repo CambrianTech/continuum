@@ -84,10 +84,11 @@ export class ResponseCorrelator {
   }
 
   /**
-   * Generate unique correlation ID
+   * Generate unique correlation ID using proper UUID
    */
   generateCorrelationId(): string {
-    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+    const { generateUUID } = require('../types/CrossPlatformUUID');
+    return generateUUID();
   }
 
   /**
