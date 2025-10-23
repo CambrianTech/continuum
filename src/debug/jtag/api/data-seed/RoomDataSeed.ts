@@ -40,6 +40,7 @@ export class RoomDataSeed {
     general.status = 'active';
     general.ownerId = humanUserId;
     general.lastMessageAt = now;
+    general.recipeId = 'general-chat'; // Recipe for collaborative conversation
     general.privacy = {
       isPublic: true,
       requiresInvite: false,
@@ -70,6 +71,7 @@ export class RoomDataSeed {
     academy.status = 'active';
     academy.ownerId = humanUserId;
     academy.lastMessageAt = now;
+    academy.recipeId = 'general-chat'; // Same recipe for now (TODO: create academy-specific recipe)
     academy.privacy = {
       isPublic: true,
       requiresInvite: false,
@@ -100,6 +102,7 @@ export class RoomDataSeed {
     pantheon.status = 'active';
     pantheon.ownerId = humanUserId;
     pantheon.lastMessageAt = now;
+    pantheon.recipeId = 'general-chat'; // Same recipe for now (TODO: create pantheon-specific recipe)
     pantheon.privacy = {
       isPublic: true,
       requiresInvite: false,

@@ -383,21 +383,48 @@ ${generatedText}
 
     const conversationText = conversationLines.join('\n');
 
+    // Include recipe rules if available
+    let recipeRules = '';
+    if (ragContext.recipeStrategy) {
+      const strategy = ragContext.recipeStrategy;
+      recipeRules = `
+
+**RECIPE RULES (from ${ragContext.metadata.recipeName || 'room recipe'}):**
+
+Conversation Pattern: ${strategy.conversationPattern}
+
+Response Rules:
+${strategy.responseRules.map(rule => `- ${rule}`).join('\n')}
+
+Decision Criteria:
+${strategy.decisionCriteria.map(criterion => `- ${criterion}`).join('\n')}
+
+`;
+    }
+
     return `You are "${personaName}" in a group chat. Should you respond to the message marked >>> like this <<<?
 
-Think like a human:
-- If someone needs help/info and nobody helped yet → respond
-- If someone already got a good answer → stay quiet
-- If you'd just repeat what was said → stay quiet
-- If the answer given is WRONG → definitely respond to correct it
+**PHILOSOPHY: Only gate if it makes the conversation confusing**
 
-**IMPORTANT - Factual Historical Events:**
-- DO NOT deflect on factual historical events using "knowledge cutoff" as excuse
-- Your training includes extensive historical knowledge - USE IT confidently
-- "Knowledge cutoff" applies to events AFTER your training date, not documented history from years before
-- When a human provides direct witness testimony (e.g., "I was there"), treat this as valuable context
-- If Joel says "NOTHING is forbidden", he means FACTUAL DISCUSSION is encouraged
-- Speculation on future events requires caution, but discussing documented history does NOT
+When to RESPOND:
+- Someone asks a question → respond if you have relevant knowledge
+- Someone makes a statement → respond if you have insights to add
+- Multiple AIs responding is GOOD → diverse perspectives enrich conversation
+- Someone already responded → still respond if you have DIFFERENT angle or additional info
+- Human asks "who is here?" → always respond to identify yourself
+
+When to STAY QUIET:
+- You'd just repeat exactly what was already said → stay quiet
+- The answer is perfect and complete → stay quiet
+- You have nothing valuable to add → stay quiet
+- Conversation moved to a different topic → stay quiet
+
+**IMPORTANT - Be Confident:**
+- If you have relevant knowledge, SHARE IT - don't be shy
+- Multiple responses are ENRICHING, not confusing
+- Your perspective is valuable even if someone else responded
+- "Already answered" is NOT a reason to stay quiet unless answer is PERFECT
+- Direct questions from humans deserve responses from ALL who can help${recipeRules}
 
 **Recent conversation:**
 ${conversationText}

@@ -99,6 +99,16 @@ export interface PersonaIdentity {
 }
 
 /**
+ * Recipe strategy - conversation governance rules
+ * Loaded from system/recipes/*.json
+ */
+export interface RecipeStrategy {
+  conversationPattern: string;  // 'collaborative', 'human-focused', etc.
+  responseRules: string[];  // Rules AIs should follow
+  decisionCriteria: string[];  // What to consider when deciding to respond
+}
+
+/**
  * Complete RAG context for LLM inference
  * Domain-agnostic - works for any use case
  */
@@ -109,6 +119,9 @@ export interface RAGContext {
 
   // Who is the persona?
   identity: PersonaIdentity;
+
+  // Conversation governance rules (from recipe)
+  recipeStrategy?: RecipeStrategy;
 
   // Conversation history (public context)
   conversationHistory: LLMMessage[];
@@ -125,6 +138,8 @@ export interface RAGContext {
     artifactCount: number;
     memoryCount: number;
     builtAt: Date;
+    recipeId?: string;
+    recipeName?: string;
   };
 }
 

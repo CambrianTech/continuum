@@ -147,7 +147,7 @@ function createRoomStats(memberCount: number): any {
 /**
  * Create complete room object
  */
-function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[], ownerId: string, uniqueId: string): any {
+function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[], ownerId: string, uniqueId: string, recipeId: string = 'general-chat'): any {
   return {
     id,
     uniqueId,  // REQUIRED field for RoomEntity validation
@@ -159,6 +159,7 @@ function createRoom(id: string, name: string, displayName: string, description: 
     status: "active",
     ownerId,
     lastMessageAt: new Date().toISOString(), // Set to current time for new rooms
+    recipeId,  // Recipe for conversation governance
     privacy: createRoomPrivacy(),
     settings: createRoomSettings(),
     stats: createRoomStats(memberCount),

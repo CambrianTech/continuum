@@ -23,6 +23,7 @@ import type {
   PersonaPriority
 } from '../shared/ConversationCoordinationTypes';
 import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationTypes';
+import { BaseModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
 
 /**
  * Thought Stream Coordinator - RTOS-inspired AI social coordination
@@ -36,63 +37,61 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   /** Sequential evaluation queue - ensures personas evaluate one at a time */
   private evaluationQueue: Map<string, Promise<void>> = new Map();
 
-  /** Recent responders by context (for recency-based rotation) */
+  /** Recent responders by context (for recency-based rotation) - DEPRECATED: Now handled by moderator */
   private recentResponders: Map<UUID, UUID[]> = new Map(); // contextId -> [personaIds in recency order]
 
   /** Cleanup timer */
   private cleanupInterval: NodeJS.Timeout;
 
-  constructor(config: Partial<CoordinationConfig> = {}) {
+  /** Moderator - makes ALL coordination decisions (adapter pattern) */
+  private moderator: BaseModerator;
+
+  /** Conversation health tracking by contextId */
+  private conversationHealth: Map<UUID, ConversationHealth> = new Map();
+
+  /** Message history tracking for health metrics (contextId -> timestamps) */
+  private recentMessages: Map<UUID, number[]> = new Map();
+
+  constructor(config: Partial<CoordinationConfig> = {}, moderator?: BaseModerator) {
     super();
     this.config = { ...DEFAULT_COORDINATION_CONFIG, ...config };
+    this.moderator = moderator || getDefaultModerator();
 
     // Cleanup old streams every 30 seconds
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, 30000);
 
-    if (this.config.enableLogging) {
-      console.log('🧠 ThoughtStreamCoordinator: Initialized', this.config);
-    }
+    // ALWAYS enable ThoughtStream debugging
+    console.log('🧠 ThoughtStreamCoordinator: Initialized');
+    console.log(`🎚️ Using moderator: ${this.moderator.constructor.name}`);
   }
 
   /**
-   * Request evaluation turn (ensures sequential evaluation with random ordering)
-   * Brain-like: One persona thinks at a time, but order is randomized for fairness
+   * Request evaluation turn - NOW PARALLEL (no sequential bottleneck)
    *
-   * Usage:
-   *   const releaseTurn = await coordinator.requestEvaluationTurn(messageId, personaId);
-   *   try {
-   *     await evaluateAndRespond();
-   *   } finally {
-   *     releaseTurn();
-   *   }
+   * REMOVED: Sequential queue that was causing memory leaks
+   * - Was forcing 12+ AIs to wait in line (10-90 seconds each)
+   * - Caused cascading failures when one AI got stuck
+   * - Memory accumulated with pending Promises
+   *
+   * NEW BEHAVIOR: All AIs evaluate in parallel
+   * - ThoughtStream + Moderator handle coordination
+   * - No artificial bottleneck
+   * - Natural concurrency
    */
   async requestEvaluationTurn(messageId: string, personaId: UUID): Promise<() => void> {
-    // Wait for any previous evaluation on this message to complete
-    const existingEvaluation = this.evaluationQueue.get(messageId);
-    if (existingEvaluation) {
-      await existingEvaluation;
-    }
-
-    // Create promise for this evaluation (others will wait for it)
-    let resolveEvaluation: () => void;
-    const evaluationPromise = new Promise<void>((resolve) => {
-      resolveEvaluation = resolve;
-    });
-
-    this.evaluationQueue.set(messageId, evaluationPromise);
-
-    // Add small random delay (10-100ms) to simulate neural timing variance
-    const randomDelay = Math.random() * 90 + 10;
+    // NO-OP: Just return immediately (no queue)
+    // Add tiny random delay (0-50ms) to prevent thundering herd
+    const randomDelay = Math.random() * 50;
     await new Promise(resolve => setTimeout(resolve, randomDelay));
 
     if (this.config.enableLogging) {
-      console.log(`🎲 ${personaId.slice(0, 8)}: Got evaluation turn (after ${randomDelay.toFixed(0)}ms delay)`);
+      console.log(`⚡ ${personaId.slice(0, 8)}: Parallel evaluation (${randomDelay.toFixed(0)}ms delay)`);
     }
 
-    // Return resolver so caller can release the turn when done
-    return resolveEvaluation!;
+    // Return no-op resolver (no queue to release)
+    return () => {};
   }
 
   /**
@@ -109,10 +108,9 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       // Update mutable state
       stream.considerations.set(thought.personaId, thought);
 
-      if (this.config.enableLogging) {
-        console.log(`🧠 Thought: ${thought.personaId.slice(0, 8)} → ${thought.type} (conf=${thought.confidence})`);
-        console.log(`   Reasoning: ${thought.reasoning}`);
-      }
+      // ALWAYS log thoughts for debugging
+      console.log(`🧠 Thought: ${thought.personaId.slice(0, 8)} → ${thought.type} (conf=${thought.confidence.toFixed(2)})`);
+      console.log(`   Reasoning: ${thought.reasoning.slice(0, 100)}${thought.reasoning.length > 100 ? '...' : ''}`);
 
       // SEMAPHORE: Handle claiming/deferring
       if (thought.type === 'claiming') {
@@ -221,56 +219,80 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   }
 
   /**
-   * Check if we can make a decision (HEURISTICS)
+   * Get or update conversation health metrics for a context
+   */
+  private getConversationHealth(contextId: UUID): ConversationHealth {
+    let health = this.conversationHealth.get(contextId);
+
+    if (!health) {
+      // Initialize health for new context
+      health = {
+        consecutiveSilence: 0,
+        recentMessageCount: 0,
+        avgResponseTime: 0,
+        activeParticipants: 0,
+        timeSinceLastResponse: 0
+      };
+      this.conversationHealth.set(contextId, health);
+    }
+
+    return health;
+  }
+
+  /**
+   * Update conversation health after AI response
+   */
+  private updateConversationHealth(contextId: UUID, responded: boolean): void {
+    const health = this.getConversationHealth(contextId);
+    const now = Date.now();
+
+    // Track recent messages (last 5 minutes) - FIX: Limit array size
+    let messages = this.recentMessages.get(contextId) || [];
+    messages.push(now);
+    messages = messages.filter(t => now - t < 300000); // Keep last 5 minutes
+
+    // SAFETY: Hard limit to prevent memory leak (max 100 messages tracked)
+    if (messages.length > 100) {
+      messages = messages.slice(-100);
+    }
+
+    this.recentMessages.set(contextId, messages);
+
+    health.recentMessageCount = messages.length;
+
+    // Update consecutive silence counter
+    if (responded) {
+      health.consecutiveSilence = 0;
+      health.timeSinceLastResponse = 0;
+    } else {
+      health.consecutiveSilence++;
+      health.timeSinceLastResponse = now - (messages[messages.length - 2] || now);
+    }
+
+    this.conversationHealth.set(contextId, health);
+  }
+
+  /**
+   * Check if we can make a decision (DELEGATES to moderator)
    */
   private canDecide(stream: ThoughtStream): boolean {
     if (stream.phase === 'decided') {
       return false; // Already decided
     }
 
-    const thoughts = Array.from(stream.considerations.values());
-    const claims = thoughts.filter(t => t.type === 'claiming');
-    const deferrals = thoughts.filter(t => t.type === 'deferring');
+    const health = this.getConversationHealth(stream.contextId);
+    const context: ModerationContext = {
+      stream,
+      health,
+      config: this.config,
+      now: Date.now()
+    };
 
-    // RULE 1: Clear winner - one claim with very high confidence
-    if (claims.length === 1 && claims[0].confidence > 90) {
-      if (this.config.enableLogging) {
-        console.log(`🎯 CanDecide: Clear winner (conf=${claims[0].confidence})`);
-      }
-      return true;
-    }
-
-    // RULE 2: All slots claimed
-    if (stream.availableSlots === 0 && stream.claimedBy.size > 0) {
-      if (this.config.enableLogging) {
-        console.log(`🎯 CanDecide: All slots claimed (${stream.claimedBy.size})`);
-      }
-      return true;
-    }
-
-    // RULE 3: Everyone has decided (claim or defer)
-    const totalPersonas = thoughts.length;
-    if (totalPersonas > 0 && claims.length + deferrals.length === totalPersonas) {
-      if (this.config.enableLogging) {
-        console.log(`🎯 CanDecide: Everyone decided (${claims.length} claims, ${deferrals.length} deferrals)`);
-      }
-      return true;
-    }
-
-    // RULE 4: Timeout fallback - 3 seconds elapsed with at least one claim
-    const elapsed = Date.now() - stream.startTime;
-    if (elapsed > 3000 && claims.length > 0) {
-      if (this.config.enableLogging) {
-        console.log(`⏰ CanDecide: Timeout fallback (${elapsed}ms, ${claims.length} claims)`);
-      }
-      return true;
-    }
-
-    return false;
+    return this.moderator.shouldDecideNow(context);
   }
 
   /**
-   * Make final decision and signal waiters (CONDITION VARIABLE broadcast)
+   * Make final decision and signal waiters (DELEGATES to moderator)
    */
   private async makeDecision(stream: ThoughtStream): Promise<void> {
     if (stream.phase === 'decided') {
@@ -279,130 +301,52 @@ export class ThoughtStreamCoordinator extends EventEmitter {
 
     stream.phase = 'deliberating';
 
+    // Build moderation context
+    const health = this.getConversationHealth(stream.contextId);
+    const context: ModerationContext = {
+      stream,
+      health,
+      config: this.config,
+      now: Date.now()
+    };
+
+    // Delegate decision to moderator (adapter pattern)
+    const moderatorDecision = this.moderator.makeDecision(context);
+
+    // Convert ModeratorDecision to CoordinationDecision
     const thoughts = Array.from(stream.considerations.values());
-    const claims = thoughts.filter(t => t.type === 'claiming');
-
-    // Check if any moderator is claiming (if so, no recency penalty - moderator controls the flow)
-    const hasModerator = claims.some(c => c.priority === 'moderator');
-
-    // Get recency penalties (personas who recently responded get deprioritized)
-    const recentList = this.recentResponders.get(stream.contextId) || [];
-    const getRecencyPenalty = (personaId: UUID): number => {
-      if (hasModerator) return 0; // No recency penalty when moderator present
-
-      const position = recentList.indexOf(personaId);
-      if (position === -1) return 0; // Never responded, no penalty
-
-      // Recent responders get penalty (0-50 point deduction)
-      // Most recent = 50 point penalty, older = less penalty
-      const maxPenalty = 50;
-      const recencyFactor = 1 - (position / Math.max(recentList.length, 1));
-      return maxPenalty * recencyFactor;
-    };
-
-    // Sort claims by PRIORITY FIRST, then confidence minus recency penalty
-    // Priority order: moderator > expert > participant > observer
-    const getPriorityWeight = (priority?: PersonaPriority): number => {
-      switch (priority) {
-        case 'moderator': return 1000; // Highest priority (teachers, admins, project managers)
-        case 'expert': return 100;     // Domain experts get boosted
-        case 'participant': return 10;  // Normal participants
-        case 'observer': return 1;      // Low-priority observers
-        default: return 10;             // Default to participant if not specified
-      }
-    };
-
-    const sortedClaims = claims.sort((a, b) => {
-      const priorityA = getPriorityWeight(a.priority);
-      const priorityB = getPriorityWeight(b.priority);
-
-      // Sort by priority first
-      if (priorityA !== priorityB) {
-        return priorityB - priorityA;
-      }
-
-      // Within same priority, sort by confidence MINUS recency penalty
-      const recencyPenaltyA = getRecencyPenalty(a.personaId);
-      const recencyPenaltyB = getRecencyPenalty(b.personaId);
-      const scoreA = a.confidence - recencyPenaltyA;
-      const scoreB = b.confidence - recencyPenaltyB;
-
-      return scoreB - scoreA;
-    });
-
-    // Grant slots to top claimers (up to maxResponders)
-    const granted: UUID[] = [];
+    const granted = moderatorDecision.granted;
     const denied: UUID[] = [];
     const reasoning: string[] = [];
 
-    // FIX 1: If only one claimant, ALWAYS grant (regardless of confidence)
-    if (sortedClaims.length === 1) {
-      const claim = sortedClaims[0];
-      granted.push(claim.personaId);
-      reasoning.push(`${claim.personaId.slice(0, 8)} is only claimant (conf=${claim.confidence.toFixed(2)}) - auto-granted`);
-
-      if (this.config.enableLogging) {
-        console.log(`✅ Decision: Only one claimant, auto-granting ${claim.personaId.slice(0, 8)}`);
-      }
-    }
-    // FIX 2: If NO claimants but some personas evaluated, lower the bar and check deferrals
-    else if (sortedClaims.length === 0) {
-      if (this.config.enableLogging) {
-        console.log(`⚠️  Decision: No claimants - all personas deferred or went silent`);
-      }
-      reasoning.push('No personas claimed - all went silent');
-    }
-    // Normal case: Multiple claimants
-    else {
-      // FIX 3: Dynamic minConfidence based on context
-      // - If many high-confidence claims: use normal threshold
-      // - If all low confidence: lower the threshold
-      const avgConfidence = sortedClaims.reduce((sum, c) => sum + c.confidence, 0) / sortedClaims.length;
-      const dynamicMinConfidence = avgConfidence < 0.4 ? 0.2 : this.config.minConfidence;
-
-      if (this.config.enableLogging && dynamicMinConfidence !== this.config.minConfidence) {
-        console.log(`🎚️  Decision: Lowered minConfidence ${this.config.minConfidence} → ${dynamicMinConfidence} (avg conf=${avgConfidence.toFixed(2)})`);
-      }
-
-      for (let i = 0; i < Math.min(sortedClaims.length, this.config.maxResponders); i++) {
-        const claim = sortedClaims[i];
-        if (claim.confidence >= dynamicMinConfidence) {
-          granted.push(claim.personaId);
-          reasoning.push(`${claim.personaId.slice(0, 8)} claimed (conf=${claim.confidence.toFixed(2)})`);
-        } else {
-          reasoning.push(`${claim.personaId.slice(0, 8)} below threshold (conf=${claim.confidence.toFixed(2)} < ${dynamicMinConfidence.toFixed(2)})`);
-        }
+    // Build reasoning strings for granted personas
+    for (const personaId of granted) {
+      const thought = stream.considerations.get(personaId);
+      if (thought) {
+        reasoning.push(`${personaId.slice(0, 8)} granted (conf=${thought.confidence.toFixed(2)})`);
       }
     }
 
-    // Everyone else denied - track rejection reasons for diagnostics
+    // Build rejection reasons for denied personas
     for (const thought of thoughts) {
       if (!granted.includes(thought.personaId)) {
         denied.push(thought.personaId);
 
-        // Determine rejection reason
+        // Get rejection reason from moderator
+        const rejectionReason = moderatorDecision.rejected.get(thought.personaId);
         let reason: RejectionReason['reason'] = 'no_slots';
-        let details = '';
+        let details = rejectionReason || 'Not granted by moderator';
 
+        // Classify rejection reason
         if (thought.type === 'deferring') {
           reason = 'deferred';
           details = `Persona chose to defer: ${thought.reasoning}`;
-        } else if (thought.type === 'claiming') {
-          // Was claiming but didn't get granted
-          const claimIndex = sortedClaims.findIndex(c => c.personaId === thought.personaId);
-          if (claimIndex >= this.config.maxResponders) {
-            reason = 'outranked';
-            details = `Ranked ${claimIndex + 1}/${sortedClaims.length}, only ${this.config.maxResponders} slot(s) available`;
-          } else if (thought.confidence < this.config.minConfidence) {
-            reason = 'low_confidence';
-            details = `Confidence ${thought.confidence.toFixed(2)} below threshold ${this.config.minConfidence.toFixed(2)}`;
-          } else {
-            reason = 'no_slots';
-            details = 'All slots claimed by higher priority personas';
-          }
-        } else {
+        } else if (rejectionReason?.includes('below threshold')) {
+          reason = 'low_confidence';
+        } else if (rejectionReason?.includes('Ranked')) {
+          reason = 'outranked';
+        } else if (rejectionReason?.includes('timeout')) {
           reason = 'timeout';
-          details = `Timed out in '${thought.type}' state`;
         }
 
         stream.rejections.push({
@@ -423,15 +367,15 @@ export class ThoughtStreamCoordinator extends EventEmitter {
         contextId: stream.contextId,
         messageId: stream.messageId,
         confidence: t.confidence,
-        urgency: 50, // TODO: Add urgency to Thought
-        responseType: 'answer', // TODO: Map from ThoughtType
+        urgency: 50,
+        responseType: 'answer',
         relevanceScore: t.confidence,
-        wasMentioned: false, // TODO: Track this
+        wasMentioned: false,
         timestamp: t.timestamp
       })),
       granted,
       denied,
-      reasoning: reasoning.join('; '),
+      reasoning: reasoning.join('; ') || 'No personas responded',
       timestamp: new Date(),
       coordinationDurationMs: Date.now() - stream.startTime
     };
@@ -439,17 +383,26 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     stream.decision = decision;
     stream.phase = 'decided';
 
-    // Track granted responders for recency-based rotation
-    for (const personaId of granted) {
-      this.trackResponse(stream.contextId, personaId);
+    // Update conversation health (did anyone respond?)
+    this.updateConversationHealth(stream.contextId, granted.length > 0);
+
+    // Update moderator's recency tracking (if using PolynomialDecayModerator)
+    if ('updateRecency' in this.moderator && typeof (this.moderator as any).updateRecency === 'function') {
+      (this.moderator as any).updateRecency(stream.contextId, granted);
     }
 
-    if (this.config.enableLogging) {
-      console.log(`🎯 Decision: ${stream.messageId.slice(0, 8)} → ${granted.length} granted, ${denied.length} denied (${decision.coordinationDurationMs}ms)`);
-      console.log(`   Reasoning: ${decision.reasoning}`);
-      if (!hasModerator && recentList.length > 0) {
-        console.log(`🔄 Recency: Recent responders=[${recentList.slice(0, 5).map((r: UUID) => r.slice(0, 8)).join(', ')}...]`);
-      }
+    // ALWAYS log final decision for debugging
+    console.log(`🎯 Decision: ${stream.messageId.slice(0, 8)} → ${granted.length} granted, ${denied.length} denied (${decision.coordinationDurationMs}ms)`);
+    console.log(`   Moderator: threshold=${(moderatorDecision.confidenceThreshold * 100).toFixed(0)}%, maxResponders=${moderatorDecision.maxResponders}`);
+    console.log(`   Health: silence=${health.consecutiveSilence}, recent=${health.recentMessageCount}`);
+    if (granted.length > 0) {
+      console.log(`   ✅ Granted: ${granted.map(id => id.slice(0, 8)).join(', ')}`);
+    }
+    if (denied.length > 0) {
+      console.log(`   ❌ Denied: ${denied.map(id => id.slice(0, 8)).join(', ')}`);
+    }
+    if (reasoning.length > 0) {
+      console.log(`   Reasoning: ${reasoning.join('; ')}`);
     }
 
     // CONDITION VARIABLE: Signal all waiters
@@ -562,6 +515,20 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   }
 
   /**
+   * Get all active streams (for diagnostics/inspection)
+   */
+  getStreams(): Map<string, ThoughtStream> {
+    return this.streams;
+  }
+
+  /**
+   * Get specific stream by message ID
+   */
+  getStream(messageId: string): ThoughtStream | undefined {
+    return this.streams.get(messageId);
+  }
+
+  /**
    * Get summary statistics about coordination
    */
   getCoordinationStats() {
@@ -599,20 +566,53 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   }
 
   /**
-   * Cleanup old streams
+   * Cleanup old streams and health tracking (MECHANICAL SAFETY)
    */
   private cleanup(): void {
     const now = Date.now();
-    const maxAge = 60000; // 1 minute
+    const streamMaxAge = 60000; // 1 minute
+    const healthMaxAge = 600000; // 10 minutes
 
+    // Clean up old streams
     for (const [messageId, stream] of Array.from(this.streams.entries())) {
-      if (now - stream.startTime > maxAge) {
+      if (now - stream.startTime > streamMaxAge) {
         this.streams.delete(messageId);
       }
     }
 
-    if (this.config.enableLogging && this.streams.size > 0) {
-      console.log(`🧠 Cleanup: ${this.streams.size} active streams`);
+    // SAFETY: Clean up conversation health tracking (prevent memory leak)
+    for (const [contextId, health] of Array.from(this.conversationHealth.entries())) {
+      if (health.timeSinceLastResponse > healthMaxAge) {
+        this.conversationHealth.delete(contextId);
+        this.recentMessages.delete(contextId);
+      }
+    }
+
+    // SAFETY: Clean up recent messages tracking (prevent memory leak)
+    for (const [contextId, messages] of Array.from(this.recentMessages.entries())) {
+      // Remove messages older than 5 minutes
+      const filtered = messages.filter(t => now - t < 300000);
+      if (filtered.length === 0) {
+        this.recentMessages.delete(contextId);
+      } else {
+        this.recentMessages.set(contextId, filtered);
+      }
+    }
+
+    // SAFETY: Clean up evaluation queue (detect dead AIs)
+    for (const [messageId, promise] of Array.from(this.evaluationQueue.entries())) {
+      const stream = this.streams.get(messageId);
+      // If stream is gone but evaluation still queued, AI is dead/stuck
+      if (!stream || now - stream.startTime > streamMaxAge) {
+        this.evaluationQueue.delete(messageId);
+        if (this.config.enableLogging) {
+          console.log(`🚨 Cleanup: Removed dead evaluation queue for ${messageId.slice(0, 8)}`);
+        }
+      }
+    }
+
+    if (this.config.enableLogging && (this.streams.size > 0 || this.conversationHealth.size > 0)) {
+      console.log(`🧠 Cleanup: ${this.streams.size} active streams, ${this.conversationHealth.size} tracked contexts, ${this.evaluationQueue.size} queued evaluations`);
     }
   }
 
@@ -635,15 +635,19 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   }
 
   /**
-   * Shutdown
+   * Shutdown (MECHANICAL SAFETY: Clean up ALL state)
    */
   shutdown(): void {
     clearInterval(this.cleanupInterval);
     this.streams.clear();
+    this.evaluationQueue.clear();
+    this.recentResponders.clear();
+    this.conversationHealth.clear();
+    this.recentMessages.clear();
     this.removeAllListeners();
 
     if (this.config.enableLogging) {
-      console.log('🧠 ThoughtStreamCoordinator: Shutdown complete');
+      console.log('🧠 ThoughtStreamCoordinator: Shutdown complete - all state cleared');
     }
   }
 }

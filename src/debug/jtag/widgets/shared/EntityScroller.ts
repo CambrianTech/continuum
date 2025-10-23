@@ -141,6 +141,73 @@ export function createScroller<T extends BaseEntity>(
     resizeObserver.observe(container);
   }
 
+  // Insert single entity in correct timestamp order
+  const insertEntityInOrder = (entity: T): void => {
+    // Add to entity manager
+    if (!entityManager.add(entity)) {
+      return; // Already exists
+    }
+
+    // Render the new element
+    const renderContext: RenderContext<T> = {
+      ...context,
+      index: 0,
+      total: entityManager.count()
+    };
+    const newElement = render(entity, renderContext);
+    const entityId = entity.id ?? (entity as Record<string, unknown>).messageId as string ?? 'unknown';
+    newElement.setAttribute('data-entity-id', entityId);
+
+    // Get timestamp for ordering (if entity has timestamp field)
+    // Handle both Date objects and number timestamps
+    const entityTimestampRaw = (entity as Record<string, unknown>).timestamp;
+    const entityTimestamp = entityTimestampRaw instanceof Date
+      ? entityTimestampRaw.getTime()
+      : (typeof entityTimestampRaw === 'number' ? entityTimestampRaw : undefined);
+
+    if (!entityTimestamp) {
+      // No timestamp, just append (fallback behavior)
+      container.appendChild(newElement);
+      return;
+    }
+
+    // Find correct insertion point based on timestamp
+    // DOM order: oldest -> newest (column-reverse CSS flips visual display)
+    const children = Array.from(container.children);
+    let insertBefore: Element | null = null;
+
+    for (const child of children) {
+      const childId = child.getAttribute('data-entity-id');
+      if (!childId) continue;
+
+      // Get child entity from manager
+      const childEntity = entityManager.get(childId);
+      if (!childEntity) continue;
+
+      // Handle both Date objects and number timestamps
+      const childTimestampRaw = (childEntity as Record<string, unknown>).timestamp;
+      const childTimestamp = childTimestampRaw instanceof Date
+        ? childTimestampRaw.getTime()
+        : (typeof childTimestampRaw === 'number' ? childTimestampRaw : undefined);
+
+      if (!childTimestamp) continue;
+
+      // If new message is older than this child, insert before it
+      if (entityTimestamp < childTimestamp) {
+        insertBefore = child;
+        break;
+      }
+    }
+
+    if (insertBefore) {
+      container.insertBefore(newElement, insertBefore);
+      console.log(`📍 EntityScroller: Inserted message ${entityId} before ${insertBefore.getAttribute('data-entity-id')} (timestamp order)`);
+    } else {
+      // Newest message, append to end
+      container.appendChild(newElement);
+    }
+  };
+
   // Efficient DOM operations using fragments - only add genuinely new entities
   // For newest-first: initial load appends, loadMore prepends (older messages at top)
   // For oldest-first: always appends
@@ -344,8 +411,8 @@ export function createScroller<T extends BaseEntity>(
         existingElement.remove();
       }
 
-      // Add entity - always appends to DOM end, CSS handles visual positioning
-      addEntitiesToDOM([entity]);
+      // Add entity - insert in correct timestamp order for messages
+      insertEntityInOrder(entity);
     },
 
     // Smart real-time updates with auto-scroll
@@ -385,8 +452,8 @@ export function createScroller<T extends BaseEntity>(
       // CHECK SCROLL POSITION BEFORE ADDING (critical: must check before DOM changes)
       const wasAtBottom = config.autoScroll?.enabled && isNearEnd();
 
-      // Add entity - always appends to DOM end, CSS handles visual positioning
-      addEntitiesToDOM([entity]);
+      // Add entity - insert in correct timestamp order
+      insertEntityInOrder(entity);
 
       // Auto-scroll only if entity was genuinely added AND user was at bottom
       if (entityManager.count() > initialCount && wasAtBottom) {

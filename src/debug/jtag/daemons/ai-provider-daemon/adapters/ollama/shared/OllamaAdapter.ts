@@ -43,6 +43,8 @@ interface QueuedRequest {
   reject: (error: Error) => void;
   requestId: string;
   abortController?: AbortController;  // For timeout cancellation
+  enqueuedAt: number;  // Track when request was added to queue
+  timeoutHandle?: ReturnType<typeof setTimeout>;  // Timeout timer
 }
 
 class OllamaRequestQueue {
@@ -50,10 +52,11 @@ class OllamaRequestQueue {
   private activeRequests = 0;
   private readonly maxConcurrent: number;
   private activeRequestIds: Set<string> = new Set();
+  private readonly REQUEST_TIMEOUT = 90000; // 90 seconds max wait time in queue
 
   constructor(maxConcurrent: number = 4) {
     this.maxConcurrent = maxConcurrent;
-    console.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}`);
+    console.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, timeout=${this.REQUEST_TIMEOUT}ms`);
   }
 
   async enqueue<T>(executor: () => Promise<T>, requestId: string, abortController?: AbortController): Promise<T> {
@@ -63,7 +66,8 @@ class OllamaRequestQueue {
         resolve: resolve as (value: unknown) => void,
         reject,
         requestId,
-        abortController
+        abortController,
+        enqueuedAt: Date.now()
       };
 
       this.queue.push(queuedRequest);
