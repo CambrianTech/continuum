@@ -1086,8 +1086,9 @@ export class RemoteConnection implements JTAGConnection {
 
   async executeCommand(commandName: string, params: any): Promise<any> {
     // Create strongly-typed request message
+    // Use client_ prefix for external client detection
     const correlationId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
-    
+
     const requestMessage: JTAGMessage = JTAGMessageFactory.createRequest(
       this.context,
       this.context.environment, // origin: current environment
@@ -1101,14 +1102,14 @@ export class RemoteConnection implements JTAGConnection {
     if (!transport) {
       throw new Error('No transport available for remote command execution');
     }
-    
+
     console.log(`📤 RemoteConnection: Sending command '${commandName}' with correlation ${correlationId}`);
     const sendResult: TransportSendResult = await transport.send(requestMessage);
-    
+
     if (!sendResult.success) {
       throw new Error(`Transport failed to send command at ${sendResult.timestamp}`);
     }
-    
+
     // Wait for correlated response using the shared correlation interface
     const response = await this.correlator.waitForResponse(correlationId, 30000);
     return response;

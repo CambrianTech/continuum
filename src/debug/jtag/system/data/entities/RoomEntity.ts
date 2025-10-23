@@ -31,6 +31,11 @@ export interface RoomMember {
   role: 'owner' | 'admin' | 'member';
   joinedAt: Date;
   lastReadAt?: Date;
+
+  // Learning mode configuration (optional = backwards compatible)
+  learningMode?: 'fine-tuning' | 'inference-only';
+  genomeId?: UUID;  // Only present if fine-tuning
+  participantRole?: string;  // 'student', 'teacher', 'reviewer', etc.
 }
 
 import {
