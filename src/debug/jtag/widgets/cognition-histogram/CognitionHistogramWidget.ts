@@ -116,12 +116,14 @@ export class CognitionHistogramWidget extends BaseWidget {
     const stages: PipelineStage[] = ['rag-build', 'should-respond', 'generate', 'coordination', 'post-response'];
     const barWidth = 100 / stages.length;
     const maxHeight = 100;
+    const maxBarHeight = 70;  // Limit bars to 70% of container height
 
     stages.forEach((stage, index) => {
       const data = this.stageData.get(stage);
       if (!data || data.count === 0) return;
 
-      const height = (data.percentCapacity / 100) * maxHeight;
+      // Scale height to maxBarHeight (70%) instead of full container
+      const height = (data.percentCapacity / 100) * maxBarHeight;
       const x = index * barWidth;
       const y = maxHeight - height;
 
