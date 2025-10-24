@@ -24,6 +24,7 @@ import type {
 } from '../shared/ConversationCoordinationTypes';
 import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationTypes';
 import { BaseModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
+import { HeartbeatManager } from '../shared/SystemHeartbeat';
 
 /**
  * Thought Stream Coordinator - RTOS-inspired AI social coordination
@@ -48,6 +49,9 @@ export class ThoughtStreamCoordinator extends EventEmitter {
 
   /** Conversation health tracking by contextId */
   private conversationHealth: Map<UUID, ConversationHealth> = new Map();
+
+  /** Adaptive cadence manager - learns system's natural rhythm */
+  private heartbeatManager: HeartbeatManager = new HeartbeatManager();
 
   /** Message history tracking for health metrics (contextId -> timestamps) */
   private recentMessages: Map<UUID, number[]> = new Map();
@@ -113,6 +117,10 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       console.log(`🧠 Thought #${stream.thoughts.length}: ${thought.personaId.slice(0, 8)} → ${thought.type} (conf=${thought.confidence.toFixed(2)}) [+${elapsedMs}ms]`);
       console.log(`   Reasoning: ${thought.reasoning.slice(0, 100)}${thought.reasoning.length > 100 ? '...' : ''}`);
 
+      // Record evaluation time for adaptive cadence
+      const heartbeat = this.heartbeatManager.getHeartbeat(stream.contextId);
+      heartbeat.recordEvaluation(thought.personaId, elapsedMs);
+
       // SEMAPHORE: Handle claiming/deferring
       if (thought.type === 'claiming') {
         await this.handleClaim(stream, thought);
@@ -124,16 +132,20 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       this.emit(`thought:${messageId}`, thought);
       this.emit('thought', messageId, thought);
 
-      // Schedule decision after intention window (if not already scheduled)
+      // Schedule decision after adaptive cadence window (if not already scheduled)
       if (!stream.decisionTimer) {
+        // Get adaptive cadence from heartbeat (smoothly tracks p95)
+        const heartbeat = this.heartbeatManager.getHeartbeat(stream.contextId);
+        const adaptiveWindow = heartbeat.getAdaptiveCadence();
+
+        console.log(`🫀 Adaptive cadence: ${adaptiveWindow}ms (was ${this.config.intentionWindowMs}ms fixed)`);
+
         stream.decisionTimer = setTimeout(async () => {
           if (stream.phase === 'gathering') {
-            if (this.config.enableLogging) {
-              console.log(`⏰ Intention window expired for ${messageId.slice(0, 8)}, making decision...`);
-            }
+            console.log(`⏰ Adaptive window expired for ${messageId.slice(0, 8)}, making decision...`);
             await this.makeDecision(stream);
           }
-        }, this.config.intentionWindowMs);
+        }, adaptiveWindow);
       }
 
       // Early decision only if ALL personas have responded (optimization)
