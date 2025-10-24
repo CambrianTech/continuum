@@ -66,31 +66,32 @@
 }
 
 .histogram-svg text {
-  font-family: var(--font-mono, monospace);
-  user-select: none;
+  display: none;
 }
 
 /* Legend */
 .legend {
   display: flex;
-  gap: 8px;
+  gap: 16px;
   margin-top: 4px;
   padding: 0 4px;
-  font-size: 10px;
-  font-family: var(--font-mono, monospace);
+  font-size: 19px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-weight: 500;
   color: var(--content-tertiary, #6a7280);
+  text-transform: lowercase;
 }
 
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 6px;
 }
 
 .legend-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
   display: inline-block;
 }
 
