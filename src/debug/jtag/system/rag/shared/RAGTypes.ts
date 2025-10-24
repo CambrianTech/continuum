@@ -132,6 +132,11 @@ export interface RAGContext {
   // Private memories (persona's internal knowledge)
   privateMemories: PersonaMemory[];
 
+  // Learning mode configuration (Phase 2: Per-participant learning)
+  learningMode?: 'fine-tuning' | 'inference-only';
+  genomeId?: UUID;
+  participantRole?: string;  // 'student', 'teacher', 'reviewer', etc.
+
   // Metadata for debugging/logging
   metadata: {
     messageCount: number;

@@ -90,6 +90,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     // 5. Load room's recipe strategy (conversation governance rules)
     const recipeStrategy = await this.loadRecipeStrategy(contextId);
 
+    // 6. Load learning configuration (Phase 2: Per-participant learning mode)
+    const learningConfig = await this.loadLearningConfig(contextId, personaId);
+
     const ragContext: RAGContext = {
       domain: 'chat',
       contextId,
@@ -99,6 +102,9 @@ export class ChatRAGBuilder extends RAGBuilder {
       conversationHistory,
       artifacts,
       privateMemories,
+      learningMode: learningConfig?.learningMode,
+      genomeId: learningConfig?.genomeId,
+      participantRole: learningConfig?.participantRole,
       metadata: {
         messageCount: conversationHistory.length,
         artifactCount: artifacts.length,
@@ -397,6 +403,52 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       return recipe.strategy;
     } catch (error) {
       console.error(`❌ ChatRAGBuilder: Error loading recipe strategy:`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Load learning configuration for persona from room membership
+   * Phase 2: Per-participant learning mode
+   */
+  private async loadLearningConfig(
+    roomId: UUID,
+    personaId: UUID
+  ): Promise<{ learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined> {
+    try {
+      // 1. Load room entity
+      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (!roomResult.success || !roomResult.data) {
+        console.warn(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for learning config`);
+        return undefined;
+      }
+
+      const room = roomResult.data.data;
+
+      // 2. Find this persona's membership
+      const member = room.members.find(m => m.userId === personaId);
+      if (!member) {
+        console.log(`ℹ️ ChatRAGBuilder: Persona ${personaId.slice(0, 8)} not a member of room ${roomId.slice(0, 8)}`);
+        return undefined;
+      }
+
+      // 3. Return learning config if present (all fields optional)
+      const config = {
+        learningMode: member.learningMode,
+        genomeId: member.genomeId,
+        participantRole: member.participantRole
+      };
+
+      // Log learning mode status for debugging
+      if (config.learningMode) {
+        console.log(`🧠 ChatRAGBuilder: Persona ${personaId.slice(0, 8)} learning mode: ${config.learningMode}` +
+                    `${config.participantRole ? ` (${config.participantRole})` : ''}` +
+                    `${config.genomeId ? ` genome=${config.genomeId.slice(0, 8)}` : ''}`);
+      }
+
+      return config;
+    } catch (error) {
+      console.error(`❌ ChatRAGBuilder: Error loading learning config:`, error);
       return undefined;
     }
   }

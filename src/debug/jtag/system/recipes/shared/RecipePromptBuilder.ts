@@ -18,6 +18,7 @@
 
 import type { RecipeStrategy, ConversationPattern } from './RecipeTypes';
 import type { RAGContext } from '../../rag/shared/RAGTypes';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 /**
  * Base prompt context - shared across all adapters
@@ -26,6 +27,11 @@ export interface BasePromptContext {
   readonly personaName: string;
   readonly roomContext: RAGContext;
   readonly conversationPattern: ConversationPattern;
+
+  // Learning mode configuration (Phase 2: Per-participant learning)
+  readonly learningMode?: 'fine-tuning' | 'inference-only';
+  readonly genomeId?: UUID;
+  readonly participantRole?: string;
 }
 
 /**
