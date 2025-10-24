@@ -8,6 +8,20 @@
 import type { UUID } from '../../core/types/JTAGTypes';
 
 /**
+ * Cognition Event Names
+ * Emitted during AI cognitive pipeline execution
+ */
+export const COGNITION_EVENTS = {
+  /** Single pipeline stage completed */
+  STAGE_COMPLETE: 'cognition:stage-complete',
+
+  /** Complete pipeline summary for a message */
+  PIPELINE_SUMMARY: 'cognition:pipeline-summary'
+} as const;
+
+export type CognitionEventType = typeof COGNITION_EVENTS[keyof typeof COGNITION_EVENTS];
+
+/**
  * Pipeline stage identifiers
  */
 export type PipelineStage =

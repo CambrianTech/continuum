@@ -26,7 +26,7 @@ import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationT
 import { BaseModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
 import { HeartbeatManager } from '../shared/SystemHeartbeat';
 import type { StageCompleteEvent } from '../shared/CognitionEventTypes';
-import { calculateSpeedScore, getStageStatus } from '../shared/CognitionEventTypes';
+import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../shared/CognitionEventTypes';
 
 /**
  * Thought Stream Coordinator - RTOS-inspired AI social coordination
@@ -426,7 +426,7 @@ export class ThoughtStreamCoordinator extends EventEmitter {
         timestamp: Date.now()
       };
 
-      this.emit('cognition:stage-complete', stageEvent);
+      this.emit(COGNITION_EVENTS.STAGE_COMPLETE, stageEvent);
     }
 
     // Update conversation health (did anyone respond?)
