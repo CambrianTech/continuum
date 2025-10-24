@@ -69,3 +69,47 @@
   font-family: var(--font-mono, monospace);
   user-select: none;
 }
+
+/* Legend */
+.legend {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 0 4px;
+  font-size: 7px;
+  font-family: var(--font-mono, monospace);
+  color: var(--content-tertiary, #6a7280);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.legend-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  display: inline-block;
+}
+
+.legend-dot.fast {
+  background: #0f0;
+  box-shadow: 0 0 3px #0f0;
+}
+
+.legend-dot.normal {
+  background: #ff0;
+  box-shadow: 0 0 3px #ff0;
+}
+
+.legend-dot.slow {
+  background: #fa0;
+  box-shadow: 0 0 3px #fa0;
+}
+
+.legend-dot.bottleneck {
+  background: #f00;
+  box-shadow: 0 0 3px #f00;
+}
