@@ -1,0 +1,72 @@
+/* CognitionHistogram - Winamp-style AI Pipeline Visualization */
+
+:host {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+}
+
+.histogram-container {
+  display: flex;
+  flex-direction: column;
+  height: 180px;
+  max-height: 180px;
+  background: var(--surface-secondary, #0f1117);
+  border: 1px solid var(--border-primary, #2a2d35);
+  border-radius: 6px;
+  padding: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+}
+
+.histogram-container:hover {
+  border-color: var(--accent-primary, #4a9eff);
+}
+
+/* Header */
+.histogram-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.mode-label {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  color: var(--content-secondary, #8a92a5);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.hint {
+  font-size: 8px;
+  font-family: var(--font-mono, monospace);
+  color: var(--content-tertiary, #5a6270);
+  opacity: 0.7;
+}
+
+/* SVG Container */
+.histogram-svg {
+  flex: 1;
+  width: 100%;
+  background: var(--surface-primary, #1a1d24);
+  border: 1px solid var(--border-secondary, #383b44);
+  border-radius: 4px;
+}
+
+/* SVG Elements (set via JS) */
+.histogram-svg rect {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.histogram-svg path {
+  transition: d 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.histogram-svg text {
+  font-family: var(--font-mono, monospace);
+  user-select: none;
+}
