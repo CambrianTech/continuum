@@ -18,7 +18,8 @@
   padding: 15px;
   position: relative;
   gap: var(--spacing-md);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* Widget containers - split vertical space evenly */
