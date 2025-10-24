@@ -7,6 +7,7 @@
 import { BaseWidget } from '../shared/BaseWidget';
 import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
+import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversation/shared/CognitionEventTypes';
 
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: 'initializing' | 'connected' | 'disconnected' = 'initializing';
@@ -32,6 +33,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
 
     await this.startHealthMonitoring();
     this.subscribeToAIEvents();
+    this.subscribeToCognitionEvents();
     this.subscribeToEmotionEvents();
 
     // Add test message to verify scroller works
@@ -81,6 +83,30 @@ export class ContinuumEmoterWidget extends BaseWidget {
 
     Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string; personaName?: string; error: string }) => {
       this.addStatusMessage(`${data.personaName || 'AI'}: error ✗`);
+    });
+  }
+
+  /**
+   * Subscribe to cognition pipeline events
+   */
+  private subscribeToCognitionEvents(): void {
+    console.log('🎭 ContinuumEmoter: Subscribing to cognition events...');
+    console.log('🎭 ContinuumEmoter: COGNITION_EVENTS constant:', COGNITION_EVENTS);
+
+    Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
+      console.log('🎭 ContinuumEmoter: Received STAGE_COMPLETE event:', {
+        stage: data.stage,
+        personaId: data.personaId.slice(0, 8),
+        durationMs: data.metrics.durationMs,
+        status: data.metrics.status
+      });
+
+      // Show stage completion in status feed
+      const statusIcon = data.metrics.status === 'fast' ? '⚡' :
+                        data.metrics.status === 'normal' ? '✓' :
+                        data.metrics.status === 'slow' ? '⏱️' : '🐌';
+
+      this.addStatusMessage(`${statusIcon} ${data.stage}: ${data.metrics.durationMs}ms`);
     });
   }
 
