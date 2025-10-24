@@ -4,9 +4,16 @@
  * Renders one wide bar with average speed/capacity across all stages.
  */
 
-import { ChartRenderer, type ChartData } from './ChartRenderer';
+import { ChartRenderer, type ChartData, type LegendConfig } from './ChartRenderer';
 
 export class SimpleBarsRenderer extends ChartRenderer {
+  protected getLegendConfig(): LegendConfig {
+    return {
+      visible: true,
+      items: ChartRenderer.SPEED_LEGEND_ITEMS
+    };
+  }
+
   protected renderChart(data: ChartData[]): void {
     // Calculate overall averages
     const avgSpeed = this.average(data.map(d => d.percentSpeed));

@@ -4,9 +4,16 @@
  * Renders individual bars for each pipeline stage with speed-based coloring.
  */
 
-import { ChartRenderer, type ChartData } from './ChartRenderer';
+import { ChartRenderer, type ChartData, type LegendConfig } from './ChartRenderer';
 
 export class PipelineStagesRenderer extends ChartRenderer {
+  protected getLegendConfig(): LegendConfig {
+    return {
+      visible: true,
+      items: ChartRenderer.SPEED_LEGEND_ITEMS
+    };
+  }
+
   protected renderChart(data: ChartData[]): void {
     const barWidth = 100 / data.length;
 
