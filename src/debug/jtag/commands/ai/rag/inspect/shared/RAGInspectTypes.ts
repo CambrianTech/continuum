@@ -27,6 +27,12 @@ export interface RAGInspectParams extends CommandParams {
 
   /** Optional: Include private memories */
   includeMemories?: boolean;
+
+  /** Optional: Show full RAG content (like ping --verbose) */
+  verbose?: boolean;
+
+  /** Optional: Message ID that triggered evaluation (for decision-point analysis) */
+  triggerMessageId?: UUID;
 }
 
 /**
@@ -50,6 +56,39 @@ export interface RAGInspectResult extends CommandResult {
     };
     systemPromptLength: number;
     totalTokensEstimate: number;
+
+    // Phase 2: Learning mode fields (explicitly surfaced)
+    learningMode?: 'fine-tuning' | 'inference-only';
+    genomeId?: UUID;
+    participantRole?: string;
+    learningModeStatus: 'enabled' | 'disabled' | 'not-configured';
+  };
+
+  /** Decision-point analysis (items 4-6) */
+  readonly decisionPoint?: {
+    /** The message that triggered this evaluation */
+    triggerMessage?: {
+      id: UUID;
+      content: string;
+      senderName: string;
+      timestamp: number;
+    };
+
+    /** Decision made by this persona */
+    decision?: {
+      shouldRespond: boolean;
+      confidence?: number;
+      reasoning?: string;
+      action: 'POSTED' | 'SILENT' | 'ERROR' | 'TIMEOUT';
+    };
+
+    /** Learning mode context at decision time */
+    learningContext: {
+      mode: 'fine-tuning' | 'inference-only' | 'not-configured';
+      genomeActive: boolean;
+      participantRole?: string;
+      adaptiveDataAvailable: boolean;
+    };
   };
 
   /** Validation warnings */
