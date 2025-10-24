@@ -109,7 +109,8 @@ export class ThoughtStreamCoordinator extends EventEmitter {
       stream.considerations.set(thought.personaId, thought);
 
       // ALWAYS log thoughts for debugging
-      console.log(`🧠 Thought: ${thought.personaId.slice(0, 8)} → ${thought.type} (conf=${thought.confidence.toFixed(2)})`);
+      const elapsedMs = Date.now() - stream.startTime;
+      console.log(`🧠 Thought #${stream.thoughts.length}: ${thought.personaId.slice(0, 8)} → ${thought.type} (conf=${thought.confidence.toFixed(2)}) [+${elapsedMs}ms]`);
       console.log(`   Reasoning: ${thought.reasoning.slice(0, 100)}${thought.reasoning.length > 100 ? '...' : ''}`);
 
       // SEMAPHORE: Handle claiming/deferring
@@ -382,6 +383,10 @@ export class ThoughtStreamCoordinator extends EventEmitter {
 
     stream.decision = decision;
     stream.phase = 'decided';
+
+    // Log decision timing
+    const totalMs = Date.now() - stream.startTime;
+    console.log(`⏱️  Decision made after ${totalMs}ms with ${stream.thoughts.length} thoughts (${granted.length} granted, ${denied.length} denied)`);
 
     // Update conversation health (did anyone respond?)
     this.updateConversationHealth(stream.contextId, granted.length > 0);

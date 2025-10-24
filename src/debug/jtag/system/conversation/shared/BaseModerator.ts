@@ -132,9 +132,9 @@ export abstract class BaseModerator {
     const claims = Array.from(stream.considerations.values())
       .filter(t => t.type === 'claiming');
 
-    if (config.enableLogging) {
-      console.log(`🎯 Moderator (Conflict Resolver): ${claims.length} AIs want to respond`);
-    }
+    // ALWAYS log moderator decisions (critical for debugging)
+    console.log(`🎯 Moderator (Conflict Resolver): ${claims.length} AIs want to respond (messageId: ${stream.messageId.slice(0, 8)})`);
+    console.log(`   Claims: ${claims.map(c => `${c.personaId.slice(0, 8)} (conf=${c.confidence.toFixed(2)})`).join(', ')}`);
 
     // PHILOSOPHY: AIs are autonomous citizens who self-regulate using recipe rules
     // - Recipe defines the rules ("ONE AI responds to human questions")
@@ -178,9 +178,9 @@ export abstract class BaseModerator {
       granted.push(claim.personaId);
     }
 
-    if (config.enableLogging) {
-      console.log(`✅ Moderator: Granted ALL ${granted.length} claimants (autonomous self-regulation)`);
-    }
+    // ALWAYS log grant decisions (critical for debugging)
+    console.log(`✅ Moderator: Granted ALL ${granted.length} claimants (autonomous self-regulation)`);
+    console.log(`   Granted: ${granted.map(id => id.slice(0, 8)).join(', ')}`);
 
     return {
       granted,
