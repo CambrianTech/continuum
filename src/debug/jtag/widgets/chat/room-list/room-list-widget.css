@@ -1,12 +1,21 @@
 /* Room List Widget - Sidebar widget styling */
 
 :host {
-  display: block;
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  flex: 1 1 auto;
+  min-height: 200px;
+  max-height: 500px;
+  overflow: hidden;
 }
 
 /* Shared Entity List Widget Styles */
 .entity-list-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   background: var(--widget-surface-solid);
   border: 1px solid var(--widget-border);
   border-radius: var(--radius-lg);
@@ -39,7 +48,8 @@
 }
 
 .entity-list-body {
-  max-height: 400px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);

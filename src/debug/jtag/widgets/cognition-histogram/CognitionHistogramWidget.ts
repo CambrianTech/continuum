@@ -18,9 +18,12 @@ interface StageData {
   lastUpdate: number;
 }
 
+type VisualizationMode = 'pipeline' | 'simple-bars' | 'wave-graph';
+
 export class CognitionHistogramWidget extends BaseWidget {
   private stageData: Map<PipelineStage, StageData> = new Map();
   private animationFrame: number | null = null;
+  private mode: VisualizationMode = 'pipeline';
 
   constructor() {
     super({
@@ -52,9 +55,41 @@ export class CognitionHistogramWidget extends BaseWidget {
     });
 
     this.subscribeToCognitionEvents();
+    this.setupClickHandler();
     this.startAnimationLoop();
 
     console.log('✅ CognitionHistogram: Initialized');
+  }
+
+  private setupClickHandler(): void {
+    const container = this.shadowRoot?.querySelector('.histogram-container');
+    if (container) {
+      container.addEventListener('click', () => {
+        // Cycle through modes
+        if (this.mode === 'pipeline') {
+          this.mode = 'simple-bars';
+        } else if (this.mode === 'simple-bars') {
+          this.mode = 'wave-graph';
+        } else {
+          this.mode = 'pipeline';
+        }
+
+        console.log(`🧠 CognitionHistogram: Switched to ${this.mode} mode`);
+        this.updateModeLabel();
+      });
+    }
+  }
+
+  private updateModeLabel(): void {
+    const label = this.shadowRoot?.querySelector('.mode-label');
+    if (label) {
+      const modeNames = {
+        'pipeline': 'Pipeline Stages',
+        'simple-bars': 'Simple Bars',
+        'wave-graph': 'Wave Graph'
+      };
+      label.textContent = modeNames[this.mode];
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -98,10 +133,24 @@ export class CognitionHistogramWidget extends BaseWidget {
    */
   private startAnimationLoop(): void {
     const animate = () => {
-      this.renderPipelineStages();
+      this.renderCurrentMode();
       this.animationFrame = requestAnimationFrame(animate);
     };
     animate();
+  }
+
+  private renderCurrentMode(): void {
+    switch (this.mode) {
+      case 'pipeline':
+        this.renderPipelineStages();
+        break;
+      case 'simple-bars':
+        this.renderSimpleBars();
+        break;
+      case 'wave-graph':
+        this.renderWaveGraph();
+        break;
+    }
   }
 
   /**
@@ -150,6 +199,73 @@ export class CognitionHistogramWidget extends BaseWidget {
 
       svg.appendChild(rect);
     });
+  }
+
+  /**
+   * Render simple unified bar showing average performance
+   */
+  private renderSimpleBars(): void {
+    const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
+    if (!svg) return;
+
+    svg.innerHTML = '';
+
+    // Calculate overall average
+    const stages = Array.from(this.stageData.values()).filter(d => d.count > 0);
+    if (stages.length === 0) return;
+
+    const avgSpeed = stages.reduce((sum, d) => sum + d.percentSpeed, 0) / stages.length;
+    const avgCapacity = stages.reduce((sum, d) => sum + d.percentCapacity, 0) / stages.length;
+
+    const height = (avgCapacity / 100) * 70; // Max 70% height
+    const y = 100 - height;
+
+    // Color based on average speed
+    const color = avgSpeed >= 80 ? '#0f0' :
+                 avgSpeed >= 50 ? '#ff0' :
+                 avgSpeed >= 25 ? '#fa0' : '#f00';
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', '35%');
+    rect.setAttribute('y', `${y}%`);
+    rect.setAttribute('width', '30%');
+    rect.setAttribute('height', `${height}%`);
+    rect.setAttribute('fill', color);
+    rect.setAttribute('opacity', '0.8');
+    rect.setAttribute('rx', '4');
+    rect.style.filter = `drop-shadow(0 0 6px ${color})`;
+
+    svg.appendChild(rect);
+  }
+
+  /**
+   * Render wave graph showing capacity oscillation
+   */
+  private renderWaveGraph(): void {
+    const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
+    if (!svg) return;
+
+    svg.innerHTML = '';
+
+    const stages = Array.from(this.stageData.values()).filter(d => d.count > 0);
+    if (stages.length < 2) return;
+
+    const points = stages.map((data, index) => {
+      const x = (index / (stages.length - 1)) * 100;
+      const y = 100 - ((data.percentCapacity / 100) * 70); // Max 70% height
+      return `${x},${y}`;
+    }).join(' ');
+
+    const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    polyline.setAttribute('points', points);
+    polyline.setAttribute('fill', 'none');
+    polyline.setAttribute('stroke', '#ffd700');
+    polyline.setAttribute('stroke-width', '3');
+    polyline.setAttribute('stroke-linecap', 'round');
+    polyline.setAttribute('stroke-linejoin', 'round');
+    polyline.style.filter = 'drop-shadow(0 0 4px rgba(255, 215, 0, 0.6))';
+
+    svg.appendChild(polyline);
   }
 
   protected async renderWidget(): Promise<void> {
