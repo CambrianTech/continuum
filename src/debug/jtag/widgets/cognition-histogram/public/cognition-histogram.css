@@ -76,7 +76,7 @@
   gap: 8px;
   margin-top: 4px;
   padding: 0 4px;
-  font-size: 7px;
+  font-size: 10px;
   font-family: var(--font-mono, monospace);
   color: var(--content-tertiary, #6a7280);
 }
