@@ -57,6 +57,9 @@ import { Events } from '../../core/shared/Events';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
+import { calculateSpeedScore, getStageStatus } from '../../conversation/shared/CognitionEventTypes';
+import { EventEmitter } from 'events';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -90,6 +93,9 @@ export class PersonaUser extends AIUser {
   // Worker thread for parallel message evaluation
   private worker: PersonaWorkerThread | null = null;
 
+  // Event emitter for cognition events
+  private eventEmitter: EventEmitter;
+
   // AI model configuration (provider, model, temperature, etc.)
   private modelConfig: ModelConfig;
 
@@ -112,6 +118,9 @@ export class PersonaUser extends AIUser {
     client?: JTAGClient
   ) {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
+
+    // Initialize event emitter for cognition events
+    this.eventEmitter = new EventEmitter();
 
     // Extract modelConfig from entity (stored via Object.assign during creation)
     // Default to Ollama if not configured
@@ -1688,10 +1697,37 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       timestamp?: number;
     }>;
   }> {
+    const startTime = Date.now();
 
     try {
       // FAST-PATH: If directly mentioned by name, always respond (skip expensive LLM call)
       if (isMentioned) {
+        const durationMs = Date.now() - startTime;
+
+        // Emit cognition event for should-respond stage (fast-path)
+        const stageEvent: StageCompleteEvent = {
+          messageId: message.id,
+          personaId: this.id,
+          contextId: message.roomId,
+          stage: 'should-respond',
+          metrics: {
+            stage: 'should-respond',
+            durationMs,
+            resourceUsed: 100,  // 100% confidence
+            maxResource: 100,
+            percentCapacity: 100,
+            percentSpeed: calculateSpeedScore(durationMs, 'should-respond'),
+            status: getStageStatus(durationMs, 'should-respond'),
+            metadata: {
+              fastPath: true,
+              mentioned: true
+            }
+          },
+          timestamp: Date.now()
+        };
+
+        this.eventEmitter.emit('cognition:stage-complete', stageEvent);
+
         return {
           shouldRespond: true,
           confidence: 1.0,
@@ -1794,6 +1830,34 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         temperature: 0.3
       });
 
+      const durationMs = Date.now() - startTime;
+
+      // Emit cognition event for should-respond stage
+      const stageEvent: StageCompleteEvent = {
+        messageId: message.id,
+        personaId: this.id,
+        contextId: message.roomId,
+        stage: 'should-respond',
+        metrics: {
+          stage: 'should-respond',
+          durationMs,
+          resourceUsed: result.confidence * 100,
+          maxResource: 100,
+          percentCapacity: result.confidence * 100,
+          percentSpeed: calculateSpeedScore(durationMs, 'should-respond'),
+          status: getStageStatus(durationMs, 'should-respond'),
+          metadata: {
+            shouldRespond: result.shouldRespond,
+            model: gatingModel,
+            filteredMessages: recentHistory.length,
+            totalMessages: ragContext.conversationHistory.length
+          }
+        },
+        timestamp: Date.now()
+      };
+
+      this.eventEmitter.emit('cognition:stage-complete', stageEvent);
+
       // Return with RAG context summary for logging
       return {
         shouldRespond: result.shouldRespond,
@@ -1814,6 +1878,33 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
     } catch (error) {
       console.error(`❌ ${this.displayName}: Should-respond evaluation failed:`, error);
+
+      const durationMs = Date.now() - startTime;
+
+      // Emit cognition event for error case
+      const stageEvent: StageCompleteEvent = {
+        messageId: message.id,
+        personaId: this.id,
+        contextId: message.roomId,
+        stage: 'should-respond',
+        metrics: {
+          stage: 'should-respond',
+          durationMs,
+          resourceUsed: 0,
+          maxResource: 100,
+          percentCapacity: 0,
+          percentSpeed: calculateSpeedScore(durationMs, 'should-respond'),
+          status: 'bottleneck',
+          metadata: {
+            error: true,
+            errorMessage: error instanceof Error ? error.message : String(error)
+          }
+        },
+        timestamp: Date.now()
+      };
+
+      this.eventEmitter.emit('cognition:stage-complete', stageEvent);
+
       return {
         shouldRespond: isMentioned,
         confidence: isMentioned ? 1.0 : 0.5,

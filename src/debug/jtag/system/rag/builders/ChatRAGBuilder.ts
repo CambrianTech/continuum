@@ -27,6 +27,9 @@ import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { RoomEntity } from '../../data/entities/RoomEntity';
 import { RecipeLoader } from '../../recipes/server/RecipeLoader';
+import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
+import { calculateSpeedScore, getStageStatus } from '../../conversation/shared/CognitionEventTypes';
+import { EventEmitter } from 'events';
 
 /**
  * Chat-specific RAG builder
@@ -34,6 +37,12 @@ import { RecipeLoader } from '../../recipes/server/RecipeLoader';
  */
 export class ChatRAGBuilder extends RAGBuilder {
   readonly domain: RAGDomain = 'chat';
+  private eventEmitter: EventEmitter;
+
+  constructor() {
+    super();
+    this.eventEmitter = new EventEmitter();
+  }
 
   /**
    * Build RAG context from a chat room
@@ -47,6 +56,8 @@ export class ChatRAGBuilder extends RAGBuilder {
     personaId: UUID,
     options?: RAGBuildOptions
   ): Promise<RAGContext> {
+    const startTime = Date.now();
+
     const maxMessages = options?.maxMessages ?? 20;
     const maxMemories = options?.maxMemories ?? 10;
     const includeArtifacts = options?.includeArtifacts ?? true;
@@ -114,6 +125,35 @@ export class ChatRAGBuilder extends RAGBuilder {
         recipeName: recipeStrategy ? `${recipeStrategy.conversationPattern} conversation` : undefined
       }
     };
+
+    // Emit cognition event for rag-build stage
+    const durationMs = Date.now() - startTime;
+    const totalTokens = conversationHistory.reduce((sum, msg) => sum + (msg.content?.length ?? 0), 0);
+    const maxTokens = 128000;  // Typical context window
+
+    const stageEvent: StageCompleteEvent = {
+      messageId: (options as any)?.messageId ?? contextId,  // Use messageId if available, fallback to contextId
+      personaId,
+      contextId,
+      stage: 'rag-build',
+      metrics: {
+        stage: 'rag-build',
+        durationMs,
+        resourceUsed: totalTokens,
+        maxResource: maxTokens,
+        percentCapacity: (totalTokens / maxTokens) * 100,
+        percentSpeed: calculateSpeedScore(durationMs, 'rag-build'),
+        status: getStageStatus(durationMs, 'rag-build'),
+        metadata: {
+          messageCount: conversationHistory.length,
+          artifactCount: artifacts.length,
+          memoryCount: privateMemories.length
+        }
+      },
+      timestamp: Date.now()
+    };
+
+    this.eventEmitter.emit('cognition:stage-complete', stageEvent);
 
     return ragContext;
   }
