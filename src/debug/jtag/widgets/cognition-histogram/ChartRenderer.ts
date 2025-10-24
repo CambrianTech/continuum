@@ -13,6 +13,11 @@ export interface ChartData {
   count: number;
 }
 
+export interface LegendConfig {
+  visible: boolean;
+  items?: Array<{ label: string; color: string }>;
+}
+
 export abstract class ChartRenderer {
   protected svg: SVGElement;
   protected readonly MAX_BAR_HEIGHT = 70;  // Limit bars to 70% of container
@@ -23,12 +28,33 @@ export abstract class ChartRenderer {
   }
 
   /**
+   * Get legend configuration for this chart type
+   * Default: no legend (subclasses override)
+   */
+  protected getLegendConfig(): LegendConfig {
+    return { visible: false };
+  }
+
+  /**
    * Clear SVG and render chart
    */
   render(data: ChartData[]): void {
     this.clearSVG();
     if (data.length === 0) return;
     this.renderChart(data);
+    this.updateLegend();
+  }
+
+  /**
+   * Update legend visibility based on chart type
+   */
+  private updateLegend(): void {
+    const legendConfig = this.getLegendConfig();
+    const legendElement = document.querySelector('.legend') as HTMLElement;
+
+    if (legendElement) {
+      legendElement.style.display = legendConfig.visible ? 'flex' : 'none';
+    }
   }
 
   /**
@@ -45,13 +71,32 @@ export abstract class ChartRenderer {
 
   /**
    * Get color based on speed percentage (heat map: green=fast, red=stuck)
+   * Static so other code can use the same color mapping
    */
-  protected getSpeedColor(percentSpeed: number): string {
+  static getSpeedColor(percentSpeed: number): string {
     if (percentSpeed >= 80) return '#0f0';  // Fast (green)
     if (percentSpeed >= 50) return '#ff0';  // Normal (yellow)
     if (percentSpeed >= 25) return '#fa0';  // Slow (orange)
     return '#f00';                          // Bottleneck (red)
   }
+
+  /**
+   * Instance method delegates to static
+   */
+  protected getSpeedColor(percentSpeed: number): string {
+    return ChartRenderer.getSpeedColor(percentSpeed);
+  }
+
+  /**
+   * Static legend items for speed categories
+   * Reusable for any renderer that wants speed-based legends
+   */
+  static readonly SPEED_LEGEND_ITEMS = [
+    { label: 'Fast', color: '#0f0' },
+    { label: 'Normal', color: '#ff0' },
+    { label: 'Slow', color: '#fa0' },
+    { label: 'Stuck', color: '#f00' }
+  ];
 
   /**
    * Create SVG rect element with common attributes
