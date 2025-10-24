@@ -25,6 +25,8 @@ import type {
 import { DEFAULT_COORDINATION_CONFIG } from '../shared/ConversationCoordinationTypes';
 import { BaseModerator, getDefaultModerator, type ConversationHealth, type ModerationContext } from '../shared/BaseModerator';
 import { HeartbeatManager } from '../shared/SystemHeartbeat';
+import type { StageCompleteEvent } from '../shared/CognitionEventTypes';
+import { calculateSpeedScore, getStageStatus } from '../shared/CognitionEventTypes';
 
 /**
  * Thought Stream Coordinator - RTOS-inspired AI social coordination
@@ -399,6 +401,33 @@ export class ThoughtStreamCoordinator extends EventEmitter {
     // Log decision timing
     const totalMs = Date.now() - stream.startTime;
     console.log(`⏱️  Decision made after ${totalMs}ms with ${stream.thoughts.length} thoughts (${granted.length} granted, ${denied.length} denied)`);
+
+    // Emit cognition event for coordination stage (for all personas who evaluated)
+    for (const thought of stream.thoughts) {
+      const stageEvent: StageCompleteEvent = {
+        messageId: stream.messageId,
+        personaId: thought.personaId,
+        contextId: stream.contextId,
+        stage: 'coordination',
+        metrics: {
+          stage: 'coordination',
+          durationMs: totalMs,
+          resourceUsed: stream.thoughts.length,  // Number of thoughts
+          maxResource: 10,  // Typical max personas in a room
+          percentCapacity: (stream.thoughts.length / 10) * 100,
+          percentSpeed: calculateSpeedScore(totalMs, 'coordination'),
+          status: getStageStatus(totalMs, 'coordination'),
+          metadata: {
+            wasGranted: granted.includes(thought.personaId),
+            thoughtType: thought.type,
+            confidence: thought.confidence
+          }
+        },
+        timestamp: Date.now()
+      };
+
+      this.emit('cognition:stage-complete', stageEvent);
+    }
 
     // Update conversation health (did anyone respond?)
     this.updateConversationHealth(stream.contextId, granted.length > 0);
