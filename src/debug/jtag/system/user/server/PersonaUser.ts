@@ -986,12 +986,41 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       });
 
       let aiResponse: TextGenerationResponse;
+      const generateStartTime = Date.now();
       try {
         aiResponse = await Promise.race([
           AIProviderDaemon.generateText(request),
           timeoutPromise
         ]);
+        const generateDuration = Date.now() - generateStartTime;
         console.log(`✅ ${this.displayName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
+
+        // Emit cognition event for generate stage
+        await Events.emit<StageCompleteEvent>(
+          DataDaemon.jtagContext!,
+          COGNITION_EVENTS.STAGE_COMPLETE,
+          {
+            messageId: originalMessage.id,
+            personaId: this.id,
+            contextId: originalMessage.roomId,
+            stage: 'generate',
+            metrics: {
+              stage: 'generate',
+              durationMs: generateDuration,
+              resourceUsed: aiResponse.text.length,
+              maxResource: this.modelConfig.maxTokens ?? 150,
+              percentCapacity: (aiResponse.text.length / (this.modelConfig.maxTokens ?? 150)) * 100,
+              percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
+              status: getStageStatus(generateDuration, 'generate'),
+              metadata: {
+                model: this.modelConfig.model,
+                provider: this.modelConfig.provider,
+                tokensUsed: aiResponse.text.length
+              }
+            },
+            timestamp: Date.now()
+          }
+        );
 
         // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
         // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
@@ -1119,6 +1148,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // ✅ Post response via JTAGClient - universal Commands API
       // Prefer this.client if available (set by UserDaemon), fallback to shared instance
+      const postStartTime = Date.now();
       const result = this.client
         ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
             context: this.client.context,
@@ -1132,11 +1162,38 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             backend: 'server',
             data: responseMessage
           });
+      const postDuration = Date.now() - postStartTime;
       console.log(`✅ ${this.displayName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
 
       if (!result.success) {
         throw new Error(`Failed to create message: ${result.error}`);
       }
+
+      // Emit cognition event for post-response stage
+      await Events.emit<StageCompleteEvent>(
+        DataDaemon.jtagContext!,
+        COGNITION_EVENTS.STAGE_COMPLETE,
+        {
+          messageId: result.data?.id ?? originalMessage.id,
+          personaId: this.id,
+          contextId: originalMessage.roomId,
+          stage: 'post-response',
+          metrics: {
+            stage: 'post-response',
+            durationMs: postDuration,
+            resourceUsed: 1,  // One message posted
+            maxResource: 1,
+            percentCapacity: 100,
+            percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
+            status: getStageStatus(postDuration, 'post-response'),
+            metadata: {
+              messageId: result.data?.id,
+              success: result.success
+            }
+          },
+          timestamp: Date.now()
+        }
+      );
 
       // ✅ Log successful response posting
       AIDecisionLogger.logResponse(
