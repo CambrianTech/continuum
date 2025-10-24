@@ -15,6 +15,7 @@ export interface ThoughtStreamParams extends CommandParams {
   limit?: number;                      // Max number of streams to show (default 10)
 
   // Display options
+  showContent?: boolean;               // Show actual message content (not "Unknown")
   showRagContext?: boolean;            // Include RAG context for each thought
   showPrompts?: boolean;               // Include evaluation prompts
   verbose?: boolean;                   // Full details

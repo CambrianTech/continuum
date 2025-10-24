@@ -11,6 +11,8 @@ import type { RAGInspectParams, RAGInspectResult } from '../shared/RAGInspectTyp
 import { ChatRAGBuilder } from '../../../../../system/rag/builders/ChatRAGBuilder';
 import { DataDaemon } from '../../../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../../../../system/data/entities/ChatMessageEntity';
+import { getThoughtStreamCoordinator } from '../../../../../system/conversation/server/ThoughtStreamCoordinator';
+import type { Thought } from '../../../../../system/conversation/shared/ConversationCoordinationTypes';
 
 export class RAGInspectServerCommand extends RAGInspectCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -62,6 +64,26 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
 
       console.log(`✅ RAG Inspect: Built context with ${context.conversationHistory.length} messages, ~${totalTokensEstimate} tokens`);
 
+      // Build context preview (always shown in compact mode)
+      const contextPreview = {
+        // Recipe rules (top 3) - if available
+        recipeRules: context.recipeStrategy?.responseRules?.slice(0, 3) || ['No recipe rules configured'],
+
+        // System prompt excerpt (first 200 chars)
+        systemPromptExcerpt: context.identity.systemPrompt.length > 200
+          ? context.identity.systemPrompt.slice(0, 200) + '...'
+          : context.identity.systemPrompt,
+
+        // Recent messages (last 3)
+        recentMessages: context.conversationHistory.slice(-3).map(msg => ({
+          sender: msg.name ?? msg.role,
+          contentSnippet: msg.content.length > 50
+            ? msg.content.slice(0, 50) + '...'
+            : msg.content,
+          timestamp: msg.timestamp
+        }))
+      };
+
       // Determine learning mode status
       const learningModeStatus = context.learningMode
         ? 'enabled'
@@ -80,6 +102,63 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
           const msgResult = await DataDaemon.read<ChatMessageEntity>(ChatMessageEntity.collection, params.triggerMessageId);
           if (msgResult.success && msgResult.data) {
             const msg = msgResult.data.data;
+
+            // Get actual decision from ThoughtStream
+            const coordinator = getThoughtStreamCoordinator();
+            const stream = coordinator.getStream(params.triggerMessageId);
+
+            let actualDecision: {
+              shouldRespond: boolean;
+              confidence?: number;
+              reasoning?: string;
+              action: 'POSTED' | 'SILENT' | 'ERROR' | 'TIMEOUT';
+            };
+            if (stream) {
+              // Find this persona's thought in the stream
+              const personaThought = stream.thoughts.find((t: Thought) => t.personaId === params.personaId);
+
+              if (personaThought) {
+                // Check if persona was granted permission
+                const wasGranted = stream.decision?.granted.includes(params.personaId) || false;
+
+                // Determine action based on thought state and coordination outcome
+                let action: 'POSTED' | 'SILENT' | 'ERROR' | 'TIMEOUT';
+
+                // Check for error/timeout conditions first
+                if (personaThought.type === 'deferring' && personaThought.reasoning?.toLowerCase().includes('error')) {
+                  action = 'ERROR';
+                } else if (personaThought.type === 'deferring' && personaThought.reasoning?.toLowerCase().includes('timeout')) {
+                  action = 'TIMEOUT';
+                } else if (stream.phase === 'decided' && wasGranted) {
+                  action = 'POSTED';
+                } else {
+                  action = 'SILENT';
+                }
+
+                actualDecision = {
+                  shouldRespond: personaThought.type === 'claiming',
+                  confidence: personaThought.confidence,
+                  reasoning: personaThought.reasoning,
+                  action
+                };
+                console.log(`✅ Found real decision: ${actualDecision.action} (confidence: ${actualDecision.confidence})${personaThought.reasoning ? ` - ${personaThought.reasoning.slice(0, 50)}` : ''}`);
+              } else {
+                // Persona didn't evaluate this message
+                actualDecision = {
+                  shouldRespond: false,
+                  action: 'SILENT',
+                  reasoning: 'Persona did not evaluate this message'
+                };
+              }
+            } else {
+              // ThoughtStream not found (old message or not yet processed)
+              actualDecision = {
+                shouldRespond: false,
+                action: 'SILENT',
+                reasoning: 'ThoughtStream not available (message may be too old or not yet processed)'
+              };
+            }
+
             decisionPoint = {
               triggerMessage: {
                 id: msg.id!,
@@ -87,11 +166,7 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
                 senderName: msg.senderName,
                 timestamp: typeof msg.timestamp === 'number' ? msg.timestamp : new Date(msg.timestamp!).getTime()
               },
-              decision: {
-                shouldRespond: false, // TODO: Look up actual decision from thoughtstream
-                action: 'SILENT',
-                reasoning: 'Decision data not yet integrated'
-              },
+              decision: actualDecision,
               learningContext: {
                 mode: context.learningMode || 'not-configured',
                 genomeActive: !!context.genomeId,
@@ -124,6 +199,7 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
           participantRole: context.participantRole,
           learningModeStatus
         },
+        contextPreview,  // Always show preview (compact mode visibility)
         decisionPoint,
         warnings: warnings.length > 0 ? warnings : undefined
       };

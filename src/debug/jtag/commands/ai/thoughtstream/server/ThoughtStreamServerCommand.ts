@@ -81,8 +81,9 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
 
           if (result.success && result.data) {
             const msg = result.data as any;
-            messageSender = msg.senderName || 'Unknown';
-            messageContent = msg.content?.text || '';
+            // Try different possible structures for message data
+            messageSender = msg.senderName || msg.data?.senderName || 'Unknown';
+            messageContent = msg.content?.text || msg.data?.content?.text || msg.text || '';
           }
         } catch (error) {
           console.warn(`⚠️ Could not load message ${stream.messageId}:`, error);
