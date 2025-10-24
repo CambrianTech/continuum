@@ -1707,7 +1707,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         message.roomId,
         this.id,
         {
-          maxMessages: 10,  // Reduced from 30 to 10 - less noise, clearer topic detection
+          maxMessages: 20,  // Match response generation context - AIs need full conversation flow
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
@@ -1728,7 +1728,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // FIX 2: Configurable minimum messages per persona
       // Always include at least N messages for context, regardless of time window
-      const minContextMessages = this.entity?.personaConfig?.minContextMessages ?? 3;
+      // Default to 15 messages - AIs need substantial context to understand conversation flow
+      const minContextMessages = this.entity?.personaConfig?.minContextMessages ?? 15;
 
       // Filter conversation history to only include REAL messages (not system/welcome)
       const nonSystemMessages = ragContext.conversationHistory.filter(msg => {
@@ -1742,18 +1743,26 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         return !isSystemMessage;
       });
 
-      // Apply time window filter
+      // STRATEGY: "More is better than less" - prioritize message count over time
+      // Time window is a soft limit: if we have fewer than minContextMessages in the window,
+      // include older messages to reach the minimum. This ensures AIs always have enough
+      // context to understand the conversation flow.
+
       const timeFilteredHistory = nonSystemMessages.filter(msg => {
         const msgTime = msg.timestamp ?? 0;
         return msgTime >= cutoffTime;
       });
 
-      // FIX 3: Ensure minimum messages regardless of time window
-      // If time filtering removed too many messages, include older ones to meet minimum
-      let recentHistory = timeFilteredHistory;
-      if (recentHistory.length < minContextMessages && nonSystemMessages.length >= minContextMessages) {
+      // Ensure we always have at least minContextMessages, even if outside time window
+      let recentHistory: typeof nonSystemMessages;
+      if (timeFilteredHistory.length >= minContextMessages) {
+        // Time window has enough messages - use them
+        recentHistory = timeFilteredHistory;
+      } else {
+        // Not enough recent messages - include older ones
+        // "Like an oil change: 30 days OR 3000 miles, whichever comes first"
         recentHistory = nonSystemMessages.slice(-minContextMessages);
-        console.log(`⚠️ ${this.displayName}: Time window too restrictive (${recentHistory.length}/${minContextMessages}), using last ${minContextMessages} messages`);
+        console.log(`⚠️ ${this.displayName}: Time window had only ${timeFilteredHistory.length} msgs (${contextWindowMinutes}min), including ${recentHistory.length} recent messages instead`);
       }
 
       // Use filtered context for gating decision
