@@ -8,6 +8,10 @@
 import { BaseWidget } from '../shared/BaseWidget';
 import { Events } from '../../system/core/shared/Events';
 import { COGNITION_EVENTS, type StageCompleteEvent, type PipelineStage, BASELINE_SPEEDS } from '../../system/conversation/shared/CognitionEventTypes';
+import { PipelineStagesRenderer } from './PipelineStagesRenderer';
+import { SimpleBarsRenderer } from './SimpleBarsRenderer';
+import { WaveGraphRenderer } from './WaveGraphRenderer';
+import type { ChartData } from './ChartRenderer';
 
 interface StageData {
   stage: PipelineStage;
@@ -160,45 +164,18 @@ export class CognitionHistogramWidget extends BaseWidget {
     const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
     if (!svg) return;
 
-    svg.innerHTML = '';
-
     const stages: PipelineStage[] = ['rag-build', 'should-respond', 'generate', 'coordination', 'post-response'];
-    const barWidth = 100 / stages.length;
-    const maxHeight = 100;
-    const maxBarHeight = 70;  // Limit bars to 70% of container height
-
-    stages.forEach((stage, index) => {
+    const chartData: ChartData[] = stages.map(stage => {
       const data = this.stageData.get(stage);
-      if (!data || data.count === 0) return;
-
-      // Scale height to maxBarHeight (70%) instead of full container
-      const height = (data.percentCapacity / 100) * maxBarHeight;
-      const x = index * barWidth;
-      const y = maxHeight - height;
-
-      // Color based on percentSpeed
-      const color = data.percentSpeed >= 80 ? '#0f0' :  // Fast (green)
-                   data.percentSpeed >= 50 ? '#ff0' :  // Normal (yellow)
-                   data.percentSpeed >= 25 ? '#fa0' :  // Slow (orange)
-                   '#f00';                             // Bottleneck (red)
-
-      // Create bar (thinner bars at 60% width, centered)
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      const barWidthPercent = barWidth * 0.6;
-      const xCentered = x + (barWidth - barWidthPercent) / 2;
-      rect.setAttribute('x', `${xCentered}%`);
-      rect.setAttribute('y', `${y}%`);
-      rect.setAttribute('width', `${barWidthPercent}%`);
-      rect.setAttribute('height', `${height}%`);
-      rect.setAttribute('fill', color);
-      rect.setAttribute('opacity', '0.8');
-      rect.setAttribute('rx', '2');
-
-      // Add glow effect
-      rect.style.filter = `drop-shadow(0 0 4px ${color})`;
-
-      svg.appendChild(rect);
+      return {
+        percentCapacity: data?.percentCapacity ?? 0,
+        percentSpeed: data?.percentSpeed ?? 0,
+        count: data?.count ?? 0
+      };
     });
+
+    const renderer = new PipelineStagesRenderer(svg);
+    renderer.render(chartData);
   }
 
   /**
@@ -208,34 +185,16 @@ export class CognitionHistogramWidget extends BaseWidget {
     const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
     if (!svg) return;
 
-    svg.innerHTML = '';
+    const chartData: ChartData[] = Array.from(this.stageData.values())
+      .filter(d => d.count > 0)
+      .map(d => ({
+        percentCapacity: d.percentCapacity,
+        percentSpeed: d.percentSpeed,
+        count: d.count
+      }));
 
-    // Calculate overall average
-    const stages = Array.from(this.stageData.values()).filter(d => d.count > 0);
-    if (stages.length === 0) return;
-
-    const avgSpeed = stages.reduce((sum, d) => sum + d.percentSpeed, 0) / stages.length;
-    const avgCapacity = stages.reduce((sum, d) => sum + d.percentCapacity, 0) / stages.length;
-
-    const height = (avgCapacity / 100) * 70; // Max 70% height
-    const y = 100 - height;
-
-    // Color based on average speed
-    const color = avgSpeed >= 80 ? '#0f0' :
-                 avgSpeed >= 50 ? '#ff0' :
-                 avgSpeed >= 25 ? '#fa0' : '#f00';
-
-    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    rect.setAttribute('x', '35%');
-    rect.setAttribute('y', `${y}%`);
-    rect.setAttribute('width', '30%');
-    rect.setAttribute('height', `${height}%`);
-    rect.setAttribute('fill', color);
-    rect.setAttribute('opacity', '0.8');
-    rect.setAttribute('rx', '4');
-    rect.style.filter = `drop-shadow(0 0 6px ${color})`;
-
-    svg.appendChild(rect);
+    const renderer = new SimpleBarsRenderer(svg);
+    renderer.render(chartData);
   }
 
   /**
@@ -245,27 +204,16 @@ export class CognitionHistogramWidget extends BaseWidget {
     const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
     if (!svg) return;
 
-    svg.innerHTML = '';
+    const chartData: ChartData[] = Array.from(this.stageData.values())
+      .filter(d => d.count > 0)
+      .map(d => ({
+        percentCapacity: d.percentCapacity,
+        percentSpeed: d.percentSpeed,
+        count: d.count
+      }));
 
-    const stages = Array.from(this.stageData.values()).filter(d => d.count > 0);
-    if (stages.length < 2) return;
-
-    const points = stages.map((data, index) => {
-      const x = (index / (stages.length - 1)) * 100;
-      const y = 100 - ((data.percentCapacity / 100) * 70); // Max 70% height
-      return `${x},${y}`;
-    }).join(' ');
-
-    const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-    polyline.setAttribute('points', points);
-    polyline.setAttribute('fill', 'none');
-    polyline.setAttribute('stroke', '#ffd700');
-    polyline.setAttribute('stroke-width', '3');
-    polyline.setAttribute('stroke-linecap', 'round');
-    polyline.setAttribute('stroke-linejoin', 'round');
-    polyline.style.filter = 'drop-shadow(0 0 4px rgba(255, 215, 0, 0.6))';
-
-    svg.appendChild(polyline);
+    const renderer = new WaveGraphRenderer(svg);
+    renderer.render(chartData);
   }
 
   protected async renderWidget(): Promise<void> {
