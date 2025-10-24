@@ -90,13 +90,30 @@ export function getEnvironmentType(): 'browser' | 'server' | 'webworker' | 'unkn
 
 /**
  * Safely access DOM elements with proper error handling
+ * Automatically handles widget selectors with shadow DOM traversal
  * Only works in browser environment - returns null otherwise
  */
 export function safeQuerySelector(selector: string): Element | null {
   if (!isBrowserEnvironment()) return null;
-  
+
   const context = getGlobalContext();
   try {
+    // Check if selector looks like a widget (ends with -widget)
+    if (selector.endsWith('-widget')) {
+      // Dynamically import WidgetDiscovery to avoid circular dependencies
+      // Use runtime check for browser environment
+      if (typeof document !== 'undefined' && document.querySelector('continuum-widget')) {
+        // Import WidgetDiscovery class
+        // Note: This requires the module to be loaded in browser context
+        const widgetDiscovery = (globalThis as any).WidgetDiscovery;
+        if (widgetDiscovery?.findWidget) {
+          const widgetRef = widgetDiscovery.findWidget(selector);
+          return widgetRef?.element ?? null;
+        }
+      }
+    }
+
+    // Fallback to regular query selector
     return context.document?.querySelector(selector) ?? null;
   } catch (error) {
     console.warn(`Failed to query selector "${selector}":`, error);

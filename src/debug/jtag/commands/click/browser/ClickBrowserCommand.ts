@@ -25,26 +25,56 @@ import { type ClickParams, type ClickResult, createClickResult } from '../shared
 import { ValidationError } from '../../../system/core/types/ErrorTypes';
 import { ClickCommand } from '../shared/ClickCommand';
 import { safeQuerySelector } from '../../../daemons/command-daemon/shared/GlobalUtils';
+import { WidgetDiscovery } from '../../../system/core/browser/utils/WidgetIntrospection';
 
 export class ClickBrowserCommand extends ClickCommand {
   
   /**
    * Browser does ONE thing: click element
+   * Handles both regular selectors and widget selectors (with shadow DOM traversal)
    */
   async execute(params: ClickParams): Promise<ClickResult> {
     console.log(`👆 BROWSER: Clicking ${params.selector}`);
 
     try {
-      const element = safeQuerySelector(params.selector);
-      if (!element) {
-        throw new Error(`Element not found: ${params.selector}`);
+      let element: Element | null = null;
+      let clickTarget: Element | null = null;
+
+      // Check if selector looks like a widget (ends with -widget)
+      if (params.selector.endsWith('-widget')) {
+        console.log(`🔍 BROWSER: Widget selector detected, using WidgetDiscovery`);
+        const widgetRef = WidgetDiscovery.findWidget(params.selector);
+
+        if (!widgetRef) {
+          throw new Error(`Widget not found: ${params.selector}`);
+        }
+
+        element = widgetRef.element;
+
+        // If shadowRoot and innerSelector provided, find element inside widget's shadow DOM
+        if (params.shadowRoot && params.innerSelector && widgetRef.shadowRoot) {
+          clickTarget = widgetRef.shadowRoot.querySelector(params.innerSelector);
+          if (!clickTarget) {
+            throw new Error(`Inner element not found: ${params.innerSelector} inside ${params.selector}`);
+          }
+          console.log(`🎯 BROWSER: Found inner element ${params.innerSelector} inside widget`);
+        } else {
+          clickTarget = element;
+        }
+      } else {
+        // Regular selector (non-widget)
+        element = safeQuerySelector(params.selector);
+        if (!element) {
+          throw new Error(`Element not found: ${params.selector}`);
+        }
+        clickTarget = element;
       }
 
-      // Simple click (cast to HTMLElement for click method)
-      (element as HTMLElement).click();
-      
-      console.log(`✅ BROWSER: Clicked ${params.selector}`);
-      
+      // Click the target element
+      (clickTarget as HTMLElement).click();
+
+      console.log(`✅ BROWSER: Clicked ${params.selector}${params.innerSelector ? ` -> ${params.innerSelector}` : ''}`);
+
       return createClickResult(params.context, params.sessionId, {
         success: true,
         selector: params.selector,

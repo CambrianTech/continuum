@@ -28,6 +28,8 @@ export interface ClickParams extends CommandParams {
   readonly selector: string;
   readonly button?: 'left' | 'right' | 'middle';
   readonly timeout?: number;
+  readonly shadowRoot?: boolean;  // For clicking elements inside widget shadow DOMs
+  readonly innerSelector?: string;  // Selector for element inside widget's shadow root
 }
 
 export const createClickParams = (
@@ -37,6 +39,8 @@ export const createClickParams = (
     selector?: string;
     button?: 'left' | 'right' | 'middle';
     timeout?: number;
+    shadowRoot?: boolean;
+    innerSelector?: string;
   }
 ): ClickParams => createPayload(context, sessionId, {
   selector: data.selector ?? '',
