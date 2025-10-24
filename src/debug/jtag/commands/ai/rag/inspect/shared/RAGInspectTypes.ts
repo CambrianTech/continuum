@@ -64,6 +64,20 @@ export interface RAGInspectResult extends CommandResult {
     learningModeStatus: 'enabled' | 'disabled' | 'not-configured';
   };
 
+  /** Context preview (shown in compact mode for quick diagnostics) */
+  readonly contextPreview?: {
+    /** Top 3 rules from recipe strategy */
+    recipeRules?: string[];
+    /** First 200 chars of system prompt */
+    systemPromptExcerpt?: string;
+    /** Last 3 messages the AI saw */
+    recentMessages?: Array<{
+      sender: string;
+      contentSnippet: string;
+      timestamp?: number;
+    }>;
+  };
+
   /** Decision-point analysis (items 4-6) */
   readonly decisionPoint?: {
     /** The message that triggered this evaluation */
