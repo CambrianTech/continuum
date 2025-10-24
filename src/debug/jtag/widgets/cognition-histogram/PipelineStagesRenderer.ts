@@ -10,7 +10,11 @@ export class PipelineStagesRenderer extends ChartRenderer {
   protected getLegendConfig(): LegendConfig {
     return {
       visible: true,
-      items: ChartRenderer.SPEED_LEGEND_ITEMS
+      minLabel: 'Stuck',
+      maxLabel: 'Fast',
+      colorFunction: ChartRenderer.getSpeedColor,
+      minValue: 0,
+      maxValue: 100
     };
   }
 
