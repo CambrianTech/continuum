@@ -55,7 +55,6 @@ export class CognitionHistogramWidget extends BaseWidget {
     });
 
     this.subscribeToCognitionEvents();
-    this.setupClickHandler();
     this.startAnimationLoop();
 
     console.log('✅ CognitionHistogram: Initialized');
@@ -76,6 +75,7 @@ export class CognitionHistogramWidget extends BaseWidget {
 
         console.log(`🧠 CognitionHistogram: Switched to ${this.mode} mode`);
         this.updateModeLabel();
+        this.renderCurrentMode(); // Re-render with new mode
       });
     }
   }
@@ -280,12 +280,12 @@ export class CognitionHistogramWidget extends BaseWidget {
       <style>${styles}</style>
       ${templateString}
     `;
+
+    // Set up click handler AFTER DOM is rendered
+    this.setupClickHandler();
   }
 
   protected resolveResourcePath(filename: string): string {
     return `widgets/cognition-histogram/public/${filename}`;
   }
 }
-
-// Register widget
-customElements.define('cognition-histogram-widget', CognitionHistogramWidget);

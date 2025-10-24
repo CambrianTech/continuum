@@ -18,6 +18,9 @@ import { BROWSER_WIDGETS } from './browser/generated';
 // Import widget debugging utilities
 import * as WidgetUtils from './system/browser/WidgetUtils';
 
+// Import WidgetDiscovery for universal selector support
+import { WidgetDiscovery } from './system/core/browser/utils/WidgetIntrospection';
+
 // NOTE: ThemeWidget imported via BROWSER_WIDGETS registry - no need for direct import
 
 export const jtag = {
@@ -35,6 +38,9 @@ export const jtag = {
 
     // Set up global window.jtag for widgets and tests
     (globalThis as any).jtag = client;
+
+    // Expose WidgetDiscovery for universal selector support (used by GlobalUtils.safeQuerySelector)
+    (globalThis as any).WidgetDiscovery = WidgetDiscovery;
 
     // Register client in static registry for sharedInstance access
     JTAGClient.registerClient('default', client);
