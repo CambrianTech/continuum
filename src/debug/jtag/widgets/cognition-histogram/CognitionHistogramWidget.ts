@@ -133,11 +133,13 @@ export class CognitionHistogramWidget extends BaseWidget {
                    data.percentSpeed >= 25 ? '#fa0' :  // Slow (orange)
                    '#f00';                             // Bottleneck (red)
 
-      // Create bar
+      // Create bar (thinner bars at 60% width, centered)
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      rect.setAttribute('x', `${x}%`);
+      const barWidthPercent = barWidth * 0.6;
+      const xCentered = x + (barWidth - barWidthPercent) / 2;
+      rect.setAttribute('x', `${xCentered}%`);
       rect.setAttribute('y', `${y}%`);
-      rect.setAttribute('width', `${barWidth * 0.8}%`);
+      rect.setAttribute('width', `${barWidthPercent}%`);
       rect.setAttribute('height', `${height}%`);
       rect.setAttribute('fill', color);
       rect.setAttribute('opacity', '0.8');
@@ -147,18 +149,6 @@ export class CognitionHistogramWidget extends BaseWidget {
       rect.style.filter = `drop-shadow(0 0 4px ${color})`;
 
       svg.appendChild(rect);
-
-      // Add stage label at bottom (only if there's space)
-      if (height < 90) {
-        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        text.setAttribute('x', `${x + barWidth * 0.4}%`);
-        text.setAttribute('y', '96');
-        text.setAttribute('text-anchor', 'middle');
-        text.setAttribute('font-size', '6');
-        text.setAttribute('fill', '#666');
-        text.textContent = stage.split('-')[0]; // First word only
-        svg.appendChild(text);
-      }
     });
   }
 
