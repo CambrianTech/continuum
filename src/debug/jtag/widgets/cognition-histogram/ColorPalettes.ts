@@ -128,8 +128,9 @@ function coolwarm(valueNormalized: number): string {
 }
 
 /**
- * Magma - Black → purple → magenta → orange → yellow → white
- * 0 = black (cold) → 1 = white (hot)
+ * Magma - Lighter purple → magenta → orange → yellow → white
+ * 0 = lighter purple (cold) → 1 = white (hot)
+ * Adjusted to avoid near-black colors for visibility
  */
 function magma(valueNormalized: number): string {
   const t = Math.max(0, Math.min(1, valueNormalized));
@@ -137,28 +138,28 @@ function magma(valueNormalized: number): string {
   let r: number, g: number, b: number;
 
   if (t < 0.2) {
-    // Black → Dark Purple
+    // Lighter Purple start (avoid black)
     const local = t / 0.2;
-    r = Math.floor(local * 50);
-    g = Math.floor(local * 10);
-    b = Math.floor(local * 80);
+    r = Math.floor(60 + local * 40);    // Start at 60 instead of 0
+    g = Math.floor(30 + local * 20);    // Start at 30 instead of 0
+    b = Math.floor(100 + local * 60);   // Start at 100 instead of 0
   } else if (t < 0.4) {
-    // Dark Purple → Magenta
+    // Purple → Magenta
     const local = (t - 0.2) / 0.2;
-    r = Math.floor(50 + local * 130);
-    g = Math.floor(10 + local * 30);
-    b = Math.floor(80 + local * 100);
+    r = Math.floor(100 + local * 80);
+    g = Math.floor(50 + local * 20);
+    b = Math.floor(160 + local * 40);
   } else if (t < 0.6) {
     // Magenta → Red-Orange
     const local = (t - 0.4) / 0.2;
     r = Math.floor(180 + local * 75);
-    g = Math.floor(40 + local * 60);
-    b = Math.floor(180 - local * 130);
+    g = Math.floor(70 + local * 50);
+    b = Math.floor(200 - local * 150);
   } else if (t < 0.8) {
     // Red-Orange → Orange-Yellow
     const local = (t - 0.6) / 0.2;
     r = 255;
-    g = Math.floor(100 + local * 120);
+    g = Math.floor(120 + local * 100);
     b = Math.floor(50 - local * 30);
   } else {
     // Orange-Yellow → White
