@@ -143,6 +143,42 @@ export class CognitionHistogramWidget extends BaseWidget {
     animate();
   }
 
+  /**
+   * Get SVG and legend elements from shadow DOM
+   */
+  private getChartElements(): { svg: SVGElement; legend: HTMLElement } | null {
+    const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
+    const legend = this.shadowRoot?.querySelector('.legend') as HTMLElement;
+    if (!svg) return null;
+    return { svg, legend };
+  }
+
+  /**
+   * Build chart data from current stage data
+   */
+  private buildChartData(stages?: PipelineStage[]): ChartData[] {
+    if (stages) {
+      // Specific stages (for pipeline view)
+      return stages.map(stage => {
+        const data = this.stageData.get(stage);
+        return {
+          percentCapacity: data?.percentCapacity ?? 0,
+          percentSpeed: data?.percentSpeed ?? 0,
+          count: data?.count ?? 0
+        };
+      });
+    } else {
+      // All stages with data (for simple/wave views)
+      return Array.from(this.stageData.values())
+        .filter(d => d.count > 0)
+        .map(d => ({
+          percentCapacity: d.percentCapacity,
+          percentSpeed: d.percentSpeed,
+          count: d.count
+        }));
+    }
+  }
+
   private renderCurrentMode(): void {
     switch (this.mode) {
       case 'pipeline':
@@ -161,20 +197,13 @@ export class CognitionHistogramWidget extends BaseWidget {
    * Render pipeline stages as Winamp-style frequency bars
    */
   private renderPipelineStages(): void {
-    const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
-    if (!svg) return;
+    const elements = this.getChartElements();
+    if (!elements) return;
 
     const stages: PipelineStage[] = ['rag-build', 'should-respond', 'generate', 'coordination', 'post-response'];
-    const chartData: ChartData[] = stages.map(stage => {
-      const data = this.stageData.get(stage);
-      return {
-        percentCapacity: data?.percentCapacity ?? 0,
-        percentSpeed: data?.percentSpeed ?? 0,
-        count: data?.count ?? 0
-      };
-    });
+    const chartData = this.buildChartData(stages);
 
-    const renderer = new PipelineStagesRenderer(svg);
+    const renderer = new PipelineStagesRenderer(elements.svg, elements.legend);
     renderer.render(chartData);
   }
 
@@ -182,18 +211,12 @@ export class CognitionHistogramWidget extends BaseWidget {
    * Render simple unified bar showing average performance
    */
   private renderSimpleBars(): void {
-    const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
-    if (!svg) return;
+    const elements = this.getChartElements();
+    if (!elements) return;
 
-    const chartData: ChartData[] = Array.from(this.stageData.values())
-      .filter(d => d.count > 0)
-      .map(d => ({
-        percentCapacity: d.percentCapacity,
-        percentSpeed: d.percentSpeed,
-        count: d.count
-      }));
+    const chartData = this.buildChartData();
 
-    const renderer = new SimpleBarsRenderer(svg);
+    const renderer = new SimpleBarsRenderer(elements.svg, elements.legend);
     renderer.render(chartData);
   }
 
@@ -201,18 +224,12 @@ export class CognitionHistogramWidget extends BaseWidget {
    * Render wave graph showing capacity oscillation
    */
   private renderWaveGraph(): void {
-    const svg = this.shadowRoot?.querySelector('.histogram-svg') as SVGElement;
-    if (!svg) return;
+    const elements = this.getChartElements();
+    if (!elements) return;
 
-    const chartData: ChartData[] = Array.from(this.stageData.values())
-      .filter(d => d.count > 0)
-      .map(d => ({
-        percentCapacity: d.percentCapacity,
-        percentSpeed: d.percentSpeed,
-        count: d.count
-      }));
+    const chartData = this.buildChartData();
 
-    const renderer = new WaveGraphRenderer(svg);
+    const renderer = new WaveGraphRenderer(elements.svg, elements.legend);
     renderer.render(chartData);
   }
 
