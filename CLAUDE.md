@@ -12,9 +12,44 @@ BEFORE YOU BEGIN *ANY NEW TASK* IN THIS REPO, GO BACK AND READ THE RELEVANT SECT
 ```bash
 cd src/debug/jtag
 npm start                    # REQUIRED to deploy ANY code changes
-./continuum screenshot       # Test functionality
+./jtag screenshot            # Test functionality
 ```
 npm test will also take care of deployment
+
+### 🚨 AI RESPONSE TESTING (MANDATORY BEFORE ANY COMMIT)
+
+**YOU ARE ABSOLUTELY PROHIBITED FROM COMMITTING CODE WHERE AIS DO NOT RESPOND TO `./jtag debug/chat-send --room=general`**
+
+The precommit hook runs:
+- TypeScript compilation (`npm run build:ts`)
+- CRUD integration tests (`database-chat-integration.test.ts`)
+- State integration tests (`state-system-integration.test.ts`)
+- Screenshot proof collection (4 widgets)
+
+**BUT** the precommit hook DOES NOT test live AI responses to chat messages. You MUST verify AIs respond manually.
+
+```bash
+# 1. Deploy and wait for system to start (BE PATIENT - 90+ seconds)
+npm start
+sleep 90
+
+# 2. Test AI responses in general room
+./jtag debug/chat-send --room=general --message="Test AI responses: $(date)"
+
+# 3. Wait for AI evaluation
+sleep 15
+
+# 4. Verify AIs responded (should see POSTED or SILENT entries)
+grep -A 2 "Test AI responses" .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log | grep -E "(POSTED|SILENT)"
+```
+
+**If AIs don't respond, the code is BROKEN. Do NOT commit.**
+
+**NEVER:**
+- Check out old commits without testing AI responses first
+- Revert files without deploying and testing afterwards
+- Assume compilation + CRUD tests = working AI responses
+- Commit code where AI responses are broken
 
 ### 🔧 DEVELOPMENT ESSENTIALS
 
