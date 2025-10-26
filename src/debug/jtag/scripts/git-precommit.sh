@@ -83,8 +83,8 @@ fi
 
 # Phase 2: Integration Testing
 echo ""
-echo "🧪 Phase 2: CRUD + State Integration (100% required)"
-echo "----------------------------------------------------"
+echo "🧪 Phase 2: CRUD + State + AI Response Integration (100% required)"
+echo "-------------------------------------------------------------------"
 
 echo "🧪 Running precommit test profile via JTAG test runner..."
 
@@ -108,13 +108,21 @@ TEST_OUTPUT2=$(cat .continuum/sessions/validation/test2-output.txt)
 echo "=================================================="
 
 echo ""
-# Check if both tests passed
-if [ $TEST_EXIT_CODE1 -eq 0 ] && [ $TEST_EXIT_CODE2 -eq 0 ]; then
+echo "🧪 Running AI Response integration test..."
+echo "=================================================="
+npx tsx tests/integration/ai-response-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test3-output.txt
+TEST_EXIT_CODE3=${PIPESTATUS[0]}
+TEST_OUTPUT3=$(cat .continuum/sessions/validation/test3-output.txt)
+echo "=================================================="
+
+echo ""
+# Check if all tests passed
+if [ $TEST_EXIT_CODE1 -eq 0 ] && [ $TEST_EXIT_CODE2 -eq 0 ] && [ $TEST_EXIT_CODE3 -eq 0 ]; then
     echo "✅ Precommit integration tests: ALL PASSED"
-    echo "📊 Test results: 2 of 2 tests passed (CRUD + State Integration)"
+    echo "📊 Test results: 3 of 3 tests passed (CRUD + State + AI Response Integration)"
 
     # Store test results for commit message
-    TEST_SUMMARY="CRUD + State Integration: 2/2 - ALL TESTS PASSED"
+    TEST_SUMMARY="CRUD + State + AI Response Integration: 3/3 - ALL TESTS PASSED"
 else
     echo ""
     echo "❌ PRECOMMIT INTEGRATION TESTS FAILED - BLOCKING COMMIT"
@@ -127,6 +135,11 @@ else
     if [ $TEST_EXIT_CODE2 -ne 0 ]; then
         echo "❌ State integration test FAILED (exit code: $TEST_EXIT_CODE2)"
         echo "   Test file: tests/integration/state-system-integration.test.ts"
+        echo "   Output shown above"
+    fi
+    if [ $TEST_EXIT_CODE3 -ne 0 ]; then
+        echo "❌ AI Response integration test FAILED (exit code: $TEST_EXIT_CODE3)"
+        echo "   Test file: tests/integration/ai-response-integration.test.ts"
         echo "   Output shown above"
     fi
     echo ""
@@ -279,7 +292,7 @@ echo "🎉 PRECOMMIT VALIDATION COMPLETE!"
 echo "=================================================="
 echo "✅ TypeScript compilation: PASSED"
 echo "✅ System deployment: PASSED"
-echo "✅ CRUD + State integration: 100% PASSED"
+echo "✅ CRUD + State + AI Response integration: 100% PASSED"
 echo "✅ Screenshot proof: COLLECTED"
 echo "✅ Session artifacts: PROMOTED"
 echo "✅ All validation artifacts included in commit"
