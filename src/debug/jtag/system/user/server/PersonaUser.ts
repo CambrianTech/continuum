@@ -613,7 +613,8 @@ export class PersonaUser extends AIUser {
       timestamp: new Date()
     };
 
-    await this.broadcastThought(messageEntity.id, thought);
+    console.log(`🔧 RACE-CONDITION-FIX: ${this.displayName} broadcasting thought for message ${messageEntity.id.slice(0, 8)} in room ${messageEntity.roomId.slice(0, 8)}`);
+    await this.broadcastThought(messageEntity.id, messageEntity.roomId, thought);
 
     // Wait for coordinator decision (fast: typically <100ms with early exit rules)
     const decision = await coordinator.waitForDecision(messageEntity.id, 3000);
@@ -1973,10 +1974,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   /**
    * Broadcast thought to stream (SIGNAL primitive)
    */
-  private async broadcastThought(messageId: string, thought: Thought): Promise<void> {
+  private async broadcastThought(messageId: string, contextId: UUID, thought: Thought): Promise<void> {
     try {
       const coordinator = getThoughtStreamCoordinator();
-      await coordinator.broadcastThought(messageId, thought);
+      await coordinator.broadcastThought(messageId, contextId, thought);
     } catch (error) {
       console.error(`❌ ${this.displayName}: Failed to broadcast thought (non-fatal):`, error);
       // Non-fatal: continue without coordination

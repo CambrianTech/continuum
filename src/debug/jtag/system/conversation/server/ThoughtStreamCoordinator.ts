@@ -104,9 +104,10 @@ export class ThoughtStreamCoordinator extends EventEmitter {
    * Broadcast a thought to the stream (SIGNAL primitive)
    * Event-driven: immediately notifies all observers
    */
-  async broadcastThought(messageId: string, thought: Thought): Promise<void> {
+  async broadcastThought(messageId: string, contextId: UUID, thought: Thought): Promise<void> {
     try {
-      const stream = this.getOrCreateStream(messageId, thought.personaId);
+      console.log(`🔧 RACE-CONDITION-FIX: broadcastThought(msg=${messageId.slice(0, 8)}, ctx=${contextId.slice(0, 8)}, persona=${thought.personaId.slice(0, 8)})`);
+      const stream = this.getOrCreateStream(messageId, contextId);
 
       // Add to immutable log
       stream.thoughts.push(thought);
