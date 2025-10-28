@@ -14,8 +14,9 @@ import type { UserCreateParams, UserCreateResult } from '../shared/UserCreateTyp
 import { createUserCreateResult } from '../shared/UserCreateTypes';
 import { UserFactory } from '../../../../system/user/shared/UserFactory';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
+import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
+import { createDataListParams } from '../../../data/list/shared/DataListTypes';
 
 export class UserCreateServerCommand extends UserCreateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -41,18 +42,30 @@ export class UserCreateServerCommand extends UserCreateCommand {
 
       // Check if user with this uniqueId already exists (prevent duplicates on re-seed)
       if (params.uniqueId) {
-        const existingResult = await DataDaemon.query<UserEntity>({
-          collection: COLLECTIONS.USERS,
-          filter: { uniqueId: params.uniqueId }
-        });
+        // Use proper command interface, not direct DataDaemon access
+        const listCommand = this.commander.commands.get('data/list');
+        if (!listCommand) {
+          throw new Error('data/list command not available');
+        }
 
-        if (existingResult.success && existingResult.data && existingResult.data.length > 0) {
+        // Create properly typed params with context and sessionId
+        const listParams = createDataListParams<UserEntity>(
+          this.context,
+          params.sessionId,
+          {
+            collection: COLLECTIONS.USERS,
+            filter: { uniqueId: params.uniqueId },
+            limit: 1
+          }
+        );
+
+        const existingResult = await listCommand.execute(listParams) as DataListResult<UserEntity>;
+
+        if (existingResult.success && existingResult.items && existingResult.items.length > 0) {
           console.log(`⚠️ User with uniqueId="${params.uniqueId}" already exists, returning existing user`);
 
-          // DataDaemon.query returns StorageResult<DataRecord<UserEntity>[]>
-          // DataRecord has structure: { id, collection, data: UserEntity, metadata }
-          // So existingResult.data[0].data is the actual UserEntity
-          const existingUser = existingResult.data[0].data;
+          // data/list command returns items array with UserEntity objects directly
+          const existingUser = existingResult.items[0];
 
           return createUserCreateResult(params, {
             success: true,
