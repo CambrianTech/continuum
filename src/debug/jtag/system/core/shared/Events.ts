@@ -212,12 +212,17 @@ export class Events {
   /**
    * ✨ Universal event subscription - works in browser (DOM events), server (EventBridge), shared code
    *
+   * @param subscriberId Optional ID to enable deduplication. If provided and subscription already exists for this {subscriberId, eventName}, replaces it instead of creating duplicate.
+   *
    * @example
    * // Elegant pattern matching - multiple actions
    * Events.subscribe('data:users {created,updated}', (user) => console.log(user));
    *
    * // With filtering
    * Events.subscribe('data:rooms', (room) => console.log(room), { where: { public: true } });
+   *
+   * // With deduplication (prevents duplicate subscriptions)
+   * Events.subscribe('chat:message', handler, undefined, personaId);  // Replaces previous subscription for same persona
    *
    * // Wildcard patterns
    * Events.subscribe('data:*:created', (entity) => console.log('Created:', entity));
@@ -228,7 +233,8 @@ export class Events {
   static subscribe<T>(
     patternOrEventName: string,
     listener: (eventData: T) => void,
-    filter?: SubscriptionFilter
+    filter?: SubscriptionFilter,
+    subscriberId?: string
   ): () => void {
     try {
       console.log(`🎧 Events: Subscribing to ${patternOrEventName}`);
@@ -245,12 +251,20 @@ export class Events {
         const parsedPattern = ElegantSubscriptionParser.parsePattern(patternOrEventName);
         console.log(`🎯 Events: Parsed elegant pattern:`, parsedPattern);
 
-        // Create subscription ID
-        const subscriptionId = `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+        // Create subscription ID - use subscriberId if provided for deduplication
+        const subscriptionId = subscriberId
+          ? `${patternOrEventName}_${subscriberId}`
+          : `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
         // Store elegant subscriptions in registry
         if (!this.elegantSubscriptions) {
           this.elegantSubscriptions = new Map();
+        }
+
+        // Check if replacing existing subscription (deduplication)
+        const existingSubscription = this.elegantSubscriptions.get(subscriptionId);
+        if (existingSubscription) {
+          console.log(`🔄 Events: Replacing existing subscription ${subscriptionId} for pattern ${patternOrEventName}`);
         }
 
         this.elegantSubscriptions.set(subscriptionId, {
@@ -260,7 +274,7 @@ export class Events {
           originalPattern: patternOrEventName
         });
 
-        console.log(`🎧 Events: Added elegant subscription ${subscriptionId} for pattern ${patternOrEventName}`);
+        console.log(`🎧 Events: ${existingSubscription ? 'Replaced' : 'Added'} elegant subscription ${subscriptionId} for pattern ${patternOrEventName}`);
 
         // Return unsubscribe function
         return () => {
@@ -271,10 +285,20 @@ export class Events {
       } else if (patternOrEventName.includes('*')) {
         // Legacy wildcard support
         const pattern = new RegExp('^' + patternOrEventName.replace(/\*/g, '.*') + '$');
-        const subscriptionId = `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+        // Create subscription ID - use subscriberId if provided for deduplication
+        const subscriptionId = subscriberId
+          ? `${patternOrEventName}_${subscriberId}`
+          : `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
         if (!this.wildcardSubscriptions) {
           this.wildcardSubscriptions = new Map();
+        }
+
+        // Check if replacing existing subscription (deduplication)
+        const existingSubscription = this.wildcardSubscriptions.get(subscriptionId);
+        if (existingSubscription) {
+          console.log(`🔄 Events: Replacing existing wildcard subscription ${subscriptionId} for pattern ${patternOrEventName}`);
         }
 
         this.wildcardSubscriptions.set(subscriptionId, {
@@ -282,6 +306,8 @@ export class Events {
           listener,
           eventName: patternOrEventName
         });
+
+        console.log(`🎧 Events: ${existingSubscription ? 'Replaced' : 'Added'} wildcard subscription ${subscriptionId}`);
 
         return () => {
           this.wildcardSubscriptions?.delete(subscriptionId);
@@ -302,10 +328,20 @@ export class Events {
         };
       } else {
         // Server environment - store exact-match subscriptions in map
-        const subscriptionId = `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+        // Create subscription ID - use subscriberId if provided for deduplication
+        const subscriptionId = subscriberId
+          ? `${patternOrEventName}_${subscriberId}`
+          : `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
         if (!this.exactMatchSubscriptions) {
           this.exactMatchSubscriptions = new Map();
+        }
+
+        // Check if replacing existing subscription (deduplication)
+        const existingSubscription = this.exactMatchSubscriptions.get(subscriptionId);
+        if (existingSubscription) {
+          console.log(`🔄 Events: Replacing existing exact-match subscription ${subscriptionId} for ${patternOrEventName}`);
         }
 
         this.exactMatchSubscriptions.set(subscriptionId, {
@@ -314,7 +350,7 @@ export class Events {
           filter
         });
 
-        console.log(`✅ Events: Added exact-match server subscription for ${patternOrEventName} (${subscriptionId})`);
+        console.log(`✅ Events: ${existingSubscription ? 'Replaced' : 'Added'} exact-match server subscription for ${patternOrEventName} (${subscriptionId})`);
 
         return () => {
           this.exactMatchSubscriptions?.delete(subscriptionId);

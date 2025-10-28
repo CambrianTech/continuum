@@ -136,70 +136,12 @@ export class RoomDataSeed {
    * @param roomIds - Map of room unique IDs to their database IDs
    * @param humanUserId - The userId of the system owner (from SystemIdentity)
    * @param senderName - Name of the system owner (from SystemIdentity)
+   *
+   * REMOVED: Generic welcome messages are redundant - room info is already in the header
    */
   public static generateSeedMessages(roomIds: Map<string, UUID>, humanUserId: UUID, senderName: string = 'Human'): ChatMessageEntity[] {
-    const messages: ChatMessageEntity[] = [];
-    const now = new Date();
-
-    const generalRoomId = roomIds.get(ROOM_UNIQUE_IDS.GENERAL);
-    const academyRoomId = roomIds.get(ROOM_UNIQUE_IDS.ACADEMY);
-    const pantheonRoomId = roomIds.get(ROOM_UNIQUE_IDS.PANTHEON);
-
-    if (generalRoomId) {
-      // Welcome message for general room
-      const welcome = new ChatMessageEntity();
-      welcome.roomId = generalRoomId;
-      welcome.senderId = humanUserId;
-      welcome.senderName = senderName;
-      welcome.senderType = 'human'; // Denormalized user type (human seed message)
-      welcome.content = {
-        text: 'Welcome to the General room! This is where we discuss development, collaborate, and share ideas.',
-        attachments: []
-      };
-      welcome.status = 'sent';
-      welcome.priority = 'normal';
-      welcome.timestamp = now;
-      welcome.reactions = [];
-      messages.push(welcome);
-    }
-
-    if (academyRoomId) {
-      // Academy welcome
-      const academyWelcome = new ChatMessageEntity();
-      academyWelcome.roomId = academyRoomId;
-      academyWelcome.senderId = humanUserId;
-      academyWelcome.senderName = senderName;
-      academyWelcome.senderType = 'human'; // Denormalized user type (human seed message)
-      academyWelcome.content = {
-        text: 'Welcome to the Academy! This room is for learning, tutorials, and educational discussions.',
-        attachments: []
-      };
-      academyWelcome.status = 'sent';
-      academyWelcome.priority = 'normal';
-      academyWelcome.timestamp = new Date(now.getTime() + 1000);
-      academyWelcome.reactions = [];
-      messages.push(academyWelcome);
-    }
-
-    if (pantheonRoomId) {
-      // Pantheon welcome
-      const pantheonWelcome = new ChatMessageEntity();
-      pantheonWelcome.roomId = pantheonRoomId;
-      pantheonWelcome.senderId = humanUserId;
-      pantheonWelcome.senderName = senderName;
-      pantheonWelcome.senderType = 'human'; // Denormalized user type (human seed message)
-      pantheonWelcome.content = {
-        text: 'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
-        attachments: []
-      };
-      pantheonWelcome.status = 'sent';
-      pantheonWelcome.priority = 'normal';
-      pantheonWelcome.timestamp = new Date(now.getTime() + 2000);
-      pantheonWelcome.reactions = [];
-      messages.push(pantheonWelcome);
-    }
-
-    return messages;
+    // No seed messages - let real conversations start naturally
+    return [];
   }
 
   /**
