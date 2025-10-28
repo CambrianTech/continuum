@@ -618,12 +618,24 @@ export class ThoughtStreamCoordinator extends EventEmitter {
   private cleanup(): void {
     const now = Date.now();
     const streamMaxAge = 60000; // 1 minute
+    const decidedStreamMaxAge = 5000; // 5 seconds for decided streams (fast cleanup)
     const healthMaxAge = 600000; // 10 minutes
 
     // Clean up old streams
     for (const [messageId, stream] of Array.from(this.streams.entries())) {
-      if (now - stream.startTime > streamMaxAge) {
+      // FAST CLEANUP: Decided streams cleaned up after 5 seconds (prevent deadlock)
+      if (stream.phase === 'decided' && now - stream.startTime > decidedStreamMaxAge) {
         this.streams.delete(messageId);
+        if (this.config.enableLogging) {
+          console.log(`🧹 Cleanup: Removed decided stream ${messageId.slice(0, 8)} (${now - stream.startTime}ms old)`);
+        }
+      }
+      // SLOW CLEANUP: Gathering streams cleaned up after 60 seconds (stuck evaluations)
+      else if (now - stream.startTime > streamMaxAge) {
+        this.streams.delete(messageId);
+        if (this.config.enableLogging) {
+          console.log(`🧹 Cleanup: Removed stale stream ${messageId.slice(0, 8)} (${now - stream.startTime}ms old, phase=${stream.phase})`);
+        }
       }
     }
 

@@ -59,6 +59,7 @@ import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
+import { RateLimiter } from './modules/RateLimiter';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -95,17 +96,8 @@ export class PersonaUser extends AIUser {
   // AI model configuration (provider, model, temperature, etc.)
   private modelConfig: ModelConfig;
 
-  // Rate limiting state (in-memory for now, will move to SQLite later)
-  private lastResponseTime: Map<UUID, Date> = new Map();
-  private readonly minSecondsBetweenResponses = 10; // 10 seconds between responses per room
-
-  // Response cap to prevent infinite loops
-  private responseCount: Map<UUID, number> = new Map(); // room -> count
-  private readonly maxResponsesPerSession = 50; // Max 50 responses per room per session
-
-  // Message deduplication - prevent evaluating same message multiple times
-  private evaluatedMessages: Set<string> = new Set(); // messageId -> already evaluated
-  private readonly MAX_EVALUATED_CACHE = 1000; // Keep last 1000 messages in cache
+  // Rate limiting module (TODO: Replace with AI-based coordination when ThoughtStream is solid)
+  private rateLimiter: RateLimiter;
 
   constructor(
     entity: UserEntity,
@@ -125,6 +117,12 @@ export class PersonaUser extends AIUser {
     };
 
     console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}`);
+
+    // Initialize rate limiter (TODO: Replace with AI-based coordination)
+    this.rateLimiter = new RateLimiter({
+      minSecondsBetweenResponses: 10,
+      maxResponsesPerSession: 50
+    });
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -292,11 +290,11 @@ export class PersonaUser extends AIUser {
       this.subscribeToChatEvents(this.handleChatMessage.bind(this));
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
 
-      // Subscribe to truncate events to cancel in-flight processing (using Events.subscribe)
+      // Subscribe to truncate events to reset rate limiter (using Events.subscribe)
       // Pass this.id as subscriberId to enable deduplication (prevents duplicate subscriptions)
       Events.subscribe('data:chat_messages:truncated', () => {
-        this.responseCount.clear();
-        this.lastResponseTime.clear();
+        // Clear message deduplication cache when messages are truncated
+        this.rateLimiter.clearEvaluatedMessages();
       }, undefined, this.id);
 
       this.eventsSubscribed = true;
@@ -385,20 +383,12 @@ export class PersonaUser extends AIUser {
     }
 
     // STEP 2: Deduplication - prevent evaluating same message multiple times
-    if (this.evaluatedMessages.has(messageEntity.id)) {
+    if (this.rateLimiter.hasEvaluatedMessage(messageEntity.id)) {
       return; // Already evaluated this message
     }
 
-    // Mark as evaluated (add to cache)
-    this.evaluatedMessages.add(messageEntity.id);
-
-    // Clean up old entries if cache gets too large
-    if (this.evaluatedMessages.size > this.MAX_EVALUATED_CACHE) {
-      // Convert to array, remove oldest 20%, convert back to Set
-      const entries = Array.from(this.evaluatedMessages);
-      const keepCount = Math.floor(this.MAX_EVALUATED_CACHE * 0.8);
-      this.evaluatedMessages = new Set(entries.slice(-keepCount));
-    }
+    // Mark as evaluated
+    this.rateLimiter.markMessageEvaluated(messageEntity.id);
 
     // STEP 3: Skip resolved messages (moderator marked as no longer needing responses)
     if (messageEntity.metadata?.resolved) {
@@ -470,9 +460,10 @@ export class PersonaUser extends AIUser {
     messageText: string
   ): Promise<void> {
     // STEP 2: Check response cap (prevent infinite loops)
-    const currentCount = this.responseCount.get(messageEntity.roomId) || 0;
-    if (currentCount >= this.maxResponsesPerSession) {
-      this.logAIDecision('SILENT', `Response cap reached (${currentCount}/${this.maxResponsesPerSession})`, {
+    if (this.rateLimiter.hasReachedResponseCap(messageEntity.roomId)) {
+      const currentCount = this.rateLimiter.getResponseCount(messageEntity.roomId);
+      const config = this.rateLimiter.getConfig();
+      this.logAIDecision('SILENT', `Response cap reached (${currentCount}/${config.maxResponsesPerSession})`, {
         message: messageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
@@ -484,11 +475,9 @@ export class PersonaUser extends AIUser {
     const isMentioned = this.isPersonaMentioned(messageText);
 
     // STEP 4: Check rate limiting (before expensive LLM call)
-    if (this.isRateLimited(messageEntity.roomId)) {
-      const lastTime = this.lastResponseTime.get(messageEntity.roomId)!;
-      const secondsSince = (Date.now() - lastTime.getTime()) / 1000;
-      const waitTime = this.minSecondsBetweenResponses - secondsSince;
-      this.logAIDecision('SILENT', `Rate limited, wait ${waitTime.toFixed(1)}s more`, {
+    if (this.rateLimiter.isRateLimited(messageEntity.roomId)) {
+      const info = this.rateLimiter.getRateLimitInfo(messageEntity.roomId);
+      this.logAIDecision('SILENT', `Rate limited, wait ${info.waitTimeSeconds?.toFixed(1)}s more`, {
         message: messageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
@@ -709,25 +698,8 @@ export class PersonaUser extends AIUser {
     console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
 
 
-    // Increment response count
-    const newCount = (this.responseCount.get(messageEntity.roomId) || 0) + 1;
-    this.responseCount.set(messageEntity.roomId, newCount);
-
-    // Track response time for rate limiting
-    this.lastResponseTime.set(messageEntity.roomId, new Date());
-  }
-
-  /**
-   * Check if this persona is rate limited for a room
-   */
-  private isRateLimited(roomId: UUID): boolean {
-    const lastTime = this.lastResponseTime.get(roomId);
-    if (!lastTime) {
-      return false; // Never responded in this room
-    }
-
-    const secondsSince = (Date.now() - lastTime.getTime()) / 1000;
-    return secondsSince < this.minSecondsBetweenResponses;
+    // Track response for rate limiting
+    this.rateLimiter.trackResponse(messageEntity.roomId);
   }
 
   /**
