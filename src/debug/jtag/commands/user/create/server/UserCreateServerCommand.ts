@@ -13,6 +13,9 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { UserCreateParams, UserCreateResult } from '../shared/UserCreateTypes';
 import { createUserCreateResult } from '../shared/UserCreateTypes';
 import { UserFactory } from '../../../../system/user/shared/UserFactory';
+import type { UserEntity } from '../../../../system/data/entities/UserEntity';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
 export class UserCreateServerCommand extends UserCreateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -34,6 +37,28 @@ export class UserCreateServerCommand extends UserCreateCommand {
           success: false,
           error: 'Display name is required'
         });
+      }
+
+      // Check if user with this uniqueId already exists (prevent duplicates on re-seed)
+      if (params.uniqueId) {
+        const existingResult = await DataDaemon.query<UserEntity>({
+          collection: COLLECTIONS.USERS,
+          filter: { uniqueId: params.uniqueId }
+        });
+
+        if (existingResult.success && existingResult.data && existingResult.data.length > 0) {
+          console.log(`⚠️ User with uniqueId="${params.uniqueId}" already exists, returning existing user`);
+
+          // DataDaemon.query returns StorageResult<DataRecord<UserEntity>[]>
+          // DataRecord has structure: { id, collection, data: UserEntity, metadata }
+          // So existingResult.data[0].data is the actual UserEntity
+          const existingUser = existingResult.data[0].data;
+
+          return createUserCreateResult(params, {
+            success: true,
+            user: existingUser
+          });
+        }
       }
 
       // Factory creates user via appropriate subclass

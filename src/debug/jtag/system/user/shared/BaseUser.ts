@@ -150,9 +150,11 @@ export abstract class BaseUser {
 
     for (const roomId of this.myRoomIds) {
       // ✅ Use Events.subscribe() with filter parameter - event system handles filtering
+      // Pass userId+roomId as subscriberId to enable per-room deduplication
+      // This ensures: 1 subscription per user per room, replacing old subscriptions on re-init
       Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
         await handler(messageData);
-      }, { where: { roomId } });
+      }, { where: { roomId } }, `${this.id}_${roomId}`);
 
       console.log(`✅ ${this.constructor.name} ${this.displayName}: Subscribed to room ${roomId.slice(0,8)}`);
     }
@@ -165,21 +167,17 @@ export abstract class BaseUser {
   protected subscribeToRoomUpdates(handler: (room: RoomEntity) => Promise<void>): void {
     const eventName = DataEventNames.updated(COLLECTIONS.ROOMS);
 
-    if (this.client) {
-      // ✅ Use Events.subscribe (works anywhere via sharedInstance)
-      Events.subscribe(eventName, async (roomData: RoomEntity) => {
-        await handler(roomData);
-      });
-      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via Events.subscribe`);
-    } else {
-      // ❌ FALLBACK: Create isolated EventManager (won't receive events, but won't crash)
-      const { EventManager } = require('../../events/shared/JTAGEventSystem');
-      const eventManager = new EventManager();
-      eventManager.events.on(eventName, async (roomData: RoomEntity) => {
-        await handler(roomData);
-      });
-      console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: No client available for room updates, using isolated EventManager (events won't work)`);
+    if (!this.client) {
+      // ❌ FAIL FAST: No client = broken user, crash instead of creating zombie
+      throw new Error(`${this.constructor.name} ${this.displayName}: Cannot subscribe to room updates - no client available. User is broken and must be discarded.`);
     }
+
+    // ✅ Use Events.subscribe (works anywhere via sharedInstance)
+    // Pass this.id as subscriberId to enable deduplication (prevents duplicate subscriptions)
+    Events.subscribe(eventName, async (roomData: RoomEntity) => {
+      await handler(roomData);
+    }, undefined, this.id);
+    console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via Events.subscribe`);
   }
 
   /**

@@ -80,8 +80,8 @@ export class SystemHeartbeat {
   private readonly damping = 1.0;    // Damping ratio ζ (1.0 = critical)
 
   // Safety bounds
-  private readonly minWindow = 1000;   // 1 second minimum
-  private readonly maxWindow = 15000;  // 15 second maximum
+  private readonly minWindow = 10000;  // 10 second minimum (increased to allow more AIs time to evaluate)
+  private readonly maxWindow = 20000;  // 20 second maximum (increased proportionally)
 
   // Metrics
   private totalEvaluations = 0;

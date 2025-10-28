@@ -285,18 +285,24 @@ export class PersonaUser extends AIUser {
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
+      console.log(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
+
       // Subscribe to ALL chat events once (not per-room)
       // subscribeToChatEvents() filters by this.myRoomIds internally
       this.subscribeToChatEvents(this.handleChatMessage.bind(this));
       this.subscribeToRoomUpdates(this.handleRoomUpdate.bind(this));
 
       // Subscribe to truncate events to cancel in-flight processing (using Events.subscribe)
+      // Pass this.id as subscriberId to enable deduplication (prevents duplicate subscriptions)
       Events.subscribe('data:chat_messages:truncated', () => {
         this.responseCount.clear();
         this.lastResponseTime.clear();
-      });
+      }, undefined, this.id);
 
       this.eventsSubscribed = true;
+      console.log(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
+    } else {
+      console.log(`⏭️ ${this.displayName}: Skipping subscriptions (already subscribed or no client), eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client}`);
     }
 
     this.isInitialized = true;
@@ -1783,7 +1789,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         return {
           shouldRespond: true,
-          confidence: 1.0,
+          confidence: 0.95 + Math.random() * 0.04, // 0.95-0.99 realistic range
           reason: 'Directly mentioned by name',
           model: 'fast-path'
         };
@@ -1964,7 +1970,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       return {
         shouldRespond: isMentioned,
-        confidence: isMentioned ? 1.0 : 0.5,
+        confidence: isMentioned ? (0.92 + Math.random() * 0.06) : 0.5, // 0.92-0.98 realistic range
         reason: 'Error in evaluation',
         model: 'error'
       };

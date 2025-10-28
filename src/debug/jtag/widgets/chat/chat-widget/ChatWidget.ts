@@ -478,10 +478,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Get member display (avatars/names)
     const memberDisplay = this.renderMemberList();
 
+    // Use room topic if available (more descriptive), otherwise fall back to description or name
+    const headerText = this.currentRoom?.topic
+      || this.currentRoom?.description
+      || this.currentRoomName;
+
     return `
       <div class="entity-list-header">
         <div class="header-top">
-          <span class="header-title">${this.currentRoomName}</span>
+          <span class="header-title">${headerText}</span>
           <span class="list-count">${this.getEntityCount()}</span>
         </div>
         <div class="header-members">
