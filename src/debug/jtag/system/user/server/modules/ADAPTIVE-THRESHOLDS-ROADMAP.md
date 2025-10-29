@@ -444,31 +444,92 @@ export class PersonaCommunity {
 
 ## Implementation Order
 
+**CRITICAL SAFETY PATTERN**: Name classes by implementation type for easy swapping and fallback.
+
+### Naming Convention for Graceful Degradation
+
+```typescript
+// Phase 1: Hard-coded (works, predictable, safe fallback)
+class HardCodedThresholdManager implements ThresholdManager {
+  shouldEngage(priority: number): boolean {
+    return priority > 0.5;  // Hard-coded, never fails
+  }
+}
+
+// Phase 3: Adaptive (learns from metrics, can fail if bad data)
+class AdaptiveThresholdManager implements ThresholdManager {
+  shouldEngage(priority: number): boolean {
+    return priority > this.learnedThreshold;  // Adapted, might be wrong
+  }
+}
+
+// Phase 5: AI-based (uses LLM, can freeze/timeout)
+class AIThresholdManager implements ThresholdManager {
+  async shouldEngage(priority: number): Promise<boolean> {
+    return await this.llm.evaluate(priority);  // AI-based, can hang
+  }
+}
+
+// PersonaUser.ts - Factory with fallback chain
+class PersonaUser {
+  private thresholdManager: ThresholdManager;
+  private fallbackManager: HardCodedThresholdManager;  // ALWAYS available
+
+  async shouldEngage(priority: number): Promise<boolean> {
+    try {
+      // Try AI/Adaptive first
+      const result = await Promise.race([
+        this.thresholdManager.shouldEngage(priority),
+        timeout(5000)  // 5 second timeout
+      ]);
+      return result;
+    } catch (error) {
+      // AI froze or failed - fall back to hard-coded
+      console.warn(`⚠️ ThresholdManager failed, using fallback: ${error}`);
+      return this.fallbackManager.shouldEngage(priority);
+    }
+  }
+}
+```
+
+### Why This Pattern Matters
+
+**Safety**: System NEVER freezes due to AI failure
+**Observability**: Explicit class names show what's running (`HardCodedXManager` vs `AIXManager`)
+**Swappability**: Change implementation by changing one line in factory
+**Testing**: Test each implementation independently
+**Gradual Rollout**: Deploy new implementation behind feature flag, fallback if issues
+
+### Implementation Phases with Explicit Naming
+
 1. **Phase 1**: Extract hard-coded values into configuration (Week 1)
-   - Modify PersonaState.ts to accept threshold config
-   - Modify PersonaInbox.ts to accept priority weights
-   - NO behavior change, just abstraction
+   - Create `HardCodedThresholdConfig` interface
+   - Create `HardCodedThresholdManager` class
+   - Modify PersonaState.ts to use `HardCodedThresholdManager`
+   - NO behavior change, just explicit naming
 
 2. **Phase 2**: Add metrics collection (Week 2)
-   - Create PersonaMetricsCollector
+   - Create `PersonaMetricsCollector`
    - Integrate into PersonaUser evaluation loop
    - Collect data, NO adaptation yet
 
 3. **Phase 3**: Implement adaptive learning (Week 3)
-   - Create AdaptiveThresholdManager
-   - Create AdaptiveCadenceManager
+   - Create `AdaptiveThresholdManager` (implements `ThresholdManager`)
+   - Create `AdaptiveCadenceManager` (implements `CadenceManager`)
    - Run adaptation every 100 messages
-   - Verify improvement via metrics
+   - **Fallback to `HardCodedThresholdManager` if adaptation produces bad values**
 
 4. **Phase 4**: Genome persistence (Week 4)
    - Save learned thresholds to genome
    - Load on initialization
    - Personas remember their learned behavior
+   - **Still use `HardCodedThresholdManager` as fallback**
 
 5. **Phase 5**: Multi-persona learning (Future)
+   - Create `CommunityThresholdManager` (learns from all personas)
    - Community-wide metric sharing
    - Best-practice propagation
-   - Collective intelligence
+   - **Fallback chain: Community → Adaptive → HardCoded**
 
 ---
 
