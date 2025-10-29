@@ -34,14 +34,41 @@ git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
 cd src/debug/jtag
 echo "✅ TypeScript compilation passed"
 
-# Check if system is already running and healthy
-echo "🔍 Checking if system is already running..."
+# Detect if code changes require deployment
+echo "🔍 Checking if code changes require deployment..."
+cd ../../..
+CODE_CHANGED=false
+
+# Check if any TypeScript, JavaScript, or browser bundle files are being committed
+if git diff --cached --name-only | grep -qE '\.(ts|tsx|js|jsx|css|html)$'; then
+    echo "📝 Code changes detected in commit - deployment required"
+    CODE_CHANGED=true
+elif git diff --cached --name-only | grep -q 'browser/generated\.ts'; then
+    echo "📦 Browser bundle changed - deployment required"
+    CODE_CHANGED=true
+else
+    echo "📄 Only documentation/config changes - deployment may not be needed"
+fi
+
+cd src/debug/jtag
+
+# Check if system is already running
 SYSTEM_ALREADY_RUNNING=false
 if ./jtag ping >/dev/null 2>&1; then
-    echo "✅ System already running - skipping restart (massive time savings!)"
     SYSTEM_ALREADY_RUNNING=true
-else
-    echo "🚀 System not running - starting deployment..."
+
+    if [ "$CODE_CHANGED" = true ]; then
+        echo "🔄 System running but CODE CHANGED - forcing deployment to load new code"
+        echo "💡 This prevents the 'old code deployed' bug"
+        SYSTEM_ALREADY_RUNNING=false  # Force deployment
+    else
+        echo "✅ System already running with current code - skipping restart (massive time savings!)"
+    fi
+fi
+
+# Start system if needed
+if [ "$SYSTEM_ALREADY_RUNNING" = false ]; then
+    echo "🚀 Starting deployment..."
     npm start &
     DEPLOY_PID=$!
 fi
