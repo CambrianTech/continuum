@@ -4,14 +4,19 @@
 
 **Everything in this system is built on TWO primitives:**
 
-### 1. `client.commands['name'](params)` - Request/Response
+### 1. `Commands.execute<T, U>(name, params)` - Request/Response
 ```typescript
-const client = await jtag.connect();
-const result = await client.commands['data/list']({ collection: 'users' });
+import { Commands } from 'system/core/shared/Commands';
+
+// Type-safe! params and result types inferred from command name
+const users = await Commands.execute('data/list', { collection: 'users' });
+const screenshot = await Commands.execute('screenshot', { querySelector: 'body' });
 ```
 
 ### 2. `Events.subscribe()|emit()` - Publish/Subscribe
 ```typescript
+import { Events } from 'system/core/shared/Events';
+
 Events.subscribe('data:users:created', (user) => { /* handle */ });
 Events.emit('data:users:created', newUser);
 ```
@@ -20,6 +25,7 @@ Events.emit('data:users:created', newUser);
 - Type-safe with full TypeScript inference
 - Universal (works everywhere: browser, server, CLI, tests)
 - Transparent (local = direct, remote = WebSocket)
+- Auto-injected context and sessionId
 
 **See detailed documentation:** [docs/UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md)
 
