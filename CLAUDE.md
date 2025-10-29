@@ -1,5 +1,30 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## ⚡ THE TWO UNIVERSAL PRIMITIVES (E = mc²)
+
+**Everything in this system is built on TWO primitives:**
+
+### 1. `client.commands['name'](params)` - Request/Response
+```typescript
+const client = await jtag.connect();
+const result = await client.commands['data/list']({ collection: 'users' });
+```
+
+### 2. `Events.subscribe()|emit()` - Publish/Subscribe
+```typescript
+Events.subscribe('data:users:created', (user) => { /* handle */ });
+Events.emit('data:users:created', newUser);
+```
+
+**Key Properties:**
+- Type-safe with full TypeScript inference
+- Universal (works everywhere: browser, server, CLI, tests)
+- Transparent (local = direct, remote = WebSocket)
+
+**See detailed documentation:** [docs/UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md)
+
+---
+
 ## 🚨 CRITICAL WORKFLOW (READ FIRST!)
 
 ### EVERY TIME YOU EDIT CODE:
