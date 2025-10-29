@@ -1,0 +1,165 @@
+/**
+ * Fine-Tuning Types - Environment-Agnostic
+ *
+ * These types work in both browser and server environments.
+ * NO Node.js imports allowed here!
+ *
+ * Philosophy: "general knowledge can understand the base only"
+ * - Shared types define the contract
+ * - Server implementations provide Node.js-specific logic
+ */
+
+import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
+
+/**
+ * Training dataset format for fine-tuning
+ * Uses standard chat completions format (compatible with OpenAI, Anthropic, etc.)
+ */
+export interface TrainingExample {
+  messages: TrainingMessage[];
+  metadata?: {
+    timestamp?: number;
+    roomId?: UUID;
+    correctionId?: UUID;
+    confidence?: number;
+  };
+}
+
+export interface TrainingMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Training dataset with examples
+ */
+export interface TrainingDataset {
+  examples: TrainingExample[];
+  metadata: {
+    personaId: UUID;
+    personaName: string;
+    traitType: TraitType;
+    createdAt: number;
+    source: 'corrections' | 'conversations' | 'exercises';
+    totalExamples: number;
+  };
+}
+
+/**
+ * Fine-tuning request configuration
+ */
+export interface LoRATrainingRequest {
+  // Identity
+  personaId: UUID;
+  personaName: string;
+  traitType: TraitType;
+
+  // Model configuration
+  baseModel: string;  // 'llama3.2', 'gpt-3.5-turbo', 'deepseek-chat', etc.
+
+  // Training data
+  dataset: TrainingDataset;
+
+  // LoRA hyperparameters
+  rank?: number;              // LoRA rank (default: 16)
+  alpha?: number;             // LoRA alpha (default: 32)
+  epochs?: number;            // Training epochs (default: 3)
+  learningRate?: number;      // Learning rate (default: 0.0001)
+  batchSize?: number;         // Batch size (default: 4)
+
+  // Output configuration
+  outputPath?: string;        // Where to save adapter (default: system-generated)
+
+  // Optional validation dataset
+  validationDataset?: TrainingDataset;
+}
+
+/**
+ * Fine-tuning result with metrics
+ */
+export interface LoRATrainingResult {
+  success: boolean;
+
+  // Adapter location
+  modelPath?: string;         // Local path to .safetensors file (local training)
+  modelId?: string;           // Remote model ID (API training)
+  ollamaModelName?: string;   // Ollama model name (if using Ollama)
+
+  // Training metrics
+  metrics?: {
+    trainLoss?: number;
+    validationLoss?: number;
+    accuracy?: number;
+    epochs: number;
+    trainingTime: number;     // milliseconds
+    examplesProcessed: number;
+  };
+
+  // Error information
+  error?: string;
+  errorDetails?: unknown;
+}
+
+/**
+ * Training job status (for async training)
+ */
+export type TrainingJobStatus =
+  | 'pending'      // Queued for training
+  | 'preparing'    // Preparing dataset
+  | 'training'     // Currently training
+  | 'validating'   // Running validation
+  | 'completed'    // Successfully completed
+  | 'failed'       // Training failed
+  | 'cancelled';   // User cancelled
+
+/**
+ * Training job (tracks async fine-tuning)
+ */
+export interface TrainingJob {
+  id: UUID;
+  personaId: UUID;
+  personaName: string;
+  traitType: TraitType;
+  baseModel: string;
+
+  status: TrainingJobStatus;
+  progress: number;           // 0.0 - 1.0
+
+  startedAt?: number;
+  completedAt?: number;
+
+  result?: LoRATrainingResult;
+
+  // For API-based training
+  providerJobId?: string;     // OpenAI job ID, DeepSeek job ID, etc.
+}
+
+/**
+ * Fine-tuning strategy (how to train)
+ */
+export type FineTuningStrategy =
+  | 'local-llama-cpp'    // Local training via llama.cpp (Ollama)
+  | 'local-pytorch'      // Local training via PyTorch + Transformers
+  | 'remote-api';        // Remote training via provider API (OpenAI, DeepSeek, etc.)
+
+/**
+ * Provider capabilities for fine-tuning
+ */
+export interface FineTuningCapabilities {
+  supportsFineTuning: boolean;
+  strategy: FineTuningStrategy;
+
+  // Model restrictions
+  supportedBaseModels?: string[];      // Which models can be fine-tuned
+
+  // Hyperparameter constraints
+  minRank?: number;
+  maxRank?: number;
+  minEpochs?: number;
+  maxEpochs?: number;
+
+  // Pricing (for API-based training)
+  costPerExample?: number;             // USD per training example
+  estimatedTrainingTime?: number;      // Milliseconds per example
+}
