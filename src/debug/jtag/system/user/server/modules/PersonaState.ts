@@ -81,11 +81,12 @@ export class PersonaStateManager {
       this.state.attention = Math.max(0, this.state.attention);
     }
 
-    // Update mood
-    this.state.mood = this.calculateMood();
-
+    // Update state counters first (needed for mood calculation)
     this.state.lastActivityTime = Date.now();
     this.state.responseCount++;
+
+    // Calculate mood after updating state
+    this.state.mood = this.calculateMood();
 
     this.log(`📊 Activity recorded: energy=${this.state.energy.toFixed(2)}, attention=${this.state.attention.toFixed(2)}, mood=${this.state.mood}`);
   }
@@ -125,7 +126,7 @@ export class PersonaStateManager {
     }
 
     // Active: engaged and energized
-    if (this.state.responseCount > 0 && this.state.energy > 0.5) {
+    if (this.state.responseCount > 0 && this.state.energy >= 0.5) {
       return 'active';
     }
 
