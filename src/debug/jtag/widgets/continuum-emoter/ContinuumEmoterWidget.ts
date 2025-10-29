@@ -12,10 +12,10 @@ import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversa
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: 'initializing' | 'connected' | 'disconnected' = 'initializing';
   private health: 'unknown' | 'healthy' | 'warning' | 'error' = 'unknown';
-  private maxMessages = 10;
+  private maxMessages: number;
   private healthCheckInterval?: NodeJS.Timeout;
 
-  constructor() {
+  constructor(maxMessages: number = 100) {
     super({
       widgetId: 'continuum-emoter-widget',
       widgetName: 'ContinuumEmoterWidget',
@@ -26,6 +26,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
       enableRouterEvents: true,
       enableScreenshots: false
     });
+    this.maxMessages = maxMessages;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
