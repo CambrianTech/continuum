@@ -8,6 +8,22 @@
  * - Backpressure handling and load shedding
  *
  * Philosophy: "what if this became more fluid or autonomous?"
+ *
+ * CRITICAL ARCHITECTURAL GAP:
+ * PersonaUser is currently EVENT-DRIVEN (reactive to chat messages).
+ * These tests document what AUTONOMOUS behavior should look like:
+ * - Proactive inbox polling at adaptive cadence
+ * - State-aware message selection (not just priority)
+ * - Rest cycles for energy recovery (RTOS duty cycle)
+ * - Graceful degradation under load
+ *
+ * Current Status:
+ * ✅ PersonaInbox module works (unit tests pass)
+ * ✅ PersonaState module works (unit tests pass)
+ * ❌ PersonaUser doesn't use them yet (NO autonomous loop)
+ * ❌ No continuous servicing (just reactive event handling)
+ *
+ * See: system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
