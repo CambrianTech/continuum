@@ -108,6 +108,9 @@ export class PersonaUser extends AIUser {
   private inbox: PersonaInbox;
   private personaState: PersonaStateManager;
 
+  // PHASE 3: Autonomous polling loop
+  private servicingLoop: NodeJS.Timeout | null = null;
+
   constructor(
     entity: UserEntity,
     state: UserStateEntity,
@@ -327,6 +330,9 @@ export class PersonaUser extends AIUser {
     }
 
     this.isInitialized = true;
+
+    // PHASE 3: Start autonomous servicing loop (lifecycle-based)
+    this.startAutonomousServicing();
   }
 
   /**
@@ -446,67 +452,14 @@ export class PersonaUser extends AIUser {
     };
 
     await this.inbox.enqueue(inboxMessage);
-    console.log(`📨 ${this.displayName}: Enqueued message (priority=${priority.toFixed(2)}, inbox size=${this.inbox.getSize()})`);
 
-    // PHASE 1: SYNCHRONOUS PROCESSING (proves inbox works without changing behavior)
-    // Pop message immediately and process (no autonomous loop yet)
-    const dequeuedMessage = await this.inbox.pop(0);
-    if (!dequeuedMessage) {
-      console.warn(`⚠️  ${this.displayName}: Failed to dequeue message ${messageEntity.id.slice(0, 8)}`);
-      return;
-    }
+    // Update inbox load in state (for mood calculation)
+    this.personaState.updateInboxLoad(this.inbox.getSize());
 
-    console.log(`✅ ${this.displayName}: Dequeued message (priority=${dequeuedMessage.priority.toFixed(2)})`);
+    console.log(`📨 ${this.displayName}: Enqueued message (priority=${priority.toFixed(2)}, inbox size=${this.inbox.getSize()}, mood=${this.personaState.getState().mood})`);
 
-    const senderIsHuman = messageEntity.senderType === 'human';
-    const messageText = messageEntity.content?.text || '';
-
-    // === FREE-FLOWING EVALUATION: All AIs evaluate simultaneously ===
-    console.log(`🎬 ${this.displayName}: START evaluation for message from ${messageEntity.senderName}: "${messageText.slice(0, 60)}${messageText.length > 60 ? '...' : ''}"`);
-
-    try {
-      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
-    } catch (error) {
-      // 🚨 CRITICAL: Log errors instead of silent failure
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
-
-      console.error(`❌ ${this.displayName}: ERROR during evaluation/response:`, {
-        error: errorMessage,
-        stack: errorStack,
-        messageId: messageEntity.id,
-        roomId: messageEntity.roomId,
-        sender: messageEntity.senderName
-      });
-
-      // Emit ERROR event for diagnostics (using auto-context via sharedInstance)
-      if (this.client) {
-        await Events.emit<AIErrorEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.ERROR,
-          {
-            personaId: this.id,
-            personaName: this.displayName,
-            roomId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            isHumanMessage: senderIsHuman,
-            timestamp: Date.now(),
-            error: errorMessage,
-            phase: 'evaluating'  // Error happened during evaluation/response phase
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: messageEntity.roomId
-          }
-        );
-      }
-
-      // Log to AI decisions log
-      const operation = `Evaluation/Response for message from ${messageEntity.senderName} in room ${messageEntity.roomId}`;
-      const errorDetails = `${errorMessage}${errorStack ? '\n' + errorStack.split('\n').slice(0, 5).join('\n') : ''}`;
-      AIDecisionLogger.logError(this.displayName, operation, errorDetails);
-    }
-    // No finally block needed - free-flowing coordination doesn't use turn locks
+    // PHASE 3: Autonomous polling loop will service inbox at adaptive cadence
+    // (No immediate processing - messages wait in inbox until loop polls)
   }
 
   /**
@@ -2034,9 +1987,136 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   // broadcastThought() method removed - now using getChatCoordinator().broadcastChatThought() directly
 
   /**
+   * PHASE 3: Start autonomous servicing loop (RTOS-inspired duty cycle)
+   *
+   * The persona continuously polls the inbox at an adaptive cadence based on mood:
+   * - idle: 3s (eager to work)
+   * - active: 5s (normal processing)
+   * - tired: 7s (moderate pace)
+   * - overwhelmed: 10s (back pressure)
+   *
+   * This is lifecycle-based - loop runs continuously while persona is "online"
+   */
+  private startAutonomousServicing(): void {
+    const cadence = this.personaState.getCadence();
+    const mood = this.personaState.getState().mood;
+
+    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (cadence=${cadence}ms, mood=${mood})`);
+
+    // Create polling loop
+    this.servicingLoop = setInterval(async () => {
+      await this.serviceInbox();
+    }, cadence);
+  }
+
+  /**
+   * PHASE 3: Service inbox (one polling iteration)
+   *
+   * Checks inbox for messages, evaluates priority vs mood threshold, and processes if should engage
+   */
+  private async serviceInbox(): Promise<void> {
+    // Check if inbox has messages
+    if (this.inbox.getSize() === 0) {
+      // No messages - check if cadence should adjust due to rest/recovery
+      this.adjustCadence();
+      return;
+    }
+
+    // Peek at highest priority message
+    const candidates = await this.inbox.peek(1);
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const message = candidates[0];
+
+    // Check if we should engage with this message based on mood threshold
+    if (!this.personaState.shouldEngage(message.priority)) {
+      console.log(`⏭️ ${this.displayName}: Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood})`);
+      // Leave in inbox - threshold might lower later
+      return;
+    }
+
+    // Pop message from inbox (we're processing it now)
+    await this.inbox.pop(0); // Immediate pop (no timeout)
+
+    console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
+
+    try {
+      // Reconstruct minimal ChatMessageEntity from inbox message
+      // (Inbox has all essential fields: messageId, roomId, senderId, senderName, content, timestamp)
+      // Type as 'any' to bypass strict typing - this is a pragmatic Phase 3 solution
+      // Future: Make inbox domain-agnostic or use proper entity fetching
+      const reconstructedEntity: any = {
+        id: message.messageId,
+        roomId: message.roomId,
+        senderId: message.senderId,
+        senderName: message.senderName,
+        content: { text: message.content },
+        timestamp: message.timestamp,
+        // Fields not critical for evaluation:
+        senderDisplayName: message.senderName,
+        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
+        status: 'delivered',
+        priority: message.priority,
+        metadata: {},
+        reactions: [],
+        attachments: [],
+        mentions: [],
+        replyTo: undefined,
+        editedAt: undefined,
+        deletedAt: undefined
+      };
+
+      // Determine if sender is human (not an AI persona)
+      const senderIsHuman = !message.senderId.startsWith('persona-');
+
+      // Extract message text
+      const messageText = message.content;
+
+      // Process message using existing evaluation logic
+      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+
+      // Update inbox load in state (affects mood calculation)
+      this.personaState.updateInboxLoad(this.inbox.getSize());
+
+      // Check if cadence should adjust (mood may have changed after processing)
+      this.adjustCadence();
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error processing inbox message: ${error}`);
+    }
+  }
+
+  /**
+   * PHASE 3: Adjust polling cadence if mood changed
+   *
+   * Dynamically adjusts the setInterval cadence when mood transitions occur
+   */
+  private adjustCadence(): void {
+    const currentCadence = this.personaState.getCadence();
+
+    // Get current interval (we need to restart to change cadence)
+    if (this.servicingLoop) {
+      clearInterval(this.servicingLoop);
+      this.servicingLoop = setInterval(async () => {
+        await this.serviceInbox();
+      }, currentCadence);
+
+      console.log(`⏱️ ${this.displayName}: Adjusted cadence to ${currentCadence}ms (mood=${this.personaState.getState().mood})`);
+    }
+  }
+
+  /**
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // PHASE 3: Stop autonomous servicing loop
+    if (this.servicingLoop) {
+      clearInterval(this.servicingLoop);
+      this.servicingLoop = null;
+      console.log(`🔄 ${this.displayName}: Stopped autonomous servicing loop`);
+    }
+
     if (this.worker) {
       await this.worker.shutdown();
       console.log(`🧵 ${this.displayName}: Worker thread shut down`);
