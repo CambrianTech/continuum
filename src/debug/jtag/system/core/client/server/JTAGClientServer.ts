@@ -27,8 +27,11 @@ import { TransportFactoryServer } from '../../../transports/server/TransportFact
 import type { ListResult } from '../../../../commands/list/shared/ListTypes';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { JTAGSystemServer } from '../../system/server/JTAGSystemServer';
-import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
+import { JTAGMessageTypes } from '../../types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
+import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
+import { Events } from '../../shared/Events';
 
 export class JTAGClientServer extends JTAGClient {
   constructor(context: JTAGContext) {
@@ -86,18 +89,54 @@ export class JTAGClientServer extends JTAGClient {
     return {
       waitForResponse: async (correlationId: string, timeoutMs?: number): Promise<JTAGPayload> => {
         const response = await this.responseCorrelator.createRequest(correlationId, timeoutMs);
-        
+
         // Extract commandResult from the nested response structure
         // Response structure: { payload: { commandResult: { commands: [...], success: true, ... } } }
         // Client expects: { commands: [...], success: true, ... }
         if (response && typeof response === 'object' && 'commandResult' in response) {
           return response.commandResult as JTAGPayload;
         }
-        
+
         // Fallback: return response as-is for non-command responses
         return response;
       }
     };
+  }
+
+  /**
+   * Override event message handling to trigger local subscriptions
+   * This makes Events.subscribe() work consistently for remote server clients
+   */
+  async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
+    // Handle event messages - trigger local subscriptions
+    if (JTAGMessageTypes.isEvent(message)) {
+      console.log(`📥 JTAGClientServer: Received event message, triggering local subscriptions`);
+
+      // Extract event name and data from payload (EventBridgePayload structure)
+      const payload = message.payload as any;
+      const eventName = payload?.eventName;
+      const eventData = payload?.data;
+
+      if (eventName && eventData !== undefined) {
+        // Trigger local subscriptions (wildcard, elegant, exact-match)
+        Events.checkWildcardSubscriptions(eventName, eventData);
+        console.log(`✅ JTAGClientServer: Triggered local subscriptions for ${eventName}`);
+      } else {
+        console.warn(`⚠️ JTAGClientServer: Event message missing eventName or data`, payload);
+      }
+
+      // Still return acknowledgment (clients don't route to other clients)
+      return {
+        success: true,
+        delegated: true,
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        sessionId: this.sessionId
+      } as JTAGResponsePayload;
+    }
+
+    // For all other messages, delegate to base class
+    return super.handleTransportMessage(message);
   }
 
 

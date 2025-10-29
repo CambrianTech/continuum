@@ -38,8 +38,11 @@ import type { ListResult } from '../../../../commands/list/shared/ListTypes';
 import type { ITransportFactory} from '../../../transports/shared/ITransportFactory';
 import { TransportFactoryBrowser } from '../../../transports/browser/TransportFactoryBrowser';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
-import type { JTAGPayload, JTAGContext } from '../../types/JTAGTypes';
+import { JTAGMessageTypes } from '../../types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
+import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
+import { Events } from '../../shared/Events';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -123,6 +126,42 @@ export class JTAGClientBrowser extends JTAGClient {
         return await this.responseCorrelator.createRequest(correlationId, timeoutMs);
       }
     };
+  }
+
+  /**
+   * Override event message handling to trigger local subscriptions
+   * This makes Events.subscribe() work consistently for remote browser clients
+   */
+  async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
+    // Handle event messages - trigger local subscriptions
+    if (JTAGMessageTypes.isEvent(message)) {
+      console.log(`📥 JTAGClientBrowser: Received event message, triggering local subscriptions`);
+
+      // Extract event name and data from payload (EventBridgePayload structure)
+      const payload = message.payload as any;
+      const eventName = payload?.eventName;
+      const eventData = payload?.data;
+
+      if (eventName && eventData !== undefined) {
+        // Trigger local subscriptions (wildcard, elegant, exact-match)
+        Events.checkWildcardSubscriptions(eventName, eventData);
+        console.log(`✅ JTAGClientBrowser: Triggered local subscriptions for ${eventName}`);
+      } else {
+        console.warn(`⚠️ JTAGClientBrowser: Event message missing eventName or data`, payload);
+      }
+
+      // Still return acknowledgment (clients don't route to other clients)
+      return {
+        success: true,
+        delegated: true,
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        sessionId: this.sessionId
+      } as JTAGResponsePayload;
+    }
+
+    // For all other messages, delegate to base class
+    return super.handleTransportMessage(message);
   }
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
