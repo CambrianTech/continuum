@@ -531,12 +531,155 @@ tail .continuum/sessions/.../logs/server.log | grep "Genome.*Loading adapter"
 system/user/server/modules/PersonaGenome.ts        # Add enableLearningMode()
 system/user/server/modules/LoRAAdapter.ts          # Add training integration
 system/user/server/PersonaUser.ts                  # Handle fine-tuning tasks
+system/user/server/modules/FineTuningBackend.ts    # NEW - backend abstraction
 tests/integration/continuous-learning.test.ts      # Integration test
+tests/integration/multi-backend-finetuning.test.ts # NEW - multi-backend tests
+```
+
+**NEW: Backend Abstraction Layer**:
+```typescript
+// system/user/server/modules/FineTuningBackend.ts
+export abstract class FineTuningBackend {
+  abstract readonly name: string;  // 'ollama' | 'grok' | 'openai' | etc.
+  abstract readonly location: 'local' | 'remote';
+
+  /**
+   * Fine-tune a LoRA adapter with training data
+   * Returns updated adapter weights
+   */
+  abstract async fineTune(
+    baseModel: string,
+    adapterName: string,
+    trainingData: TrainingDataset,
+    options?: FineTuningOptions
+  ): Promise<LoRAWeights>;
+
+  /**
+   * Validate backend is accessible and configured
+   */
+  abstract async healthCheck(): Promise<BackendHealth>;
+}
+
+// Local Ollama backend
+export class OllamaFineTuningBackend extends FineTuningBackend {
+  readonly name = 'ollama';
+  readonly location = 'local';
+
+  async fineTune(
+    baseModel: string,
+    adapterName: string,
+    trainingData: TrainingDataset,
+    options?: FineTuningOptions
+  ): Promise<LoRAWeights> {
+    // Call Ollama local API for fine-tuning
+    // Model stays on local GPU
+    console.log(`[Ollama] Fine-tuning ${adapterName} on ${baseModel} (local)`);
+
+    // STUB for Phase 7: Simulate training
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // PHASE 8: Real Ollama API integration
+    // const result = await fetch('http://localhost:11434/api/fine-tune', { ... });
+
+    return { stub: true, backend: 'ollama' } as LoRAWeights;
+  }
+
+  async healthCheck(): Promise<BackendHealth> {
+    try {
+      const response = await fetch('http://localhost:11434/api/version');
+      return { available: response.ok, latency: 0 };
+    } catch {
+      return { available: false, error: 'Ollama not running' };
+    }
+  }
+}
+
+// Remote Grok backend
+export class GrokFineTuningBackend extends FineTuningBackend {
+  readonly name = 'grok';
+  readonly location = 'remote';
+  private apiKey: string;
+
+  constructor(apiKey: string) {
+    super();
+    this.apiKey = apiKey;
+  }
+
+  async fineTune(
+    baseModel: string,
+    adapterName: string,
+    trainingData: TrainingDataset,
+    options?: FineTuningOptions
+  ): Promise<LoRAWeights> {
+    // Call Grok API for remote fine-tuning
+    console.log(`[Grok] Fine-tuning ${adapterName} on ${baseModel} (remote)`);
+
+    // STUB for Phase 7: Simulate remote training
+    await new Promise(resolve => setTimeout(resolve, 8000));  // Slower (network)
+
+    // PHASE 8: Real Grok API integration
+    // const result = await fetch('https://api.x.ai/v1/fine-tuning/jobs', { ... });
+
+    return { stub: true, backend: 'grok' } as LoRAWeights;
+  }
+
+  async healthCheck(): Promise<BackendHealth> {
+    try {
+      const response = await fetch('https://api.x.ai/v1/models', {
+        headers: { 'Authorization': `Bearer ${this.apiKey}` }
+      });
+      return { available: response.ok, latency: 0 };
+    } catch {
+      return { available: false, error: 'Grok API unreachable or invalid key' };
+    }
+  }
+}
+
+// Backend factory and registry
+export class FineTuningBackendFactory {
+  private static backends: Map<string, FineTuningBackend> = new Map();
+
+  static register(backend: FineTuningBackend): void {
+    this.backends.set(backend.name, backend);
+  }
+
+  static get(name: string): FineTuningBackend {
+    const backend = this.backends.get(name);
+    if (!backend) {
+      throw new Error(`Fine-tuning backend '${name}' not registered`);
+    }
+    return backend;
+  }
+
+  static async getBestAvailable(): Promise<FineTuningBackend> {
+    // Prefer local over remote (faster, cheaper)
+    for (const [name, backend] of this.backends.entries()) {
+      const health = await backend.healthCheck();
+      if (health.available && backend.location === 'local') {
+        console.log(`[FineTuning] Using local backend: ${name}`);
+        return backend;
+      }
+    }
+
+    // Fallback to remote
+    for (const [name, backend] of this.backends.entries()) {
+      const health = await backend.healthCheck();
+      if (health.available) {
+        console.log(`[FineTuning] Using remote backend: ${name}`);
+        return backend;
+      }
+    }
+
+    throw new Error('No fine-tuning backends available');
+  }
+}
 ```
 
 **PersonaGenome Changes**:
 ```typescript
 // Add to PersonaGenome
+private fineTuningBackend?: FineTuningBackend;
+
 async enableLearningMode(skill: string, trainingData: unknown): Promise<void> {
   const adapter = this.activeAdapters.get(skill);
   if (!adapter) {
@@ -546,10 +689,23 @@ async enableLearningMode(skill: string, trainingData: unknown): Promise<void> {
   console.log(`[Genome] Enabling learning mode for '${skill}'`);
   adapter.trainingActive = true;
 
-  // FUTURE: Actual Ollama fine-tuning integration
-  // For now, just simulate:
-  await new Promise(resolve => setTimeout(resolve, 5000));  // Simulate training
-  console.log(`[Genome] Training complete for '${skill}' (simulated)`);
+  // Select best available backend (prefers local Ollama)
+  const backend = this.fineTuningBackend ??
+    await FineTuningBackendFactory.getBestAvailable();
+
+  console.log(`[Genome] Fine-tuning via ${backend.name} (${backend.location})`);
+
+  // Fine-tune adapter using selected backend
+  const updatedWeights = await backend.fineTune(
+    this.baseModel,
+    skill,
+    trainingData as TrainingDataset,
+    { learningRate: 0.0001, epochs: 3 }
+  );
+
+  // Update adapter with new weights
+  adapter.weights = updatedWeights;
+  console.log(`[Genome] Training complete for '${skill}' via ${backend.name}`);
 
   // Save updated weights to disk
   await adapter.save();
@@ -563,11 +719,18 @@ async processTask(task: InboxMessage): Promise<void> {
   if (task.taskType === 'fine-tune-lora') {
     const skill = task.metadata?.targetSkill as string;
     const trainingData = task.metadata?.trainingData;
+    const backendPreference = task.metadata?.backend as string | undefined;
 
     // Activate adapter (page in if needed)
     await this.genome.activateSkill(skill);
 
     // Enable learning mode (fine-tune)
+    // Optionally specify backend: 'ollama' or 'grok'
+    if (backendPreference) {
+      const backend = FineTuningBackendFactory.get(backendPreference);
+      await this.genome.setFineTuningBackend(backend);
+    }
+
     await this.genome.enableLearningMode(skill, trainingData);
 
     // Mark task complete
@@ -579,41 +742,328 @@ async processTask(task: InboxMessage): Promise<void> {
 }
 ```
 
-**Testing**:
+**Multi-Backend Testing**:
 ```bash
-# AI detects mistakes and creates learning task automatically
+# Phase 7: Test with stubs (simulated fine-tuning)
+
+# Register both backends at startup
 npm start
 
-# After AI makes TypeScript mistakes, check for learning task:
+# AI detects mistakes and creates learning task automatically
 ./jtag task/list --assignee="helper-ai-id" --filter='{"taskType":"fine-tune-lora"}'
 
 # Should see task like:
 # "Improve TypeScript understanding based on recent mistakes"
 
 # Wait for AI to process task, check logs:
-tail .continuum/sessions/.../logs/server.log | grep "Training complete"
+tail .continuum/sessions/.../logs/server.log | grep "Fine-tuning via"
+# Should show: "Fine-tuning via ollama (local)" (prefers local)
+
+# Test explicit backend selection:
+./jtag task/create \
+  --assignee="helper-ai-id" \
+  --description="Fine-tune conversational skills" \
+  --taskType="fine-tune-lora" \
+  --metadata='{"targetSkill":"conversational","backend":"grok"}' \
+  --priority=0.7
+
+# Check logs: Should show "Fine-tuning via grok (remote)"
+```
+
+**Integration Test (NEW)**:
+```typescript
+// tests/integration/multi-backend-finetuning.test.ts
+describe('Multi-Backend Fine-Tuning', () => {
+  it('should fine-tune using Ollama (local)', async () => {
+    const backend = FineTuningBackendFactory.get('ollama');
+    const weights = await backend.fineTune('deepseek-coder-v2', 'test-skill', mockData);
+    expect(weights).toBeDefined();
+  });
+
+  it('should fine-tune using Grok (remote)', async () => {
+    const backend = FineTuningBackendFactory.get('grok');
+    const weights = await backend.fineTune('grok-1', 'test-skill', mockData);
+    expect(weights).toBeDefined();
+  });
+
+  it('should prefer local backend when both available', async () => {
+    const backend = await FineTuningBackendFactory.getBestAvailable();
+    expect(backend.location).toBe('local');
+    expect(backend.name).toBe('ollama');
+  });
+
+  it('should fallback to remote when local unavailable', async () => {
+    // Simulate Ollama down
+    const backend = await FineTuningBackendFactory.getBestAvailable();
+    // Should fall back to Grok
+    expect(backend.location).toBe('remote');
+  });
+});
 ```
 
 **Success Criteria**:
 - ✅ AI detects mistakes and creates fine-tuning task
 - ✅ Fine-tuning task activates appropriate adapter
-- ✅ Training simulates successfully (5 second delay)
+- ✅ Training uses best available backend (prefers local Ollama)
+- ✅ Ollama backend works (simulated in Phase 7, real in Phase 8)
+- ✅ Grok backend works (simulated in Phase 7, real in Phase 8)
+- ✅ Backend selection can be explicitly specified per task
+- ✅ Fallback to remote when local unavailable
 - ✅ Updated adapter persists to disk after training
 - ✅ AI continues using updated adapter after training
 
 ---
 
-### Phase 8: Real Ollama Integration (FUTURE)
+### Phase 8: Real Backend Integration (Ollama + Grok)
 
-**Goal**: Replace stubs with actual Ollama fine-tuning
+**Goal**: Replace simulation stubs with actual fine-tuning APIs
 
-**This requires**:
-- Ollama API for fine-tuning (currently experimental)
-- SafeTensors loading/saving
-- GPU memory management
-- Training dataset preparation
+**Why Both Backends?**
+- **Ollama (Local)**: Fast, free, private, no rate limits, GPU-accelerated
+- **Grok (Remote)**: Access to larger models, cloud compute when local GPU busy
+- **Philosophy**: "Prefer local, use remote as overflow" (cost + privacy)
 
-**Deferred until**: Ollama stabilizes fine-tuning API
+**Phase 8A: Real Ollama Integration**
+
+**Requirements**:
+- Ollama fine-tuning API (currently experimental - check ollama/ollama repo)
+- SafeTensors format support
+- CUDA/Metal GPU access
+- Training dataset preparation (JSONL format)
+
+**OllamaFineTuningBackend Real Implementation**:
+```typescript
+async fineTune(
+  baseModel: string,
+  adapterName: string,
+  trainingData: TrainingDataset,
+  options?: FineTuningOptions
+): Promise<LoRAWeights> {
+  // 1. Prepare training dataset in Ollama format
+  const dataset = this.prepareDataset(trainingData);
+  const datasetPath = await this.saveDatasetToTempFile(dataset);
+
+  // 2. Call Ollama fine-tuning API
+  const response = await fetch('http://localhost:11434/api/fine-tune', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: baseModel,
+      adapter: adapterName,
+      dataset: datasetPath,
+      learning_rate: options?.learningRate ?? 0.0001,
+      epochs: options?.epochs ?? 3,
+      batch_size: options?.batchSize ?? 4,
+      lora_rank: options?.loraRank ?? 8,
+      lora_alpha: options?.loraAlpha ?? 16
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Ollama fine-tuning failed: ${response.statusText}`);
+  }
+
+  // 3. Load resulting LoRA weights from Ollama
+  const result = await response.json();
+  const weightsPath = result.adapter_path;
+  const weights = await this.loadSafeTensors(weightsPath);
+
+  console.log(`[Ollama] Fine-tuning complete: ${adapterName} (${weights.size}MB)`);
+  return weights;
+}
+
+private prepareDataset(trainingData: TrainingDataset): OllamaDataset {
+  // Convert mistakes/examples into Ollama JSONL format
+  return trainingData.map(example => ({
+    prompt: example.input,
+    completion: example.expectedOutput,
+    metadata: { source: 'self-learning', timestamp: Date.now() }
+  }));
+}
+
+private async loadSafeTensors(path: string): Promise<LoRAWeights> {
+  // Use safetensors library to load weights
+  const buffer = await fs.readFile(path);
+  const tensors = safetensors.load(buffer);
+  return { tensors, format: 'safetensors', size: buffer.length / 1024 / 1024 };
+}
+```
+
+**Phase 8B: Real Grok Integration**
+
+**Requirements**:
+- Grok API access (X.AI API key)
+- Fine-tuning job submission and polling
+- Remote dataset upload
+- Model download after training
+
+**GrokFineTuningBackend Real Implementation**:
+```typescript
+async fineTune(
+  baseModel: string,
+  adapterName: string,
+  trainingData: TrainingDataset,
+  options?: FineTuningOptions
+): Promise<LoRAWeights> {
+  // 1. Upload training dataset to Grok
+  const dataset = this.prepareDataset(trainingData);
+  const fileId = await this.uploadDataset(dataset);
+
+  // 2. Create fine-tuning job
+  const job = await this.createFineTuningJob(baseModel, fileId, options);
+
+  // 3. Poll for completion
+  const completedJob = await this.pollUntilComplete(job.id);
+
+  // 4. Download fine-tuned adapter
+  const weights = await this.downloadAdapter(completedJob.output_adapter_id);
+
+  console.log(`[Grok] Fine-tuning complete: ${adapterName} (${weights.size}MB)`);
+  return weights;
+}
+
+private async uploadDataset(dataset: GrokDataset): Promise<string> {
+  const response = await fetch('https://api.x.ai/v1/files', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${this.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ purpose: 'fine-tune', data: dataset })
+  });
+
+  const result = await response.json();
+  return result.id;
+}
+
+private async createFineTuningJob(
+  baseModel: string,
+  fileId: string,
+  options?: FineTuningOptions
+): Promise<FineTuningJob> {
+  const response = await fetch('https://api.x.ai/v1/fine-tuning/jobs', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${this.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: baseModel,
+      training_file: fileId,
+      hyperparameters: {
+        learning_rate: options?.learningRate ?? 0.0001,
+        n_epochs: options?.epochs ?? 3,
+        batch_size: options?.batchSize ?? 4
+      }
+    })
+  });
+
+  return response.json();
+}
+
+private async pollUntilComplete(jobId: string): Promise<FineTuningJob> {
+  while (true) {
+    const response = await fetch(`https://api.x.ai/v1/fine-tuning/jobs/${jobId}`, {
+      headers: { 'Authorization': `Bearer ${this.apiKey}` }
+    });
+
+    const job = await response.json();
+
+    if (job.status === 'succeeded') {
+      return job;
+    } else if (job.status === 'failed') {
+      throw new Error(`Fine-tuning job failed: ${job.error}`);
+    }
+
+    // Poll every 30 seconds
+    await new Promise(resolve => setTimeout(resolve, 30000));
+  }
+}
+
+private async downloadAdapter(adapterId: string): Promise<LoRAWeights> {
+  const response = await fetch(`https://api.x.ai/v1/adapters/${adapterId}`, {
+    headers: { 'Authorization': `Bearer ${this.apiKey}` }
+  });
+
+  const buffer = await response.arrayBuffer();
+  const tensors = safetensors.load(Buffer.from(buffer));
+  return { tensors, format: 'safetensors', size: buffer.byteLength / 1024 / 1024 };
+}
+```
+
+**Backend Registration (system startup)**:
+```typescript
+// Register backends at system startup
+import { FineTuningBackendFactory } from './modules/FineTuningBackend';
+import { OllamaFineTuningBackend, GrokFineTuningBackend } from './modules/FineTuningBackend';
+
+// Local Ollama (always register)
+FineTuningBackendFactory.register(new OllamaFineTuningBackend());
+
+// Remote Grok (register if API key available)
+const grokApiKey = process.env.GROK_API_KEY;
+if (grokApiKey) {
+  FineTuningBackendFactory.register(new GrokFineTuningBackend(grokApiKey));
+} else {
+  console.warn('[FineTuning] Grok API key not found - remote fine-tuning unavailable');
+}
+
+console.log(`[FineTuning] Registered backends: ${FineTuningBackendFactory.backends.size}`);
+```
+
+**Testing Real Backends**:
+```bash
+# Ensure Ollama running locally
+ollama serve
+
+# Ensure Grok API key configured
+export GROK_API_KEY="xai-..."
+
+# Deploy system
+npm start
+
+# Test Ollama fine-tuning (local)
+./jtag task/create \
+  --assignee="helper-ai-id" \
+  --description="Fine-tune TypeScript expertise" \
+  --taskType="fine-tune-lora" \
+  --metadata='{"targetSkill":"typescript-expertise","backend":"ollama"}' \
+  --priority=0.7
+
+# Monitor Ollama logs
+tail -f ~/.ollama/logs/server.log
+
+# Test Grok fine-tuning (remote)
+./jtag task/create \
+  --assignee="helper-ai-id" \
+  --description="Fine-tune conversational skills on Grok" \
+  --taskType="fine-tune-lora" \
+  --metadata='{"targetSkill":"conversational","backend":"grok"}' \
+  --priority=0.6
+
+# Check fine-tuning progress
+./jtag task/list --assignee="helper-ai-id" --filter='{"taskType":"fine-tune-lora"}'
+
+# Verify adapter files saved
+ls -lh .continuum/genomes/helper-ai-id/adapters/
+# Should see: typescript-expertise.safetensors, conversational.safetensors
+```
+
+**Success Criteria**:
+- ✅ Ollama fine-tuning works with real API (local GPU)
+- ✅ Grok fine-tuning works with real API (remote cloud)
+- ✅ SafeTensors format correctly loaded/saved
+- ✅ Training datasets prepared in correct format (JSONL)
+- ✅ Fine-tuning jobs complete successfully
+- ✅ Updated adapters saved to disk
+- ✅ PersonaUser uses fine-tuned adapters after training
+- ✅ Fallback works (Ollama → Grok if local unavailable)
+- ✅ Cost tracking (Grok charges per training job)
+- ✅ Privacy preserved (local preferred over remote)
+
+**Deferred Until**:
+- Ollama stabilizes fine-tuning API (check ollama/ollama#issues)
+- Grok API documentation available (X.AI developer portal)
 
 ---
 
