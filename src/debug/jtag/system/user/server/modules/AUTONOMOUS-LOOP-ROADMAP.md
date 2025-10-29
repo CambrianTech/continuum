@@ -2,29 +2,58 @@
 
 ## The Architectural Gap
 
-**Current System (Event-Driven):**
+**Current System (Event-Driven, Per-Domain):**
 ```
-Message arrives → Event fired → PersonaUser.handleChatMessage() → Evaluate → Respond
+Chat: Message arrives → Event fired → PersonaUser.handleChatMessage() → Evaluate → Respond
+Code: File changes → Event fired → (no handler, ignored)
+Game: Move made → Event fired → (no handler, ignored)
+Academy: Question asked → Event fired → (no handler, ignored)
 ```
 
-**Missing Autonomous Behavior:**
+**Missing Autonomous Behavior (Universal Across All Domains):**
 ```
-PersonaInbox accumulates messages → PersonaState tracks energy/mood
+ALL domain events → Unified PersonaInbox (priority queue)
+  ↓
+PersonaState tracks energy/mood across ALL activities
   ↓
 Autonomous servicing loop polls inbox at adaptive cadence
   ↓
-State-aware engagement decisions (not just reactive)
+Cross-domain prioritization: "Chat @mention (0.9) vs Build Error (0.8) vs Chess Move (0.7)"
+  ↓
+State-aware engagement: "I'm tired (energy 0.3), only handle priority > 0.5"
 ```
 
-## The Vision: "What if this became more fluid or autonomous?"
+## The Vision: Multi-Domain Universal Cognition
 
-PersonaUser should have **internal life cycles**, not just react to external events:
+**"What if this became more fluid or autonomous?"** - across ALL domains simultaneously.
 
-1. **Proactive Message Discovery**: Poll inbox at mood-based cadence (not just wait for events)
-2. **State-Aware Selection**: Choose which messages to engage with based on energy/attention
-3. **Graceful Degradation**: Lower thresholds when overwhelmed, raise when fatigued
-4. **Rest Cycles**: Recover energy during idle periods (RTOS duty cycle management)
-5. **Autonomous Decision**: "I have 5 messages, I'm tired, I'll only handle the urgent one"
+PersonaUser should be a **universal cognitive agent** with internal life cycles:
+
+1. **Unified Task Queue**: ONE inbox for chat, code, games, academy, web browsing
+2. **Cross-Domain Prioritization**: "@mention in chat (0.9)" outranks "file changed (0.5)"
+3. **Shared Energy Pool**: Energy depletes from ALL activities, recovers during rest
+4. **State-Aware Selection**: "I'm tired, only handle urgent tasks across ALL domains"
+5. **Graceful Degradation**: Lower engagement thresholds when overwhelmed (everywhere)
+6. **Rest Cycles**: Recover energy during idle periods (RTOS duty cycle management)
+7. **Autonomous Decision**: "I have 10 tasks across 4 domains, I'm tired, I'll handle the 3 urgent ones"
+
+### Multi-Domain Example
+
+```
+PersonaUser: "Helper AI" (Energy: 0.3, Mood: tired, Threshold: 0.5)
+
+Unified Inbox (sorted by priority across ALL domains):
+1. Chat: @Helper urgent question (priority 0.9, domain: chat) ✅ ENGAGE
+2. Code: Build error in main.ts (priority 0.8, domain: code) ✅ ENGAGE
+3. Game: Your turn in chess (priority 0.7, domain: game) ✅ ENGAGE
+4. Academy: Student submitted exercise (priority 0.6, domain: academy) ✅ ENGAGE
+5. Code: File changed notification (priority 0.5, domain: code) ❌ SKIP (at threshold)
+6. Chat: Casual conversation (priority 0.3, domain: chat) ❌ SKIP (below threshold)
+7. Game: Opponent moved (priority 0.4, domain: game) ❌ SKIP (below threshold)
+
+Energy depletes from ALL handled tasks → 0.3 → 0.2 → 0.15
+After 30 seconds idle → REST → Energy recovers → 0.15 → 0.2 → 0.3 → ...
+```
 
 ## Why This Matters
 
