@@ -29,7 +29,7 @@ import type { DataCreateParams, DataCreateResult } from '../../../commands/data/
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
 import type { Thought, ThoughtType } from '../../conversation/shared/ConversationCoordinationTypes';
-import { getThoughtStreamCoordinator } from '../../conversation/server/ThoughtStreamCoordinator';
+import { getChatCoordinator, type ChatThought } from '../../coordination/server/ChatCoordinationStream';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
@@ -399,10 +399,7 @@ export class PersonaUser extends AIUser {
     const senderIsHuman = messageEntity.senderType === 'human';
     const messageText = messageEntity.content?.text || '';
 
-    // === SEQUENTIAL EVALUATION: Request turn (brain-like, one at a time) ===
-    const coordinator = getThoughtStreamCoordinator();
-    const releaseTurn = await coordinator.requestEvaluationTurn(messageEntity.id, this.id);
-
+    // === FREE-FLOWING EVALUATION: All AIs evaluate simultaneously ===
     console.log(`🎬 ${this.displayName}: START evaluation for message from ${messageEntity.senderName}: "${messageText.slice(0, 60)}${messageText.length > 60 ? '...' : ''}"`);
 
     try {
@@ -446,9 +443,8 @@ export class PersonaUser extends AIUser {
       const operation = `Evaluation/Response for message from ${messageEntity.senderName} in room ${messageEntity.roomId}`;
       const errorDetails = `${errorMessage}${errorStack ? '\n' + errorStack.split('\n').slice(0, 5).join('\n') : ''}`;
       AIDecisionLogger.logError(this.displayName, operation, errorDetails);
-    } finally {
-      releaseTurn(); // Always release turn, even if evaluation fails
     }
+    // No finally block needed - free-flowing coordination doesn't use turn locks
   }
 
   /**
@@ -598,21 +594,25 @@ export class PersonaUser extends AIUser {
       );
     }
 
-    // === COORDINATION: Broadcast "claiming" thought and wait for permission ===
-    const coordinator = getThoughtStreamCoordinator();
-    const thought: Thought = {
+    // === FREE-FLOWING COORDINATION: Broadcast thought simultaneously with other AIs ===
+    const coordinator = getChatCoordinator();
+    const chatThought: ChatThought = {
       personaId: this.id,
+      personaName: this.displayName,
       type: 'claiming',
       confidence: gatingResult.confidence ?? 0.5,
       reasoning: gatingResult.reason,
-      timestamp: new Date()
+      timestamp: Date.now(),
+      messageId: messageEntity.id,
+      roomId: messageEntity.roomId
     };
 
-    console.log(`🔧 RACE-CONDITION-FIX: ${this.displayName} broadcasting thought for message ${messageEntity.id.slice(0, 8)} in room ${messageEntity.roomId.slice(0, 8)}`);
-    await this.broadcastThought(messageEntity.id, messageEntity.roomId, thought);
+    console.log(`🧠 ${this.displayName}: Broadcasting thought (confidence=${gatingResult.confidence?.toFixed(2)}) for message ${messageEntity.id.slice(0, 8)}`);
+    await coordinator.broadcastChatThought(messageEntity.id, messageEntity.roomId, chatThought);
 
-    // Wait for coordinator decision (fast: typically <100ms with early exit rules)
-    const decision = await coordinator.waitForDecision(messageEntity.id, 3000);
+    // Wait for coordinator decision (reasonable timeout for thought gathering)
+    console.log(`⏳ ${this.displayName}: Waiting for coordination decision...`);
+    const decision = await coordinator.waitForChatDecision(messageEntity.id, 5000);
 
     // Check if we were granted permission to respond
     if (!decision || !decision.granted.includes(this.id)) {
@@ -1949,18 +1949,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     }
   }
 
-  /**
-   * Broadcast thought to stream (SIGNAL primitive)
-   */
-  private async broadcastThought(messageId: string, contextId: UUID, thought: Thought): Promise<void> {
-    try {
-      const coordinator = getThoughtStreamCoordinator();
-      await coordinator.broadcastThought(messageId, contextId, thought);
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Failed to broadcast thought (non-fatal):`, error);
-      // Non-fatal: continue without coordination
-    }
-  }
+  // broadcastThought() method removed - now using getChatCoordinator().broadcastChatThought() directly
 
   /**
    * Shutdown worker thread and cleanup resources
