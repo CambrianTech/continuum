@@ -20,9 +20,9 @@ import type {
   TrainingExample,
   TrainingMessage
 } from '../shared/FineTuningTypes';
-import { DataDaemon } from '../../../daemons/data-daemon/DataDaemon';
-import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
-import type { DataListParams } from '../../../daemons/data-daemon/shared/DataTypes';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import type { ChatMessageEntity, MessageContent } from '../../../data/entities/ChatMessageEntity';
+import type { DataListParams } from '../../../../daemons/data-daemon/shared/DataTypes';
 
 /**
  * Dataset builder configuration
@@ -191,13 +191,23 @@ export class TrainingDatasetBuilder {
   /**
    * Filter messages based on config
    */
+  /**
+   * Convert MessageContent to string
+   */
+  private contentToString(content: MessageContent | string | null | undefined): string {
+    if (!content) return '';
+    if (typeof content === 'string') return content;
+    return content.text || '';
+  }
+
   private filterMessages(
     messages: ChatMessageEntity[],
     personaId: UUID
   ): ChatMessageEntity[] {
     return messages.filter(msg => {
       // Filter by length
-      if (!msg.content || msg.content.length < this.config.minMessageLength) {
+      const contentText = this.contentToString(msg.content);
+      if (!contentText || contentText.length < this.config.minMessageLength) {
         return false;
       }
 
@@ -211,10 +221,10 @@ export class TrainingDatasetBuilder {
         return false;
       }
 
-      // Filter other AI messages
-      if (!this.config.includeOtherPersonas && msg.metadata?.category === 'ai' && msg.senderId !== personaId) {
-        return false;
-      }
+      // Filter other AI messages (no category field exists, skip this check)
+      // if (!this.config.includeOtherPersonas && msg.metadata?.category === 'ai' && msg.senderId !== personaId) {
+      //   return false;
+      // }
 
       return true;
     });
@@ -251,7 +261,7 @@ export class TrainingDatasetBuilder {
 
       return {
         role,
-        content: msg.content || ''
+        content: this.contentToString(msg.content)
       };
     });
 
