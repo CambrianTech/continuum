@@ -419,4 +419,182 @@ See lines 318-1283 of this file (archived sections) for full migration strategy 
 
 ---
 
+## 📝 SESSION CONTINUATION TEMPLATE
+
+**When context runs out and Claude needs to continue in a new session**, use this template to create comprehensive summaries.
+
+### Summary Structure Requirements
+
+Every session summary MUST include these 9 sections in order:
+
+```markdown
+<analysis>
+[Your thought process analyzing the conversation chronologically]
+</analysis>
+
+Summary:
+
+## 1. Primary Request and Intent
+[Chronological list of ALL user requests with direct quotes]
+
+## 2. Key Technical Concepts
+[All technical terms, architectures, algorithms mentioned]
+
+## 3. Files and Code Sections
+[Every file touched with line numbers, importance ratings, and code snippets]
+
+## 4. Errors and Fixes
+[All errors encountered and how they were resolved]
+
+## 5. Problem Solving
+[Document problems solved with "Problem → Solution → Key Insight" format]
+
+## 6. All User Messages
+[Complete list of every user message with direct quotes]
+
+## 7. Pending Tasks
+[Explicit list of unfinished work]
+
+## 8. Current Work
+[What you were doing immediately before summary was requested]
+
+## 9. Optional Next Step
+[What should happen next, with user's exact words if they specified]
+```
+
+### Analysis Tags (REQUIRED)
+
+Wrap your chronological analysis in `<analysis></analysis>` tags BEFORE the summary sections. This helps you:
+- Track the conversation flow chronologically
+- Identify patterns and themes
+- Understand context for the numbered sections
+- Think through what happened before documenting it
+
+### Section 3 Requirements: Files and Code
+
+For EVERY file mentioned, include:
+
+1. **File path and line count**
+2. **Importance rating** (Critical/High/Medium/Low)
+3. **What changed** with actual code snippets
+4. **Why it matters** for the overall architecture
+
+**Example**:
+```markdown
+### **PersonaUser.ts** (system/user/server/PersonaUser.ts - MODIFIED, lines 358-412)
+**Importance**: Critical - Core autonomous loop implementation
+
+**Before** (synchronous, reactive):
+```typescript
+private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
+  // Process immediately when message arrives
+  await this.processMessage(messageEntity);
+}
+```
+
+**After** (autonomous, adaptive):
+```typescript
+async serviceInbox(): Promise<void> {
+  const tasks = await this.inbox.peek(10);
+  if (!this.state.shouldEngage(task.priority)) return;
+  await this.genome.activateSkill(task.domain);
+  // ... rest of convergence pattern
+}
+```
+
+**Why**: Transforms PersonaUser from reactive slave to autonomous citizen with internal scheduling.
+```
+
+### Section 5 Requirements: Problem Solving
+
+Use this exact format:
+
+```markdown
+### **Solved: [Problem Title]**
+
+**Problem**: [Describe the problem with context]
+
+**Solution**: [Describe the solution with specifics]
+
+**Key Insight**: [The lesson or pattern discovered]
+```
+
+### Common Pitfalls to Avoid
+
+1. **DON'T summarize - DOCUMENT**
+   - ❌ "We worked on task system"
+   - ✅ "Created TaskEntity.ts (312 lines) with priority queue, LRU eviction, and persistence"
+
+2. **DON'T paraphrase user messages**
+   - ❌ "User wanted me to add tests"
+   - ✅ Direct quote: "you're gonna need to even just try out the fine tuning in all the adapters"
+
+3. **DON'T skip code snippets**
+   - Every significant code change needs before/after snippets
+   - Include line numbers from the Read tool
+
+4. **DON'T forget chronological analysis**
+   - `<analysis>` tags are REQUIRED before numbered sections
+   - Think through what happened step by step
+
+### Example Summary (Abbreviated)
+
+```markdown
+<analysis>
+Chronological analysis of the session:
+
+1. User asked to search old Academy docs for "virtual memory" concepts
+2. I created PERSONA-CONVERGENCE-ROADMAP.md synthesizing three visions
+3. User requested addition to CLAUDE.md with phases and tests
+4. User introduced NEW requirement about multi-backend fine-tuning
+5. [... continue chronologically ...]
+</analysis>
+
+Summary:
+
+## 1. Primary Request and Intent
+
+**Chronological requests:**
+
+1. **Search old Academy docs**: "we described some before so look for words like 'virtual memory' in jtag/design"
+   - Context: Academy daemon is dead but storage patterns remain valuable
+
+2. **Document comprehensively**: "ok just make sure its all in your docs here, arch, and ethos"
+
+3. **Add to CLAUDE.md**: "add your work to our list where it belongs, this lora stuff... work it in where it belongs most logically"
+
+[... continue for all requests ...]
+
+## 2. Key Technical Concepts
+
+- **LoRA Genome Paging**: Virtual memory-style system for loading/unloading LoRA adapters
+- **LRU Eviction**: Least-recently-used algorithm for paging out adapters when memory full
+- **Autonomous Loop**: RTOS-inspired servicing with adaptive cadence (3s→5s→7s→10s)
+[... continue ...]
+
+## 3. Files and Code Sections
+
+### **PERSONA-CONVERGENCE-ROADMAP.md** (Created, then Enhanced - ~1067 lines final)
+**Importance**: Critical - Master synthesis document
+
+[... include code snippets and explanations ...]
+
+[... continue for all 9 sections ...]
+```
+
+### Usage Instructions
+
+When context is running low:
+
+1. **Read this template section carefully**
+2. **Create analysis tags** tracking conversation chronologically
+3. **Fill in ALL 9 sections** with maximum detail
+4. **Include direct quotes** from user messages
+5. **Add code snippets** for every file touched
+6. **Use Problem→Solution→Insight** format for problem solving
+7. **Document pending tasks** explicitly
+8. **Verify completeness** - did you capture everything?
+
+---
+
 **File reduced from 61k to ~20k characters**
