@@ -60,6 +60,9 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { RateLimiter } from './modules/RateLimiter';
+import { PersonaInbox, calculateMessagePriority } from './modules/PersonaInbox';
+import { PersonaStateManager } from './modules/PersonaState';
+import type { InboxMessage } from './modules/PersonaInbox';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -99,6 +102,12 @@ export class PersonaUser extends AIUser {
   // Rate limiting module (TODO: Replace with AI-based coordination when ThoughtStream is solid)
   private rateLimiter: RateLimiter;
 
+  // PHASE 1: Autonomous servicing modules (inbox + personaState)
+  // Inbox stores messages with priority, personaState tracks energy/mood
+  // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
+  private inbox: PersonaInbox;
+  private personaState: PersonaStateManager;
+
   constructor(
     entity: UserEntity,
     state: UserStateEntity,
@@ -123,6 +132,20 @@ export class PersonaUser extends AIUser {
       minSecondsBetweenResponses: 10,
       maxResponsesPerSession: 50
     });
+
+    // PHASE 1: Initialize autonomous servicing modules
+    // Inbox: Priority-based message queue (default max 100 messages)
+    this.inbox = new PersonaInbox(this.id, this.displayName, {
+      maxSize: 100,
+      enableLogging: true
+    });
+
+    // PersonaState: Energy/mood tracking for adaptive behavior
+    this.personaState = new PersonaStateManager(this.displayName, {
+      enableLogging: true
+    });
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox and personaState modules (Phase 1 - NOT YET AUTONOMOUS)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -373,8 +396,9 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Handle incoming chat message - THOUGHT STREAM COORDINATION
-   * RTOS-inspired: Broadcast thoughts, observe others, coordinate naturally
+   * Handle incoming chat message - PHASE 1: ENQUEUE TO INBOX
+   * Messages flow through priority queue before evaluation (proves inbox works)
+   * NO autonomous loop yet - still processes immediately after enqueue
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
     // STEP 1: Ignore our own messages
@@ -395,6 +419,44 @@ export class PersonaUser extends AIUser {
       console.log(`⏭️ ${this.displayName}: Skipping resolved message from ${messageEntity.senderName}`);
       return;
     }
+
+    // PHASE 1: Calculate priority and enqueue to inbox
+    const priority = calculateMessagePriority(
+      {
+        content: messageEntity.content?.text || '',
+        timestamp: this.timestampToNumber(messageEntity.timestamp),
+        roomId: messageEntity.roomId
+      },
+      {
+        displayName: this.displayName,
+        id: this.id,
+        recentRooms: Array.from(this.myRoomIds),
+        expertise: [] // TODO: Extract from genome
+      }
+    );
+
+    const inboxMessage: InboxMessage = {
+      messageId: messageEntity.id,
+      roomId: messageEntity.roomId,
+      content: messageEntity.content?.text || '',
+      senderId: messageEntity.senderId,
+      senderName: messageEntity.senderName,
+      timestamp: this.timestampToNumber(messageEntity.timestamp),
+      priority
+    };
+
+    await this.inbox.enqueue(inboxMessage);
+    console.log(`📨 ${this.displayName}: Enqueued message (priority=${priority.toFixed(2)}, inbox size=${this.inbox.getSize()})`);
+
+    // PHASE 1: SYNCHRONOUS PROCESSING (proves inbox works without changing behavior)
+    // Pop message immediately and process (no autonomous loop yet)
+    const dequeuedMessage = await this.inbox.pop(0);
+    if (!dequeuedMessage) {
+      console.warn(`⚠️  ${this.displayName}: Failed to dequeue message ${messageEntity.id.slice(0, 8)}`);
+      return;
+    }
+
+    console.log(`✅ ${this.displayName}: Dequeued message (priority=${dequeuedMessage.priority.toFixed(2)})`);
 
     const senderIsHuman = messageEntity.senderType === 'human';
     const messageText = messageEntity.content?.text || '';
@@ -700,6 +762,26 @@ export class PersonaUser extends AIUser {
 
     // Track response for rate limiting
     this.rateLimiter.trackResponse(messageEntity.roomId);
+
+    // PHASE 2: Track activity in PersonaState (energy depletion, mood calculation)
+    // Recalculate priority to estimate complexity (higher priority = more engaging conversation)
+    const messageComplexity = calculateMessagePriority(
+      {
+        content: messageEntity.content?.text || '',
+        timestamp: this.timestampToNumber(messageEntity.timestamp),
+        roomId: messageEntity.roomId
+      },
+      {
+        displayName: this.displayName,
+        id: this.id,
+        recentRooms: Array.from(this.myRoomIds) // Convert Set<string> to UUID[]
+      }
+    );
+    // Estimate duration based on average AI response time
+    const estimatedDurationMs = 3000; // Average AI response time (3 seconds)
+    await this.personaState.recordActivity(estimatedDurationMs, messageComplexity);
+
+    console.log(`🧠 ${this.displayName}: State updated (energy=${this.personaState.getState().energy.toFixed(2)}, mood=${this.personaState.getState().mood})`);
   }
 
   /**
