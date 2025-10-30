@@ -63,6 +63,7 @@ import { RateLimiter } from './modules/RateLimiter';
 import { PersonaInbox, calculateMessagePriority } from './modules/PersonaInbox';
 import { PersonaStateManager } from './modules/PersonaState';
 import type { InboxMessage } from './modules/PersonaInbox';
+import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -108,6 +109,10 @@ export class PersonaUser extends AIUser {
   private inbox: PersonaInbox;
   private personaState: PersonaStateManager;
 
+  // PHASE 7.4: Training data accumulation for recipe-embedded learning
+  // Accumulates training examples in RAM during recipe execution
+  public trainingAccumulator: TrainingDataAccumulator;
+
   // PHASE 3: Autonomous polling loop
   private servicingLoop: NodeJS.Timeout | null = null;
 
@@ -148,7 +153,10 @@ export class PersonaUser extends AIUser {
       enableLogging: true
     });
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox and personaState modules (Phase 1 - NOT YET AUTONOMOUS)`);
+    // PHASE 7.4: Training data accumulator for recipe-embedded learning
+    this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
