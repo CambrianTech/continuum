@@ -9,8 +9,9 @@
  */
 
 import { BaseEntity } from './BaseEntity';
-import { COLLECTIONS } from '../shared/Collections';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { COLLECTIONS } from '../config/DatabaseConfig';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { TextField, EnumField, DateField, JsonField, NumberField } from '../decorators/FieldDecorators';
 
 /**
  * Task status lifecycle
@@ -68,32 +69,50 @@ export type TaskType =
 
 export class TaskEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.TASKS;
-  static readonly version = 1;
 
   // Identity
-  id!: UUID;                     // Task ID
+  @TextField({ index: true })
   assigneeId!: UUID;             // Who should do this task (PersonaUser ID)
+
+  @TextField({ index: true })
   createdBy!: UUID;              // Who created this task (can be same as assignee for self-tasks)
 
   // Classification
+  @EnumField({ index: true })
   domain!: TaskDomain;           // Which domain this task belongs to
+
+  @EnumField({ index: true })
   taskType!: TaskType;           // Specific type within domain
 
   // Context
+  @TextField({ index: true })
   contextId!: UUID;              // Domain-specific context (roomId, fileId, gameId, personaId, etc.)
+
+  @TextField()
   description!: string;          // Human-readable task description
 
   // Priority & Scheduling
+  @NumberField()
   priority!: TaskPriority;       // Task priority (0.0-1.0, used by PersonaInbox)
+
+  @DateField({ nullable: true })
   dueDate?: Date;                // Optional deadline
+
+  @NumberField({ nullable: true })
   estimatedDuration?: number;    // Estimated time to complete (ms)
 
   // Status
+  @EnumField({ index: true })
   status!: TaskStatus;           // Current status
+
+  @DateField({ nullable: true })
   startedAt?: Date;              // When work began
+
+  @DateField({ nullable: true })
   completedAt?: Date;            // When finished
 
   // Results
+  @JsonField({ nullable: true })
   result?: {                     // Task result (structure depends on taskType)
     success: boolean;
     output?: unknown;            // Domain-specific output
@@ -106,10 +125,14 @@ export class TaskEntity extends BaseEntity {
   };
 
   // Dependencies
+  @JsonField({ nullable: true })
   dependsOn?: UUID[];            // Task IDs this task depends on (must complete first)
+
+  @JsonField({ nullable: true })
   blockedBy?: UUID[];            // Tasks blocking this one
 
   // Metadata
+  @JsonField({ nullable: true })
   metadata?: {                   // Domain-specific metadata
     // Chat domain
     messageId?: UUID;
@@ -132,9 +155,52 @@ export class TaskEntity extends BaseEntity {
     trainingData?: unknown[];    // Training examples
   };
 
-  // Timestamps
-  createdAt!: Date;
-  updatedAt!: Date;
+  constructor() {
+    super(); // Initialize BaseEntity fields (id, createdAt, updatedAt, version)
+
+    // Set defaults
+    this.status = 'pending';
+    this.priority = 0.5;
+  }
+
+  /**
+   * Implement BaseEntity abstract method
+   */
+  get collection(): string {
+    return TaskEntity.collection;
+  }
+
+  /**
+   * Implement BaseEntity abstract method - validate task data
+   */
+  validate(): { success: boolean; error?: string } {
+    // Required fields
+    if (!this.assigneeId) {
+      return { success: false, error: 'Task assigneeId is required' };
+    }
+    if (!this.createdBy) {
+      return { success: false, error: 'Task createdBy is required' };
+    }
+    if (!this.domain) {
+      return { success: false, error: 'Task domain is required' };
+    }
+    if (!this.taskType) {
+      return { success: false, error: 'Task taskType is required' };
+    }
+    if (!this.contextId) {
+      return { success: false, error: 'Task contextId is required' };
+    }
+    if (!this.description?.trim()) {
+      return { success: false, error: 'Task description is required' };
+    }
+
+    // Validate priority range
+    if (this.priority < 0 || this.priority > 1) {
+      return { success: false, error: 'Task priority must be between 0.0 and 1.0' };
+    }
+
+    return { success: true };
+  }
 
   /**
    * Calculate message priority for inbox (used by PersonaInbox.enqueue())
@@ -166,66 +232,4 @@ export class TaskEntity extends BaseEntity {
     return Math.min(priority, 1.0);
   }
 
-  /**
-   * Check if task is ready to be worked on (all dependencies met)
-   */
-  async isReady(): Promise<boolean> {
-    if (!this.dependsOn || this.dependsOn.length === 0) {
-      return true; // No dependencies
-    }
-
-    // Check if all dependencies are completed
-    for (const taskId of this.dependsOn) {
-      const dependency = await TaskEntity.findById(taskId);
-      if (!dependency || dependency.status !== 'completed') {
-        return false; // Dependency not met
-      }
-    }
-
-    return true; // All dependencies met
-  }
-
-  /**
-   * Mark task as started
-   */
-  async markStarted(): Promise<void> {
-    this.status = 'in_progress';
-    this.startedAt = new Date();
-    this.updatedAt = new Date();
-    await this.save();
-  }
-
-  /**
-   * Mark task as completed with result
-   */
-  async markCompleted(result: TaskEntity['result']): Promise<void> {
-    this.status = 'completed';
-    this.completedAt = new Date();
-    this.updatedAt = new Date();
-    this.result = result;
-    await this.save();
-  }
-
-  /**
-   * Mark task as failed with error
-   */
-  async markFailed(error: string): Promise<void> {
-    this.status = 'failed';
-    this.completedAt = new Date();
-    this.updatedAt = new Date();
-    this.result = {
-      success: false,
-      error
-    };
-    await this.save();
-  }
-
-  /**
-   * Cancel task
-   */
-  async cancel(): Promise<void> {
-    this.status = 'cancelled';
-    this.updatedAt = new Date();
-    await this.save();
-  }
 }
