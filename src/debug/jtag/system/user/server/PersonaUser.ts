@@ -116,6 +116,9 @@ export class PersonaUser extends AIUser {
   // PHASE 3: Autonomous polling loop
   private servicingLoop: NodeJS.Timeout | null = null;
 
+  // PHASE 7.5.1: Training readiness check loop (runs less frequently than servicing loop)
+  private trainingCheckLoop: NodeJS.Timeout | null = null;
+
   constructor(
     entity: UserEntity,
     state: UserStateEntity,
@@ -2011,10 +2014,66 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
     console.log(`🔄 ${this.displayName}: Starting autonomous servicing (cadence=${cadence}ms, mood=${mood})`);
 
-    // Create polling loop
+    // Create polling loop for inbox servicing
     this.servicingLoop = setInterval(async () => {
       await this.serviceInbox();
     }, cadence);
+
+    // PHASE 7.5.1: Create training check loop (every 60 seconds)
+    // Checks less frequently than inbox servicing to avoid overhead
+    console.log(`🧬 ${this.displayName}: Starting training readiness checks (every 60s)`);
+    this.trainingCheckLoop = setInterval(async () => {
+      await this.checkTrainingReadiness();
+    }, 60000); // 60 seconds
+  }
+
+  /**
+   * PHASE 7.5.1: Check training readiness and trigger micro-tuning
+   *
+   * Called periodically (less frequently than serviceInbox) to check if any
+   * domain buffers are ready for training. When threshold reached, automatically
+   * triggers genome/train command for that domain.
+   *
+   * This enables continuous learning: PersonaUsers improve through recipe execution
+   * without manual intervention.
+   */
+  private async checkTrainingReadiness(): Promise<void> {
+    try {
+      const domains = this.trainingAccumulator.getDomains();
+
+      if (domains.length === 0) {
+        return; // No accumulated training data
+      }
+
+      for (const domain of domains) {
+        if (this.trainingAccumulator.shouldMicroTune(domain)) {
+          const bufferSize = this.trainingAccumulator.getBufferSize(domain);
+          const threshold = this.trainingAccumulator.getBatchThreshold(domain);
+
+          console.log(`🧬 ${this.displayName}: Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
+
+          // Consume training data from buffer
+          const examples = await this.trainingAccumulator.consumeTrainingData(domain);
+
+          console.log(`📊 ${this.displayName}: Consumed ${examples.length} examples for ${domain} training`);
+
+          // TODO Phase 7.5.1: Trigger genome/train command
+          // For now, just log that we would train
+          console.log(`🚀 ${this.displayName}: Would train ${domain} adapter with ${examples.length} examples`);
+
+          // Future implementation:
+          // await Commands.execute('genome/train', {
+          //   personaId: this.id,
+          //   provider: 'unsloth',
+          //   domain,
+          //   trainingExamples: examples,
+          //   dryRun: false
+          // });
+        }
+      }
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error checking training readiness:`, error);
+    }
   }
 
   /**
@@ -2123,6 +2182,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       clearInterval(this.servicingLoop);
       this.servicingLoop = null;
       console.log(`🔄 ${this.displayName}: Stopped autonomous servicing loop`);
+    }
+
+    // PHASE 7.5.1: Stop training check loop
+    if (this.trainingCheckLoop) {
+      clearInterval(this.trainingCheckLoop);
+      this.trainingCheckLoop = null;
+      console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
     }
 
     if (this.worker) {
