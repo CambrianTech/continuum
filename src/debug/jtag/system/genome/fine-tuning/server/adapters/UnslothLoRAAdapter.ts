@@ -16,12 +16,17 @@
  */
 
 import { BaseLoRATrainer } from '../../shared/BaseLoRATrainer';
+import { TrainingDatasetBuilder } from '../TrainingDatasetBuilder';
 import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
   FineTuningStrategy
 } from '../../shared/FineTuningTypes';
+import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 /**
  * Unsloth LoRA Adapter - Local Python-based training with Unsloth
@@ -35,15 +40,12 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
   /**
    * Check if Unsloth supports fine-tuning
    *
-   * MVP: Returns false (not implemented yet)
-   * Phase 7.1+: Check if Python + Unsloth installed
+   * Phase 7.1: Check if Python + Unsloth training script available
    */
   supportsFineTuning(): boolean {
-    // MVP: Not yet implemented
-    return false;
-
-    // TODO Phase 7.1: Check for Python + Unsloth availability
-    // return this.checkUnslothAvailable();
+    // Check if Python training script exists
+    const scriptPath = path.join(__dirname, 'scripts', 'unsloth-train.py');
+    return fs.existsSync(scriptPath);
   }
 
   /**
@@ -103,8 +105,7 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
   /**
    * Train LoRA adapter
    *
-   * MVP: Throws "not implemented" error
-   * Phase 7.1+: Call Unsloth via Python subprocess for local training
+   * Phase 7.1: Call Unsloth via Python subprocess for local training
    *
    * @param request Training configuration
    * @returns Training result with adapter location
@@ -113,15 +114,50 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
     // Validate request first
     this.validateRequest(request);
 
-    // MVP: Not implemented yet
-    throw new Error(
-      'Unsloth LoRA training not implemented yet (Phase 7.0 MVP). ' +
-      'Full implementation in Phase 7.1+ will use Unsloth for local training.'
-    );
+    const startTime = Date.now();
 
-    // TODO Phase 7.1: Implement local Unsloth training
-    // const result = await this.trainWithUnsloth(request);
-    // return result;
+    console.log('🧬 Starting Unsloth LoRA training...');
+    console.log(`   Model: ${request.baseModel}`);
+    console.log(`   Examples: ${request.dataset.examples.length}`);
+    console.log(`   Epochs: ${request.epochs}`);
+
+    // 1. Create config JSON
+    const configPath = await this.createConfigFile(request);
+
+    // 2. Export dataset to JSONL
+    const datasetPath = await this.exportDatasetToJSONL(request.dataset);
+
+    // 3. Create output directory
+    const outputDir = path.join(os.tmpdir(), `jtag-training-${Date.now()}`);
+    await fs.promises.mkdir(outputDir, { recursive: true });
+
+    try {
+      // 4. Execute Python training script
+      const metrics = await this.executeUnslothTraining(configPath, outputDir);
+
+      // 5. Copy adapter to genome storage
+      const adapterPath = await this.saveAdapter(request, outputDir);
+
+      const trainingTime = Date.now() - startTime;
+
+      console.log(`✅ Training complete in ${(trainingTime / 1000).toFixed(2)}s`);
+      console.log(`   Adapter saved to: ${adapterPath}`);
+
+      return {
+        success: true,
+        modelPath: adapterPath,
+        metrics: {
+          trainingTime,
+          finalLoss: metrics.finalLoss,
+          examplesProcessed: request.dataset.examples.length,
+          epochs: request.epochs || 3
+        },
+        timestamp: Date.now()
+      };
+    } finally {
+      // Cleanup temp files
+      await this.cleanupTempFiles(configPath, datasetPath);
+    }
   }
 
   /**
@@ -158,87 +194,147 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
     return exampleCount * epochs * 25; // 25ms per example per epoch (GPU, Unsloth)
   }
 
-  // ==================== FUTURE IMPLEMENTATION (Phase 7.1+) ====================
+  // ==================== PHASE 7.1 IMPLEMENTATION ====================
 
   /**
-   * TODO Phase 7.1: Train LoRA adapter with Unsloth
-   *
-   * Implementation steps:
-   * 1. Export dataset to JSONL
-   * 2. Create Python training script with Unsloth
-   * 3. Execute training via subprocess
-   * 4. Monitor training progress
-   * 5. Export adapter to GGUF format
-   * 6. Save adapter to local path
-   * 7. Return result with metrics
+   * Create config JSON file for Python script
    *
    * @private
    */
-  /*
-  private async trainWithUnsloth(request: LoRATrainingRequest): Promise<LoRATrainingResult> {
-    const startTime = Date.now();
+  private async createConfigFile(request: LoRATrainingRequest): Promise<string> {
+    const capabilities = this.getFineTuningCapabilities();
 
-    // 1. Export dataset to temp file
-    const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-
-    // 2. Create Python training script
-    const scriptPath = await this.createTrainingScript(request, datasetPath);
-
-    // 3. Execute training
-    const metrics = await this.executeUnslothTraining(scriptPath);
-
-    // 4. Export to GGUF format
-    const ggufPath = await this.exportToGGUF(request);
-
-    // 5. Save adapter
-    const adapterPath = await this.saveAdapter(request, ggufPath);
-
-    // 6. Clean up temp files
-    await this.cleanupTempFiles(datasetPath, scriptPath, ggufPath);
-
-    const trainingTime = Date.now() - startTime;
-
-    return {
-      success: true,
-      modelPath: adapterPath,
-      ollamaModelName: this.getOllamaModelName(request),
-      metrics: {
-        trainingTime,
-        finalLoss: metrics.finalLoss,
-        examplesProcessed: request.dataset.examples.length,
-        epochs: request.epochs || 3
-      },
-      timestamp: Date.now()
+    const config = {
+      baseModel: request.baseModel,
+      datasetPath: '', // Will be set by Python script
+      rank: request.rank || capabilities.defaultRank,
+      alpha: request.alpha || capabilities.defaultAlpha,
+      epochs: request.epochs || capabilities.defaultEpochs,
+      learningRate: request.learningRate || capabilities.defaultLearningRate,
+      batchSize: request.batchSize || capabilities.defaultBatchSize,
+      outputDir: '' // Will be set by Python script
     };
+
+    const configPath = path.join(os.tmpdir(), `jtag-config-${Date.now()}.json`);
+    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+    console.log(`   Config written to: ${configPath}`);
+    return configPath;
   }
-  */
 
   /**
-   * TODO Phase 7.1: Check if Unsloth is available
+   * Export dataset to JSONL file
    *
    * @private
    */
-  /*
-  private checkUnslothAvailable(): boolean {
-    // Check if Python + Unsloth installed
-    // exec('python3 -c "import unsloth"') or similar
-    return false; // Stub
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Export dataset to JSONL file
-   *
-   * @private
-   */
-  /*
   private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     const tempPath = path.join(os.tmpdir(), `jtag-training-${Date.now()}.jsonl`);
     const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
     await fs.promises.writeFile(tempPath, jsonl, 'utf-8');
+
+    console.log(`   Dataset exported to: ${tempPath}`);
     return tempPath;
   }
-  */
+
+  /**
+   * Execute Python training script
+   *
+   * @private
+   */
+  private async executeUnslothTraining(configPath: string, outputDir: string): Promise<{ finalLoss: number }> {
+    const scriptPath = path.join(__dirname, 'scripts', 'unsloth-train.py');
+
+    console.log(`   Executing: python3 ${scriptPath}`);
+    console.log(`   Config: ${configPath}`);
+    console.log(`   Output: ${outputDir}`);
+
+    return new Promise((resolve, reject) => {
+      const python = spawn('python3', [scriptPath, '--config', configPath, '--output', outputDir]);
+
+      let stdout = '';
+      let stderr = '';
+      let finalLoss = 0.5; // Default
+
+      python.stdout.on('data', (data: Buffer) => {
+        const text = data.toString();
+        stdout += text;
+        process.stdout.write(text); // Stream to console
+
+        // Parse final loss from output
+        const lossMatch = text.match(/Final loss: ([\d.]+)/);
+        if (lossMatch) {
+          finalLoss = parseFloat(lossMatch[1]);
+        }
+      });
+
+      python.stderr.on('data', (data: Buffer) => {
+        const text = data.toString();
+        stderr += text;
+        process.stderr.write(text); // Stream to console
+      });
+
+      python.on('close', (code: number | null) => {
+        if (code === 0) {
+          console.log(`   Training script completed successfully`);
+          resolve({ finalLoss });
+        } else {
+          reject(new Error(`Training script failed with exit code ${code}\nStderr: ${stderr}`));
+        }
+      });
+
+      python.on('error', (error: Error) => {
+        reject(new Error(`Failed to spawn Python process: ${error.message}`));
+      });
+    });
+  }
+
+  /**
+   * Save trained adapter to genome storage
+   *
+   * @private
+   */
+  private async saveAdapter(request: LoRATrainingRequest, outputDir: string): Promise<string> {
+    // Create genome adapters directory
+    const adaptersDir = path.join('.continuum', 'genome', 'adapters');
+    await fs.promises.mkdir(adaptersDir, { recursive: true });
+
+    // Create adapter subdirectory
+    const adapterName = `${request.personaName.replace(/\s+/g, '-')}-${request.traitType}-${Date.now()}`;
+    const adapterPath = path.join(adaptersDir, adapterName);
+    await fs.promises.mkdir(adapterPath, { recursive: true });
+
+    // Copy all adapter files from output directory
+    const files = await fs.promises.readdir(outputDir);
+    for (const file of files) {
+      const srcPath = path.join(outputDir, file);
+      const destPath = path.join(adapterPath, file);
+      await fs.promises.copyFile(srcPath, destPath);
+    }
+
+    console.log(`   Adapter files copied to: ${adapterPath}`);
+    return adapterPath;
+  }
+
+  /**
+   * Clean up temporary files
+   *
+   * @private
+   */
+  private async cleanupTempFiles(...paths: string[]): Promise<void> {
+    for (const filePath of paths) {
+      try {
+        const stats = await fs.promises.stat(filePath);
+        if (stats.isDirectory()) {
+          await fs.promises.rm(filePath, { recursive: true, force: true });
+        } else {
+          await fs.promises.unlink(filePath);
+        }
+        console.log(`   Cleaned up: ${filePath}`);
+      } catch (error) {
+        console.warn(`   Failed to clean up ${filePath}:`, error);
+      }
+    }
+  }
 
   /**
    * TODO Phase 7.1: Create Python training script with Unsloth
