@@ -90,6 +90,7 @@ export interface LoRATrainingResult {
   metrics?: {
     trainLoss?: number;
     validationLoss?: number;
+    finalLoss?: number;       // Final loss value (may be same as trainLoss)
     accuracy?: number;
     epochs: number;
     trainingTime: number;     // milliseconds
@@ -156,8 +157,23 @@ export interface FineTuningCapabilities {
   // Hyperparameter constraints
   minRank?: number;
   maxRank?: number;
+  defaultRank?: number;               // Default LoRA rank
+  minAlpha?: number;
+  maxAlpha?: number;
+  defaultAlpha?: number;              // Default LoRA alpha
   minEpochs?: number;
   maxEpochs?: number;
+  defaultEpochs?: number;             // Default training epochs
+  minLearningRate?: number;
+  maxLearningRate?: number;
+  defaultLearningRate?: number;       // Default learning rate
+  minBatchSize?: number;
+  maxBatchSize?: number;
+  defaultBatchSize?: number;          // Default batch size
+
+  // System requirements
+  requiresGPU?: boolean;              // Does this strategy require a GPU?
+  requiresInternet?: boolean;         // Does this strategy require internet?
 
   // Pricing (for API-based training)
   costPerExample?: number;             // USD per training example

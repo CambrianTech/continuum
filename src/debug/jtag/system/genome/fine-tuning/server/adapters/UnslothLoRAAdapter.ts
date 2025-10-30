@@ -21,7 +21,8 @@ import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
-  FineTuningStrategy
+  FineTuningStrategy,
+  TrainingDataset
 } from '../../shared/FineTuningTypes';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
@@ -62,6 +63,9 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
    */
   getFineTuningCapabilities(): FineTuningCapabilities {
     return {
+      supportsFineTuning: this.supportsFineTuning(),
+      strategy: this.getFineTuningStrategy(),
+
       // LoRA parameters
       minRank: 8,
       maxRank: 256,
@@ -151,8 +155,7 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
           finalLoss: metrics.finalLoss,
           examplesProcessed: request.dataset.examples.length,
           epochs: request.epochs || 3
-        },
-        timestamp: Date.now()
+        }
       };
     } finally {
       // Cleanup temp files

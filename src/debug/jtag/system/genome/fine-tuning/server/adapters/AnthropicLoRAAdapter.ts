@@ -62,6 +62,9 @@ export class AnthropicLoRAAdapter extends BaseLoRATrainer {
    */
   getFineTuningCapabilities(): FineTuningCapabilities {
     return {
+      supportsFineTuning: this.supportsFineTuning(),
+      strategy: this.getFineTuningStrategy(),
+
       // LoRA parameters (expected to be fixed by provider)
       minRank: 8,
       maxRank: 64,

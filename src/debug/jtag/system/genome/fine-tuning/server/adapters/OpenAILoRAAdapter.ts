@@ -59,6 +59,9 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
    */
   getFineTuningCapabilities(): FineTuningCapabilities {
     return {
+      supportsFineTuning: this.supportsFineTuning(),
+      strategy: this.getFineTuningStrategy(),
+
       // LoRA parameters (fixed by provider)
       minRank: 16,
       maxRank: 64,
