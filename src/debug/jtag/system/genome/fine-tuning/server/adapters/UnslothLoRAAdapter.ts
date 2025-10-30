@@ -154,7 +154,7 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
           trainingTime,
           finalLoss: metrics.finalLoss,
           examplesProcessed: request.dataset.examples.length,
-          epochs: request.epochs || 3
+          epochs: request.epochs ?? 3
         }
       };
     } finally {
@@ -173,7 +173,7 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
   /**
    * Estimate training cost (free for local training)
    */
-  estimateTrainingCost(exampleCount: number): number {
+  estimateTrainingCost(_exampleCount: number): number {
     // Local training is free (ignoring electricity costs)
     return 0;
   }
@@ -210,11 +210,11 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
     const config = {
       baseModel: request.baseModel,
       datasetPath: '', // Will be set by Python script
-      rank: request.rank || capabilities.defaultRank,
-      alpha: request.alpha || capabilities.defaultAlpha,
-      epochs: request.epochs || capabilities.defaultEpochs,
-      learningRate: request.learningRate || capabilities.defaultLearningRate,
-      batchSize: request.batchSize || capabilities.defaultBatchSize,
+      rank: request.rank ?? capabilities.defaultRank,
+      alpha: request.alpha ?? capabilities.defaultAlpha,
+      epochs: request.epochs ?? capabilities.defaultEpochs,
+      learningRate: request.learningRate ?? capabilities.defaultLearningRate,
+      batchSize: request.batchSize ?? capabilities.defaultBatchSize,
       outputDir: '' // Will be set by Python script
     };
 
@@ -254,13 +254,11 @@ export class UnslothLoRAAdapter extends BaseLoRATrainer {
     return new Promise((resolve, reject) => {
       const python = spawn('python3', [scriptPath, '--config', configPath, '--output', outputDir]);
 
-      let stdout = '';
       let stderr = '';
       let finalLoss = 0.5; // Default
 
       python.stdout.on('data', (data: Buffer) => {
         const text = data.toString();
-        stdout += text;
         process.stdout.write(text); // Stream to console
 
         // Parse final loss from output
