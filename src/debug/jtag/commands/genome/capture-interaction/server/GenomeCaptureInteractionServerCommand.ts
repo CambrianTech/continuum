@@ -78,7 +78,6 @@ export class GenomeCaptureInteractionServerCommand extends CommandBase<
         domain: captureParams.domain,
         input: captureParams.input,
         output: captureParams.output,
-        expectedOutput: captureParams.expectedOutput,
         contextMetadata: {
           ...captureParams.metadata,
           loraAdapter: captureParams.loraAdapter,
