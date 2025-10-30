@@ -53,6 +53,13 @@ import {
   type AIPostedEventData,
   type AIErrorEventData
 } from '../../events/shared/AIDecisionEvents';
+import {
+  AI_LEARNING_EVENTS,
+  type AITrainingStartedEventData,
+  type AITrainingCompleteEventData,
+  type AITrainingErrorEventData,
+  type AIInteractionCapturedEventData
+} from '../../events/shared/AILearningEvents';
 import { Events } from '../../core/shared/Events';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
@@ -2052,6 +2059,33 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
           console.log(`🧬 ${this.displayName}: Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
 
+          const provider = 'unsloth'; // Default provider
+          const estimatedTime = bufferSize * 25; // 25ms per example estimate
+
+          // Update learning state in UserStateEntity
+          if (!this.state.learningState) {
+            this.state.learningState = { isLearning: false };
+          }
+          this.state.learningState.isLearning = true;
+          this.state.learningState.domain = domain;
+          this.state.learningState.provider = provider;
+          this.state.learningState.startedAt = Date.now();
+          this.state.learningState.exampleCount = bufferSize;
+          this.state.learningState.estimatedCompletion = Date.now() + estimatedTime;
+          await this.saveState(); // Persist state to database
+
+          // Emit training started event
+          const trainingStartedData: AITrainingStartedEventData = {
+            personaId: this.id,
+            personaName: this.displayName ?? 'AI Assistant',
+            domain,
+            provider,
+            exampleCount: bufferSize,
+            estimatedTime,
+            timestamp: Date.now()
+          };
+          await Events.emit(AI_LEARNING_EVENTS.TRAINING_STARTED, trainingStartedData);
+
           // Consume training data from buffer
           const examples = await this.trainingAccumulator.consumeTrainingData(domain);
 
@@ -2060,6 +2094,28 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           // TODO Phase 7.5.1: Trigger genome/train command
           // For now, just log that we would train
           console.log(`🚀 ${this.displayName}: Would train ${domain} adapter with ${examples.length} examples`);
+
+          // Clear learning state
+          this.state.learningState.isLearning = false;
+          this.state.learningState.domain = undefined;
+          this.state.learningState.provider = undefined;
+          this.state.learningState.startedAt = undefined;
+          this.state.learningState.exampleCount = undefined;
+          this.state.learningState.estimatedCompletion = undefined;
+          await this.saveState(); // Persist state to database
+
+          // Simulate training completion for UI feedback
+          const trainingCompleteData: AITrainingCompleteEventData = {
+            personaId: this.id,
+            personaName: this.displayName ?? 'AI Assistant',
+            domain,
+            provider,
+            examplesProcessed: examples.length,
+            trainingTime: examples.length * 25,
+            finalLoss: 0.5,
+            timestamp: Date.now()
+          };
+          await Events.emit(AI_LEARNING_EVENTS.TRAINING_COMPLETE, trainingCompleteData);
 
           // Future implementation:
           // await Commands.execute('genome/train', {

@@ -74,6 +74,18 @@ export class UserStateEntity extends BaseEntity {
     };
   };
 
+  // AI learning state - tracks whether PersonaUser is currently training
+  // Used by UI widgets to show learning indicators (similar to AI thinking status)
+  @JsonField()
+  learningState?: {
+    isLearning: boolean;
+    domain?: string;              // Domain being trained (e.g., 'conversational', 'code')
+    provider?: string;            // Training provider (e.g., 'unsloth', 'deepseek')
+    startedAt?: number;          // Timestamp when training started
+    exampleCount?: number;        // Number of training examples
+    estimatedCompletion?: number; // Estimated completion timestamp
+  };
+
   // Index signature for compatibility
   [key: string]: unknown;
 
@@ -94,6 +106,9 @@ export class UserStateEntity extends BaseEntity {
       syncAcrossDevices: true
     };
     this.roomReadState = {};
+    this.learningState = {
+      isLearning: false
+    };
   }
 
   /**

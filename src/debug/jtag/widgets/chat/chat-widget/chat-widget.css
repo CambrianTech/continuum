@@ -566,3 +566,56 @@
     background: rgba(128, 128, 128, 0.2);
   }
 }
+
+/* ========================================
+   Learning Indicators
+   ======================================== */
+
+/* Learning border - pulsing DNA strand effect */
+.entity-list-container.learning-active {
+  border: 3px solid #00ff88;
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+  animation: learning-pulse 2s ease-in-out infinite;
+}
+
+@keyframes learning-pulse {
+  0%, 100% {
+    border-color: #00ff88;
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+  }
+  50% {
+    border-color: #00ccff;
+    box-shadow: 0 0 30px rgba(0, 204, 255, 0.7);
+  }
+}
+
+.entity-list-container.learning-active::before {
+  content: '🧬 Learning: ' attr(data-learning-persona);
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: linear-gradient(135deg, #00ff88, #00ccff);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 0.85em;
+  font-weight: 600;
+  z-index: 1000;
+  animation: learning-badge-pulse 2s ease-in-out infinite;
+}
+
+@keyframes learning-badge-pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .entity-list-container.learning-active {
+    border-color: #00ff88;
+    box-shadow: 0 0 25px rgba(0, 255, 136, 0.6);
+  }
+}
