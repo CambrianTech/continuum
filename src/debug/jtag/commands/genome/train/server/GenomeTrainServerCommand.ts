@@ -65,49 +65,87 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
 
       console.log(`   Persona name: ${persona.displayName}`);
 
-      // Step 2: Determine room(s) to train from
-      const roomIds = await this.determineRooms(trainParams.personaId, trainParams.roomId);
-      if (roomIds.length === 0) {
-        return transformPayload(params, {
-          success: false,
-          error: 'No rooms found for this PersonaUser'
+      // Step 2: Load or build training dataset
+      let dataset;
+      let datasetStats;
+
+      if (trainParams.datasetPath) {
+        // PATHWAY 1: Load dataset from file
+        console.log(`📁 GENOME TRAIN: Loading dataset from file: ${trainParams.datasetPath}`);
+        const loadResult = await this.loadDatasetFromFile(
+          trainParams.datasetPath,
+          trainParams.personaId,
+          persona.displayName ?? 'AI Assistant',
+          trainParams.traitType ?? 'conversational'
+        );
+
+        if (!loadResult.success || !loadResult.dataset) {
+          return transformPayload(params, {
+            success: false,
+            error: loadResult.error ?? 'Failed to load dataset from file',
+            dataset: {
+              totalMessages: 0,
+              exampleCount: 0,
+              messagesFiltered: 0
+            }
+          });
+        }
+
+        dataset = loadResult.dataset;
+        datasetStats = {
+          totalMessages: dataset.examples.length,
+          exampleCount: dataset.examples.length,
+          messagesFiltered: 0
+        };
+        console.log(`✅ Dataset loaded: ${dataset.examples.length} training examples`);
+
+      } else {
+        // PATHWAY 2: Extract from chat history (original behavior)
+        const roomIds = await this.determineRooms(trainParams.personaId, trainParams.roomId);
+        if (roomIds.length === 0) {
+          return transformPayload(params, {
+            success: false,
+            error: 'No rooms found for this PersonaUser (or provide --datasetPath instead)'
+          });
+        }
+
+        console.log(`   Training from ${roomIds.length} room(s)`);
+
+        const builder = new TrainingDatasetBuilder({
+          maxMessages: trainParams.maxMessages ?? 50,
+          minMessages: trainParams.minMessages ?? 10,
+          minMessageLength: 10
         });
+
+        console.log('🔧 GENOME TRAIN: Building training dataset from chat history...');
+
+        const datasetResult = await builder.buildFromConversation(
+          trainParams.personaId,
+          persona.displayName ?? 'AI Assistant',
+          roomIds[0], // Use first room for now (TODO: support multiple rooms)
+          trainParams.traitType ?? 'conversational'
+        );
+
+        if (!datasetResult.success || !datasetResult.dataset) {
+          return transformPayload(params, {
+            success: false,
+            error: datasetResult.error ?? 'Failed to build training dataset',
+            dataset: {
+              totalMessages: 0,
+              exampleCount: 0,
+              messagesFiltered: 0
+            }
+          });
+        }
+
+        dataset = datasetResult.dataset;
+        datasetStats = {
+          totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
+          exampleCount: dataset.examples.length,
+          messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
+        };
+        console.log(`✅ Dataset built: ${dataset.examples.length} training examples`);
       }
-
-      console.log(`   Training from ${roomIds.length} room(s)`);
-
-      // Step 3: Build training dataset from chat conversations
-      const builder = new TrainingDatasetBuilder({
-        maxMessages: trainParams.maxMessages ?? 50,
-        minMessages: trainParams.minMessages ?? 10,
-        minMessageLength: 10
-        // Note: DatasetBuilderConfig doesn't have requirePersonaInConversation property
-        // Filtering is handled automatically by TrainingDatasetBuilder
-      });
-
-      console.log('🔧 GENOME TRAIN: Building training dataset from chat history...');
-
-      const datasetResult = await builder.buildFromConversation(
-        trainParams.personaId,
-        persona.displayName ?? 'AI Assistant',
-        roomIds[0], // Use first room for now (TODO: support multiple rooms)
-        trainParams.traitType ?? 'conversational'
-      );
-
-      if (!datasetResult.success || !datasetResult.dataset) {
-        return transformPayload(params, {
-          success: false,
-          error: datasetResult.error ?? 'Failed to build training dataset',
-          dataset: {
-            totalMessages: 0,
-            exampleCount: 0,
-            messagesFiltered: 0
-          }
-        });
-      }
-
-      const dataset = datasetResult.dataset;
-      console.log(`✅ Dataset built: ${dataset.examples.length} training examples`);
 
       // Step 4: Get adapter for provider
       const adapter = this.getAdapter(trainParams.provider);
@@ -155,11 +193,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
         return transformPayload(params, {
           success: true,
           estimates,
-          dataset: {
-            totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
-            exampleCount: dataset.examples.length,
-            messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
-          }
+          dataset: datasetStats
         });
       }
 
@@ -184,11 +218,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
           success: false,
           error: trainingResult.error ?? 'Training failed',
           estimates,
-          dataset: {
-            totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
-            exampleCount: dataset.examples.length,
-            messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
-          }
+          dataset: datasetStats
         });
       }
 
@@ -212,11 +242,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
           epochs: trainingResult.metrics.epochs ?? epochs
         } : undefined,
         estimates,
-        dataset: {
-          totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
-          exampleCount: dataset.examples.length,
-          messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
-        }
+        dataset: datasetStats
       });
 
     } catch (error) {
@@ -248,6 +274,78 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       id: user.id as UUID,
       displayName: user.displayName ?? 'AI Assistant'
     };
+  }
+
+  /**
+   * Load training dataset from JSONL file
+   */
+  private async loadDatasetFromFile(
+    filePath: string,
+    personaId: UUID,
+    personaName: string,
+    traitType: string
+  ): Promise<{ success: boolean; dataset?: any; error?: string }> {
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+
+      // Resolve path (support relative paths)
+      const resolvedPath = path.resolve(filePath);
+
+      // Check if file exists
+      if (!fs.existsSync(resolvedPath)) {
+        return {
+          success: false,
+          error: `Dataset file not found: ${resolvedPath}`
+        };
+      }
+
+      // Read JSONL file
+      const fileContent = fs.readFileSync(resolvedPath, 'utf-8');
+      const lines = fileContent.split('\n').filter(line => line.trim().length > 0);
+
+      // Parse each line as JSON
+      const examples = [];
+      for (let i = 0; i < lines.length; i++) {
+        try {
+          const parsed = JSON.parse(lines[i]);
+          examples.push(parsed);
+        } catch (error) {
+          console.warn(`⚠️  Skipping malformed JSON on line ${i + 1}: ${error}`);
+        }
+      }
+
+      if (examples.length === 0) {
+        return {
+          success: false,
+          error: 'No valid training examples found in dataset file'
+        };
+      }
+
+      // Build TrainingDataset
+      const dataset = {
+        examples,
+        metadata: {
+          personaId,
+          personaName,
+          traitType,
+          createdAt: Date.now(),
+          source: 'file' as const,
+          totalExamples: examples.length
+        }
+      };
+
+      return {
+        success: true,
+        dataset
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   /**
