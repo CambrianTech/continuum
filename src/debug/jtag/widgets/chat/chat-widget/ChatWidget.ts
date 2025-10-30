@@ -22,6 +22,7 @@ import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
+import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLInputElement;
@@ -330,10 +331,51 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     console.log(`✅ ChatWidget: AI decision event subscriptions active`);
 
+    // Subscribe to AI learning events for visual learning indicators
+    console.log(`🧬 ChatWidget: Subscribing to AI learning events`);
+
+    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: any) => {
+      this.addLearningBorder(data.personaName);
+    });
+
+    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_COMPLETE, (data: any) => {
+      this.removeLearningBorder();
+    });
+
+    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_ERROR, (data: any) => {
+      this.removeLearningBorder();
+    });
+
+    console.log(`✅ ChatWidget: Learning event subscriptions active`);
+
     // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
     // No manual subscription needed - filtering happens in shouldAddEntity()
 
     console.log(`✅ ChatWidget: Initialized with room selection, AI status indicators, and automatic CRUD events`);
+  }
+
+  /**
+   * Add learning border to chat widget
+   */
+  private addLearningBorder(personaName: string): void {
+    const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
+    if (container) {
+      container.classList.add('learning-active');
+      container.dataset.learningPersona = personaName;
+      console.log(`🧬 ChatWidget: Added learning border for ${personaName}`);
+    }
+  }
+
+  /**
+   * Remove learning border from chat widget
+   */
+  private removeLearningBorder(): void {
+    const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
+    if (container) {
+      container.classList.remove('learning-active');
+      delete container.dataset.learningPersona;
+      console.log(`🧬 ChatWidget: Removed learning border`);
+    }
   }
 
   // Note: We receive ALL ChatMessage events, but EntityScroller will filter them

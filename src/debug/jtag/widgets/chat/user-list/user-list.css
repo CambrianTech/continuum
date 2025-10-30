@@ -386,3 +386,37 @@
   color: var(--content-secondary);
   margin: 0;
 }
+
+/* ========================================
+   Learning Indicators
+   ======================================== */
+
+/* User item with learning indicator */
+.user-item[data-learning="true"] {
+  border-left: 4px solid #00ff88;
+  background: linear-gradient(90deg, rgba(0, 255, 136, 0.1) 0%, transparent 20%);
+  animation: learning-glow 2s ease-in-out infinite;
+}
+
+@keyframes learning-glow {
+  0%, 100% {
+    border-left-color: #00ff88;
+    box-shadow: -4px 0 12px rgba(0, 255, 136, 0.3);
+  }
+  50% {
+    border-left-color: #00ccff;
+    box-shadow: -4px 0 20px rgba(0, 204, 255, 0.5);
+  }
+}
+
+/* Learning status emoji */
+.user-learning-status {
+  display: inline-block;
+  margin-left: 4px;
+  animation: learning-spin 3s linear infinite;
+}
+
+@keyframes learning-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}

@@ -11,6 +11,7 @@ import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstant
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { Events } from '../../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
+import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
 
 /**
  * AI Status tracking for user list display
@@ -22,10 +23,21 @@ interface AIStatusState {
   errorMessage?: string;
 }
 
+/**
+ * AI Learning State tracking for user list display
+ */
+interface AILearningState {
+  personaId: string;
+  isLearning: boolean;
+  domain?: string;
+  timestamp: number;
+}
+
 export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   private searchFilter: string = '';
   private selectedUserId: string | null = null;
   private aiStatuses: Map<string, AIStatusState> = new Map();
+  private learningStatuses: Map<string, AILearningState> = new Map();
   private allUsers: UserEntity[] = [];
 
   constructor() {
@@ -49,6 +61,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   protected override async onWidgetInitialize(): Promise<void> {
     await super.onWidgetInitialize();
     this.setupAIEventSubscriptions();
+    this.setupLearningEventSubscriptions();
   }
 
   /**
@@ -84,6 +97,57 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
     Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string; error: string }) => {
       this.updateAIStatus(data.personaId, 'error', data.error);
     });
+  }
+
+  /**
+   * Subscribe to AI learning events for learning indicators
+   */
+  private setupLearningEventSubscriptions(): void {
+    console.log('🧬 UserListWidget: Setting up learning event subscriptions...');
+
+    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: { personaId: string; domain: string }) => {
+      this.updateLearningStatus(data.personaId, true, data.domain);
+    });
+
+    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_COMPLETE, (data: { personaId: string }) => {
+      this.updateLearningStatus(data.personaId, false);
+    });
+
+    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_ERROR, (data: { personaId: string }) => {
+      this.updateLearningStatus(data.personaId, false);
+    });
+  }
+
+  /**
+   * Update learning status and update DOM directly
+   */
+  private updateLearningStatus(personaId: string, isLearning: boolean, domain?: string): void {
+    if (!isLearning) {
+      this.learningStatuses.delete(personaId);
+    } else {
+      this.learningStatuses.set(personaId, {
+        personaId,
+        isLearning: true,
+        domain,
+        timestamp: Date.now()
+      });
+    }
+
+    // Update DOM directly to show/hide learning indicator
+    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${personaId}"]`) as HTMLElement;
+    if (userElement) {
+      if (isLearning) {
+        userElement.dataset.learning = 'true';
+      } else {
+        delete userElement.dataset.learning;
+      }
+
+      // Update learning emoji if present
+      const learningEmojiElement = userElement.querySelector('.user-learning-status');
+      if (learningEmojiElement) {
+        learningEmojiElement.textContent = isLearning ? '🧬' : '';
+      }
+    }
   }
 
   /**
@@ -208,6 +272,8 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
 
       const speciality = user.speciality; // UserEntity getter
       const aiStatusEmoji = this.getStatusEmoji(user.id);
+      const learningState = this.learningStatuses.get(user.id);
+      const learningEmoji = learningState?.isLearning ? '🧬' : '';
 
       // Format last active timestamp
       const lastActive = user.lastActiveAt ? this.formatTimestamp(user.lastActiveAt) : null;
@@ -226,12 +292,18 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
         userElement.dataset.aiStatus = aiStatus.currentPhase;
       }
 
+      // Set learning data attribute for learning styling
+      if (learningState?.isLearning) {
+        userElement.dataset.learning = 'true';
+      }
+
       userElement.innerHTML = `
         <span class="user-avatar">${avatar}</span>
         <div class="user-info">
           <div class="user-name-row">
             <span class="user-name">${displayName}</span>
             ${aiStatusEmoji ? `<span class="user-ai-status" title="AI Status">${aiStatusEmoji}</span>` : ''}
+            ${learningEmoji ? `<span class="user-learning-status" title="Learning: ${learningState?.domain ?? 'training'}">${learningEmoji}</span>` : ''}
           </div>
           <div class="user-meta">
             <span class="user-type-badge">${typeBadge}</span>
