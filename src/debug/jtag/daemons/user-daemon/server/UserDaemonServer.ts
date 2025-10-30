@@ -23,12 +23,24 @@ import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientS
 import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
 
 export class UserDaemonServer extends UserDaemon {
+  private static instance: UserDaemonServer | null = null;
+
   private monitoringInterval?: ReturnType<typeof setInterval>;
   private reconciliationInterval?: ReturnType<typeof setInterval>;
   private unsubscribeFunctions: (() => void)[] = [];
 
+  /**
+   * Get singleton instance (for genome commands to access PersonaUsers)
+   */
+  public static getInstance(): UserDaemonServer | null {
+    return UserDaemonServer.instance;
+  }
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Store singleton instance
+    UserDaemonServer.instance = this;
 
     // Initialize AI decision logger for persona decision-making
     AIDecisionLogger.initialize('00000000-0000-0000-0000-000000000000'); // System session ID

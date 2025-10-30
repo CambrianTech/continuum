@@ -24,6 +24,12 @@ export type FeedbackType =
  */
 export interface GenomeCaptureFeedbackParams extends CommandParams {
   /**
+   * Interaction ID to attach feedback to (optional)
+   * If not provided, will find most recent interaction for targetRole in domain
+   */
+  interactionId?: string;
+
+  /**
    * Who is receiving this feedback
    */
   targetRole: string;

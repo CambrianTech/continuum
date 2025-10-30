@@ -226,6 +226,27 @@ export class TrainingDataAccumulator {
   }
 
   /**
+   * Find most recent interaction for a roleId in a domain
+   * Used by genome/capture-feedback to attach feedback to interactions
+   */
+  findMostRecentInteraction(domain: string, roleId: string): TrainingExample | null {
+    const buffer = this.domainBuffers.get(domain);
+    if (!buffer || buffer.length === 0) {
+      return null;
+    }
+
+    // Find most recent interaction from this roleId
+    // Buffer is chronological, so iterate backwards
+    for (let i = buffer.length - 1; i >= 0; i--) {
+      if (buffer[i].roleId === roleId) {
+        return buffer[i];
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Clear all buffers (for testing)
    */
   clearAll(): void {

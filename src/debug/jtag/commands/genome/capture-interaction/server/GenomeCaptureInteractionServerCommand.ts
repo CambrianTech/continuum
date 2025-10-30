@@ -13,8 +13,9 @@ import type {
   GenomeCaptureInteractionParams,
   GenomeCaptureInteractionResult
 } from '../shared/GenomeCaptureInteractionTypes';
-import { v4 as uuidv4 } from 'uuid';
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { UserDaemonServer } from '../../../../daemons/user-daemon/server/UserDaemonServer';
+import { PersonaUser } from '../../../../system/user/server/PersonaUser';
+import type { InteractionCapture } from '../../../../system/user/server/modules/TrainingDataAccumulator';
 
 export class GenomeCaptureInteractionServerCommand extends CommandBase<
   GenomeCaptureInteractionParams,
@@ -34,38 +35,67 @@ export class GenomeCaptureInteractionServerCommand extends CommandBase<
     console.log(`   Output length: ${captureParams.output.length}`);
 
     try {
-      // Get PersonaUser's training accumulator
-      // TODO: Access PersonaUser instance and its TrainingDataAccumulator
-      // For now, we'll store in a temporary in-memory structure
+      // Get UserDaemon singleton
+      const userDaemon = UserDaemonServer.getInstance();
+      if (!userDaemon) {
+        return transformPayload(params, {
+          success: false,
+          error: 'UserDaemon not initialized'
+        });
+      }
 
-      const exampleId = uuidv4() as UUID;
+      // Get PersonaUser instance (if personaId provided)
+      const personaId = captureParams.personaId;
+      if (!personaId) {
+        // No persona specified - just log and return success
+        console.log(`ℹ️ No personaId specified, interaction not captured`);
+        return transformPayload(params, {
+          success: true,
+          capture: {
+            exampleId: 'no-persona',
+            domain: captureParams.domain,
+            roleId: captureParams.roleId,
+            bufferSize: 0,
+            readyForTraining: false
+          }
+        });
+      }
 
-      // TODO: Replace with actual PersonaUser.trainingAccumulator.captureInteraction()
-      // This is a placeholder implementation
-      const capture = {
-        exampleId,
+      const baseUser = userDaemon.getPersonaUser(personaId);
+      if (!baseUser || !(baseUser instanceof PersonaUser)) {
+        return transformPayload(params, {
+          success: false,
+          error: `PersonaUser not found: ${personaId}`
+        });
+      }
+
+      const personaUser = baseUser as PersonaUser;
+
+      // Capture interaction in TrainingDataAccumulator
+      const capture: InteractionCapture = {
         roleId: captureParams.roleId,
+        personaId: captureParams.personaId,
         domain: captureParams.domain,
-        loraAdapter: captureParams.loraAdapter ?? `${captureParams.domain}-base`,
         input: captureParams.input,
         output: captureParams.output,
-        thoughtStream: captureParams.thoughtStream,
-        metadata: {
+        expectedOutput: captureParams.expectedOutput,
+        contextMetadata: {
           ...captureParams.metadata,
+          loraAdapter: captureParams.loraAdapter,
+          thoughtStream: captureParams.thoughtStream,
           capturedAt: new Date().toISOString()
         }
       };
 
-      // Store capture (temporary - should go to PersonaUser's accumulator)
-      console.log(`📝 Captured interaction ${exampleId.slice(0, 8)}... for ${captureParams.domain}`);
+      const exampleId = await personaUser.trainingAccumulator.captureInteraction(capture);
 
-      // TODO: Get actual buffer size from TrainingDataAccumulator
-      const bufferSize = 1; // Placeholder
-      const batchThreshold = 10;
-      const readyForTraining = bufferSize >= batchThreshold;
+      // Get buffer stats
+      const bufferSize = personaUser.trainingAccumulator.getBufferSize(captureParams.domain);
+      const batchThreshold = personaUser.trainingAccumulator.getBatchThreshold(captureParams.domain);
+      const readyForTraining = personaUser.trainingAccumulator.shouldMicroTune(captureParams.domain);
 
       if (readyForTraining) {
-        console.log(`✅ Buffer ready for training (${bufferSize}/${batchThreshold} examples)`);
+        console.log(`✅ ${personaUser.displayName}: Buffer ready for training (${bufferSize}/${batchThreshold} examples)`);
       }
 
       return transformPayload(params, {
