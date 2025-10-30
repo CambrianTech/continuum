@@ -55,7 +55,8 @@ export const COLLECTIONS = {
   ROOMS: 'rooms',
   CHAT_MESSAGES: 'chat_messages',
   ARTIFACTS: 'artifacts',
-  SESSIONS: 'sessions'
+  SESSIONS: 'sessions',
+  TASKS: 'tasks'
 } as const;
 
 export type CollectionName = typeof COLLECTIONS[keyof typeof COLLECTIONS];
