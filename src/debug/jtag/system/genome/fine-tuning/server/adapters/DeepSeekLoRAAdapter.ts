@@ -16,12 +16,16 @@
  */
 
 import { BaseLoRATrainer } from '../../shared/BaseLoRATrainer';
+import { TrainingDatasetBuilder } from '../TrainingDatasetBuilder';
 import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
   FineTuningStrategy
 } from '../../shared/FineTuningTypes';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 /**
  * DeepSeek LoRA Adapter - Remote API training with DeepSeek
@@ -35,15 +39,10 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
   /**
    * Check if DeepSeek supports fine-tuning
    *
-   * MVP: Returns false (not implemented yet)
-   * Phase 7.1+: Check if API key configured
+   * Phase 7.1: Check if API key configured
    */
   supportsFineTuning(): boolean {
-    // MVP: Not yet implemented
-    return false;
-
-    // TODO Phase 7.1: Check for DeepSeek API key
-    // return !!process.env.DEEPSEEK_API_KEY;
+    return !!process.env.DEEPSEEK_API_KEY;
   }
 
   /**
@@ -59,6 +58,9 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
    */
   getFineTuningCapabilities(): FineTuningCapabilities {
     return {
+      supportsFineTuning: this.supportsFineTuning(),
+      strategy: this.getFineTuningStrategy(),
+
       // LoRA parameters (typically fixed by provider)
       minRank: 8,
       maxRank: 64,

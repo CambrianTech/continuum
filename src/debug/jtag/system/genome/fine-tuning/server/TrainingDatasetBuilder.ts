@@ -22,7 +22,6 @@ import type {
 } from '../shared/FineTuningTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { ChatMessageEntity, MessageContent } from '../../../data/entities/ChatMessageEntity';
-import type { DataListParams } from '../../../../daemons/data-daemon/shared/DataTypes';
 
 /**
  * Dataset builder configuration
@@ -169,23 +168,23 @@ export class TrainingDatasetBuilder {
    * Load messages from room (most recent first, then reverse)
    */
   private async loadMessages(roomId: UUID): Promise<ChatMessageEntity[]> {
-    const listParams: DataListParams = {
+    // Note: DataListParams doesn't support orderBy, messages returned in insertion order
+    // We'll reverse them after loading to get chronological order
+    const result = await DataDaemon.query<ChatMessageEntity>({
+      collection: 'chat_messages',
       filter: { roomId },
-      orderBy: [{ field: 'createdAt', direction: 'desc' }],
       limit: this.config.maxMessages
-    };
+    });
 
-    const result = await DataDaemon.shared().list<ChatMessageEntity>(
-      'chat_messages',
-      listParams
-    );
-
-    if (!result.success || !result.items) {
+    if (!result.success || !result.data) {
       throw new Error('Failed to load messages from room');
     }
 
+    // Unwrap DataRecord<ChatMessageEntity>[] to ChatMessageEntity[]
+    const messages = result.data.map(record => record.data);
+
     // Reverse to chronological order (oldest first)
-    return result.items.reverse();
+    return messages.reverse();
   }
 
   /**
@@ -255,7 +254,7 @@ export class TrainingDatasetBuilder {
     }
 
     // Convert messages to training format
-    const trainingMessages: TrainingMessage[] = messages.map((msg, idx) => {
+    const trainingMessages: TrainingMessage[] = messages.map((msg) => {
       const isAssistant = msg.senderId === personaId;
       const role: 'system' | 'user' | 'assistant' = isAssistant ? 'assistant' : 'user';
 

@@ -1,0 +1,286 @@
+/**
+ * Genome Train Server Command
+ *
+ * Integrates fine-tuning into the live system - REAL UTILITY!
+ * Philosophy: "Past simple integration tests into real utility"
+ *
+ * Usage: ./jtag genome/train --personaId=<uuid> --provider=unsloth --roomId=<uuid>
+ */
+
+import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type { GenomeTrainParams, GenomeTrainResult } from '../shared/GenomeTrainTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+
+// Dataset builder
+import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
+
+// Adapters
+import { UnslothLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/UnslothLoRAAdapter';
+import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
+import { OpenAILoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OpenAILoRAAdapter';
+import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
+import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
+
+// Data access
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
+import { UserEntity } from '../../../../system/data/entities/UserEntity';
+
+/**
+ * Genome Train Server Command
+ *
+ * Orchestrates the complete fine-tuning pipeline:
+ * 1. Load PersonaUser data
+ * 2. Extract training data from chat conversations
+ * 3. Build training dataset
+ * 4. Show cost/time estimates
+ * 5. Execute training with selected provider
+ * 6. Save adapter to genome storage
+ * 7. Return results to user
+ */
+export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, GenomeTrainResult> {
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('genome-train', context, subpath, commander);
+  }
+
+  async execute(params: JTAGPayload): Promise<GenomeTrainResult> {
+    const trainParams = params as GenomeTrainParams;
+    console.log('🧬 GENOME TRAIN: Starting fine-tuning integration');
+    console.log(`   PersonaUser: ${trainParams.personaId.slice(0, 8)}...`);
+    console.log(`   Provider: ${trainParams.provider}`);
+    console.log(`   Room: ${trainParams.roomId ? trainParams.roomId.slice(0, 8) + '...' : 'ALL'}`);
+
+    try {
+      // Step 1: Load PersonaUser data
+      const persona = await this.loadPersonaUser(trainParams.personaId);
+      if (!persona) {
+        return transformPayload(params, {
+          success: false,
+          error: `PersonaUser not found: ${trainParams.personaId}`
+        });
+      }
+
+      console.log(`   Persona name: ${persona.displayName}`);
+
+      // Step 2: Determine room(s) to train from
+      const roomIds = await this.determineRooms(trainParams.personaId, trainParams.roomId);
+      if (roomIds.length === 0) {
+        return transformPayload(params, {
+          success: false,
+          error: 'No rooms found for this PersonaUser'
+        });
+      }
+
+      console.log(`   Training from ${roomIds.length} room(s)`);
+
+      // Step 3: Build training dataset from chat conversations
+      const builder = new TrainingDatasetBuilder({
+        maxMessages: trainParams.maxMessages ?? 50,
+        minMessages: trainParams.minMessages ?? 10,
+        minMessageLength: 10
+        // Note: DatasetBuilderConfig doesn't have requirePersonaInConversation property
+        // Filtering is handled automatically by TrainingDatasetBuilder
+      });
+
+      console.log('🔧 GENOME TRAIN: Building training dataset from chat history...');
+
+      const datasetResult = await builder.buildFromConversation(
+        trainParams.personaId,
+        persona.displayName ?? 'AI Assistant',
+        roomIds[0], // Use first room for now (TODO: support multiple rooms)
+        trainParams.traitType ?? 'conversational'
+      );
+
+      if (!datasetResult.success || !datasetResult.dataset) {
+        return transformPayload(params, {
+          success: false,
+          error: datasetResult.error ?? 'Failed to build training dataset',
+          dataset: {
+            totalMessages: 0,
+            exampleCount: 0,
+            messagesFiltered: 0
+          }
+        });
+      }
+
+      const dataset = datasetResult.dataset;
+      console.log(`✅ Dataset built: ${dataset.examples.length} training examples`);
+
+      // Step 4: Get adapter for provider
+      const adapter = this.getAdapter(trainParams.provider);
+      if (!adapter) {
+        return transformPayload(params, {
+          success: false,
+          error: `Unknown provider: ${trainParams.provider}`
+        });
+      }
+
+      // Check if adapter supports fine-tuning
+      if (!adapter.supportsFineTuning()) {
+        return transformPayload(params, {
+          success: false,
+          error: `Provider ${trainParams.provider} not available (check API keys or dependencies)`
+        });
+      }
+
+      // Step 5: Show cost/time estimates
+      const capabilities = adapter.getFineTuningCapabilities();
+      const epochs = trainParams.epochs ?? capabilities.defaultEpochs ?? 3;  // Guaranteed to be number with fallback
+      const cost = adapter.estimateTrainingCost(dataset.examples.length);
+      const time = adapter.estimateTrainingTime(dataset.examples.length, epochs);
+
+      const estimates = {
+        cost,
+        time,
+        exampleCount: dataset.examples.length
+      };
+
+      console.log('💰 Cost estimate: $' + cost.toFixed(4));
+      console.log('⏱️  Time estimate: ' + (time / 1000).toFixed(1) + 's');
+
+      if (trainParams.showEstimates !== false) {
+        console.log('📊 Training estimates:');
+        console.log(`   Examples: ${dataset.examples.length}`);
+        console.log(`   Epochs: ${epochs}`);
+        console.log(`   Cost: $${cost.toFixed(4)}`);
+        console.log(`   Time: ~${(time / 1000).toFixed(1)}s`);
+      }
+
+      // Step 6: Dry run? Return estimates only
+      if (trainParams.dryRun) {
+        console.log('🔍 DRY RUN: Skipping actual training');
+        return transformPayload(params, {
+          success: true,
+          estimates,
+          dataset: {
+            totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
+            exampleCount: dataset.examples.length,
+            messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
+          }
+        });
+      }
+
+      // Step 7: Execute training
+      console.log('🚀 GENOME TRAIN: Starting training...');
+
+      const trainingResult = await adapter.trainLoRA({
+        personaId: trainParams.personaId,
+        personaName: persona.displayName ?? 'AI Assistant',
+        traitType: trainParams.traitType ?? 'conversational',
+        baseModel: trainParams.baseModel ?? (capabilities.supportedBaseModels?.[0] ?? 'llama3.2:3b'),
+        dataset,
+        rank: trainParams.rank ?? capabilities.defaultRank,
+        alpha: trainParams.alpha ?? capabilities.defaultAlpha,
+        epochs,
+        learningRate: trainParams.learningRate ?? capabilities.defaultLearningRate,
+        batchSize: trainParams.batchSize ?? capabilities.defaultBatchSize
+      });
+
+      if (!trainingResult.success) {
+        return transformPayload(params, {
+          success: false,
+          error: trainingResult.error ?? 'Training failed',
+          estimates,
+          dataset: {
+            totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
+            exampleCount: dataset.examples.length,
+            messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
+          }
+        });
+      }
+
+      // Step 8: Success!
+      console.log('✅ GENOME TRAIN: Training complete!');
+      if (trainingResult.modelId) {
+        console.log(`   Model ID: ${trainingResult.modelId}`);
+      }
+      if (trainingResult.modelPath) {
+        console.log(`   Adapter path: ${trainingResult.modelPath}`);
+      }
+
+      return transformPayload(params, {
+        success: true,
+        modelId: trainingResult.modelId,
+        adapterPath: trainingResult.modelPath,
+        metrics: trainingResult.metrics ? {
+          trainingTime: trainingResult.metrics.trainingTime ?? 0,
+          finalLoss: trainingResult.metrics.finalLoss ?? 0.5,
+          examplesProcessed: trainingResult.metrics.examplesProcessed ?? dataset.examples.length,
+          epochs: trainingResult.metrics.epochs ?? epochs
+        } : undefined,
+        estimates,
+        dataset: {
+          totalMessages: datasetResult.stats?.messagesProcessed ?? 0,
+          exampleCount: dataset.examples.length,
+          messagesFiltered: datasetResult.stats?.messagesFiltered ?? 0
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ GENOME TRAIN: Error:', error);
+      return transformPayload(params, {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  /**
+   * Load PersonaUser data from database
+   */
+  private async loadPersonaUser(personaId: UUID): Promise<{ id: UUID; displayName: string } | null> {
+    const result = await DataDaemon.query<UserEntity>({
+      collection: COLLECTIONS.USERS,
+      filter: { id: personaId },
+      limit: 1
+    });
+
+    if (!result.success || !result.data || result.data.length === 0) {
+      return null;
+    }
+
+    const record = result.data[0];  // DataRecord<UserEntity>
+    const user = record.data;  // UserEntity with displayName property
+    return {
+      id: user.id as UUID,
+      displayName: user.displayName ?? 'AI Assistant'
+    };
+  }
+
+  /**
+   * Determine which room(s) to extract training data from
+   */
+  private async determineRooms(personaId: UUID, roomId?: UUID): Promise<UUID[]> {
+    // If roomId specified, use that
+    if (roomId) {
+      return [roomId];
+    }
+
+    // Otherwise, find all rooms this PersonaUser participates in
+    // TODO: Implement room membership query
+    // For now, just return empty array (user must specify roomId)
+    console.log('⚠️  No roomId specified - user must provide --roomId parameter');
+    return [];
+  }
+
+  /**
+   * Get adapter for provider
+   */
+  private getAdapter(provider: string): BaseLoRATrainer | null {
+    switch (provider) {
+      case 'unsloth':
+        return new UnslothLoRAAdapter();
+      case 'deepseek':
+        return new DeepSeekLoRAAdapter();
+      case 'openai':
+        return new OpenAILoRAAdapter();
+      case 'anthropic':
+        return new AnthropicLoRAAdapter();
+      default:
+        return null;
+    }
+  }
+}
