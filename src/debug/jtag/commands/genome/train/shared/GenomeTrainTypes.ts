@@ -28,8 +28,17 @@ export interface GenomeTrainParams extends CommandParams {
   /**
    * Room ID to extract training data from
    * If not provided, uses all rooms the PersonaUser participates in
+   * Mutually exclusive with datasetPath
    */
   roomId?: UUID;
+
+  /**
+   * Path to JSONL dataset file to load directly
+   * If provided, skips chat history extraction
+   * Format: One JSON object per line with {messages: [{role, content}, ...]}
+   * Mutually exclusive with roomId
+   */
+  datasetPath?: string;
 
   /**
    * Trait type to train (default: 'conversational')
