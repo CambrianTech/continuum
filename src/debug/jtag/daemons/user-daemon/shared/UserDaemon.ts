@@ -69,6 +69,14 @@ export abstract class UserDaemon extends DaemonBase {
   protected abstract startMonitoringLoops(): void;
   protected abstract stopMonitoringLoops(): void;
 
+  /**
+   * Get PersonaUser instance by ID (for genome commands)
+   * Returns null if not found or not a PersonaUser
+   */
+  public getPersonaUser(userId: UUID): BaseUser | null {
+    return this.personaClients.get(userId) || null;
+  }
+
   constructor(
     context: JTAGContext,
     router: JTAGRouter

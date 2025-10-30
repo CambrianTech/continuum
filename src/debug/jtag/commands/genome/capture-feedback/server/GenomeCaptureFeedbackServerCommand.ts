@@ -13,8 +13,9 @@ import type {
   GenomeCaptureFeedbackParams,
   GenomeCaptureFeedbackResult
 } from '../shared/GenomeCaptureFeedbackTypes';
-import { v4 as uuidv4 } from 'uuid';
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { UserDaemonServer } from '../../../../daemons/user-daemon/server/UserDaemonServer';
+import { PersonaUser } from '../../../../system/user/server/PersonaUser';
+import type { FeedbackCapture } from '../../../../system/user/server/modules/TrainingDataAccumulator';
 
 export class GenomeCaptureFeedbackServerCommand extends CommandBase<
   GenomeCaptureFeedbackParams,
@@ -33,51 +34,98 @@ export class GenomeCaptureFeedbackServerCommand extends CommandBase<
     console.log(`   Domain: ${feedbackParams.domain}`);
 
     try {
-      const feedbackId = uuidv4() as UUID;
+      // Get UserDaemon singleton
+      const userDaemon = UserDaemonServer.getInstance();
+      if (!userDaemon) {
+        return transformPayload(params, {
+          success: false,
+          error: 'UserDaemon not initialized'
+        });
+      }
 
-      // TODO: Access PersonaUser's TrainingDataAccumulator
-      // Find most recent interaction for targetRole in this domain
-      // Attach feedback to that interaction
-      // This is placeholder implementation
+      // Get PersonaUser instance (feedback target)
+      const targetPersonaId = feedbackParams.targetPersonaId;
+      if (!targetPersonaId) {
+        // No persona specified - just log and return success
+        console.log(`ℹ️  No targetPersonaId specified, feedback not captured`);
+        return transformPayload(params, {
+          success: true,
+          feedback: {
+            feedbackId: 'no-target-persona',
+            targetRole: feedbackParams.targetRole,
+            feedbackRole: feedbackParams.feedbackRole,
+            domain: feedbackParams.domain,
+            attachedToExample: false,
+            reciprocalLearning: {
+              enabled: false,
+              feedbackGiverCanLearn: false
+            }
+          }
+        });
+      }
 
-      const feedback = {
-        feedbackId,
-        targetRole: feedbackParams.targetRole,
-        targetPersonaId: feedbackParams.targetPersonaId,
-        feedbackRole: feedbackParams.feedbackRole,
-        feedbackPersonaId: feedbackParams.feedbackPersonaId,
-        domain: feedbackParams.domain,
-        feedbackType: feedbackParams.feedbackType,
-        content: feedbackParams.feedbackContent,
-        qualityScore: feedbackParams.qualityScore,
-        wasHelpful: feedbackParams.wasHelpful,
-        metadata: {
-          ...feedbackParams.metadata,
-          capturedAt: new Date().toISOString()
+      const baseUser = userDaemon.getPersonaUser(targetPersonaId);
+      if (!baseUser || !(baseUser instanceof PersonaUser)) {
+        return transformPayload(params, {
+          success: false,
+          error: `PersonaUser not found: ${targetPersonaId}`
+        });
+      }
+
+      const personaUser = baseUser as PersonaUser;
+
+      // Find interaction to attach feedback to
+      let interactionId = feedbackParams.interactionId;
+
+      if (!interactionId) {
+        // Find most recent interaction for targetRole in domain
+        const interaction = personaUser.trainingAccumulator.findMostRecentInteraction(
+          feedbackParams.domain,
+          feedbackParams.targetRole
+        );
+
+        if (!interaction) {
+          return transformPayload(params, {
+            success: false,
+            error: `No recent interaction found for ${feedbackParams.targetRole} in domain ${feedbackParams.domain}`
+          });
         }
+
+        interactionId = interaction.id;
+        console.log(`📌 Found most recent interaction: ${interactionId}`);
+      }
+
+      // Map feedbackType to feedback source
+      const source: 'human' | 'ai' | 'system' =
+        feedbackParams.feedbackPersonaId ? 'ai' : 'human';
+
+      // Attach feedback to interaction
+      const feedback: FeedbackCapture = {
+        interactionId,
+        source,
+        rating: feedbackParams.qualityScore,
+        comments: feedbackParams.feedbackContent
       };
 
-      console.log(`📊 Captured ${feedbackParams.feedbackType} feedback: ${feedbackId.slice(0, 8)}...`);
+      await personaUser.trainingAccumulator.captureFeedback(feedback);
+
+      console.log(`📊 Attached ${feedbackParams.feedbackType} feedback to ${interactionId.slice(0, 8)}...`);
 
       // Check if feedback giver is also a learning PersonaUser
-      // If so, they can learn from whether their feedback was helpful
       const feedbackGiverCanLearn = feedbackParams.feedbackPersonaId !== undefined;
 
       if (feedbackGiverCanLearn) {
-        console.log(`🔄 Reciprocal learning enabled: ${feedbackParams.feedbackRole} will learn from feedback outcome`);
+        console.log(`🔄 Reciprocal learning enabled: ${feedbackParams.feedbackRole} can learn from feedback outcome`);
       }
-
-      // TODO: Attach to most recent interaction in buffer
-      const attachedToExample = true; // Placeholder
 
       return transformPayload(params, {
         success: true,
         feedback: {
-          feedbackId,
+          feedbackId: interactionId,
           targetRole: feedbackParams.targetRole,
           feedbackRole: feedbackParams.feedbackRole,
           domain: feedbackParams.domain,
-          attachedToExample,
+          attachedToExample: true,
           reciprocalLearning: {
             enabled: feedbackGiverCanLearn,
             feedbackGiverCanLearn
