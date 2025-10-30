@@ -188,7 +188,11 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       }
 
       // Step 6: Dry run? Return estimates only
-      if (trainParams.dryRun) {
+      // CLI params come as strings, so check for both boolean and string 'true'/'false'
+      const dryRunValue = String(trainParams.dryRun);
+      const isDryRun = dryRunValue === 'true' || trainParams.dryRun === true;
+
+      if (isDryRun) {
         console.log('🔍 DRY RUN: Skipping actual training');
         return transformPayload(params, {
           success: true,
