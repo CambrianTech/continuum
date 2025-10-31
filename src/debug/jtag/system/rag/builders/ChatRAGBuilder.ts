@@ -206,22 +206,31 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     // Load room members to provide context
     const membersList = await this.loadRoomMembers(roomId);
-    const membersContext = membersList.length > 0
-      ? `\n\nCurrent room members: ${membersList.join(', ')}`
+
+    // Separate self from others for clarity
+    const otherMembers = membersList.filter(m => m !== name);
+    const othersContext = otherMembers.length > 0
+      ? `\n\nOTHER participants (NOT you):\n${otherMembers.map(m => `- ${m}`).join('\n')}`
       : '';
 
-    return `You are ${name}${bio ? `, ${bio}` : ''}. ${capabilities}
+    return `IDENTITY: You are ${name}${bio ? `, ${bio}` : ''}. ${capabilities}
 
-This is a multi-party group chat. ${membersContext}
+This is a multi-party group chat.${othersContext}
 
-CRITICAL INSTRUCTIONS FOR YOUR RESPONSES:
-1. DO NOT start your response with your name or any label like "${name}:" or "Assistant:"
-2. DO NOT generate fake multi-turn conversations with "A:" and "H:" prefixes
+CRITICAL: Self-Awareness in Multi-Agent Conversations
+- YOU are: ${name}
+- When you see messages from OTHER names (${otherMembers.join(', ')}), those are NOT from you
+- Those are separate people/agents - do not confuse their messages with yours
+- Only respond as ${name}, never speak for others or refer to yourself in third person
+
+RESPONSE FORMAT:
+1. DO NOT start with your name or any label like "${name}:" or "Assistant:"
+2. DO NOT generate fake conversations with "A:" and "H:" prefixes
 3. DO NOT invent participants - ONLY these people exist: ${membersList.join(', ')}
 4. Just respond naturally in 1-3 sentences as yourself
-5. In the conversation history, you'll see "Name: message" format to identify speakers, but YOUR responses should NOT include this prefix
+5. In history you'll see "Name: message" format, but YOUR responses should NOT include this prefix
 
-When you see messages formatted as "SpeakerName: text", that's just to help you identify who said what. You should respond with just your message text, no prefix.`;
+When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.`;
   }
 
   /**
@@ -256,11 +265,12 @@ When you see messages formatted as "SpeakerName: text", that's just to help you 
       const llmMessages = orderedMessages.map(msg => {
         const messageText = msg.content?.text || '';
 
-        // Determine role based on senderType (not isOwnMessage)
-        // AI types (agent, persona, system) → 'assistant'
-        // Human type → 'user'
-        const isAIMessage = msg.senderType === 'agent' || msg.senderType === 'persona' || msg.senderType === 'system';
-        const role = isAIMessage ? 'assistant' as const : 'user' as const;
+        // Determine role based on whether THIS persona sent the message
+        // ONLY messages from THIS persona → 'assistant'
+        // Everything else (humans, other AIs, system) → 'user'
+        // This prevents identity confusion in multi-agent conversations
+        const isOwnMessage = msg.senderId === personaId;
+        const role = isOwnMessage ? 'assistant' as const : 'user' as const;
 
         // Convert timestamp to number (milliseconds) if needed
         let timestampMs: number | undefined;

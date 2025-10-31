@@ -199,7 +199,12 @@ export function calculateMessagePriority(
   let priority = 0.2; // Base priority
 
   // HIGH PRIORITY: Mentioned by name (NEVER neglect)
-  if (message.content.toLowerCase().includes(`@${persona.displayName.toLowerCase()}`)) {
+  // Check both "Groq Lightning" and "groq-lightning" formats
+  const nameWithSpaces = `@${persona.displayName.toLowerCase()}`;
+  const nameWithHyphens = `@${persona.displayName.toLowerCase().replace(/\s+/g, '-')}`;
+  const contentLower = message.content.toLowerCase();
+
+  if (contentLower.includes(nameWithSpaces) || contentLower.includes(nameWithHyphens)) {
     priority += 0.4;
   }
 

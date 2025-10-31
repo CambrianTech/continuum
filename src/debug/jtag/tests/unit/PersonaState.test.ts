@@ -431,6 +431,93 @@ describe('PersonaStateManager', () => {
       expect(stateAfterRest.attention).toBeGreaterThanOrEqual(stateAfterWork.attention);
     });
 
+    it('should recover from deadlock state (exhausted energy)', async () => {
+      // BUG FIX TEST: Phase 7.5.3.2
+      // Before fix: Personas could exhaust energy and never recover (permanent deadlock)
+      // After fix: rest() calls during idle/skip allow gradual energy recovery
+
+      // Step 1: Exhaust energy completely (simulate heavy load)
+      for (let i = 0; i < 20; i++) {
+        await stateManager.recordActivity(10000, 2.0);
+      }
+
+      const exhaustedState = stateManager.getState();
+      expect(exhaustedState.energy).toBe(0); // Completely exhausted
+      expect(exhaustedState.mood).toBe('tired');
+      expect(stateManager.shouldEngage(0.5)).toBe(false); // Can't process messages
+
+      // Step 2: Simulate rest cycles (what serviceInbox now does when skipping messages)
+      // At 7s cadence (tired mode), rest for ~2 minutes = ~17 cycles
+      const cadence = 7000;
+      const cycles = 17;
+
+      for (let i = 0; i < cycles; i++) {
+        await stateManager.rest(cadence);
+      }
+
+      // Step 3: Verify recovery
+      const recoveredState = stateManager.getState();
+
+      // Energy should recover: 0.00005 per ms * 7000ms * 17 cycles = ~0.6
+      expect(recoveredState.energy).toBeGreaterThan(0.2); // Above tired threshold
+      expect(recoveredState.energy).toBeLessThanOrEqual(1.0);
+
+      // Should now be able to engage with messages again
+      expect(stateManager.shouldEngage(0.6)).toBe(true);
+
+      // Mood should improve (no longer tired if energy > 0.3)
+      if (recoveredState.energy >= 0.3) {
+        expect(recoveredState.mood).not.toBe('tired');
+      }
+    });
+
+    it('should gradually recover energy during rest cycles', async () => {
+      // Test incremental recovery (what happens in serviceInbox loop)
+
+      // Deplete to ~0.10 (like Groq Lightning was stuck at)
+      // energyDepletionRate = 0.0001 per ms
+      // 10000ms activity * 0.0001 * complexity = energy loss
+      // Start at 1.0, need to lose 0.9 to get to 0.1
+      // 10000ms * 0.0001 * 2.0 = 0.002 per cycle
+      // Need ~450 cycles... that's too many
+      // Better: Just set energy directly for this test
+      stateManager['state'].energy = 0.10;
+      stateManager['state'].mood = 'tired';
+
+      const initial = stateManager.getState();
+      expect(initial.energy).toBe(0.10);
+      expect(initial.mood).toBe('tired');
+
+      // Rest for 5 cycles (simulate 5 polling iterations at 7s each)
+      // energyRecoveryRate = 0.00005 per ms
+      // 7000ms * 0.00005 = 0.35 per cycle (huge!)
+      // After 1 cycle: 0.10 + 0.35 = 0.45
+      // After 2 cycles: 0.45 + 0.35 = 0.80
+      // After 3 cycles: 0.80 + 0.35 = 1.0 (capped!)
+      // So we'll only see 3 increases before capping
+
+      const energyLevels: number[] = [initial.energy];
+
+      for (let i = 0; i < 5; i++) {
+        await stateManager.rest(7000);
+        energyLevels.push(stateManager.getState().energy);
+      }
+
+      // Energy should increase monotonically UNTIL it caps at 1.0
+      // After capping, it stays at 1.0 (not greater than previous)
+      // So we check: each level is >= previous (allows for capping)
+      for (let i = 1; i < energyLevels.length; i++) {
+        expect(energyLevels[i]).toBeGreaterThanOrEqual(energyLevels[i - 1]);
+      }
+
+      // Final energy should be noticeably higher than initial
+      const final = stateManager.getState();
+      expect(final.energy).toBeGreaterThan(initial.energy + 0.10);
+
+      // Should eventually cap at 1.0
+      expect(final.energy).toBeLessThanOrEqual(1.0);
+    });
+
     it('should transition through moods realistically', async () => {
       // Start idle
       expect(stateManager.getState().mood).toBe('idle');

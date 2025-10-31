@@ -950,13 +950,19 @@ export class PersonaUser extends AIUser {
 
       // CRITICAL: Identity reminder at END of context (research shows this prevents "prompt drift")
       // LLMs have recency bias - instructions at the end have MORE influence than at beginning
-      // This prevents the persona from copying the "Name: message" format or inventing fake participants
       const now = new Date();
       const currentTime = `${now.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
 
       messages.push({
         role: 'system',
-        content: `IDENTITY REMINDER: You are ${this.displayName}. Respond naturally with JUST your message - NO name prefix, NO "A:" or "H:" labels, NO fake conversations. The room has ONLY these people: ${fullRAGContext.identity.systemPrompt.match(/Current room members: ([^\n]+)/)?.[1] || 'unknown members'}.
+        content: `You are ${this.displayName}.
+
+In the conversation above:
+- Messages with role='assistant' are YOUR past messages
+- Messages with role='user' are from everyone else (humans and other AIs)
+- Names are shown in the format "[HH:MM] Name: message"
+
+Respond naturally with JUST your message - NO name prefix, NO labels.
 
 CURRENT TIME: ${currentTime}
 
