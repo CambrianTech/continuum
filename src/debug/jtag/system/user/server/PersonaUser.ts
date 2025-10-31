@@ -2140,7 +2140,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   private async serviceInbox(): Promise<void> {
     // Check if inbox has messages
     if (this.inbox.getSize() === 0) {
-      // No messages - check if cadence should adjust due to rest/recovery
+      // No messages - REST to recover energy
+      const cadence = this.personaState.getCadence();
+      await this.personaState.rest(cadence); // Rest for one polling cycle
+      console.log(`💤 ${this.displayName}: Resting (no messages) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
       this.adjustCadence();
       return;
     }
@@ -2156,7 +2159,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     // Check if we should engage with this message based on mood threshold
     if (!this.personaState.shouldEngage(message.priority)) {
       console.log(`⏭️ ${this.displayName}: Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood})`);
-      // Leave in inbox - threshold might lower later
+      // REST while skipping messages to recover energy
+      const cadence = this.personaState.getCadence();
+      await this.personaState.rest(cadence); // Rest for one polling cycle
+      console.log(`💤 ${this.displayName}: Resting (skipped message) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
+      // Leave in inbox - threshold might lower as energy recovers
       return;
     }
 
