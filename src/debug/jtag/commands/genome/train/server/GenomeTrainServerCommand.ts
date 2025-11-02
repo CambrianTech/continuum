@@ -18,7 +18,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
 
 // Adapters
-import { UnslothLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/UnslothLoRAAdapter';
+import { PEFTLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/PEFTLoRAAdapter';
 import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
 import { OpenAILoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OpenAILoRAAdapter';
 import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
@@ -373,8 +373,9 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
    */
   private getAdapter(provider: string): BaseLoRATrainer | null {
     switch (provider) {
-      case 'unsloth':
-        return new UnslothLoRAAdapter();
+      case 'peft':
+      case 'unsloth': // Legacy alias
+        return new PEFTLoRAAdapter();
       case 'deepseek':
         return new DeepSeekLoRAAdapter();
       case 'openai':
