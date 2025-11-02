@@ -345,8 +345,10 @@ async function main() {
     // Execute command with command-specific timeout
     try {
       // AI commands need longer timeout due to queue + generation time
+      // Genome training commands need even longer (training can take minutes)
       const isAICommand = command.startsWith('ai/');
-      const timeoutMs = isAICommand ? 60000 : 10000; // 60s for AI, 10s for others
+      const isGenomeCommand = command.startsWith('genome/');
+      const timeoutMs = isGenomeCommand ? 300000 : isAICommand ? 60000 : 10000; // 5min for genome, 60s for AI, 10s for others
       const timeoutSeconds = timeoutMs / 1000;
 
       const commandTimeout = new Promise((_, reject) =>
