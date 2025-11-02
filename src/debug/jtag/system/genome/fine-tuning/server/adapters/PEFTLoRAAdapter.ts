@@ -93,13 +93,14 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       // Performance (standard PyTorch/PEFT)
       estimatedTrainingTime: 25, // 25ms per example per epoch (GPU estimate)
 
-      // Model support (PEFT supports latest models)
+      // Model support (PEFT supports any HuggingFace transformers model)
+      // Listed models are verified to work on M1 MacBook Air (8GB RAM)
       supportedBaseModels: [
-        'unsloth/Llama-4-8b',
-        'unsloth/DeepSeek-R1-7b',
-        'unsloth/Qwen3-7b',
-        'unsloth/Gemma-3-8b',
-        'unsloth/Phi-4'
+        'TinyLlama/TinyLlama-1.1B-Chat-v1.0',  // 1.1B - Perfect for M1 testing
+        'microsoft/phi-2',                       // 2.7B - Fast, quality
+        'meta-llama/Llama-2-7b-chat-hf',        // 7B - Requires auth
+        'mistralai/Mistral-7B-v0.1',            // 7B - Open, no auth
+        'HuggingFaceH4/zephyr-7b-beta'          // 7B - Instruct-tuned
       ],
 
       // Requirements
