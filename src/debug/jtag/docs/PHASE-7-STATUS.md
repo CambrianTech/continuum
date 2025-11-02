@@ -1,7 +1,8 @@
 # Phase 7.1 Status Update - PEFT Adapter Implementation
 
 **Date**: 2025-11-02
-**Current Phase**: 7.1 COMPLETE ✅, Moving to 7.2
+**Current Phase**: 7.1 COMPLETE ✅, 7.2 IN PROGRESS
+**Last Updated**: 2025-11-02 22:00 UTC
 
 ## ✅ What We Completed Today
 
@@ -53,26 +54,49 @@
 - **Implication**: If it works on M1 8GB, works everywhere
 - **Future**: MLX for Apple Silicon, Ollama for inference
 
-## 📋 Next Steps (Phase 7.2)
+## 📋 Phase 7.2 Progress
 
-### Immediate Priorities
+### ✅ Completed
+1. **System Verification**
+   - ✅ npm start successful (deployment verified)
+   - ✅ System fully operational (74 commands registered)
+   - ✅ Database seeded with personas and rooms
+   - ✅ Integration test passed in Phase 7.1
 
-1. **Test genome/train command with real data**
-   - Get room IDs and persona IDs
-   - Run actual training
-   - Verify adapter loads into PersonaUser
+### ⚠️ Known Issue: JTAG CLI Timeout
+**Problem**: `./jtag genome/train` times out after 10 seconds (hardcoded)
+**Impact**: Cannot run training via CLI (training takes ~10-15s)
+**Workaround**: Training works via TypeScript API (test-integration.ts proves this)
+**Solution Needed**: Increase JTAG command timeout for long-running operations
 
-2. **Visual Feedback**
+**Evidence**:
+```bash
+./jtag genome/train --personaId="5a8316a5-e00c-441c-8601-15e61136f834" \
+  --datasetPath="../../../.continuum/genome/python/test-training-dataset.jsonl" \
+  --provider="peft" --rank=8 --epochs=1
+# Returns: "Command 'genome/train' timed out after 10 seconds"
+```
+
+**Core Functionality Status**: ✅ WORKING (proven by integration test)
+**CLI Access**: 🚧 BLOCKED (timeout issue)
+
+### 🚧 In Progress
+1. **Increase JTAG command timeout** - Required before testing with real chat data
+2. **Ensure PersonaUser can load trained adapters** - Waiting for training run to complete
+
+### 📋 Remaining Priorities
+
+1. **Visual Feedback**
    - Training completion notifications
    - Progress indicators
    - "Your AI just got smarter!" messages
 
-3. **Hardware Detection Utility**
+2. **Hardware Detection Utility**
    - Detect platform, GPU, RAM
    - Test which adapters work
    - Store in checkpoint
 
-4. **Bootstrap Persona Implementation**
+3. **Bootstrap Persona Implementation**
    - Create persona entity
    - Hardware detection trait
    - Recommendation algorithm
@@ -145,11 +169,13 @@ User removes upgrade → Gracefully falls back
 
 ## 🚨 Important Notes
 
-- **PEFT training time**: ~10s for 3 examples (acceptable for MVP)
+- **PEFT training time**: ~10-15s for 3 examples (acceptable for MVP)
 - **Python env size**: ~25GB (one-time bootstrap)
 - **TypeScript compilation**: All passing ✅
 - **Integration tests**: All passing ✅
 - **npm start**: Deployed successfully ✅
+- **JTAG CLI timeout**: 10s hardcoded limit blocks training commands
+- **Training functionality**: Core works (TypeScript API), CLI needs timeout fix
 
 ## 🔮 Vision Alignment
 
