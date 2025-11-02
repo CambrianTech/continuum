@@ -19,6 +19,7 @@ import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/se
 
 // Adapters
 import { PEFTLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/PEFTLoRAAdapter';
+import { OllamaLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OllamaLoRAAdapter';
 import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
 import { OpenAILoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OpenAILoRAAdapter';
 import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
@@ -376,6 +377,9 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       case 'peft':
       case 'unsloth': // Legacy alias
         return new PEFTLoRAAdapter();
+      case 'ollama':
+      case 'llama-cpp': // Alias
+        return new OllamaLoRAAdapter();
       case 'deepseek':
         return new DeepSeekLoRAAdapter();
       case 'openai':
