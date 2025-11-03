@@ -99,6 +99,60 @@ const result = await this.executeCommand<DataListResult<UserEntity>>('data/list'
 
 ---
 
+## 📁 PATH ALIASES (New! Use These Going Forward)
+
+**TypeScript path aliases are now configured** to eliminate relative import hell (`../../../../`).
+
+### Available Aliases:
+
+```typescript
+// ❌ OLD WAY (still works, but deprecated)
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { Commands } from '../../../system/core/shared/Commands';
+
+// ✅ NEW WAY (preferred)
+import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { Commands } from '@system/core/shared/Commands';
+```
+
+### All Available Aliases:
+
+| Alias | Maps To | Use For |
+|-------|---------|---------|
+| `@commands/*` | `commands/*` | Command implementations |
+| `@daemons/*` | `daemons/*` | Daemon services |
+| `@system/*` | `system/*` | Core system modules |
+| `@widgets/*` | `widgets/*` | Widget components |
+| `@shared/*` | `shared/*` | Shared utilities |
+| `@types/*` | `types/*` | Type definitions |
+| `@browser/*` | `browser/*` | Browser-specific code |
+| `@server/*` | `server/*` | Server-specific code |
+
+**Migration Strategy:**
+- **New code**: Always use path aliases
+- **Existing code**: Migrate incrementally (not urgent)
+- **Both styles work**: Old relative imports still function
+
+**Examples:**
+```typescript
+// Commands
+import { PingCommand } from '@commands/ping/shared/PingTypes';
+
+// Daemons
+import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { AIProviderDaemon } from '@daemons/ai-provider-daemon/shared/AIProviderDaemon';
+
+// System
+import { Commands } from '@system/core/shared/Commands';
+import { Events } from '@system/core/shared/Events';
+import { BaseUser } from '@system/user/shared/BaseUser';
+
+// Types
+import type { UUID } from '@types/CrossPlatformUUID';
+```
+
+---
+
 ## 🏛️ USER ARCHITECTURE
 
 ```
