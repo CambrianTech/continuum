@@ -44,7 +44,9 @@
     "daemons/**/*.ts",
     "commands/**/*.ts",
     "widgets/**/*.ts",
-    "tests/workers/**/*.ts"
+    "tests/workers/**/*.ts",
+    "test-path-aliases.ts",
+    "test-path-aliases-runtime.ts"
   ],
   "exclude": [
     "node_modules",
