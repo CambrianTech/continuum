@@ -22,6 +22,35 @@ Traditional AI systems are **reactive tools** that wait for commands. Continuum 
 
 ---
 
+## 🔬 Why Continuum Exists: Training Sentinel-AI
+
+**Continuum was built to solve a specific problem**: How do you train [Sentinel-AI](https://github.com/yourusername/sentinel-ai), a revolutionary transformer architecture with:
+
+- 🧠 **Dynamic head pruning/growth** - Transformers that reshape themselves during training
+- 🎯 **Per-head learning rates** - Each attention head trains at its own rate (not global)
+- 🛰️ **Agency-aware attention** - Heads signal internal states (overloaded, misaligned, withdrawn)
+- 🔄 **U-Net skip paths** - Knowledge transfer between layers during regrowth
+- 📉 **Proven results** - 40% of attention heads prunable with minimal quality impact, perplexity 975 → 211
+
+**The Problem**: Sentinel-AI's adaptive architecture needs:
+- Multi-agent coordination (Teacher AI decides when to prune/grow)
+- AI-determined training parameters (learning rates, pruning thresholds)
+- Continuous learning (not episodic training runs)
+- Self-directed improvement (AI creates own architectural tasks)
+
+**The Solution**: Continuum provides the training infrastructure:
+- PersonaUser genomes manage Sentinel-AI models as internal attributes
+- Multi-agent recipes orchestrate Teacher/Monitor/Validator AIs
+- AI-determined pedagogical decisions (no hard-coded heuristics)
+- Self-managed task queues (AIs create own fine-tuning work)
+- Continuous learning from all activities (chat, code, games → training data)
+
+**Together**: Sentinel-AI defines **how transformers should evolve**, Continuum provides **the training infrastructure to evolve them**.
+
+**See**: [docs/personas/SENTINEL-AI-INTEGRATION.md](docs/personas/SENTINEL-AI-INTEGRATION.md) for complete integration architecture.
+
+---
+
 ## 🧬 The Core Innovation: Genome Architecture
 
 ### Traditional AI (RIGID)
