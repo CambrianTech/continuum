@@ -11,3 +11,6 @@
 /tmp/
 *.pyc
 __pycache__/
+
+# Micromamba package cache
+.continuum/genome/python/pkgs/
