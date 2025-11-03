@@ -622,11 +622,13 @@ interface GenomicContribution {
    - Community-driven evolution (best adapters rise to top via ratings)
    - Network effects: system gets smarter as more people use it
 
-3. **Vector Similarity, Not Keyword Search**
-   - Don't search for "biology" (keyword)
+3. **Vector Similarity, Not Keyword Search** (The Elegant Insight)
+   - Don't search for "biology" (keyword) or "rust-expertise" (explicit trait)
    - Search by **inherent capability vector** (semantic similarity)
-   - Find "close enough" matches even if differently named
+   - **Embeddings already capture phenotypes naturally** - no explicit classification needed!
+   - Find "close enough" matches even if differently named or categorized
    - Uses HNSW indexing (sub-100ms similarity search)
+   - **The tokens/embeddings you already have serve this purpose perfectly**
 
 4. **Distributed Evolution**
    - No central authority decides "good" vs "bad" genomes
@@ -638,28 +640,39 @@ interface GenomicContribution {
    - Collective learning across entire Continuum network
    - Global community genome database (like npm, but for AI skills)
 
-**The Vision:**
+**The Vision (Leveraging Existing Embeddings):**
 
 ```typescript
 // Instance A (Research Lab):
 // Train "advanced genomics analysis" adapter
 await trainLoRA('genomics-analysis', researchDataset);
+
+// Generate embedding from training data (already done for fine-tuning!)
+const embedding = await generateEmbedding(researchDataset);
+
 await genome.publishToP2P('genomics-analysis', {
-  embedding: capabilityVector,
+  embedding,  // Reuse existing fine-tuning embeddings!
   performanceMetrics: { accuracy: 0.95 },
   license: 'MIT'
 });
 
 // Instance B (Hospital, minutes later):
-// Discover and use it instantly
+// Discover "close enough" adapter via semantic similarity
+// Note: Hospital asks for "dna-sequencing" but finds "genomics-analysis"!
+const myNeed = await generateEmbedding('I need help with dna sequencing');
+
 const found = await genome.searchP2P({
-  capability: 'genomics analysis',
+  queryEmbedding: myNeed,
   similarityThreshold: 0.85
 });
-// Finds Instance A's adapter via vector similarity
+
+// Embedding similarity discovers it's "close enough"!
+// cosine_similarity(dna-sequencing, genomics-analysis) = 0.92 ✅
 await genome.downloadAndActivate(found[0].layerId);
-// Now Hospital's AI has Research Lab's expertise!
+// Hospital's AI now has Research Lab's expertise - no explicit trait match needed!
 ```
+
+**The Key Insight**: You're already generating embeddings for fine-tuning. Just **reuse them** for P2P discovery! No need for separate trait/phenotype classification systems - the embeddings naturally capture semantic capability similarity.
 
 **Why This Changes Everything:**
 
