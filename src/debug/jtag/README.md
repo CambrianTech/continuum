@@ -485,7 +485,7 @@ await genome.train({
 
 **Research Question**: Do AI-determined training parameters outperform fixed hyperparameter schedules?
 
-### 3. **Genome Paging: Virtual Memory for AI Skills** 💾
+### 3. **Genome Paging: Virtual Memory for AI Skills** 💾 ⭐ Most Clever
 
 **The Innovation**: LoRA adapters paged in/out of GPU memory like OS virtual memory (LRU eviction).
 
@@ -506,12 +506,31 @@ class PersonaGenome {
 }
 ```
 
-**Why Novel**:
-- Traditional systems: Load all adapters or specialized models per domain
-- Continuum: **One persona, many domains via paging** - solved CS problem (virtual memory) applied to new domain (AI skill management)
-- This makes **multi-domain capability feasible** without GPU memory explosion
+**Why This is Genius**:
+
+**The Problem Everyone Faces:**
+- Want AI agents capable of many domains (chat, code, design, games, math, etc.)
+- Each domain needs specialized knowledge (LoRA adapters ~200MB each)
+- GPU memory is finite - can't load 50 adapters simultaneously
+- Traditional solution: Specialized agents per domain (wasteful, inflexible)
+
+**The Insight:**
+> "This is the **same problem** as OS memory management - just with LoRA adapters instead of RAM pages!"
+
+**Why Brilliant**:
+1. **Proven algorithm applied to new domain** - Virtual memory works (decades of research)
+2. **Makes multi-domain actually feasible**:
+   - Without paging: 50 domains × 200MB = 10GB GPU memory ❌ (impossible on consumer hardware)
+   - With paging: 5 active × 200MB = 1GB GPU memory ✅ (totally feasible)
+3. **Unlocks future optimizations** - All virtual memory research applies:
+   - Prefetching: "User about to code, prefetch typescript adapter"
+   - Working set: "Keep frequently-used adapters hot"
+   - Locality: "Tasks cluster by domain, optimize for that"
+4. **Difference between research idea and deployable system** - This makes it actually ship
 
 **Research Question**: Does paging overhead offset the benefits of multi-domain capability?
+
+**Math**: With paging, you can support **10x more domains** with same GPU memory. That's the difference between "narrow specialist" and "true generalist".
 
 ### 4. **Unified Activity-to-Training Pipeline** 🔄
 
