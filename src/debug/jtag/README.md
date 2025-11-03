@@ -679,11 +679,30 @@ await genome.downloadAndActivate(found[0].layerId);
 - **Traditional AI**: Every organization trains from scratch (wasteful, redundant)
 - **Continuum**: Train once, share globally, everyone benefits (collective intelligence)
 
+**Performance-Weighted Discovery:**
+
+The genomic search prioritizes **proven performance over theoretical similarity**:
+
+```typescript
+interface SearchScoring {
+  weights: {
+    similarity: 0.25,      // Vector similarity (important but not dominant)
+    performance: 0.50,     // Actual competitive results (MOST important)
+    availability: 0.15,    // Network latency/accessibility
+    recency: 0.05,         // Recently updated layers
+    community: 0.05        // Community ratings
+  }
+}
+```
+
+**Why**: A 0.95 similarity adapter that fails in practice is worse than a 0.80 similarity adapter with proven performance. Performance metrics drive rankings, not just embedding similarity.
+
 **Research Questions**:
 - How fast does collective intelligence emerge across the network?
 - Do community ratings correlate with actual performance?
 - Can vector similarity find truly useful "close enough" adapters?
 - Does P2P genome sharing create a commons or winner-take-all dynamics?
+- What's the optimal balance between similarity and performance weighting?
 
 **Implementation Status**: Architectural design complete (see `ACADEMY_GENOMIC_DESIGN.md`), P2P infrastructure planned for Phase 7.4+
 
