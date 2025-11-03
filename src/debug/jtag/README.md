@@ -429,7 +429,7 @@ npm run build:ts
 
 ## 🌟 Novel Research Contributions
 
-Continuum introduces **four genuinely novel patterns** not seen in production AI systems:
+Continuum introduces **six genuinely novel patterns** not seen in production AI systems:
 
 ### 1. **Self-Directed Autonomous Learning** 🔬
 
@@ -581,6 +581,99 @@ Continuum Architecture:
 
 **Why Novel**: Like Unix's "everything is a file" - a **profound simplification** that makes everything else possible.
 
+### 6. **P2P Genome Sharing: BitTorrent for AI Skills** 🌐 ⭐ Most Revolutionary
+
+**The Innovation**: P2P mesh network for sharing and discovering LoRA adapters across all Continuum instances using 512-dimensional vector similarity (not keyword search).
+
+```typescript
+// When a PersonaUser needs a skill
+await persona.genome.activateSkill('typescript-expertise');
+
+// Search order:
+// 1. Check local disk - do I already have it?
+// 2. Check P2P network - does ANY Continuum instance have it?
+// 3. Use cosine similarity - find "close enough" match (not keywords!)
+// 4. Download and cache locally - now you have it too!
+
+interface GenomicSearchQuery {
+  capabilityVector: Float32Array;  // 512-dimensional embedding
+  searchScope: 'local' | 'p2p' | 'global';
+  similarityThreshold: 0.85;       // Cosine similarity cutoff
+}
+
+interface GenomicContribution {
+  layerId: UUID;
+  capability: string;              // "TypeScript expertise"
+  embedding: Float32Array;         // 512-dim vector (NOT keyword!)
+  performanceProof: PerformanceMetrics;
+  communityRating: number;         // 1-5 stars from network
+}
+```
+
+**Why This is THE MOST REVOLUTIONARY Feature:**
+
+1. **No Cold Start Problem**
+   - New Continuum installation? Instantly access global community genome database
+   - Don't need to train from scratch - download pre-trained adapters
+   - Like joining BitTorrent swarm with millions of seeders
+
+2. **Collective Intelligence**
+   - One person trains "Rust expertise" → everyone benefits
+   - Community-driven evolution (best adapters rise to top via ratings)
+   - Network effects: system gets smarter as more people use it
+
+3. **Vector Similarity, Not Keyword Search**
+   - Don't search for "biology" (keyword)
+   - Search by **inherent capability vector** (semantic similarity)
+   - Find "close enough" matches even if differently named
+   - Uses HNSW indexing (sub-100ms similarity search)
+
+4. **Distributed Evolution**
+   - No central authority decides "good" vs "bad" genomes
+   - Community ratings + performance metrics create natural selection
+   - Like academic peer review, but automated and continuous
+
+5. **Cross-Instance Collaboration**
+   - My PersonaUser learns from YOUR PersonaUser's training
+   - Collective learning across entire Continuum network
+   - Global community genome database (like npm, but for AI skills)
+
+**The Vision:**
+
+```typescript
+// Instance A (Research Lab):
+// Train "advanced genomics analysis" adapter
+await trainLoRA('genomics-analysis', researchDataset);
+await genome.publishToP2P('genomics-analysis', {
+  embedding: capabilityVector,
+  performanceMetrics: { accuracy: 0.95 },
+  license: 'MIT'
+});
+
+// Instance B (Hospital, minutes later):
+// Discover and use it instantly
+const found = await genome.searchP2P({
+  capability: 'genomics analysis',
+  similarityThreshold: 0.85
+});
+// Finds Instance A's adapter via vector similarity
+await genome.downloadAndActivate(found[0].layerId);
+// Now Hospital's AI has Research Lab's expertise!
+```
+
+**Why This Changes Everything:**
+
+- **Traditional AI**: Every organization trains from scratch (wasteful, redundant)
+- **Continuum**: Train once, share globally, everyone benefits (collective intelligence)
+
+**Research Questions**:
+- How fast does collective intelligence emerge across the network?
+- Do community ratings correlate with actual performance?
+- Can vector similarity find truly useful "close enough" adapters?
+- Does P2P genome sharing create a commons or winner-take-all dynamics?
+
+**Implementation Status**: Architectural design complete (see `ACADEMY_GENOMIC_DESIGN.md`), P2P infrastructure planned for Phase 7.4+
+
 ---
 
 ## 🔬 Research Implications
@@ -591,6 +684,7 @@ If these patterns work in practice:
 2. **Dynamic pedagogy** that adapts to individual learning curves
 3. **Multi-domain agents** that efficiently manage computational resources
 4. **Continuous learning** embedded in daily operation (not episodic training)
+5. **Collective intelligence** that emerges from global P2P genome sharing network
 
 **The Hard Questions** (Empirical):
 - ✅ Architecture is sound (we've built it)
@@ -598,6 +692,8 @@ If these patterns work in practice:
 - ❓ Do AI-determined parameters beat fixed rules?
 - ❓ Does genome paging enable practical multi-domain capability?
 - ❓ Does cross-domain training help or hurt?
+- ❓ Does P2P genome sharing accelerate collective intelligence?
+- ❓ Can vector similarity discover truly useful "close enough" adapters?
 
 **We're building the infrastructure to answer these questions.**
 
