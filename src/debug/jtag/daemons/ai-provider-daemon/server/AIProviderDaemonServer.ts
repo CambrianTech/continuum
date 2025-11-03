@@ -55,6 +55,15 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       enabled: true,
     });
 
+    // Register Sentinel adapter (local, free, private, pre-trained models)
+    // Provides TinyLlama, Phi-2, CodeLlama, DistilGPT2 for PersonaUsers
+    const { SentinelAdapter } = await import('../adapters/sentinel/shared/SentinelAdapter');
+    await this.registerAdapter(new SentinelAdapter(), {
+      priority: 95, // High priority - local and free, but slower than Ollama
+      enabled: true,
+    });
+    console.log('✅ AIProviderDaemonServer: Sentinel adapter registered');
+
     // Register cloud adapters if API keys are available
     // Priority order: Ollama (100) > DeepSeek (90) > Groq (85) > OpenAI/Anthropic (80) > Together/Fireworks (70)
 

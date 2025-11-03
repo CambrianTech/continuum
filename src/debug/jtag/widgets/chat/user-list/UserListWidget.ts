@@ -281,6 +281,19 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       // User type badge - uses UserType from UserEntity (CSS handles uppercase)
       const typeBadge = user.type;
 
+      // Model information for AI personas - show provider and model
+      let modelInfo = '';
+      if (user.type === 'persona' || user.type === 'agent') {
+        // Check modelConfig first (cloud providers like DeepSeek, Groq, Anthropic, etc.)
+        if (user.modelConfig?.provider && user.modelConfig?.model) {
+          modelInfo = `${user.modelConfig.provider}/${user.modelConfig.model}`;
+        }
+        // Fallback to personaConfig.responseModel (local Ollama models)
+        else if (user.personaConfig?.responseModel) {
+          modelInfo = `ollama/${user.personaConfig.responseModel}`;
+        }
+      }
+
       const userElement = globalThis.document.createElement('div');
       userElement.className = `user-item ${statusClass} ${isSelected ? 'selected' : ''}`;
       userElement.dataset.userId = user.id;
@@ -307,6 +320,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
           </div>
           <div class="user-meta">
             <span class="user-type-badge">${typeBadge}</span>
+            ${modelInfo ? `<span class="user-model-info" title="AI Model">${modelInfo}</span>` : ''}
             ${speciality ? `<span class="user-speciality">${speciality}</span>` : ''}
             ${lastActive ? `<span class="user-last-active">${lastActive}</span>` : ''}
           </div>
