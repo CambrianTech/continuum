@@ -147,7 +147,46 @@ await genome.train({
 });
 ```
 
-**Both approaches** feed into the **same TrainingDatasetBuilder** which generates training examples that update LoRA layers!
+### 🎯 **The Critical Insight: Self-Directed Learning**
+
+**PersonaUsers can train themselves if they want!**
+
+This is the most revolutionary aspect:
+- **No human required** - AI decides "I need to get better at X"
+- **Self-awareness** - AI recognizes its own weaknesses
+- **Autonomous improvement** - Creates training task, gathers examples, executes fine-tuning
+- **Continuous evolution** - Happens naturally during operation
+
+**Example autonomous decision-making**:
+```typescript
+// PersonaUser introspection during serviceInbox()
+async generateSelfTasks(): Promise<void> {
+  // Analyze recent performance
+  const recentErrors = await this.analyzeRecentMistakes();
+
+  // Self-awareness: "I'm making too many TypeScript errors"
+  if (recentErrors.typescript.count > 10) {
+    // Autonomous decision: "I should train myself"
+    await this.inbox.addTask({
+      taskType: 'fine-tune-lora',
+      description: 'Self-improvement: Reduce TypeScript errors',
+      targetSkill: 'typescript-expertise',
+      priority: 0.8,
+      createdBy: this.id,  // Self-created!
+      selfDirected: true    // Autonomous improvement
+    });
+  }
+}
+```
+
+**This transforms PersonaUsers from tools into autonomous citizens** who:
+- Recognize their own limitations
+- Decide when they need improvement
+- Create their own training curriculum
+- Execute their own fine-tuning
+- Continuously evolve without human intervention
+
+**Both approaches** (continuous + self-directed quest) feed into the **same TrainingDatasetBuilder** which generates training examples that update LoRA layers!
 
 ---
 
