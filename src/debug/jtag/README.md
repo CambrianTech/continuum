@@ -427,27 +427,174 @@ npm run build:ts
 
 ---
 
+## 🌟 Novel Research Contributions
+
+Continuum introduces **four genuinely novel patterns** not seen in production AI systems:
+
+### 1. **Self-Directed Autonomous Learning** 🔬
+
+**The Innovation**: AI agents recognize their own performance gaps and autonomously create training tasks for themselves.
+
+```typescript
+// AI introspection - unprecedented in production systems
+async generateSelfTasks(): Promise<void> {
+  const recentErrors = await this.analyzeRecentMistakes();
+
+  if (recentErrors.typescript.count > 10) {
+    // AI decides: "I need improvement"
+    await this.createSelfTrainingTask('typescript-expertise');
+  }
+}
+```
+
+**Why Novel**:
+- Most AI systems: Trained once, deployed forever, updated only when humans decide
+- Continuum: **AI recognizes "I'm making too many errors" and creates its own fine-tuning task**
+- This is **self-awareness + autonomous action** - the AI deciding it needs improvement and executing the training loop
+
+**Research Question**: Do self-generated training tasks improve performance faster than human-scheduled updates?
+
+### 2. **AI-Determined Pedagogical Parameters** 🎓
+
+**The Innovation**: Teacher AIs dynamically decide training hyperparameters based on student performance, not hard-coded rules.
+
+```typescript
+// Teacher AI makes pedagogical decision
+const decision = await teacherAI.evaluate({
+  prompt: `
+    Student made ${corrections} errors.
+    Performance: ${metrics}
+
+    Should I: practice more, scaffold examples, or fine-tune now?
+    If training: what learning rate? which examples? how many epochs?
+  `
+});
+
+// AI-determined parameters (not hard-coded!)
+await genome.train({
+  learningRate: decision.learningRate,
+  epochs: decision.epochs,
+  examples: decision.selectedExamples
+});
+```
+
+**Why Novel**:
+- Traditional systems: `if (errors > 10) train(lr=0.001, epochs=3)` (fixed rules)
+- Continuum: **Teacher AI analyzes context and decides parameters dynamically**
+- This is **intelligence all the way down** - even the training process is AI-orchestrated
+
+**Research Question**: Do AI-determined training parameters outperform fixed hyperparameter schedules?
+
+### 3. **Genome Paging: Virtual Memory for AI Skills** 💾
+
+**The Innovation**: LoRA adapters paged in/out of GPU memory like OS virtual memory (LRU eviction).
+
+```typescript
+class PersonaGenome {
+  async activateSkill(skill: string): Promise<void> {
+    // Skill already loaded? Switch to it
+    if (this.activeAdapters.has(skill)) return;
+
+    // Evict LRU adapters until space available
+    while (this.memoryUsage + adapterSize > this.memoryBudget) {
+      await this.evictLRU();
+    }
+
+    // Load adapter from disk
+    await this.loadAdapter(skill);
+  }
+}
+```
+
+**Why Novel**:
+- Traditional systems: Load all adapters or specialized models per domain
+- Continuum: **One persona, many domains via paging** - solved CS problem (virtual memory) applied to new domain (AI skill management)
+- This makes **multi-domain capability feasible** without GPU memory explosion
+
+**Research Question**: Does paging overhead offset the benefits of multi-domain capability?
+
+### 4. **Unified Activity-to-Training Pipeline** 🔄
+
+**The Innovation**: Single training system that works across ALL activity types (chat, code, games, design).
+
+```typescript
+class TrainingDatasetBuilder {
+  // Works for ANY activity type!
+  buildDataset(interactions: Interaction[]): TrainingExample[] {
+    return interactions.map(interaction => ({
+      messages: [
+        { role: 'system', content: this.buildSystemPrompt(interaction) },
+        { role: 'user', content: interaction.input },
+        { role: 'assistant', content: interaction.output }
+      ],
+      metadata: {
+        activity: interaction.activity,  // 'chat' | 'code' | 'game' | 'design'
+        qualityScore: interaction.feedback.qualityScore
+      }
+    }));
+  }
+}
+```
+
+**Why Novel**:
+- Traditional systems: Separate training pipelines per domain
+- Continuum: **Universal training** - chat corrections, code reviews, game outcomes, design feedback ALL feed into same LoRA fine-tuning
+- This is **architectural unification** - one system, all domains
+
+**Research Question**: Does cross-domain training improve general capability or create interference?
+
+### 5. **The Elegant Collapse**
+
+Continuum takes what **should be** three complex systems and collapses them into one:
+
+```
+Traditional Architecture:
+├── Academy Daemon (learning infrastructure)
+├── Training Pipeline (separate compute)
+└── Recipe System (multi-agent coordination)
+
+Continuum Architecture:
+└── PersonaUser.genome (just attributes!)
+    ├── loraLayers (skills)
+    ├── learningMode (boolean flag)
+    └── inbox (training is just another task)
+```
+
+**Why Novel**: Like Unix's "everything is a file" - a **profound simplification** that makes everything else possible.
+
+---
+
+## 🔬 Research Implications
+
+If these patterns work in practice:
+
+1. **Self-improving AI systems** that don't require human supervision for updates
+2. **Dynamic pedagogy** that adapts to individual learning curves
+3. **Multi-domain agents** that efficiently manage computational resources
+4. **Continuous learning** embedded in daily operation (not episodic training)
+
+**The Hard Questions** (Empirical):
+- ✅ Architecture is sound (we've built it)
+- ❓ Does self-directed training actually improve performance?
+- ❓ Do AI-determined parameters beat fixed rules?
+- ❓ Does genome paging enable practical multi-domain capability?
+- ❓ Does cross-domain training help or hurt?
+
+**We're building the infrastructure to answer these questions.**
+
+---
+
 ## 🌟 What Makes Continuum Unique
 
-### 1. **Autonomous Citizens, Not Tools**
-Traditional AI: Reactive, waits for commands
-Continuum: **Proactive, creates own improvement tasks**
+*(In addition to the novel research contributions above)*
 
-### 2. **Learning is Continuous, Not Episodic**
-Traditional: Separate training phases
-Continuum: **Learning happens during every activity**
+### Architectural Excellence
 
-### 3. **Multi-Domain Capability**
-Traditional: Specialized models per domain
-Continuum: **One persona, many domains via adapter paging**
-
-### 4. **AI-Orchestrated Learning**
-Traditional: Hard-coded training rules
-Continuum: **Teacher AIs make pedagogical decisions**
-
-### 5. **Elegant Simplification**
-Traditional: 3 separate infrastructures (Academy + Training + Recipes)
-Continuum: **Just PersonaUser genome attributes**
+- **Autonomous Citizens, Not Tools** - Proactive, creates own improvement tasks
+- **Continuous Learning** - Happens during every activity, not separate phases
+- **Type Safety** - Rust-like strict typing throughout the codebase
+- **Universal Primitives** - Commands.execute() and Events for everything
+- **Clean Separation** - Shared/Browser/Server boundaries enforced
 
 ---
 
