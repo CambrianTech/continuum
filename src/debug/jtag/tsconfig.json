@@ -10,6 +10,16 @@
     "outDir": "./dist",
     "rootDir": "./",
     "baseUrl": "./",
+    "paths": {
+      "@commands/*": ["commands/*"],
+      "@daemons/*": ["daemons/*"],
+      "@system/*": ["system/*"],
+      "@widgets/*": ["widgets/*"],
+      "@shared/*": ["shared/*"],
+      "@types/*": ["types/*"],
+      "@browser/*": ["browser/*"],
+      "@server/*": ["server/*"]
+    },
     "strict": true,
     "noImplicitAny": true,
     "noImplicitReturns": true,
