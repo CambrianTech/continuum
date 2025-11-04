@@ -459,6 +459,7 @@
   flex-shrink: 0;
   margin-left: 8px;
   height: 32px;
+  align-self: flex-end; /* Align to bottom baseline */
 }
 
 .genome-label {
