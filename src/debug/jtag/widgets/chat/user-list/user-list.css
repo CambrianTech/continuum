@@ -131,6 +131,7 @@
   gap: 12px;
   flex-shrink: 0;
   min-height: 56px;
+  position: relative;
 }
 
 .user-item:hover {
@@ -263,8 +264,8 @@
   font-weight: 600;
   color: var(--content-primary);
   overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   flex: 1;
   min-width: 0;
 }
@@ -326,12 +327,15 @@
 }
 
 .user-last-active {
+  position: absolute;
+  top: 8px;
+  right: 56px; /* Genome panel width (48px) + gap (8px) */
   font-size: 10px;
   color: var(--content-secondary);
   opacity: 0.6;
   flex-shrink: 0;
   white-space: nowrap;
-  margin-left: auto;
+  z-index: 1;
 }
 
 /* Hover controls - minimal */
