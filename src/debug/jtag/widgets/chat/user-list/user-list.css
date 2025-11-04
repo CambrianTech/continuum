@@ -296,6 +296,21 @@
   text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
 }
 
+/* Model badge - top right aligned, same style as type badge */
+.user-model-badge {
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.7);
+  background: transparent;
+  padding: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+  font-family: monospace;
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+  margin-left: auto;
+}
+
 .user-model-info {
   display: none;
 }
