@@ -283,14 +283,20 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
 
       // Model information for AI personas - show provider and model
       let modelInfo = '';
+      let modelBadge = '';
       if (user.type === 'persona' || user.type === 'agent') {
         // Check modelConfig first (cloud providers like DeepSeek, Groq, Anthropic, etc.)
         if (user.modelConfig?.provider && user.modelConfig?.model) {
           modelInfo = `${user.modelConfig.provider}/${user.modelConfig.model}`;
+          // Extract short model name for badge (5-8 chars max)
+          modelBadge = user.modelConfig.model.split('-')[0].substring(0, 8).toUpperCase();
         }
         // Fallback to personaConfig.responseModel (local Ollama models)
         else if (user.personaConfig?.responseModel) {
           modelInfo = `ollama/${user.personaConfig.responseModel}`;
+          // Extract short model name for badge
+          const modelName = user.personaConfig.responseModel.split(':')[0];
+          modelBadge = modelName.substring(0, 8).toUpperCase();
         }
       }
 
@@ -369,6 +375,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
             ${modelInfo ? `<span class="user-model-info" title="AI Model">${modelInfo}</span>` : ''}
             ${speciality ? `<span class="user-speciality">${speciality}</span>` : ''}
             ${lastActive ? `<span class="user-last-active">${lastActive}</span>` : ''}
+            ${modelBadge ? `<span class="user-model-badge">${modelBadge}</span>` : ''}
           </div>
           ${intelligenceBars}
         </div>
