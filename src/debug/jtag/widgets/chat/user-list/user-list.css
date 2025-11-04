@@ -431,18 +431,19 @@
   flex-direction: row;
   align-items: center;
   gap: 4px;
-  padding: 4px 6px;
+  padding: 2px 4px;
   background: rgba(10, 25, 35, 0.8);
   border: 1px solid rgba(0, 255, 200, 0.5);
   border-radius: 4px;
   box-shadow: 0 0 10px rgba(0, 255, 200, 0.2);
-  flex-shrink: 1;
+  flex-shrink: 0;
   margin-left: 8px;
-  max-width: 80px;
+  max-width: 50px;
+  min-width: 50px;
 }
 
 .genome-label {
-  font-size: 8px;
+  font-size: 6px;
   font-weight: 800;
   color: rgba(0, 255, 200, 0.9);
   text-transform: uppercase;
@@ -456,14 +457,14 @@
 .genome-bars {
   display: flex !important;
   flex-direction: row !important;
-  gap: 3px !important;
+  gap: 2px !important;
   align-items: flex-end !important;
-  height: 35px !important;
-  min-width: 50px !important;
+  height: 26px !important;
+  min-width: 35px !important;
 }
 
 .genome-layer {
-  width: 5px !important;
+  width: 3px !important;
   min-height: 10px !important;
   border-radius: 2px;
   border: 1px solid rgba(0, 255, 200, 0.6);
