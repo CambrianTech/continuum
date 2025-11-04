@@ -358,6 +358,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       const genomePanel = this.renderGenomePanel(user);
 
       userElement.innerHTML = `
+        ${lastActive ? `<span class="user-last-active">${lastActive}</span>` : ''}
         <span class="user-avatar">
           ${avatar}
           <span class="status-indicator"></span>
@@ -366,15 +367,11 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
         <div class="user-info">
           <div class="user-name-row">
             <span class="user-name">${displayName}</span>
-            ${aiStatusEmoji ? `<span class="user-ai-status" title="AI Status">${aiStatusEmoji}</span>` : ''}
-            ${learningEmoji ? `<span class="user-learning-status" title="Learning: ${learningState?.domain ?? 'training'}">${learningEmoji}</span>` : ''}
-            ${ragBadge}
           </div>
           <div class="user-meta">
             <span class="user-type-badge">${typeBadge}</span>
             ${modelInfo ? `<span class="user-model-info" title="AI Model">${modelInfo}</span>` : ''}
             ${speciality ? `<span class="user-speciality">${speciality}</span>` : ''}
-            ${lastActive ? `<span class="user-last-active">${lastActive}</span>` : ''}
             ${modelBadge ? `<span class="user-model-badge">${modelBadge}</span>` : ''}
           </div>
           ${intelligenceBars}
