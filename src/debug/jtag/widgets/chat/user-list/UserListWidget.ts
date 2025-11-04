@@ -348,8 +348,14 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
         userElement.dataset.learning = 'true';
       }
 
+      // Generate genome panel for AI personas/agents
+      const genomePanel = this.renderGenomePanel(user);
+
       userElement.innerHTML = `
-        <span class="user-avatar">${avatar}</span>
+        <span class="user-avatar">
+          ${avatar}
+          <span class="status-indicator"></span>
+        </span>
         <div class="user-info">
           <div class="user-name-row">
             <span class="user-name">${displayName}</span>
@@ -370,9 +376,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
           <button class="user-favorite-btn" title="Add to favorites">⭐</button>
           <button class="user-action-btn" title="Actions">»</button>
         </div>
-        <div class="user-status">
-          <span class="status-indicator"></span>
-        </div>
+        ${genomePanel}
       `;
 
       // Add click handler for selection
@@ -530,6 +534,37 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
           <animate attributeName="x2" from="54" to="234" dur="2s" repeatCount="indefinite"/>
         </line>
       </svg>
+    `.trim();
+  }
+
+  /**
+   * Render genome state panel showing loaded LoRA layers (like AIDA64 CORE section)
+   * @param user - User entity
+   * @returns HTML string for genome panel or empty string
+   */
+  private renderGenomePanel(user: UserEntity): string {
+    // Only show for AI personas/agents
+    if (user.type !== 'persona' && user.type !== 'agent') {
+      return '';
+    }
+
+    // Demo data: 4-8 layers with 40-80% active
+    const totalLayers = 4 + Math.floor(Math.random() * 5);
+    const activeLayers = Math.floor(totalLayers * (0.4 + Math.random() * 0.4));
+
+    // Build vertical bars (like AIDA64 CORE section)
+    const layerBars = Array.from({ length: totalLayers }, (_, i) => {
+      const isActive = i < activeLayers;
+      const activeClass = isActive ? 'active' : 'inactive';
+      return `<div class="genome-layer ${activeClass}"></div>`;
+    }).join('');
+
+    return `
+      <div class="genome-panel">
+        <div class="genome-label">GENOME</div>
+        <div class="genome-bars">${layerBars}</div>
+        <div class="genome-count">${activeLayers}/${totalLayers}</div>
+      </div>
     `.trim();
   }
 

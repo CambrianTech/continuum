@@ -239,10 +239,10 @@
 }
 
 .user-info {
-  flex: 1;
-  display: flex;
+  flex: 1 1 auto;
+  display: flex !important;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
   overflow: hidden;
 }
@@ -254,8 +254,8 @@
 }
 
 .user-name {
-  font-size: 15px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--content-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -293,16 +293,19 @@
 }
 
 .user-model-info {
-  font-size: 10px;
-  font-weight: 500;
+  font-size: 9px;
+  font-weight: 600;
   color: var(--accent-primary);
   background: var(--accent-surface);
-  padding: 2px 6px;
+  padding: 2px 5px;
   border-radius: 3px;
-  flex-shrink: 0;
+  flex-shrink: 1;
   white-space: nowrap;
-  opacity: 0.9;
+  opacity: 0.85;
   font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .user-speciality {
@@ -326,11 +329,7 @@
 
 /* Hover controls - minimal */
 .user-controls {
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.1s;
-  flex-shrink: 0;
+  display: none;
 }
 
 .user-item:hover .user-controls {
@@ -356,18 +355,17 @@
   color: var(--content-primary);
 }
 
-/* Status indicator - subtle dot */
-.user-status {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
+/* Status indicator - Discord-style overlay on avatar */
 .status-indicator {
-  width: 8px;
-  height: 8px;
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--status-offline);
+  border: 2px solid var(--widget-surface-solid);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
 }
 
 .user-item.online .status-indicator {
@@ -432,4 +430,92 @@
 @keyframes learning-spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+/* ========================================
+   Genome Panel - LoRA Layer Visualization
+   ======================================== */
+
+.genome-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: rgba(10, 25, 35, 0.8);
+  border: 1px solid rgba(0, 255, 200, 0.5);
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(0, 255, 200, 0.2);
+  flex-shrink: 1;
+  margin-left: 8px;
+  max-width: 80px;
+}
+
+.genome-label {
+  font-size: 8px;
+  font-weight: 800;
+  color: rgba(0, 255, 200, 0.9);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  text-shadow: 0 0 6px rgba(0, 255, 200, 0.5);
+}
+
+.genome-bars {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 3px !important;
+  align-items: flex-end !important;
+  height: 35px !important;
+  min-width: 50px !important;
+}
+
+.genome-layer {
+  width: 5px !important;
+  min-height: 10px !important;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 255, 200, 0.6);
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+
+.genome-layer.active {
+  height: 100% !important;
+  background: linear-gradient(180deg,
+    rgba(0, 255, 200, 1) 0%,
+    rgba(0, 220, 255, 0.95) 50%,
+    rgba(0, 180, 255, 0.9) 100%) !important;
+  box-shadow:
+    0 0 10px rgba(0, 255, 200, 0.8),
+    inset 0 0 4px rgba(255, 255, 255, 0.4) !important;
+  border-color: rgba(0, 255, 255, 1);
+}
+
+.genome-layer.inactive {
+  height: 40% !important;
+  background: rgba(50, 70, 90, 0.6) !important;
+  border-color: rgba(70, 90, 110, 0.7);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.4);
+}
+
+.genome-count {
+  font-size: 9px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 1);
+  font-family: monospace;
+  text-shadow: 0 0 5px rgba(0, 255, 200, 0.6);
+  white-space: nowrap;
+}
+
+.user-item:hover .genome-panel {
+  border-color: rgba(0, 255, 200, 0.8);
+  box-shadow: 0 0 15px rgba(0, 255, 200, 0.3);
+}
+
+.user-item:hover .genome-layer.active {
+  box-shadow:
+    0 0 14px rgba(0, 255, 200, 1),
+    inset 0 0 6px rgba(255, 255, 255, 0.6) !important;
 }
