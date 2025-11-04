@@ -636,7 +636,8 @@ async function getMissingUsers(): Promise<string[]> {
     'persona-xai',
     'persona-together',
     'persona-fireworks',
-    'persona-ollama'
+    'persona-ollama',
+    'persona-sentinel'
   ];
 
   try {
@@ -841,6 +842,9 @@ async function seedViaJTAG() {
     }
     if (missingUsers.includes('persona-ollama')) {
       userMap['ollamaPersona'] = await createUserViaCommand('persona', 'Local Assistant', 'persona-ollama', 'ollama');
+    }
+    if (missingUsers.includes('persona-sentinel')) {
+      userMap['sentinelPersona'] = await createUserViaCommand('persona', 'Sentinel', 'persona-sentinel', 'sentinel');
     }
 
     // Count only newly created users (users that were in missingUsers list)
