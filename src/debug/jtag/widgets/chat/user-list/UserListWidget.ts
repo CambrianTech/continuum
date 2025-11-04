@@ -323,11 +323,11 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       }
       const intelligenceBars = intelligenceLevel > 0 ? this.renderIntelligenceBars(intelligenceLevel, ragCertified) : '';
 
-      // Response mode indicator (free chat vs mention-required)
+      // Response mode indicator (free chat vs mention-required) - now shown as dot on avatar
       const requiresMention = user.modelConfig?.requiresExplicitMention ?? false;
-      const responseModeIcon = (user.type === 'persona' || user.type === 'agent') ?
-        (requiresMention ? '<span class="response-mode-icon mention-required" title="Requires @mention">@</span>' :
-                          '<span class="response-mode-icon free-chat" title="Can respond freely">💬</span>') : '';
+      const responseModeDot = (user.type === 'persona' || user.type === 'agent') ?
+        (requiresMention ? '<span class="response-mode-dot mention-required" title="Requires @mention"></span>' :
+                          '<span class="response-mode-dot free-chat" title="Can respond freely"></span>') : '';
 
       // RAG badge (removing since it's now in the SVG HUD)
       const ragBadge = '';
@@ -355,13 +355,13 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
         <span class="user-avatar">
           ${avatar}
           <span class="status-indicator"></span>
+          ${responseModeDot}
         </span>
         <div class="user-info">
           <div class="user-name-row">
             <span class="user-name">${displayName}</span>
             ${aiStatusEmoji ? `<span class="user-ai-status" title="AI Status">${aiStatusEmoji}</span>` : ''}
             ${learningEmoji ? `<span class="user-learning-status" title="Learning: ${learningState?.domain ?? 'training'}">${learningEmoji}</span>` : ''}
-            ${responseModeIcon}
             ${ragBadge}
           </div>
           <div class="user-meta">
@@ -548,11 +548,11 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       return '';
     }
 
-    // Demo data: 4-8 layers with 40-80% active
-    const totalLayers = 4 + Math.floor(Math.random() * 5);
-    const activeLayers = Math.floor(totalLayers * (0.4 + Math.random() * 0.4));
+    // Fixed: Always 4 bars total (representing 4 LoRA layers)
+    const totalLayers = 4;
+    const activeLayers = 2 + Math.floor(Math.random() * 3); // 2-4 active
 
-    // Build vertical bars (like AIDA64 CORE section)
+    // Build vertical bars - FIXED count, all same width
     const layerBars = Array.from({ length: totalLayers }, (_, i) => {
       const isActive = i < activeLayers;
       const activeClass = isActive ? 'active' : 'inactive';
