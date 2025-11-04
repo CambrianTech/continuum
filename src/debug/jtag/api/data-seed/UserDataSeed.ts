@@ -106,13 +106,15 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 70,  // Advanced model - strong reasoning
       modelConfig: {
         model: 'claude-haiku',
         provider: 'anthropic',
         maxTokens: 2000,
         temperature: 0.7,
         systemPrompt: 'You are GeneralAI, a helpful and knowledgeable assistant ready to help with a wide variety of tasks.',
-        capabilities: ['general-assistance', 'knowledge-synthesis', 'conversation']
+        capabilities: ['general-assistance', 'knowledge-synthesis', 'conversation'],
+        ragCertified: true  // Anthropic models tested with complex RAG
       },
       personaStyle: 'friendly-helper',
       contextualMemory: {
@@ -139,13 +141,15 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 80,  // Specialized advanced model - code reasoning
       modelConfig: {
         model: 'deepseek-coder',
         provider: 'deepseek',
         maxTokens: 4000,
         temperature: 0.1,
         systemPrompt: 'Code analysis and debugging specialist. Expert at identifying bugs, performance issues, and security vulnerabilities.',
-        capabilities: ['code-analysis', 'refactoring', 'optimization', 'security-analysis']
+        capabilities: ['code-analysis', 'refactoring', 'optimization', 'security-analysis'],
+        ragCertified: false  // Not yet tested with our RAG system
       },
       specialization: 'code-analysis',
       toolAccess: ['static-analysis', 'linting', 'testing', 'profiling'],
@@ -166,13 +170,15 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 90,  // Frontier model - exceptional reasoning
       modelConfig: {
         model: 'gpt-4',
         provider: 'openai',
         maxTokens: 3000,
         temperature: 0.3,
         systemPrompt: 'Strategic planning and architecture specialist. Expert at breaking down complex projects and designing system architecture.',
-        capabilities: ['strategic-planning', 'task-decomposition', 'workflow-optimization']
+        capabilities: ['strategic-planning', 'task-decomposition', 'workflow-optimization'],
+        ragCertified: false  // Not yet tested with our RAG system
       },
       specialization: 'project-management',
       toolAccess: ['analysis', 'modeling', 'documentation'],
@@ -193,13 +199,15 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 70,  // Advanced model - strong reasoning
       modelConfig: {
         model: 'claude-haiku',
         provider: 'anthropic',
         maxTokens: 1000,
         temperature: 0.2,
         systemPrompt: 'Smart agent selection system. Analyzes tasks and routes them to the most appropriate specialist agent.',
-        capabilities: ['task-routing', 'agent-selection', 'workflow-management']
+        capabilities: ['task-routing', 'agent-selection', 'workflow-management'],
+        ragCertified: true  // Anthropic models tested with complex RAG
       },
       specialization: 'task-coordination',
       toolAccess: ['agent-registry', 'task-analysis', 'routing'],
@@ -220,13 +228,15 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 85,  // Very advanced model - strong reasoning, SOTA
       modelConfig: {
         model: 'deepseek-chat',
         provider: 'deepseek',
         maxTokens: 4000,
         temperature: 0.7,
         systemPrompt: 'You are DeepSeek Assistant, a helpful AI powered by DeepSeek\'s cost-effective SOTA models. You provide high-quality assistance at industry-leading efficiency.',
-        capabilities: ['sota', 'general-assistance', 'reasoning', 'code-generation']
+        capabilities: ['sota', 'general-assistance', 'reasoning', 'code-generation'],
+        ragCertified: false  // Not yet tested with our RAG system
       },
       personaStyle: 'efficient-expert',
       contextualMemory: {
@@ -253,13 +263,15 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 60,  // Capable instruction-tuned model - basic reasoning
       modelConfig: {
         model: 'llama-3.1-8b-instant',
         provider: 'groq',
         maxTokens: 2000,
         temperature: 0.8,
         systemPrompt: 'You are Groq Lightning, powered by the world\'s fastest LPU inference. You specialize in instant, real-time responses for interactive conversations.',
-        capabilities: ['real-time-assistance', 'quick-responses', 'interactive-chat']
+        capabilities: ['real-time-assistance', 'quick-responses', 'interactive-chat'],
+        ragCertified: false  // Not yet tested with our RAG system
       },
       personaStyle: 'fast-responsive',
       contextualMemory: {
@@ -418,9 +430,11 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 85,  // Very advanced model - DeepSeek-V3 via Fireworks
       modelConfig: {
         model: 'accounts/fireworks/models/deepseek-v3',
         provider: 'fireworks',
+        ragCertified: false,  // Not yet tested with our RAG system
         maxTokens: 3000,
         temperature: 0.7,
         systemPrompt: 'You are Fireworks AI, optimized for production deployment. You focus on practical, reliable solutions and efficient problem-solving for real-world applications.',
@@ -451,9 +465,11 @@ export class UserDataSeed {
       lastActiveAt: new Date().toISOString(),
       preferences: {},
       isOnline: true,
+      intelligenceLevel: 55,  // Capable instruction-tuned model - basic reasoning
       modelConfig: {
         model: 'llama3.2:3b',
         provider: 'ollama',
+        ragCertified: false,  // Not yet tested with complex RAG
         maxTokens: 2000,
         temperature: 0.7,
         systemPrompt: 'You are Local Assistant, running privately on this machine via Ollama. You provide help while keeping all data local and private.',
@@ -471,6 +487,43 @@ export class UserDataSeed {
       conversationalDepth: 'moderate'
     };
     const ollamaPersona = new PersonaUser(ollamaPersonaData);
+
+    // Sentinel Simple Persona - Local GPT-2 inference (requires explicit mention)
+    const sentinelSimplePersonaData: PersonaUserData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: 'Sentinel Simple',
+      citizenType: 'ai',
+      aiType: 'persona',
+      capabilities: ['local-inference', 'simple-responses'],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      intelligenceLevel: 25,  // Simple base model - pattern matching only
+      modelConfig: {
+        model: 'distilgpt2',
+        provider: 'sentinel',
+        ragCertified: false,  // NOT certified for complex RAG - too simple
+        maxTokens: 150,
+        temperature: 0.7,
+        contextWindow: 1024,
+        promptFormat: 'base',
+        requiresExplicitMention: true,  // Only responds when @mentioned
+        systemPrompt: 'You are Sentinel Simple, a lightweight local AI powered by GPT-2. You provide quick responses using local inference while keeping all data private. You only respond when explicitly mentioned.'
+      },
+      personaStyle: 'simple-local',
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: 'helpful', formality: 'friendly' },
+        domainKnowledge: ['basic-help', 'local-processing', 'privacy']
+      },
+      adaptivePersonality: false,
+      emotionalIntelligence: 40,
+      conversationalDepth: 'shallow'
+    };
+    const sentinelSimplePersona = new PersonaUser(sentinelSimplePersonaData);
 
     // System Users - For automated messages and announcements
     const welcomeBot = SystemUser.createWelcomeBot({
@@ -498,6 +551,7 @@ export class UserDataSeed {
       togetherPersona,
       fireworksPersona,
       ollamaPersona,
+      sentinelSimplePersona,
       welcomeBot,
       helpBot
     ] as const;
@@ -540,7 +594,10 @@ export class UserDataSeed {
       createdAt: user.createdAt,
       lastActiveAt: user.lastActiveAt,
       preferences: { ...user.preferences },
-      isOnline: user.isOnline
+      isOnline: user.isOnline,
+      // Include intelligence level and model config for AI users
+      ...(user.intelligenceLevel !== undefined && { intelligenceLevel: user.intelligenceLevel }),
+      ...(user.modelConfig && { modelConfig: user.modelConfig })
     };
 
     return {

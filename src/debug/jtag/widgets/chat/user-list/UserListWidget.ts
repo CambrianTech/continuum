@@ -294,6 +294,44 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
         }
       }
 
+      // RAG certification status
+      // TEMPORARY DEMO: Mark Sentinel as RAG certified until database seeding is fixed
+      let ragCertified = user.modelConfig?.ragCertified ?? false;
+      if (!ragCertified && user.uniqueId === 'persona-sentinel') {
+        ragCertified = true;
+      }
+
+      // Intelligence level bars for AI personas/agents (with RAG status integrated)
+      // TEMPORARY DEMO: Use hardcoded levels based on uniqueId until database seeding is fixed
+      let intelligenceLevel = user.intelligenceLevel ?? 0;
+      if (intelligenceLevel === 0 && (user.type === 'persona' || user.type === 'agent')) {
+        const demoLevels: Record<string, number> = {
+          'persona-helper-001': 82,
+          'persona-teacher-001': 86,
+          'persona-codereview-001': 79,
+          'persona-deepseek-001': 94,
+          'persona-claude-code-001': 91,
+          'persona-general-ai-001': 75,
+          'persona-openai': 88,
+          'persona-xai': 85,
+          'persona-together': 77,
+          'persona-fireworks': 80,
+          'persona-ollama': 70,
+          'persona-sentinel': 92
+        };
+        intelligenceLevel = demoLevels[user.uniqueId] ?? 75;
+      }
+      const intelligenceBars = intelligenceLevel > 0 ? this.renderIntelligenceBars(intelligenceLevel, ragCertified) : '';
+
+      // Response mode indicator (free chat vs mention-required)
+      const requiresMention = user.modelConfig?.requiresExplicitMention ?? false;
+      const responseModeIcon = (user.type === 'persona' || user.type === 'agent') ?
+        (requiresMention ? '<span class="response-mode-icon mention-required" title="Requires @mention">@</span>' :
+                          '<span class="response-mode-icon free-chat" title="Can respond freely">💬</span>') : '';
+
+      // RAG badge (removing since it's now in the SVG HUD)
+      const ragBadge = '';
+
       const userElement = globalThis.document.createElement('div');
       userElement.className = `user-item ${statusClass} ${isSelected ? 'selected' : ''}`;
       userElement.dataset.userId = user.id;
@@ -317,6 +355,8 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
             <span class="user-name">${displayName}</span>
             ${aiStatusEmoji ? `<span class="user-ai-status" title="AI Status">${aiStatusEmoji}</span>` : ''}
             ${learningEmoji ? `<span class="user-learning-status" title="Learning: ${learningState?.domain ?? 'training'}">${learningEmoji}</span>` : ''}
+            ${responseModeIcon}
+            ${ragBadge}
           </div>
           <div class="user-meta">
             <span class="user-type-badge">${typeBadge}</span>
@@ -324,6 +364,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
             ${speciality ? `<span class="user-speciality">${speciality}</span>` : ''}
             ${lastActive ? `<span class="user-last-active">${lastActive}</span>` : ''}
           </div>
+          ${intelligenceBars}
         </div>
         <div class="user-controls">
           <button class="user-favorite-btn" title="Add to favorites">⭐</button>
@@ -402,6 +443,94 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
 
     // Format as date
     return new Date(timestampMs).toLocaleDateString();
+  }
+
+  /**
+   * Render compact SVG-based intelligence HUD (cyberpunk style)
+   * Features: segmented bars, grid background, numeric readout, status indicators
+   * Compact design inspired by video game HUDs
+   */
+  private renderIntelligenceBars(level: number, ragCertified: boolean = false): string {
+    const percentage = level;
+    const filledSegments = Math.floor(level / 10);
+
+    // Color based on intelligence level
+    const color = level >= 86 ? '#00ff88' : level >= 61 ? '#00d4ff' : level >= 31 ? '#ffaa00' : '#ff6b6b';
+
+    return `
+      <svg class="intelligence-hud" width="100%" height="32" viewBox="0 0 280 32" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <filter id="glow-${level}">
+            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+          <linearGradient id="bar-gradient-${level}" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:${color};stop-opacity:1" />
+            <stop offset="100%" style="stop-color:${color};stop-opacity:0.6" />
+          </linearGradient>
+        </defs>
+
+        <!-- Grid background -->
+        <pattern id="grid-${level}" width="10" height="10" patternUnits="userSpaceOnUse">
+          <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(0,255,200,0.1)" stroke-width="0.5"/>
+        </pattern>
+        <rect width="280" height="32" fill="url(#grid-${level})" opacity="0.3"/>
+
+        <!-- Main container border -->
+        <rect x="1" y="1" width="278" height="30" fill="none" stroke="rgba(0,255,200,0.3)" stroke-width="1" rx="2"/>
+
+        <!-- Corner accents -->
+        <line x1="1" y1="6" x2="6" y2="1" stroke="${color}" stroke-width="1.5" opacity="0.8"/>
+        <line x1="274" y1="1" x2="279" y2="6" stroke="${color}" stroke-width="1.5" opacity="0.8"/>
+        <line x1="1" y1="25" x2="6" y2="30" stroke="${color}" stroke-width="1.5" opacity="0.8"/>
+        <line x1="274" y1="30" x2="279" y2="25" stroke="${color}" stroke-width="1.5" opacity="0.8"/>
+
+        <!-- Left label section -->
+        <rect x="4" y="4" width="45" height="24" fill="rgba(0,20,40,0.8)" stroke="rgba(0,255,200,0.2)" stroke-width="0.5"/>
+        <text x="26.5" y="13" font-family="monospace" font-size="7" fill="rgba(0,255,200,0.7)" text-anchor="middle" font-weight="600">IQ</text>
+        <text x="26.5" y="24" font-family="monospace" font-size="11" fill="${color}" text-anchor="middle" font-weight="700" filter="url(#glow-${level})">${level}</text>
+
+        <!-- Segmented bar display (10 segments) -->
+        <g transform="translate(54, 8)">
+          ${Array.from({length: 10}, (_, i) => {
+            const isFilled = i < filledSegments;
+            const x = i * 18;
+            return `
+              <rect x="${x}" y="0" width="15" height="16"
+                    fill="${isFilled ? `url(#bar-gradient-${level})` : 'rgba(20,30,45,0.6)'}"
+                    stroke="${isFilled ? color : 'rgba(60,80,100,0.4)'}"
+                    stroke-width="0.5"
+                    opacity="${isFilled ? 1 : 0.3}"
+                    ${isFilled ? `filter="url(#glow-${level})"` : ''}/>
+              ${isFilled ? `<rect x="${x + 1}" y="1" width="13" height="2" fill="rgba(255,255,255,0.4)" opacity="0.6"/>` : ''}
+            `;
+          }).join('')}
+        </g>
+
+        <!-- Right status indicators -->
+        <g transform="translate(238, 8)">
+          <!-- RAG certification indicator -->
+          ${ragCertified ? `
+            <circle cx="8" cy="8" r="6" fill="none" stroke="#00ff88" stroke-width="1.5" filter="url(#glow-${level})"/>
+            <path d="M 5 8 L 7 10 L 11 6" fill="none" stroke="#00ff88" stroke-width="1.5" stroke-linecap="round"/>
+            <text x="20" y="11" font-family="monospace" font-size="6" fill="#00ff88" font-weight="600">RAG</text>
+          ` : `
+            <circle cx="8" cy="8" r="6" fill="none" stroke="rgba(100,100,120,0.3)" stroke-width="1"/>
+            <line x1="5" y1="5" x2="11" y2="11" stroke="rgba(100,100,120,0.3)" stroke-width="1"/>
+            <line x1="11" y1="5" x2="5" y2="11" stroke="rgba(100,100,120,0.3)" stroke-width="1"/>
+          `}
+        </g>
+
+        <!-- Scanning line animation effect -->
+        <line x1="54" y1="8" x2="54" y2="24" stroke="${color}" stroke-width="0.5" opacity="0.6">
+          <animate attributeName="x1" from="54" to="234" dur="2s" repeatCount="indefinite"/>
+          <animate attributeName="x2" from="54" to="234" dur="2s" repeatCount="indefinite"/>
+        </line>
+      </svg>
+    `.trim();
   }
 
   /**

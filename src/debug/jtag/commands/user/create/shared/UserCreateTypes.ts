@@ -43,6 +43,8 @@ export interface ModelConfig {
   readonly systemPrompt?: string;       // Custom system prompt for persona
   readonly capabilities?: readonly string[];  // Model capabilities
   readonly promptFormat?: PromptFormat; // How this model expects prompts formatted
+  readonly requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned (e.g., @sentinel)
+  readonly ragCertified?: boolean;      // Has this model been tested/certified with our complex RAG system?
 }
 
 /**
@@ -61,6 +63,7 @@ export interface UserCreateParams extends JTAGPayload {
   readonly modelConfig?: ModelConfig;        // For personas: AI model configuration
   readonly capabilities?: UserCapabilities;  // Override default capabilities
   readonly status?: 'online' | 'away' | 'offline';
+  readonly intelligenceLevel?: number;       // AI intelligence level (1-100 scale)
 }
 
 /**

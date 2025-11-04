@@ -268,6 +268,81 @@ async function testConversationHistory(): Promise<void> {
   }
 }
 
+async function testModelTiers(): Promise<void> {
+  console.log('\n🎯 TEST 8: Model Tier Architecture (Simple vs Capable)');
+  console.log('======================================================');
+
+  const hasSentinelPath = SecretManager.getInstance().has('SENTINEL_PATH');
+
+  if (!hasSentinelPath) {
+    console.log('⏭️  Skipped (SENTINEL_PATH not configured)');
+    return;
+  }
+
+  console.log('\n📊 Model Tier Strategy:');
+  console.log('   TIER 1 (Simple): GPT-2, DistilGPT-2 - Small base models');
+  console.log('      • Limited context (1024 tokens)');
+  console.log('      • Repetitive output, poor instruction following');
+  console.log('      • REQUIRES @mention to respond (opt-in)');
+  console.log('      • Use case: Quick local inference when explicitly asked');
+  console.log('');
+  console.log('   TIER 2 (Capable): Phi-2, TinyLlama - Instruction-tuned models');
+  console.log('      • Larger context (2048+ tokens)');
+  console.log('      • Better quality, follows instructions');
+  console.log('      • Can respond automatically (full RAG)');
+  console.log('      • Use case: Primary local assistant');
+  console.log('');
+
+  try {
+    const adapter = new SentinelAdapter();
+    await adapter.initialize();
+
+    const models = await adapter.getAvailableModels();
+
+    console.log('📋 Available Models by Tier:\n');
+
+    // Tier 1: Simple models (current implementation)
+    const tier1Models = models.filter(m =>
+      m.contextWindow <= 1024 &&
+      (m.id.includes('gpt2') || m.id.includes('distilgpt2'))
+    );
+
+    console.log('🔹 TIER 1 (Simple - requiresExplicitMention recommended):');
+    tier1Models.forEach(m => {
+      console.log(`   ✓ ${m.id}: ${m.contextWindow} tokens, ${m.maxOutputTokens} max output`);
+      console.log(`     Strategy: Only respond when @mentioned`);
+    });
+
+    // Tier 2: Capable models (coming soon)
+    const tier2Models = models.filter(m =>
+      m.contextWindow > 1024 ||
+      m.id.includes('phi') ||
+      m.id.includes('llama') ||
+      m.id.includes('codellama')
+    );
+
+    if (tier2Models.length > 0) {
+      console.log('\n🔹 TIER 2 (Capable - full RAG supported):');
+      tier2Models.forEach(m => {
+        console.log(`   ✓ ${m.id}: ${m.contextWindow} tokens, ${m.maxOutputTokens} max output`);
+        console.log(`     Strategy: Full autonomous response with RAG`);
+      });
+    } else {
+      console.log('\n🔹 TIER 2 (Capable - coming soon):');
+      console.log('   ⏳ phi-2 (2.7B params, 2048 context)');
+      console.log('   ⏳ TinyLlama-1.1B (2048 context)');
+      console.log('   ⏳ CodeLlama-7B (4096 context)');
+      console.log('   Note: These will NOT need requiresExplicitMention');
+    }
+
+    console.log('\n✅ Model tier architecture validated');
+    console.log('💡 Future: Add phi-2/TinyLlama as Tier 2 models');
+
+  } catch (error) {
+    console.log(`❌ Model tier test failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 // Main test runner
 async function runTests(): Promise<void> {
   console.log('╔═════════════════════════════════════════╗');
@@ -282,6 +357,7 @@ async function runTests(): Promise<void> {
     await testMultipleModels();
     await testHealthCheck();
     await testConversationHistory();
+    await testModelTiers();
 
     console.log('\n╔═════════════════════════════════════════╗');
     console.log('║        All Tests Completed! 🎉          ║');

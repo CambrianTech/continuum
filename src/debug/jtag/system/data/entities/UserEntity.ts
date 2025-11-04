@@ -121,7 +121,18 @@ export class UserEntity extends BaseEntity {
     maxTokens?: number;
     systemPrompt?: string;
     capabilities?: readonly string[];
+    ragCertified?: boolean;  // Has this model been tested with our complex RAG system?
+    requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned
   };
+
+  // Intelligence level for AI personas/agents (1-100 scale)
+  // Represents the model's capability to handle complex reasoning, not just size
+  // 1-30: Simple base models (GPT-2, DistilGPT-2) - pattern matching only
+  // 31-60: Capable instruction-tuned models (Llama 7B, Phi-2) - basic reasoning
+  // 61-85: Advanced models (Claude Haiku, GPT-3.5) - strong reasoning
+  // 86-100: Frontier models (Claude Sonnet/Opus, GPT-4) - exceptional reasoning
+  @TextField({ nullable: true })
+  intelligenceLevel?: number;
 
   // Genome reference for PersonaUser (Phase 1.2)
   // Links persona to their LoRA-adapted genome for specialized behavior
