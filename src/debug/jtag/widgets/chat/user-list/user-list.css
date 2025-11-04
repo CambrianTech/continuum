@@ -1,5 +1,10 @@
 /* Professional User List - Discord/Teams Style */
 
+/* Hide intelligence bars for cleaner technical aesthetic */
+.intelligence-bars {
+  display: none !important;
+}
+
 :host {
   display: flex;
   flex-direction: column;
@@ -266,9 +271,7 @@
 
 /* AI status emoji (subtle, inline) */
 .user-ai-status {
-  font-size: 10px;
-  flex-shrink: 0;
-  opacity: 0.7;
+  display: none;
 }
 
 .user-meta {
@@ -279,33 +282,22 @@
   overflow: hidden;
 }
 
-/* Subtle type badge */
+/* Subtle type badge - technical monospace style */
 .user-type-badge {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--content-secondary);
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.7);
   background: transparent;
   padding: 0;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 1px;
   flex-shrink: 0;
-  opacity: 0.6;
+  font-family: monospace;
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
 }
 
 .user-model-info {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--accent-primary);
-  background: var(--accent-surface);
-  padding: 2px 5px;
-  border-radius: 3px;
-  flex-shrink: 1;
-  white-space: nowrap;
-  opacity: 0.85;
-  font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: none;
 }
 
 .user-speciality {
@@ -422,9 +414,7 @@
 
 /* Learning status emoji */
 .user-learning-status {
-  display: inline-block;
-  margin-left: 4px;
-  animation: learning-spin 3s linear infinite;
+  display: none;
 }
 
 @keyframes learning-spin {
