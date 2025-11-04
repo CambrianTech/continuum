@@ -566,11 +566,28 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       return `<div class="genome-layer ${activeClass}"></div>`;
     }).join('');
 
+    // Genome attributes for diamond grid (mock data for now)
+    // TODO: Pull from actual user.personaConfig or user.capabilities
+    const hasLearning = Math.random() > 0.5; // Continuous learning enabled
+    const isCloud = user.modelConfig?.provider !== 'ollama'; // Cloud vs local
+    const hasRAG = Math.random() > 0.5; // Has RAG system
+    const hasLoRA = activeLayers > 2; // Has LoRA adapters
+
+    // Build 2x2 diamond grid
+    const diamond = `
+      <div class="genome-diamond">
+        <div class="diamond-cell top ${hasLearning ? 'active' : ''}"></div>
+        <div class="diamond-cell right ${isCloud ? 'active' : ''}"></div>
+        <div class="diamond-cell bottom ${hasRAG ? 'active' : ''}"></div>
+        <div class="diamond-cell left ${hasLoRA ? 'active' : ''}"></div>
+      </div>
+    `.trim();
+
     return `
       <div class="genome-panel">
         <div class="genome-label">GENOME</div>
         <div class="genome-bars">${layerBars}</div>
-        <div class="genome-count">${activeLayers}/${totalLayers}</div>
+        ${diamond}
       </div>
     `.trim();
   }

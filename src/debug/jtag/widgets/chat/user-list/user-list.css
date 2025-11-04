@@ -535,6 +535,38 @@
   line-height: 1;
 }
 
+/* Diamond grid - 2x2 rotated squares showing genome attributes */
+.genome-diamond {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  transform: rotate(45deg);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.diamond-cell {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  background: rgba(60, 80, 100, 0.3);
+  border: 1px solid rgba(80, 100, 120, 0.4);
+  border-radius: 1px;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}
+
+.diamond-cell.active {
+  background: linear-gradient(135deg,
+    rgba(0, 255, 200, 0.8) 0%,
+    rgba(0, 220, 255, 0.7) 100%);
+  border-color: rgba(0, 255, 255, 0.6);
+  box-shadow: 0 0 4px rgba(0, 255, 200, 0.5);
+}
+
 .user-item:hover .genome-panel {
   border-color: rgba(0, 255, 200, 0.6);
   box-shadow: 0 0 12px rgba(0, 255, 200, 0.25);
@@ -542,4 +574,8 @@
 
 .user-item:hover .genome-layer.active {
   box-shadow: 0 0 8px rgba(0, 255, 200, 0.8) !important;
+}
+
+.user-item:hover .diamond-cell.active {
+  box-shadow: 0 0 6px rgba(0, 255, 200, 0.7);
 }
