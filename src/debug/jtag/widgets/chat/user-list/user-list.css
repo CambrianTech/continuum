@@ -249,7 +249,7 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .user-name-row {
@@ -262,9 +262,9 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--content-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
   flex: 1;
   min-width: 0;
 }
