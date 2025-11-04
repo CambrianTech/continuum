@@ -1283,6 +1283,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<boolean> {
+    // Rule 0: If persona requires explicit mention, only respond when mentioned
+    const requiresExplicitMention = this.entity?.modelConfig?.requiresExplicitMention ?? false;
+    if (requiresExplicitMention && !isMentioned) {
+      console.log(`🔇 ${this.displayName}: Requires explicit mention but wasn't mentioned - staying silent`);
+      return false;
+    }
+
     // Rule 1: Always respond if @mentioned (highest priority - forced response)
     if (isMentioned) {
       return true;
