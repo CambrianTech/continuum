@@ -41,9 +41,8 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
   private readonly sentinelPath = '/Volumes/FlashGordon/cambrian/sentinel-ai';
   private readonly pythonWrapper = 'experiments/run_with_continuum_python.sh';
 
-  // For now, use stub for fast testing
-  // Once proven, swap to real inference: 'scripts/continuum_inference.py'
-  private readonly inferenceScript = '/tmp/test_sentinel_stub.py';
+  // Real Sentinel inference using adaptive models with manual generation
+  private readonly inferenceScript = 'scripts/chat_inference.py';
 
   constructor() {
     super();
@@ -56,7 +55,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
     const requestId = `sentinel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
 
-    console.log(`🧬 Sentinel: Generating text (model: ${request.model ?? 'tinyllama-chat'})`);
+    console.log(`🧬 Sentinel: Generating text (model: ${request.model ?? 'distilgpt2'})`);
 
     // Write messages to temp file to avoid shell escaping issues
     const tmpFile = path.join(os.tmpdir(), `sentinel-messages-${requestId}.json`);
@@ -65,14 +64,14 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       // Write messages to temp file
       await writeFile(tmpFile, JSON.stringify(request.messages), 'utf-8');
 
-      const model = request.model ?? 'tinyllama-chat';
+      const model = request.model ?? 'distilgpt2';
       const temperature = request.temperature ?? 0.7;
       const maxTokens = request.maxTokens ?? 150;
 
-      // Execute Python script with file path instead of inline JSON
-      const command = `cd "${this.sentinelPath}" && python3 "${this.inferenceScript}" --model "${model}" --messages-file "${tmpFile}" --temperature ${temperature} --max-tokens ${maxTokens}`;
+      // Execute Python script with file path instead of inline JSON (using environment wrapper)
+      const command = `cd "${this.sentinelPath}" && ${this.pythonWrapper} "${this.inferenceScript}" --model "${model}" --messages-file "${tmpFile}" --temperature ${temperature} --max-tokens ${maxTokens}`;
 
-      console.log(`🔧 Executing: python3 ${this.inferenceScript} --model ${model} --messages-file ${tmpFile}`);
+      console.log(`🔧 Executing: ${this.pythonWrapper} ${this.inferenceScript} --model ${model} --messages-file ${tmpFile}`);
 
       const { stdout, stderr } = await execAsync(command, {
         timeout: 120000, // 2 minutes
@@ -168,18 +167,18 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
   async getAvailableModels(): Promise<ModelInfo[]> {
     return [
       {
-        id: 'tinyllama-chat',
-        name: 'TinyLlama 1.1B Chat',
+        id: 'distilgpt2',
+        name: 'DistilGPT2 (Default)',
         provider: this.providerId,
-        capabilities: ['text-generation', 'chat'],
-        contextWindow: 2048,
-        maxOutputTokens: 512,
+        capabilities: ['text-generation'],
+        contextWindow: 1024,
+        maxOutputTokens: 256,
         supportsStreaming: false,
         supportsFunctions: false
       },
       {
-        id: 'distilgpt2',
-        name: 'DistilGPT2',
+        id: 'gpt2',
+        name: 'GPT-2',
         provider: this.providerId,
         capabilities: ['text-generation'],
         contextWindow: 1024,

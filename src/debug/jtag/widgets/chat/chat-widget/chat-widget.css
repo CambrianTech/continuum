@@ -487,6 +487,7 @@
 .ai-status-error .ai-status-text {
   color: #dc3545;
   font-weight: 500;
+  user-select: text;
 }
 
 /* Close button for all statuses */
