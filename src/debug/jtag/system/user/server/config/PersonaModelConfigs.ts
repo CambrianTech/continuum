@@ -83,10 +83,12 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'sentinel': {
     provider: 'sentinel',
-    model: 'distilgpt2',
+    model: 'gpt2',
     temperature: 0.7,
     maxTokens: 150,
-    systemPrompt: 'You are Sentinel, powered by local pre-trained models from the Sentinel-AI model zoo. You provide helpful responses while keeping all data local and private.'
+    contextWindow: 1024,  // GPT-2 max context length
+    systemPrompt: 'You are Sentinel, powered by local pre-trained models from the Sentinel-AI model zoo. You provide helpful responses while keeping all data local and private.',
+    promptFormat: 'base'  // GPT-2 is a base model, needs "User: ...\n\nAssistant:" format
   }
 };
 

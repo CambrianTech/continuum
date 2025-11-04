@@ -21,15 +21,28 @@ import type { UserEntity, UserCapabilities } from '../../../../system/data/entit
 export type UserType = 'human' | 'agent' | 'persona';
 
 /**
+ * Prompt format types - defines how different model families expect prompts
+ */
+export type PromptFormat =
+  | 'base'           // Base models (GPT-2, Llama base): "User: ...\n\nAssistant:"
+  | 'chatml'         // ChatML format: "<|im_start|>user\n...<|im_end|>"
+  | 'llama2'         // Llama-2 chat: "[INST] ... [/INST]"
+  | 'alpaca'         // Alpaca format: "### Instruction:\n...\n\n### Response:"
+  | 'openai'         // OpenAI native messages array
+  | 'anthropic';     // Anthropic native messages array
+
+/**
  * Model configuration for AI users
  */
 export interface ModelConfig {
   readonly model?: string;
   readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, ollama)
   readonly temperature?: number;
-  readonly maxTokens?: number;
+  readonly maxTokens?: number;          // Maximum output tokens
+  readonly contextWindow?: number;      // Maximum input tokens (context length)
   readonly systemPrompt?: string;       // Custom system prompt for persona
   readonly capabilities?: readonly string[];  // Model capabilities
+  readonly promptFormat?: PromptFormat; // How this model expects prompts formatted
 }
 
 /**
