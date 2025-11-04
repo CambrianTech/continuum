@@ -22,6 +22,8 @@ import type {
   ModelCapability,
 } from '../../../shared/AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
+import { truncateMessages } from '../../../shared/PromptFormatters';
+import { getSecret } from '../../../../../system/secrets/SecretManager';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { writeFile, unlink } from 'fs/promises';
@@ -38,17 +40,48 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
   readonly providerName = 'Sentinel AI';
   readonly supportedCapabilities: ModelCapability[] = ['text-generation', 'chat'];
 
-  private readonly sentinelPath = '/Volumes/FlashGordon/cambrian/sentinel-ai';
+  // Paths for Sentinel Python environment
   private readonly pythonWrapper = 'experiments/run_with_continuum_python.sh';
-
-  // Real Sentinel inference using adaptive models with manual generation
   private readonly inferenceScript = 'scripts/chat_inference.py';
+  private readonly sentinelPath: string;
 
   constructor() {
     super();
+
+    // Get Sentinel path from config (required)
+    const configPath = getSecret('SENTINEL_PATH', 'SentinelAdapter');
+    if (!configPath) {
+      throw new Error(
+        'SENTINEL_PATH not configured. Please add it to ~/.continuum/config.env:\n' +
+        'SENTINEL_PATH=/path/to/sentinel-ai'
+      );
+    }
+
+    this.sentinelPath = configPath;
+
+    // Clear Python bytecode cache on startup to ensure fresh code
+    this.clearPythonCache();
+
     console.log('🧬 Sentinel Adapter initialized');
     console.log(`   Path: ${this.sentinelPath}`);
     console.log(`   Script: ${this.inferenceScript}`);
+  }
+
+  /**
+   * Clear Python bytecode cache (.pyc files and __pycache__ directories)
+   * This ensures we always run the latest Python code, not cached bytecode
+   */
+  private clearPythonCache(): void {
+    try {
+      // Run asynchronously in background - don't block initialization
+      execAsync(`find "${this.sentinelPath}" -type f -name "*.pyc" -delete && find "${this.sentinelPath}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null`, {
+        timeout: 5000
+      }).catch(() => {
+        // Ignore errors - cache clearing is best-effort
+      });
+    } catch {
+      // Ignore errors - cache clearing is best-effort
+    }
   }
 
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
@@ -57,12 +90,21 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
     console.log(`🧬 Sentinel: Generating text (model: ${request.model ?? 'distilgpt2'})`);
 
+    // Get model info to find context window
+    const model = request.model ?? 'distilgpt2';
+    const availableModels = await this.getAvailableModels();
+    const modelInfo = availableModels.find(m => m.id === model);
+    const contextWindow = modelInfo?.contextWindow ?? 1024; // Default to 1024 for GPT-2
+
+    // Truncate messages to fit context window (uses 'base' format for GPT-2 models)
+    const truncatedMessages = truncateMessages(request.messages, contextWindow, 'base');
+
     // Write messages to temp file to avoid shell escaping issues
     const tmpFile = path.join(os.tmpdir(), `sentinel-messages-${requestId}.json`);
 
     try {
-      // Write messages to temp file
-      await writeFile(tmpFile, JSON.stringify(request.messages), 'utf-8');
+      // Write truncated messages to temp file
+      await writeFile(tmpFile, JSON.stringify(truncatedMessages), 'utf-8');
 
       const model = request.model ?? 'distilgpt2';
       const temperature = request.temperature ?? 0.7;
@@ -78,8 +120,16 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         maxBuffer: 10 * 1024 * 1024 // 10MB
       });
 
-      if (stderr && !stderr.includes('FutureWarning')) {
-        console.warn(`⚠️  Sentinel stderr: ${stderr.substring(0, 200)}`);
+      // Filter out common Python warnings and informational messages
+      // Only treat stderr as an error if it contains actual error indicators
+      const errorIndicators = ['Error:', 'Exception:', 'Traceback', 'FAILED', 'CRITICAL'];
+      const hasRealError = stderr && errorIndicators.some(indicator => stderr.includes(indicator));
+
+      if (stderr && !hasRealError) {
+        // Log informational stderr for debugging but don't treat as error
+        console.log(`🐍 Sentinel debug output: ${stderr.substring(0, 200)}`);
+      } else if (hasRealError) {
+        console.error(`❌ Sentinel error in stderr: ${stderr.substring(0, 500)}`);
       }
 
       // Parse JSON response from Python

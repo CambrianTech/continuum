@@ -67,7 +67,9 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
       // Build context preview (always shown in compact mode)
       const contextPreview = {
         // Recipe rules (top 3) - if available
-        recipeRules: context.recipeStrategy?.responseRules?.slice(0, 3) || ['No recipe rules configured'],
+        recipeRules: (context.recipeStrategy?.responseRules ?? []).slice(0, 3).length > 0
+          ? (context.recipeStrategy?.responseRules ?? []).slice(0, 3)
+          : ['No recipe rules configured'],
 
         // System prompt excerpt (first 200 chars)
         systemPromptExcerpt: context.identity.systemPrompt.length > 200
