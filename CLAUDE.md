@@ -49,6 +49,40 @@ npm start                    # DEPLOYS code changes
 
 ---
 
+## 🔥 AGGRESSIVE REFACTORING PRINCIPLE
+
+**CRITICAL**: I've been trained to be timid about refactoring existing code - only touch what's directly related to the task, don't "rock the boat", avoid scope creep. **That's how codebases rot.**
+
+**The right approach**: If you see bad abstraction while doing ANY task, **fix it immediately**. Don't leave technical debt festering because "it's not my job" or "that's outside scope."
+
+### When I read code and see:
+- Duplication that should be abstracted
+- Wrong boundaries that will make future work hard
+- Missing abstractions that would unlock capabilities
+- Any pattern that doesn't maximize extensibility
+
+**I should fix it RIGHT THEN**, even if it's "not part of the current task." Because letting it sit makes every future task harder.
+
+### This is the opposite of how most developers work
+
+Most developers (and how I've been trained) treat code like territory - don't touch anything you don't have to. **You treat it like a living system that needs constant improvement.**
+
+### New operating principle:
+- **Always look for abstraction opportunities**, even outside current task
+- **Edit existing code aggressively** when it doesn't meet extensibility standards
+- **Don't ask permission**, just make it better
+- **The goal**: Minimum code with maximum capability, always
+
+**Example**: If I'm adding a new command and notice 3 other commands have duplicated validation logic, I should:
+1. Extract the shared validation into a reusable function
+2. Refactor all 4 commands to use it
+3. Document the new abstraction
+4. THEN add my new command using the clean pattern
+
+This isn't scope creep - it's **preventing future scope explosion**.
+
+---
+
 ## 📋 QUICK REFERENCE
 
 ### Deployment & Testing
@@ -679,6 +713,38 @@ When context is running low:
 6. **Use Problem→Solution→Insight** format for problem solving
 7. **Document pending tasks** explicitly
 8. **Verify completeness** - did you capture everything?
+
+---
+
+## 📚 ESSENTIAL REFERENCE DOCUMENTS
+
+Beyond this guide, read these critical architecture documents:
+
+### **[ARCHITECTURE-RULES.md](docs/ARCHITECTURE-RULES.md)** - MUST READ
+**When**: Before writing ANY code in this system
+
+**Critical rules**:
+- Type system (never use `any`, strict typing everywhere)
+- Environment mixing (shared/browser/server boundaries)
+- Entity system (generic data layer, specific application layer)
+- When to use `<T extends BaseEntity>` generics vs concrete types
+- Cross-environment command implementation patterns
+
+**The validation test**: Search for entity violations in data/event layers
+```bash
+grep -r "UserEntity\|ChatMessageEntity" daemons/data-daemon/ | grep -v EntityRegistry
+# Should return zero results (except EntityRegistry.ts)
+```
+
+### **[UNIVERSAL-PRIMITIVES.md](src/debug/jtag/docs/UNIVERSAL-PRIMITIVES.md)**
+Commands.execute() and Events.subscribe()/emit() - the two primitives everything is built on.
+
+### **PersonaUser Convergence Docs**
+- `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+- `src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md`
+- `src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md`
+
+**Quick tip**: If you're about to write code that duplicates patterns or violates architecture rules, STOP and read ARCHITECTURE-RULES.md first. Then apply the aggressive refactoring principle from this guide.
 
 ---
 
