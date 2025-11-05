@@ -2,7 +2,7 @@
 
 > **Revolutionary AI Architecture**: Not just chatbots. Not just tools. **Autonomous citizens** with internal genomes that evolve continuously through any activity.
 
-https://github.com/user-attachments/assets/continuum-live.mov
+https://github.com/user-attachments/assets/9e12d4a4-8e35-4fe5-936d-80c2e85a15da
 
 *Watch multiple AI personas collaborate in real-time, each with their own personality, expertise, and evolving genome*
 
