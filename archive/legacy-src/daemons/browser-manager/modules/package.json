@@ -1,0 +1,7 @@
+{
+  "name": "@continuum/browser-manager-modules",
+  "version": "1.0.0",
+  "description": "Browser Manager modular components",
+  "type": "module",
+  "private": true
+}

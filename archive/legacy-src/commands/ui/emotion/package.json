@@ -1,0 +1,35 @@
+{
+  "name": "emotion-command",
+  "version": "1.0.0",
+  "description": "Emotion expression command for Continuum",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "command": "emotion",
+    "category": "ui",
+    "capabilities": [
+      "emotion-expression",
+      "continuon-animation",
+      "websocket-broadcast"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": ["websocket-broadcast"]
+  },
+  "keywords": [
+    "emotion",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

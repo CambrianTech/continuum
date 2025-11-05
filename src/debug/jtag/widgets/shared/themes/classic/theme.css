@@ -1,0 +1,81 @@
+/**
+ * Classic Theme - Traditional professional interface for JTAG Widget System
+ * Clean, business-appropriate styling with subtle colors
+ */
+
+:root {
+  /* === COLORS - CONTENT === */
+  --content-primary: #2c3e50;
+  --content-secondary: #7f8c8d;
+  --content-accent: #3498db;
+  --content-warning: #e67e22;
+  --content-success: #27ae60;
+  
+  /* === COLORS - BACKGROUNDS === */
+  --background-primary: linear-gradient(135deg, #ecf0f1 0%, #bdc3c7 100%);
+  --widget-surface: #ffffff;
+  --widget-surface-solid: #ffffff;
+  --widget-content-background: #f8f9fa;
+  --widget-header-background: linear-gradient(90deg, #34495e, #2c3e50);
+  --widget-input-area-background: #ffffff;
+  
+  /* === COLORS - SIDEBAR === */
+  --sidebar-background: #34495e;
+  --sidebar-border: #bdc3c7;
+  
+  /* === COLORS - BORDERS === */
+  --border-subtle: #bdc3c7;
+  --border-strong: #95a5a6;
+  --border-accent: #3498db;
+  --widget-border: #bdc3c7;
+  --widget-border-focus: #3498db;
+  
+  /* === COLORS - RESIZER === */
+  --resizer-background: #bdc3c7;
+  --resizer-background-hover: #95a5a6;
+  --resizer-background-active: #3498db;
+  --resizer-border: #95a5a6;
+  --resizer-border-hover: #3498db;
+  --resizer-border-active: #3498db;
+  --resizer-glow-hover: rgba(52, 152, 219, 0.3);
+  --resizer-glow-active: rgba(52, 152, 219, 0.5);
+  
+  /* === COLORS - INPUT === */
+  --input-background: #ffffff;
+  --input-border: #bdc3c7;
+  --input-border-focus: #3498db;
+  --input-text: #2c3e50;
+  --input-placeholder: #7f8c8d;
+  --input-focus-shadow: rgba(52, 152, 219, 0.2);
+  
+  /* === COLORS - BUTTONS === */
+  --button-primary-background: linear-gradient(135deg, #3498db, #2980b9);
+  --button-primary-background-hover: linear-gradient(135deg, #5dade2, #3498db);
+  --button-primary-background-active: linear-gradient(135deg, #2980b9, #21618c);
+  --button-primary-text: #ffffff;
+  --button-primary-shadow: rgba(52, 152, 219, 0.3);
+  
+  --button-secondary-background: #ecf0f1;
+  --button-secondary-background-hover: #d5dbdb;
+  --button-secondary-background-active: #bdc3c7;
+  --button-secondary-text: #2c3e50;
+  
+  /* === COLORS - MESSAGES === */
+  --message-user-background: #ebf3fd;
+  --message-user-text: #2c3e50;
+  --message-user-border: #3498db;
+  
+  --message-assistant-background: #f8f9fa;
+  --message-assistant-text: #2c3e50;
+  --message-assistant-border: #bdc3c7;
+  
+  /* === TYPOGRAPHY === */
+  --font-primary: 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+  --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+  
+  /* === SHADOWS === */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.18);
+  --shadow-glow: 0 0 20px rgba(52, 152, 219, 0.3);
+}

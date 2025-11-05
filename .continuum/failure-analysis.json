@@ -1,0 +1,225 @@
+{
+  "timestamp": 1748846612620,
+  "missionId": "NASA_AI_1748846602524",
+  "error": "require is not defined",
+  "missionLog": [
+    {
+      "timestamp": "2025-06-02T06:43:22.525Z",
+      "type": "MISSION_START",
+      "message": "Initializing NASA-grade AI development mission",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.527Z",
+      "type": "WEB_CONSOLE",
+      "message": "🌐 Launching web console for user communication",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.540Z",
+      "type": "WEB_CONSOLE",
+      "message": "🌐 Web console available at http://localhost:4444",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.540Z",
+      "type": "STRATEGY_LOAD",
+      "message": "Loading strategy database from previous missions",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.540Z",
+      "type": "STRATEGY_LOAD",
+      "message": "No strategy database found, initializing new database",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.540Z",
+      "type": "STRATEGY_ANALYSIS",
+      "message": "Analyzing previous strategies for improvement opportunities",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.540Z",
+      "type": "STRATEGY_ANALYSIS",
+      "message": "Identified 0 improvement opportunities",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.540Z",
+      "type": "TEST_GENERATION",
+      "message": "Generating comprehensive test suite with 100% coverage requirement",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.541Z",
+      "type": "TEST_GENERATION",
+      "message": "Generated 7 comprehensive test suites",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.541Z",
+      "type": "QUALITY_GATES",
+      "message": "Executing mission with mandatory quality gates",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.541Z",
+      "type": "PRE_FLIGHT",
+      "message": "🔧 Performing intelligent pre-flight checks to avoid getting stuck",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:22.574Z",
+      "type": "PRE_FLIGHT",
+      "message": "✅ Git repository operational",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:26.302Z",
+      "type": "PRE_FLIGHT",
+      "message": "🔧 Build attempt 1/3 failed - analyzing",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:29.482Z",
+      "type": "PRE_FLIGHT",
+      "message": "🔧 Build attempt 2/3 failed - analyzing",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.616Z",
+      "type": "PRE_FLIGHT",
+      "message": "🔧 Build attempt 3/3 failed - analyzing",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.616Z",
+      "type": "PRE_FLIGHT",
+      "message": "⚠️ Build still failing - will create working components",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "PRE_FLIGHT",
+      "message": "✅ Pre-flight checks completed - mission ready to proceed",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deploying comprehensive test suite",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Memory Package Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Cyberpunk Theme Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Build System Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Integration Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Performance Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Security Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.617Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Deployed Self-Validation Tests",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.618Z",
+      "type": "TEST_DEPLOYMENT",
+      "message": "Master test runner deployed - ALL tests must pass",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.618Z",
+      "type": "COMPONENT_CREATION",
+      "message": "Creating core components with test-driven development",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.618Z",
+      "type": "MEMORY_PACKAGE",
+      "message": "Creating NASA-grade memory package",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.618Z",
+      "type": "MEMORY_PACKAGE",
+      "message": "NASA-grade memory package created successfully",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.618Z",
+      "type": "CYBERPUNK_THEME",
+      "message": "Creating NASA-grade cyberpunk theme",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.619Z",
+      "type": "CYBERPUNK_THEME",
+      "message": "NASA-grade cyberpunk theme created successfully",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.619Z",
+      "type": "PROJECT_STRUCTURE",
+      "message": "Creating required project structure",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.619Z",
+      "type": "QUALITY_GATES",
+      "message": "🚨 EXECUTING MANDATORY QUALITY GATES - ALL MUST PASS",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.620Z",
+      "type": "QUALITY_GATES",
+      "message": "🚨 QUALITY GATE FAILURE: require is not defined",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.620Z",
+      "type": "MISSION_CRITICAL_FAILURE",
+      "message": "Mission failed: require is not defined",
+      "missionId": "NASA_AI_1748846602524"
+    },
+    {
+      "timestamp": "2025-06-02T06:43:32.620Z",
+      "type": "FAILURE_ANALYSIS",
+      "message": "Performing post-mission failure analysis",
+      "missionId": "NASA_AI_1748846602524"
+    }
+  ],
+  "failurePoint": "FAILURE_ANALYSIS",
+  "recommendations": []
+}

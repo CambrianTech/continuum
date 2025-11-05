@@ -1,0 +1,13 @@
+{
+  "sessionId": "0af92504-9750-4605-a0fe-c8b9d9b992f7",
+  "type": "development",
+  "owner": "shared",
+  "created": "2025-08-18T16:28:24.704Z",
+  "structure": {
+    "logs": "Server and client logs",
+    "screenshots": "Browser screenshots and visual artifacts",
+    "files": "Downloaded files and exports",
+    "recordings": "Screen recordings and interactions",
+    "devtools": "DevTools dumps and debugging artifacts"
+  }
+}

@@ -1,0 +1,267 @@
+#!/usr/bin/env tsx
+/**
+ * Intelligent Test Runner - Handles cross-example switching and versioning
+ *
+ * USAGE RULES:
+ *
+ * Run by categories:
+ *   npm test                                 # Comprehensive (all tests)
+ *   npm test -- comprehensive               # All tests
+ *   npm test -- integration                 # Integration tests only
+ *   npm test -- unit                        # Unit tests only
+ *   npm test -- chat                        # Chat-related tests only
+ *   npm test -- database                    # Database/CRUD tests only
+ *   npm test -- events                      # Event system tests only
+ *
+ * Run individual tests:
+ *   npm test -- single-test path/to/test.ts    # Run single test file
+ *   npm test -- crud-event-chain               # Run specific test by name match
+ *   npm test -- transport-architecture         # Run specific test by name match
+ *
+ * Available categories: comprehensive, integration, unit, chat, screenshots,
+ *   themes, transport, events, blocker, critical, widgets, database, ai, performance
+ *
+ * PROBLEM SOLVED: When you run widget-ui, then npm test (test-bench),
+ * ports conflict because different examples use same ports.
+ *
+ * INTELLIGENCE:
+ * 1. Force cleanup ALL existing systems (any example)
+ * 2. Handle versioning conflicts automatically
+ * 3. Wait for ports to be released properly
+ * 4. Start clean active example environment (from examples.json)
+ */
+
+import { spawn } from 'child_process';
+import { getActiveExampleName } from '../examples/shared/ExampleConfig';
+
+async function runIntelligentTest(testArgs: string[] = []): Promise<boolean> {
+  const activeExample = getActiveExampleName();
+  console.log('🧠 INTELLIGENT TEST RUNNER: Handling cross-example switching');
+  console.log(`📋 Using active example: ${activeExample} (from examples.json)`);
+
+  // Process test arguments
+  let profile = 'comprehensive';
+  let testFile: string | undefined;
+
+  if (testArgs.length > 0) {
+    const firstArg = testArgs[0];
+
+    // Check if it's a single-test call
+    if (firstArg === 'single-test' && testArgs.length > 1) {
+      profile = 'single-test';
+      testFile = testArgs[1];
+      console.log(`📋 Running single test: ${testFile}`);
+    }
+    // Check if it's a test name pattern (look for common test names)
+    else if (firstArg.includes('test') || firstArg.includes('integration') || firstArg.includes('crud')) {
+      // Try to find matching test file
+      const potentialFiles = [
+        `tests/integration/${firstArg}.test.ts`,
+        `tests/${firstArg}.test.ts`,
+        `tests/integration/${firstArg}.ts`
+      ];
+
+      const fs = require('fs');
+      for (const file of potentialFiles) {
+        if (fs.existsSync(file)) {
+          profile = 'single-test';
+          testFile = file;
+          console.log(`📋 Found matching test: ${testFile}`);
+          break;
+        }
+      }
+
+      if (!testFile) {
+        console.log(`📋 No specific test file found for "${firstArg}", treating as profile`);
+        profile = firstArg;
+      }
+    }
+    // Otherwise, treat as profile name
+    else {
+      profile = firstArg;
+      console.log(`📋 Running test profile: ${profile}`);
+    }
+  }
+  
+  // INTELLIGENCE: Step 0 - TypeScript compilation check first
+  console.log('\n🔧 STEP 0: TypeScript compilation verification');
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tscCheck = spawn('npx', ['tsc', '--noEmit', '--project', '.'], {
+        stdio: 'inherit',
+        shell: true
+      });
+      
+      tscCheck.on('exit', (code) => {
+        if (code === 0) {
+          console.log('✅ TypeScript compilation successful');
+          resolve();
+        } else {
+          console.log(`❌ FATAL: TypeScript compilation failed (exit code: ${code})`);
+          reject(new Error('TypeScript compilation failed'));
+        }
+      });
+      
+      tscCheck.on('error', (error) => {
+        console.log(`❌ FATAL: TypeScript compilation error: ${error.message}`);
+        reject(error);
+      });
+    });
+  } catch (error) {
+    console.log('💥 TypeScript compilation failed - aborting tests');
+    return false;
+  }
+
+  // INTELLIGENCE: Step 1 - Force cleanup ALL existing systems AND session directories
+  console.log('\n🧹 STEP 1: Force cleanup of all existing JTAG systems and session directories (any example)');
+  try {
+    await new Promise<void>((resolve) => {
+      const cleanup = spawn('npm', ['run', 'system:stop'], {
+        stdio: 'inherit',
+        shell: true
+      });
+      
+      cleanup.on('exit', (code) => {
+        console.log(`✅ System cleanup completed (exit code: ${code})`);
+        resolve();
+      });
+      
+      cleanup.on('error', (error) => {
+        console.warn(`⚠️ Cleanup error (continuing anyway): ${error.message}`);
+        resolve(); // Continue even if cleanup fails
+      });
+    });
+    
+    // INTELLIGENCE: Clean session directories to prevent deadbeef accumulation
+    console.log('🗑️  Cleaning session directories to prevent deadbeef accumulation...');
+    try {
+      const fs = await import('fs').then(m => m.promises);
+      const path = await import('path');
+      
+      // Clean metadata.json files in both widget-ui and test-bench examples
+      const exampleDirs = ['examples/widget-ui', 'examples/test-bench'];
+      
+      for (const exampleDir of exampleDirs) {
+        const metadataPath = path.join(exampleDir, '.continuum/jtag/sessions/metadata.json');
+        try {
+          const emptyMetadata = {
+            "projectContext": path.resolve(exampleDir),
+            "sessions": [],
+            "lastUpdated": new Date().toISOString(),
+            "version": "1.0.0"
+          };
+          
+          await fs.writeFile(metadataPath, JSON.stringify(emptyMetadata, null, 2));
+          console.log(`✅ Cleared session metadata: ${metadataPath}`);
+        } catch (error) {
+          console.warn(`⚠️ Could not clean ${metadataPath}: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+      
+    } catch (error) {
+      console.warn(`⚠️ Session cleanup error (continuing anyway): ${error instanceof Error ? error.message : error}`);
+    }
+    
+    // INTELLIGENCE: Extra wait for ports to be fully released
+    console.log('⏳ Waiting for ports to be fully released...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+  } catch (error) {
+    console.warn(`⚠️ Cleanup failed (continuing): ${error}`);
+  }
+  
+  // INTELLIGENCE: Step 2 - Kill any lingering processes on our ports
+  console.log('\n🔫 STEP 2: Kill any lingering processes on dynamic ports');
+  try {
+    // Get dynamic port configuration instead of hardcoded ports
+    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const activePorts = await getActivePorts();
+    const portsToKill = [activePorts.websocket_server, activePorts.http_server];
+    
+    for (const port of portsToKill) {
+      await new Promise<void>((resolve) => {
+        // Use lsof to find and kill processes on specific ports
+        const killCmd = `lsof -ti :${port} | xargs kill -9 2>/dev/null || true`;
+        const killPort = spawn('bash', ['-c', killCmd], {
+          stdio: 'pipe', // Don't show output for these
+          shell: false
+        });
+        
+        killPort.on('exit', () => resolve());
+        killPort.on('error', () => resolve()); // Continue even if fails
+      });
+    }
+    console.log('✅ Port cleanup completed');
+  } catch (error) {
+    console.warn(`⚠️ Port cleanup failed (continuing): ${error}`);
+  }
+  
+  // INTELLIGENCE: Step 3 - Start test system with smart environment
+  console.log('\n🚀 STEP 3: Starting active example system with intelligent configuration');
+  
+  return new Promise<boolean>((resolve) => {
+    const testArgs = ['run', 'test:start-and-test'];
+
+    // Pass through the profile and test file as environment variables
+    const env = {
+      ...process.env,
+      // Use active_example from examples.json instead of hardcoding 'test-bench'
+      JTAG_FORCE_RESTART: 'true',           // Force restart to handle version conflicts
+      JTAG_IGNORE_EXISTING: 'true',         // Ignore any existing systems
+      JTAG_TEST_PROFILE: profile,           // Pass the test profile
+    };
+
+    if (testFile) {
+      env.JTAG_TEST_FILE = testFile;
+    }
+
+    const testProcess = spawn('npm', testArgs, {
+      stdio: 'inherit',
+      shell: true,
+      env
+    });
+    
+    // Handle interruption
+    process.on('SIGINT', () => {
+      console.log('\n🛑 Intelligent test interrupted - cleaning up...');
+      testProcess.kill('SIGINT');
+      setTimeout(() => {
+        process.exit(130);
+      }, 1000);
+    });
+    
+    testProcess.on('exit', (code) => {
+      const success = code === 0;
+      if (success) {
+        console.log('\n🎉 Intelligent test execution completed successfully!');
+        console.log('🧠 Cross-example switching handled automatically');
+      } else {
+        console.log(`\n❌ Intelligent test failed with exit code: ${code}`);
+        console.log('💡 Try running again - port conflicts may need more cleanup time');
+      }
+      resolve(success);
+    });
+    
+    testProcess.on('error', (error) => {
+      console.error(`\n💥 Intelligent test execution error: ${error.message}`);
+      resolve(false);
+    });
+  });
+}
+
+// Main execution
+async function main() {
+  try {
+    // Parse command line arguments (skip node and script name)
+    const testArgs = process.argv.slice(2);
+    const success = await runIntelligentTest(testArgs);
+    process.exit(success ? 0 : 1);
+  } catch (error: any) {
+    console.error('\n💥 Intelligent test runner failed:', error.message);
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  main();
+}

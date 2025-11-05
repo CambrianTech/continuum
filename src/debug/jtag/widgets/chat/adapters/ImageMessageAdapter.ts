@@ -1,0 +1,374 @@
+/**
+ * Image Message Content Adapter
+ *
+ * Simple, efficient image renderer with lazy loading
+ * No shadow DOM per row - just embedded CSS and HTML
+ */
+
+import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import { AbstractMessageAdapter } from './AbstractMessageAdapter';
+
+interface ImageContentData {
+  readonly url: string;
+  readonly altText?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly caption?: string;
+  readonly thumbnail?: string;
+}
+
+export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData> {
+  constructor(options = {}, hooks = {}) {
+    super('image', {
+      enableIntersectionObserver: true,
+      lazyLoadContent: true,
+      enableInteractions: true,
+      aiEditingEnabled: true, // AI can generate alt text, captions
+      ...options
+    }, hooks);
+  }
+
+  /**
+   * Parse image URL from message text
+   * Future: Support structured image data from ChatMessagePayload
+   */
+  parseContent(message: ChatMessageEntity): ImageContentData | null {
+    const text = message.content?.text;
+    if (!text) return null;
+
+    // Simple URL extraction for demo - future versions will use structured data
+    const imageUrlMatch = text.match(/(https?:\/\/[^\s]+\.(?:jpg|jpeg|png|gif|webp|svg))/i);
+    if (!imageUrlMatch) return null;
+
+    const url = imageUrlMatch[1];
+    const remainingText = text.replace(url, '').trim();
+
+    return {
+      url,
+      caption: remainingText || undefined,
+      altText: `Image: ${remainingText || 'Shared image'}` // AI will improve this
+    };
+  }
+
+  /**
+   * Render responsive image with loading states
+   */
+  renderContent(data: ImageContentData, currentUserId: string): string {
+    const { url, altText, caption } = data;
+    const imageId = `img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    return `
+      <div class="image-message-content">
+        <div class="image-container" data-image-id="${imageId}">
+          <div class="image-loading-placeholder">
+            <div class="loading-spinner"></div>
+            <span class="loading-text">Loading image...</span>
+          </div>
+          <img
+            src="${url}"
+            alt="${altText || 'Image'}"
+            class="message-image"
+            loading="lazy"
+            data-loaded="false"
+            style="display: none;"
+          />
+          <div class="image-error" style="display: none;">
+            <span class="error-icon">🖼️</span>
+            <span class="error-text">Image failed to load</span>
+            <button class="retry-button" data-url="${url}">Retry</button>
+          </div>
+        </div>
+        ${caption ? `<div class="image-caption">${caption}</div>` : ''}
+        <div class="image-actions">
+          <button class="action-button fullscreen" title="View fullscreen">🔍</button>
+          <button class="action-button download" title="Download" data-url="${url}">⬇️</button>
+          <button class="action-button ai-describe" title="AI describe image">🤖</button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Handle image loading with proper error states and lazy loading
+   */
+  async handleContentLoading(element: HTMLElement): Promise<void> {
+    const img = element.querySelector('.message-image') as HTMLImageElement;
+    const placeholder = element.querySelector('.image-loading-placeholder') as HTMLElement;
+    const errorDiv = element.querySelector('.image-error') as HTMLElement;
+
+    if (!img) return;
+
+    return new Promise((resolve) => {
+      const onLoad = () => {
+        img.style.display = 'block';
+        img.dataset.loaded = 'true';
+        placeholder.style.display = 'none';
+        errorDiv.style.display = 'none';
+        resolve();
+      };
+
+      const onError = () => {
+        placeholder.style.display = 'none';
+        errorDiv.style.display = 'block';
+        resolve(); // Still resolve to not block other content
+      };
+
+      // Set up event listeners
+      img.addEventListener('load', onLoad, { once: true });
+      img.addEventListener('error', onError, { once: true });
+
+      // If image is already loaded (cached), trigger immediately
+      if (img.complete && img.naturalWidth > 0) {
+        onLoad();
+      }
+    });
+  }
+
+  /**
+   * CSS classes specific to image content
+   */
+  getContentClasses(): string[] {
+    return ['image-content', 'media-content', 'interactive-content'];
+  }
+
+  /**
+   * CSS for image message content (injected once into chat widget shadow DOM)
+   */
+  getCSS(): string {
+    return `
+      /* Image Message Adapter Styles */
+      .content-type-image {
+        max-width: 100%;
+        margin: 8px 0;
+      }
+
+      .image-message-content {
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--message-bg, #f5f5f5);
+      }
+
+      .image-container {
+        position: relative;
+        max-width: 400px;
+        max-height: 300px;
+      }
+
+      .image-loading-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100px;
+        background: var(--loading-bg, #e0e0e0);
+        color: var(--loading-text, #666);
+      }
+
+      .loading-spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid transparent;
+        border-top: 2px solid currentColor;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 8px;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .message-image {
+        width: 100%;
+        height: auto;
+        display: block;
+        transition: opacity 0.2s ease;
+      }
+
+      .image-error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+        background: var(--error-bg, #fff3f3);
+        color: var(--error-text, #d73a49);
+      }
+
+      .retry-button {
+        margin-top: 8px;
+        padding: 4px 12px;
+        background: var(--button-bg, #007acc);
+        color: var(--button-text, white);
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .image-caption {
+        padding: 8px 12px;
+        font-size: 14px;
+        color: var(--caption-text, #666);
+        background: var(--caption-bg, rgba(0,0,0,0.05));
+      }
+
+      .image-actions {
+        display: flex;
+        gap: 4px;
+        padding: 8px;
+        background: var(--actions-bg, rgba(0,0,0,0.05));
+        justify-content: flex-end;
+      }
+
+      .action-button {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 4px;
+        opacity: 0.7;
+        transition: opacity 0.2s ease;
+      }
+
+      .action-button:hover {
+        opacity: 1;
+        background: var(--button-hover-bg, rgba(0,0,0,0.1));
+      }
+    `;
+  }
+
+  /**
+   * Enhanced interaction handlers for images
+   */
+  protected setupInteractionHandlers(element: HTMLElement): void {
+    super.setupInteractionHandlers(element);
+
+    // Fullscreen viewing
+    const fullscreenBtn = element.querySelector('.fullscreen');
+    fullscreenBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.openFullscreen(element);
+    });
+
+    // Download functionality
+    const downloadBtn = element.querySelector('.download');
+    downloadBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const url = (e.target as HTMLElement).dataset.url;
+      if (url) this.downloadImage(url);
+    });
+
+    // AI describe functionality
+    const aiBtn = element.querySelector('.ai-describe');
+    aiBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.requestAIDescription(element);
+    });
+
+    // Retry on error
+    const retryBtn = element.querySelector('.retry-button');
+    retryBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const url = (e.target as HTMLElement).dataset.url;
+      if (url) this.retryImageLoad(element, url);
+    });
+  }
+
+  /**
+   * Open image in fullscreen mode
+   */
+  private openFullscreen(element: HTMLElement): void {
+    const img = element.querySelector('.message-image') as HTMLImageElement;
+    if (!img) return;
+
+    // Future: Implement fullscreen overlay
+    console.log('🖼️ Opening fullscreen for:', img.src);
+    this.hooks.onUserInteraction?.('fullscreen', { url: img.src });
+  }
+
+  /**
+   * Download image
+   */
+  private downloadImage(url: string): void {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = url.split('/').pop() || 'image';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    this.hooks.onUserInteraction?.('download', { url });
+  }
+
+  /**
+   * Request AI-generated description
+   */
+  private async requestAIDescription(element: HTMLElement): Promise<void> {
+    const img = element.querySelector('.message-image') as HTMLImageElement;
+    if (!img) return;
+
+    console.log('🤖 Requesting AI description for:', img.src);
+
+    // Future: Call AI service for image description
+    // const description = await aiService.describeImage(img.src);
+
+    this.hooks.onUserInteraction?.('ai_describe', {
+      url: img.src,
+      action: 'describe_image'
+    });
+  }
+
+  /**
+   * Retry failed image load
+   */
+  private retryImageLoad(element: HTMLElement, url: string): void {
+    const img = element.querySelector('.message-image') as HTMLImageElement;
+    const placeholder = element.querySelector('.image-loading-placeholder') as HTMLElement;
+    const errorDiv = element.querySelector('.image-error') as HTMLElement;
+
+    if (!img) return;
+
+    // Reset states
+    errorDiv.style.display = 'none';
+    placeholder.style.display = 'block';
+    img.style.display = 'none';
+
+    // Force reload by adding timestamp
+    img.src = `${url}?retry=${Date.now()}`;
+  }
+
+  /**
+   * AI-editable fields for this content type
+   */
+  protected getAIEditableFields(): Record<string, any> {
+    return {
+      altText: 'string',
+      caption: 'string',
+      description: 'string'
+    };
+  }
+
+  /**
+   * Handle AI editing of image content
+   */
+  async handleAIEdit(editInstructions: any): Promise<void> {
+    console.log('🤖 AI editing image content:', editInstructions);
+
+    // Future: AI can:
+    // - Generate better alt text
+    // - Create captions
+    // - Suggest image improvements
+    // - Auto-crop/enhance images
+
+    if (editInstructions.generateAltText) {
+      // const newAltText = await aiService.generateAltText(this.contentData?.url);
+      // Update the image alt text
+    }
+
+    if (editInstructions.generateCaption) {
+      // const newCaption = await aiService.generateCaption(this.contentData?.url);
+      // Update the caption
+    }
+
+    super.handleAIEdit(editInstructions);
+  }
+}

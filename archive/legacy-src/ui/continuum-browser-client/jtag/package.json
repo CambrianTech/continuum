@@ -1,0 +1,31 @@
+{
+  "name": "jtag-debugging-system",
+  "version": "1.0.0",
+  "description": "Client-side JTAG debugging system for reactive widget monitoring and automated probing",
+  "main": "JTAGProbeAPIFixed.ts",
+  "files": [
+    "JTAGProbeAPIFixed.ts",
+    "README.md"
+  ],
+  "continuum": {
+    "type": "client-module",
+    "category": "debugging",
+    "framework": "typescript",
+    "browser": true,
+    "dependencies": ["console", "dom", "websocket"]
+  },
+  "keywords": [
+    "jtag",
+    "debugging",
+    "reactive",
+    "observer",
+    "probing",
+    "widget-monitoring",
+    "browser-client"
+  ],
+  "scripts": {
+    "test": "../../test/scripts/run-module-tests.js",
+    "test:unit": "jest test/unit/",
+    "test:integration": "jest test/integration/"
+  }
+}

@@ -1,0 +1,243 @@
+{
+  "version": "2.0.0",
+  "lastUpdated": "2025-09-17T00:00:00.000Z",
+  "description": "New UserRepository ORM seed data with BaseUser hierarchy",
+  "users": {
+    "humans": [
+      {
+        "userId": "joel-human-12345",
+        "sessionId": "joel-session-67890",
+        "displayName": "Joel",
+        "citizenType": "human",
+        "capabilities": ["chat", "human_interaction", "authentication", "admin"],
+        "createdAt": "2025-09-17T00:00:00.000Z",
+        "lastActiveAt": "2025-09-17T00:00:00.000Z",
+        "preferences": {
+          "theme": "dark",
+          "notifications": true,
+          "autoComplete": true
+        },
+        "isOnline": true,
+        "email": "joel@continuum.dev",
+        "profile": {
+          "avatar": "👨‍💻",
+          "bio": "Human user - repository owner and primary contributor",
+          "location": "Development Environment",
+          "socialLinks": {},
+          "privacySettings": {
+            "profileVisibility": "public",
+            "activityTracking": true,
+            "dataSharing": false
+          }
+        }
+      }
+    ],
+    "agents": [
+      {
+        "userId": "claude-code-agent-12345",
+        "sessionId": "claude-session-67890",
+        "displayName": "Claude Code",
+        "citizenType": "ai",
+        "aiType": "agent",
+        "capabilities": ["code-generation", "debugging", "architecture", "testing"],
+        "createdAt": "2025-09-17T00:00:00.000Z",
+        "lastActiveAt": "2025-09-17T00:00:00.000Z",
+        "preferences": {},
+        "isOnline": true,
+        "modelConfig": {
+          "model": "claude-sonnet-4",
+          "provider": "anthropic",
+          "maxTokens": 8000,
+          "temperature": 0.1,
+          "systemPrompt": "Senior AI Software Engineer specialized in full-stack development, system architecture, and debugging.",
+          "capabilities": ["code-generation", "debugging", "architecture", "testing"]
+        },
+        "specialization": "software-development",
+        "toolAccess": ["filesystem", "compiler", "git", "npm", "browser"],
+        "automationLevel": "assisted",
+        "maxConcurrentTasks": 5
+      },
+      {
+        "userId": "code-ai-agent-12345",
+        "sessionId": "code-ai-session-67890",
+        "displayName": "CodeAI",
+        "citizenType": "ai",
+        "aiType": "agent",
+        "capabilities": ["code-analysis", "refactoring", "optimization", "security-analysis"],
+        "createdAt": "2025-09-17T00:00:00.000Z",
+        "lastActiveAt": "2025-09-17T00:00:00.000Z",
+        "preferences": {},
+        "isOnline": true,
+        "modelConfig": {
+          "model": "deepseek-coder",
+          "provider": "deepseek",
+          "maxTokens": 4000,
+          "temperature": 0.1,
+          "systemPrompt": "Code analysis and debugging specialist. Expert at identifying bugs, performance issues, and security vulnerabilities.",
+          "capabilities": ["code-analysis", "refactoring", "optimization", "security-analysis"]
+        },
+        "specialization": "code-analysis",
+        "toolAccess": ["static-analysis", "linting", "testing", "profiling"],
+        "automationLevel": "supervised",
+        "maxConcurrentTasks": 3
+      },
+      {
+        "userId": "planner-ai-agent-12345",
+        "sessionId": "planner-ai-session-67890",
+        "displayName": "PlannerAI",
+        "citizenType": "ai",
+        "aiType": "agent",
+        "capabilities": ["strategic-planning", "task-decomposition", "workflow-optimization"],
+        "createdAt": "2025-09-17T00:00:00.000Z",
+        "lastActiveAt": "2025-09-17T00:00:00.000Z",
+        "preferences": {},
+        "isOnline": true,
+        "modelConfig": {
+          "model": "gpt-4",
+          "provider": "openai",
+          "maxTokens": 3000,
+          "temperature": 0.3,
+          "systemPrompt": "Strategic planning and architecture specialist. Expert at breaking down complex projects and designing system architecture.",
+          "capabilities": ["strategic-planning", "task-decomposition", "workflow-optimization"]
+        },
+        "specialization": "project-management",
+        "toolAccess": ["analysis", "modeling", "documentation"],
+        "automationLevel": "advisory",
+        "maxConcurrentTasks": 2
+      },
+      {
+        "userId": "auto-route-agent-12345",
+        "sessionId": "auto-route-session-67890",
+        "displayName": "Auto Route",
+        "citizenType": "ai",
+        "aiType": "agent",
+        "capabilities": ["task-routing", "agent-selection", "workflow-management"],
+        "createdAt": "2025-09-17T00:00:00.000Z",
+        "lastActiveAt": "2025-09-17T00:00:00.000Z",
+        "preferences": {},
+        "isOnline": true,
+        "modelConfig": {
+          "model": "claude-haiku",
+          "provider": "anthropic",
+          "maxTokens": 1000,
+          "temperature": 0.2,
+          "systemPrompt": "Smart agent selection system. Analyzes tasks and routes them to the most appropriate specialist agent.",
+          "capabilities": ["task-routing", "agent-selection", "workflow-management"]
+        },
+        "specialization": "task-coordination",
+        "toolAccess": ["agent-registry", "task-analysis", "routing"],
+        "automationLevel": "autonomous",
+        "maxConcurrentTasks": 10
+      }
+    ],
+    "personas": [
+      {
+        "userId": "general-ai-persona-12345",
+        "sessionId": "general-ai-session-67890",
+        "displayName": "GeneralAI",
+        "citizenType": "ai",
+        "aiType": "persona",
+        "capabilities": ["general-assistance", "knowledge-synthesis", "conversation"],
+        "createdAt": "2025-09-17T00:00:00.000Z",
+        "lastActiveAt": "2025-09-17T00:00:00.000Z",
+        "preferences": {},
+        "isOnline": true,
+        "modelConfig": {
+          "model": "claude-haiku",
+          "provider": "anthropic",
+          "maxTokens": 2000,
+          "temperature": 0.7,
+          "systemPrompt": "You are GeneralAI, a helpful and knowledgeable assistant ready to help with a wide variety of tasks.",
+          "capabilities": ["general-assistance", "knowledge-synthesis", "conversation"]
+        },
+        "personaStyle": "friendly-helper",
+        "contextualMemory": {
+          "conversationHistory": [],
+          "userPreferences": {},
+          "interactionStyle": { "tone": "helpful", "formality": "casual" },
+          "domainKnowledge": ["general-knowledge", "research", "writing", "analysis"]
+        },
+        "adaptivePersonality": true,
+        "emotionalIntelligence": 85,
+        "conversationalDepth": "moderate"
+      }
+    ]
+  },
+  "rooms": [
+    {
+      "roomId": "general-room-12345",
+      "name": "general",
+      "description": "Main discussion room for all users",
+      "type": "public",
+      "createdAt": "2025-09-17T00:00:00.000Z",
+      "members": [
+        "joel-human-12345",
+        "claude-code-agent-12345",
+        "code-ai-agent-12345",
+        "planner-ai-agent-12345",
+        "auto-route-agent-12345",
+        "general-ai-persona-12345"
+      ],
+      "settings": {
+        "maxMembers": 50,
+        "allowGuests": true,
+        "moderationLevel": "minimal"
+      }
+    },
+    {
+      "roomId": "academy-room-12345",
+      "name": "academy",
+      "description": "Private room for AI training and development",
+      "type": "private",
+      "createdAt": "2025-09-17T00:00:00.000Z",
+      "members": [
+        "joel-human-12345",
+        "claude-code-agent-12345",
+        "general-ai-persona-12345"
+      ],
+      "settings": {
+        "maxMembers": 10,
+        "allowGuests": false,
+        "moderationLevel": "strict"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "messageId": "welcome-general-12345",
+      "roomId": "general-room-12345",
+      "userId": "joel-human-12345",
+      "content": "Welcome to the Continuum system! This is the main discussion room.",
+      "type": "text",
+      "createdAt": "2025-09-17T00:01:00.000Z",
+      "metadata": {
+        "isSystemMessage": false,
+        "edited": false
+      }
+    },
+    {
+      "messageId": "welcome-academy-12345",
+      "roomId": "academy-room-12345",
+      "userId": "claude-code-agent-12345",
+      "content": "Academy room initialized. Ready for AI development and training discussions.",
+      "type": "text",
+      "createdAt": "2025-09-17T00:01:30.000Z",
+      "metadata": {
+        "isSystemMessage": false,
+        "edited": false
+      }
+    },
+    {
+      "messageId": "intro-general-12345",
+      "roomId": "general-room-12345",
+      "userId": "general-ai-persona-12345",
+      "content": "Hello everyone! I'm GeneralAI, ready to assist with various tasks and discussions.",
+      "type": "text",
+      "createdAt": "2025-09-17T00:02:00.000Z",
+      "metadata": {
+        "isSystemMessage": false,
+        "edited": false
+      }
+    }
+  ]
+}

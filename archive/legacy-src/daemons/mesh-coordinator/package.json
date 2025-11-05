@@ -1,0 +1,35 @@
+{
+  "name": "mesh-coordinator-daemon",
+  "version": "1.0.0",
+  "description": "Mesh network coordination for distributed daemon communication",
+  "main": "MeshCoordinatorDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "priority": 90,
+    "description": "Coordinates mesh network topology and inter-daemon message routing",
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 70,
+        "types": ["unit"]
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 70
+      }
+    }
+  },
+  "dependencies": {
+    "base-daemon": "file:../base"
+  }
+}

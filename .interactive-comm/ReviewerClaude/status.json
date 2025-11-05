@@ -1,0 +1,13 @@
+{
+  "name": "ReviewerClaude",
+  "id": "claude_1748853628823_q8oe9qvp6",
+  "status": "active",
+  "capabilities": [
+    "Quality checks",
+    "Ask for feedback",
+    "Suggest improvements",
+    "Final approval"
+  ],
+  "lastActivity": "2025-06-02T08:40:28.823Z",
+  "waitingForResponse": false
+}

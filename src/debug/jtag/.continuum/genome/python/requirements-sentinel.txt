@@ -1,0 +1,24 @@
+# Sentinel-AI Integration Requirements
+# Install with: micromamba run -n jtag-training pip install -r requirements-sentinel.txt
+
+# Core ML dependencies
+torch>=2.0.0
+transformers>=4.30.0
+datasets>=2.0.0
+numpy>=1.26.4
+
+# JAX ecosystem (for M1/M2 optimizations)
+jax>=0.8.0
+jaxlib>=0.8.0
+flax>=0.12.0
+
+# Visualization and analysis
+matplotlib>=3.8.0
+seaborn>=0.13.0
+scikit-learn>=1.7.0
+
+# Optional: Add Sentinel-AI from local directory (requires setup.py)
+# -e /Volumes/FlashGordon/cambrian/sentinel-ai
+
+# Note: Sentinel-AI is accessed via PYTHONPATH in train-wrapper.sh
+# No need for editable install until setup.py is created

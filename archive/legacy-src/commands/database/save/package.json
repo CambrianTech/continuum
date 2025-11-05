@@ -1,0 +1,34 @@
+{
+  "name": "database-save-command",
+  "version": "1.0.0",
+  "description": "Database save command for Continuum",
+  "main": "DatabaseSaveCommand.ts",
+  "type": "module",
+  "continuum": {
+    "command": "database-save",
+    "category": "Database",
+    "capabilities": [
+      "data-persistence",
+      "record-creation"
+    ],
+    "dependencies": ["database-daemon"],
+    "interfaces": ["CommandProcessor"],
+    "permissions": ["write", "storage"]
+  },
+  "keywords": [
+    "database",
+    "save",
+    "command",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

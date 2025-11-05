@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "localhost",
+    "protocol": "ws"
+  },
+  "client": {
+    "host": "localhost",
+    "protocol": "http"
+  },
+  "paths": {
+    "test_bench": "test-bench",
+    "logs": ".continuum/jtag/logs",
+    "screenshots": ".continuum/jtag/screenshots"
+  },
+  "browser": {
+    "headless": false,
+    "devtools": true,
+    "width": 1200,
+    "height": 800
+  },
+  "test_settings": {
+    "timeout_ms": 30000,
+    "retry_attempts": 3,
+    "screenshot_on_failure": true,
+    "cleanup_after_test": true
+  },
+  "environment": {
+    "test_mode": true,
+    "verbose_logging": true,
+    "isolated_sessions": true
+  },
+  "_comment": "Ports are resolved dynamically from active example configuration - see TestConfigFactory"
+}

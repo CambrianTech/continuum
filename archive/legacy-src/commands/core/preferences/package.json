@@ -1,0 +1,32 @@
+{
+  "name": "preferences-core",
+  "version": "1.0.0",
+  "description": "preferences core for Continuum",
+  "main": "PreferencesCommand.ts",
+  "type": "module",
+  "continuum": {
+    "core": "preferences",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "preferences",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

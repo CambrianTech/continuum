@@ -1,0 +1,34 @@
+{
+  "name": "continuum-directory-core",
+  "version": "1.0.0",
+  "description": "continuum-directory core for Continuum",
+  "main": "ContinuumDirectoryDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "priority": 15,
+    "core": "continuum_directory",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "continuum-directory",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "name": "@continuum/jtag-command-navigate",
+  "version": "1.0.0",
+  "description": "JTAG Navigate Command - Browser navigation with loading state management",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "browser"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "navigate",
+    "testParams": {
+      "url": "https://example.com",
+      "waitForLoad": true,
+      "timeout": 5000
+    },
+    "expectedFields": [
+      "success",
+      "url",
+      "finalUrl",
+      "loadTime",
+      "statusCode"
+    ],
+    "performanceThresholdMs": 8000,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "navigate-simple",
+        "description": "Simple navigation to URL",
+        "params": {
+          "url": "https://example.com"
+        }
+      },
+      {
+        "name": "navigate-with-timeout",
+        "description": "Navigation with custom timeout",
+        "params": {
+          "url": "https://httpbin.org/delay/2",
+          "timeout": 5000,
+          "waitForLoad": true
+        }
+      },
+      {
+        "name": "navigate-local-file",
+        "description": "Navigate to local file",
+        "params": {
+          "url": "file:///tmp/test.html",
+          "waitForLoad": false
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for navigate command'",
+    "test:integration": "echo 'Integration tests for navigate command'"
+  },
+  "keywords": [
+    "jtag",
+    "navigate",
+    "browser",
+    "url",
+    "command"
+  ]
+}

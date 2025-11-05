@@ -2,10 +2,16 @@
 node_modules/
 jspm_packages/
 
+# Git hook backup files
+*.pre-commit-backup
+
 # Build outputs
 dist/
 build/
 *.tsbuildinfo
+
+# Generated manifest files (use generated.ts instead)
+src/debug/jtag/manifests/
 
 # Generated test files
 test-config.md
@@ -17,7 +23,9 @@ examples/CLAUDE.md
 
 # Logs
 logs
+!verification/logs/
 *.log
+!verification/logs/*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -57,3 +65,82 @@ Thumbs.db
 
 # Debug files
 packages/cli/bin/debug-*.js
+
+# AI system generated files and directories
+# Ignore all .continuum directories except sessions/validation
+**/.continuum/data/
+**/.continuum/generator/
+**/.continuum/jtag/
+**/.continuum/test*/
+**/.continuum/sessions/user/
+**/.continuum/sessions/shared/
+**/.continuum/sessions/cli/
+**/.continuum/shared/
+**/.continuum/directory.json
+**/.continuum/*.log
+**/examples/**/.continuum/
+
+# Genome training environment (Python/conda)
+# Keep bootstrap scripts (source code), ignore installed environment
+**/.continuum/genome/python/micromamba/
+**/.continuum/genome/python/test-output/
+**/.continuum/genome/python/*.log
+**/.continuum/genome/python/test-training-*.json
+!**/.continuum/genome/python/bootstrap.sh
+!**/.continuum/genome/python/train-wrapper.sh
+!**/.continuum/genome/python/activate.sh
+!**/.continuum/genome/python/environment.yml
+!**/.continuum/genome/python/README.md
+
+# Trained adapters (user-specific runtime data)
+**/.continuum/genome/adapters/
+**/.continuum/genome/models/
+# Keep validation directory for historical test artifacts
+.claude-pool/
+.claude-messages/
+.continuum-comm/
+.continuum-safe-backup/
+.continuum-system/
+.interactive-comm/
+*ai*.cjs
+*ai-*.cjs
+SYSTEM_ARCHITECTURE.md
+test-continuum-web.cjs
+ai-venv/
+
+# Continuum persistent state
+continuum.log
+continuum_restart.log
+
+# Generated documentation
+*-AI-*.md
+generated-*/
+*.md.backup
+*.md.test-backup
+
+# Debug and temporary files
+debug-*.cjs
+debug-*.html
+debug-*.js
+*debug*.log
+*temp*.cjs
+fix-*.js
+stream-*.cjs
+test-*.cjs
+*-test.cjs
+claude-code-agent.cjs
+
+# Test data files
+.test-instance-*
+/agent-scripts/bin
+archived/
+
+# Compiled TypeScript files
+src/ui/**/*.js
+src/ui/**/*.js.map
+src/ui/**/*.d.ts
+src/commands/**/*.js
+src/commands/**/*.js.map
+src/commands/**/*.d.ts
+/src/debug/jtag/.archive
+.tgz

@@ -1,0 +1,82 @@
+#!/usr/bin/env sh
+# CONTINUUM PRE-PUSH VALIDATION: PREVENT REGRESSIONS ONLY
+# Focus on blocking breaking changes, not comprehensive testing
+
+npm run log:git-hook pre-push >/dev/null 2>&1 || true
+printf "\rContinuum Pre-Push: Preventing Regressions\n" >&2
+echo "🛡️ Blocking breaking changes - Pre-commit already validated code quality"
+echo ""
+
+# 🎓 CRITICAL: Graduated modules must never regress
+echo "🎓 Graduated module regression check..."
+npm run test:quality:push --silent || {
+    echo ""
+    echo "❌ PUSH BLOCKED: Graduated module regression detected!"
+    echo "   🔍 Run: npm run test:quality:push"
+    echo "   💡 Graduated modules must maintain perfect quality forever"
+    echo "   🎯 Either fix the regression or demote the module status"
+    exit 1
+}
+echo "   ✅ No regressions in graduated modules"
+
+# 🔌 CRITICAL: Core integration must not be broken
+echo "🔌 Core integration stability check..."
+npm run test:integration:layer2-3 --silent || {
+    echo ""
+    echo "❌ PUSH BLOCKED: Core integration broken!"
+    echo "   🔍 Run: npm run test:integration:layer2-3"
+    echo "   💡 Core daemons and commands must integrate properly"
+    echo "   🎯 Fix integration failures before pushing"
+    exit 1
+}
+echo "   ✅ Core integration stable"
+
+# 📊 CRITICAL: Quality Ratchet - No Degradation Ever
+echo "📊 Quality Ratchet: Enforcing monotonic quality improvement..."
+
+# Get current quality score
+CURRENT_SCORE=$(npx tsx src/testing/ModuleComplianceReport.ts --use-whitelist --silent 2>/dev/null | grep "✅ Compliant:" | sed 's/.*(\([0-9.]*\)%).*/\1/' || echo "0")
+
+# Check for graduated module regressions (stricter than basic compliance)
+if ! npx tsx src/testing/QualityEnforcementEngine.ts --push --silent >/dev/null 2>&1; then
+    echo ""
+    echo "❌ PUSH BLOCKED: Quality degradation detected!"
+    echo "   🎯 Core Principle Violated: qualityScore(after) >= qualityScore(before)"
+    echo "   🔍 Run: npm run test:quality:push"
+    echo "   💡 Graduated modules can NEVER regress in quality"
+    echo "   🎓 Either fix the degradation or demote module status"
+    exit 1
+fi
+
+# Ensure module compliance violations don't break existing modules
+npx tsx src/testing/ModuleComplianceReport.ts --exit-on-failure --use-whitelist --silent || {
+    echo ""
+    echo "❌ PUSH BLOCKED: Module compliance violations!"
+    echo "   🔍 Run: npm run test:compliance:strict"
+    echo "   💡 Module structure changes broke compliance"
+    echo "   🎯 Fix module structure or update whitelist"
+    exit 1
+}
+
+echo "   ✅ Quality ratchet enforced - no degradation detected"
+echo "   📊 Current compliance: ${CURRENT_SCORE}%"
+
+# ✅ ALL CRITICAL PROTECTIONS PASSED
+echo ""
+echo "✅ QUALITY RATCHET ENFORCEMENT COMPLETE!"
+echo "🎯 Core Principle: qualityScore(after) >= qualityScore(before) ✅"
+echo "🎓 Graduated modules maintain perfect quality"
+echo "🔌 Core integration remains stable"
+echo "📊 Module compliance: ${CURRENT_SCORE}% maintained"
+echo ""
+echo "🚀 SAFE TO PUSH - NO QUALITY DEGRADATION!"
+echo ""
+echo "💡 MIDDLE-OUT PHASE 1 IMPLEMENTATION:"
+echo "   • Pre-commit: 6-layer validation + JTAG health check ✅"
+echo "   • Pre-push: Quality ratchet + regression prevention ✅"
+echo "   • Next: Phase 2 PR-level CI enforcement"
+echo ""
+echo "🎓 GRADUATION OPPORTUNITY:"
+echo "   • Run 'npm run test:compliance:graduation' to find promotion candidates"
+echo "   • Quality improvements welcome - degradations blocked"
+echo ""

@@ -1,0 +1,13 @@
+{
+  "name": "DecisionClaude",
+  "id": "claude_1748853628822_n7how1kvg",
+  "status": "active",
+  "capabilities": [
+    "Present options",
+    "Ask for choices",
+    "Weigh trade-offs",
+    "Get approvals"
+  ],
+  "lastActivity": "2025-06-02T08:40:28.822Z",
+  "waitingForResponse": false
+}

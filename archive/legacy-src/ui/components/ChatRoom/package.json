@@ -1,0 +1,36 @@
+{
+  "name": "ChatRoom-widget",
+  "version": "1.0.0",
+  "description": "ChatRoom widget for Continuum",
+  "main": "ChatRoom.ts",
+  "type": "module",
+  "continuum": {
+    "type": "widget",
+    "core": "ChatRoom",
+    "category": "Communication",
+    "capabilities": [
+      "room-management",
+      "participant-tracking",
+      "chat-integration"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "ChatRoom",
+    "widget",
+    "communication",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

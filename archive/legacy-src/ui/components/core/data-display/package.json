@@ -1,0 +1,33 @@
+{
+  "name": "data-display-widget",
+  "version": "1.0.0",
+  "description": "Layer 1 Data Display Widget - Generic patterns for displaying structured data",
+  "main": "DataDisplayWidget.ts", 
+  "type": "module",
+  "layer": 1,
+  "dependencies": {
+    "base-widget": "file:../base-widget"
+  },
+  "architecture": {
+    "layer_description": "Generic data display patterns and components",
+    "depends_on": ["base-widget only"],
+    "provides": [
+      "DataDisplayWidget - Generic data display base class",
+      "Table display patterns",
+      "List display patterns", 
+      "Card display patterns",
+      "Pagination and filtering"
+    ],
+    "used_by": [
+      "Layer 2 domain widgets that display data",
+      "Academy widget for training metrics",
+      "Chat widget for message history",
+      "System widgets for logs and status"
+    ]
+  },
+  "testing": {
+    "unit_tests": "Data display rendering and formatting",
+    "integration_tests": "Data display with BaseWidget functionality",
+    "pattern_tests": "Table, list, and card display patterns"
+  }
+}

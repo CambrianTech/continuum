@@ -1,0 +1,23 @@
+/**
+ * Proxy Navigate Command - Abstract Base
+ */
+
+import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { type ProxyNavigateParams, type ProxyNavigateResult, createProxyNavigateParams } from './ProxyNavigateTypes';
+
+export abstract class ProxyNavigateCommand extends CommandBase<ProxyNavigateParams, ProxyNavigateResult> {
+
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('proxy-navigate', context, subpath, commander);
+  }
+
+  public override getDefaultParams(sessionId: UUID): ProxyNavigateParams {
+    return createProxyNavigateParams(this.context, sessionId, {
+      url: 'https://example.com'
+    });
+  }
+
+  abstract execute(params: ProxyNavigateParams): Promise<ProxyNavigateResult>;
+}

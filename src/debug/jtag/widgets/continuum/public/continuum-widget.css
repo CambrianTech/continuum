@@ -1,0 +1,93 @@
+/* ContinuumWidget - Main Desktop Interface Styling */
+
+:host {
+  display: block;
+  width: 100%;
+  height: 100vh;
+}
+
+.desktop-container {
+  display: grid;
+  grid-template-columns: var(--sidebar-width, 250px) 1fr;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Main panel layout */
+.main-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.content-header {
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.content-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  color: var(--content-primary);
+}
+
+.content-view {
+  flex: 1;
+  padding: var(--spacing-md);
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+
+/* Sidebar container - fixed width with resizer */
+.sidebar-container {
+  position: relative;
+  display: flex;
+  height: 100%;
+  background: var(--sidebar-background);
+  border-right: 1px solid var(--sidebar-border);
+}
+
+.left-sidebar {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Discord/VS Code style resizer - visible divider at exact border */
+sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -1px;
+  width: var(--resizer-width, 2px);
+  height: 100%;
+  cursor: col-resize;
+  background: var(--resizer-background);
+  z-index: 1000;
+  transition: all 0.2s ease;
+  border-right: 1px solid var(--resizer-border);
+}
+
+sidebar-resizer:hover {
+  background: var(--resizer-background-hover);
+  border-right: 1px solid var(--resizer-border-hover);
+  box-shadow: 0 0 4px var(--resizer-glow-hover);
+}
+
+sidebar-resizer:active, sidebar-resizer.dragging {
+  background: var(--resizer-background-active);
+  border-right: 2px solid var(--resizer-border-active);
+  box-shadow: 0 0 6px var(--resizer-glow-active);
+  width: var(--resizer-width-active, 3px);
+}
+
+/* Theme Widget Overlay - positioned in top-right corner */
+.theme-widget-overlay {
+  position: absolute;
+  top: var(--spacing-md, 12px);
+  right: var(--spacing-md, 12px);
+  z-index: 2000;
+  max-width: 320px;
+}

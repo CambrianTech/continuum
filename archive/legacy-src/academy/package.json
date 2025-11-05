@@ -1,0 +1,59 @@
+{
+  "name": "academy-system",
+  "version": "1.0.0",
+  "description": "Academy AI Evolution System with persona training and competitive evolution",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "daemon": "academy",
+    "category": "ai-evolution",
+    "capabilities": [
+      "persona-management",
+      "evolution-engine",
+      "competitive-training",
+      "session-management",
+      "lineage-tracking",
+      "ecosystem-monitoring"
+    ],
+    "exports": {
+      "AcademyDaemon": "./server/AcademyDaemon.ts",
+      "AcademyClient": "./client/AcademyClient.ts",
+      "PersonaManager": "./integrations/persona-manager/server/PersonaManagerServer.ts"
+    },
+    "dependencies": [
+      "@continuum/daemons",
+      "@continuum/sessions"
+    ],
+    "interfaces": [
+      "daemon-protocol",
+      "session-management"
+    ],
+    "permissions": [
+      "daemon-lifecycle",
+      "session-create",
+      "session-cleanup",
+      "file-write",
+      "process-spawn"
+    ]
+  },
+  "keywords": [
+    "academy",
+    "ai-evolution",
+    "persona",
+    "training",
+    "genetic-algorithm",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/",
+    "demo": "npx tsx demo/evolution-demo.ts"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

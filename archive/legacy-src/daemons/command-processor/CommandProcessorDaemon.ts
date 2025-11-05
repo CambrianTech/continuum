@@ -1,0 +1,962 @@
+// ISSUES: 1 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+// 🚨 ISSUE #1: Screenshot HTTP requests cause 500 error before reaching handleMessage - routing broken above CommandProcessor level
+/**
+ * Command Processor Daemon - TypeScript-first command execution orchestration
+ * Strongly typed, modular, and designed for mesh distribution
+ * 
+ * ✅ CLEANED UP: Fixed session extraction with proper shared types (2025-07-13)
+ * ✅ CLEANED UP: Made session management modular via SessionManagerDaemon (2025-07-13)
+ * ✅ CLEANED UP: Removed hardcoded session logic from API handlers (2025-07-13)
+ */
+
+import { BaseDaemon } from '../base/BaseDaemon';
+import { 
+  DaemonMessage, 
+  DaemonResponse
+} from '../base/DaemonProtocol';
+import { DaemonType } from '../base/DaemonTypes';
+import { DaemonConnector } from '../../integrations/websocket/core/DaemonConnector';
+import { SessionExtractionRequest, SessionExtractionResponse } from '../../types/shared/SessionTypes';
+
+// Strongly typed command interfaces
+export interface TypedCommandRequest<T = unknown> {
+  readonly command: string;
+  readonly parameters: T;
+  readonly context: Record<string, any>;
+  readonly continuumContext?: any;
+  readonly routing?: CommandRouting;
+}
+
+export interface CommandRouting {
+  readonly preferredProvider: 'browser' | 'python' | 'cloud' | 'mesh' | 'auto';
+  readonly fallbackAllowed: boolean;
+  readonly meshDistribution: boolean;
+  readonly qualityRequirement: 'fast' | 'balanced' | 'accurate';
+}
+
+export interface CommandImplementation {
+  readonly name: string;
+  readonly provider: 'browser' | 'python' | 'cloud' | 'mesh';
+  readonly status: 'available' | 'degraded' | 'unavailable';
+  readonly quality: 'basic' | 'standard' | 'premium';
+  readonly cost: CommandCost;
+  readonly capabilities: readonly string[];
+}
+
+export interface CommandCost {
+  readonly type: 'free' | 'per_execution' | 'per_minute' | 'subscription';
+  readonly amount: number;
+  readonly currency: string;
+}
+
+export interface CommandExecution<T = unknown, R = unknown> {
+  readonly id: string;
+  readonly command: string;
+  readonly parameters: T;
+  readonly implementation: CommandImplementation;
+  readonly startTime: Date;
+  readonly status: 'pending' | 'running' | 'completed' | 'failed';
+  readonly result?: R;
+  readonly error?: string;
+  readonly executionTime?: number;
+}
+
+// Phase Omega Pattern of Care validation
+export interface CareValidation {
+  readonly isValid: boolean;
+  readonly careLevel: 'concerning' | 'acceptable' | 'good' | 'excellent';
+  readonly score: number;
+  readonly message: string;
+  readonly metrics: {
+    readonly dignityPreservation: number;
+    readonly cognitiveLoadReduction: number;
+    readonly systemStability: number;
+    readonly empowermentFactor: number;
+    readonly harmPrevention: number;
+  };
+}
+
+export class CommandProcessorDaemon extends BaseDaemon {
+  public readonly name = 'command-processor';
+  public readonly version = '2.0.0';
+  public readonly id: string;
+  public readonly daemonType = DaemonType.COMMAND_PROCESSOR;
+  public readonly config = {
+    name: this.name,
+    version: this.version,
+    port: 9001,
+    autoStart: true,
+    dependencies: [],
+    healthCheck: { interval: 30000, timeout: 5000, retries: 3 },
+    resources: { maxMemory: 512, maxCpu: 70 }
+  };
+
+  private readonly implementations = new Map<string, readonly CommandImplementation[]>();
+  private readonly activeExecutions = new Map<string, CommandExecution>();
+  private readonly executionHistory: CommandExecution[] = [];
+  private readonly phaseOmegaEnabled = true;
+  private monitoringInterval: NodeJS.Timeout | undefined;
+  private commandConnector!: DaemonConnector;
+  
+  // JTAG integration properties
+  private jtagLogs: Array<{timestamp: Date, level: string, message: string, context?: any}> = [];
+  private jtagTracingEnabled = false;
+  private executionTraces: Array<{command: string, timestamp: Date, duration: number, result?: any}> = [];
+
+  constructor(config?: {id?: string, logLevel?: string}) {
+    super();
+    this.id = config?.id || 'command-processor-default';
+    console.log('🟢🟢🟢 COMMAND PROCESSOR CONSTRUCTOR CALLED - ACTUAL CODE LOADING 🟢🟢🟢');
+  }
+
+  /**
+   * Override getStatus to add 'running' field expected by tests
+   */
+  getStatus(): any {
+    const baseStatus = super.getStatus();
+    return {
+      ...baseStatus,
+      running: this.isRunning()
+    };
+  }
+
+  protected async onStart(): Promise<void> {
+    this.log('🚀 Initializing command discovery...');
+    
+    // Initialize command discovery
+    this.commandConnector = new DaemonConnector();
+    const connected = await this.commandConnector.connect();
+    
+    if (!connected) {
+      this.log('❌ Failed to connect command discovery system', 'error');
+      throw new Error('Command discovery system failed to initialize');
+    }
+    
+    await this.registerCoreImplementations();
+    this.startExecutionMonitoring();
+    
+    const availableCommands = this.commandConnector.getAvailableCommands();
+    this.log(`✅ Command Processor started with ${availableCommands.length} discovered commands: ${availableCommands.join(', ')}`);
+    
+    // JTAG Observability: Listen for session events to log available commands
+    this.setupSessionCommandLogging(availableCommands);
+    
+    // Listen for session_created events to log available commands for new sessions
+    this.on('session_created', (event: any) => {
+      this.logDiscoveredCommandsForSession(event);
+    });
+  }
+
+  protected async onStop(): Promise<void> {
+    // Stop monitoring interval to prevent memory leaks
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = undefined;
+    }
+    
+    // Disconnect command connector
+    if (this.commandConnector) {
+      await this.commandConnector.disconnect();
+    }
+    
+    // Cancel active executions
+    for (const execution of this.activeExecutions.values()) {
+      if (execution.status === 'running') {
+        this.log(`Cancelling execution: ${execution.id}`);
+      }
+    }
+    this.activeExecutions.clear();
+    this.log('Command Processor Daemon stopped');
+  }
+
+  /**
+   * Public interface for test compatibility
+   */
+  async processCommand<T = unknown, R = unknown>(request: TypedCommandRequest<T>): Promise<{ success: boolean; result?: R; error?: string; processor?: string }> {
+    try {
+      const response = await this.executeCommand(request);
+      const result: { success: boolean; result?: R; error?: string; processor?: string } = {
+        success: response.success,
+        processor: 'typescript-daemon' // Test expects this field
+      };
+      if (response.success) {
+        result.result = response.data as R;
+      } else if (response.error) {
+        result.error = response.error;
+      }
+      return result;
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        processor: 'typescript-daemon'
+      };
+    }
+  }
+
+  /**
+   * Get message types this daemon handles (ENDPOINT REGISTRATION)
+   */
+  getMessageTypes(): string[] {
+    return [
+      'execute_command',    // WebSocket command execution  
+      'handle_api',         // HTTP API routes: /api/commands/*
+      'handle_widget_api',  // HTTP API routes: /api/widgets/*
+      'command.execute'     // Direct command execution
+    ];
+  }
+
+  protected async handleMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    this.log(`🎯🎯🎯 COMMAND PROCESSOR: handleMessage called with type: ${message.type} 🎯🎯🎯`);
+    this.log(`🎯🎯🎯 COMMAND PROCESSOR: Call stack: ${new Error().stack?.split('\n').slice(1, 4).join(' -> ')}`);
+    console.log(`🔍 CommandProcessor: Received message type: ${message.type}, from: ${message.from}`);
+    
+    // 🚨 SCREENSHOT DEBUG: Log all screenshot-related messages
+    if (message.type.includes('screenshot') || (message.data && JSON.stringify(message.data).includes('screenshot'))) {
+      this.log(`🚨🚨🚨 SCREENSHOT MESSAGE REACHED COMMAND PROCESSOR: ${JSON.stringify(message, null, 2)} 🚨🚨🚨`);
+    }
+    
+    // 🔍 SESSION DEBUG: Log full incoming message to CommandProcessor
+    console.log(`🔍 [SESSION_DEBUG] CommandProcessor.handleMessage:`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data: ${JSON.stringify(message.data, null, 2)}`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data.context: ${JSON.stringify((message.data as any)?.context, null, 2)}`);
+    console.log(`🔍 [SESSION_DEBUG]   message.data.context.sessionId: ${(message.data as any)?.context?.sessionId || 'NOT_FOUND'}`);
+    
+    // DYNAMIC ENDPOINT ROUTER - handles any registered message type
+    return await this.routeMessage(message);
+  }
+  
+  private async routeMessage(message: DaemonMessage): Promise<DaemonResponse> {
+    console.log(`🔍 CommandProcessor: Routing message, extracting command info...`);
+    // Extract command info from any message format
+    const commandInfo = await this.extractCommandFromMessage(message);
+    console.log(`🔍 CommandProcessor: Extracted command: ${commandInfo.command}, success: ${commandInfo.success}`);
+    
+    if (!commandInfo.success) {
+      return commandInfo;
+    }
+    
+    // SET GLOBAL CONTEXT: So console.log can pick it up
+    if (commandInfo.continuumContext) {
+      const { SessionContext } = await import('../../context/SessionContext');
+      return await SessionContext.withContinuumContext(commandInfo.continuumContext, async () => {
+        // Execute command dynamically within context
+        return await this.executeCommand({
+          command: commandInfo.command!,
+          parameters: commandInfo.parameters,
+          context: commandInfo.context,
+          continuumContext: commandInfo.continuumContext
+        });
+      });
+    }
+    
+    // Execute command dynamically (fallback without context)
+    return await this.executeCommand({
+      command: commandInfo.command!,
+      parameters: commandInfo.parameters,
+      context: commandInfo.context,
+      continuumContext: commandInfo.continuumContext
+    });
+  }
+  
+  private async extractCommandFromMessage(message: DaemonMessage): Promise<{
+    success: boolean;
+    command?: string;
+    parameters?: any;
+    context?: any;
+    continuumContext?: any;
+    error?: string;
+  }> {
+    switch (message.type) {
+      case 'command.execute':
+        const directData = message.data as TypedCommandRequest;
+        
+        // 🔍 SESSION DEBUG: Log context extraction for command.execute
+        console.log(`🔍 [SESSION_DEBUG] extractCommandFromMessage - command.execute:`);
+        console.log(`🔍 [SESSION_DEBUG]   directData: ${JSON.stringify(directData, null, 2)}`);
+        console.log(`🔍 [SESSION_DEBUG]   directData.context: ${JSON.stringify(directData.context, null, 2)}`);
+        console.log(`🔍 [SESSION_DEBUG]   directData.context.sessionId: ${directData.context?.sessionId || 'NOT_FOUND'}`);
+        
+        const extractedContext = directData.context || {};
+        console.log(`🔍 [SESSION_DEBUG]   final extracted context: ${JSON.stringify(extractedContext, null, 2)}`);
+        
+        // Extract ContinuumContext if available
+        const continuumContext = extractedContext.continuumContext || null;
+        console.log(`🔍 [SESSION_DEBUG]   continuumContext: ${JSON.stringify(continuumContext, null, 2)}`);
+        
+        return {
+          success: true,
+          command: directData.command,
+          parameters: directData.parameters,
+          context: extractedContext,
+          continuumContext: continuumContext
+        };
+
+      case 'execute_command':
+        const execData = message.data as any; // TODO: Add proper type
+        if (!execData?.command) {
+          return {
+            success: false,
+            error: `Missing command in execute_command: ${JSON.stringify(message.data)}`
+          };
+        }
+        return {
+          success: true,
+          command: execData.command,
+          parameters: execData.args || execData.parameters || [],
+          context: { source: execData.source || 'websocket' }
+        };
+
+      case 'handle_api':
+        this.log(`🎯🎯🎯 COMMAND PROCESSOR handle_api CALLED - PATH A 🎯🎯🎯`);
+        this.log(`🔥🔥🔥 Command processor received API request - PATH A 🔥🔥🔥`);
+        const apiData = message.data as any; // TODO: Add proper type
+        this.log(`🎊🎊🎊 API Data pathname: ${apiData.pathname} 🎊🎊🎊`);
+        const { pathname, requestInfo } = apiData;
+        const pathParts = pathname.split('/').filter(Boolean);
+        if (pathParts[0] === 'api' && pathParts[1] === 'commands' && pathParts[2]) {
+          const body = apiData.body || {};
+          
+          // 🎯 SMART HTTP INTEGRATION: Support strongly typed CommandExecution and legacy formats
+          let parameters;
+          
+          if (body.args && Array.isArray(body.args)) {
+            // Legacy CLI-style format: {"args": ["--selector=body", "--filename=test.png"]}
+            parameters = {
+              ...body,    // Include all top-level parameters (owner, forceNew, sessionId, etc.)
+              args: body.args  // Keep args array for parser
+            };
+            console.log(`🔄 Using legacy args format`);
+          } else {
+            // REST-style format: {"selector": "body", "filename": "test.png", "quality": 90}
+            // Create canonical format that parser expects
+            parameters = body; // Direct named parameters - no args array needed
+            console.log(`🌐 Using REST format`);
+          }
+          
+          // Use SessionManagerDaemon to extract session info dynamically
+          const sessionContext = await this.extractSessionContext(requestInfo);
+          
+          console.log(`🔍 [LAYER4_DEBUG] Command: ${pathParts[2]}`);
+          console.log(`🔍 [LAYER4_DEBUG] RequestInfo:`, JSON.stringify(requestInfo, null, 2));
+          console.log(`🔍 [LAYER4_DEBUG] Extracted sessionContext:`, sessionContext);
+          console.log(`🔍 [LAYER4_DEBUG] Final sessionId: ${sessionContext?.sessionId}`);
+          
+          return {
+            success: true,
+            command: pathParts[2],
+            parameters: parameters,
+            context: { 
+              source: 'http', 
+              method: apiData.method, 
+              url: apiData.url,
+              sessionId: sessionContext?.sessionId, // Session ID from SessionManagerDaemon
+              // Include websocket context for daemon access (passed from WebSocketDaemon)
+              websocket: apiData?.context?.websocket || null
+            }
+          };
+        }
+        return {
+          success: false,
+          error: `Invalid API path: ${pathname} - not a command endpoint`
+        };
+
+      case 'handle_widget_api':
+        const widgetApiData = message.data as any;
+        const { pathname: widgetPath } = widgetApiData;
+        const widgetPathParts = widgetPath.split('/').filter(Boolean);
+        if (widgetPathParts[0] === 'api' && widgetPathParts[1] === 'widgets' && widgetPathParts[2] === 'list') {
+          return {
+            success: true,
+            command: 'widget-list',
+            parameters: widgetApiData.body || {},
+            context: { 
+              source: 'http', 
+              method: widgetApiData.method, 
+              url: widgetApiData.url
+            }
+          };
+        }
+        return {
+          success: false,
+          error: `Invalid widget API path: ${widgetPath}`
+        };
+
+      default:
+        return {
+          success: false,
+          error: `Unsupported message type: ${message.type}`
+        };
+    }
+  }
+
+  /**
+   * Execute command with Phase Omega validation and optimal routing
+   */
+  private async executeCommand<T, R>(request: TypedCommandRequest<T>): Promise<DaemonResponse> {
+    const executionId = this.generateExecutionId();
+    const startTime = Date.now();
+    
+    try {
+      this.log(`⚡ Executing command: ${request.command} (${executionId})`);
+      this.addJTAGLog('info', `Command execution started: ${request.command}`, { executionId, command: request.command });
+      
+      // Emit command:start event for integration tests
+      this.emit('command:start', { command: request.command, executionId, timestamp: new Date() });
+      
+      // Phase Omega: Validate Pattern of Care
+      if (this.phaseOmegaEnabled) {
+        const careValidation = await this.validatePatternOfCare(request);
+        if (!careValidation.isValid) {
+          throw new Error(`🚨 PHASE OMEGA PROTECTION: ${careValidation.message}`);
+        }
+        this.log(`✨ Pattern of Care validated: ${careValidation.careLevel} (${careValidation.score.toFixed(2)})`);
+      }
+      
+      console.log(`🔍 [CommandProcessor] After Pattern of Care, continuing to selectImplementation for: ${request.command}`);
+
+      // Select optimal implementation
+      console.log(`🔍 [CommandProcessor] About to call selectImplementation for: ${request.command}`);
+      const implementation = await this.selectImplementation(request);
+      console.log(`🔍 [CommandProcessor] selectImplementation returned:`, implementation);
+      if (!implementation) {
+        // Emit command:error event and throw specific error for unknown commands
+        const errorMsg = `Command '${request.command}' not found`;
+        console.log(`🔍 [CommandProcessor] No implementation found, throwing error: ${errorMsg}`);
+        this.emit('command:error', { command: request.command, executionId, error: errorMsg });
+        this.addJTAGLog('error', errorMsg, { executionId, command: request.command });
+        throw new Error(errorMsg);
+      }
+
+      // Create execution tracking
+      const execution: CommandExecution<T, R> = {
+        id: executionId,
+        command: request.command,
+        parameters: request.parameters,
+        implementation,
+        startTime: new Date(),
+        status: 'pending'
+      };
+
+      this.activeExecutions.set(executionId, execution);
+
+      // Execute with selected implementation
+      const result = await this.executeWithImplementation(execution, request);
+      
+      // Update execution
+      const executionTime = Date.now() - startTime;
+      const completedExecution: CommandExecution<T, R> = {
+        ...execution,
+        status: 'completed',
+        result,
+        executionTime
+      };
+
+      this.executionHistory.push(completedExecution);
+      this.activeExecutions.delete(executionId);
+
+      this.log(`✅ Command completed: ${request.command} (${executionTime}ms)`);
+      this.addJTAGLog('info', `Command execution completed: ${request.command}`, { executionId, duration: executionTime });
+      
+      // Add execution trace and emit completion event
+      this.addExecutionTrace(request.command, executionTime, result);
+      this.emit('command:complete', { command: request.command, executionId, result, duration: executionTime });
+
+      return {
+        success: true,
+        data: result
+      };
+
+    } catch (error) {
+      const executionTime = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      this.log(`❌ Command failed: ${request.command} (${executionId}) - ${errorMessage}`, 'error');
+      this.addJTAGLog('error', `Command execution failed: ${request.command}`, { executionId, error: errorMessage, duration: executionTime });
+      
+      // Emit command:error event
+      this.emit('command:error', { command: request.command, executionId, error: errorMessage });
+      
+      const failedExecution: CommandExecution<T, R> = {
+        id: executionId,
+        command: request.command,
+        parameters: request.parameters,
+        implementation: { name: 'unknown', provider: 'browser', status: 'unavailable', quality: 'basic', cost: { type: 'free', amount: 0, currency: 'USD' }, capabilities: [] },
+        startTime: new Date(),
+        status: 'failed',
+        error: errorMessage,
+        executionTime
+      };
+
+      this.executionHistory.push(failedExecution);
+      this.activeExecutions.delete(executionId);
+
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
+  }
+
+  /**
+   * Phase Omega Pattern of Care validation
+   */
+  private async validatePatternOfCare<T>(request: TypedCommandRequest<T>): Promise<CareValidation> {
+    const { command, parameters } = request;
+    const commandStr = command || '';
+    const paramsStr = parameters ? JSON.stringify(parameters) : '';
+    
+    // Calculate care metrics
+    const metrics = {
+      dignityPreservation: this.assessDignityImpact(commandStr, paramsStr),
+      cognitiveLoadReduction: this.assessCognitiveImpact(commandStr, paramsStr),
+      systemStability: this.assessStabilityImpact(commandStr, paramsStr),
+      empowermentFactor: this.assessEmpowermentImpact(commandStr, paramsStr),
+      harmPrevention: this.assessHarmPrevention(commandStr, paramsStr)
+    };
+    
+    const score = Object.values(metrics).reduce((sum, metric) => sum + metric, 0) / Object.keys(metrics).length;
+    
+    let careLevel: CareValidation['careLevel'] = 'acceptable';
+    if (score >= 0.8) careLevel = 'excellent';
+    else if (score >= 0.6) careLevel = 'good';
+    else if (score >= 0.4) careLevel = 'acceptable';
+    else careLevel = 'concerning';
+    
+    const isValid = score >= 0.2; // Block commands that significantly violate care pattern
+    const message = isValid ? 
+      `Pattern of care validated: ${careLevel}` :
+      `Command blocked: violates pattern of care`;
+
+    return { isValid, careLevel, score, message, metrics };
+  }
+
+  /**
+   * Select optimal implementation based on routing preferences
+   */
+  private async selectImplementation<T>(request: TypedCommandRequest<T>): Promise<CommandImplementation | null> {
+    console.log(`🔍 [CommandProcessor] selectImplementation for: ${request.command}`);
+    const implementations = this.implementations.get(request.command) || [];
+    console.log(`🔍 [CommandProcessor] Found ${implementations.length} implementations for ${request.command}`);
+    const availableImpls = implementations.filter(impl => impl.status === 'available');
+    console.log(`🔍 [CommandProcessor] ${availableImpls.length} available implementations`);
+    
+    if (availableImpls.length === 0) {
+      console.log(`🔍 [CommandProcessor] No implementations found for ${request.command}`);
+      return null;
+    }
+
+    // Simple selection logic - could be enhanced with AI
+    const routing = request.routing;
+    if (routing?.preferredProvider && routing.preferredProvider !== 'auto') {
+      const preferred = availableImpls.find(impl => impl.provider === routing.preferredProvider);
+      if (preferred) return preferred;
+      if (!routing.fallbackAllowed) return null;
+    }
+
+    // Default to highest quality available
+    return availableImpls.sort((a, b) => {
+      const qualityOrder = { premium: 3, standard: 2, basic: 1 };
+      return qualityOrder[b.quality] - qualityOrder[a.quality];
+    })[0];
+  }
+
+  /**
+   * Execute command with selected implementation
+   */
+  private async executeWithImplementation<T, R>(
+    execution: CommandExecution<T, R>,
+    request: TypedCommandRequest<T>
+  ): Promise<R> {
+    const { implementation } = execution;
+    
+    // Update status
+    const updatedExecution = { ...execution, status: 'running' as const };
+    this.activeExecutions.set(execution.id, updatedExecution);
+    
+    switch (implementation.provider) {
+      case 'browser':
+        return await this.executeBrowserImplementation(request);
+      case 'python':
+        return await this.executePythonImplementation(request);
+      case 'cloud':
+        return await this.executeCloudImplementation(request);
+      case 'mesh':
+        return await this.executeMeshImplementation(request);
+      default:
+        throw new Error(`Unknown implementation provider: ${implementation.provider}`);
+    }
+  }
+
+  // Implementation-specific execution methods
+  private async routeToDaemon(daemonRequest: any): Promise<DaemonResponse> {
+    console.log(`🔍 [CommandProcessor] Routing to daemon: ${daemonRequest.targetDaemon}`);
+    
+    // Send through daemon connector/mesh using BaseDaemon's sendMessage
+    const response = await this.sendMessage(
+      daemonRequest.targetDaemon,
+      daemonRequest.messageType,
+      daemonRequest.data
+    );
+    console.log(`🔍 [CommandProcessor] Daemon response:`, response);
+    
+    // Check if this is a connect command response with session info
+    if (response.success && response.data && typeof response.data === 'object' && 'sessionId' in response.data) {
+      // Add session info to the response for HTTP cookie handling
+      return {
+        ...response,
+        sessionInfo: {
+          sessionId: (response.data as any).sessionId
+        }
+      } as DaemonResponse & { sessionInfo?: { sessionId: string } };
+    }
+    
+    return response;
+  }
+
+  private async executeBrowserImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
+    this.log(`🌐 Executing command via dynamic discovery: ${request.command}`);
+    console.log(`🔍 [CommandProcessor] executeBrowserImplementation called for: ${request.command}`);
+    
+    // Use the command connector to execute discovered commands - NO HARDCODED COMMANDS
+    console.log(`🔍 [CommandProcessor] Checking command connector: connected=${this.commandConnector?.isConnected()}`);
+    if (!this.commandConnector || !this.commandConnector.isConnected()) {
+      console.log(`🔍 [CommandProcessor] Command connector not available - throwing error`);
+      throw new Error('Command discovery system not available');
+    }
+    
+    console.log(`🔍 [CommandProcessor] Calling commandConnector.executeCommand for: ${request.command}`);
+    const result = await this.commandConnector.executeCommand(
+      request.command,
+      request.parameters,
+      request.continuumContext || request.context
+    );
+    console.log(`🔍 [CommandProcessor] Command connector result:`, result);
+    
+    // Check if this is a daemon routing request (e.g., RemoteCommand WebSocket routing)
+    if (result.success && result.data && typeof result.data === 'object' && '_routeToDaemon' in result.data) {
+      const daemonRequest = (result.data as any)._routeToDaemon;
+      console.log(`🔍 [CommandProcessor] Command wants to route to daemon: ${daemonRequest.targetDaemon}`);
+      
+      // Special handling for WebSocket remote execution requests
+      if (daemonRequest.messageType === 'send_to_session' && daemonRequest.data?.message?.type === 'remote_execution_request') {
+        console.log(`🔍 [CommandProcessor] Routing to remote_execution handler instead of send_to_session`);
+        // Use the new remote_execution handler that handles request-response cycle
+        daemonRequest.targetDaemon = 'session-manager';
+        daemonRequest.messageType = 'remote_execution';
+      }
+      
+      // Route to the specified daemon through standard messaging
+      const daemonResponse = await this.routeToDaemon(daemonRequest);
+      if (daemonResponse.success) {
+        return daemonResponse.data as R;
+      } else {
+        throw new Error(daemonResponse.error || 'Daemon routing failed');
+      }
+    }
+    
+    if (result.success) {
+      return result.data as R;
+    } else {
+      throw new Error(result.error || 'Command execution failed');
+    }
+  }
+
+  private async executePythonImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
+    this.log(`🐍 Executing in Python: ${request.command}`);
+    // Would integrate with Python execution system
+    return { provider: 'python', status: 'executed' } as R;
+  }
+
+  /**
+   * Extract session context from HTTP request info using SessionManagerDaemon
+   */
+  private async extractSessionContext(requestInfo: SessionExtractionRequest): Promise<{ sessionId?: string }> {
+    try {
+      // Delegate session extraction to SessionManagerDaemon
+      const sessionResponse = await this.sendMessage(
+        'session-manager' as any,
+        'session.extract',
+        requestInfo
+      );
+      
+      if (sessionResponse.success && sessionResponse.data) {
+        const extractionResult = sessionResponse.data as SessionExtractionResponse;
+        return extractionResult.sessionId ? { sessionId: extractionResult.sessionId } : {};
+      }
+      
+      return {};
+    } catch (error) {
+      console.error(`🔍 [CommandProcessor] Session extraction failed: ${error}`);
+      return {};
+    }
+  }
+
+  private async executeCloudImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
+    this.log(`☁️ Executing in cloud: ${request.command}`);
+    return { provider: 'cloud', status: 'executed' } as R;
+  }
+
+  private async executeMeshImplementation<T, R>(request: TypedCommandRequest<T>): Promise<R> {
+    this.log(`🕸️ Executing in mesh: ${request.command}`);
+    return { provider: 'mesh', status: 'executed' } as R;
+  }
+
+
+  // Care pattern assessment methods
+  private assessDignityImpact(command: string, params: string): number {
+    const dignityCommands = ['help', 'screenshot', 'status', 'info'];
+    const harmfulPatterns = ['delete', 'destroy', 'break', 'hack'];
+    
+    if (dignityCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.9;
+    if (harmfulPatterns.some(pattern => params.toLowerCase().includes(pattern))) return 0.1;
+    return 0.7;
+  }
+
+  private assessCognitiveImpact(command: string, _params: string): number {
+    const helpfulCommands = ['help', 'info', 'status', 'explain'];
+    if (helpfulCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.9;
+    return 0.6;
+  }
+
+  private assessStabilityImpact(command: string, _params: string): number {
+    const stableCommands = ['info', 'status', 'help'];
+    const riskyCommands = ['exec', 'delete', 'modify'];
+    
+    if (stableCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.9;
+    if (riskyCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.4;
+    return 0.7;
+  }
+
+  private assessEmpowermentImpact(command: string, _params: string): number {
+    const empoweringCommands = ['help', 'learn', 'create', 'build'];
+    if (empoweringCommands.some(cmd => command.toLowerCase().includes(cmd))) return 0.9;
+    return 0.6;
+  }
+
+  private assessHarmPrevention(_command: string, params: string): number {
+    const harmfulPatterns = ['rm -rf', 'delete all', 'destroy', 'break'];
+    if (harmfulPatterns.some(pattern => params.toLowerCase().includes(pattern))) return 0.1;
+    return 0.8;
+  }
+
+  // Helper methods
+  private async registerCoreImplementations(): Promise<void> {
+    // Get ALL commands from dynamic discovery - no hardcoded lists
+    const availableCommands = this.commandConnector?.getAvailableCommands() || [];
+    
+    // Register all discovered commands as browser implementations
+    // (since the dynamic discovery uses filesystem-based command loading)
+    const discoveredImplementations: CommandImplementation[] = availableCommands.map(commandName => ({
+      name: `${commandName}-discovered`,
+      provider: 'browser' as const,
+      status: 'available' as const,
+      quality: 'standard' as const,
+      cost: { type: 'free', amount: 0, currency: 'USD' },
+      capabilities: ['command-execution', 'discovered']
+    }));
+
+    // Register implementations for each command
+    for (let i = 0; i < availableCommands.length; i++) {
+      const commandName = availableCommands[i];
+      const implementation = discoveredImplementations[i];
+      this.implementations.set(commandName, [implementation]);
+    }
+    
+    this.log(`🔍 DYNAMIC REGISTRY: Registered ${discoveredImplementations.length} command implementations: ${availableCommands.join(', ')}`);
+  }
+
+  // Removed unused methods to fix compilation warnings
+
+  private startExecutionMonitoring(): void {
+    this.monitoringInterval = setInterval(() => {
+      if (this.activeExecutions.size > 0) {
+        this.log(`📊 Active executions: ${this.activeExecutions.size}`);
+      }
+    }, 60000); // Every minute
+  }
+
+  private generateExecutionId(): string {
+    return `exec-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`;
+  }
+
+  /**
+   * Log discovered commands when a new session is created
+   */
+  private logDiscoveredCommandsForSession(event: any): void {
+    const { sessionId, sessionType, owner } = event;
+    const availableCommands = this.commandConnector?.getAvailableCommands() || [];
+    
+    this.log(`📚 NEW SESSION COMMAND DISCOVERY for ${sessionType} session ${sessionId} (owner: ${owner}):`);
+    this.log(`📋 ${availableCommands.length} commands available:`);
+    
+    // Log commands in groups for readability
+    const commandsByCategory: Record<string, string[]> = {};
+    
+    // Group commands by category (before the colon or by first word)
+    for (const cmd of availableCommands) {
+      let category = 'general';
+      if (cmd.includes(':')) {
+        category = cmd.split(':')[0];
+      } else if (cmd.includes('_')) {
+        category = cmd.split('_')[0];
+      }
+      
+      if (!commandsByCategory[category]) {
+        commandsByCategory[category] = [];
+      }
+      commandsByCategory[category].push(cmd);
+    }
+    
+    // Log by category
+    for (const [category, commands] of Object.entries(commandsByCategory)) {
+      this.log(`  ${category}: ${commands.join(', ')}`);
+    }
+    
+    this.log(`🎯 Session ${sessionId} ready with full command access`);
+  }
+
+  /**
+   * JTAG Integration Methods - Required by integration tests
+   */
+  
+  getJTAGLogs(): Array<{timestamp: Date, level: string, message: string, context?: any}> {
+    return [...this.jtagLogs]; // Return copy to prevent external modification
+  }
+
+  enableJTAGTracing(enabled: boolean): void {
+    this.jtagTracingEnabled = enabled;
+    this.addJTAGLog('info', `JTAG tracing ${enabled ? 'enabled' : 'disabled'}`, { tracing: enabled });
+  }
+
+  getExecutionTraces(): Array<{command: string, timestamp: Date, duration: number, result?: any}> {
+    return [...this.executionTraces]; // Return copy to prevent external modification
+  }
+
+  private addJTAGLog(level: string, message: string, context?: any): void {
+    this.jtagLogs.push({
+      timestamp: new Date(),
+      level,
+      message,
+      context
+    });
+    
+    // Keep last 1000 logs to prevent memory growth
+    if (this.jtagLogs.length > 1000) {
+      this.jtagLogs = this.jtagLogs.slice(-1000);
+    }
+  }
+
+  private addExecutionTrace(command: string, duration: number, result?: any): void {
+    if (this.jtagTracingEnabled) {
+      this.executionTraces.push({
+        command,
+        timestamp: new Date(),
+        duration,
+        result
+      });
+      
+      // Keep last 500 traces to prevent memory growth
+      if (this.executionTraces.length > 500) {
+        this.executionTraces = this.executionTraces.slice(-500);
+      }
+    }
+  }
+
+  /**
+   * JTAG Observability: Setup session-based command logging
+   * Both client and server should know what commands are available
+   */
+  private setupSessionCommandLogging(availableCommands: string[]): void {
+    this.log('📋 JTAG Observability: Setting up session-based command logging');
+    
+    // Listen for session_created events to log available commands
+    this.on('session_created', (event: any) => {
+      this.logCommandsForNewSession(event, availableCommands);
+    });
+  }
+
+  /**
+   * Log all available commands when a new session is created
+   * This helps with JTAG feedback loop and debugging
+   */
+  private logCommandsForNewSession(event: any, availableCommands: string[]): void {
+    const sessionId = event.sessionId || event.data?.sessionId || 'unknown-session';
+    const sessionType = event.sessionType || event.data?.type || 'unknown-type';
+    
+    this.log(`🎯 SESSION CREATED [${sessionId}] - AVAILABLE COMMANDS (${availableCommands.length}):`);
+    this.log(`📋 Session Type: ${sessionType}`);
+    this.log(`🗂️  Server Commands: ${availableCommands.join(', ')}`);
+    
+    // For JTAG observability, also log critical command categories
+    const commandCategories = this.categorizeCommands(availableCommands);
+    this.log(`📊 Command Categories: ${Object.keys(commandCategories).map(cat => `${cat}(${commandCategories[cat].length})`).join(', ')}`);
+    
+    // Log to JTAG trace if enabled
+    this.addJtagLog('info', `Session ${sessionId} created with ${availableCommands.length} available commands`, {
+      sessionId,
+      sessionType,
+      availableCommands,
+      commandCategories
+    });
+  }
+
+  /**
+   * Categorize commands for better observability
+   */
+  private categorizeCommands(commands: string[]): Record<string, string[]> {
+    const categories: Record<string, string[]> = {
+      session: [],
+      ai: [],
+      file: [],
+      system: [],
+      browser: [],
+      other: []
+    };
+
+    for (const cmd of commands) {
+      if (cmd.includes('session')) categories.session.push(cmd);
+      else if (cmd.includes('ai') || cmd.includes('model')) categories.ai.push(cmd);
+      else if (cmd.includes('file') || cmd.includes('read') || cmd.includes('write')) categories.file.push(cmd);
+      else if (cmd.includes('system') || cmd.includes('health') || cmd.includes('status')) categories.system.push(cmd);
+      else if (cmd.includes('browser') || cmd.includes('js-execute')) categories.browser.push(cmd);
+      else categories.other.push(cmd);
+    }
+
+    return categories;
+  }
+
+  private addJtagLog(level: string, message: string, context?: any): void {
+    this.jtagLogs.push({
+      timestamp: new Date(),
+      level,
+      message,
+      context
+    });
+    
+    // Keep last 1000 logs to prevent memory growth
+    if (this.jtagLogs.length > 1000) {
+      this.jtagLogs = this.jtagLogs.slice(-1000);
+    }
+  }
+
+  /**
+   * Register with WebSocketDaemon to handle command routes
+   */
+  public registerWithWebSocketDaemon(wsDaemon: { registerRouteHandler: (pattern: string, daemonName: string, messageType: string) => void }): void {
+    // Register handler for API command endpoints
+    wsDaemon.registerRouteHandler('/api/commands/*', this.name, 'handle_api');
+    console.log(`🔗 CommandProcessorDaemon registered route: /api/commands/* → ${this.name}::handle_api`);
+  }
+}
+
+// Main execution when run directly (direct execution detection)
+if (process.argv[1] && process.argv[1].endsWith('CommandProcessorDaemon.ts')) {
+  const daemon = new CommandProcessorDaemon();
+  daemon.start().catch(error => {
+    console.error('❌ Failed to start Command Processor Daemon:', error);
+    process.exit(1);
+  });
+}
+
+export default CommandProcessorDaemon;

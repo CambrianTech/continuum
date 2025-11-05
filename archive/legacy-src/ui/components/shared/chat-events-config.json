@@ -1,0 +1,96 @@
+{
+  "chatEvents": {
+    "message_received": {
+      "handler": "handleIncomingMessage",
+      "description": "New message received in room",
+      "matchField": "roomId",
+      "requiresCurrentRoom": true
+    },
+    "agent_typing": {
+      "handler": "setTypingIndicator", 
+      "handlerArgs": [true],
+      "description": "Agent started typing in room",
+      "matchField": "roomId",
+      "requiresCurrentRoom": true
+    },
+    "agent_stop_typing": {
+      "handler": "setTypingIndicator",
+      "handlerArgs": [false], 
+      "description": "Agent stopped typing in room",
+      "matchField": "roomId",
+      "requiresCurrentRoom": true
+    },
+    "room_participants_updated": {
+      "handler": "updateParticipantsList",
+      "description": "Room participant list changed",
+      "matchField": "roomId",
+      "requiresCurrentRoom": true
+    },
+    "message_status_updated": {
+      "handler": "updateMessageStatus",
+      "description": "Message delivery/read status changed",
+      "matchField": "messageId",
+      "requiresCurrentRoom": false
+    }
+  },
+  "globalEvents": {
+    "continuum:room-changed": {
+      "handler": "switchRoom",
+      "description": "Legacy room change event",
+      "dataPath": "detail.room.id"
+    },
+    "continuum:ready": {
+      "handler": "setupContinuumListeners",
+      "description": "Continuum API became ready",
+      "once": true
+    }
+  },
+  "messageTypes": {
+    "user": {
+      "icon": "👤",
+      "className": "user-message",
+      "showAvatar": true,
+      "allowEdit": true
+    },
+    "assistant": {
+      "icon": "🤖", 
+      "className": "assistant-message",
+      "showAvatar": true,
+      "allowEdit": false
+    },
+    "system": {
+      "icon": "ℹ️",
+      "className": "system-message", 
+      "showAvatar": false,
+      "allowEdit": false
+    },
+    "error": {
+      "icon": "❌",
+      "className": "error-message",
+      "showAvatar": false,
+      "allowEdit": false
+    }
+  },
+  "messageStatuses": {
+    "sending": {
+      "icon": "⏳",
+      "className": "status-sending",
+      "description": "Sending message..."
+    },
+    "sent": {
+      "icon": "✓",
+      "className": "status-sent", 
+      "description": "Message sent"
+    },
+    "delivered": {
+      "icon": "✓✓",
+      "className": "status-delivered",
+      "description": "Message delivered"
+    },
+    "error": {
+      "icon": "❌",
+      "className": "status-error",
+      "description": "Failed to send"
+    }
+  }
+}

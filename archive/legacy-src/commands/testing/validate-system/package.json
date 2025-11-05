@@ -1,0 +1,32 @@
+{
+  "name": "validate-system-core",
+  "version": "1.0.0",
+  "description": "validate-system core for Continuum",
+  "main": "ValidateSystemCommand.ts",
+  "type": "module",
+  "continuum": {
+    "core": "validate_system",
+    "category": "Core",
+    "capabilities": [
+      "testing"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "validate-system",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

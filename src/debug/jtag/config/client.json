@@ -1,0 +1,21 @@
+{
+  "client": {
+    "ui_port": 9002,
+    "host": "localhost",
+    "protocol": "http",
+    "auto_connect": true,
+    "reconnect_attempts": 3
+  },
+  "browser": {
+    "headless": false,
+    "devtools": true,
+    "width": 1200,
+    "height": 800,
+    "user_agent": "JTAG-TestBrowser/1.0"
+  },
+  "ui": {
+    "theme": "dark",
+    "enable_animations": true,
+    "show_debug_panel": false
+  }
+}

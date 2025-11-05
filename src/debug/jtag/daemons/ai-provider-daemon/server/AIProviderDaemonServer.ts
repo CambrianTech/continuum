@@ -1,0 +1,175 @@
+/**
+ * AI Provider Daemon Server - Server-specific AI Integration
+ * ===========================================================
+ *
+ * Server implementation of AIProviderDaemon with full access to:
+ * - HTTP requests (fetch API)
+ * - File system (for config/cache)
+ * - Environment variables (for API keys)
+ * - ProcessPool for genome inference workers
+ *
+ * All AI provider logic is in the shared AIProviderDaemon base class.
+ * This server version provides daemon registration and ProcessPool initialization.
+ */
+
+import { AIProviderDaemon } from '../shared/AIProviderDaemon';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import type { AIProviderAdapter } from '../shared/AIProviderTypesV2';
+import { ProcessPool } from '../../../system/genome/server/ProcessPool';
+import { initializeSecrets, getSecret } from '../../../system/secrets/SecretManager';
+import * as path from 'path';
+
+export class AIProviderDaemonServer extends AIProviderDaemon {
+  private processPool?: ProcessPool;
+
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super(context, router);
+  }
+
+  /**
+   * Override to return typed ProcessPool instance
+   */
+  protected getProcessPoolInstance(): ProcessPool | undefined {
+    return this.processPool;
+  }
+
+  /**
+   * Server-specific initialization
+   * Initializes base daemon, dynamically loads adapters, and sets up static interface
+   */
+  protected async initialize(): Promise<void> {
+    // Initialize SecretManager FIRST (adapters depend on it)
+    console.log('🔐 AIProviderDaemonServer: Initializing SecretManager...');
+    await initializeSecrets();
+    console.log('✅ AIProviderDaemonServer: SecretManager initialized');
+
+    // Register adapters dynamically (server-only code)
+    console.log('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
+
+    // Register Ollama adapter (local, free, private)
+    // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
+    const { OllamaAdapter } = await import('../adapters/ollama/shared/OllamaAdapter');
+    await this.registerAdapter(new OllamaAdapter({ maxConcurrent: 4 }), {
+      priority: 100, // Highest priority - free and local
+      enabled: true,
+    });
+
+    // Register Sentinel adapter (local, free, private, pre-trained models)
+    // Provides TinyLlama, Phi-2, CodeLlama, DistilGPT2 for PersonaUsers
+    const { SentinelAdapter } = await import('../adapters/sentinel/shared/SentinelAdapter');
+    await this.registerAdapter(new SentinelAdapter(), {
+      priority: 95, // High priority - local and free, but slower than Ollama
+      enabled: true,
+    });
+    console.log('✅ AIProviderDaemonServer: Sentinel adapter registered');
+
+    // Register cloud adapters if API keys are available
+    // Priority order: Ollama (100) > DeepSeek (90) > Groq (85) > OpenAI/Anthropic (80) > Together/Fireworks (70)
+
+    // DeepSeek: Cheapest SOTA model ($0.27/M tokens vs GPT-4's $3.50/M)
+    const deepseekKey = await getSecret('DEEPSEEK_API_KEY');
+    if (deepseekKey) {
+      const { DeepSeekAdapter } = await import('../adapters/deepseek/shared/DeepSeekAdapter');
+      await this.registerAdapter(new DeepSeekAdapter(deepseekKey), {
+        priority: 90,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: DeepSeek adapter registered');
+    }
+
+    // Groq: Fastest inference (LPU hardware, <100ms latency)
+    const groqKey = await getSecret('GROQ_API_KEY');
+    if (groqKey) {
+      const { GroqAdapter } = await import('../adapters/groq/shared/GroqAdapter');
+      await this.registerAdapter(new GroqAdapter(groqKey), {
+        priority: 85,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: Groq adapter registered');
+    }
+
+    // X.AI: Grok models with advanced reasoning
+    const xaiKey = await getSecret('XAI_API_KEY');
+    if (xaiKey) {
+      const { XAIAdapter } = await import('../adapters/xai/shared/XAIAdapter');
+      await this.registerAdapter(new XAIAdapter(xaiKey), {
+        priority: 83,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
+    }
+
+    // OpenAI: Premium quality (GPT-4, expensive)
+    const openaiKey = await getSecret('OPENAI_API_KEY');
+    if (openaiKey) {
+      const { OpenAIAdapter } = await import('../adapters/openai/shared/OpenAIAdapter');
+      await this.registerAdapter(new OpenAIAdapter(openaiKey), {
+        priority: 80,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: OpenAI adapter registered');
+    }
+
+    // Anthropic: Best reasoning (Claude 3)
+    const anthropicKey = await getSecret('ANTHROPIC_API_KEY');
+    if (anthropicKey) {
+      const { AnthropicAdapter } = await import('../adapters/anthropic/shared/AnthropicAdapter');
+      await this.registerAdapter(new AnthropicAdapter(anthropicKey), {
+        priority: 80,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: Anthropic adapter registered');
+    }
+
+    // Together.ai: Cheap + diverse models
+    const togetherKey = await getSecret('TOGETHER_API_KEY');
+    if (togetherKey) {
+      const { TogetherAIAdapter } = await import('../adapters/together/shared/TogetherAIAdapter');
+      await this.registerAdapter(new TogetherAIAdapter(togetherKey), {
+        priority: 70,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: Together.ai adapter registered');
+    }
+
+    // Fireworks: Fast inference + coding models
+    const fireworksKey = await getSecret('FIREWORKS_API_KEY');
+    if (fireworksKey) {
+      const { FireworksAdapter } = await import('../adapters/fireworks/shared/FireworksAdapter');
+      await this.registerAdapter(new FireworksAdapter(fireworksKey), {
+        priority: 70,
+        enabled: true,
+      });
+      console.log('✅ AIProviderDaemonServer: Fireworks adapter registered');
+    }
+
+    // Call base initialization
+    await super['initialize']();
+
+    // DISABLED: ProcessPool adds 40s overhead - direct Ollama adapter is 132x faster
+    // ProcessPool with HTTP workers → 41s per request
+    // Direct Ollama adapter → 310ms per request
+    console.log('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
+
+    // Initialize static AIProviderDaemon interface for commands to use (like DataDaemon.query)
+    AIProviderDaemon.initialize(this);
+
+    console.log(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
+  }
+
+  /**
+   * Server-specific shutdown
+   * Shuts down ProcessPool gracefully, then delegates to base class
+   */
+  async shutdown(): Promise<void> {
+    console.log('🔄 AIProviderDaemonServer: Shutting down ProcessPool...');
+
+    if (this.processPool) {
+      await this.processPool.shutdown();
+      console.log('✅ AIProviderDaemonServer: ProcessPool shutdown complete');
+    }
+
+    await super.shutdown();
+  }
+}

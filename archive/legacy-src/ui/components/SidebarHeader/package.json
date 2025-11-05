@@ -1,0 +1,19 @@
+{
+  "name": "SidebarHeader-core",
+  "version": "1.0.0",
+  "description": "SidebarHeader widget for Continuum",
+  "main": "SidebarHeader.ts",
+  "type": "module",
+  "continuum": {
+    "type": "widget",
+    "widgetName": "SidebarHeader",
+    "componentName": "sidebar-header"
+  },
+  "keywords": [
+    "SidebarHeader",
+    "widget",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

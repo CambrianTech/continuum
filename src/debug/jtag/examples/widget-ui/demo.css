@@ -1,0 +1,267 @@
+/* JTAG Widget System - Complete Working CSS */
+
+/* === RESET & BASE === */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, rgba(15, 20, 25, 1) 0%, rgba(20, 25, 35, 1) 100%);
+    color: #e0e6ed;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+/* Enable text selection for chat widget areas */
+chat-widget,
+.chat-container,
+.content-view chat-widget,
+input[type="text"],
+textarea {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+}
+
+/* === DESKTOP LAYOUT === */
+.desktop-container {
+    display: grid;
+    grid-template-columns: 250px 1fr;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* === SIDEBAR === */
+.sidebar-panel {
+    position: relative;
+    background: linear-gradient(180deg, rgba(25, 30, 40, 0.95) 0%, rgba(35, 40, 50, 0.9) 100%);
+    border-right: 1px solid rgba(0, 212, 255, 0.3);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    backdrop-filter: blur(10px);
+    box-shadow: 4px 0 15px rgba(0, 0, 0, 0.3);
+}
+
+.status-view {
+    padding: 15px 0;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+}
+
+.dynamic-list {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.list-item {
+    padding: 10px 15px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    color: rgba(224, 230, 237, 0.7);
+    font-weight: 500;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.list-item:hover {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 150, 255, 0.05) 100%);
+    color: #00d4ff;
+    border: 1px solid rgba(0, 212, 255, 0.3);
+    transform: translateX(5px);
+}
+
+.list-item.active {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.2) 0%, rgba(0, 150, 255, 0.1) 100%);
+    color: #00d4ff;
+    border: 1px solid rgba(0, 212, 255, 0.5);
+    box-shadow: 0 0 15px rgba(0, 212, 255, 0.3);
+}
+
+/* === MAIN PANEL === */
+.main-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.content-header {
+    background: linear-gradient(90deg, rgba(20, 25, 35, 0.95) 0%, rgba(25, 30, 40, 0.9) 100%);
+    border-bottom: 2px solid rgba(0, 212, 255, 0.3);
+    padding: 20px;
+    backdrop-filter: blur(5px);
+}
+
+.content-header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #00d4ff;
+    text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+    letter-spacing: -0.02em;
+    margin: 0;
+}
+
+.content-view {
+    flex: 1;
+    padding: 30px;
+    overflow-y: auto;
+    background: linear-gradient(135deg, rgba(15, 20, 25, 0.8) 0%, rgba(20, 25, 35, 0.9) 100%);
+}
+
+/* === STATUS BADGES === */
+.status {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: inline-block;
+    min-width: 100px;
+    text-align: center;
+    border: 1px solid rgba(0, 212, 255, 0.4);
+    background: linear-gradient(45deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 150, 255, 0.05) 100%);
+    color: #00d4ff;
+}
+
+.status.connected {
+    background: linear-gradient(45deg, rgba(0, 255, 100, 0.2) 0%, rgba(0, 200, 80, 0.1) 100%);
+    border-color: rgba(0, 255, 100, 0.4);
+    color: #00ff64;
+}
+
+.status.disconnected {
+    background: linear-gradient(45deg, rgba(255, 100, 100, 0.2) 0%, rgba(200, 50, 50, 0.1) 100%);
+    border-color: rgba(255, 100, 100, 0.4);
+    color: #ff6464;
+}
+
+/* === BUTTONS === */
+.cyber-btn {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.2) 0%, rgba(0, 150, 255, 0.1) 100%);
+    border: 1px solid rgba(0, 212, 255, 0.5);
+    color: #00d4ff;
+    padding: 12px 24px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: inherit;
+    position: relative;
+    overflow: hidden;
+}
+
+.cyber-btn:hover {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.4) 0%, rgba(0, 150, 255, 0.2) 100%);
+    border-color: rgba(0, 212, 255, 0.8);
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 212, 255, 0.4);
+}
+
+.cyber-btn.primary {
+    background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+    color: #000;
+}
+
+.cyber-btn.secondary {
+    background: transparent;
+    color: #00d4ff;
+}
+
+.cyber-btn.secondary:hover {
+    background: rgba(0, 212, 255, 0.1);
+}
+
+/* === CHAT WIDGET PANEL === */
+chat-widget {
+    display: block;
+    background: linear-gradient(135deg, rgba(25, 30, 40, 0.9) 0%, rgba(30, 35, 45, 0.8) 100%);
+    border: 1px solid rgba(0, 212, 255, 0.3);
+    border-radius: 12px;
+    padding: 20px;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+/* === ANIMATIONS === */
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+@keyframes glow {
+    0% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.3); }
+    50% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.6); }
+    100% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.3); }
+}
+
+.status.connected {
+    animation: glow 2s ease-in-out infinite;
+}
+
+/* === RESPONSIVE === */
+@media (max-width: 768px) {
+    .desktop-container {
+        grid-template-columns: 200px 1fr;
+    }
+    
+    .sidebar-panel {
+        padding: 15px;
+    }
+    
+    .content-view {
+        padding: 20px;
+    }
+}
+
+@media (max-width: 480px) {
+    .desktop-container {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+    }
+    
+    .sidebar-panel {
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid rgba(0, 212, 255, 0.3);
+    }
+}
+
+/* === WEB COMPONENTS === */
+continuum-emoter {
+    display: block;
+    height: 60px;
+    background: linear-gradient(45deg, rgba(255, 100, 150, 0.2), rgba(255, 150, 200, 0.1));
+    border: 1px solid rgba(255, 100, 150, 0.4);
+    border-radius: 8px;
+    position: relative;
+}
+
+sidebar-resizer {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    width: 8px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 1000;
+}
+
+sidebar-resizer:hover {
+    background: rgba(0, 212, 255, 0.3);
+}

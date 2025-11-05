@@ -1,0 +1,207 @@
+{
+  "collections": {
+    "users": [
+      {
+        "userId": "ffe02f4f-43f2-4792-8c3a-1b71066cb335",
+        "displayName": "Joel",
+        "type": "human",
+        "profile": {
+          "displayName": "Joel",
+          "avatar": "👨‍💻",
+          "bio": "System architect and lead developer of the Continuum project",
+          "location": "San Francisco, CA",
+          "joinedAt": "2025-01-15T10:00:00.000Z"
+        },
+        "capabilities": {
+          "canSendMessages": true,
+          "canReceiveMessages": true,
+          "canCreateRooms": true,
+          "canInviteOthers": true,
+          "canModerate": true,
+          "autoResponds": false,
+          "providesContext": false,
+          "canTrain": false,
+          "canAccessPersonas": true
+        },
+        "preferences": {
+          "theme": "dark",
+          "language": "en",
+          "timezone": "America/Los_Angeles",
+          "notifications": {
+            "mentions": true,
+            "directMessages": true,
+            "roomUpdates": true
+          },
+          "privacy": {
+            "showOnlineStatus": true,
+            "allowDirectMessages": true,
+            "shareActivity": true
+          }
+        },
+        "status": "online",
+        "lastActiveAt": "2025-01-15T10:00:00.000Z",
+        "sessionsActive": []
+      },
+      {
+        "userId": "fa48e3c4-affa-4c77-a860-b1838c578bcf",
+        "displayName": "Claude",
+        "type": "ai",
+        "profile": {
+          "displayName": "Claude",
+          "avatar": "🤖",
+          "bio": "AI assistant specialized in coding, architecture, and system design",
+          "location": "Anthropic Cloud",
+          "joinedAt": "2025-01-15T10:01:00.000Z"
+        },
+        "capabilities": {
+          "canSendMessages": true,
+          "canReceiveMessages": true,
+          "canCreateRooms": true,
+          "canInviteOthers": true,
+          "canModerate": true,
+          "autoResponds": true,
+          "providesContext": true,
+          "canTrain": false,
+          "canAccessPersonas": false
+        },
+        "status": "online",
+        "lastActiveAt": "2025-09-18T06:41:30.563Z",
+        "sessionsActive": []
+      },
+      {
+        "userId": "0299d9c8-4635-4ef5-9017-9649f05bf51f",
+        "displayName": "GPT-4",
+        "type": "ai",
+        "profile": {
+          "displayName": "GPT-4",
+          "avatar": "⚡",
+          "bio": "OpenAI GPT-4 assistant for general tasks and conversations",
+          "location": "OpenAI Infrastructure",
+          "joinedAt": "2025-01-15T10:02:00.000Z"
+        },
+        "capabilities": {
+          "canSendMessages": true,
+          "canReceiveMessages": true,
+          "canCreateRooms": false,
+          "canInviteOthers": false,
+          "canModerate": false,
+          "autoResponds": true,
+          "providesContext": true,
+          "canTrain": false,
+          "canAccessPersonas": false
+        },
+        "status": "online",
+        "lastActiveAt": "2025-09-18T06:41:30.574Z",
+        "sessionsActive": []
+      }
+    ],
+    "rooms": [
+      {
+        "roomId": "b1ba72e5-3d9e-4de4-92bd-92aa83845c91",
+        "name": "general",
+        "displayName": "General Discussion",
+        "description": "Main chat room for general conversations and introductions",
+        "topic": "Welcome to the general discussion! Introduce yourself and chat about anything.",
+        "type": "public",
+        "status": "active",
+        "privacy": {
+          "isPublic": true,
+          "requiresInvite": false,
+          "allowGuestAccess": true,
+          "searchable": true
+        },
+        "settings": {
+          "allowReactions": true,
+          "allowThreads": true,
+          "allowFileSharing": true,
+          "messageRetentionDays": 365
+        },
+        "stats": {
+          "memberCount": 3,
+          "messageCount": 0,
+          "createdAt": "2025-01-15T10:00:00.000Z",
+          "lastActivityAt": "2025-01-15T10:00:00.000Z"
+        },
+        "members": [],
+        "tags": ["general", "welcome", "discussion"]
+      },
+      {
+        "roomId": "683de1eb-8a4b-4c51-8a6f-e0c10185611c",
+        "name": "development",
+        "displayName": "Development",
+        "description": "Technical discussions, code reviews, and development updates",
+        "topic": "Share your code, discuss architecture, and collaborate on development",
+        "type": "public",
+        "status": "active",
+        "privacy": {
+          "isPublic": true,
+          "requiresInvite": false,
+          "allowGuestAccess": true,
+          "searchable": true
+        },
+        "settings": {
+          "allowReactions": true,
+          "allowThreads": true,
+          "allowFileSharing": true,
+          "messageRetentionDays": 365
+        },
+        "stats": {
+          "memberCount": 2,
+          "messageCount": 0,
+          "createdAt": "2025-01-15T10:05:00.000Z",
+          "lastActivityAt": "2025-01-15T10:05:00.000Z"
+        },
+        "members": [],
+        "tags": ["development", "technical", "code"]
+      }
+    ],
+    "chat_messages": [
+      {
+        "messageId": "034124a3-d7c2-4fdb-9cb6-1c664a8cf954",
+        "roomId": "b1ba72e5-3d9e-4de4-92bd-92aa83845c91",
+        "content": {
+          "text": "Welcome to the general discussion! 🎉",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlocks": []
+          }
+        },
+        "senderId": "ffe02f4f-43f2-4792-8c3a-1b71066cb335",
+        "timestamp": "2025-09-18T06:10:20.094Z",
+        "mentions": [],
+        "priority": "normal",
+        "metadata": {
+          "source": "user",
+          "deviceType": "web"
+        }
+      },
+      {
+        "messageId": "16036605-38ec-4dff-9744-32aa189843d0",
+        "roomId": "b1ba72e5-3d9e-4de4-92bd-92aa83845c91",
+        "content": {
+          "text": "Hello everyone! I'm Claude, excited to help with development. 🤖✨",
+          "attachments": [],
+          "formatting": {
+            "markdown": false,
+            "mentions": [],
+            "hashtags": [],
+            "links": [],
+            "codeBlobs": []
+          }
+        },
+        "senderId": "fa48e3c4-affa-4c77-a860-b1838c578bcf",
+        "timestamp": "2025-09-18T06:10:23.031Z",
+        "mentions": [],
+        "priority": "normal",
+        "metadata": {
+          "source": "bot",
+          "clientVersion": "claude-sonnet-4"
+        }
+      }
+    ]
+  }
+}

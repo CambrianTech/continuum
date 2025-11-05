@@ -11,7 +11,15 @@ export default [
       'node_modules/**',
       'coverage/**',
       '*.config.js',
-      '**/dist/**'
+      '**/dist/**',
+      '.continuum/**',
+      'python-client/.venv/**',
+      'python-client/**/*.log',
+      'test_screenshots/**',
+      'agents/workspace/**',
+      '**/venv/**',
+      '**/env/**',
+      '**/htmlfiles/**'
     ],
     languageOptions: {
       parser: tsParser,
@@ -19,7 +27,9 @@ export default [
       sourceType: 'module',
       parserOptions: {
         ecmaVersion: 2022,
-        sourceType: 'module'
+        sourceType: 'module',
+        project: ['./tsconfig.json', './tsconfig.test.json'],
+        tsconfigRootDir: import.meta.dirname
       },
       globals: {
         // Node.js globals
@@ -29,6 +39,13 @@ export default [
         require: 'readonly',
         __dirname: 'readonly',
         __filename: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+        setImmediate: 'readonly',
+        clearTimeout: 'readonly',
+        clearInterval: 'readonly',
+        Buffer: 'readonly',
+        global: 'readonly',
       }
     },
     plugins: {
@@ -37,17 +54,53 @@ export default [
     rules: {
       ...eslintJs.configs.recommended.rules,
       ...tseslint.configs.recommended.rules,
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unused-vars': ['warn', { 'argsIgnorePattern': '^_' }],
-      '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-require-imports': 'off',
+      
+      // STRICT TYPE SAFETY - No compromises
+      '@typescript-eslint/no-explicit-any': 'error', // No any types allowed
+      '@typescript-eslint/no-unused-vars': ['error', { 'argsIgnorePattern': '^_' }], // Error not warn
+      '@typescript-eslint/explicit-module-boundary-types': 'error', // Require explicit return types
+      '@typescript-eslint/explicit-function-return-type': 'error', // All functions must have return types
+      '@typescript-eslint/no-inferrable-types': 'off', // Allow explicit types even if inferrable
+      // '@typescript-eslint/prefer-readonly-parameter-types': 'warn', // Prefer readonly params - needs project config
+      
+      // CLEAN CODE ENFORCEMENT
+      '@typescript-eslint/no-require-imports': 'error', // No require() in TypeScript
+      '@typescript-eslint/no-var-requires': 'error', // No var require
+      '@typescript-eslint/consistent-type-imports': 'error', // Use import type
+      '@typescript-eslint/no-unnecessary-type-assertion': 'error', // Remove unnecessary assertions
+      '@typescript-eslint/prefer-nullish-coalescing': 'error', // Use ?? over ||
+      '@typescript-eslint/prefer-optional-chain': 'error', // Use optional chaining
+      
+      // ARCHITECTURE ENFORCEMENT
       'no-undef': 'error',
+      'no-unused-expressions': 'error',
+      'prefer-const': 'error', // Use const when possible
+      'no-var': 'error', // No var declarations
+      
+      // MODULE SYSTEM ENFORCEMENT
+      'no-restricted-imports': ['error', {
+        'patterns': ['*.js', '*.jsx', '*.ts', '*.tsx'] // No file extensions in imports
+      }],
+      
+      // NAMING CONVENTIONS
+      '@typescript-eslint/naming-convention': ['error',
+        { selector: 'interface', format: ['PascalCase'] },
+        { selector: 'typeAlias', format: ['PascalCase'] },
+        { selector: 'class', format: ['PascalCase'] },
+        { selector: 'method', format: ['camelCase'] },
+        { selector: 'function', format: ['camelCase'] },
+        { selector: 'variable', format: ['camelCase', 'UPPER_CASE'] },
+        { selector: 'parameter', format: ['camelCase'], leadingUnderscore: 'allow' }
+      ]
     }
   },
   
   // Config specifically for test files
   {
-    files: ['**/__tests__/**/*.ts', '**/*.test.ts', '**/*.spec.ts'],
+    files: ['**/__tests__/**/*.{js,ts}', '**/*.test.{js,ts}', '**/*.spec.{js,ts}'],
+    plugins: {
+      '@typescript-eslint': tseslint
+    },
     languageOptions: {
       globals: {
         // Jest globals
@@ -60,7 +113,82 @@ export default [
         beforeAll: 'readonly',
         afterAll: 'readonly',
         jest: 'readonly',
+        global: 'readonly',
+        Buffer: 'readonly',
+        setTimeout: 'readonly',
       }
+    }
+  },
+
+  // Config for browser-side scripts (agent-scripts, UI components)
+  {
+    files: ['agent-scripts/**/*.js', 'src/ui/**/*.js', '**/browser*.js', 'src/modules/**/*.js'],
+    languageOptions: {
+      globals: {
+        // Browser globals
+        window: 'readonly',
+        document: 'readonly',
+        navigator: 'readonly',
+        location: 'readonly',
+        alert: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearTimeout: 'readonly',
+        clearInterval: 'readonly',
+        requestAnimationFrame: 'readonly',
+        WebSocket: 'readonly',
+        Response: 'readonly',
+        performance: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+        CustomEvent: 'readonly',
+        HTMLElement: 'readonly',
+        customElements: 'readonly',
+        localStorage: 'readonly',
+        confirm: 'readonly',
+        define: 'readonly',
+        ws: 'writable',
+        addMessage: 'readonly',
+        addSystemMessage: 'readonly',
+        initWebSocket: 'readonly',
+        handleWebSocketMessage: 'readonly',
+        BaseWidget: 'readonly',
+        SidebarWidget: 'readonly',
+        captureWidgetScreenshot: 'readonly',
+        validateScreenshotContent: 'readonly',
+        runSelfDiagnostics: 'readonly',
+        commands: 'readonly',
+      }
+    }
+  },
+
+  // Config for archived/experimental files (more lenient)
+  {
+    files: ['archive/**/*.{js,ts}', 'archived/**/*.{js,ts}', 'examples/**/*.js', 'agent-scripts/**/*.js'],
+    plugins: {
+      '@typescript-eslint': tseslint
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': 'warn',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-expressions': 'warn',
+      'no-undef': 'warn',
+      'no-global-assign': 'warn',
+      'no-prototype-builtins': 'warn',
+    }
+  },
+
+  // Config for CommonJS files
+  {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'script',
+      ecmaVersion: 2022,
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     }
   }
 ];

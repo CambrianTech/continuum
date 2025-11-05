@@ -1,0 +1,305 @@
+/**
+ * AI Should Respond Fast Server Command
+ *
+ * Fast, deterministic "should respond" detection using bag-of-words scoring
+ * No LLM calls - pure algorithmic approach
+ */
+
+import { ShouldRespondFastCommand } from '../shared/ShouldRespondFastCommand';
+import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import type {
+  ShouldRespondFastParams,
+  ShouldRespondFastResult,
+  PersonaResponseConfig,
+  ResponseScoringWeights
+} from '../shared/ShouldRespondFastTypes';
+import { DEFAULT_SCORING_WEIGHTS, DEFAULT_RESPONSE_THRESHOLD } from '../shared/ShouldRespondFastTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
+import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+
+export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
+  // Cache of recent message timestamps per persona per room
+  private lastMessageTimes: Map<string, number> = new Map();
+
+  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+    super('ai/should-respond-fast', context, subpath, commander);
+  }
+
+  async execute(params: ShouldRespondFastParams): Promise<ShouldRespondFastResult> {
+    try {
+      console.log(`🎯 ShouldRespondFast: Evaluating for persona ${params.personaId.slice(0, 8)} in context ${params.contextId.slice(0, 8)}`);
+
+      // Build config (merge defaults with overrides)
+      const config = await this.buildConfig(params);
+
+      // Check cooldown
+      const cooldownKey = `${params.personaId}:${params.contextId}`;
+      const lastMessageTime = this.lastMessageTimes.get(cooldownKey) ?? 0;
+      const now = Date.now();
+      const timeSinceLastMessage = (now - lastMessageTime) / 1000;
+
+      if (timeSinceLastMessage < config.cooldownSeconds) {
+        console.log(`⏰ ShouldRespondFast: Cooldown active (${timeSinceLastMessage.toFixed(0)}s < ${config.cooldownSeconds}s)`);
+        return this.buildResult(params, false, 0, {
+          reasoning: `Cooldown active - last message ${timeSinceLastMessage.toFixed(0)}s ago`
+        });
+      }
+
+      // Calculate score
+      const scoreResult = await this.calculateScore(params, config);
+
+      // Determine if should respond
+      const shouldRespond = scoreResult.score >= config.responseThreshold ||
+        (config.alwaysRespondToMentions && scoreResult.signals.wasMentioned);
+
+      // Update cooldown if responding
+      if (shouldRespond) {
+        this.lastMessageTimes.set(cooldownKey, now);
+      }
+
+      console.log(`${shouldRespond ? '✅' : '❌'} ShouldRespondFast: Score ${scoreResult.score} ${shouldRespond ? '>=' : '<'} threshold ${config.responseThreshold}`);
+
+      return this.buildResult(params, shouldRespond, scoreResult.score, {
+        scoreBreakdown: scoreResult.scoreBreakdown,
+        signals: scoreResult.signals,
+        reasoning: shouldRespond
+          ? `Score ${scoreResult.score} exceeds threshold ${config.responseThreshold}`
+          : `Score ${scoreResult.score} below threshold ${config.responseThreshold}`
+      });
+
+    } catch (error) {
+      console.error('❌ ShouldRespondFast: Command failed:', error);
+      return {
+        context: params.context,
+        sessionId: params.sessionId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        shouldRespond: false,
+        score: 0,
+        scoreBreakdown: {
+          directMention: 0,
+          domainKeywords: 0,
+          conversationContext: 0,
+          isQuestion: 0,
+          publicMessage: 0,
+          roomActivity: 0
+        },
+        signals: {
+          wasMentioned: false,
+          matchedKeywords: [],
+          isQuestion: false,
+          recentlyActive: false
+        },
+        reasoning: 'Error occurred during evaluation'
+      };
+    }
+  }
+
+  /**
+   * Build persona config (defaults + overrides + DB lookup)
+   */
+  private async buildConfig(params: ShouldRespondFastParams): Promise<PersonaResponseConfig> {
+    // TODO: Load from database when PersonaResponseConfig entity exists
+    // For now, use defaults with overrides
+
+    const weights: ResponseScoringWeights = {
+      ...DEFAULT_SCORING_WEIGHTS,
+      ...(params.config?.weights ?? {})
+    };
+
+    return {
+      personaId: params.personaId,
+      personaName: params.config?.personaName ?? 'Persona',
+      domainKeywords: params.config?.domainKeywords ?? [],
+      weights,
+      responseThreshold: params.config?.responseThreshold ?? DEFAULT_RESPONSE_THRESHOLD,
+      alwaysRespondToMentions: params.config?.alwaysRespondToMentions ?? true,
+      cooldownSeconds: params.config?.cooldownSeconds ?? 60
+    };
+  }
+
+  /**
+   * Calculate bag-of-words score
+   */
+  private async calculateScore(
+    params: ShouldRespondFastParams,
+    config: PersonaResponseConfig
+  ): Promise<{
+    score: number;
+    scoreBreakdown: ShouldRespondFastResult['scoreBreakdown'];
+    signals: ShouldRespondFastResult['signals'];
+  }> {
+    const messageText = params.messageText.toLowerCase();
+    const scoreBreakdown = {
+      directMention: 0,
+      domainKeywords: 0,
+      conversationContext: 0,
+      isQuestion: 0,
+      publicMessage: 0,
+      roomActivity: 0
+    };
+
+    const signals = {
+      wasMentioned: false,
+      matchedKeywords: [] as string[],
+      isQuestion: false,
+      recentlyActive: false
+    };
+
+    // 1. Direct mention detection
+    const personaNameLower = config.personaName.toLowerCase();
+    if (messageText.includes(`@${personaNameLower}`) || messageText.includes(personaNameLower)) {
+      scoreBreakdown.directMention = config.weights.directMention;
+      signals.wasMentioned = true;
+      console.log(`🎯 Detected direct mention: ${config.personaName}`);
+    }
+
+    // 2. Domain keyword matching
+    for (const keyword of config.domainKeywords) {
+      if (messageText.includes(keyword.toLowerCase())) {
+        scoreBreakdown.domainKeywords += config.weights.domainKeyword;
+        signals.matchedKeywords.push(keyword);
+      }
+    }
+    if (signals.matchedKeywords.length > 0) {
+      console.log(`🔑 Matched keywords: ${signals.matchedKeywords.join(', ')}`);
+    }
+
+    // 3. Conversation context - was persona recently active?
+    const recentlyActive = await this.wasRecentlyActive(params.personaId, params.contextId);
+    if (recentlyActive) {
+      scoreBreakdown.conversationContext = config.weights.conversationContext;
+      signals.recentlyActive = true;
+      console.log(`💬 Persona recently active in conversation`);
+    }
+
+    // 4. Question detection
+    const isQuestion = messageText.includes('?') ||
+      /\b(how|what|why|when|where|who|can|could|would|should|is|are|do|does)\b/.test(messageText);
+    if (isQuestion) {
+      scoreBreakdown.isQuestion = config.weights.isQuestion;
+      signals.isQuestion = true;
+      console.log(`❓ Message is a question`);
+    }
+
+    // 5. Public message (always true for chat rooms)
+    scoreBreakdown.publicMessage = config.weights.publicMessage;
+
+    // 6. Room activity - recent messages in last 5 minutes
+    const roomActivity = await this.getRoomActivity(params.contextId);
+    if (roomActivity > 3) {
+      scoreBreakdown.roomActivity = config.weights.roomActivity;
+      console.log(`📈 High room activity: ${roomActivity} messages in 5min`);
+    }
+
+    // Calculate total score
+    const score =
+      scoreBreakdown.directMention +
+      scoreBreakdown.domainKeywords +
+      scoreBreakdown.conversationContext +
+      scoreBreakdown.isQuestion +
+      scoreBreakdown.publicMessage +
+      scoreBreakdown.roomActivity;
+
+    return { score, scoreBreakdown, signals };
+  }
+
+  /**
+   * Check if persona was recently active in conversation
+   */
+  private async wasRecentlyActive(personaId: string, contextId: string): Promise<boolean> {
+    try {
+      // Check if persona sent message in last 10 minutes
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+        collection: 'chat_messages',
+        filter: {
+          roomId: contextId,
+          senderId: personaId
+        },
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 1
+      });
+
+      if (result.success && result.items && result.items.length > 0) {
+        const lastMessage = result.items[0];
+        const messageTime = new Date(lastMessage.timestamp);
+        return messageTime > tenMinutesAgo;
+      }
+
+      return false;
+    } catch (error) {
+      console.warn('⚠️ Failed to check recent activity:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get room activity count (messages in last 5 minutes)
+   */
+  private async getRoomActivity(contextId: string): Promise<number> {
+    try {
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+        collection: 'chat_messages',
+        filter: { roomId: contextId },
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 50 // Check last 50 messages
+      });
+
+      if (result.success && result.items) {
+        const recentMessages = result.items.filter((msg: ChatMessageEntity) => {
+          const messageTime = new Date(msg.timestamp);
+          return messageTime > fiveMinutesAgo;
+        });
+        return recentMessages.length;
+      }
+
+      return 0;
+    } catch (error) {
+      console.warn('⚠️ Failed to check room activity:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Build result object
+   */
+  private buildResult(
+    params: ShouldRespondFastParams,
+    shouldRespond: boolean,
+    score: number,
+    extra: {
+      scoreBreakdown?: ShouldRespondFastResult['scoreBreakdown'];
+      signals?: ShouldRespondFastResult['signals'];
+      reasoning: string;
+    }
+  ): ShouldRespondFastResult {
+    return {
+      context: params.context,
+      sessionId: params.sessionId,
+      success: true,
+      shouldRespond,
+      score,
+      scoreBreakdown: extra.scoreBreakdown ?? {
+        directMention: 0,
+        domainKeywords: 0,
+        conversationContext: 0,
+        isQuestion: 0,
+        publicMessage: 0,
+        roomActivity: 0
+      },
+      signals: extra.signals ?? {
+        wasMentioned: false,
+        matchedKeywords: [],
+        isQuestion: false,
+        recentlyActive: false
+      },
+      reasoning: extra.reasoning
+    };
+  }
+}

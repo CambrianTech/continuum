@@ -1,0 +1,30 @@
+{
+  "name": "@continuum/jtag-command",
+  "version": "1.0.0",
+  "description": "JTAG AI Autonomous Debugging Command - TypeScript module",
+  "main": "JtagCommand.ts",
+  "continuum": {
+    "commandName": "jtag",
+    "type": "command"
+  },
+  "scripts": {
+    "test": "jest",
+    "test:unit": "jest test/unit/",
+    "test:integration": "jest test/integration/"
+  },
+  "dependencies": {
+    "@continuum/types": "workspace:*",
+    "@continuum/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "JtagCommand.ts",
+    "types/",
+    "modules/",
+    "cli/"
+  ]
+}

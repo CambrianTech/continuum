@@ -1,0 +1,10 @@
+#!/bin/bash
+# JTAG Terminal Portal - Pure CLI client (no server startup)
+
+# Check for --verbose flag to show connection message
+if [[ "$*" == *"--verbose"* ]]; then
+  echo "🔗 JTAG CLI - Connecting to existing server..."
+fi
+
+# Pure client - just connect to existing server
+npx tsx cli.ts "$@"

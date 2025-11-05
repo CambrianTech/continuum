@@ -1,0 +1,288 @@
+// ISSUES: 0 open, last updated 2025-07-14 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
+/**
+ * Continuum Browser Client - Main API Implementation
+ * Lifecycle-aware single global API for browser-server communication
+ * 
+ * Now uses shared FileOperationParams interface for consistent file operations
+ * across browser client and server commands.
+ */
+
+import packageJson from '../../../package.json';
+import type { ContinuumAPI, ContinuumState, CommandResult } from './types/BrowserClientTypes';
+import type { CommandExecuteData } from './types/WebSocketTypes';
+import { ConsoleForwarder } from './console/ConsoleForwarder';
+import { WebSocketManager } from './connection/WebSocketManager';
+import type { FileOperationParams } from '../../commands/file/client-exports';
+import { FileSaveClient } from '../../commands/file/client-exports';
+import '../../commands/browser/screenshot/client/ScreenshotClient'; // Auto-registers screenshot handler
+
+export class ContinuumBrowserClient implements ContinuumAPI {
+  public readonly version: string;
+  public sessionId: string | null = null;
+  public clientId: string | null = null;
+  
+  private readonly SESSION_COOKIE_NAME = 'continuum_session_id';
+  private readonly SESSION_COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
+  
+  private _state: ContinuumState = 'initializing';
+  private stateCallbacks: ((state: ContinuumState) => void)[] = [];
+  private readyCallbacks: (() => void)[] = [];
+  private dynamicMethods: Map<string, (...args: unknown[]) => unknown> = new Map();
+  
+  // Component modules
+  private consoleForwarder: ConsoleForwarder;
+  private webSocketManager: WebSocketManager;
+
+  constructor() {
+    this.version = packageJson.version;
+    
+    // Initialize session from cookie before WebSocket connection
+    this.initializeSessionFromCookie();
+
+    (window as any).continuum = this; // Attach to global for easy access
+    
+    // Initialize component modules
+    this.consoleForwarder = new ConsoleForwarder(
+      () => this._state,
+      () => this.sessionId
+    );
+    
+    this.webSocketManager = new WebSocketManager(this.version);
+    
+    // Set up module callbacks
+    this.setupModuleCallbacks();
+    
+    console.log(`🌐 Continuum v${this.version} lifecycle starting...`);
+    
+    // Initialize lifecycle
+    this.setState('connecting');
+    this.webSocketManager.initializeConnection();
+  }
+
+  private setupModuleCallbacks(): void {
+    // Console forwarder callback
+    this.consoleForwarder.setExecuteCallback((command, params) => {
+      return this.execute(command, params);
+    });
+
+    // WebSocket manager callbacks
+    this.webSocketManager.setCallbacks({
+      onStateChange: (state) => this.setState(state),
+      onClientId: (clientId) => { this.clientId = clientId; },
+      onSessionId: (sessionId) => { 
+        this.sessionId = sessionId;
+        // Save session ID to cookie for persistence
+        this.saveSessionToCookie(sessionId);
+      },
+      onMessage: (message) => this.handleCustomMessage(message)
+    });
+  }
+
+  get state(): ContinuumState {
+    return this._state;
+  }
+
+  private setState(newState: ContinuumState): void {
+    if (this._state !== newState) {
+      console.log(`🔄 Continuum state: ${this._state} → ${newState}`);
+      this._state = newState;
+      this.stateCallbacks.forEach(callback => callback(newState));
+      
+      // Handle state-specific logic
+      this.handleStateChange(newState);
+    }
+  }
+
+  private handleStateChange(state: ContinuumState): void {
+    switch (state) {
+      case 'connected':
+        console.log('🔌 Continuum API connected to server');
+        break;
+      case 'ready':
+        this.readyCallbacks.forEach(callback => callback());
+        this.consoleForwarder.executeAndFlushConsoleMessageQueue();
+        console.log('✅ Continuum API ready for use');
+        this.consoleForwarder.performHealthCheck();
+        
+        // Test widget discovery using the WidgetDaemon event system  
+        console.log('🎨 BROWSER_DEBUG: Testing widget discovery via WidgetDaemon...');
+        this.execute('widget:discover', { paths: ['src/ui/components'] })
+          .then(result => {
+            console.log('🎨 BROWSER_DEBUG: Widget discovery via WidgetDaemon result:', result);
+            
+            // Test console object serialization with known object
+            const testObj = { 
+              test: 'serialization', 
+              number: 42, 
+              nested: { key: 'value', array: [1, 2, 3] },
+              boolean: true 
+            };
+            console.log('🧪 SERIALIZATION_TEST: Testing object logging:', testObj);
+          
+          // Test console.probe() functionality for AI diagnostics with DOM exploration
+          (console as any).probe({
+            message: '🔬 AI_DIAGNOSTIC_TEST: Probing DOM and browser state',
+            data: { widgets: result, serialization: testObj },
+            executeJS: 'JSON.stringify({ title: document.title, url: window.location.href, bodyChildren: document.body?.children.length || 0, scripts: document.scripts.length, stylesheets: document.styleSheets.length, readyState: document.readyState })',
+            category: 'dom-analysis',
+            tags: ['test', 'dom', 'browser-state', 'widget-discovery']
+          });
+
+          // Add probes to explore widget state and debug why page might be blank
+          (console as any).probe({
+            message: '🔍 WIDGET_INVESTIGATION: Checking widget custom elements status',
+            executeJS: 'JSON.stringify({ sidebarElement: !!document.querySelector("continuum-sidebar"), chatElement: !!document.querySelector("chat-widget"), sidebarInnerHTML: document.querySelector("continuum-sidebar")?.innerHTML?.substring(0, 100) || "empty", chatInnerHTML: document.querySelector("chat-widget")?.innerHTML?.substring(0, 100) || "empty", customElementsSupported: !!window.customElements, bodyHTML: document.body?.innerHTML?.substring(0, 300) || "no body" })',
+            category: 'widget-debug',
+            tags: ['widgets', 'custom-elements', 'debug']
+          });
+
+          // Probe for custom element registration and widget class definitions
+          (console as any).probe({
+            message: '🔍 CUSTOM_ELEMENT_PROBE: Checking widget class registration',
+            executeJS: 'JSON.stringify({ customElementsRegistry: Object.keys(window.customElements || {}), sidebarClass: typeof window.customElements?.get("continuum-sidebar"), chatClass: typeof window.customElements?.get("chat-widget"), globalClasses: Object.keys(window).filter(k => k.includes("Widget") || k.includes("Sidebar")).slice(0, 10) })',
+            category: 'custom-elements',
+            tags: ['registration', 'classes', 'debug']
+          });
+          })
+          .catch(error => {
+            console.error('❌ Widget discovery error:', error);
+          });
+        break;
+      case 'error':
+        console.error('❌ Continuum API in error state');
+        break;
+    }
+  }
+
+  private handleCustomMessage(message: Record<string, unknown>): void {
+    // Handle any custom messages that aren't standard protocol
+    console.log('📨 Received custom message:', message);
+  }
+
+  isConnected(): boolean {
+    return this.state === 'ready' && this.webSocketManager.isOpen();
+  }
+
+  async execute(command: string, params: Record<string, unknown> = {}): Promise<CommandResult> {
+    if (!this.isConnected()) {
+      throw new Error(`Continuum not ready (state: ${this.state})`);
+    }
+
+    return new Promise((resolve, reject) => {
+      const requestId = `cmd_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      const timeout = setTimeout(() => {
+        reject(new Error(`Command '${command}' timed out`));
+      }, 10000);
+
+      // Listen for response
+      const responseHandler = (event: Event) : void => {
+        const message = (event as CustomEvent).detail;
+        if (message.requestId === requestId) {
+          clearTimeout(timeout);
+          document.removeEventListener('continuum:command_response', responseHandler);
+          
+          if (message.success) {
+            resolve(message.data ?? { success: true });
+          } else {
+            reject(new Error(message.error ?? 'Command failed'));
+          }
+        }
+      };
+
+      document.addEventListener('continuum:command_response', responseHandler);
+
+      // Send command
+      const commandData: CommandExecuteData = {
+        command,
+        params: JSON.stringify(params),
+        requestId,
+        sessionId: this.sessionId
+      };
+      
+      this.webSocketManager.sendMessage({
+        type: 'execute_command',
+        data: commandData,
+        timestamp: new Date().toISOString(),
+        clientId: this.clientId,
+        sessionId: this.sessionId
+      });
+    });
+  }
+
+  // File saving functionality - delegates to FileSaveClient
+  async fileSave(options: Pick<FileOperationParams, 'content' | 'filename' | 'artifactType'>): Promise<CommandResult> {
+    const fileSaveClient = FileSaveClient.getInstance();
+    const result = await fileSaveClient.saveFile({
+      content: options.content,
+      filename: options.filename,
+      artifactType: options.artifactType || undefined
+    });
+    
+    if (result.success) {
+      return {
+        success: true,
+        data: result.data ?? {}
+      };
+    } else {
+      throw new Error(result.error ?? 'File save failed');
+    }
+  }
+
+  // Dynamic method attachment
+  attachMethod(name: string, method: (...args: unknown[]) => unknown): void {
+    this.dynamicMethods.set(name, method);
+    // Attach to the object dynamically
+    (this as Record<string, unknown>)[name] = method.bind(this);
+    console.log(`🔧 Dynamic method attached: ${name}`);
+  }
+
+  hasMethod(name: string): boolean {
+    return this.dynamicMethods.has(name) || typeof (this as Record<string, unknown>)[name] === 'function';
+  }
+
+  // Lifecycle event handlers
+  onStateChange(callback: (state: ContinuumState) => void): void {
+    this.stateCallbacks.push(callback);
+  }
+
+  onReady(callback: () => void): void {
+    if (this.state === 'ready') {
+      callback();
+    } else {
+      this.readyCallbacks.push(callback);
+    }
+  }
+  
+  // Session cookie management
+  private initializeSessionFromCookie(): void {
+    const cookieSessionId = this.getSessionFromCookie();
+    if (cookieSessionId) {
+      this.sessionId = cookieSessionId;
+      console.log(`🍪 ContinuumBrowserClient: Restored session from cookie: ${cookieSessionId}`);
+    }
+  }
+  
+  private getSessionFromCookie(): string | null {
+    const cookies = document.cookie.split(';');
+    for (const cookie of cookies) {
+      const [name, value] = cookie.trim().split('=');
+      if (name === this.SESSION_COOKIE_NAME) {
+        return decodeURIComponent(value);
+      }
+    }
+    return null;
+  }
+  
+  private saveSessionToCookie(sessionId: string): void {
+    if (!sessionId) return;
+    
+    const expirationDate = new Date();
+    expirationDate.setTime(expirationDate.getTime() + this.SESSION_COOKIE_MAX_AGE);
+    
+    const cookieValue = `${this.SESSION_COOKIE_NAME}=${encodeURIComponent(sessionId)}; expires=${expirationDate.toUTCString()}; path=/; SameSite=Strict`;
+    document.cookie = cookieValue;
+    
+    console.log(`🍪 ContinuumBrowserClient: Saved session to cookie: ${sessionId}`);
+  }
+}

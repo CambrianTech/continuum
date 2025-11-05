@@ -1,0 +1,21 @@
+{
+  "name": "@continuum/process-command",
+  "version": "1.0.0",
+  "description": "Low-level process management commands for system daemons",
+  "main": "ProcessCommand.ts",
+  "keywords": ["process", "kernel", "system", "daemon", "pid", "port"],
+  "continuum": {
+    "type": "command",
+    "category": "kernel",
+    "capabilities": [
+      "process_management",
+      "port_allocation", 
+      "resource_monitoring",
+      "process_tree_analysis"
+    ],
+    "requirements": {
+      "system": ["ps", "lsof", "kill"],
+      "permissions": ["process_monitor", "process_kill"]
+    }
+  }
+}

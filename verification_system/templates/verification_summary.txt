@@ -1,0 +1,7 @@
+Git Hook Verification - Commit {commit_sha}
+
+{status_line}
+
+{details}
+
+This verification confirms all JTAG debugging capabilities are working.

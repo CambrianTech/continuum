@@ -1,0 +1,26 @@
+{
+  "maxAIs": 5,
+  "specializations": [
+    {
+      "name": "CodeAI",
+      "role": "Programming and development tasks"
+    },
+    {
+      "name": "ResearchAI",
+      "role": "Information gathering and analysis"
+    },
+    {
+      "name": "SystemAI",
+      "role": "File operations and system tasks"
+    },
+    {
+      "name": "CreativeAI",
+      "role": "Writing and creative tasks"
+    },
+    {
+      "name": "CoordinatorAI",
+      "role": "Managing and routing tasks"
+    }
+  ],
+  "created": "2025-06-02T08:15:25.592Z"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@continuum/remote-command",
+  "version": "1.0.0",
+  "description": "Base class for commands requiring client-server coordination",
+  "main": "RemoteCommand.ts",
+  "type": "module",
+  "dependencies": {
+    "@continuum/base-command": "^1.0.0"
+  }
+}

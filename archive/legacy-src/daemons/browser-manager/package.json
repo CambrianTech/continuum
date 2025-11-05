@@ -1,0 +1,62 @@
+{
+  "name": "browser-manager-core",
+  "version": "1.0.0",
+  "description": "browser-manager core for Continuum",
+  "main": "BrowserManagerDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "priority": 85,
+    "core": "browser_manager",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [],
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 80,
+        "types": ["unit", "integration"],
+        "mustPass": true
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 85,
+        "structure": {
+          "packageJson": true,
+          "readme": true,
+          "mainFile": true,
+          "testDirectory": true,
+          "typeDefinitions": true
+        }
+      }
+    }
+  },
+  "keywords": [
+    "browser-manager",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

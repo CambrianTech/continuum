@@ -1,0 +1,80 @@
+/**
+ * Cyberpunk Theme - High-contrast neon theme for JTAG Widget System
+ * Overrides base theme with vibrant cyberpunk colors
+ */
+
+:root {
+  /* === COLORS - CONTENT === */
+  --content-primary: #00ff88;
+  --content-secondary: #ff0088;
+  --content-accent: #ff00aa;
+  --content-warning: #ff3366;
+  --content-success: #00ffaa;
+  
+  /* === COLORS - BACKGROUNDS === */
+  --background-primary: linear-gradient(135deg, #0a0a0a 0%, #1a0026 100%);
+  --widget-surface: linear-gradient(135deg, rgba(26, 0, 38, 0.98), rgba(51, 0, 68, 0.95));
+  --widget-surface-solid: #1a0026;
+  --widget-content-background: rgba(26, 0, 38, 0.9);
+  --widget-header-background: linear-gradient(90deg, #aa0066, #660033);
+  --widget-input-area-background: rgba(10, 10, 10, 0.95);
+  
+  /* === COLORS - SIDEBAR === */
+  --sidebar-background: linear-gradient(180deg, #1a0026, #330044);
+  --sidebar-border: rgba(255, 0, 170, 0.6);
+  
+  /* === COLORS - BORDERS === */
+  --border-subtle: rgba(255, 0, 170, 0.3);
+  --border-strong: rgba(255, 0, 170, 0.5);
+  --border-accent: rgba(255, 0, 170, 0.8);
+  --widget-border: rgba(255, 0, 170, 0.6);
+  --widget-border-focus: rgba(255, 0, 170, 0.9);
+  
+  /* === COLORS - RESIZER === */
+  --resizer-background: rgba(255, 0, 170, 0.2);
+  --resizer-background-hover: rgba(255, 0, 170, 0.5);
+  --resizer-background-active: rgba(255, 0, 170, 0.8);
+  --resizer-border: rgba(255, 0, 170, 0.4);
+  --resizer-border-hover: #ff00aa;
+  --resizer-border-active: #ff00aa;
+  --resizer-glow-hover: rgba(255, 0, 170, 0.7);
+  --resizer-glow-active: rgba(255, 0, 170, 1.0);
+  
+  /* === COLORS - INPUT === */
+  --input-background: rgba(10, 10, 10, 0.9);
+  --input-border: rgba(255, 0, 170, 0.4);
+  --input-border-focus: rgba(255, 0, 170, 0.8);
+  --input-text: #00ff88;
+  --input-placeholder: #ff0088;
+  --input-focus-shadow: rgba(255, 0, 170, 0.5);
+  
+  /* === COLORS - BUTTONS === */
+  --button-primary-background: linear-gradient(135deg, #ff00aa, #aa0066);
+  --button-primary-background-hover: linear-gradient(135deg, #ff2299, #cc0077);
+  --button-primary-background-active: linear-gradient(135deg, #dd0088, #990055);
+  --button-primary-text: #ffffff;
+  --button-primary-shadow: rgba(255, 0, 170, 0.6);
+  
+  --button-secondary-background: linear-gradient(135deg, #00ffaa, #006655);
+  --button-secondary-background-hover: linear-gradient(135deg, #22ffbb, #007766);
+  --button-secondary-background-active: linear-gradient(135deg, #00dd99, #005544);
+  --button-secondary-text: #000000;
+  
+  /* === COLORS - MESSAGES === */
+  --message-user-background: rgba(255, 0, 170, 0.2);
+  --message-user-text: #00ff88;
+  --message-user-border: rgba(255, 0, 170, 0.6);
+  
+  --message-assistant-background: rgba(0, 255, 170, 0.1);
+  --message-assistant-text: #ff0088;
+  --message-assistant-border: rgba(0, 255, 170, 0.3);
+  
+  /* === TYPOGRAPHY === */
+  --font-primary: 'Courier New', 'SF Mono', monospace;
+  
+  /* === SHADOWS === */
+  --shadow-sm: 0 2px 4px rgba(255, 0, 170, 0.3);
+  --shadow-md: 0 6px 12px rgba(255, 0, 170, 0.4);
+  --shadow-lg: 0 12px 24px rgba(255, 0, 170, 0.5);
+  --shadow-glow: 0 0 30px rgba(255, 0, 170, 0.8);
+}

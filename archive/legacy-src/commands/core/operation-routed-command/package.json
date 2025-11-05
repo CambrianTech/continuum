@@ -1,0 +1,10 @@
+{
+  "name": "@continuum/operation-routed-command",
+  "version": "1.0.0",
+  "description": "Base class for commands with operation-based routing",
+  "main": "OperationRoutedCommand.ts",
+  "type": "module",
+  "dependencies": {
+    "@continuum/base-command": "^1.0.0"
+  }
+}

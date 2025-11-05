@@ -1,0 +1,105 @@
+/* SidebarHeader Widget Styles */
+.logo {
+    padding: 16px;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.logo-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.logo-text {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--continuum-blue);
+    text-shadow: 0 0 10px var(--continuum-blue-shadow);
+}
+
+.subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-left: 44px;
+}
+
+.continuon-orb-integrated {
+    position: relative;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.orb-ring {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    border: 2px solid #00ff00;
+    border-radius: 50%;
+    animation: pulse 2s infinite ease-in-out;
+}
+
+.status-healthy .orb-ring {
+    border-color: #00ff00;
+}
+
+.status-pending .orb-ring {
+    border-color: #ffff00;
+}
+
+.status-error .orb-ring {
+    border-color: #ff0000;
+}
+
+.orb-center {
+    position: relative;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.orb-center.status-healthy {
+    background: #00ff00;
+    box-shadow: 0 0 12px rgba(0, 255, 0, 0.8);
+}
+
+.orb-center.status-pending {
+    background: #ffff00;
+    box-shadow: 0 0 12px rgba(255, 255, 0, 0.8);
+}
+
+.orb-center.status-error {
+    background: #ff0000;
+    box-shadow: 0 0 12px rgba(255, 0, 0, 0.8);
+}
+
+.orb-glow {
+    position: absolute;
+    width: 24px;
+    height: 24px;
+    background: radial-gradient(circle, rgba(0, 212, 255, 0.2) 0%, transparent 70%);
+    border-radius: 50%;
+    animation: breathe 4s ease-in-out infinite;
+}
+
+.orb-emotion {
+    font-size: 8px;
+    color: #0a0e13;
+    font-weight: bold;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.1); opacity: 0.8; }
+}
+
+@keyframes breathe {
+    0%, 100% { opacity: 0.4; transform: scale(1); }
+    50% { opacity: 0.8; transform: scale(1.2); }
+}

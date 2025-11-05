@@ -1,0 +1,23 @@
+{
+  "id": "a52fc6b0-b12c-46af-a30a-fbcfaa145362",
+  "collection": "users",
+  "data": {
+    "id": "a52fc6b0-b12c-46af-a30a-fbcfaa145362",
+    "createdAt": "2025-09-11T06:18:24.872Z",
+    "updatedAt": "2025-09-11T06:18:24.872Z",
+    "version": 1,
+    "name": "User 2",
+    "email": "user2@example.com",
+    "age": 30,
+    "active": true,
+    "tags": [
+      "test",
+      "user"
+    ]
+  },
+  "metadata": {
+    "createdAt": "2025-09-11T06:18:24.872Z",
+    "updatedAt": "2025-09-11T06:18:24.872Z",
+    "version": 1
+  }
+}

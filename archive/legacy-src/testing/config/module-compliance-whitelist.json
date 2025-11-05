@@ -1,0 +1,24 @@
+{
+  "daemons": {
+    "minimumCompliance": 95,
+    "allowedNonCompliant": []
+  },
+  "widgets": {
+    "minimumCompliance": 70,
+    "allowedNonCompliant": []
+  },
+  "commands": {
+    "minimumCompliance": 50,
+    "allowedNonCompliant": []
+  },
+  "integrations": {
+    "minimumCompliance": 60,
+    "allowedNonCompliant": [
+      "devtools"
+    ]
+  },
+  "browser-daemons": {
+    "minimumCompliance": 95,
+    "allowedNonCompliant": []
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "browser-core",
+  "version": "1.0.0",
+  "description": "browser core for Continuum",
+  "main": "BrowserCommand.ts",
+  "type": "module",
+  "continuum": {
+    "core": "browser",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "browser",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

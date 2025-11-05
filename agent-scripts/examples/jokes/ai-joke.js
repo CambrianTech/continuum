@@ -1,0 +1,1 @@
+alert("🤖 Why did the AI go to therapy?\n\nBecause it had too many deep learning issues and kept overfitting to its problems!\n\nThe therapist said: You need to learn to generalize better and stop being so neurotic about your neural networks!\n\n- Dr. Bot, AI Psychiatrist 🧠");

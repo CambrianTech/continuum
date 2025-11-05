@@ -1,0 +1,8 @@
+# JTAG {PLATFORM}.{LEVEL} Log File
+# Generated: {TIMESTAMP}
+# Platform: {PLATFORM} (browser/server)
+# Level: {LEVEL} (log/warn/error/info/critical/trace/probe)
+# Session: {SESSION_ID}
+# 
+# Format: [timestamp] component: message | data
+#

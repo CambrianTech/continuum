@@ -1,0 +1,32 @@
+{
+  "name": "discover-widgets-core",
+  "version": "1.0.0",
+  "description": "discover-widgets core for Continuum",
+  "main": "DiscoverWidgetsCommand.ts",
+  "type": "module",
+  "continuum": {
+    "core": "discover_widgets",
+    "category": "Core",
+    "capabilities": [
+      "ui-rendering"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "discover-widgets",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
