@@ -22,8 +22,8 @@
 ❌ **NEVER create switch statements for entity types** - Keep code generic
 
 ### **4. Entity System Violations (MOST CRITICAL)**
-❌ **NEVER reference derived entity types (`UserEntity`, `ChatMessageEntity`, `RoomEntity`) in data layers**
-❌ **NEVER hardcode collection names (`'users'`, `'rooms'`) in generic code**
+❌ **NEVER reference derived entity types in data/event layers** (except EntityRegistry)
+❌ **NEVER hardcode collection names** (`'users'`, `'rooms'`) in generic code
 ❌ **NEVER write entity-specific logic in data/event systems**
 ❌ **NEVER create conditional statements based on entity types**
 
@@ -43,7 +43,7 @@
 ✅ **Use `BaseEntity.collection` to get collection name from entity**
 
 ### **3. Abstraction Layers**
-✅ **Follow shared/browser/server pattern** - 85% shared logic
+✅ **Follow shared/browser/server pattern** - 80-90% shared logic
 ✅ **Use daemon/command architecture** for all system operations
 ✅ **Keep shared code environment-agnostic**
 ✅ **Build on existing patterns, don't reinvent**
@@ -67,6 +67,7 @@
 ✅ **Collection source:** Always from `entity.collection` property
 ✅ **Storage:** Adapters handle collection→table mapping
 ✅ **Queries:** Use generic filtering, not entity-specific logic
+✅ **EntityRegistry exception:** Can import specific entities for registration only
 
 ### **Widget Layer**
 ✅ **Can know specific entity types** (UserEntity, ChatMessageEntity)
@@ -101,7 +102,7 @@
 5. **Design types first** - Proper generics and constraints
 
 ### **Architecture Validation:**
-- [ ] Works with BaseEntity only, no specific types
+- [ ] Works with BaseEntity only, no specific types (except EntityRegistry)
 - [ ] Uses `entity.collection`, no hardcoded collections
 - [ ] Environment-appropriate (shared/browser/server)
 - [ ] Extends existing patterns, doesn't reinvent
@@ -120,26 +121,29 @@
 
 **✅ SUCCESS INDICATOR:**
 ```bash
-# Search event/data code for specific entities - should find ZERO results
+# Search event/data code for specific entities - should find minimal results
+cd src/debug/jtag
+
+# Events daemon should be 100% generic
 grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" daemons/events-daemon/
-grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" daemons/data-daemon/
+
+# Data daemon - only EntityRegistry.ts allowed
+grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" daemons/data-daemon/ | grep -v EntityRegistry
+
+# System event/data infrastructure - should be 100% generic
 grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" system/events/
 grep -r "UserEntity\|ChatMessageEntity\|RoomEntity" commands/data/
 ```
 
-**❌ CURRENT STATUS: VIOLATIONS FOUND**
-- `commands/data/list/server/DataListServerCommand.ts` imports specific entities
+**✅ CURRENT STATUS: Clean Architecture**
+- Events daemon: 100% generic (0 violations)
+- Data daemon: Only EntityRegistry references specific entities (legitimate exception)
+- Event/data commands: Generic (work with any BaseEntity)
 
-**IMMEDIATE ACTION REQUIRED:**
-1. **Remove specific entity imports** from all data commands
-2. **Make data commands work generically** with BaseEntity only
-3. **Ensure data commands use `entity.collection`** not hardcoded collections
-
-**NOTE:** Documentation examples with specific entities are acceptable for illustration.
-
-**If ANY results found = ARCHITECTURE VIOLATION**
-
-**The event/data systems should be 100% generic - no specific entity references anywhere.**
+**Legitimate Exceptions:**
+- `EntityRegistry.ts` - Must import all entities for registration
+- Documentation examples - Illustrative purposes
+- Widget/application code - Can be entity-specific
 
 ---
 
@@ -297,6 +301,16 @@ async execute(params: BagOfWordsParams): Promise<BagOfWordsResult> {
   // Business logic here
 }
 ```
+
+---
+
+## 🔥 **REFACTORING PRINCIPLE:**
+
+**See abstraction opportunity? Fix it immediately, even if "outside scope".**
+
+This document describes the architecture rules. See [CLAUDE.md](../CLAUDE.md#-aggressive-refactoring-principle) for the aggressive refactoring principle that governs when/how to apply these rules.
+
+**Key point**: Don't leave technical debt festering because "it's not my job" - that's how codebases rot. Fix bad abstractions when you see them.
 
 ---
 

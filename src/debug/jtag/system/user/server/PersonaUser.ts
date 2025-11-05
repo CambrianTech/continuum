@@ -34,6 +34,8 @@ import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import { TaskEntity } from '../../data/entities/TaskEntity';
+import { taskEntityToInboxTask } from './modules/QueueItemTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
@@ -390,7 +392,8 @@ export class PersonaUser extends AIUser {
     );
 
     const inboxMessage: InboxMessage = {
-      messageId: messageEntity.id,
+      id: messageEntity.id,
+      type: 'message',
       roomId: messageEntity.roomId,
       content: messageEntity.content?.text || '',
       senderId: messageEntity.senderId,
@@ -2077,17 +2080,60 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   }
 
   /**
+   * Poll task database for pending tasks assigned to this persona
+   * Convert TaskEntity → InboxTask and enqueue in inbox
+   */
+  private async pollTasks(): Promise<void> {
+    try {
+      // Query for pending tasks assigned to this persona
+      const queryResult = await DataDaemon.query<TaskEntity>({
+        collection: COLLECTIONS.TASKS,
+        filter: {
+          assigneeId: this.id,
+          status: 'pending'
+        },
+        limit: 10 // Poll top 10 pending tasks
+      });
+
+      if (!queryResult.success || !queryResult.data || queryResult.data.length === 0) {
+        return; // No pending tasks
+      }
+
+      // Convert each TaskEntity to InboxTask and enqueue
+      for (const record of queryResult.data) {
+        const task = record.data;
+
+        // Convert to InboxTask using helper
+        const inboxTask = taskEntityToInboxTask(task);
+
+        // Enqueue in inbox (unified priority queue)
+        await this.inbox.enqueue(inboxTask);
+
+        console.log(`📋 ${this.displayName}: Enqueued task ${task.taskType} (priority=${task.priority.toFixed(2)})`);
+      }
+
+      console.log(`✅ ${this.displayName}: Polled ${queryResult.data.length} pending tasks`);
+
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error polling tasks:`, error);
+    }
+  }
+
+  /**
    * PHASE 3: Service inbox (one polling iteration)
    *
    * Checks inbox for messages, evaluates priority vs mood threshold, and processes if should engage
    */
   private async serviceInbox(): Promise<void> {
-    // Check if inbox has messages
+    // STEP 1: Poll task database for pending tasks assigned to this persona
+    await this.pollTasks();
+
+    // STEP 2: Check if inbox has work (messages or tasks)
     if (this.inbox.getSize() === 0) {
-      // No messages - REST to recover energy
+      // No work - REST to recover energy
       const cadence = this.personaState.getCadence();
       await this.personaState.rest(cadence); // Rest for one polling cycle
-      console.log(`💤 ${this.displayName}: Resting (no messages) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
+      console.log(`💤 ${this.displayName}: Resting (no work) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
       this.adjustCadence();
       return;
     }
@@ -2114,42 +2160,54 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     // Pop message from inbox (we're processing it now)
     await this.inbox.pop(0); // Immediate pop (no timeout)
 
+    // If this is a task, update status to 'in_progress' in database (prevents re-polling)
+    if (message.type === 'task') {
+      await DataDaemon.update<TaskEntity>(
+        COLLECTIONS.TASKS,
+        message.taskId,
+        { status: 'in_progress', startedAt: new Date() }
+      );
+    }
+
     console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
 
     try {
-      // Reconstruct minimal ChatMessageEntity from inbox message
-      // (Inbox has all essential fields: messageId, roomId, senderId, senderName, content, timestamp)
-      // Type as 'any' to bypass strict typing - this is a pragmatic Phase 3 solution
-      // Future: Make inbox domain-agnostic or use proper entity fetching
-      const reconstructedEntity: any = {
-        id: message.messageId,
-        roomId: message.roomId,
-        senderId: message.senderId,
-        senderName: message.senderName,
-        content: { text: message.content },
-        timestamp: message.timestamp,
-        // Fields not critical for evaluation:
-        senderDisplayName: message.senderName,
-        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
-        status: 'delivered',
-        priority: message.priority,
-        metadata: {},
-        reactions: [],
-        attachments: [],
-        mentions: [],
-        replyTo: undefined,
-        editedAt: undefined,
-        deletedAt: undefined
-      };
+      // Type-safe handling: Check if this is a message or task
+      if (message.type === 'message') {
+        // Reconstruct minimal ChatMessageEntity from inbox message
+        const reconstructedEntity: any = {
+          id: message.id,
+          roomId: message.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          content: { text: message.content },
+          timestamp: message.timestamp,
+          // Fields not critical for evaluation:
+          senderDisplayName: message.senderName,
+          senderType: 'user', // Assumption: will be corrected by senderIsHuman check
+          status: 'delivered',
+          priority: message.priority,
+          metadata: {},
+          reactions: [],
+          attachments: [],
+          mentions: [],
+          replyTo: undefined,
+          editedAt: undefined,
+          deletedAt: undefined
+        };
 
-      // Determine if sender is human (not an AI persona)
-      const senderIsHuman = !message.senderId.startsWith('persona-');
+        // Determine if sender is human (not an AI persona)
+        const senderIsHuman = !message.senderId.startsWith('persona-');
 
-      // Extract message text
-      const messageText = message.content;
+        // Extract message text
+        const messageText = message.content;
 
-      // Process message using existing evaluation logic
-      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+        // Process message using existing evaluation logic
+        await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+      } else if (message.type === 'task') {
+        // TODO: Implement task handling
+        console.log(`⚠️  [PersonaUser:${this.entity.displayName}] Task handling not yet implemented: ${message.taskType}`);
+      }
 
       // Update inbox load in state (affects mood calculation)
       this.personaState.updateInboxLoad(this.inbox.getSize());
