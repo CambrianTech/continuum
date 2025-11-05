@@ -73,7 +73,9 @@ import { RateLimiter } from './modules/RateLimiter';
 import { PersonaInbox, calculateMessagePriority } from './modules/PersonaInbox';
 import { PersonaStateManager } from './modules/PersonaState';
 import type { InboxMessage } from './modules/PersonaInbox';
+import type { InboxTask, TaskStatus } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
+import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -118,6 +120,9 @@ export class PersonaUser extends AIUser {
   // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
   private inbox: PersonaInbox;
   private personaState: PersonaStateManager;
+
+  // PHASE 5: Self-task generation (autonomous work creation)
+  private taskGenerator: SelfTaskGenerator;
 
   // PHASE 7.4: Training data accumulation for recipe-embedded learning
   // Accumulates training examples in RAM during recipe execution
@@ -166,10 +171,18 @@ export class PersonaUser extends AIUser {
       enableLogging: true
     });
 
+    // PHASE 5: Self-task generation for autonomous work creation
+    this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {
+      enabled: true,  // Enable self-task generation
+      memoryReviewInterval: 3600000,      // 1 hour
+      skillAuditInterval: 21600000,       // 6 hours
+      unfinishedWorkThreshold: 1800000    // 30 minutes
+    });
+
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, and trainingAccumulator modules`);
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -2132,6 +2145,29 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     // STEP 1: Poll task database for pending tasks assigned to this persona
     await this.pollTasks();
 
+    // PHASE 5: Generate self-tasks for autonomous work creation
+    try {
+      const selfTasks = await this.taskGenerator.generateSelfTasks();
+      if (selfTasks.length > 0) {
+        console.log(`🧠 ${this.displayName}: Generated ${selfTasks.length} self-tasks`);
+
+        // Persist each task to database and enqueue in inbox
+        for (const task of selfTasks) {
+          const storedTask = await DataDaemon.store(COLLECTIONS.TASKS, task);
+          if (storedTask) {
+            // Convert to InboxTask and enqueue
+            const inboxTask = taskEntityToInboxTask(task);
+            await this.inbox.enqueue(inboxTask);
+            console.log(`📋 ${this.displayName}: Created self-task: ${task.description}`);
+          } else {
+            console.error(`❌ ${this.displayName}: Failed to create self-task`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error generating self-tasks: ${error}`);
+    }
+
     // STEP 2: Check if inbox has work (messages or tasks)
     if (this.inbox.getSize() === 0) {
       // No work - REST to recover energy
@@ -2209,8 +2245,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         // Process message using existing evaluation logic
         await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
       } else if (message.type === 'task') {
-        // TODO: Implement task handling
-        console.log(`⚠️  [PersonaUser:${this.entity.displayName}] Task handling not yet implemented: ${message.taskType}`);
+        // PHASE 5: Task execution based on task type
+        await this.executeTask(message);
       }
 
       // Update inbox load in state (affects mood calculation)
@@ -2221,6 +2257,165 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     } catch (error) {
       console.error(`❌ ${this.displayName}: Error processing inbox message: ${error}`);
     }
+  }
+
+  /**
+   * PHASE 5: Execute a task based on its type
+   *
+   * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work, etc.
+   */
+  private async executeTask(task: InboxTask): Promise<void> {
+    console.log(`🎯 ${this.displayName}: Executing task: ${task.taskType} - ${task.description}`);
+
+    const startTime = Date.now();
+    let outcome = '';
+    let status: TaskStatus = 'completed';
+
+    try {
+      switch (task.taskType) {
+        case 'memory-consolidation':
+          outcome = await this.executeMemoryConsolidation(task);
+          break;
+
+        case 'skill-audit':
+          outcome = await this.executeSkillAudit(task);
+          break;
+
+        case 'resume-work':
+          outcome = await this.executeResumeWork(task);
+          break;
+
+        case 'fine-tune-lora':
+          outcome = await this.executeFineTuneLora(task);
+          break;
+
+        default:
+          outcome = `Unknown task type: ${task.taskType}`;
+          status = 'failed';
+          console.warn(`⚠️  ${this.displayName}: ${outcome}`);
+      }
+
+      console.log(`✅ ${this.displayName}: Task completed: ${task.taskType} - ${outcome}`);
+    } catch (error) {
+      status = 'failed';
+      outcome = `Error executing task: ${error}`;
+      console.error(`❌ ${this.displayName}: ${outcome}`);
+    }
+
+    // Update task in database with completion status
+    const duration = Date.now() - startTime;
+    await DataDaemon.update<TaskEntity>(
+      COLLECTIONS.TASKS,
+      task.taskId,
+      {
+        status,
+        completedAt: new Date(),
+        result: {
+          success: status === 'completed',
+          output: outcome,
+          error: status === 'failed' ? outcome : undefined,
+          metrics: {
+            latencyMs: duration
+          }
+        }
+      }
+    );
+
+    // Record activity in persona state (affects energy/mood)
+    const complexity = task.priority; // Use priority as proxy for complexity
+    await this.personaState.recordActivity(duration, complexity);
+  }
+
+  /**
+   * PHASE 5: Memory consolidation task
+   * Reviews recent activities and consolidates important memories
+   */
+  private async executeMemoryConsolidation(_task: InboxTask): Promise<string> {
+    // TODO: Implement memory consolidation logic
+    // For now, just log and return success
+    console.log(`🧠 ${this.displayName}: Consolidating memories...`);
+
+    // Query recent messages from rooms this persona is in
+    const recentMessages = await DataDaemon.query({
+      collection: COLLECTIONS.CHAT_MESSAGES,
+      filter: {
+        // Get messages from last hour
+        timestamp: { $gte: Date.now() - 3600000 }
+      },
+      limit: 50
+    });
+
+    const messageCount = recentMessages.data?.length || 0;
+    return `Reviewed ${messageCount} recent messages for memory consolidation`;
+  }
+
+  /**
+   * PHASE 5: Skill audit task
+   * Evaluates current capabilities and identifies areas for improvement
+   */
+  private async executeSkillAudit(_task: InboxTask): Promise<string> {
+    // TODO: Implement skill audit logic
+    console.log(`🔍 ${this.displayName}: Auditing skills...`);
+
+    // Query recent tasks to evaluate performance by domain
+    const recentTasks = await DataDaemon.query<TaskEntity>({
+      collection: COLLECTIONS.TASKS,
+      filter: {
+        assigneeId: this.id,
+        completedAt: { $gte: new Date(Date.now() - 21600000) } // Last 6 hours
+      },
+      limit: 100
+    });
+
+    const tasks = recentTasks.data || [];
+    const domainStats: Record<string, { completed: number; failed: number }> = {};
+
+    for (const record of tasks) {
+      const t = record.data;
+      if (!domainStats[t.domain]) {
+        domainStats[t.domain] = { completed: 0, failed: 0 };
+      }
+      if (t.status === 'completed') domainStats[t.domain].completed++;
+      if (t.status === 'failed') domainStats[t.domain].failed++;
+    }
+
+    const report = Object.entries(domainStats)
+      .map(([domain, stats]) => `${domain}: ${stats.completed} completed, ${stats.failed} failed`)
+      .join('; ');
+
+    return `Skill audit complete - ${report || 'No recent tasks'}`;
+  }
+
+  /**
+   * PHASE 5: Resume work task
+   * Continues work on a previously started task that became stale
+   */
+  private async executeResumeWork(_task: InboxTask): Promise<string> {
+    console.log(`♻️  ${this.displayName}: Resuming unfinished work...`);
+
+    // TODO: Implement resume logic - query for stale in_progress tasks and re-enqueue them
+    // For now, just acknowledge the task
+    return 'Resume work task acknowledged - full implementation pending';
+  }
+
+  /**
+   * PHASE 5: Fine-tune LoRA task
+   * Trains a LoRA adapter on recent failure examples to improve performance
+   */
+  private async executeFineTuneLora(task: InboxTask): Promise<string> {
+    console.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
+
+    const loraLayer = task.metadata?.loraLayer as string;
+
+    if (!loraLayer) {
+      return 'Missing LoRA layer in metadata';
+    }
+
+    // TODO: Implement actual fine-tuning logic (Phase 7)
+    // For now, just log the intent
+    console.log(`🧬 ${this.displayName}: Would fine-tune ${loraLayer} adapter based on recent failures`);
+
+    return `Prepared fine-tuning for ${loraLayer} adapter - actual training pending Phase 7`;
   }
 
   /**
