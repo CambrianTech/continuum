@@ -77,6 +77,13 @@ export class TaskListServerCommand extends CommandBase<TaskListParams, TaskListR
       // Convert DataRecord<TaskEntity>[] to TaskSummary[]
       const tasks: TaskSummary[] = queryResult.data.map(record => {
         const task = record.data;
+
+        // Helper to convert Date or ISO string to ISO string
+        const toISOString = (value: Date | string | undefined | null): string | undefined => {
+          if (!value) return undefined;
+          return typeof value === 'string' ? value : value.toISOString();
+        };
+
         return {
           id: task.id,
           assigneeId: task.assigneeId,
@@ -87,11 +94,11 @@ export class TaskListServerCommand extends CommandBase<TaskListParams, TaskListR
           description: task.description,
           priority: task.priority,
           status: task.status,
-          createdAt: task.createdAt.toISOString(),
-          updatedAt: task.updatedAt.toISOString(),
-          startedAt: task.startedAt?.toISOString(),
-          completedAt: task.completedAt?.toISOString(),
-          dueDate: task.dueDate?.toISOString(),
+          createdAt: toISOString(task.createdAt)!,
+          updatedAt: toISOString(task.updatedAt)!,
+          startedAt: toISOString(task.startedAt),
+          completedAt: toISOString(task.completedAt),
+          dueDate: toISOString(task.dueDate),
           estimatedDuration: task.estimatedDuration,
           dependsOn: task.dependsOn,
           blockedBy: task.blockedBy

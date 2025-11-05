@@ -16,6 +16,7 @@ import { RecipeEntity } from '../../../system/data/entities/RecipeEntity';
 import { GenomeEntity } from '../../../system/genome/entities/GenomeEntity';
 import { GenomeLayerEntity } from '../../../system/genome/entities/GenomeLayerEntity';
 import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEntity';
+import { TaskEntity } from '../../../system/data/entities/TaskEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -36,6 +37,7 @@ export function initializeEntityRegistry(): void {
   new GenomeEntity();
   new GenomeLayerEntity();
   new AIGenerationEntity();
+  new TaskEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -48,6 +50,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(GenomeEntity.collection, GenomeEntity);
   registerEntity(GenomeLayerEntity.collection, GenomeLayerEntity);
   registerEntity(AIGenerationEntity.collection, AIGenerationEntity);
+  registerEntity(TaskEntity.collection, TaskEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }
