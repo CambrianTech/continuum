@@ -8,6 +8,9 @@
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TaskDomain, TaskType, TaskStatus } from '../../../data/entities/TaskEntity';
 
+// Re-export TaskStatus for use in PersonaUser
+export type { TaskStatus };
+
 /**
  * Base interface for all queue items
  * Common fields needed for priority queue management
@@ -51,6 +54,23 @@ export interface InboxTask extends BaseQueueItem {
   estimatedDuration?: number; // Estimated time to complete (ms)
   dependsOn?: UUID[];        // Task IDs this depends on
   blockedBy?: UUID[];        // Tasks blocking this one
+  metadata?: {               // Domain-specific metadata
+    messageId?: UUID;
+    roomId?: UUID;
+    fileId?: UUID;
+    pullRequestId?: UUID;
+    gameId?: UUID;
+    moveNotation?: string;
+    exerciseId?: UUID;
+    skillName?: string;
+    loraLayer?: string;
+    trainingData?: unknown[];
+    originalTaskId?: UUID;   // For resume-work tasks
+    originalDomain?: TaskDomain;
+    targetDomain?: TaskDomain;
+    failureCount?: number;
+    failedTaskIds?: UUID[];
+  };
 }
 
 /**
@@ -91,6 +111,23 @@ export function taskEntityToInboxTask(task: {
   estimatedDuration?: number;
   dependsOn?: UUID[];
   blockedBy?: UUID[];
+  metadata?: {
+    messageId?: UUID;
+    roomId?: UUID;
+    fileId?: UUID;
+    pullRequestId?: UUID;
+    gameId?: UUID;
+    moveNotation?: string;
+    exerciseId?: UUID;
+    skillName?: string;
+    loraLayer?: string;
+    trainingData?: unknown[];
+    originalTaskId?: UUID;
+    originalDomain?: TaskDomain;
+    targetDomain?: TaskDomain;
+    failureCount?: number;
+    failedTaskIds?: UUID[];
+  };
 }): InboxTask {
   // Helper to safely convert Date | string | undefined to timestamp
   const toTimestamp = (value: Date | string | undefined): number => {
@@ -115,6 +152,7 @@ export function taskEntityToInboxTask(task: {
     dueDate: task.dueDate ? toTimestamp(task.dueDate) : undefined,
     estimatedDuration: task.estimatedDuration,
     dependsOn: task.dependsOn,
-    blockedBy: task.blockedBy
+    blockedBy: task.blockedBy,
+    metadata: task.metadata
   };
 }
