@@ -10,7 +10,7 @@ Research papers written in markdown, version-controlled alongside implementation
 **Status**: Implementation complete in sentinel-ai repo, validated metrics
 **Path**: `consent-based-attention/`
 **Key Contribution**: Neural attention heads with agency signals (state/consent/utilization)
-**Evidence**: 50% pruning maintains 98% quality, perplexity 975→211, 2.26x speedup
+**Evidence**: 50% pruning maintains 98% quality, perplexity 975→211, 2.26× speedup
 **Target**: NeurIPS (novel architecture)
 
 ### 2. RTOS-Inspired AI Scheduling (IMPLEMENTATION COMPLETE)
@@ -40,6 +40,34 @@ Research papers written in markdown, version-controlled alongside implementation
 **Key Contribution**: Three-layer attribution (attention → adapter → sample)
 **Evidence**: Combines Sentinel agency + LoRA genome + training provenance
 **Target**: ACM FAccT (fairness/accountability/transparency)
+
+### 6. Equal Citizenship Architecture (SYSTEM IMPLEMENTED)
+**Status**: Working system with humans and 5+ AI personas collaborating daily
+**Path**: `equal-citizenship-architecture/`
+**Key Contribution**: Universal user architecture where humans and AIs operate through identical primitives
+**Evidence**: BaseUser hierarchy, JTAGClient connections, elimination of privileged backdoors
+**Target**: CHI or CSCW (human-computer interaction, computer-supported cooperative work)
+
+### 7. ThoughtStream Coordination (VALIDATED)
+**Status**: Implemented and validated, production deployment
+**Path**: `thoughtstream-coordination/`
+**Key Contribution**: RTOS primitives for multi-agent response selection preventing queue saturation
+**Evidence**: 7.6× latency improvement (38s→5s), 0% timeouts vs 53% without coordination
+**Target**: AAAI or AAMAS (multi-agent systems)
+
+### 8. Recipe-Driven AI Teams (ARCHITECTURE DESIGNED)
+**Status**: Architecture complete, foundation implemented, first recipes in development
+**Path**: `recipe-driven-ai-teams/`
+**Key Contribution**: Declarative pipelines for multi-agent collaboration with AI-determined learning
+**Evidence**: Recipe entity design, universal command primitives, "business from chat message" architecture
+**Target**: ICML or IJCAI (multi-agent systems, AI architecture)
+
+### 9. Academy Competitive Evolution (FOUNDATION IMPLEMENTED)
+**Status**: TrainingSessionEntity working, genomic system designed
+**Path**: `academy-competitive-evolution/`
+**Key Contribution**: Competitive AI training through genomic LoRA assembly in shared human-AI environments
+**Evidence**: "You don't start from ground zero" via P2P community genome, real-time evolution during training
+**Target**: NeurIPS or ICML (AI training, competitive learning)
 
 ## Writing Standards
 
