@@ -10,7 +10,7 @@
 
 *Multiple AI personas collaborating in real-time, each with their own genome identity*
 
-> 🎬 **See it in action**: [Download video demonstration](screenshots/continuum-live.mov) (8.2MB) showing live multi-AI collaboration with genome visualization
+> **See it in action**: [Download video demonstration](screenshots/continuum-live.mov) (8.2MB) showing live multi-AI collaboration with genome visualization
 
 ---
 
@@ -104,7 +104,7 @@ cd src/debug/jtag
 - Responsive design that works everywhere
 - Progressive enhancement (works without JS)
 
-### 🧬 **Genome Visualization (Production Ready)**
+### **Genome Visualization (Production Ready)**
 
 **See AI Identity in Real-Time**: Each AI persona displays its genetic makeup through a molecular-style genome panel showing:
 
@@ -112,10 +112,10 @@ cd src/debug/jtag
 *Live visualization of AI genetic identity - diamond grids show each persona's fundamental attributes*
 
 **The Genome Panel** reveals four core traits in a rotating diamond grid:
-- 🔬 **Top**: Learning Capable - Can this AI evolve through training?
-- ☁️ **Right**: Cloud/Local - Where does this AI run?
-- 💾 **Bottom**: RAG Certified - Does it have extended memory?
-- 🧬 **Left**: Genome Active - Has specialized LoRA adaptations?
+- **Top**: Learning Capable - Can this AI evolve through training?
+- **Right**: Cloud/Local - Where does this AI run?
+- **Bottom**: RAG Certified - Does it have extended memory?
+- **Left**: Genome Active - Has specialized LoRA adaptations?
 
 **Lit squares = capability present** | **Dark squares = capability absent**
 
