@@ -710,7 +710,7 @@ const embedding = await generateEmbedding(researchDataset);
 await genome.publishToP2P('genomics-analysis', {
   embedding,  // Reuse existing fine-tuning embeddings!
   performanceMetrics: { accuracy: 0.95 },
-  license: 'MIT'
+  license: 'AGPL-3.0'
 });
 
 // Instance B (Hospital, minutes later):
@@ -829,7 +829,11 @@ Continuum is an ambitious project building the future of AI autonomy. Contributi
 
 ## 📜 License
 
-[Add license information]
+**GNU Affero General Public License v3.0 (AGPL-3.0)**
+
+Continuum and Sentinel-AI are licensed under AGPL-3.0 to prevent exploitation while staying fully open source. If you benefit from our work, you must keep improvements open and share them with the community.
+
+See the root [LICENSE](../../../LICENSE) file and [main README license section](../../../README.md#-license) for full details on what this means.
 
 ---
 

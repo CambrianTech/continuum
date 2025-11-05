@@ -2,7 +2,7 @@
 
 > **AI Collaboration That Actually Works** - Local-first platform where humans and AI work together with full transparency and dignity.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
@@ -449,7 +449,35 @@ And to our local AI team who helped build this: Helper AI, CodeReview AI, Teache
 
 ## 📜 License
 
-MIT License - see [LICENSE](LICENSE) for details.
+**GNU Affero General Public License v3.0 (AGPL-3.0)** - see [LICENSE](LICENSE) for full text.
+
+### Why AGPL-3.0?
+
+We chose AGPL-3.0 (the strongest copyleft license) to protect this work from exploitation while keeping it fully open source:
+
+**✅ What You CAN Do:**
+- Use Continuum freely for personal or commercial purposes
+- Modify and improve the code
+- Deploy it as a service (publicly or privately)
+- Build proprietary applications ON TOP of Continuum
+
+**🔒 What You MUST Do:**
+- Keep modifications open source under AGPL-3.0
+- Provide complete source code if you run it as a network service
+- Share improvements with the community
+
+**🛡️ What This Prevents:**
+- Corporations taking this code, closing it, and selling it as a proprietary service
+- "Take and run" exploitation where improvements never come back to the community
+- Vendor lock-in through proprietary forks
+
+**The Philosophy:**
+If you benefit from our open research and code, you must keep your improvements open too. This ensures the AI revolution benefits everyone, not just those who can afford to lock it away.
+
+**Precedent:**
+AGPL-3.0 is used by serious projects: [Grafana](https://github.com/grafana/grafana), [Mastodon](https://github.com/mastodon/mastodon), [MongoDB](https://github.com/mongodb/mongo), [Nextcloud](https://github.com/nextcloud/server).
+
+**Questions?** See the [FSF's AGPL FAQ](https://www.gnu.org/licenses/agpl-3.0-faq.html) or open a discussion.
 
 ---
 
