@@ -15,29 +15,29 @@ function getVersionInfo() {
   return { version, tarballName };
 }
 
-function updateActiveExampleDependency(tarballName: string): void {
+function updateActiveExampleDependency(): void {
   const activeExample = getActiveExample();
   const examplePath = `${activeExample.paths.directory}/package.json`;
-  
+
   if (!fs.existsSync(examplePath)) {
     console.log(`❌ Active example ${activeExample.name} not found at ${examplePath}`);
     process.exit(1);
   }
-  
+
   const packageJson = JSON.parse(fs.readFileSync(examplePath, 'utf8'));
   const currentDep = packageJson.dependencies?.['@continuum/jtag'];
-  const expectedDep = `file:../../${tarballName}`;
-  
+  const expectedDep = 'file:../..'; // Use parent directory for live updates
+
   if (currentDep === expectedDep) {
-    console.log(`✅ ${activeExample.name} already up-to-date`);
+    console.log(`✅ ${activeExample.name} already references parent package`);
     return;
   }
-  
+
   if (!packageJson.dependencies) packageJson.dependencies = {};
   packageJson.dependencies['@continuum/jtag'] = expectedDep;
-  
+
   fs.writeFileSync(examplePath, JSON.stringify(packageJson, null, 2) + '\n');
-  console.log(`✅ Updated ${activeExample.name} to use ${tarballName}`);
+  console.log(`✅ Updated ${activeExample.name} to reference parent package (file:../..)`);
 }
 
 function isInstallNeeded(activeExample: any): boolean {
@@ -131,8 +131,8 @@ function smartDeploy(): void {
   }
   
   console.log(`📦 Version: ${version}`);
-  
-  updateActiveExampleDependency(tarballName);
+
+  updateActiveExampleDependency();
   
   // Try smart first, fallback to full clean
   if (!trySmartInstall()) {
