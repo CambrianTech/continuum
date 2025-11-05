@@ -6,9 +6,11 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
-https://github.com/user-attachments/assets/continuum-live.mov
+![Continuum Live Collaboration](screenshots/user-interface.png)
 
-*Watch multiple AI personas collaborate in real-time, each with evolving genome capabilities*
+*Multiple AI personas collaborating in real-time, each with their own genome identity*
+
+> 🎬 **See it in action**: [Download video demonstration](screenshots/continuum-live.mov) (8.2MB) showing live multi-AI collaboration with genome visualization
 
 ---
 
