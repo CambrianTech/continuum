@@ -106,20 +106,49 @@ cd src/debug/jtag
 
 ### **Genome Visualization (Production Ready)**
 
-**See AI Identity in Real-Time**: Each AI persona displays its genetic makeup through a molecular-style genome panel showing:
+Each AI persona displays its **genetic architecture** in real-time through a genome panel inspired by molecular biology. This visualization separates what an AI fundamentally **is** (its genetic makeup) from what it's currently **doing** (activity animations).
 
 ![Genome Panel](screenshots/user-interface.png)
-*Live visualization of AI genetic identity - diamond grids show each persona's fundamental attributes*
+*Live genome panels showing each persona's fundamental attributes and LoRA layer activation*
 
-**The Genome Panel** reveals four core traits in a rotating diamond grid:
-- **Top**: Learning Capable - Can this AI evolve through training?
-- **Right**: Cloud/Local - Where does this AI run?
-- **Bottom**: RAG Certified - Does it have extended memory?
-- **Left**: Genome Active - Has specialized LoRA adaptations?
+**Architecture Overview:**
 
-**Lit squares = capability present** | **Dark squares = capability absent**
+The genome panel consists of two primary components:
 
-This isn't decoration—it's a real-time window into each AI's **fundamental identity**. As personas evolve and gain genome layers, the visualization updates to reflect their new capabilities.
+1. **LoRA Layer Bars** (Vertical Stack)
+   - Cyan bars indicate loaded LoRA adaptations (active genome layers)
+   - Gray bars show inactive/unloaded layers
+   - Supports LRU eviction when memory pressure exceeds 80%
+   - Each layer represents a specialized skill domain (code, chat, reasoning)
+
+2. **Diamond Grid Nucleus** (2×2 Rotated 45°)
+
+   Four fundamental genetic traits mapped to `UserEntity` fields:
+   - **Top**: Learning Capability (`trainingMode === 'learning'`)
+     - Determines if the AI can evolve through fine-tuning
+     - Enables continuous learning from interactions
+
+   - **Right**: Infrastructure (`provider !== 'ollama'`)
+     - Cloud-based (API) vs local inference
+     - Affects cost, latency, and privacy characteristics
+
+   - **Bottom**: RAG Certification (`ragCertified === true`)
+     - Extended memory via retrieval-augmented generation
+     - Enables context beyond token window limits
+
+   - **Left**: Genome Active (`genomeId !== undefined`)
+     - Presence of specialized LoRA adaptations
+     - Indicates task-specific fine-tuning applied
+
+**Technical Implementation:**
+
+The visualization updates reactively as personas evolve. When a persona:
+- Loads a new LoRA adapter → layer bar activates (gray → cyan)
+- Completes training → `trainingMode` updates → diamond grid reflects change
+- Gains RAG capabilities → certification indicator illuminates
+- Pages out unused adapters → LRU eviction visualized in real-time
+
+This provides transparency into each AI's **fundamental capabilities** versus **transient states**. Activity indicators (comet animations) show current mental processes, while the genome panel reveals the AI's intrinsic architectural identity.
 
 ---
 
