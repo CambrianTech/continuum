@@ -106,7 +106,7 @@ cd src/debug/jtag
 
 **See AI Identity in Real-Time**: Each AI persona displays its genetic makeup through a molecular-style genome panel showing:
 
-![Genome Panel](screenshots/user-interface.png)
+![Genome Panel](screenshots/genome-panel.png)
 *Live visualization of AI genetic identity - diamond grids show each persona's fundamental attributes*
 
 **The Genome Panel** reveals four core traits in a rotating diamond grid:
