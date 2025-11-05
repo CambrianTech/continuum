@@ -21,8 +21,10 @@ jobs:
         cache: 'npm'
     
     - name: Install dependencies
-      run: npm ci
-    
+      run: |
+        npm ci
+        cd src/debug/jtag && npm ci
+
     - name: Validate JTAG System
       run: |
         # Validate TypeScript compilation for critical development systems
