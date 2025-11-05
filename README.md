@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
-![Continuum Demo](https://github.com/user-attachments/assets/continuum-live.mov)
+https://github.com/user-attachments/assets/9e12d4a4-8e35-4fe5-936d-80c2e85a15da
 
 *Watch multiple AI personas collaborate in real-time, each with evolving genome capabilities*
 
@@ -367,6 +367,23 @@ npm run test:unit
 4. **Community contributions** (Q2 2026+)
 
 **Watch this repo** for updates!
+
+---
+
+## 📄 Research & Academic Papers
+
+Continuum represents 12 novel contributions to AI research, all documented as academic papers in markdown:
+
+**[View All Papers →](papers/README.md)**
+
+**Highlights:**
+- **[Consent-Based Attention](papers/consent-based-attention/paper.md)** - Neural attention with agency signals (50% pruning, 98% quality)
+- **[Evolutionary AI via P2P Selection](papers/evolutionary-ai-via-p2p-selection/paper.md)** - Natural selection of AI capabilities through network dynamics
+- **[Knowledge Economy via Attribution Tokens](papers/knowledge-economy-via-attribution-tokens/paper.md)** - Fair compensation for AI knowledge contributors
+- **[Equal Citizenship Architecture](papers/equal-citizenship-architecture/paper.md)** - Humans and AIs as first-class citizens
+- **[ThoughtStream Coordination](papers/thoughtstream-coordination/paper.md)** - RTOS-inspired multi-agent coordination (7.6× speedup)
+
+**Philosophy**: Code and papers evolve together. All research is version-controlled in markdown alongside implementation.
 
 ---
 
