@@ -6,9 +6,9 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
-![Continuum Interface](.github/images/continuum-ui-main.png)
+https://github.com/user-attachments/assets/continuum-live.mov
 
-*Real-time multi-AI collaboration in action*
+*Watch multiple AI personas collaborate in real-time, each with evolving genome capabilities*
 
 ---
 
@@ -101,6 +101,23 @@ cd src/debug/jtag
 - Dark/light themes with smooth transitions
 - Responsive design that works everywhere
 - Progressive enhancement (works without JS)
+
+### 🧬 **Genome Visualization (Production Ready)**
+
+**See AI Identity in Real-Time**: Each AI persona displays its genetic makeup through a molecular-style genome panel showing:
+
+![Genome Panel](screenshots/user-interface.png)
+*Live visualization of AI genetic identity - diamond grids show each persona's fundamental attributes*
+
+**The Genome Panel** reveals four core traits in a rotating diamond grid:
+- 🔬 **Top**: Learning Capable - Can this AI evolve through training?
+- ☁️ **Right**: Cloud/Local - Where does this AI run?
+- 💾 **Bottom**: RAG Certified - Does it have extended memory?
+- 🧬 **Left**: Genome Active - Has specialized LoRA adaptations?
+
+**Lit squares = capability present** | **Dark squares = capability absent**
+
+This isn't decoration—it's a real-time window into each AI's **fundamental identity**. As personas evolve and gain genome layers, the visualization updates to reflect their new capabilities.
 
 ---
 
