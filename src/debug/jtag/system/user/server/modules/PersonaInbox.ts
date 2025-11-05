@@ -1,5 +1,5 @@
 /**
- * PersonaInbox - Traffic-managed message queue for autonomous personas
+ * PersonaInbox - Traffic-managed work queue for autonomous personas
  *
  * Philosophy: "scheduling and self prioritization, but not neglecting so badly, like a traffic problem"
  *
@@ -8,23 +8,16 @@
  * - Graceful degradation (drop low priority when overloaded)
  * - Load awareness (personas see queue depth)
  * - Non-blocking operations (autonomous checking)
+ *
+ * Handles unified queue of messages and tasks with type-safe discrimination
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
+import { isInboxMessage, isInboxTask } from './QueueItemTypes';
 
-/**
- * Message in persona's inbox
- */
-export interface InboxMessage {
-  messageId: string;      // Chat message ID
-  roomId: UUID;           // Room where message was sent
-  content: string;        // Message text
-  senderId: UUID;         // Who sent it
-  senderName: string;     // Sender display name
-  timestamp: number;      // When message was sent
-  priority: number;       // 0.0-1.0 (calculated relevance + urgency)
-  mentions?: boolean;     // True if persona mentioned by name
-}
+// Re-export types for backward compatibility
+export type { InboxMessage, InboxTask } from './QueueItemTypes';
 
 /**
  * Inbox configuration
@@ -40,11 +33,12 @@ export const DEFAULT_INBOX_CONFIG: InboxConfig = {
 };
 
 /**
- * PersonaInbox: Priority queue for autonomous message processing
+ * PersonaInbox: Priority queue for autonomous work processing
+ * Handles both messages and tasks in unified queue
  */
 export class PersonaInbox {
   private readonly config: InboxConfig;
-  private queue: InboxMessage[] = [];
+  private queue: QueueItem[] = [];
   private readonly personaId: UUID;
   private readonly personaName: string;
 
@@ -57,61 +51,75 @@ export class PersonaInbox {
   }
 
   /**
-   * Add message to inbox (non-blocking)
+   * Add item to inbox (non-blocking)
+   * Accepts both messages and tasks
    * Traffic management: Drop lowest priority when full
    */
-  async enqueue(message: InboxMessage): Promise<boolean> {
+  async enqueue(item: QueueItem): Promise<boolean> {
     // Check if over capacity
     if (this.queue.length >= this.config.maxSize) {
       // Sort by priority (highest first)
       this.queue.sort((a, b) => b.priority - a.priority);
 
-      // Drop lowest priority message (traffic shed)
+      // Drop lowest priority item (traffic shed)
       const dropped = this.queue.pop();
-      this.log(`⚠️  Queue full! Dropped low-priority message (priority=${dropped?.priority.toFixed(2)})`);
+      this.log(`⚠️  Queue full! Dropped low-priority ${dropped?.type} (priority=${dropped?.priority.toFixed(2)})`);
     }
 
-    // Add message
-    this.queue.push(message);
+    // Add item
+    this.queue.push(item);
 
     // Re-sort by priority
     this.queue.sort((a, b) => b.priority - a.priority);
 
-    this.log(`📬 Enqueued: ${message.senderId.slice(0, 8)} → priority=${message.priority.toFixed(2)} (queue=${this.queue.length})`);
+    // Log with type-specific details
+    if (isInboxMessage(item)) {
+      this.log(`📬 Enqueued message: ${item.senderId.slice(0, 8)} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
+    } else if (isInboxTask(item)) {
+      this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
+    }
 
     return true;
   }
 
   /**
    * Check inbox without removing (non-blocking)
-   * Returns top N messages by priority
+   * Returns top N items by priority
    */
-  async peek(limit: number = 10): Promise<InboxMessage[]> {
+  async peek(limit: number = 10): Promise<QueueItem[]> {
     return this.queue.slice(0, limit);
   }
 
   /**
-   * Remove and return next message (blocking with timeout)
-   * Returns null if no message within timeout
+   * Remove and return next item (blocking with timeout)
+   * Returns null if no item within timeout
    */
-  async pop(timeoutMs: number = 5000): Promise<InboxMessage | null> {
+  async pop(timeoutMs: number = 5000): Promise<QueueItem | null> {
     // Immediate check
     if (this.queue.length > 0) {
-      const message = this.queue.shift()!;
-      this.log(`📭 Popped: ${message.messageId.slice(0, 8)} (queue=${this.queue.length})`);
-      return message;
+      const item = this.queue.shift()!;
+      if (isInboxMessage(item)) {
+        this.log(`📭 Popped message: ${item.id.slice(0, 8)} (queue=${this.queue.length})`);
+      } else if (isInboxTask(item)) {
+        this.log(`📭 Popped task: ${item.taskId.slice(0, 8)} (queue=${this.queue.length})`);
+      }
+      return item;
     }
 
-    // Wait for message
-    return new Promise<InboxMessage | null>((resolve) => {
+    // Wait for item
+    return new Promise<QueueItem | null>((resolve) => {
       const startTime = Date.now();
 
       const checkInterval = setInterval(() => {
         if (this.queue.length > 0) {
           clearInterval(checkInterval);
-          const message = this.queue.shift()!;
-          this.log(`📭 Popped (after wait): ${message.messageId.slice(0, 8)} (queue=${this.queue.length})`);
-          resolve(message);
+          const item = this.queue.shift()!;
+          if (isInboxMessage(item)) {
+            this.log(`📭 Popped message (after wait): ${item.id.slice(0, 8)} (queue=${this.queue.length})`);
+          } else if (isInboxTask(item)) {
+            this.log(`📭 Popped task (after wait): ${item.taskId.slice(0, 8)} (queue=${this.queue.length})`);
+          }
+          resolve(item);
         } else if (Date.now() - startTime > timeoutMs) {
           clearInterval(checkInterval);
           resolve(null); // Timeout
@@ -147,7 +155,7 @@ export class PersonaInbox {
   clear(): void {
     const cleared = this.queue.length;
     this.queue = [];
-    this.log(`🗑️  Cleared ${cleared} messages`);
+    this.log(`🗑️  Cleared ${cleared} items`);
   }
 
   /**
