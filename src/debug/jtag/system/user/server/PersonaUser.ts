@@ -390,7 +390,8 @@ export class PersonaUser extends AIUser {
     );
 
     const inboxMessage: InboxMessage = {
-      messageId: messageEntity.id,
+      id: messageEntity.id,
+      type: 'message',
       roomId: messageEntity.roomId,
       content: messageEntity.content?.text || '',
       senderId: messageEntity.senderId,
@@ -2117,39 +2118,42 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
 
     try {
-      // Reconstruct minimal ChatMessageEntity from inbox message
-      // (Inbox has all essential fields: messageId, roomId, senderId, senderName, content, timestamp)
-      // Type as 'any' to bypass strict typing - this is a pragmatic Phase 3 solution
-      // Future: Make inbox domain-agnostic or use proper entity fetching
-      const reconstructedEntity: any = {
-        id: message.messageId,
-        roomId: message.roomId,
-        senderId: message.senderId,
-        senderName: message.senderName,
-        content: { text: message.content },
-        timestamp: message.timestamp,
-        // Fields not critical for evaluation:
-        senderDisplayName: message.senderName,
-        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
-        status: 'delivered',
-        priority: message.priority,
-        metadata: {},
-        reactions: [],
-        attachments: [],
-        mentions: [],
-        replyTo: undefined,
-        editedAt: undefined,
-        deletedAt: undefined
-      };
+      // Type-safe handling: Check if this is a message or task
+      if (message.type === 'message') {
+        // Reconstruct minimal ChatMessageEntity from inbox message
+        const reconstructedEntity: any = {
+          id: message.id,
+          roomId: message.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          content: { text: message.content },
+          timestamp: message.timestamp,
+          // Fields not critical for evaluation:
+          senderDisplayName: message.senderName,
+          senderType: 'user', // Assumption: will be corrected by senderIsHuman check
+          status: 'delivered',
+          priority: message.priority,
+          metadata: {},
+          reactions: [],
+          attachments: [],
+          mentions: [],
+          replyTo: undefined,
+          editedAt: undefined,
+          deletedAt: undefined
+        };
 
-      // Determine if sender is human (not an AI persona)
-      const senderIsHuman = !message.senderId.startsWith('persona-');
+        // Determine if sender is human (not an AI persona)
+        const senderIsHuman = !message.senderId.startsWith('persona-');
 
-      // Extract message text
-      const messageText = message.content;
+        // Extract message text
+        const messageText = message.content;
 
-      // Process message using existing evaluation logic
-      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+        // Process message using existing evaluation logic
+        await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+      } else if (message.type === 'task') {
+        // TODO: Implement task handling
+        console.log(`⚠️  [PersonaUser:${this.entity.displayName}] Task handling not yet implemented: ${message.taskType}`);
+      }
 
       // Update inbox load in state (affects mood calculation)
       this.personaState.updateInboxLoad(this.inbox.getSize());
