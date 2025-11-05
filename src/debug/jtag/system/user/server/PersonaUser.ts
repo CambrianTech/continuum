@@ -2104,7 +2104,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const task = record.data;
 
         // Convert to InboxTask using helper
-        const inboxTask = taskEntityToInboxTask(task);
+        // Note: DataDaemon stores ID separately from data, so we need to inject it
+        const inboxTask = taskEntityToInboxTask({
+          ...task,
+          id: record.id // Inject ID from record root
+        });
 
         // Enqueue in inbox (unified priority queue)
         await this.inbox.enqueue(inboxTask);
