@@ -9,6 +9,8 @@ jspm_packages/
 dist/
 build/
 *.tsbuildinfo
+*.tgz
+continuum-jtag-*.tgz
 
 # Generated manifest files (use generated.ts instead)
 src/debug/jtag/manifests/
@@ -144,3 +146,14 @@ src/commands/**/*.js.map
 src/commands/**/*.d.ts
 /src/debug/jtag/.archive
 .tgz
+
+# Runtime directories (session data, logs, temp files)
+.continuum/
+.continuum-comm/
+.continuum-system/
+.continuum-safe-backup/
+.claude-messages/
+.interactive-comm/
+
+# Genome training artifacts
+.continuum/genome/
