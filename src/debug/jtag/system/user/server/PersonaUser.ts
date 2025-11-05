@@ -2160,6 +2160,15 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     // Pop message from inbox (we're processing it now)
     await this.inbox.pop(0); // Immediate pop (no timeout)
 
+    // If this is a task, update status to 'in_progress' in database (prevents re-polling)
+    if (message.type === 'task') {
+      await DataDaemon.update<TaskEntity>(
+        COLLECTIONS.TASKS,
+        message.taskId,
+        { status: 'in_progress', startedAt: new Date() }
+      );
+    }
+
     console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
 
     try {

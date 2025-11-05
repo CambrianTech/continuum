@@ -92,6 +92,13 @@ export function taskEntityToInboxTask(task: {
   dependsOn?: UUID[];
   blockedBy?: UUID[];
 }): InboxTask {
+  // Helper to safely convert Date | string | undefined to timestamp
+  const toTimestamp = (value: Date | string | undefined): number => {
+    if (!value) return Date.now(); // Fallback to now if missing
+    if (typeof value === 'string') return new Date(value).getTime();
+    return value.getTime();
+  };
+
   return {
     id: task.id,
     type: 'task',
@@ -104,12 +111,8 @@ export function taskEntityToInboxTask(task: {
     description: task.description,
     priority: task.priority,
     status: task.status,
-    timestamp: typeof task.createdAt === 'string'
-      ? new Date(task.createdAt).getTime()
-      : task.createdAt.getTime(),
-    dueDate: task.dueDate
-      ? (typeof task.dueDate === 'string' ? new Date(task.dueDate).getTime() : task.dueDate.getTime())
-      : undefined,
+    timestamp: toTimestamp(task.createdAt),
+    dueDate: task.dueDate ? toTimestamp(task.dueDate) : undefined,
     estimatedDuration: task.estimatedDuration,
     dependsOn: task.dependsOn,
     blockedBy: task.blockedBy
