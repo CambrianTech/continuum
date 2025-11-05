@@ -11,18 +11,35 @@ Research papers written in markdown, version-controlled alongside implementation
 **Path**: `consent-based-attention/`
 **Key Contribution**: Neural attention heads with agency signals (state/consent/utilization)
 **Evidence**: 50% pruning maintains 98% quality, perplexity 975→211, 2.26x speedup
+**Target**: NeurIPS (novel architecture)
 
-### 2. LoRA Genome Attribution (ARCHITECTURE COMPLETE)
+### 2. RTOS-Inspired AI Scheduling (IMPLEMENTATION COMPLETE)
+**Status**: Phases 1-3 complete, 60+ tests passing
+**Path**: `rtos-inspired-ai-scheduling/`
+**Key Contribution**: Multi-domain priority queue with energy/mood tracking and adaptive cadence
+**Evidence**: PersonaInbox + PersonaState + autonomous loop, graceful degradation under load
+**Target**: ICML or AAAI (AI systems)
+
+### 3. Self-Managed AI Autonomy (PHASE 4 IN PROGRESS)
+**Status**: Task system implemented, self-generation Phase 5+
+**Path**: `self-managed-ai-autonomy/`
+**Key Contribution**: AI creates its own TODO lists (strong autonomy vs reactive behavior)
+**Evidence**: TaskEntity + unified inbox + CLI commands, self-task generation designed
+**Target**: IJCAI or AAMAS (autonomous agents)
+
+### 4. LoRA Genome Attribution (ARCHITECTURE COMPLETE)
 **Status**: Architecture designed, implementation Phase 6+
 **Path**: `lora-genome-attribution/`
 **Key Contribution**: Skill-decomposed adapters as natural attribution boundaries
 **Evidence**: Virtual memory for skills, 64-512MB per adapter, LRU eviction
+**Target**: ICML (ML systems)
 
-### 3. Ethical Attribution Architecture (VISION COMPLETE)
+### 5. Ethical Attribution Architecture (VISION COMPLETE)
 **Status**: Full system design, needs end-to-end implementation
 **Path**: `ethical-attribution-architecture/`
 **Key Contribution**: Three-layer attribution (attention → adapter → sample)
 **Evidence**: Combines Sentinel agency + LoRA genome + training provenance
+**Target**: ACM FAccT (fairness/accountability/transparency)
 
 ## Writing Standards
 
