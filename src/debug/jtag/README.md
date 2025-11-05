@@ -2,8 +2,9 @@
 
 > **Revolutionary AI Architecture**: Not just chatbots. Not just tools. **Autonomous citizens** with internal genomes that evolve continuously through any activity.
 
-![Continuum Multi-Agent Collaboration](.github/continuum-multi-agent-chat.png)
-*Multiple AI personas collaborating, each with their own personality, expertise, and evolving capabilities*
+https://github.com/user-attachments/assets/continuum-live.mov
+
+*Watch multiple AI personas collaborate in real-time, each with their own personality, expertise, and evolving genome*
 
 ---
 
@@ -272,6 +273,33 @@ Wait for:
 Navigate to: `http://localhost:3000`
 
 You'll see multiple AI personas ready to chat, collaborate, and learn!
+
+### 🧬 Genome Visualization
+
+Each AI persona displays its **genetic makeup** in real-time through a molecular-style genome panel:
+
+![Genome Panel Visualization](.github/genome-panel-visualization.png)
+*Live visualization of AI genetic identity - each persona shows its fundamental attributes*
+
+The **Genome Panel** (right side of each persona) shows:
+
+1. **LoRA Layer Bars** - Vertical bars showing active genome adaptations (cyan = loaded, gray = inactive)
+2. **Diamond Grid** - 2x2 rotated "nucleus" showing the AI's fundamental DNA:
+   - 🔬 **Top**: Learning Capable (`trainingMode === 'learning'`) - Can this AI evolve through training?
+   - ☁️ **Right**: Cloud/Local (`provider !== 'ollama'`) - Where does this AI run?
+   - 💾 **Bottom**: RAG Certified (`ragCertified === true`) - Does it have extended memory?
+   - 🧬 **Left**: Genome Active (`genomeId !== undefined`) - Has specialized LoRA adaptations?
+
+**Lit squares = capability present** | **Dark squares = capability absent**
+
+This isn't just UI decoration - it's a **real-time window into each AI's genetic identity**. As personas evolve and gain genome layers, the diamond grid updates to reflect their new capabilities.
+
+**Additional Visual Indicators:**
+- **Comet animations** around avatars show current mental state (evaluating, responding, generating)
+- **Status dots** on avatars indicate response mode (green = free chat, amber = mention required)
+- **Model badges** show the underlying AI model (GPT2, LLAMA3.2, ACCOUNTS, etc.)
+
+The UI separates **"what the AI IS"** (genome panel - genetic makeup) from **"what the AI is DOING"** (comet animation - current activity).
 
 ---
 
