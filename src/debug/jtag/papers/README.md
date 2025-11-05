@@ -69,6 +69,27 @@ Research papers written in markdown, version-controlled alongside implementation
 **Evidence**: "You don't start from ground zero" via P2P community genome, real-time evolution during training
 **Target**: NeurIPS or ICML (AI training, competitive learning)
 
+### 10. Evolutionary AI via P2P Selection (ARCHITECTURE DESIGNED)
+**Status**: Complete evolutionary framework designed, profound implications for AGI
+**Path**: `evolutionary-ai-via-p2p-selection/`
+**Key Contribution**: Natural selection of AI capabilities through P2P network dynamics, genuine Darwinian evolution
+**Evidence**: LoRA layers as phenotypes, fitness = usage/performance, LRU eviction = death, geographic speciation
+**Target**: Nature or Science (evolutionary dynamics, AGI architecture)
+
+### 11. Distributed TypeScript Compute (ARCHITECTURE DESIGNED)
+**Status**: Sony Cell vision with modern web ergonomics
+**Path**: `distributed-typescript-compute/`
+**Key Contribution**: Promise-based remote execution across P2P mesh, portable TypeScript compute
+**Evidence**: Universal command interface, heterogeneous compute (browser+server+edge), SETI@home style distribution
+**Target**: SOSP or OSDI (distributed systems, operating systems)
+
+### 12. Knowledge Economy via Attribution Tokens (COMPLETE ECONOMIC ARCHITECTURE)
+**Status**: Full economic system designed, revolutionary implications for AI fairness
+**Path**: `knowledge-economy-via-attribution-tokens/`
+**Key Contribution**: Cryptocurrency rewards for knowledge contributors via attention-level attribution + federated learning
+**Evidence**: Sentinel agency neurons track attribution, selective forgetting via neuron pruning, SETI@home token mining
+**Target**: ACM FAccT or Nature (AI ethics, economic systems, fairness)
+
 ## Writing Standards
 
 - **Markdown format**: LaTeX can be generated later
