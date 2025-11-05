@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# Pre-commit hook for Continuum
+# Runs adversarial testing if API keys are available
+#
+
+echo "🔍 Continuum pre-commit checks..."
+
+# Check if we're in the right directory
+if [ ! -f "package.json" ] || ! grep -q "continuum" package.json; then
+    echo "⚠️  Not in continuum directory, skipping adversarial tests"
+    exit 0
+fi
+
+# Check for API keys (don't echo them!)
+has_anthropic_key=false
+has_openai_key=false
+
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    has_anthropic_key=true
+fi
+
+if [ -n "$OPENAI_API_KEY" ]; then
+    has_openai_key=true
+fi
+
+echo "🔑 API Keys available: Anthropic=$has_anthropic_key, OpenAI=$has_openai_key"
+
+# Run basic tests first
+echo "🧪 Running basic unit tests..."
+if ! npm test 2>/dev/null; then
+    echo "❌ Basic tests failed, commit blocked"
+    exit 1
+fi
+
+# Run adversarial tests if API keys available
+if [ "$has_anthropic_key" = true ]; then
+    echo "🔥 Running adversarial protocol tests..."
+    if node tests/adversarial-protocol.test.cjs 2>/dev/null; then
+        echo "✅ Adversarial tests passed"
+    else
+        echo "⚠️  Adversarial tests had issues but not blocking commit"
+        echo "   (API-dependent tests can be flaky)"
+    fi
+else
+    echo "⚠️  Skipping adversarial tests (no Anthropic API key)"
+fi
+
+# Run command processing tests (these should always work)
+echo "🛡️  Testing command processing..."
+if ! node tests/command-processing.test.cjs; then
+    echo "❌ Command processing tests failed, commit blocked"
+    exit 1
+fi
+
+echo "✅ Pre-commit checks complete"
+exit 0

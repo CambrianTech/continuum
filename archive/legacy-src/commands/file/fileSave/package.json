@@ -1,0 +1,42 @@
+{
+  "name": "file-save-command",
+  "version": "1.0.0",
+  "description": "File save command for binary data and base64 content",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "command": "file_save",
+    "category": "file",
+    "capabilities": [
+      "file-save",
+      "binary-data",
+      "base64-encoding",
+      "session-file-management"
+    ],
+    "exports": {
+      "FileSaveCommand": "./server/FileSaveCommand.ts",
+      "FileSaveClient": "./client/FileSaveClient.ts"
+    },
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": ["file-write"]
+  },
+  "keywords": [
+    "file",
+    "save",
+    "binary",
+    "base64",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

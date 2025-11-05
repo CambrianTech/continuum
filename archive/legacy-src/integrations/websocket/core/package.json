@@ -1,0 +1,10 @@
+{
+  "name": "@continuum/websocket-core",
+  "version": "1.0.0",
+  "description": "Core WebSocket server components for clean routing and connection management",
+  "type": "module",
+  "continuum": {
+    "module": true,
+    "category": "integration-core"
+  }
+}

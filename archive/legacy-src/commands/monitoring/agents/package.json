@@ -1,0 +1,33 @@
+{
+  "name": "agents-core",
+  "version": "1.0.0",
+  "description": "agents core for Continuum",
+  "main": "AgentsCore.ts",
+  "type": "module",
+  "continuum": {
+    "core": "agents",
+    "category": "Core",
+    "capabilities": [
+      "auto-generated"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [],
+    "disabled": true
+  },
+  "keywords": [
+    "agents",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

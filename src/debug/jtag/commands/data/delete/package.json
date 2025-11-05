@@ -1,0 +1,58 @@
+{
+  "name": "@continuum/jtag-command-data-delete",
+  "version": "1.0.0", 
+  "description": "JTAG Data Delete Command - Remove records from collections with existence validation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "data"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "data/delete",
+    "testParams": {
+      "collection": "test-collection",
+      "id": "test-id-123"
+    },
+    "expectedFields": [
+      "collection",
+      "id",
+      "found", 
+      "deleted",
+      "timestamp"
+    ],
+    "performanceThresholdMs": 500,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "basic-delete",
+        "description": "Delete existing record",
+        "params": {
+          "collection": "test-users",
+          "id": "06623f80-b974-48c8-b786-016e64dc0283"
+        }
+      },
+      {
+        "name": "delete-nonexistent",
+        "description": "Attempt to delete non-existent record",
+        "params": {
+          "collection": "test-users",
+          "id": "nonexistent-id"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for data delete command'",
+    "test:integration": "echo 'Integration tests for data delete command'"
+  },
+  "keywords": [
+    "jtag",
+    "data",
+    "delete",
+    "crud",
+    "command"
+  ]
+}

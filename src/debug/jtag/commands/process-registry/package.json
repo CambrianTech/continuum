@@ -1,0 +1,10 @@
+{
+  "name": "@continuum/process-registry-command",
+  "version": "1.0.0",
+  "description": "Process registry command for JTAG process identification and cleanup",
+  "continuum": {
+    "type": "command",
+    "category": "system",
+    "capabilities": ["process-registration", "process-discovery", "smart-cleanup"]
+  }
+}

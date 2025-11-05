@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>continuum</title>
+    <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔴</text></svg>">
+    <!-- Continuum Theme CSS Variables -->
+    <link rel="stylesheet" href="/src/ui/themes/continuum-dark.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+            color: #e0e6ed;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        continuum-sidebar {
+            flex: 0 0 auto; /* Don't shrink, don't grow, use intrinsic size */
+            height: 100vh;
+        }
+        
+        chat-widget {
+            flex: 1; /* Take remaining space */
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- TypeScript Widgets - Custom Elements -->
+        <continuum-sidebar></continuum-sidebar>
+        <chat-widget></chat-widget>
+    </div>
+    
+    <!-- Widget modules bundled with continuum-browser.js - no separate loading needed -->
+    
+    <!-- All scripts injected dynamically by RendererDaemon -->
+</body>
+</html>

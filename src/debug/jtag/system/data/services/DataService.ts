@@ -1,0 +1,599 @@
+/**
+ * DataService - Professional ORM-like Data Operations
+ * 
+ * Following widget.executeCommand pattern for data operations
+ * Provides type-safe, adapter-agnostic data access with strict typing
+ * Supports multiple backends: JSON files, SQLite, PostgreSQL
+ */
+
+import type { 
+  BaseEntity,
+  DataResult,
+  DataError,
+  DataOperation,
+  DataOperationContext,
+  QueryOptions,
+  UserId,
+  SessionId,
+  ISOString
+} from '../domains/CoreTypes';
+import { Ok, Err, createDataError } from '../domains/CoreTypes';
+import type { CreateUserData } from '../domains/User';
+import type { CreateMessageData } from '../domains/ChatMessage';
+
+/**
+ * Strict operation payload types - eliminate any usage
+ */
+export interface ReadOperationPayload {
+  readonly id: string;
+}
+
+export interface UpdateOperationPayload<T extends BaseEntity> {
+  readonly id: string;
+  readonly data?: Partial<T>;
+}
+
+export interface DeleteOperationPayload {
+  readonly id: string;
+}
+
+export interface QueryOperationPayload<T extends BaseEntity> {
+  readonly filters: Record<string, unknown>;
+  readonly options?: QueryOptions<T>;
+}
+
+export interface CountOperationPayload {
+  readonly filters?: Record<string, unknown>;
+}
+
+/**
+ * Type guards for validation
+ */
+function hasUserDataFields(data: unknown): data is { displayName?: unknown; type?: unknown } {
+  return data !== null && typeof data === 'object' && 
+         ('displayName' in (data as object) || 'type' in (data as object));
+}
+
+function hasMessageDataFields(data: unknown): data is { content?: unknown; roomId?: unknown } {
+  return data !== null && typeof data === 'object' && 
+         ('content' in (data as object) || 'roomId' in (data as object));
+}
+import { generateUUID } from '../../core/types/CrossPlatformUUID';
+
+/**
+ * Data Adapter Interface - Like DataStorageAdapter but cleaner
+ */
+export interface DataAdapter {
+  readonly name: string;
+  readonly capabilities: {
+    readonly supportsTransactions: boolean;
+    readonly supportsFullTextSearch: boolean;
+    readonly supportsRelations: boolean;
+    readonly supportsJsonQueries: boolean;
+  };
+
+  // Core CRUD operations
+  create<T extends BaseEntity>(collection: string, data: Omit<T, keyof BaseEntity>, context: DataOperationContext): Promise<DataResult<T>>;
+  read<T extends BaseEntity>(collection: string, id: string, context: DataOperationContext): Promise<DataResult<T | null>>;
+  update<T extends BaseEntity>(collection: string, id: string, data: Partial<T>, context: DataOperationContext): Promise<DataResult<T>>;
+  delete(collection: string, id: string, context: DataOperationContext): Promise<DataResult<boolean>>;
+  list<T extends BaseEntity>(collection: string, options?: QueryOptions<T>, context?: DataOperationContext): Promise<DataResult<T[]>>;
+  query<T extends BaseEntity>(collection: string, filters: Record<string, unknown>, options?: QueryOptions<T>, context?: DataOperationContext): Promise<DataResult<T[]>>;
+  count(collection: string, filters?: Record<string, unknown>, context?: DataOperationContext): Promise<DataResult<number>>;
+
+  // Lifecycle
+  initialize(): Promise<DataResult<void>>;
+  close(): Promise<DataResult<void>>;
+}
+
+/**
+ * Hybrid Adapter Configuration - Multi-backend support
+ */
+export interface HybridAdapterConfig {
+  readonly read: readonly DataAdapter[];    // Try these in order for reads
+  readonly write: DataAdapter;             // Always write to this one
+  readonly migrate?: {
+    readonly from: DataAdapter;
+    readonly to: DataAdapter;
+    readonly autoMigrate: boolean;
+  };
+}
+
+/**
+ * Data Service Configuration
+ */
+export interface DataServiceConfig {
+  readonly adapters: Record<string, DataAdapter | HybridAdapterConfig>;
+  readonly defaultAdapter: DataAdapter;
+  readonly context: {
+    readonly userId?: UserId;
+    readonly sessionId: SessionId;
+    readonly source: string;
+  };
+}
+
+/**
+ * DataService - Professional data operations like widget.executeCommand
+ */
+export class DataService {
+  private config: DataServiceConfig;
+  private isInitialized: boolean = false;
+
+  constructor(config: DataServiceConfig) {
+    this.config = config;
+  }
+
+  /**
+   * Initialize all adapters
+   */
+  async initialize(): Promise<DataResult<void>> {
+    if (this.isInitialized) {
+      return Ok(undefined);
+    }
+
+    try {
+      // Initialize default adapter
+      const defaultResult = await this.config.defaultAdapter.initialize();
+      if (!defaultResult.success) {
+        return defaultResult;
+      }
+
+      // Initialize all configured adapters
+      for (const [collection, adapterConfig] of Object.entries(this.config.adapters)) {
+        if (this.isHybridConfig(adapterConfig)) {
+          // Initialize all adapters in hybrid config
+          for (const adapter of adapterConfig.read) {
+            const result = await adapter.initialize();
+            if (!result.success) {
+              return Err(createDataError('STORAGE_ERROR', `Failed to initialize read adapter for ${collection}: ${result.error.message}`));
+            }
+          }
+          const writeResult = await adapterConfig.write.initialize();
+          if (!writeResult.success) {
+            return Err(createDataError('STORAGE_ERROR', `Failed to initialize write adapter for ${collection}: ${writeResult.error.message}`));
+          }
+        } else {
+          const result = await adapterConfig.initialize();
+          if (!result.success) {
+            return Err(createDataError('STORAGE_ERROR', `Failed to initialize adapter for ${collection}: ${result.error.message}`));
+          }
+        }
+      }
+
+      this.isInitialized = true;
+      return Ok(undefined);
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown initialization error';
+      return Err(createDataError('STORAGE_ERROR', `DataService initialization failed: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Execute data operation - Like widget.executeCommand but for data
+   */
+  async executeOperation<T extends BaseEntity>(
+    operation: `${string}/${DataOperation}`,
+    data?: ReadOperationPayload | UpdateOperationPayload<T> | DeleteOperationPayload | QueryOperationPayload<T> | CountOperationPayload | Omit<T, keyof BaseEntity>,
+    options?: {
+      readonly context?: Partial<DataOperationContext>;
+      readonly adapter?: string;
+    }
+  ): Promise<DataResult<T | T[] | boolean | number>> {
+    if (!this.isInitialized) {
+      const initResult = await this.initialize();
+      if (!initResult.success) {
+        return initResult as DataResult<T>;
+      }
+    }
+
+    const [collection, op] = operation.split('/') as [string, DataOperation];
+    const context = this.createContext(options?.context);
+    const adapter = this.getAdapter(collection, options?.adapter);
+
+    try {
+      switch (op) {
+        case 'create':
+          // Apply strict validation for create operations (Rust-like enforcement)
+          if (collection === 'users' && hasUserDataFields(data)) {
+            const { validateUserData } = await import('../domains/User');
+            const validation = validateUserData(data as CreateUserData);
+            if (!validation.success) {
+              return Err(validation.error);
+            }
+          }
+          
+          if (collection.includes('message') && hasMessageDataFields(data)) {
+            const { validateMessageData } = await import('../domains/ChatMessage');
+            const validation = validateMessageData(data as CreateMessageData);
+            if (!validation.success) {
+              return Err(validation.error);
+            }
+          }
+          
+          return await adapter.create<T>(collection, data as Omit<T, keyof BaseEntity>, context);
+        
+        case 'read':
+          const readPayload = data as ReadOperationPayload;
+          if (!readPayload?.id) {
+            return Err(createDataError('VALIDATION_ERROR', 'ID is required for read operation'));
+          }
+          return await adapter.read<T>(collection, readPayload.id, context) as DataResult<T | T[] | boolean | number>;
+        
+        case 'update':
+          const updatePayload = data as UpdateOperationPayload<T>;
+          if (!updatePayload?.id) {
+            return Err(createDataError('VALIDATION_ERROR', 'ID is required for update operation'));
+          }
+          return await adapter.update<T>(collection, updatePayload.id, updatePayload.data || {}, context);
+        
+        case 'delete':
+          const deletePayload = data as DeleteOperationPayload;
+          if (!deletePayload?.id) {
+            return Err(createDataError('VALIDATION_ERROR', 'ID is required for delete operation'));
+          }
+          return await adapter.delete(collection, deletePayload.id, context) as DataResult<boolean>;
+        
+        case 'list':
+          const listOptions = data as QueryOptions<T> | undefined;
+          return await adapter.list<T>(collection, listOptions, context) as DataResult<T[]>;
+        
+        case 'query':
+          const queryPayload = data as QueryOperationPayload<T>;
+          if (!queryPayload?.filters) {
+            return Err(createDataError('VALIDATION_ERROR', 'Filters are required for query operation'));
+          }
+          return await adapter.query<T>(collection, queryPayload.filters, queryPayload.options, context) as DataResult<T[]>;
+        
+        case 'count':
+          const countPayload = data as CountOperationPayload;
+          return await adapter.count(collection, countPayload?.filters, context) as DataResult<number>;
+        
+        default:
+          return Err(createDataError('VALIDATION_ERROR', `Unknown operation: ${op}`));
+      }
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown operation error';
+      return Err(createDataError('STORAGE_ERROR', `Operation ${operation} failed: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Convenient typed methods (ORM-like)
+   */
+  async create<T extends BaseEntity>(
+    collection: string, 
+    data: Omit<T, keyof BaseEntity>, 
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<T>> {
+    // Add validation for known collections
+    if (collection === 'users' && hasUserDataFields(data)) {
+      const { validateUserData } = await import('../domains/User');
+      const validation = validateUserData(data as unknown as CreateUserData);
+      if (!validation.success) {
+        return Err(validation.error);
+      }
+    }
+    
+    if (collection.includes('message') && hasMessageDataFields(data)) {
+      const { validateMessageData } = await import('../domains/ChatMessage');
+      const validation = validateMessageData(data as unknown as CreateMessageData);
+      if (!validation.success) {
+        return Err(validation.error);
+      }
+    }
+    
+    return await this.executeOperation<T>(`${collection}/create`, data, { context }) as DataResult<T>;
+  }
+
+  async read<T extends BaseEntity>(
+    collection: string, 
+    id: string, 
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<T | null>> {
+    return await this.executeOperation<T>(`${collection}/read`, { id }, { context }) as DataResult<T | null>;
+  }
+
+  async update<T extends BaseEntity>(
+    collection: string, 
+    id: string, 
+    data: Partial<T>, 
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<T>> {
+    return await this.executeOperation<T>(`${collection}/update`, { id, ...data }, { context }) as DataResult<T>;
+  }
+
+  async delete(
+    collection: string, 
+    id: string, 
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<boolean>> {
+    return await this.executeOperation(`${collection}/delete`, { id }, { context }) as DataResult<boolean>;
+  }
+
+  async list<T extends BaseEntity>(
+    collection: string, 
+    options?: QueryOptions<T>, 
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<T[]>> {
+    return await this.executeOperation<T>(`${collection}/list`, options, { context }) as DataResult<T[]>;
+  }
+
+  async query<T extends BaseEntity>(
+    collection: string, 
+    filters: Record<string, unknown>, 
+    options?: QueryOptions<T>, 
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<T[]>> {
+    return await this.executeOperation<T>(`${collection}/query`, { filters, options }, { context }) as DataResult<T[]>;
+  }
+
+  /**
+   * Export collection data to TypeScript module format
+   * Same mechanism used for seeding - create entities, export, import later
+   */
+  async export<T extends BaseEntity>(
+    collection: string,
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ collection: string; entities: T[]; exportedAt: ISOString }>> {
+    try {
+      const result = await this.list<T>(collection, undefined, context);
+      if (!result.success) {
+        return Err(result.error);
+      }
+
+      return Ok({
+        collection,
+        entities: result.data,
+        exportedAt: new Date().toISOString() as ISOString
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown export error';
+      return Err(createDataError('STORAGE_ERROR', `Export failed for ${collection}: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Import collection data from exported format
+   * Bulk create entities using the same ORM methods
+   */
+  async import<T extends BaseEntity>(
+    collection: string,
+    entities: Omit<T, keyof BaseEntity>[],
+    options?: {
+      clearFirst?: boolean;
+      skipValidation?: boolean;
+    },
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ imported: number; errors: string[] }>> {
+    const importErrors: string[] = [];
+    let importedCount = 0;
+
+    try {
+      // Optional: clear collection first
+      if (options?.clearFirst) {
+        // Note: DataService doesn't have bulk delete yet, but could be added
+        console.log(`⚠️ Clear first requested for ${collection} - not implemented yet`);
+      }
+
+      // Import each entity using normal create() method
+      for (const entityData of entities) {
+        const result = await this.create<T>(collection, entityData, context);
+        if (result.success) {
+          importedCount++;
+        } else {
+          importErrors.push(`Entity import failed: ${result.error.message}`);
+        }
+      }
+
+      return Ok({
+        imported: importedCount,
+        errors: importErrors
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown import error';
+      return Err(createDataError('STORAGE_ERROR', `Import failed for ${collection}: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Clear (delete all records from) a collection
+   * Useful for implementing data:clear functionality
+   */
+  async clear(
+    collection: string,
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ deleted: number }>> {
+    try {
+      // For now, we'll implement this as list + delete each item
+      // Future optimization: add bulk delete to adapters
+      const listResult = await this.list(collection, undefined, context);
+      if (!listResult.success) {
+        return Err(listResult.error);
+      }
+
+      let deletedCount = 0;
+      const deleteErrors: string[] = [];
+
+      // Delete each item individually
+      for (const item of listResult.data) {
+        const deleteResult = await this.delete(collection, (item as any).id, context);
+        if (deleteResult.success) {
+          deletedCount++;
+        } else {
+          deleteErrors.push(`Failed to delete ${(item as any).id}: ${deleteResult.error.message}`);
+        }
+      }
+
+      if (deleteErrors.length > 0) {
+        console.warn(`⚠️ Clear ${collection}: ${deleteErrors.length} delete errors occurred`);
+        // Still return success with partial results
+      }
+
+      return Ok({
+        deleted: deletedCount
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown clear error';
+      return Err(createDataError('STORAGE_ERROR', `Clear failed for ${collection}: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Clear multiple collections
+   */
+  async clearAll(
+    collections: string[],
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ results: Record<string, { deleted: number; errors: string[] }> }>> {
+    try {
+      const results: Record<string, { deleted: number; errors: string[] }> = {};
+      const clearErrors: string[] = [];
+
+      for (const collection of collections) {
+        const clearResult = await this.clear(collection, context);
+        if (clearResult.success) {
+          results[collection] = {
+            deleted: clearResult.data.deleted,
+            errors: []
+          };
+        } else {
+          results[collection] = {
+            deleted: 0,
+            errors: [clearResult.error.message]
+          };
+          clearErrors.push(`${collection}: ${clearResult.error.message}`);
+        }
+      }
+
+      if (clearErrors.length > 0) {
+        return Err(createDataError('STORAGE_ERROR', `Clear all errors: ${clearErrors.join(', ')}`));
+      }
+
+      return Ok({ results });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown clear all error';
+      return Err(createDataError('STORAGE_ERROR', `Clear all failed: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Export all collections to a complete dataset
+   */
+  async exportAll(
+    collections: string[],
+    context?: Partial<DataOperationContext>
+  ): Promise<DataResult<{ collections: Record<string, any[]>; exportedAt: ISOString }>> {
+    try {
+      const collectionsData: Record<string, any[]> = {};
+      const exportErrors: string[] = [];
+
+      for (const collection of collections) {
+        const result = await this.export(collection, context);
+        if (result.success) {
+          collectionsData[collection] = result.data.entities;
+        } else {
+          exportErrors.push(`Failed to export ${collection}: ${result.error.message}`);
+        }
+      }
+
+      if (exportErrors.length > 0) {
+        return Err(createDataError('STORAGE_ERROR', `Export errors: ${exportErrors.join(', ')}`));
+      }
+
+      return Ok({
+        collections: collectionsData,
+        exportedAt: new Date().toISOString() as ISOString
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown export all error';
+      return Err(createDataError('STORAGE_ERROR', `Export all failed: ${errorMessage}`));
+    }
+  }
+
+  /**
+   * Close all connections
+   */
+  async close(): Promise<DataResult<void>> {
+    const errors: string[] = [];
+
+    try {
+      // Close default adapter
+      const defaultResult = await this.config.defaultAdapter.close();
+      if (!defaultResult.success) {
+        errors.push(`Default adapter: ${defaultResult.error.message}`);
+      }
+
+      // Close all configured adapters
+      for (const [collection, adapterConfig] of Object.entries(this.config.adapters)) {
+        if (this.isHybridConfig(adapterConfig)) {
+          for (const adapter of [...adapterConfig.read, adapterConfig.write]) {
+            const result = await adapter.close();
+            if (!result.success) {
+              errors.push(`${collection} adapter: ${result.error.message}`);
+            }
+          }
+        } else {
+          const result = await adapterConfig.close();
+          if (!result.success) {
+            errors.push(`${collection} adapter: ${result.error.message}`);
+          }
+        }
+      }
+
+      this.isInitialized = false;
+
+      if (errors.length > 0) {
+        return Err(createDataError('STORAGE_ERROR', `DataService close errors: ${errors.join(', ')}`));
+      }
+
+      return Ok(undefined);
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown close error';
+      return Err(createDataError('STORAGE_ERROR', `DataService close failed: ${errorMessage}`));
+    }
+  }
+
+  // Private helper methods
+  private isHybridConfig(config: DataAdapter | HybridAdapterConfig): config is HybridAdapterConfig {
+    return 'read' in config && 'write' in config;
+  }
+
+  private getAdapter(collection: string, adapterName?: string): DataAdapter {
+    if (adapterName) {
+      const adapter = this.config.adapters[adapterName];
+      if (!adapter) {
+        throw new Error(`Adapter ${adapterName} not found`);
+      }
+      return this.isHybridConfig(adapter) ? adapter.write : adapter;
+    }
+
+    const collectionAdapter = this.config.adapters[collection];
+    if (collectionAdapter) {
+      return this.isHybridConfig(collectionAdapter) ? collectionAdapter.write : collectionAdapter;
+    }
+
+    return this.config.defaultAdapter;
+  }
+
+  private createContext(override?: Partial<DataOperationContext>): DataOperationContext {
+    return {
+      sessionId: this.config.context.sessionId,
+      timestamp: new Date().toISOString() as ISOString,
+      source: this.config.context.source,
+      userId: this.config.context.userId,
+      transactionId: generateUUID(),
+      ...override
+    };
+  }
+
+  private shouldValidateUser(data: unknown): data is { displayName?: unknown; type?: unknown } {
+    return hasUserDataFields(data);
+  }
+
+  private shouldValidateMessage(data: unknown): data is { content?: unknown; roomId?: unknown } {
+    return hasMessageDataFields(data);
+  }
+}

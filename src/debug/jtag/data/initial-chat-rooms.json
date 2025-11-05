@@ -1,0 +1,35 @@
+[
+  {
+    "roomId": "00000000-0000-0000-0000-000000000001",
+    "name": "General Chat",
+    "description": "Main chat room for general discussions",
+    "category": "general",
+    "isPrivate": false,
+    "allowAI": true,
+    "requireModeration": false,
+    "maxHistoryLength": 1000,
+    "createdAt": "2025-08-14T00:00:00.000Z"
+  },
+  {
+    "roomId": "00000000-0000-0000-0000-000000000002", 
+    "name": "AI Training",
+    "description": "Chat room for AI agent training and development discussions",
+    "category": "ai-training",
+    "isPrivate": false,
+    "allowAI": true,
+    "requireModeration": false,
+    "maxHistoryLength": 500,
+    "createdAt": "2025-08-14T00:00:00.000Z"
+  },
+  {
+    "roomId": "00000000-0000-0000-0000-000000000003",
+    "name": "Support",
+    "description": "Technical support and help requests",
+    "category": "support", 
+    "isPrivate": false,
+    "allowAI": true,
+    "requireModeration": true,
+    "maxHistoryLength": 200,
+    "createdAt": "2025-08-14T00:00:00.000Z"
+  }
+]

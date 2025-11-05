@@ -1,0 +1,91 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2025-09-09T04:00:00.000Z",
+  "description": "Fake users for testing bidirectional chat functionality",
+  "users": [
+    {
+      "userId": "user-joel-12345",
+      "displayName": "Joel",
+      "email": "joel@example.com",
+      "role": "admin",
+      "isOnline": true,
+      "createdAt": "2025-08-01T10:00:00.000Z",
+      "lastSeen": "2025-09-09T04:00:00.000Z",
+      "avatar": "👨‍💻",
+      "status": "active",
+      "preferences": {
+        "theme": "dark",
+        "notifications": true,
+        "sounds": false
+      }
+    },
+    {
+      "userId": "user-alice-67890",
+      "displayName": "Alice",
+      "email": "alice@example.com", 
+      "role": "user",
+      "isOnline": true,
+      "createdAt": "2025-08-15T14:30:00.000Z",
+      "lastSeen": "2025-09-09T03:45:00.000Z",
+      "avatar": "👩‍🔬",
+      "status": "active",
+      "preferences": {
+        "theme": "light",
+        "notifications": true,
+        "sounds": true
+      }
+    },
+    {
+      "userId": "user-bob-11111",
+      "displayName": "Bob",
+      "email": "bob@example.com",
+      "role": "user", 
+      "isOnline": false,
+      "createdAt": "2025-08-20T09:15:00.000Z",
+      "lastSeen": "2025-09-08T22:30:00.000Z",
+      "avatar": "👨‍🎨",
+      "status": "away",
+      "preferences": {
+        "theme": "dark",
+        "notifications": false,
+        "sounds": false
+      }
+    },
+    {
+      "userId": "user-charlie-22222",
+      "displayName": "Charlie",
+      "email": "charlie@example.com",
+      "role": "moderator",
+      "isOnline": true,
+      "createdAt": "2025-08-10T16:45:00.000Z", 
+      "lastSeen": "2025-09-09T03:58:00.000Z",
+      "avatar": "🤖",
+      "status": "active",
+      "preferences": {
+        "theme": "auto",
+        "notifications": true,
+        "sounds": true
+      }
+    },
+    {
+      "userId": "system-server",
+      "displayName": "Server",
+      "email": "system@continuum.ai",
+      "role": "system",
+      "isOnline": true,
+      "createdAt": "2025-08-01T00:00:00.000Z",
+      "lastSeen": "2025-09-09T04:00:00.000Z",
+      "avatar": "🖥️",
+      "status": "active",
+      "preferences": {
+        "theme": "dark",
+        "notifications": false,
+        "sounds": false
+      }
+    }
+  ],
+  "defaultCurrentUser": {
+    "userId": "user-joel-12345",
+    "note": "This represents the persistent User ID for 'me' across sessions"
+  }
+}

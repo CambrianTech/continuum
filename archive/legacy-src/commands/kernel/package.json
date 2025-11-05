@@ -1,0 +1,35 @@
+{
+  "name": "kernel-commands",
+  "version": "1.0.0",
+  "description": "System kernel and process management commands",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "kernel",
+    "quality": {
+      "status": "whitelisted",
+      "eslint": {
+        "enforce": false,
+        "level": "off"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": false
+      },
+      "tests": {
+        "required": false
+      },
+      "compliance": {
+        "required": false
+      }
+    }
+  },
+  "keywords": [
+    "kernel",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

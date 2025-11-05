@@ -1,0 +1,505 @@
+/**
+ * CRUD Event Chain Integration Test
+ *
+ * Validates the complete elegant architecture:
+ * 1. CRUD Command → 2. Database Persistence → 3. Event Emission → 4. Widget State → 5. HTML DOM
+ *
+ * Tests all entity types (User, Room, ChatMessage) using the same generic code
+ * Architecture-compliant: Zero entity-specific logic, works with any BaseEntity
+ */
+
+import {
+  runJtagCommand,
+  DatabaseVerifier,
+  UIVerifier,
+  EventVerifier,
+  CRUDOperationTester,
+  TestResult,
+  EntityInstance,
+  sleep
+} from '../test-utils/CRUDTestUtils';
+import { SchemaFactory } from '../test-utils/SchemaBasedFactory';
+
+// Test configurations for each Collection-Widget pair (Schema-Driven)
+interface TestConfig {
+  collection: string;
+  widget: string;
+  createOverrides: Record<string, unknown>;
+  updateData: Record<string, unknown>;
+  verifyField: string;
+}
+
+const TEST_CONFIGS: TestConfig[] = [
+  {
+    collection: 'User',
+    widget: 'user-list-widget',
+    createOverrides: {
+      displayName: 'Schema CRUD Test User',
+      shortDescription: 'Test user created with schema validation'
+    },
+    updateData: {
+      displayName: 'Updated Schema Test User',
+      shortDescription: 'Updated with schema validation'
+    },
+    verifyField: 'displayName'
+  },
+  {
+    collection: 'Room',
+    widget: 'room-list-widget',
+    createOverrides: {
+      name: 'Schema CRUD Test Room',
+      description: 'Test room created with schema validation'
+    },
+    updateData: {
+      name: 'Updated Schema Test Room',
+      description: 'Updated with schema validation'
+    },
+    verifyField: 'name'
+  },
+  {
+    collection: 'ChatMessage',
+    widget: 'chat-widget',
+    createOverrides: {
+      content: {
+        text: 'Schema CRUD Test Message',
+        attachments: []
+      }
+    },
+    updateData: {
+      content: {
+        text: 'Updated Schema Test Message',
+        attachments: []
+      }
+    },
+    verifyField: 'content'
+  }
+];
+
+/**
+ * Complete CRUD Event Chain Test Suite
+ * Architecture-compliant: Works with any entity type generically
+ */
+class CompleteCRUDEventChainTester {
+  private dbVerifier = new DatabaseVerifier();
+  private uiVerifier = new UIVerifier();
+  private eventVerifier = new EventVerifier();
+
+  private allTestResults: TestResult[] = [];
+
+  /**
+   * Run complete CRUD event chain validation for all entity types
+   */
+  async runCompleteValidation(): Promise<boolean> {
+    console.log('🧪 COMPLETE CRUD-EVENT CHAIN VALIDATION');
+    console.log('=====================================');
+    console.log('Testing elegant architecture: CRUD → Event → DB → Widget → HTML');
+    console.log('Architecture-compliant: Same code works for all entity types\n');
+
+    let allTestsPass = true;
+
+    for (const config of TEST_CONFIGS) {
+      console.log(`\n📋 Testing Entity: ${config.collection} → ${config.widget}`);
+      console.log('─'.repeat(60));
+
+      const entityTestPass = await this.testEntityCRUDChain(config);
+      allTestsPass = allTestsPass && entityTestPass;
+
+      // Small delay between entity tests to allow system to settle
+      await sleep(500);
+    }
+
+    // Final comprehensive validation
+    console.log('\n🔍 COMPREHENSIVE ARCHITECTURE VALIDATION');
+    console.log('=======================================');
+    const architectureValid = await this.validateArchitecture();
+    allTestsPass = allTestsPass && architectureValid;
+
+    this.printFinalResults(allTestsPass);
+    return allTestsPass;
+  }
+
+  /**
+   * Test complete CRUD chain for a single entity type
+   * Generic: Works with any entity extending BaseEntity
+   * Uses SchemaBasedFactory for intelligent entity creation
+   */
+  private async testEntityCRUDChain(config: TestConfig): Promise<boolean> {
+    const tester = new CRUDOperationTester(
+      config.collection,
+      config.widget,
+      this.dbVerifier,
+      this.uiVerifier,
+      this.eventVerifier
+    );
+
+    let entityId: string | undefined;
+    const entityResults: TestResult[] = [];
+
+    try {
+      // 1. CREATE ENTITY USING SCHEMA-BASED FACTORY
+      console.log(`\n🏗️ Creating ${config.collection} with SchemaFactory...`);
+      const factoryResult = await SchemaFactory.create(config.collection, config.createOverrides);
+
+      if (!factoryResult.success || !factoryResult.id) {
+        console.log(`❌ SchemaFactory CREATE failed: ${factoryResult.error}`);
+        entityResults.push({
+          step: `${config.collection} SchemaFactory Creation`,
+          success: false,
+          error: factoryResult.error || 'Schema-based creation failed'
+        });
+        this.allTestResults.push(...entityResults);
+        return false;
+      }
+
+      entityId = factoryResult.id;
+      console.log(`✅ SchemaFactory created ${config.collection}/${entityId}`);
+
+      // 1. TEST CREATE VERIFICATION CHAIN (entity already created via SchemaFactory)
+      console.log(`\n1️⃣ CREATE Verification Chain: ${config.collection}`);
+
+      // Verify the entity exists in database
+      const dbVerification = await this.dbVerifier.verifyEntityExists(config.collection, entityId);
+      entityResults.push({
+        step: `${config.collection} CREATE DB Persistence`,
+        success: dbVerification.exists,
+        details: { exists: dbVerification.exists, entityId }
+      });
+
+      // Verify event emission for creation
+      const createEventResult = await this.eventVerifier.verifyEventEmitted(config.collection, 'created', entityId);
+      entityResults.push({
+        step: `${config.collection} CREATE Event`,
+        success: createEventResult.eventEmitted,
+        details: createEventResult.eventData
+      });
+
+      // Verify UI update
+      const createUIResult = await this.uiVerifier.verifyEntityInWidget(config.widget, entityId);
+      entityResults.push({
+        step: `${config.widget} CREATE UI Update`,
+        success: createUIResult.inData,
+        details: createUIResult
+      });
+
+      // Small delay to allow event propagation
+      await sleep(300);
+
+      // 2. TEST UPDATE OPERATION CHAIN
+      console.log(`\n2️⃣ UPDATE Chain: ${config.collection}`);
+      const updateResults = await tester.testUpdateOperation(entityId, config.updateData);
+      entityResults.push(...updateResults);
+
+      // Small delay to allow event propagation
+      await sleep(300);
+
+      // 3. TEST DELETE OPERATION CHAIN
+      console.log(`\n3️⃣ DELETE Chain: ${config.collection}`);
+      const deleteResults = await tester.testDeleteOperation(entityId);
+      entityResults.push(...deleteResults);
+
+    } catch (error) {
+      console.error(`❌ Entity test failed: ${config.collection}`, error);
+      entityResults.push({
+        step: `${config.collection} Complete Chain`,
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      // Cleanup: Delete the test entity if it still exists
+      if (entityId) {
+        try {
+          await SchemaFactory.delete(config.collection, entityId);
+          console.log(`🧹 Cleaned up test entity ${config.collection}/${entityId}`);
+        } catch (cleanupError) {
+          console.log(`⚠️ Cleanup failed for ${entityId}:`, cleanupError);
+        }
+      }
+    }
+
+    this.allTestResults.push(...entityResults);
+
+    // Analyze entity-specific results
+    const entitySuccess = entityResults.every(result => result.success);
+    const failedSteps = entityResults.filter(result => !result.success);
+
+    console.log(`\n📊 ${config.collection} Results: ${entitySuccess ? '✅ ALL PASS' : '❌ FAILURES'}`);
+    if (!entitySuccess) {
+      failedSteps.forEach(failure => {
+        console.log(`   ❌ ${failure.step}: ${failure.error ?? 'Failed verification'}`);
+      });
+    }
+
+    return entitySuccess;
+  }
+
+  /**
+   * Validate the overall architecture patterns
+   */
+  private async validateArchitecture(): Promise<boolean> {
+    console.log('🏗️ Architecture Pattern Validation');
+
+    const validationResults: TestResult[] = [];
+
+    try {
+      // 1. Verify generic event pattern consistency
+      console.log('   🔍 Generic event pattern validation...');
+      const eventPatternResult = await this.validateGenericEventPatterns();
+      validationResults.push(eventPatternResult);
+
+      // 2. Verify data persistence patterns
+      console.log('   🔍 Data persistence pattern validation...');
+      const persistenceResult = await this.validateDataPersistencePatterns();
+      validationResults.push(persistenceResult);
+
+      // 3. Verify widget synchronization patterns
+      console.log('   🔍 Widget synchronization pattern validation...');
+      const syncResult = await this.validateWidgetSynchronizationPatterns();
+      validationResults.push(syncResult);
+
+    } catch (error) {
+      console.error('❌ Architecture validation failed:', error);
+      validationResults.push({
+        step: 'Architecture Validation',
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    this.allTestResults.push(...validationResults);
+
+    const architectureValid = validationResults.every(result => result.success);
+    console.log(`📊 Architecture Validation: ${architectureValid ? '✅ VALID' : '❌ INVALID'}`);
+
+    return architectureValid;
+  }
+
+  /**
+   * Validate that all event patterns follow the data:collection:action format
+   */
+  private async validateGenericEventPatterns(): Promise<TestResult> {
+    const expectedPatterns = [
+      'data:User:created', 'data:User:updated', 'data:User:deleted',
+      'data:Room:created', 'data:Room:updated', 'data:Room:deleted',
+      'data:ChatMessage:created', 'data:ChatMessage:updated', 'data:ChatMessage:deleted'
+    ];
+
+    // Use timeout-protected execution to prevent hanging
+    try {
+      const output = execSync(`./jtag debug/logs --filterPattern="data:" --tailLines=50`, {
+        encoding: 'utf8',
+        cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+        timeout: 10000 // 10 second timeout for comprehensive log search
+      });
+
+      // Parse JSON with brace counting
+      const jsonStart = output.lastIndexOf('{');
+      if (jsonStart < 0) {
+        console.log('   ⚠️ Event pattern validation skipped (no JSON found)');
+        return {
+          step: 'Generic Event Pattern Validation',
+          success: false,
+          details: { error: 'No JSON found in debug/logs output' }
+        };
+      }
+
+      let braceCount = 0;
+      let jsonEnd = jsonStart;
+      for (let i = jsonStart; i < output.length; i++) {
+        if (output[i] === '{') braceCount++;
+        if (output[i] === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            jsonEnd = i + 1;
+            break;
+          }
+        }
+      }
+
+      const eventLogs = JSON.parse(output.substring(jsonStart, jsonEnd));
+      const logEntries = eventLogs.logEntries as Array<{ message?: string }> ?? [];
+      const foundPatterns: string[] = [];
+
+      for (const pattern of expectedPatterns) {
+        const patternFound = logEntries.some(entry =>
+          entry.message && entry.message.includes(pattern)
+        );
+        if (patternFound) {
+          foundPatterns.push(pattern);
+        }
+      }
+
+      const allPatternsFound = expectedPatterns.every(pattern => foundPatterns.includes(pattern));
+
+      return {
+        step: 'Generic Event Pattern Validation',
+        success: allPatternsFound,
+        details: {
+          expectedPatterns: expectedPatterns.length,
+          foundPatterns: foundPatterns.length,
+          missingPatterns: expectedPatterns.filter(p => !foundPatterns.includes(p))
+        }
+      };
+
+    } catch (error) {
+      console.log('   ⚠️ Event pattern validation skipped (timeout)');
+      return {
+        step: 'Generic Event Pattern Validation',
+        success: false,
+        details: { error: 'Timeout during event pattern validation' }
+      };
+    }
+  }
+
+  /**
+   * Validate data persistence patterns work consistently
+   */
+  private async validateDataPersistencePatterns(): Promise<TestResult> {
+    const collections = ['User', 'Room', 'ChatMessage'];
+    const persistenceResults: Record<string, boolean> = {};
+
+    for (const collection of collections) {
+      // Test that we can list entities from each collection
+      const listResult = await runJtagCommand(`data/list --collection=${collection} --limit=1`);
+      persistenceResults[collection] = Boolean(listResult.success);
+    }
+
+    const allPersistenceWorks = Object.values(persistenceResults).every(Boolean);
+
+    return {
+      step: 'Data Persistence Pattern Validation',
+      success: allPersistenceWorks,
+      details: { persistenceResults }
+    };
+  }
+
+  /**
+   * Validate widget synchronization patterns work consistently
+   */
+  private async validateWidgetSynchronizationPatterns(): Promise<TestResult> {
+    const widgetTests = [
+      { widget: 'user-list-widget', description: 'User List Widget State' },
+      { widget: 'room-list-widget', description: 'Room List Widget State' },
+      { widget: 'chat-widget', description: 'Chat Widget State' }
+    ];
+
+    const syncResults: Record<string, boolean> = {};
+
+    for (const { widget } of widgetTests) {
+      try {
+        // Use timeout-protected execution to prevent hanging
+        const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}"`, {
+          encoding: 'utf8',
+          cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+          timeout: 5000 // 5 second timeout
+        });
+
+        const jsonStart = output.lastIndexOf('{');
+        if (jsonStart >= 0) {
+          let braceCount = 0;
+          let jsonEnd = jsonStart;
+          for (let i = jsonStart; i < output.length; i++) {
+            if (output[i] === '{') braceCount++;
+            if (output[i] === '}') {
+              braceCount--;
+              if (braceCount === 0) {
+                jsonEnd = i + 1;
+                break;
+              }
+            }
+          }
+
+          const widgetState = JSON.parse(output.substring(jsonStart, jsonEnd));
+          syncResults[widget] = Boolean(widgetState.success !== false && widgetState.commandResult);
+        } else {
+          syncResults[widget] = false;
+        }
+      } catch {
+        console.log(`   ⚠️ Widget synchronization validation skipped (timeout): ${widget}`);
+        syncResults[widget] = false;
+      }
+    }
+
+    const allSyncWorks = Object.values(syncResults).every(Boolean);
+
+    return {
+      step: 'Widget Synchronization Pattern Validation',
+      success: allSyncWorks,
+      details: { syncResults }
+    };
+  }
+
+  /**
+   * Print comprehensive final results
+   */
+  private printFinalResults(allTestsPass: boolean): void {
+    console.log('\n' + '='.repeat(80));
+    console.log('🏁 COMPLETE CRUD-EVENT CHAIN VALIDATION RESULTS');
+    console.log('='.repeat(80));
+
+    // Overall result
+    console.log(`\n🎯 OVERALL RESULT: ${allTestsPass ? '✅ ALL TESTS PASS' : '❌ FAILURES DETECTED'}`);
+
+    // Test summary by category
+    const totalTests = this.allTestResults.length;
+    const passedTests = this.allTestResults.filter(r => r.success).length;
+    const failedTests = totalTests - passedTests;
+
+    console.log(`\n📊 TEST SUMMARY:`);
+    console.log(`   Total Tests: ${totalTests}`);
+    console.log(`   Passed: ${passedTests} ✅`);
+    console.log(`   Failed: ${failedTests} ${failedTests > 0 ? '❌' : ''}`);
+    console.log(`   Success Rate: ${Math.round((passedTests / totalTests) * 100)}%`);
+
+    // Failed test details
+    if (failedTests > 0) {
+      console.log('\n❌ FAILED TESTS:');
+      const failures = this.allTestResults.filter(r => !r.success);
+      failures.forEach(failure => {
+        console.log(`   • ${failure.step}: ${failure.error ?? 'Verification failed'}`);
+      });
+    }
+
+    // Architecture validation summary
+    if (allTestsPass) {
+      console.log('\n🎯 ARCHITECTURE VALIDATION: ✅ PASSED');
+      console.log('   ✅ Generic event patterns work for all entity types');
+      console.log('   ✅ Data persistence works consistently across collections');
+      console.log('   ✅ Widget synchronization works for all widget types');
+      console.log('   ✅ CRUD → Event → DB → Widget → HTML chain verified');
+      console.log('\n🎉 Elegant architecture is indisputably validated!');
+      console.log('🎉 Generic patterns work perfectly for infinite entity types');
+    } else {
+      console.log('\n❌ ARCHITECTURE VALIDATION: FAILED');
+      console.log('   Some patterns may need investigation or fixes');
+    }
+
+    console.log('='.repeat(80));
+  }
+}
+
+/**
+ * Main test execution function
+ */
+async function main(): Promise<void> {
+  try {
+    console.log('Starting CRUD Event Chain Integration Test...\n');
+
+    const tester = new CompleteCRUDEventChainTester();
+    const allTestsPass = await tester.runCompleteValidation();
+
+    console.log(`\nTest execution completed. Exit code: ${allTestsPass ? 0 : 1}`);
+    process.exit(allTestsPass ? 0 : 1);
+
+  } catch (error) {
+    console.error('\n❌ Test execution failed:', error);
+    process.exit(1);
+  }
+}
+
+// Execute if run directly
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Unhandled error:', error);
+    process.exit(1);
+  });
+}

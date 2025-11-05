@@ -1,0 +1,46 @@
+/**
+ * Session Destroy Command Types
+ * 
+ * Shared types for session destroy command across client/server contexts.
+ */
+
+import type { JTAGContext, JTAGPayload, CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+
+/**
+ * Parameters for session destroy command
+ */
+export interface SessionDestroyParams extends CommandParams {
+  context: JTAGContext;
+  sessionId: UUID;
+  reason?: string; // Reason for destruction (e.g., 'client_disconnect', 'timeout', 'cleanup')
+}
+
+/**
+ * Result of session destroy command
+ */
+export interface SessionDestroyResult extends CommandResult {
+  success: boolean;
+  timestamp: string;
+  operation: 'destroy';
+  destroyedSessionId?: UUID;
+  error?: string;
+}
+
+/**
+ * Create a session destroy result with proper typing
+ */
+export function createSessionDestroyResult(
+  params: SessionDestroyParams, 
+  result: Partial<SessionDestroyResult>
+): SessionDestroyResult {
+  return {
+    context: params.context,
+    sessionId: params.sessionId,
+    success: result.success ?? false,
+    timestamp: result.timestamp ?? new Date().toISOString(),
+    operation: 'destroy',
+    destroyedSessionId: result.destroyedSessionId,
+    error: result.error
+  };
+}

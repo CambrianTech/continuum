@@ -1,0 +1,35 @@
+{
+  "name": "development-commands",
+  "version": "1.0.0",
+  "description": "Development workflow and tooling commands",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "development",
+    "quality": {
+      "status": "whitelisted",
+      "eslint": {
+        "enforce": false,
+        "level": "off"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": false
+      },
+      "tests": {
+        "required": false
+      },
+      "compliance": {
+        "required": false
+      }
+    }
+  },
+  "keywords": [
+    "development",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

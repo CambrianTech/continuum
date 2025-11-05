@@ -1,0 +1,95 @@
+/* Theme Widget CSS - Uses CSS custom properties from themes/base/ */
+
+:host {
+  display: block;
+  font-family: var(--font-primary, monospace);
+}
+
+.theme-status {
+  padding: var(--spacing-md, 12px);
+  background: var(--widget-surface, rgba(0, 212, 255, 0.1));
+  border: 1px solid var(--widget-border, rgba(0, 212, 255, 0.3));
+  border-radius: var(--radius-md, 6px);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  margin: var(--spacing-sm, 8px) 0;
+  color: var(--content-primary, #e0e6ed);
+}
+
+.theme-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  font-weight: bold;
+}
+
+.theme-icon {
+  font-size: 16px;
+}
+
+.theme-name {
+  color: var(--content-accent, #00d4ff);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.theme-controls {
+  margin: var(--spacing-md, 12px) 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  flex-wrap: wrap;
+}
+
+.theme-controls label {
+  color: var(--content-primary, #e0e6ed);
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.theme-dropdown {
+  background: var(--input-background, rgba(40, 45, 55, 0.8));
+  border: 1px solid var(--input-border, rgba(255, 255, 255, 0.15));
+  border-radius: var(--radius-sm, 4px);
+  color: var(--input-text, #ffffff);
+  padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
+  font-family: var(--font-primary, monospace);
+  font-size: 10px;
+  min-width: 140px;
+}
+
+.theme-dropdown:focus {
+  border-color: var(--input-border-focus, rgba(0, 212, 255, 0.5));
+  outline: none;
+  box-shadow: 0 0 0 2px var(--input-focus-shadow, rgba(0, 212, 255, 0.2));
+}
+
+.theme-apply-btn {
+  background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0099cc));
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--button-primary-text, #000000);
+  padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
+  font-family: var(--font-primary, monospace);
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.theme-apply-btn:hover {
+  background: var(--button-primary-background-hover, linear-gradient(135deg, #00b8e6, #0088bb));
+  transform: translateY(-1px);
+}
+
+.theme-apply-btn:active {
+  background: var(--button-primary-background-active, linear-gradient(135deg, #009acc, #0077aa));
+  transform: translateY(0);
+}
+
+.theme-info {
+  color: var(--content-secondary, #8a92a5);
+  font-size: 10px;
+  margin-top: var(--spacing-xs, 4px);
+  font-style: italic;
+}

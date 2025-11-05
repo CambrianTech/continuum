@@ -1,0 +1,28 @@
+# Development files
+tests/
+examples/
+scripts/
+*.test.ts
+*.test.js
+.continuum/
+
+# Build files
+tsconfig.json
+build.js
+.tsbuildinfo
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+
+# Temporary
+.tmp/
+temp/

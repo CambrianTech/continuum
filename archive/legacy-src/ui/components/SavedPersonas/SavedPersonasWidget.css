@@ -1,0 +1,356 @@
+/* SavedPersonas Widget - Self-contained Styles */
+:host {
+  display: block;
+  margin-bottom: 20px;
+}
+
+.widget-container {
+  background: rgba(20, 25, 35, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+}
+
+.widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.widget-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e6ed;
+}
+
+.persona-count {
+  background: rgba(79, 195, 247, 0.2);
+  color: #4FC3F7;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: bold;
+}
+
+.widget-content {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.widget-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.widget-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.widget-content::-webkit-scrollbar-thumb {
+  background: rgba(79, 195, 247, 0.3);
+  border-radius: 3px;
+}
+
+/* Persona Cards */
+.persona-card {
+  background: linear-gradient(135deg, #1a1a2e 0%, #2a2a3e 100%);
+  border: 1px solid rgba(79, 195, 247, 0.2);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.persona-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #4FC3F7, transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.persona-card:hover {
+  transform: translateY(-2px);
+  border-color: #4FC3F7;
+  box-shadow: 0 8px 25px rgba(79, 195, 247, 0.15);
+}
+
+.persona-card:hover::before {
+  opacity: 1;
+}
+
+.persona-card.selected {
+  border-color: #4FC3F7;
+  background: linear-gradient(135deg, #1a2a3e 0%, #2a3a4e 100%);
+}
+
+.persona-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.persona-name {
+  color: #4FC3F7;
+  font-weight: bold;
+  font-size: 14px;
+  text-shadow: 0 0 8px rgba(79, 195, 247, 0.3);
+}
+
+.persona-status {
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.persona-status.graduated {
+  background: rgba(76, 175, 80, 0.3);
+  color: #4CAF50;
+  border: 1px solid #4CAF50;
+}
+
+.persona-status.training {
+  background: rgba(255, 152, 0, 0.3);
+  color: #FF9800;
+  border: 1px solid #FF9800;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.persona-status.training:hover {
+  background: rgba(255, 152, 0, 0.5);
+  transform: scale(1.05);
+}
+
+.persona-status.failed {
+  background: rgba(244, 67, 54, 0.3);
+  color: #F44336;
+  border: 1px solid #F44336;
+}
+
+.persona-status.loaded {
+  background: rgba(255, 193, 7, 0.3);
+  color: #FFC107;
+  border: 1px solid #FFC107;
+}
+
+.persona-specialization {
+  color: #8a92a5;
+  font-size: 12px;
+  margin-bottom: 12px;
+  text-transform: capitalize;
+}
+
+/* Academy Progress */
+.academy-progress {
+  margin-bottom: 12px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+
+.score-label {
+  color: #e0e6ed;
+  font-weight: 500;
+}
+
+.threshold-label {
+  color: #8a92a5;
+  font-weight: bold;
+  cursor: help;
+}
+
+.progress-bar {
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  height: 6px;
+  position: relative;
+  overflow: visible;
+  margin-bottom: 8px;
+}
+
+.progress-fill {
+  background: linear-gradient(90deg, #4FC3F7, #29B6F6);
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.threshold-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(79, 195, 247, 0.2);
+  border-radius: 4px;
+  z-index: 0;
+}
+
+.threshold-marker {
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 12px;
+  background: #4FC3F7;
+  border-radius: 50%;
+  cursor: grab;
+  z-index: 10;
+  transition: all 0.2s ease;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.threshold-marker:hover {
+  background: #29B6F6;
+  transform: scale(1.2);
+  box-shadow: 0 0 12px rgba(79, 195, 247, 0.6);
+}
+
+.threshold-marker.dragging {
+  cursor: grabbing;
+  background: #29B6F6;
+  transform: scale(1.3);
+  box-shadow: 0 0 15px rgba(79, 195, 247, 0.8);
+}
+
+/* Persona Actions */
+.persona-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.persona-action {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #e0e6ed;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.persona-action:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.persona-action.deploy {
+  background: rgba(76, 175, 80, 0.2);
+  color: #4CAF50;
+  border-color: #4CAF50;
+}
+
+.persona-action.deploy:hover {
+  background: rgba(76, 175, 80, 0.3);
+}
+
+.persona-action.retrain {
+  background: rgba(255, 152, 0, 0.2);
+  color: #FF9800;
+  border-color: #FF9800;
+}
+
+.persona-action.retrain:hover {
+  background: rgba(255, 152, 0, 0.3);
+}
+
+.persona-action.share {
+  background: rgba(255, 193, 7, 0.2);
+  color: #FFC107;
+  border-color: #FFC107;
+}
+
+.persona-action.share:hover {
+  background: rgba(255, 193, 7, 0.3);
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: #8a92a5;
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-message {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Loading State */
+.loading {
+  text-align: center;
+  padding: 20px;
+  color: #8a92a5;
+}
+
+.loading::after {
+  content: '';
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(79, 195, 247, 0.3);
+  border-radius: 50%;
+  border-top-color: #4FC3F7;
+  animation: spin 1s ease-in-out infinite;
+  margin-left: 10px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .widget-content {
+    max-height: 300px;
+  }
+  
+  .persona-card {
+    padding: 12px;
+  }
+  
+  .persona-actions {
+    justify-content: center;
+  }
+}

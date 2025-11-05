@@ -1,0 +1,76 @@
+{
+  "name": "command-processor-daemon",
+  "version": "1.0.0",
+  "description": "CommandProcessor daemon for Continuum - Layer 2 daemon coordination",
+  "main": "CommandProcessorDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "priority": 30,
+    "daemon": "command-processor",
+    "category": "Core",
+    "layer": 2,
+    "capabilities": [
+      "command-routing",
+      "daemon-coordination", 
+      "message-bus",
+      "command-execution"
+    ],
+    "dependencies": [
+      "base-daemon",
+      "daemon-protocol"
+    ],
+    "interfaces": [
+      "daemon-protocol",
+      "command-bus"
+    ],
+    "permissions": [
+      "command-execution",
+      "daemon-communication",
+      "message-routing"
+    ],
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 75,
+        "types": ["unit", "integration"],
+        "mustPass": true
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 80,
+        "structure": {
+          "packageJson": true,
+          "readme": false,
+          "mainFile": true,
+          "testDirectory": true
+        }
+      }
+    }
+  },
+  "keywords": [
+    "command-processor",
+    "daemon",
+    "continuum",
+    "layer-2"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

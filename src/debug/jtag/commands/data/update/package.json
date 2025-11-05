@@ -1,0 +1,62 @@
+{
+  "name": "@continuum/jtag-command-data-update",
+  "version": "1.0.0",
+  "description": "JTAG Data Update Command - Update existing records in collections with type safety",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "data"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "data/update",
+    "testParams": {
+      "collection": "test-collection",
+      "id": "test-id-123",
+      "data": "{\"name\":\"updated-value\"}",
+      "incrementVersion": true
+    },
+    "expectedFields": [
+      "collection",
+      "id", 
+      "found",
+      "timestamp"
+    ],
+    "performanceThresholdMs": 500,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "basic-update",
+        "description": "Update existing record with JSON data",
+        "params": {
+          "collection": "test-users",
+          "id": "06623f80-b974-48c8-b786-016e64dc0283",
+          "data": "{\"status\":\"updated\"}"
+        }
+      },
+      {
+        "name": "update-with-version",
+        "description": "Update record and increment version",
+        "params": {
+          "collection": "test-users", 
+          "id": "06623f80-b974-48c8-b786-016e64dc0283",
+          "data": "{\"name\":\"Claude Updated\"}",
+          "incrementVersion": true
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for data update command'",
+    "test:integration": "echo 'Integration tests for data update command'"
+  },
+  "keywords": [
+    "jtag",
+    "data",
+    "update",
+    "crud",
+    "command"
+  ]
+}

@@ -1,0 +1,16 @@
+# Python Training Environment
+.continuum/genome/python/envs/
+.continuum/genome/python/micromamba/
+.continuum/genome/python/*.log
+.continuum/genome/python/test-*.jsonl
+
+# Training outputs
+.continuum/genome/adapters/
+
+# Temporary files
+/tmp/
+*.pyc
+__pycache__/
+
+# Micromamba package cache
+.continuum/genome/python/pkgs/

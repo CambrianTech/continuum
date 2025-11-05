@@ -1,0 +1,32 @@
+{
+  "name": "testing-core",
+  "version": "1.0.0",
+  "description": "testing core for Continuum",
+  "main": "TestingCore.ts",
+  "type": "module",
+  "continuum": {
+    "core": "testing",
+    "category": "Core",
+    "capabilities": [
+      "testing"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": []
+  },
+  "keywords": [
+    "testing",
+    "core",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

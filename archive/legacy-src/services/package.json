@@ -1,0 +1,41 @@
+{
+  "name": "@continuum/universal-command-registry",
+  "version": "1.0.0",
+  "description": "Universal dynamic command discovery and execution service",
+  "main": "UniversalCommandRegistry.ts",
+  "scripts": {
+    "test": "jest",
+    "test:unit": "jest test/unit",
+    "test:integration": "jest test/integration"
+  },
+  "continuum": {
+    "type": "service",
+    "category": "core",
+    "capabilities": [
+      "command-discovery",
+      "command-execution", 
+      "dynamic-registry",
+      "iterator-pattern",
+      "session-management",
+      "shared-session-context"
+    ],
+    "core": true,
+    "kernel": true,
+    "description": "Provides universal command discovery and execution across all Continuum components"
+  },
+  "keywords": [
+    "command-registry",
+    "dynamic-discovery",
+    "iterator-pattern",
+    "universal-access",
+    "typescript"
+  ],
+  "dependencies": {
+    "events": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0"
+  }
+}

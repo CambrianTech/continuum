@@ -1,0 +1,39 @@
+{
+  "name": "core-commands",
+  "version": "1.0.0",
+  "description": "Core foundational commands for the Continuum platform",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "core",
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 75,
+        "types": ["unit", "integration"]
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 85
+      }
+    }
+  },
+  "keywords": [
+    "core",
+    "foundation",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

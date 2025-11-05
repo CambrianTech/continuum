@@ -1,0 +1,18 @@
+{
+  "name": "@continuum/widget-inspect-command",
+  "version": "1.0.0",
+  "description": "Comprehensive widget inspection command for debugging and autonomous development",
+  "main": "WidgetInspectCommand.ts",
+  "continuum": {
+    "type": "command",
+    "category": "browser"
+  },
+  "scripts": {
+    "test": "npx tsx test/unit/WidgetInspectCommand.test.ts"
+  },
+  "keywords": ["widget", "inspect", "debugging", "browser", "jtag"],
+  "dependencies": {
+    "../../../types": "*",
+    "../../../core/base-command": "*"
+  }
+}

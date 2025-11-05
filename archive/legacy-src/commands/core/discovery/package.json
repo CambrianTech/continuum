@@ -1,0 +1,29 @@
+{
+  "name": "@continuum/command-discovery",
+  "version": "1.0.0",
+  "description": "Command Discovery System using Core Module Patterns - Unified command discovery with type safety and dependency management",
+  "type": "module",
+  "main": "CommandDiscovery.ts",
+  "continuum": {
+    "type": "core",
+    "category": "command-discovery",
+    "status": "production",
+    "description": "Universal command discovery patterns integrated with core module system"
+  },
+  "scripts": {
+    "test": "npx tsx --test test/unit/*.test.ts",
+    "test:integration": "npx tsx --test test/integration/*.test.ts",
+    "test:all": "npm run test && npm run test:integration"
+  },
+  "dependencies": {
+    "@types/node": "*"
+  },
+  "keywords": [
+    "continuum",
+    "commands",
+    "discovery",
+    "core-modules",
+    "type-safety",
+    "dependency-management"
+  ]
+}

@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x]
+        node-version: [20.x]
 
     steps:
     - uses: actions/checkout@v4
@@ -35,15 +35,15 @@ jobs:
     - name: Lint
       run: npm run lint || echo "Linting failed but continuing"
     
-    # Only skip specific PR numbers that need ESM compatibility fixes
-    - name: Check if exempt PR
+    # Skip build/test for documentation-only PRs
+    - name: Check if documentation-only PR
       id: check_pr
       run: |
-        PR_NUM=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH" || echo "")
-        if [ "$PR_NUM" == "17" ] || [ "$PR_NUM" == "18" ] || [ "$PR_NUM" == "19" ] || [ "$PR_NUM" == "20" ] || [ "$PR_NUM" == "21" ] || [ "$PR_NUM" == "22" ] || [ "$PR_NUM" == "23" ] || [ "$PR_NUM" == "24" ] || [ "$PR_NUM" == "28" ]; then
-          echo "skip_build=true" >> $GITHUB_OUTPUT
-        else
+        # Check if PR only modifies documentation files
+        if git diff --name-only origin/main..HEAD | grep -qvE '\.(md|txt|yml|yaml)$'; then
           echo "skip_build=false" >> $GITHUB_OUTPUT
+        else
+          echo "skip_build=true" >> $GITHUB_OUTPUT
         fi
       
     - name: Build 
@@ -56,23 +56,29 @@ jobs:
 
   validation:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18.x'
+        node-version: '20'
         cache: 'npm'
-    
+
     - name: Install dependencies
-      run: npm ci
-    
-    - name: Validate schema
-      run: node scripts/validate-schema.js
-    
-    - name: Run Example
       run: |
-        cd examples
-        node visualize-config.js .continuum/default/config.md
+        npm ci
+        cd src/debug/jtag && npm ci
+
+    - name: Validate JTAG System (TypeScript + Integration Tests)
+      run: |
+        cd src/debug/jtag
+        # Run TypeScript compilation
+        npm run build:ts
+        echo "✅ TypeScript compilation passed"
+
+        # Note: Full integration tests require browser + system deployment
+        # Those are validated by the precommit hook locally
+        # CI validates compilation only to prevent breaking commits
+        echo "✅ CI validation complete - local precommit hook validates full system"

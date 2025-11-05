@@ -1,0 +1,53 @@
+{
+  "name": "logger-daemon",
+  "version": "1.0.0",
+  "description": "ProcessBasedDaemon for async logging with queue processing",
+  "main": "LoggerDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "core": "logger",
+    "category": "System",
+    "capabilities": [
+      "async-logging",
+      "queue-processing",
+      "session-aware-logging",
+      "console-interception",
+      "batch-processing"
+    ],
+    "actions": ["log", "flush", "rotate", "configure"],
+    "exports": {
+      "LoggerDaemon": "./LoggerDaemon.ts",
+      "LoggerClient": "./LoggerClient.ts",
+      "LoggerMessageTypes": "./LoggerMessageTypes.ts"
+    },
+    "dependencies": [
+      "ProcessBasedDaemon",
+      "AsyncQueue",
+      "SessionContext"
+    ],
+    "interfaces": ["LoggerInterface"],
+    "permissions": [
+      "file-write",
+      "session-logs",
+      "console-override"
+    ]
+  },
+  "keywords": [
+    "logger",
+    "daemon",
+    "async",
+    "queue",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx --test tests/",
+    "test:unit": "npx tsx --test tests/unit/",
+    "test:integration": "npx tsx --test tests/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

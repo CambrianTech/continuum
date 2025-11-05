@@ -1,0 +1,16 @@
+{
+    "name": "@continuum/widget-registration-tests",
+    "version": "1.0.0",
+    "description": "Widget registration prevention tests - prevent CustomElementRegistry errors",
+    "continuum": {
+        "core": "widget-registration-tests",
+        "moduleType": "integration-test",
+        "purpose": "Prevent duplicate widget registration errors in browser"
+    },
+    "scripts": {
+        "test": "jest widget-registration.test.ts"
+    },
+    "dependencies": {
+        "@jest/globals": "^29.0.0"
+    }
+}

@@ -1,0 +1,81 @@
+/**
+ * Monochrome Theme - High contrast black and white theme for JTAG Widget System
+ * Accessibility-focused with maximum contrast ratios
+ */
+
+:root {
+  /* === COLORS - CONTENT === */
+  --content-primary: #ffffff;
+  --content-secondary: #cccccc;
+  --content-accent: #ffffff;
+  --content-warning: #ffffff;
+  --content-success: #ffffff;
+  
+  /* === COLORS - BACKGROUNDS === */
+  --background-primary: #000000;
+  --widget-surface: #000000;
+  --widget-surface-solid: #000000;
+  --widget-content-background: #111111;
+  --widget-header-background: #000000;
+  --widget-input-area-background: #000000;
+  
+  /* === COLORS - SIDEBAR === */
+  --sidebar-background: #000000;
+  --sidebar-border: #ffffff;
+  
+  /* === COLORS - BORDERS === */
+  --border-subtle: #333333;
+  --border-strong: #ffffff;
+  --border-accent: #ffffff;
+  --widget-border: #ffffff;
+  --widget-border-focus: #ffffff;
+  
+  /* === COLORS - RESIZER === */
+  --resizer-background: #333333;
+  --resizer-background-hover: #666666;
+  --resizer-background-active: #ffffff;
+  --resizer-border: #ffffff;
+  --resizer-border-hover: #ffffff;
+  --resizer-border-active: #ffffff;
+  --resizer-glow-hover: transparent;
+  --resizer-glow-active: transparent;
+  
+  /* === COLORS - INPUT === */
+  --input-background: #000000;
+  --input-border: #ffffff;
+  --input-border-focus: #ffffff;
+  --input-text: #ffffff;
+  --input-placeholder: #cccccc;
+  --input-focus-shadow: transparent;
+  
+  /* === COLORS - BUTTONS === */
+  --button-primary-background: #ffffff;
+  --button-primary-background-hover: #cccccc;
+  --button-primary-background-active: #999999;
+  --button-primary-text: #000000;
+  --button-primary-shadow: transparent;
+  
+  --button-secondary-background: #000000;
+  --button-secondary-background-hover: #333333;
+  --button-secondary-background-active: #666666;
+  --button-secondary-text: #ffffff;
+  
+  /* === COLORS - MESSAGES === */
+  --message-user-background: #333333;
+  --message-user-text: #ffffff;
+  --message-user-border: #ffffff;
+  
+  --message-assistant-background: #111111;
+  --message-assistant-text: #ffffff;
+  --message-assistant-border: #333333;
+  
+  /* === TYPOGRAPHY === */
+  --font-primary: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  --font-mono: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  
+  /* === SHADOWS === */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-glow: none;
+}

@@ -1,0 +1,28 @@
+{
+  "server": {
+    "port": 9001,
+    "host": "localhost",
+    "protocol": "ws",
+    "bind_interface": "127.0.0.1",
+    "max_connections": 100,
+    "enable_cors": false
+  },
+  "paths": {
+    "logs": ".continuum/jtag/logs",
+    "screenshots": ".continuum/jtag/screenshots",
+    "data_directory": ".continuum/jtag/data",
+    "pid_file": ".continuum/jtag/server.pid"
+  },
+  "security": {
+    "enable_authentication": false,
+    "session_timeout_ms": 3600000,
+    "rate_limiting": {
+      "enabled": false,
+      "requests_per_minute": 60
+    }
+  },
+  "environment": {
+    "log_level": "info",
+    "debug_mode": false
+  }
+}

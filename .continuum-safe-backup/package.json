@@ -1,0 +1,73 @@
+{
+  "name": "continuum",
+  "version": "0.1.0",
+  "description": "Designed by AI and humans for AI and humans - A standard protocol for configuring AI assistants to work consistently with codebases",
+  "main": "index.js",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "jest",
+    "build": "lerna run build",
+    "lint": "eslint . --ext .ts,.js --config eslint.config.js",
+    "format": "prettier --write \"**/*.{js,ts,json,md}\"",
+    "postinstall": "lerna run prepare",
+    "ci": "./scripts/test-ci.sh",
+    "validate-schema": "node scripts/validate-schema.js",
+    "check-deps": "npm audit --production && npm outdated",
+    "version:patch": "lerna version patch --no-push --no-git-tag-version --yes",
+    "version:minor": "lerna version minor --no-push --no-git-tag-version --yes",
+    "version:major": "lerna version major --no-push --no-git-tag-version --yes",
+    "publish:dev": "lerna publish --dist-tag dev --no-push --no-git-tag-version",
+    "build:packages": "npm run build --workspaces",
+    "test:packages": "npm run test --workspaces",
+    "lint:packages": "npm run lint --workspaces"
+  },
+  "keywords": [
+    "ai",
+    "configuration",
+    "protocol",
+    "assistant",
+    "claude",
+    "gpt",
+    "gemini",
+    "llama",
+    "mistral",
+    "meta",
+    "anthropic",
+    "openai",
+    "google",
+    "copilot",
+    "standardization",
+    "cognitive-systems",
+    "contextual",
+    "devops",
+    "devsecops"
+  ],
+  "author": "Cambrian Technologies",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^22.14.0",
+    "@typescript-eslint/eslint-plugin": "^8.29.1",
+    "@typescript-eslint/parser": "^8.29.1",
+    "eslint": "^9.24.0",
+    "jest": "^29.5.0",
+    "lerna": "^8.2.1",
+    "prettier": "^3.5.3",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "glob": "^11.0.1",
+    "inquirer": "^12.5.2",
+    "punycode": "^2.3.1",
+    "yaml": "^2.7.1"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "name": "browser-console-daemon",
+  "version": "1.0.0",
+  "description": "Browser console capture and forwarding daemon for Continuum",
+  "main": "BrowserConsoleDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "browser-daemon",
+    "priority": 90,
+    "core": "console_capture",
+    "category": "Browser",
+    "capabilities": [
+      "console-capture",
+      "error-capture", 
+      "queue-management",
+      "session-correlation"
+    ],
+    "dependencies": [
+      "base"
+    ],
+    "interfaces": [
+      "console:capture",
+      "console:process_queue",
+      "console:set_session",
+      "console:get_status",
+      "console:disable",
+      "console:enable"
+    ],
+    "permissions": [
+      "console-override",
+      "error-listeners",
+      "websocket-forward"
+    ],
+    "quality": {
+      "status": "development",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 80,
+        "types": ["unit", "integration"],
+        "mustPass": true
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 85,
+        "structure": {
+          "packageJson": true,
+          "readme": true,
+          "mainFile": true,
+          "testDirectory": true,
+          "typeDefinitions": true
+        }
+      }
+    }
+  },
+  "keywords": [
+    "browser-daemon",
+    "console", 
+    "capture",
+    "logging",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

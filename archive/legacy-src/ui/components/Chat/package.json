@@ -1,0 +1,26 @@
+{
+  "name": "@continuum/chat-widget",
+  "version": "1.0.0",
+  "description": "Chat widget for real-time messaging and AI interaction",
+  "main": "ChatWidget.ts",
+  "type": "module",
+  "files": [
+    "ChatWidget.ts",
+    "ChatWidget.css",
+    "chat-icon.svg",
+    "notification.mp3",
+    "emoji-sprites.png"
+  ],
+  "continuum": {
+    "type": "widget",
+    "componentName": "chat-widget",
+    "widgetName": "ChatWidget",
+    "category": "communication",
+    "dependencies": ["continuum-api", "websocket-connection"],
+    "capabilities": ["chat", "messaging", "ai-interaction"]
+  },
+  "scripts": {
+    "test": "npx tsx test/unit/ChatWidget.test.ts",
+    "test:integration": "npx tsx test/integration/ChatWidget.integration.test.ts"
+  }
+}

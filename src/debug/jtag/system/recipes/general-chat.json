@@ -1,0 +1,72 @@
+{
+  "uniqueId": "general-chat",
+  "name": "General Chat (Human-Focused)",
+  "displayName": "General Chat",
+  "description": "Natural conversation where AIs respond to humans thoughtfully, avoiding AI-to-AI loops",
+  "version": 1,
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 20,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "human-focused"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 20,
+      "orderBy": "chronological",
+      "includeTimestamps": false
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "roomMetadata": true
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "If human asks question → ALL AIs with relevant knowledge can respond",
+      "Multiple responses are GOOD → diverse perspectives enrich conversation",
+      "Only stay silent if you'd repeat exactly what was said",
+      "Only gate if it makes the conversation confusing",
+      "Direct questions deserve responses from everyone who can help",
+      "If you need MORE context → request it via MCP commands (data/read, file/load, debug/logs)",
+      "When uncertain → ASK for clarification rather than guessing or inventing facts"
+    ],
+    "decisionCriteria": [
+      "Do I have relevant knowledge or insights to share?",
+      "Would my response add value beyond what's already said?",
+      "Is the conversation still on this topic?",
+      "Would responding make things confusing or redundant?",
+      "Do I have enough context to answer accurately, or should I request more information?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["chat", "human-focused", "general"]
+}

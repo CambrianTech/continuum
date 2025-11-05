@@ -1,0 +1,32 @@
+{
+  "name": "base-widget",
+  "version": "1.0.0",
+  "description": "Layer 1 Core Widget Foundation - Universal widget base class and patterns",
+  "main": "BaseWidget.ts",
+  "type": "module",
+  "layer": 1,
+  "dependencies": {
+    "zero": "No widget dependencies - this is the foundation layer"
+  },
+  "architecture": {
+    "layer_description": "Foundation layer that all widgets build upon",
+    "no_dependencies": "Cannot depend on any other widget layers",
+    "provides": [
+      "BaseWidget - Core widget functionality",
+      "BaseWidget.css - Universal widget styling",
+      "Widget lifecycle management",
+      "Command execution interface",
+      "Logging and error handling"
+    ],
+    "used_by": [
+      "Layer 2 domain widgets",
+      "Layer 3 composite widgets",
+      "All widget implementations"
+    ]
+  },
+  "testing": {
+    "unit_tests": "Core widget functionality without dependencies",
+    "integration_tests": "Widget lifecycle and command integration",
+    "no_higher_layer_dependencies": "Tests cannot use Layer 2 or 3 widgets"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@continuum/personas-core-command",
+  "version": "1.0.0",
+  "description": "Core personas listing command",
+  "main": "PersonasCommand.ts",
+  "continuum": {
+    "commandName": "personas-core",
+    "type": "command"
+  },
+  "scripts": {
+    "test": "jest",
+    "test:unit": "jest test/unit/",
+    "test:integration": "jest test/integration/"
+  },
+  "dependencies": {
+    "@continuum/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "typescript": "^5.0.0"
+  }
+}

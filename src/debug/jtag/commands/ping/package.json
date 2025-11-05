@@ -1,0 +1,64 @@
+{
+  "name": "@continuum/jtag-command-ping",
+  "version": "1.0.0",
+  "description": "JTAG Ping Command - Basic connectivity testing with round-trip time measurement",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "core"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "ping",
+    "testParams": {
+      "message": "test-ping",
+      "includeTiming": true,
+      "includeEnvironment": true
+    },
+    "expectedFields": [
+      "success",
+      "message", 
+      "timestamp",
+      "roundTripTime",
+      "environment"
+    ],
+    "performanceThresholdMs": 100,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "basic-ping",
+        "description": "Basic ping without parameters",
+        "params": {}
+      },
+      {
+        "name": "ping-with-message",
+        "description": "Ping with custom message",
+        "params": {
+          "message": "hello-world"
+        }
+      },
+      {
+        "name": "ping-full-details",
+        "description": "Ping with all details enabled",
+        "params": {
+          "message": "full-test",
+          "includeTiming": true,
+          "includeEnvironment": true
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for ping command'",
+    "test:integration": "echo 'Integration tests for ping command'"
+  },
+  "keywords": [
+    "jtag",
+    "ping",
+    "connectivity",
+    "testing",
+    "command"
+  ]
+}

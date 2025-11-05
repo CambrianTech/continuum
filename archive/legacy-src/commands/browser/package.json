@@ -1,0 +1,39 @@
+{
+  "name": "browser-commands",
+  "version": "1.0.0",
+  "description": "Browser interaction and automation commands",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "category": "browser",
+    "quality": {
+      "status": "graduated",
+      "eslint": {
+        "enforce": true,
+        "level": "warn"
+      },
+      "typescript": {
+        "noAny": false,
+        "strict": true
+      },
+      "tests": {
+        "required": true,
+        "coverage": 70,
+        "types": ["unit", "integration"]
+      },
+      "compliance": {
+        "required": true,
+        "minimumScore": 75
+      }
+    }
+  },
+  "keywords": [
+    "browser",
+    "automation",
+    "commands",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}

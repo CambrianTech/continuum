@@ -1,0 +1,232 @@
+{
+  "uniqueId": "academy-training",
+  "name": "Academy Training (Teacher/Student LoRA)",
+  "displayName": "Academy Training",
+  "description": "Progressive learning system where Teacher AI creates exams, Student AI responds, and Teacher scores/provides feedback. Student's LoRA adapter trains on the conversation subject to improve over time. Difficulty progressively increases as student improves.",
+  "version": 1,
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 50,
+        "includeParticipants": true,
+        "includeExamHistory": true,
+        "includeScoreHistory": true,
+        "analyzeStudentProgress": true
+      },
+      "outputTo": "ragContext",
+      "comment": "Build educational context with exam history and student performance tracking"
+    },
+    {
+      "command": "academy/determine-role",
+      "params": {
+        "lastMessage": "$ragContext.lastMessage",
+        "personaId": "$personaId",
+        "teacherId": "$roomConfig.teacherId",
+        "studentId": "$roomConfig.studentId"
+      },
+      "outputTo": "role",
+      "comment": "Determine if persona is teacher, student, or observer in this interaction"
+    },
+    {
+      "command": "academy/analyze-student-progress",
+      "params": {
+        "studentId": "$roomConfig.studentId",
+        "genomeId": "$studentConfig.genomeId",
+        "recentExams": "$ragContext.examHistory",
+        "conversationSubject": "$ragContext.dominantTopics"
+      },
+      "outputTo": "progress",
+      "condition": "role.isTeacher === true",
+      "comment": "Teacher analyzes student's current skill level and progress trajectory"
+    },
+    {
+      "command": "academy/generate-exam",
+      "params": {
+        "subject": "$ragContext.dominantTopics",
+        "difficulty": "$progress.recommendedDifficulty",
+        "studentWeaknesses": "$progress.identifiedWeaknesses",
+        "priorExams": "$ragContext.examHistory",
+        "model": "$teacherConfig.responseModel"
+      },
+      "outputTo": "exam",
+      "condition": "role.isTeacher === true && progress.readyForNextExam === true",
+      "comment": "Teacher generates progressively harder exam based on student progress"
+    },
+    {
+      "command": "genome/check-training-mode",
+      "params": {
+        "personaConfig": "$studentConfig",
+        "conversationSubject": "$ragContext.dominantTopics"
+      },
+      "outputTo": "trainingMode",
+      "condition": "role.isStudent === true",
+      "comment": "Check if student persona is actively learning this subject via LoRA"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3,
+        "model": "$studentConfig.responseModel",
+        "systemPrompt": "$studentConfig.systemPrompt",
+        "genomeId": "$studentConfig.genomeId",
+        "captureForTraining": "$trainingMode.isLearning",
+        "taskType": "exam-response"
+      },
+      "outputTo": "studentResponse",
+      "condition": "role.isStudent === true && ragContext.lastMessage.isExam === true",
+      "comment": "Student responds to exam using current LoRA layer (if trained)"
+    },
+    {
+      "command": "academy/score-response",
+      "params": {
+        "exam": "$ragContext.lastExam",
+        "studentResponse": "$studentResponse.text",
+        "scoringRubric": "$exam.rubric",
+        "model": "$teacherConfig.responseModel"
+      },
+      "outputTo": "score",
+      "condition": "role.isTeacher === true && ragContext.lastMessage.isStudentResponse === true",
+      "comment": "Teacher evaluates student response with detailed scoring"
+    },
+    {
+      "command": "academy/generate-feedback",
+      "params": {
+        "exam": "$ragContext.lastExam",
+        "studentResponse": "$ragContext.lastMessage",
+        "score": "$score",
+        "studentProgress": "$progress",
+        "model": "$teacherConfig.responseModel"
+      },
+      "outputTo": "feedback",
+      "condition": "role.isTeacher === true && score !== null",
+      "comment": "Teacher provides constructive feedback with improvement guidance"
+    },
+    {
+      "command": "genome/record-interaction",
+      "params": {
+        "personaId": "$studentConfig.id",
+        "genomeId": "$studentConfig.genomeId",
+        "conversationSubject": "$ragContext.dominantTopics",
+        "examQuestion": "$ragContext.lastExam.question",
+        "studentResponse": "$studentResponse.text",
+        "teacherScore": "$score.numericScore",
+        "teacherFeedback": "$feedback.text",
+        "difficulty": "$ragContext.lastExam.difficulty"
+      },
+      "outputTo": "trainingRecord",
+      "condition": "role.isStudent === true && score !== null && trainingMode.isLearning === true",
+      "comment": "Record exam interaction with score/feedback for LoRA training"
+    },
+    {
+      "command": "academy/update-progress",
+      "params": {
+        "studentId": "$studentConfig.id",
+        "genomeId": "$studentConfig.genomeId",
+        "conversationSubject": "$ragContext.dominantTopics",
+        "score": "$score.numericScore",
+        "difficulty": "$ragContext.lastExam.difficulty",
+        "timestamp": "$now"
+      },
+      "outputTo": "updatedProgress",
+      "condition": "score !== null",
+      "comment": "Update student progress tracking for next difficulty calculation"
+    },
+    {
+      "command": "genome/check-training-threshold",
+      "params": {
+        "genomeId": "$studentConfig.genomeId",
+        "interactionCount": "$trainingMode.recordedInteractions",
+        "minimumDataPoints": 50,
+        "scoreThreshold": 0.7
+      },
+      "outputTo": "trainingThreshold",
+      "condition": "trainingMode.isLearning === true",
+      "comment": "Check if enough training data collected to trigger LoRA fine-tuning"
+    },
+    {
+      "command": "genome/trigger-training",
+      "params": {
+        "genomeId": "$studentConfig.genomeId",
+        "conversationSubject": "$ragContext.dominantTopics",
+        "trainingData": "$trainingRecord.datasetPath",
+        "baseModel": "$studentConfig.responseModel",
+        "epochs": 3,
+        "learningRate": 0.0001
+      },
+      "outputTo": "trainingJob",
+      "condition": "trainingThreshold.readyToTrain === true",
+      "comment": "Trigger async LoRA training job when sufficient data collected"
+    },
+    {
+      "command": "chat/send",
+      "params": {
+        "content": "$exam.text || $studentResponse.text || $feedback.text",
+        "metadata": {
+          "role": "$role.name",
+          "messageType": "$exam ? 'exam' : ($studentResponse ? 'student-response' : 'teacher-feedback')",
+          "score": "$score.numericScore",
+          "difficulty": "$exam.difficulty || $ragContext.lastExam.difficulty",
+          "studentProgress": "$progress.overallScore",
+          "trainingActive": "$trainingMode.isLearning",
+          "genomeVersion": "$studentConfig.genomeId",
+          "trainingJobQueued": "$trainingJob !== null"
+        }
+      },
+      "condition": "exam !== null || studentResponse !== null || feedback !== null",
+      "comment": "Send message with rich educational metadata"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 50,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": true
+    },
+    "custom": {
+      "examHistory": true,
+      "scoreHistory": true,
+      "difficultyProgression": true,
+      "studentWeaknesses": true,
+      "loraTrainingStatus": true
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "teaching",
+    "responseRules": [
+      "TEACHER: Analyze student progress before creating exam",
+      "TEACHER: Increase difficulty progressively as student improves",
+      "TEACHER: Focus exams on identified weaknesses",
+      "TEACHER: Provide detailed scoring with constructive feedback",
+      "TEACHER: Track difficulty progression to measure growth",
+      "STUDENT: Respond to exams using current LoRA-adapted knowledge",
+      "STUDENT: Learn from teacher feedback (recorded for training)",
+      "STUDENT: LoRA layer trains on conversation subject matter",
+      "SYSTEM: Trigger LoRA training when sufficient data collected (50+ scored interactions)",
+      "SYSTEM: Student's genome evolves based on actual conversation content",
+      "LOOP PREVENTION: Teacher→Student→Teacher→Student pattern only (no external interruptions)"
+    ],
+    "decisionCriteria": [
+      "Is persona the designated teacher or student for this room?",
+      "Has student completed previous exam? (teacher waits for response)",
+      "Has teacher scored previous response? (student waits for feedback)",
+      "Is student's current skill level ready for next difficulty?",
+      "Has enough training data been collected for LoRA fine-tuning?",
+      "Is student showing improvement trajectory? (adjust difficulty accordingly)",
+      "Are identified weaknesses being addressed in exam design?",
+      "Is conversation subject stable enough for LoRA specialization?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["academy", "teaching", "lora-training", "progressive-difficulty", "adaptive-learning", "genome"]
+}

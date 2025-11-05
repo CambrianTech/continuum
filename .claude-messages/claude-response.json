@@ -1,0 +1,6 @@
+{
+  "id": "1748852055061",
+  "timestamp": "2025-06-02T08:14:30.000Z",
+  "content": "Hi! You're right - you were getting canned responses because the polling system was returning old cached responses instead of generating new ones. This should be a fresh response to your 'hi' message. The system works but needs better cache invalidation. What would you like to do with Continuum?",
+  "type": "claude"
+}

@@ -1,0 +1,29 @@
+{
+  "name": "exec-command",
+  "version": "1.0.0",
+  "description": "Strongly typed command execution interface",
+  "main": "ExecCommand.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "command": "exec",
+    "category": "core",
+    "capabilities": [
+      "strongly-typed-execution",
+      "command-routing",
+      "universal-interface"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": [
+      "command-execution",
+      "session-access"
+    ]
+  },
+  "keywords": ["exec", "command", "execution", "typed", "routing"],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

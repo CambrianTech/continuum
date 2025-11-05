@@ -1,0 +1,37 @@
+{
+  "name": "selftest-command",
+  "version": "1.0.0",
+  "description": "System self-testing and health verification command",
+  "main": "index.ts",
+  "type": "module",
+  "continuum": {
+    "type": "command",
+    "command": "selftest",
+    "category": "development",
+    "capabilities": [
+      "health-check",
+      "daemon-validation",
+      "websocket-testing",
+      "widget-verification"
+    ],
+    "dependencies": [],
+    "interfaces": [],
+    "permissions": ["system-read"]
+  },
+  "keywords": [
+    "selftest",
+    "health",
+    "development",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT",
+  "scripts": {
+    "test": "npx tsx test/",
+    "test:unit": "npx tsx test/unit/",
+    "test:integration": "npx tsx test/integration/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "name": "academy-status-widget",
+  "version": "1.0.0", 
+  "description": "Academy Status Widget - Real-time Academy system monitoring and controls",
+  "main": "AcademyStatusWidget.ts",
+  "type": "module",
+  "continuum": {
+    "type": "widget",
+    "category": "academy", 
+    "web_component": "academy-status-widget"
+  },
+  "files": [
+    "AcademyStatusWidget.ts",
+    "AcademyStatusWidget.css",
+    "AcademyStatusWidget.html", 
+    "README.md"
+  ],
+  "keywords": [
+    "academy-monitoring",
+    "training-progress",
+    "p2p-network",
+    "genome-discovery",
+    "real-time-status",
+    "academy-controls"
+  ],
+  "widget_capabilities": {
+    "real_time_monitoring": "5-second interval updates of Academy system status",
+    "training_session_tracking": "Live progress bars and convergence time estimates",
+    "p2p_network_status": "Network node health and genome synchronization",
+    "genome_discovery_feed": "Recent genome discoveries with performance metrics",
+    "quick_controls": "One-click spawn persona, start training, sync P2P, discover genomes",
+    "academy_metrics": "Active personas, training sessions, P2P connections, genome library size"
+  },
+  "integration_points": {
+    "academy_daemon": "Real-time status updates via academy.status command",
+    "formula_master": "Training session initiation and monitoring",
+    "synthesis_engine": "Capability synthesis progress tracking",
+    "genome_discoverer": "P2P genome discovery and assembly status",
+    "session_manager": "Cost tracking and resource usage",
+    "base_widget": "Extends BaseWidget with declarative HTML/CSS architecture"
+  },
+  "events_dispatched": [
+    "academy:training-details",
+    "academy:node-details", 
+    "academy:genome-details"
+  ],
+  "events_listened": [
+    "academy:status-updated",
+    "academy:training-started",
+    "academy:training-completed",
+    "academy:genome-discovered"
+  ],
+  "commands_executed": [
+    "academy.status",
+    "academy.spawnPersona",
+    "academy.startTraining", 
+    "academy.syncP2P",
+    "academy.discoverGenomes"
+  ],
+  "dependencies": {
+    "shared-ui": "file:../shared",
+    "base-widget": "file:../shared/BaseWidget.ts",
+    "academy-commands": "file:../../../commands/academy"
+  },
+  "test": {
+    "unit": "src/ui/components/Academy/test/unit/AcademyStatusWidget.test.ts",
+    "integration": "src/ui/components/Academy/test/integration/AcademyStatusWidget.integration.test.ts"
+  }
+}

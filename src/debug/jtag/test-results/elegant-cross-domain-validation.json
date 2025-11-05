@@ -1,0 +1,1478 @@
+{
+  "serverEnvironment": {
+    "success": true,
+    "responseTime": 136.29779099999996,
+    "commandsDiscovered": [
+      {
+        "name": "chat/send-message",
+        "description": "chat/send-message command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "click",
+        "description": "click command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "compile-typescript",
+        "description": "compile-typescript command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/create",
+        "description": "data/create command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/delete",
+        "description": "data/delete command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/list",
+        "description": "data/list command - system operation",
+        "category": "system",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/read",
+        "description": "data/read command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/update",
+        "description": "data/update command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "exec",
+        "description": "exec command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "file/append",
+        "description": "file/append command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "file/load",
+        "description": "file/load command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "file/save",
+        "description": "file/save command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "get-text",
+        "description": "get-text command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "list",
+        "description": "list command - system operation",
+        "category": "system",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "navigate",
+        "description": "navigate command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "ping",
+        "description": "ping command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "process-registry",
+        "description": "process-registry command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "proxy-navigate",
+        "description": "proxy-navigate command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "screenshot",
+        "description": "screenshot command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "scroll",
+        "description": "scroll command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "session/create",
+        "description": "session/create command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "test-error",
+        "description": "test-error command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "test/routing-chaos",
+        "description": "test/routing-chaos command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "type",
+        "description": "type command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "wait-for-element",
+        "description": "wait-for-element command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      }
+    ],
+    "specificCommandsValidated": {
+      "exec": true,
+      "ping": true,
+      "list": true
+    }
+  },
+  "browserEnvironment": {
+    "success": true,
+    "responseTime": 58.87258300000008,
+    "commandsDiscovered": [
+      {
+        "name": "chat/send-message",
+        "description": "chat/send-message command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "click",
+        "description": "click command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "compile-typescript",
+        "description": "compile-typescript command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/create",
+        "description": "data/create command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/delete",
+        "description": "data/delete command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/list",
+        "description": "data/list command - system operation",
+        "category": "system",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/read",
+        "description": "data/read command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "data/update",
+        "description": "data/update command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "exec",
+        "description": "exec command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "file/append",
+        "description": "file/append command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "file/load",
+        "description": "file/load command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "file/save",
+        "description": "file/save command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "get-text",
+        "description": "get-text command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "list",
+        "description": "list command - system operation",
+        "category": "system",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "navigate",
+        "description": "navigate command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "ping",
+        "description": "ping command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "process-registry",
+        "description": "process-registry command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "proxy-navigate",
+        "description": "proxy-navigate command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "screenshot",
+        "description": "screenshot command - browser operation",
+        "category": "browser",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "scroll",
+        "description": "scroll command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "session/create",
+        "description": "session/create command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "test-error",
+        "description": "test-error command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "test/routing-chaos",
+        "description": "test/routing-chaos command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "type",
+        "description": "type command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      },
+      {
+        "name": "wait-for-element",
+        "description": "wait-for-element command - server operation",
+        "category": "server",
+        "params": {
+          "context": {
+            "type": "JTAGContext",
+            "required": true
+          },
+          "sessionId": {
+            "type": "UUID",
+            "required": true
+          }
+        },
+        "returns": {
+          "success": {
+            "type": "boolean",
+            "description": "Operation success status"
+          },
+          "context": {
+            "type": "JTAGContext",
+            "description": "Request context"
+          },
+          "sessionId": {
+            "type": "UUID",
+            "description": "Session identifier"
+          }
+        }
+      }
+    ],
+    "specificCommandsValidated": {
+      "exec": true
+    }
+  },
+  "crossDomainCommunication": {
+    "websocketEstablished": true,
+    "messageLatency": 0,
+    "bidirectionalSuccess": true
+  },
+  "overallSuccess": true
+}

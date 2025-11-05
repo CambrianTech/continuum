@@ -1,0 +1,40 @@
+{
+  "name": "@continuum/browser-websocket-daemon",
+  "version": "1.0.0",
+  "description": "Browser WebSocket daemon for connection management and message handling",
+  "main": "BrowserWebSocketDaemon.ts",
+  "continuum": {
+    "type": "browser-daemon",
+    "category": "communication",
+    "responsibilities": [
+      "WebSocket connection establishment and management",
+      "Connection state monitoring and health checking", 
+      "Message sending and receiving with queueing",
+      "Automatic reconnection with exponential backoff",
+      "Session initialization and establishment",
+      "Error handling and connection recovery"
+    ],
+    "extractedFrom": "continuum-browser.ts",
+    "extractedLines": "~200 lines (15% of monolithic code)",
+    "phase": 3,
+    "dependencies": [
+      "BaseBrowserDaemon",
+      "BrowserDaemonEventBus"
+    ],
+    "integrations": [
+      "BrowserConsoleDaemon",
+      "SessionManagerDaemon",
+      "CommandProcessorDaemon"
+    ]
+  },
+  "keywords": [
+    "websocket",
+    "browser",
+    "daemon",
+    "connection",
+    "real-time",
+    "continuum"
+  ],
+  "author": "Continuum Browser Daemon System",
+  "license": "MIT"
+}

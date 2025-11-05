@@ -1,0 +1,10 @@
+{
+  "name": "@continuum/academy-train-command",
+  "version": "1.0.0",
+  "main": "AcademyTrainCommand.ts",
+  "description": "Academy Train Command - Start emergent AI evolution training sessions with adversarial TrainerAI vs LoraAgent",
+  "dependencies": {
+    "@continuum/base-command": "file:../../core/base-command",
+    "@continuum/direct-command": "file:../../core/direct-command"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "daemon-manager-daemon",
+  "version": "1.0.0",
+  "description": "Daemon management and lifecycle coordination",
+  "main": "DaemonManagerDaemon.ts",
+  "type": "module",
+  "continuum": {
+    "type": "daemon",
+    "priority": 10,
+    "description": "Manages daemon lifecycle, health monitoring, and restart policies"
+  },
+  "dependencies": {
+    "base-daemon": "file:../base"
+  }
+}

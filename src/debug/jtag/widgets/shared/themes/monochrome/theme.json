@@ -1,0 +1,17 @@
+{
+  "name": "monochrome",
+  "displayName": "Monochrome - High Contrast",
+  "description": "High contrast black and white theme for accessibility",
+  "category": "accessibility",
+  "author": "JTAG Team",
+  "version": "1.0.0",
+  "files": [
+    "theme.css"
+  ],
+  "tags": ["accessibility", "high-contrast", "monochrome", "black-white"],
+  "preview": {
+    "primaryColor": "#ffffff",
+    "backgroundColor": "#000000",
+    "textColor": "#ffffff"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2025-08-14T15:23:00.000Z",
+  "description": "Initial chat rooms configuration for JTAG system",
+  "rooms": [
+    {
+      "roomId": "general-room-12345-abcdef",
+      "name": "General",
+      "description": "Main discussion room for all users. Welcome to the community!",
+      "createdAt": "2025-08-14T15:23:00.000Z",
+      "lastActivity": "2025-08-14T15:23:00.000Z",
+      "citizenCount": 0,
+      "messageCount": 0,
+      "isPrivate": false,
+      "participantCount": 0,
+      "category": "public",
+      "allowAI": true,
+      "requireModeration": false,
+      "maxHistoryLength": 1000
+    }
+  ],
+  "defaultMessages": [
+    {
+      "messageId": "welcome-msg-12345",
+      "roomId": "general-room-12345-abcdef",
+      "senderId": "system-bot-67890",
+      "senderName": "System",
+      "content": "Welcome to the General chat room! This is where everyone can discuss ideas, ask questions, and collaborate. Have fun!",
+      "timestamp": "2025-08-14T15:23:00.000Z",
+      "messageType": "system",
+      "mentions": []
+    }
+  ]
+}

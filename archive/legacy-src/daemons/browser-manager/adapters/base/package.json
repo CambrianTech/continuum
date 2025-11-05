@@ -1,0 +1,26 @@
+{
+  "name": "@continuum/browser-adapter-base",
+  "version": "1.0.0", 
+  "description": "Base browser adapter interface and utilities",
+  "type": "module",
+  "continuum": {
+    "type": "abstract-interface",
+    "category": "browser-base",
+    "capabilities": [
+      "browser-abstraction",
+      "url-utilities",
+      "adapter-metadata"
+    ],
+    "dependencies": [],
+    "interfaces": [
+      "browser-adapter-base"
+    ],
+    "permissions": [
+      "read"
+    ]
+  },
+  "main": "./BaseBrowserAdapter.js",
+  "exports": {
+    ".": "./BaseBrowserAdapter.js"
+  }
+}

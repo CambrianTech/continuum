@@ -1,0 +1,473 @@
+/* Academy Status Widget - Real-time Academy system monitoring */
+
+.academy-status-container {
+  background: #36393f;
+  border-radius: 8px;
+  padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #dcddde;
+  max-height: 100vh;
+  overflow-y: auto;
+  border: 1px solid #40444b;
+}
+
+/* Academy Overview */
+.academy-overview {
+  background: #2f3136;
+  padding: 16px;
+  border-bottom: 1px solid #40444b;
+}
+
+.overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.academy-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.academy-status {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.academy-status.online {
+  background: rgba(67, 181, 129, 0.2);
+  color: #43b581;
+}
+
+.academy-status.offline {
+  background: rgba(240, 71, 71, 0.2);
+  color: #f04747;
+}
+
+.academy-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.metric {
+  text-align: center;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+}
+
+.metric-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #ffffff;
+  margin-bottom: 2px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.metric-label {
+  font-size: 10px;
+  color: #8e9297;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Academy Controls */
+.academy-controls {
+  padding: 16px;
+  border-bottom: 1px solid #40444b;
+}
+
+.control-section .section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8e9297;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.control-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.control-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.control-btn.primary {
+  background: #5865f2;
+  color: #ffffff;
+}
+
+.control-btn.primary:hover {
+  background: #4752c4;
+}
+
+.control-btn.secondary {
+  background: #40444b;
+  color: #dcddde;
+}
+
+.control-btn.secondary:hover {
+  background: #484b51;
+}
+
+.control-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-icon {
+  font-size: 14px;
+}
+
+/* Status Sections */
+.status-section {
+  padding: 16px;
+  border-bottom: 1px solid #40444b;
+}
+
+.status-section:last-child {
+  border-bottom: none;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.section-count {
+  font-size: 11px;
+  color: #8e9297;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.section-content {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.empty-state {
+  text-align: center;
+  color: #72767d;
+  font-style: italic;
+  padding: 20px;
+  font-size: 13px;
+}
+
+/* Training Sessions */
+.training-session {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border-left: 3px solid transparent;
+}
+
+.training-session:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.training-session.active {
+  border-left-color: #43b581;
+}
+
+.training-session.converging {
+  border-left-color: #faa61a;
+}
+
+.training-session.completed {
+  border-left-color: #7289da;
+}
+
+.training-session.failed {
+  border-left-color: #f04747;
+}
+
+.session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.session-persona {
+  font-weight: 500;
+  font-size: 13px;
+  color: #ffffff;
+}
+
+.session-status {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.session-status.status-active {
+  background: rgba(67, 181, 129, 0.2);
+  color: #43b581;
+}
+
+.session-status.status-converging {
+  background: rgba(250, 166, 26, 0.2);
+  color: #faa61a;
+}
+
+.session-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #43b581;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 11px;
+  color: #8e9297;
+  font-weight: 600;
+  min-width: 35px;
+}
+
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  color: #72767d;
+}
+
+/* P2P Network Nodes */
+.p2p-node {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border-left: 3px solid transparent;
+}
+
+.p2p-node:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.p2p-node.online {
+  border-left-color: #43b581;
+}
+
+.p2p-node.offline {
+  border-left-color: #f04747;
+}
+
+.p2p-node.syncing {
+  border-left-color: #faa61a;
+}
+
+.node-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.node-location {
+  font-weight: 500;
+  font-size: 12px;
+  color: #ffffff;
+}
+
+.node-status {
+  font-size: 14px;
+}
+
+.node-status.status-online {
+  color: #43b581;
+}
+
+.node-status.status-offline {
+  color: #f04747;
+}
+
+.node-status.status-syncing {
+  color: #faa61a;
+  animation: pulse 2s infinite;
+}
+
+.node-details {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  color: #72767d;
+}
+
+/* Genome Discoveries */
+.genome-discovery {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border-left: 3px solid #7289da;
+}
+
+.genome-discovery:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.discovery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.genome-id {
+  font-weight: 500;
+  font-size: 12px;
+  color: #ffffff;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.performance-score {
+  font-size: 11px;
+  color: #43b581;
+  font-weight: 600;
+}
+
+.discovery-details {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: #8e9297;
+}
+
+.domain {
+  font-weight: 500;
+}
+
+.source-node {
+  font-size: 9px;
+  color: #72767d;
+  font-style: italic;
+}
+
+/* Notifications */
+.academy-notification {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 1000;
+  animation: slideIn 0.3s ease;
+}
+
+.academy-notification.success {
+  background: rgba(67, 181, 129, 0.9);
+  color: #ffffff;
+}
+
+.academy-notification.error {
+  background: rgba(240, 71, 71, 0.9);
+  color: #ffffff;
+}
+
+.academy-notification.info {
+  background: rgba(114, 137, 218, 0.9);
+  color: #ffffff;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Scrollbar Styling */
+.academy-status-container::-webkit-scrollbar,
+.section-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.academy-status-container::-webkit-scrollbar-track,
+.section-content::-webkit-scrollbar-track {
+  background: #2f3136;
+}
+
+.academy-status-container::-webkit-scrollbar-thumb,
+.section-content::-webkit-scrollbar-thumb {
+  background: #202225;
+  border-radius: 4px;
+}
+
+.academy-status-container::-webkit-scrollbar-thumb:hover,
+.section-content::-webkit-scrollbar-thumb:hover {
+  background: #40444b;
+}

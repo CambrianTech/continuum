@@ -1,0 +1,19 @@
+{
+  "name": "SidebarTabs-core",
+  "version": "1.0.0",
+  "description": "SidebarTabs widget for Continuum",
+  "main": "SidebarTabs.ts",
+  "type": "module",
+  "continuum": {
+    "type": "widget",
+    "widgetName": "SidebarTabs",
+    "componentName": "sidebar-tabs"
+  },
+  "keywords": [
+    "SidebarTabs",
+    "widget",
+    "continuum"
+  ],
+  "author": "Continuum AI Platform",
+  "license": "MIT"
+}
