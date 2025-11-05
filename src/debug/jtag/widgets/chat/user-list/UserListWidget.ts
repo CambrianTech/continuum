@@ -563,20 +563,20 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       return `<div class="genome-layer ${activeClass}"></div>`;
     }).join('');
 
-    // Genome attributes for diamond grid (mock data for now)
-    // TODO: Pull from actual user.personaConfig or user.capabilities
-    const hasLearning = Math.random() > 0.5; // Continuous learning enabled
-    const isCloud = user.modelConfig?.provider !== 'ollama'; // Cloud vs local
-    const hasRAG = Math.random() > 0.5; // Has RAG system
-    const hasLoRA = activeLayers > 2; // Has LoRA adapters
+    // Genome attributes for diamond grid - the AI's "genetic makeup"
+    // These define what the persona fundamentally IS, not what it's currently doing
+    const hasLearning = user.personaConfig?.trainingMode === 'learning'; // Can this AI learn/train?
+    const isCloud = user.modelConfig?.provider !== 'ollama'; // Cloud vs local infrastructure
+    const hasRAG = user.modelConfig?.ragCertified === true; // Has memory/retrieval system
+    const hasGenome = user.genomeId !== undefined; // Has specialized LoRA adaptations
 
-    // Build 2x2 diamond grid
+    // Build 2x2 diamond grid - "genetic nucleus" showing AI's fundamental makeup
     const diamond = `
       <div class="genome-diamond">
         <div class="diamond-cell top ${hasLearning ? 'active' : ''}"></div>
         <div class="diamond-cell right ${isCloud ? 'active' : ''}"></div>
         <div class="diamond-cell bottom ${hasRAG ? 'active' : ''}"></div>
-        <div class="diamond-cell left ${hasLoRA ? 'active' : ''}"></div>
+        <div class="diamond-cell left ${hasGenome ? 'active' : ''}"></div>
       </div>
     `.trim();
 
