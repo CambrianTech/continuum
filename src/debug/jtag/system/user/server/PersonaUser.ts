@@ -76,6 +76,7 @@ import type { InboxMessage } from './modules/PersonaInbox';
 import type { InboxTask, TaskStatus } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
 import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
+import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -123,6 +124,9 @@ export class PersonaUser extends AIUser {
 
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
+
+  // PHASE 6: LoRA genome paging (virtual memory for skills)
+  private genome: PersonaGenome;
 
   // PHASE 7.4: Training data accumulation for recipe-embedded learning
   // Accumulates training examples in RAM during recipe execution
@@ -179,10 +183,40 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
+    // PHASE 6: LoRA genome paging (virtual memory for skills)
+    this.genome = new PersonaGenome({
+      baseModel: this.modelConfig.model || 'llama3.2:3b',
+      memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
+      adaptersPath: './lora-adapters',
+      initialAdapters: [
+        {
+          name: 'conversational',
+          domain: 'chat',
+          path: './lora-adapters/conversational.safetensors',
+          sizeMB: 50,
+          priority: 0.7  // High priority - used frequently
+        },
+        {
+          name: 'typescript-expertise',
+          domain: 'code',
+          path: './lora-adapters/typescript-expertise.safetensors',
+          sizeMB: 60,
+          priority: 0.6
+        },
+        {
+          name: 'self-improvement',
+          domain: 'self',
+          path: './lora-adapters/self-improvement.safetensors',
+          sizeMB: 40,
+          priority: 0.5
+        }
+      ]
+    });
+
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, and trainingAccumulator modules`);
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, genome, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -407,6 +441,7 @@ export class PersonaUser extends AIUser {
     const inboxMessage: InboxMessage = {
       id: messageEntity.id,
       type: 'message',
+      domain: 'chat',  // Messages are always chat domain
       roomId: messageEntity.roomId,
       content: messageEntity.content?.text || '',
       senderId: messageEntity.senderId,
@@ -2210,6 +2245,22 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       );
     }
 
+    // PHASE 6: Activate appropriate LoRA adapter based on domain
+    if (message.domain) {
+      const domainToAdapter: Record<string, string> = {
+        'chat': 'conversational',
+        'code': 'typescript-expertise',
+        'self': 'self-improvement'
+      };
+      const adapterName = domainToAdapter[message.domain];
+      if (adapterName) {
+        await this.genome.activateSkill(adapterName);
+      } else {
+        // Unknown domain - default to conversational
+        await this.genome.activateSkill('conversational');
+      }
+    }
+
     console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
 
     try {
@@ -2412,11 +2463,29 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       return 'Missing or invalid LoRA layer in metadata';
     }
 
-    // TODO: Implement actual fine-tuning logic (Phase 7)
-    // For now, just log the intent
-    console.log(`🧬 ${this.displayName}: Would fine-tune ${loraLayer} adapter based on recent failures`);
+    // PHASE 6: Enable learning mode on the genome
+    try {
+      await this.genome.enableLearningMode(loraLayer);
+      console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
 
-    return `Prepared fine-tuning for ${loraLayer} adapter - actual training pending Phase 7`;
+      // TODO (Phase 7): Implement actual fine-tuning logic
+      // - Collect training examples from recent failures
+      // - Format as LoRA training data
+      // - Call Ollama fine-tuning API
+      // - Save updated weights to disk
+
+      // For now, just simulate training duration
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Disable learning mode after training
+      await this.genome.disableLearningMode(loraLayer);
+      console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
+
+      return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
+      return `Fine-tuning failed: ${error}`;
+    }
   }
 
   /**
@@ -2455,6 +2524,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       this.trainingCheckLoop = null;
       console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
     }
+
+    // PHASE 6: Unload all LoRA adapters
+    await this.genome.shutdown();
 
     if (this.worker) {
       await this.worker.shutdown();
