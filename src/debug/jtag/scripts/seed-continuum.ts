@@ -18,7 +18,7 @@ import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
 import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
 import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
-import { PERSONA_CONFIGS } from './seed/personas';
+import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
 import {
   createUserCapabilities,
   createRoom,
@@ -36,6 +36,7 @@ import {
   loadUserByUniqueId,
   seedRecords
 } from './seed/helpers';
+import { isTestUser, isTestRoom, isTestMessage } from '../tests/shared/TestEntityConstants';
 
 const execAsync = promisify(exec);
 
@@ -641,22 +642,10 @@ async function getEntityCount(collection: string): Promise<string> {
  * Returns array of missing user uniqueIds that need to be created
  */
 async function getMissingUsers(): Promise<string[]> {
+  // Build required users list from PERSONA_CONFIGS (single source of truth)
   const requiredUsers = [
     DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
-    DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE,
-    DEFAULT_USER_UNIQUE_IDS.GENERAL_AI,
-    'persona-helper-001',
-    'persona-teacher-001',
-    'persona-codereview-001',
-    'persona-deepseek',
-    'persona-groq',
-    'persona-anthropic',
-    'persona-openai',
-    'persona-xai',
-    'persona-together',
-    'persona-fireworks',
-    'persona-ollama',
-    'persona-sentinel'
+    ...PERSONA_CONFIGS.map(p => p.uniqueId)
   ];
 
   try {
@@ -718,6 +707,24 @@ async function waitForJTAGReady(maxWaitSeconds: number = 60): Promise<boolean> {
 }
 
 /**
+ * Clean up test entities left over from failed integration tests
+ * Runs automatically on npm start to prevent test pollution
+ */
+async function cleanupTestEntities(): Promise<void> {
+  console.log('🧹 Cleaning up test entities from failed integration tests...');
+
+  try {
+    // Use the standalone cleanup script instead of duplicating logic
+    await execAsync('npx tsx scripts/cleanup-test-entities.ts');
+  } catch (error) {
+    // Non-fatal - just log and continue with seeding
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.warn(`⚠️  Test entity cleanup failed (non-fatal): ${errorMsg}`);
+    console.warn(`   You can manually run: npx tsx scripts/cleanup-test-entities.ts`);
+  }
+}
+
+/**
  * Main seeding function with idempotent behavior
  */
 async function seedViaJTAG() {
@@ -729,6 +736,9 @@ async function seedViaJTAG() {
     if (!isReady) {
       throw new Error('❌ JTAG system not ready - commands not registered yet');
     }
+
+    // Clean up test entities from failed integration tests
+    await cleanupTestEntities();
 
     // Check which users are missing
     const missingUsers = await getMissingUsers();
@@ -848,11 +858,12 @@ async function seedViaJTAG() {
     }).length;
     console.log(`📊 Created ${newUsersCreated}/${missingUsers.length} users (auto-join handled by RoomMembershipDaemon)`);
 
-    // Get references to created users for message seeding
-    const claudeUser = userMap['claudeUser'];
-    const helperPersona = userMap['helperPersona'];
-    const teacherPersona = userMap['teacherPersona'];
-    const codeReviewPersona = userMap['codeReviewPersona'];
+    // Get references to created users for message seeding (using uniqueIds as keys)
+    const claudeUser = userMap[DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE];
+    // Use constants from PERSONA_UNIQUE_IDS (single source of truth, no magic strings)
+    const helperPersona = userMap[PERSONA_UNIQUE_IDS.HELPER];
+    const teacherPersona = userMap[PERSONA_UNIQUE_IDS.TEACHER];
+    const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
 
     // If not first run, rooms and messages already exist
     if (!isFirstRun) {

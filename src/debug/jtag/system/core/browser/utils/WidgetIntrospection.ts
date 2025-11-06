@@ -17,6 +17,7 @@ export interface WidgetState {
   methods: string[];
   messageCount?: number;
   entityCount?: number;
+  entities?: unknown[]; // Added for test verification - array of entities from EntityScroller
   currentRoomId?: string;
 }
 
@@ -158,11 +159,15 @@ export class WidgetAnalyzer {
         state.currentRoomId = widgetObj.currentRoomId;
       }
 
-      // Check for entity collections (room/user lists)
-      if (widgetObj.roomScroller && typeof (widgetObj.roomScroller as Record<string, unknown>).entities === 'function') {
+      // Check for entity collections (EntityScrollerWidget pattern)
+      // UserListWidget, RoomListWidget, ChatWidget all use 'scroller' property
+      const scroller = widgetObj.scroller || widgetObj.roomScroller; // roomScroller for backward compatibility
+      if (scroller && typeof (scroller as Record<string, unknown>).entities === 'function') {
         try {
-          const entities = ((widgetObj.roomScroller as Record<string, unknown>).entities as () => unknown[])();
+          const entities = ((scroller as Record<string, unknown>).entities as () => unknown[])();
           state.entityCount = Array.isArray(entities) ? entities.length : 0;
+          // Also expose the entities array for test verification
+          state.entities = entities;
         } catch {
           // Ignore entity count extraction failure
         }
