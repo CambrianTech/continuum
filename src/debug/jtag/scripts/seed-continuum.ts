@@ -18,15 +18,34 @@ import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
 import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
 import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
+import { PERSONA_CONFIGS } from './seed/personas';
+import {
+  createUserCapabilities,
+  createRoom,
+  createChatMessage,
+  createDefaultContentTypes,
+  createDefaultUserStates,
+  createDefaultTrainingSessions
+} from './seed/factories';
+import {
+  createRecord,
+  createStateRecord,
+  updatePersonaProfile,
+  updatePersonaConfig,
+  createUserViaCommand,
+  loadUserByUniqueId,
+  seedRecords
+} from './seed/helpers';
 
 const execAsync = promisify(exec);
 
-// ===== FACTORY FUNCTIONS FOR DATA GENERATION =====
+// ===== MOVED TO scripts/seed/factories.ts =====
+// Factory functions extracted to eliminate repetition
 
 /**
- * Create user capabilities based on user type
+ * @deprecated - Moved to factories.ts, keeping for reference during migration
  */
-function createUserCapabilities(type: 'human' | 'agent'): any {
+function createUserCapabilities_OLD(type: 'human' | 'agent'): any {
   const baseCapabilities = {
     canSendMessages: true,
     canReceiveMessages: true,
@@ -804,47 +823,14 @@ async function seedViaJTAG() {
     // Step 3: Now create all other users (auto-join will work because rooms exist)
     console.log(`📝 Creating remaining ${missingUsers.length - 1} users (auto-join will trigger)...`);
 
-    if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE)) {
-      userMap['claudeUser'] = await createUserViaCommand('agent', USER_CONFIG.CLAUDE.NAME, DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE, 'anthropic');
-    }
-    if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.GENERAL_AI)) {
-      userMap['generalAIUser'] = await createUserViaCommand('agent', USER_CONFIG.GENERAL_AI.NAME, DEFAULT_USER_UNIQUE_IDS.GENERAL_AI, 'anthropic');
-    }
-    if (missingUsers.includes('persona-helper-001')) {
-      userMap['helperPersona'] = await createUserViaCommand('persona', 'Helper AI', 'persona-helper-001');
-    }
-    if (missingUsers.includes('persona-teacher-001')) {
-      userMap['teacherPersona'] = await createUserViaCommand('persona', 'Teacher AI', 'persona-teacher-001');
-    }
-    if (missingUsers.includes('persona-codereview-001')) {
-      userMap['codeReviewPersona'] = await createUserViaCommand('persona', 'CodeReview AI', 'persona-codereview-001');
-    }
-    if (missingUsers.includes('persona-deepseek')) {
-      userMap['deepseekPersona'] = await createUserViaCommand('persona', 'DeepSeek Assistant', 'persona-deepseek', 'deepseek');
-    }
-    if (missingUsers.includes('persona-groq')) {
-      userMap['groqPersona'] = await createUserViaCommand('persona', 'Groq Lightning', 'persona-groq', 'groq');
-    }
-    if (missingUsers.includes('persona-anthropic')) {
-      userMap['anthropicPersona'] = await createUserViaCommand('persona', 'Claude Assistant', 'persona-anthropic', 'anthropic');
-    }
-    if (missingUsers.includes('persona-openai')) {
-      userMap['openaiPersona'] = await createUserViaCommand('persona', 'GPT Assistant', 'persona-openai', 'openai');
-    }
-    if (missingUsers.includes('persona-xai')) {
-      userMap['xaiPersona'] = await createUserViaCommand('persona', 'Grok', 'persona-xai', 'xai');
-    }
-    if (missingUsers.includes('persona-together')) {
-      userMap['togetherPersona'] = await createUserViaCommand('persona', 'Together Assistant', 'persona-together', 'together');
-    }
-    if (missingUsers.includes('persona-fireworks')) {
-      userMap['fireworksPersona'] = await createUserViaCommand('persona', 'Fireworks AI', 'persona-fireworks', 'fireworks');
-    }
-    if (missingUsers.includes('persona-ollama')) {
-      userMap['ollamaPersona'] = await createUserViaCommand('persona', 'Local Assistant', 'persona-ollama', 'ollama');
-    }
-    if (missingUsers.includes('persona-sentinel')) {
-      userMap['sentinelPersona'] = await createUserViaCommand('persona', 'Sentinel', 'persona-sentinel', 'sentinel');
+    // Create all personas using config-driven loop (eliminates repetition)
+    for (const persona of PERSONA_CONFIGS) {
+      if (missingUsers.includes(persona.uniqueId)) {
+        const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
+        if (user) {
+          userMap[persona.uniqueId] = user;
+        }
+      }
     }
 
     // Count only newly created users (users that were in missingUsers list)
