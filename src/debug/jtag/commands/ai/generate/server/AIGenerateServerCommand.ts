@@ -16,7 +16,7 @@ import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
 import { ChatRAGBuilder } from '../../../../system/rag/builders/ChatRAGBuilder';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
-import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 export class AIGenerateServerCommand extends AIGenerateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

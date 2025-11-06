@@ -6,21 +6,25 @@
  */
 
 import { stringToUUID, type UUID } from '../../core/types/CrossPlatformUUID';
+import { generateUniqueId } from '../utils/UniqueIdUtils';
 
 /**
- * Default User Unique IDs - Human-readable handles for searches
+ * Default User Unique IDs - Clean @username format
  * These are used with user/create --uniqueId parameter
+ *
+ * Format: @username (short, simple, no spaces)
+ * Examples: @joel, @claude, @helper, @sentinel
  *
  * RESERVED for P2P network - these uniqueIds cannot be claimed by other users
  */
 export const DEFAULT_USER_UNIQUE_IDS = {
-  PRIMARY_HUMAN: 'primary-human',
-  CLI_CLIENT: 'cli-client',
-  CLAUDE_CODE: 'claude-code',
-  GENERAL_AI: 'general-ai',
-  CODE_AI: 'code-ai',
-  PLANNER_AI: 'planner-ai',
-  AUTO_ROUTE: 'auto-route'
+  PRIMARY_HUMAN: generateUniqueId('Joel'),           // @joel
+  CLI_CLIENT: generateUniqueId('CLI'),               // @cli
+  CLAUDE_CODE: generateUniqueId('Claude'),           // @claude
+  GENERAL_AI: generateUniqueId('General'),           // @general
+  CODE_AI: generateUniqueId('CodeReview'),           // @codereview
+  PLANNER_AI: generateUniqueId('Planner'),           // @planner
+  AUTO_ROUTE: generateUniqueId('AutoRoute')          // @autoroute
 } as const;
 
 /**

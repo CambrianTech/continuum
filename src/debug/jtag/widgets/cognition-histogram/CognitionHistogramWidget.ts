@@ -130,17 +130,21 @@ export class CognitionHistogramWidget extends BaseWidget {
       count: newCount,
       lastUpdate: Date.now()
     });
+
+    // Render only when data changes (not 60fps infinite loop!)
+    this.renderCurrentMode();
   }
 
   /**
    * Start animation loop for smooth histogram updates
+   * DISABLED: Was causing massive browser overhead (60fps infinite rendering)
+   * Now only renders when data actually changes (see updateStageData)
    */
   private startAnimationLoop(): void {
-    const animate = () => {
-      this.renderCurrentMode();
-      this.animationFrame = requestAnimationFrame(animate);
-    };
-    animate();
+    // Initial render
+    this.renderCurrentMode();
+
+    // No infinite loop - only render on data changes!
   }
 
   /**

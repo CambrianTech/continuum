@@ -17,6 +17,29 @@ import { RoomEntity } from '../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../system/data/entities/ChatMessageEntity';
 
 /**
+ * waitForWidgetInitialization - Wait for widgets to initialize and subscribe to events
+ * CRITICAL: Widgets must be initialized BEFORE CRUD operations or events will be missed
+ */
+async function waitForWidgetInitialization(client: any, widgetSelectors: string[]): Promise<void> {
+  console.log('⏳ Waiting for widgets to initialize...');
+
+  // Wait 3 seconds for widget initialization
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
+  // Verify each widget exists and has event subscriptions set up
+  for (const selector of widgetSelectors) {
+    const widgetState = await client.commands['debug/widget-state']({ widgetSelector: selector });
+    const widgetData = (widgetState as any).commandResult || widgetState;
+
+    if (!widgetData.widgetFound) {
+      throw new Error(`Widget ${selector} not found - cannot run tests`);
+    }
+
+    console.log(`✅ Widget ${selector} initialized`);
+  }
+}
+
+/**
  * verifyState - ONE function that does DB check + HTML check + Screenshot
  * Called after EVERY operation to verify system state
  */
@@ -45,12 +68,37 @@ async function verifyState(
     }
   }
 
-  // Widget HTML check
+  // Widget check - verify the SPECIFIC entity we created/updated/deleted
   const widgetState = await client.commands['debug/widget-state']({ widgetSelector });
   const widgetData = (widgetState as any).commandResult || widgetState;
-  const entities = widgetData.state?.entities || [];
-  const inWidget = entityId ? entities.some((e: any) => e.id === entityId) : false;
-  console.log(`  🎨 Widget: ${entityId ? (inWidget ? '✅ Found' : '❌ Not found') : '✅ Baseline'}`);
+  const entityCount = widgetData.state?.entityCount ?? 0;
+  const entityIds = widgetData.state?.entityIds ?? [];
+
+  // For CREATE/UPDATE: Verify the SPECIFIC entity ID exists in widget
+  // For DELETE: Verify the SPECIFIC entity ID does NOT exist in widget
+  // For BEFORE: Just check widget is working
+  if (operationName === 'before') {
+    console.log(`  🎨 Widget: ✅ Widget working (${entityCount} entities)`);
+  } else if (entityId) {
+    const entityFound = entityIds.includes(entityId);
+
+    if (operationName === 'create' || operationName === 'update') {
+      if (entityFound) {
+        console.log(`  🎨 Widget: ✅ Entity ${entityId} found in widget (${entityCount} total)`);
+      } else {
+        console.log(`  🎨 Widget: ❌ Entity ${entityId} NOT found in widget (${entityCount} total)`);
+        console.log(`  🔍 Widget has ${entityIds.length} entity IDs: ${entityIds.slice(0, 5).join(', ')}...`);
+        throw new Error(`Entity ${entityId} not found in widget after ${operationName}`);
+      }
+    } else if (operationName === 'delete') {
+      if (!entityFound) {
+        console.log(`  🎨 Widget: ✅ Entity ${entityId} removed from widget (${entityCount} total)`);
+      } else {
+        console.log(`  🎨 Widget: ❌ Entity ${entityId} still in widget after delete (${entityCount} total)`);
+        throw new Error(`Entity ${entityId} still in widget after delete`);
+      }
+    }
+  }
 
   // Screenshot - ONE CALL IN ENTIRE CODEBASE
   await client.commands['screenshot']({
@@ -129,6 +177,10 @@ async function testDatabaseChatIntegration(): Promise<void> {
     console.log('🔗 Connecting to JTAG system...');
     client = await jtag.connect();
     console.log('✅ Connected');
+
+    // CRITICAL: Wait for widgets to initialize BEFORE running CRUD operations
+    // Widgets must subscribe to events BEFORE entities are created, or events will be missed
+    await waitForWidgetInitialization(client, ['user-list-widget', 'room-list-widget', 'chat-widget']);
 
     // Test 1: User CRUD with user-list-widget
     const testUserId = await testCrud(

@@ -36,6 +36,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private inputEnhancer?: MessageInputEnhancer; // Markdown shortcuts for message input
   private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
   private aiStatusContainer?: HTMLElement; // Container for AI status indicators
+  private headerUpdateTimeout?: number; // Debounce timeout for header updates
 
   constructor() {
     super({
@@ -454,6 +455,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const sendButton = this.shadowRoot?.getElementById('sendButton');
     const clickHandler = (): void => { this.sendMessage(); };
 
+    // Use passive for better scroll performance, but we need to preventDefault on Enter
+    // So we can't use passive. Instead, return early for non-Enter keys
     this.messageInput.addEventListener('keydown', keydownHandler);
     sendButton?.addEventListener('click', clickHandler);
   }
@@ -580,12 +583,22 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Update the header with current room and member information
+   * Debounced to prevent rebuilding on every event
    */
   private updateHeader(): void {
-    const headerElement = this.shadowRoot.querySelector('.entity-list-header');
-    if (headerElement) {
-      headerElement.innerHTML = this.renderHeader();
+    // Clear any pending update
+    if (this.headerUpdateTimeout) {
+      clearTimeout(this.headerUpdateTimeout);
     }
+
+    // Schedule update for next frame
+    this.headerUpdateTimeout = setTimeout(() => {
+      const headerElement = this.shadowRoot.querySelector('.entity-list-header');
+      if (headerElement) {
+        headerElement.innerHTML = this.renderHeader();
+      }
+      this.headerUpdateTimeout = undefined;
+    }, 0) as unknown as number;
   }
 
   // Send message - the only business logic ChatWidget needs
