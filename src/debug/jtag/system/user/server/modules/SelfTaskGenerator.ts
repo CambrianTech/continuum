@@ -182,7 +182,7 @@ export class SelfTaskGenerator {
 
       for (const record of result.data) {
         const task = record.data;
-        const updatedAt = task.updatedAt ? new Date(task.updatedAt).getTime() : 0;
+        const updatedAt = task.updatedAt ? new Date(task.updatedAt).getTime() : new Date(task.createdAt).getTime();
 
         // If task hasn't been updated in a while, create resume task
         if (updatedAt < threshold) {
@@ -193,7 +193,11 @@ export class SelfTaskGenerator {
           resumeTask.domain = 'self';
           resumeTask.taskType = 'resume-work';
           resumeTask.contextId = this.personaId;
-          resumeTask.description = `[Self-Task] Resume unfinished work: ${task.description}`;
+          // Truncate long descriptions to prevent storage issues (max 200 chars for embedded description)
+          const truncatedDesc = task.description.length > 200
+            ? task.description.substring(0, 197) + '...'
+            : task.description;
+          resumeTask.description = `[Self-Task] Resume unfinished work: ${truncatedDesc}`;
           resumeTask.priority = 0.7;  // High priority
           resumeTask.status = 'pending';
 

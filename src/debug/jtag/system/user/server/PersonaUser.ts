@@ -2156,8 +2156,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         for (const task of selfTasks) {
           const storedTask = await DataDaemon.store(COLLECTIONS.TASKS, task);
           if (storedTask) {
-            // Convert to InboxTask and enqueue
-            const inboxTask = taskEntityToInboxTask(task);
+            // Convert to InboxTask and enqueue (use storedTask which has database ID)
+            const inboxTask = taskEntityToInboxTask(storedTask);
             await this.inbox.enqueue(inboxTask);
             console.log(`📋 ${this.displayName}: Created self-task: ${task.description}`);
           } else {
@@ -2406,10 +2406,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   private async executeFineTuneLora(task: InboxTask): Promise<string> {
     console.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
 
-    const loraLayer = task.metadata?.loraLayer as string;
-
-    if (!loraLayer) {
-      return 'Missing LoRA layer in metadata';
+    // Type-safe metadata validation (no type assertions)
+    const loraLayer = task.metadata?.loraLayer;
+    if (typeof loraLayer !== 'string') {
+      return 'Missing or invalid LoRA layer in metadata';
     }
 
     // TODO: Implement actual fine-tuning logic (Phase 7)
