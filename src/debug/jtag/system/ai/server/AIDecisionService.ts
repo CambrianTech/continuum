@@ -14,7 +14,7 @@
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RAGContext } from '../../rag/shared/RAGTypes';
 import { AIDecisionLogger } from './AIDecisionLogger';
 

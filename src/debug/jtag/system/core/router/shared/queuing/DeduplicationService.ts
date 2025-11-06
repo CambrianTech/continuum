@@ -92,8 +92,6 @@ export class DeduplicationService<T extends Hashable> {
       }
     }
 
-    if (cleaned > 0) {
-      console.log(`🧹 DeduplicationService: Cleaned ${cleaned} old entries`);
-    }
+    // Silently clean old entries (don't spam console)
   }
 }

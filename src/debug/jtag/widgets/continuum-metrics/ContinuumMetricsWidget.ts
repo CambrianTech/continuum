@@ -80,14 +80,12 @@ export class ContinuumMetricsWidget extends BaseWidget {
   private subscribeToAIEvents(): void {
     // Update metrics whenever an AI generates a response (cost/tokens change)
     Events.subscribe(AI_DECISION_EVENTS.POSTED, () => {
-      console.log('📊 ContinuumMetrics: AI response posted, refreshing metrics...');
       this.fetchMetricsData();
     });
 
     // Also subscribe to database events for AI generation tracking
     const dbEvent = `data:${AIGenerationEntity.collection}:created`;
     Events.subscribe(dbEvent, () => {
-      console.log('📊 ContinuumMetrics: New AI generation saved, refreshing metrics...');
       this.fetchMetricsData();
     });
   }

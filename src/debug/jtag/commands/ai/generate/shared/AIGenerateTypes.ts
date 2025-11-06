@@ -9,7 +9,7 @@
 import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { TextGenerationRequest, TextGenerationResponse } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest, TextGenerationResponse } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 // AI Generate Parameters
 export interface AIGenerateParams extends JTAGPayload {

@@ -34,8 +34,8 @@ export class SimpleBarsRenderer extends ChartRenderer {
       glow: true
     });
 
-    // Enhanced glow for simple bars
-    rect.style.filter = `drop-shadow(0 0 6px ${color})`;
+    // Enhanced glow for simple bars - DISABLED for performance
+    // rect.style.filter = `drop-shadow(0 0 6px ${color})`;
 
     this.svg.appendChild(rect);
   }

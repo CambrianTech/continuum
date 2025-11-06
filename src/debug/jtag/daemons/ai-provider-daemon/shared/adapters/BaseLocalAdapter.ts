@@ -18,7 +18,7 @@ import type {
   TextGenerationRequest,
   TextGenerationResponse,
   HealthStatus,
-} from '../AIProviderTypes';
+} from '../AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
 import { spawn } from 'child_process';
 

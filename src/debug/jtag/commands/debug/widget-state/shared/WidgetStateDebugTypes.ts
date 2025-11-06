@@ -36,6 +36,7 @@ export interface WidgetStateDebugResult extends CommandResult {
     currentRoomId?: string;
     entityCount?: number;
     entities?: Array<{ id: string; name?: string; displayName?: string }>;
+    entityIds?: string[]; // Just IDs for test verification (lightweight)
   };
 
   messages: Array<{ id: string; content?: Record<string, unknown>; [key: string]: unknown }>;

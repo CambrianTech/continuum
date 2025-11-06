@@ -30,7 +30,7 @@
   height: 24px;
   border-radius: 50%;
   flex-shrink: 0;
-  transition: all 0.3s ease;
+  transition: transform 0.3s ease, opacity 0.3s ease;
   margin-top: -1px;
   position: relative;
   background: transparent;
