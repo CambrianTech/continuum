@@ -502,15 +502,75 @@ async function checkExistingServer(): Promise<{isHealthy: boolean; tmuxRunning: 
 }
 
 /**
+ * Kill old npm/node processes from previous runs
+ * Only kills processes that match our patterns (npm, node, tsx running our scripts)
+ */
+async function killOurOwnProcesses(): Promise<void> {
+  const ourWorkDir = process.cwd();
+  console.log(`🔧 Finding and killing old npm/node processes from: ${ourWorkDir}`);
+
+  // Use ps to find npm/node/tsx processes in our directory
+  await new Promise<void>((resolve) => {
+    const psCheck = spawn('ps', ['aux'], { stdio: 'pipe' });
+    let output = '';
+    psCheck.stdout?.on('data', (data) => { output += data.toString(); });
+    psCheck.on('close', () => {
+      const lines = output.split('\n');
+      const pids = new Set<number>();
+
+      for (const line of lines) {
+        // Skip if not our working directory
+        if (!line.includes(ourWorkDir)) continue;
+
+        // Only kill npm, node, tsx processes (not bash, not other scripts)
+        if (!line.match(/\b(npm|node|tsx)\b/)) continue;
+
+        // Parse PID (second column)
+        const parts = line.trim().split(/\s+/);
+        if (parts.length > 1) {
+          const pid = parseInt(parts[1]);
+
+          // Don't kill ourselves or our parent
+          if (pid && pid !== process.pid && pid !== process.ppid) {
+            pids.add(pid);
+          }
+        }
+      }
+
+      if (pids.size > 0) {
+        console.log(`💀 Killing ${pids.size} old npm/node processes: ${Array.from(pids).join(', ')}`);
+        for (const pid of pids) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch (error) {
+            // Process might have already died, that's fine
+          }
+        }
+      } else {
+        console.log(`✅ No old npm/node processes found`);
+      }
+      resolve();
+    });
+
+    // If ps fails or times out, continue anyway
+    setTimeout(() => resolve(), 5000);
+  });
+
+  // Give processes time to die
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  console.log(`✅ Process cleanup complete`);
+}
+
+/**
  * Force kill processes using the configured ports to prevent conflicts
  */
 async function forcePortTakeover(): Promise<void> {
   const instanceConfig = loadInstanceConfigForContext();
   const wsPort = instanceConfig.ports.websocket_server;
   const httpPort = instanceConfig.ports.http_server;
-  
+
   console.log(`🔧 Force taking over configured ports: WS=${wsPort}, HTTP=${httpPort}`);
-  
+
   // Use lsof to find and kill processes using our ports
   for (const port of [wsPort, httpPort]) {
     await new Promise<void>((resolve) => {
@@ -533,7 +593,7 @@ async function forcePortTakeover(): Promise<void> {
       });
     });
   }
-  
+
   // Give processes time to die
   await new Promise(resolve => setTimeout(resolve, 2000));
   console.log(`✅ Port takeover complete`);
@@ -611,7 +671,7 @@ async function main(): Promise<void> {
       if (CONFIG.forceRestart || (serverStatus.tmuxRunning || serverStatus.portsActive)) {
         const reason = CONFIG.forceRestart ? 'Force restart requested' : 'Server unhealthy, restarting';
         if (CONFIG.verbose || CONFIG.mode !== 'test') console.log(`🔄 ${reason}...`);
-        
+
         // Kill tmux session if exists
         if (serverStatus.tmuxRunning) {
           if (CONFIG.verbose) console.log('🧹 Stopping existing tmux session...');
@@ -620,7 +680,10 @@ async function main(): Promise<void> {
             killTmux.on('close', () => resolve());
           });
         }
-        
+
+        // CRITICAL: Kill ALL our own processes, not just those on ports
+        await killOurOwnProcesses();
+
         if (serverStatus.portsActive) {
           await forcePortTakeover();
         } else {

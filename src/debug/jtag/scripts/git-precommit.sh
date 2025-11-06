@@ -251,9 +251,9 @@ EOF
         # Stage validation directory from repo root
         REPO_ROOT="../../.."
         cd "$REPO_ROOT"
-        git add "src/debug/jtag/$VALIDATION_RUN_DIR"
+        git add "src/debug/jtag/$VALIDATION_RUN_DIR" 2>/dev/null || true
         cd - > /dev/null
-        echo "✅ Validation artifacts staged for commit"
+        echo "✅ Validation artifacts staged for commit (or already ignored)"
 
         # Validation successful - artifacts will be committed with code changes
         echo "✅ VALIDATION COMPLETE: Session artifacts staged for git commit"
