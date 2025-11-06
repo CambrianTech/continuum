@@ -20,16 +20,46 @@ import type {
   HealthStatus,
   ProviderConfiguration,
   UsageMetrics,
-  OllamaGenerateRequest,
-  OllamaGenerateResponse,
-  OllamaListResponse,
-} from '../../../shared/AIProviderTypes';
+} from '../../../shared/AIProviderTypesV2';
 import {
   chatMessagesToPrompt,
-  estimateTokenCount,
-  createRequestId,
   AIProviderError,
-} from '../../../shared/AIProviderTypes';
+} from '../../../shared/AIProviderTypesV2';
+
+// Helper function previously imported from old AIProviderTypes
+function createRequestId(): string {
+  return `ollama-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Helper function previously imported from old AIProviderTypes
+function estimateTokenCount(text: string): number {
+  return Math.ceil(text.length / 4); // Rough approximation: 1 token ≈ 4 characters
+}
+
+// Ollama-specific types
+interface OllamaGenerateRequest {
+  model: string;
+  prompt: string;
+  system?: string;
+  temperature?: number;
+  num_predict?: number;
+  stream?: boolean;
+}
+
+interface OllamaGenerateResponse {
+  model: string;
+  response: string;
+  done: boolean;
+  context?: number[];
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_duration?: number;
+  eval_duration?: number;
+}
+
+interface OllamaListResponse {
+  models: Array<{ name: string; modified_at: string; size: number }>;
+}
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { spawn } from 'child_process';
 
@@ -174,7 +204,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     if (!health.apiAvailable) {
       throw new AIProviderError(
         'Ollama is not available. Please ensure Ollama is installed and running.',
-        this.providerId,
+        'adapter',
         'OLLAMA_UNAVAILABLE',
         { endpoint: this.config.apiEndpoint }
       );
@@ -212,7 +242,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
     try {
       // Convert chat messages to Ollama prompt format
-      const { prompt, system } = chatMessagesToPrompt(request.messages);
+      const { prompt, systemPrompt: system } = chatMessagesToPrompt(request.messages);
 
       // Build Ollama request
       const ollamaRequest: OllamaGenerateRequest = {
@@ -270,7 +300,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
       throw new AIProviderError(
         `Text generation failed: ${error instanceof Error ? error.message : String(error)}`,
-        this.providerId,
+        'adapter',
         'GENERATION_FAILED',
         { requestId, responseTime, originalError: error }
       );

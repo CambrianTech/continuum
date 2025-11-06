@@ -25,13 +25,22 @@ import type {
   HealthStatus,
   ProviderConfiguration,
   UsageMetrics,
-} from './AIProviderTypes';
+  ModelInfo,
+  ModelCapability,
+} from './AIProviderTypesV2';
 import {
   chatMessagesToPrompt,
-  estimateTokenCount,
-  createRequestId,
   AIProviderError,
-} from './AIProviderTypes';
+} from './AIProviderTypesV2';
+
+// Helper functions
+function createRequestId(): string {
+  return `llamacpp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function estimateTokenCount(text: string): number {
+  return Math.ceil(text.length / 4); // Rough approximation: 1 token ≈ 4 characters
+}
 import { getLlama, LlamaChatSession, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -71,7 +80,7 @@ function resolveOllamaModelPath(modelName: string): string | null {
 export class LlamaCppAdapter implements AIProviderAdapter {
   readonly providerId = 'llama-cpp';
   readonly providerName = 'LlamaCpp';
-  readonly supportedCapabilities = ['text-generation', 'chat'] as const;
+  readonly supportedCapabilities: ModelCapability[] = ['text-generation', 'chat'];
 
   private config: ProviderConfiguration;
   private llama: Llama | null = null;
@@ -247,14 +256,14 @@ export class LlamaCppAdapter implements AIProviderAdapter {
     }
   }
 
-  async getAvailableModels(): Promise<string[]> {
+  async getAvailableModels(): Promise<ModelInfo[]> {
     const ollamaDir = path.join(os.homedir(), '.ollama', 'models', 'manifests', 'registry.ollama.ai', 'library');
 
     if (!fs.existsSync(ollamaDir)) {
       return [];
     }
 
-    const models: string[] = [];
+    const models: ModelInfo[] = [];
 
     try {
       const entries = fs.readdirSync(ollamaDir, { withFileTypes: true });
@@ -266,7 +275,16 @@ export class LlamaCppAdapter implements AIProviderAdapter {
           const variants = fs.readdirSync(variantsDir);
 
           for (const variant of variants) {
-            models.push(`${modelName}:${variant}`);
+            const fullName = `${modelName}:${variant}`;
+            models.push({
+              id: fullName,
+              name: fullName,
+              provider: this.providerId,
+              capabilities: this.supportedCapabilities,
+              contextWindow: 4096,
+              supportsStreaming: false,
+              supportsFunctions: false
+            });
           }
         }
       }

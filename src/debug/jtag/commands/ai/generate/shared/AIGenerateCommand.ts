@@ -17,7 +17,7 @@ import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBa
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIGenerateParams, AIGenerateResult } from './AIGenerateTypes';
-import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 export abstract class AIGenerateCommand extends CommandBase<AIGenerateParams, AIGenerateResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -73,11 +73,12 @@ export abstract class AIGenerateCommand extends CommandBase<AIGenerateParams, AI
 
       // Show full content for system prompt, truncate others
       const maxLength = msg.role === 'system' ? Infinity : 500;
-      const content = msg.content.length > maxLength
-        ? msg.content.substring(0, maxLength) + `\n... (${msg.content.length - maxLength} more chars)`
-        : msg.content;
+      const contentText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      const content = contentText.length > maxLength
+        ? contentText.substring(0, maxLength) + `\n... (${contentText.length - maxLength} more chars)`
+        : contentText;
 
-      content.split('\n').forEach(line => {
+      content.split('\n').forEach((line: string) => {
         lines.push(`   │   ${line}`);
       });
       lines.push(`   └────────────────────────────────────────────────────`);
