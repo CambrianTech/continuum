@@ -56,8 +56,6 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
    * Handle local event bridging - emit to event system AND DOM for BaseWidget
    */
   protected handleLocalEventBridge(eventName: string, eventData: unknown): void {
-    console.log(`🔥 CLAUDE-BROWSER-EVENT-${Date.now()}: handleLocalEventBridge called with eventName='${eventName}'`);
-
     // 1. Emit to local event system - DOMEventBridge will automatically handle DOM dispatch
     this.eventManager.events.emit(eventName, eventData);
 
@@ -70,7 +68,6 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
     if (typeof globalThis !== 'undefined' && 'document' in globalThis) {
       (globalThis as typeof globalThis & { document: Document }).document.dispatchEvent(domEvent);
     }
-    console.log(`🔥 CLAUDE-DOM-EVENT-${Date.now()}: Dispatched DOM event '${eventName}' for BaseWidget`);
 
     // 3. Trigger unified subscription manager (NEW!)
     // This handles exact, wildcard, and elegant pattern subscriptions
@@ -80,9 +77,8 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
     // TODO: Migrate to unified subscription manager
     try {
       Events.checkWildcardSubscriptions(eventName, eventData);
-      console.log(`🎯 CLAUDE-WILDCARD-${Date.now()}: Checked wildcard subscriptions for '${eventName}'`);
     } catch (error) {
-      console.error(`❌ CLAUDE-WILDCARD-ERROR-${Date.now()}: Failed to check wildcard subscriptions:`, error);
+      console.error('Failed to check wildcard subscriptions:', error);
     }
   }
 

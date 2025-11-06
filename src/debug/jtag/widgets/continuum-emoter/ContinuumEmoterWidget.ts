@@ -58,7 +58,6 @@ export class ContinuumEmoterWidget extends BaseWidget {
     console.log('🎭 ContinuumEmoter: Event constants:', AI_DECISION_EVENTS);
 
     Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string; personaName?: string }) => {
-      console.log('🎭 ContinuumEmoter: Received EVALUATING event:', data);
       this.addStatusMessage(`${data.personaName || 'AI'}: thinking...`);
     });
 
@@ -95,13 +94,6 @@ export class ContinuumEmoterWidget extends BaseWidget {
     console.log('🎭 ContinuumEmoter: COGNITION_EVENTS constant:', COGNITION_EVENTS);
 
     Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
-      console.log('🎭 ContinuumEmoter: Received STAGE_COMPLETE event:', {
-        stage: data.stage,
-        personaId: data.personaId.slice(0, 8),
-        durationMs: data.metrics.durationMs,
-        status: data.metrics.status
-      });
-
       // Show stage completion in status feed
       const statusIcon = data.metrics.status === 'fast' ? '⚡' :
                         data.metrics.status === 'normal' ? '✓' :
@@ -118,7 +110,6 @@ export class ContinuumEmoterWidget extends BaseWidget {
     console.log('🎭 ContinuumEmoter: Subscribing to emotion events...');
 
     Events.subscribe('continuum:emotion', (data: { emoji: string; color: string; duration: number }) => {
-      console.log('🎭 ContinuumEmoter: Received emotion event:', data);
       this.showEmotion(data.emoji, data.color, data.duration);
     });
   }
@@ -226,8 +217,6 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Add a status message to the scrolling feed
    */
   private addStatusMessage(message: string): void {
-    console.log('🎭 ContinuumEmoter: addStatusMessage called:', message);
-
     const scroller = this.shadowRoot?.querySelector('.status-scroller');
     if (!scroller) return;
 
