@@ -10,6 +10,7 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 /**
  * LoRA adapter state
@@ -53,6 +54,7 @@ export interface LoRAAdapterState {
  */
 export class LoRAAdapter {
   private state: LoRAAdapterState;
+  private aiProvider?: AIProviderAdapter;
 
   constructor(config: {
     id: UUID;
@@ -61,6 +63,7 @@ export class LoRAAdapter {
     path: string;
     sizeMB: number;
     priority?: number;
+    aiProvider?: AIProviderAdapter;
   }) {
     this.state = {
       id: config.id,
@@ -73,6 +76,7 @@ export class LoRAAdapter {
       trainingActive: false,
       priority: config.priority ?? 0.5
     };
+    this.aiProvider = config.aiProvider;
   }
 
   /**
@@ -148,8 +152,9 @@ export class LoRAAdapter {
   /**
    * Load adapter weights from disk into GPU memory
    *
-   * Phase 6: Stubbed - no actual Ollama integration yet
-   * Phase 7: Will call Ollama API to load adapter weights
+   * Phase 6: Provider-agnostic via AIProviderAdapter.applySkill()
+   * - If aiProvider supports applySkill, delegate to it
+   * - Otherwise, just track state (stub for providers without skill support)
    */
   async load(): Promise<void> {
     if (this.state.loaded) {
@@ -159,8 +164,16 @@ export class LoRAAdapter {
 
     console.log(`📥 LoRAAdapter: Loading ${this.state.name} from ${this.state.path}...`);
 
-    // TODO (Phase 7): Actual Ollama integration
-    // await OllamaClient.loadAdapter(this.state.path);
+    // Delegate to AI provider if available and supports skill management
+    if (this.aiProvider?.applySkill) {
+      await this.aiProvider.applySkill({
+        skillId: this.state.id,
+        skillName: this.state.name,
+        skillPath: this.state.path,
+        domain: this.state.domain,
+      });
+    }
+    // Otherwise, just track state (stub mode for providers without skill support)
 
     this.state.loaded = true;
     this.state.lastUsed = Date.now();
@@ -171,8 +184,9 @@ export class LoRAAdapter {
   /**
    * Unload adapter weights from GPU memory
    *
-   * Phase 6: Stubbed - no actual Ollama integration yet
-   * Phase 7: Will call Ollama API to unload adapter weights
+   * Phase 6: Provider-agnostic via AIProviderAdapter.removeSkill()
+   * - If aiProvider supports removeSkill, delegate to it
+   * - Otherwise, just track state (stub for providers without skill support)
    */
   async unload(): Promise<void> {
     if (!this.state.loaded) {
@@ -182,8 +196,11 @@ export class LoRAAdapter {
 
     console.log(`📤 LoRAAdapter: Unloading ${this.state.name}...`);
 
-    // TODO (Phase 7): Actual Ollama integration
-    // await OllamaClient.unloadAdapter(this.state.id);
+    // Delegate to AI provider if available and supports skill management
+    if (this.aiProvider?.removeSkill) {
+      await this.aiProvider.removeSkill(this.state.id);
+    }
+    // Otherwise, just track state (stub mode for providers without skill support)
 
     this.state.loaded = false;
 
@@ -200,8 +217,9 @@ export class LoRAAdapter {
   /**
    * Enable fine-tuning mode for this adapter
    *
-   * Phase 6: Stubbed - no actual training yet
-   * Phase 7: Will enable gradient accumulation for fine-tuning
+   * Phase 6: Provider-agnostic via AIProviderAdapter.enableSkillTraining()
+   * - If aiProvider supports training, delegate to it
+   * - Otherwise, just track state (stub for providers without training support)
    */
   async enableTraining(): Promise<void> {
     if (!this.state.loaded) {
@@ -210,8 +228,11 @@ export class LoRAAdapter {
 
     console.log(`🧬 LoRAAdapter: Enabling training mode for ${this.state.name}...`);
 
-    // TODO (Phase 7): Actual fine-tuning integration
-    // await OllamaClient.enableFineTuning(this.state.id);
+    // Delegate to AI provider if available and supports skill training
+    if (this.aiProvider?.enableSkillTraining) {
+      await this.aiProvider.enableSkillTraining(this.state.id);
+    }
+    // Otherwise, just track state (stub mode for providers without training support)
 
     this.state.trainingActive = true;
 
@@ -221,8 +242,9 @@ export class LoRAAdapter {
   /**
    * Disable fine-tuning mode for this adapter
    *
-   * Phase 6: Stubbed - no actual training yet
-   * Phase 7: Will disable gradient accumulation and save weights
+   * Phase 6: Provider-agnostic via AIProviderAdapter.disableSkillTraining()
+   * - If aiProvider supports training, delegate to it
+   * - Otherwise, just track state (stub for providers without training support)
    */
   async disableTraining(): Promise<void> {
     if (!this.state.trainingActive) {
@@ -231,9 +253,11 @@ export class LoRAAdapter {
 
     console.log(`🧬 LoRAAdapter: Disabling training mode for ${this.state.name}...`);
 
-    // TODO (Phase 7): Actual fine-tuning integration
-    // await OllamaClient.disableFineTuning(this.state.id);
-    // await OllamaClient.saveAdapterWeights(this.state.path);
+    // Delegate to AI provider if available and supports skill training
+    if (this.aiProvider?.disableSkillTraining) {
+      await this.aiProvider.disableSkillTraining(this.state.id);
+    }
+    // Otherwise, just track state (stub mode for providers without training support)
 
     this.state.trainingActive = false;
 

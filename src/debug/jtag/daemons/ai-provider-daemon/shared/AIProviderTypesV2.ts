@@ -285,6 +285,16 @@ export interface AIProviderAdapter {
   analyzeImage?(request: ImageAnalysisRequest): Promise<ImageAnalysisResponse>;
   createEmbedding?(request: EmbeddingRequest): Promise<EmbeddingResponse>;
 
+  // Skill management (optional - only providers that support skill modification)
+  // Examples:
+  // - Ollama: Load LoRA adapter weights
+  // - Claude/GPT: Inject RAG context or modify system prompt
+  // - Any provider: Add few-shot examples or tools
+  applySkill?(skillImplementation: unknown): Promise<void>;
+  removeSkill?(skillId: string): Promise<void>;
+  enableSkillTraining?(skillId: string): Promise<void>;
+  disableSkillTraining?(skillId: string): Promise<void>;
+
   // Metadata
   getAvailableModels(): Promise<ModelInfo[]>;
   healthCheck(): Promise<HealthStatus>;
