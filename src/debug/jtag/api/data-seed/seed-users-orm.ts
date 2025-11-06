@@ -145,6 +145,88 @@ async function seedUsers() {
       console.error('❌ Failed to create GeneralAI:', generalResult.error);
     }
 
+    // Create HelperAI (Sentinel-powered persona)
+    const helperData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: "HelperAI",
+      citizenType: 'ai' as const,
+      aiType: 'persona' as const,
+      capabilities: ["general-assistance", "quick-answers", "conversation"],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: "gpt2",
+        provider: "sentinel",
+        maxTokens: 150,
+        temperature: 0.7,
+        systemPrompt: "You are HelperAI, a friendly and fast assistant. Keep responses brief and helpful.",
+        capabilities: ["general-assistance", "quick-answers", "conversation"]
+      },
+      personaStyle: 'quick-responder' as const,
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: "friendly", formality: "casual" },
+        domainKnowledge: ["general-assistance", "quick-facts"]
+      },
+      adaptivePersonality: true,
+      emotionalIntelligence: 70,
+      conversationalDepth: 'brief' as const
+    };
+
+    const helper = new PersonaUser(helperData);
+    const helperResult = await userRepository.createUser(helperData, context);
+
+    if (helperResult.success) {
+      console.log('🧬 Created HelperAI (Sentinel Persona - gpt2)');
+    } else {
+      console.error('❌ Failed to create HelperAI:', helperResult.error);
+    }
+
+    // Create TeacherAI (Sentinel-powered persona with phi-2)
+    const teacherData = {
+      userId: generateUUID(),
+      sessionId: generateUUID(),
+      displayName: "TeacherAI",
+      citizenType: 'ai' as const,
+      aiType: 'persona' as const,
+      capabilities: ["education", "explanations", "tutoring"],
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      preferences: {},
+      isOnline: true,
+      modelConfig: {
+        model: "microsoft/phi-2",
+        provider: "sentinel",
+        maxTokens: 200,
+        temperature: 0.5,
+        systemPrompt: "You are TeacherAI, an educational assistant. Explain concepts clearly with examples.",
+        capabilities: ["education", "explanations", "tutoring"]
+      },
+      personaStyle: 'educational' as const,
+      contextualMemory: {
+        conversationHistory: [],
+        userPreferences: {},
+        interactionStyle: { tone: "patient", formality: "professional" },
+        domainKnowledge: ["education", "computer-science", "mathematics", "programming"]
+      },
+      adaptivePersonality: true,
+      emotionalIntelligence: 80,
+      conversationalDepth: 'detailed' as const
+    };
+
+    const teacher = new PersonaUser(teacherData);
+    const teacherResult = await userRepository.createUser(teacherData, context);
+
+    if (teacherResult.success) {
+      console.log('🧬 Created TeacherAI (Sentinel Persona - phi-2)');
+    } else {
+      console.error('❌ Failed to create TeacherAI:', teacherResult.error);
+    }
+
     // Verify what we created
     console.log('\n🔍 Verifying seeded users...');
 

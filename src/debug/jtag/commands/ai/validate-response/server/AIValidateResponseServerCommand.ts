@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIValidateResponseParams, AIValidateResponseResult, ResponseDecision } from '../shared/AIValidateResponseTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 export class AIValidateResponseServerCommand extends CommandBase<AIValidateResponseParams, AIValidateResponseResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

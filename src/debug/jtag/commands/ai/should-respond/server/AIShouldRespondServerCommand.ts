@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../shared/AIShouldRespondTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

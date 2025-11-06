@@ -37,7 +37,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { TaskEntity } from '../../data/entities/TaskEntity';
 import { taskEntityToInboxTask } from './modules/QueueItemTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypes';
+import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
@@ -959,7 +959,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         model: this.modelConfig.model || 'llama3.2:3b',  // Use persona's configured model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: this.modelConfig.maxTokens ?? 150,    // Keep responses concise
-        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider']
+        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
       };
 
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)

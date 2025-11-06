@@ -285,18 +285,14 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
       let modelInfo = '';
       let modelBadge = '';
       if (user.type === 'persona' || user.type === 'agent') {
-        // Check modelConfig first (cloud providers like DeepSeek, Groq, Anthropic, etc.)
-        if (user.modelConfig?.provider && user.modelConfig?.model) {
-          modelInfo = `${user.modelConfig.provider}/${user.modelConfig.model}`;
-          // Extract short model name for badge (5-8 chars max)
-          modelBadge = user.modelConfig.model.split('-')[0].substring(0, 8).toUpperCase();
-        }
-        // Fallback to personaConfig.responseModel (local Ollama models)
-        else if (user.personaConfig?.responseModel) {
-          modelInfo = `ollama/${user.personaConfig.responseModel}`;
-          // Extract short model name for badge
-          const modelName = user.personaConfig.responseModel.split(':')[0];
-          modelBadge = modelName.substring(0, 8).toUpperCase();
+        // Get provider and model from config
+        const provider = user.modelConfig?.provider || (user.personaConfig?.responseModel ? 'ollama' : '');
+        const model = user.modelConfig?.model || user.personaConfig?.responseModel || '';
+
+        if (provider && model) {
+          modelInfo = `${provider}/${model}`;
+          // Badge is always just the provider name (max 8 chars, uppercase)
+          modelBadge = provider.substring(0, 8).toUpperCase();
         }
       }
 
