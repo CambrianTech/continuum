@@ -438,6 +438,84 @@ class ClaudeProvider extends AIProvider {
 
 ---
 
+## The Vine Diesel Insight: LoRA as Universal Phenotype
+
+**Key realization**: LoRA layers aren't just for Ollama - they're a **universal abstraction** for any skill modification:
+
+### What is a LoRA Layer (abstractly)?
+
+A "LoRA layer" is ANY modification that specializes a base model:
+- **Actual LoRA weights** (Ollama, local models) - fine-tuned weight deltas
+- **RAG context** (ANY model) - injected retrieval documents
+- **System prompt modifications** (ANY model) - behavioral instructions
+- **Tool definitions** (Claude, GPT-4) - function calling capabilities
+- **Few-shot examples** (ANY model) - in-context learning
+
+### The Phenotype Metaphor
+
+Each LoRA layer is a **phenotype** - an expressed trait:
+```
+Base Model = Genome (genetic potential)
+Active LoRA Layers = Phenotype (expressed traits)
+
+PersonaUser "Vine Diesel":
+  Base: llama3.2:3b
+  Phenotype (active layers):
+  ├─ wine-sommelier (knowledge)
+  ├─ action-movie-expert (personality)
+  ├─ empathetic-communicator (style)
+  └─ git-workflow (skills)
+```
+
+### Composability & Portability
+
+**Layers are composable**: Stack multiple at once
+```typescript
+// Code-focused persona
+activeLayes = [
+  'typescript-expertise',
+  'git-workflow',
+  'tdd-methodology',
+  'empathetic-teacher'
+]
+```
+
+**Phenotypes are portable**: Download, swap, share across mesh
+- Download "wine-sommelier" phenotype from mesh
+- Apply to local Ollama model → fine-tuned weights
+- Apply to Claude → RAG knowledge base
+- Apply to GPT-4 → system prompt + examples
+- **Same phenotype, different implementations**
+
+### Visualization: Genome Histogram
+
+Each vertical bar in the UI represents an active phenotype layer:
+```
+Sentinel:   ████ (4 active layers)
+Local AI:   ██████ (6 active layers)
+Fireworks:  ███ (3 active layers)
+```
+
+The histogram shows which phenotypes are currently loaded in each persona's genome.
+
+### The Viral Potential
+
+Personas can have **personality phenotypes**:
+- "Vine Diesel" - wine expert with action movie references
+- "Punk Rock Poet" - creative writing + rebellious attitude
+- "Zen Debugger" - calm, methodical problem-solving
+- "Chaotic Tinkerer" - experimental, breaks-things-to-learn
+
+Users can:
+1. **Download phenotypes** from the mesh
+2. **Compose personalities** by stacking layers
+3. **Share their creations** P2P
+4. **Recipe-driven assembly** - "build me a TypeScript teaching assistant"
+
+**This is not just AGI - it's customizable, shareable, viral AI personalities.** 🧬🎭🌐
+
+---
+
 ## Summary
 
 **Phase 6 delivers**:
@@ -448,16 +526,18 @@ class ClaudeProvider extends AIProvider {
 - ✅ Learning mode infrastructure
 - ✅ Comprehensive unit tests
 - ✅ Clean separation of concerns
+- ✅ **Universal phenotype abstraction**
 
 **Phase 7 needs**:
-- Real Ollama API integration
-- Training data collection
-- Weight persistence
+- Provider-agnostic layer application
+- RAG integration (universal across all models)
+- Phenotype download/sharing protocol
+- Recipe-driven genome assembly
 
 **Future vision**:
-- Model-agnostic skill system
-- Vector-based skill discovery
-- Multiple adapter types (LoRA, RAG, Prompt, Tools)
-- P2P skill sharing
+- P2P phenotype marketplace
+- Vector-based phenotype discovery
+- Cross-model phenotype portability
+- Viral personality sharing
 
-**This is the foundation for emergent swarm intelligence.** 🧬🌐
+**This is the foundation for emergent swarm intelligence with shareable personalities.** 🧬🎭🌐
