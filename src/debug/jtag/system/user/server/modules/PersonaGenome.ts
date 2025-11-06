@@ -1,309 +1,346 @@
 /**
- * PersonaGenome - Virtual memory-style LoRA adapter paging system
+ * PersonaGenome - LoRA adapter paging system (virtual memory for skills)
  *
- * Manages PersonaUser's LoRA adapters with LRU eviction (slingshot approach).
- * Architecture inspired by virtual memory management:
- * - Adapters are "pages" loaded from disk into GPU memory
- * - LRU eviction when memory budget exceeded
- * - Task-based adapter activation (domain-specific)
- * - Memory pressure tracking and graceful degradation
+ * Philosophy: Slingshot thinking - don't carry all rocks at once
+ * - Limited GPU memory (the slingshot pouch)
+ * - Many specialized skills (the pile of rocks)
+ * - Page adapters in/out based on current task (pick the right rock for THIS shot)
+ * - LRU eviction when memory full (reload as needed)
  *
- * Philosophy: "Treat adapters like pages in virtual memory"
- * - Load on demand
- * - Evict LRU when full
- * - Track fitness metrics
- * - Swap expensive, optimize for cache hits
+ * Architecture inspired by OS virtual memory:
+ * - activeAdapters = pages in RAM (GPU memory)
+ * - availableAdapters = pages on disk (safetensors files)
+ * - memoryBudget = RAM limit
+ * - LRU eviction = page replacement algorithm
+ *
+ * This is Phase 6 - adapter paging WITHOUT actual Ollama training
+ * Phase 7 will add real fine-tuning integration
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import type { GenomeEntity, GenomeLayerReference } from '../../../genome/entities/GenomeEntity';
-import type { GenomeLayerEntity, TraitType } from '../../../genome/entities/GenomeLayerEntity';
+import { LoRAAdapter, type LoRAAdapterState } from './LoRAAdapter';
+import { randomUUID } from 'crypto';
 
 /**
- * Loaded adapter - in-memory representation
+ * Genome configuration
  */
-export interface LoadedAdapter {
-  layerId: UUID;
-  traitType: TraitType;
-  layer: GenomeLayerEntity;
-  loadedAt: number;  // Timestamp for LRU
-  lastUsedAt: number;  // Timestamp for LRU
-  memoryMB: number;  // Memory footprint
-}
+export interface PersonaGenomeConfig {
+  /** Base model name (e.g., 'deepseek-coder-v2', 'llama-3') */
+  baseModel: string;
 
-/**
- * Memory budget configuration
- */
-export interface GenomeConfig {
-  maxMemoryMB: number;  // Total GPU memory budget for adapters
-  enableLogging: boolean;  // Debug logging
-}
-
-/**
- * Memory statistics
- */
-export interface GenomeStats {
-  totalAdaptersLoaded: number;
-  currentMemoryUsageMB: number;
+  /** Maximum GPU memory for adapters in MB */
   memoryBudgetMB: number;
-  cacheHits: number;
-  cacheMisses: number;
-  evictions: number;
-  loadLatencyMs: number;  // Average
+
+  /** Path to LoRA adapters directory on disk */
+  adaptersPath: string;
+
+  /** Initial adapters to register (but not load) */
+  initialAdapters?: Array<{
+    name: string;
+    domain: string;
+    path: string;
+    sizeMB: number;
+    priority?: number;
+  }>;
+}
+
+/**
+ * Genome state (for serialization/debugging)
+ */
+export interface PersonaGenomeState {
+  baseModel: string;
+  memoryBudgetMB: number;
+  memoryUsedMB: number;
+  memoryPressure: number; // 0.0-1.0 (percentage of budget used)
+  activeAdapters: LoRAAdapterState[];
+  availableAdapters: LoRAAdapterState[];
+  currentAdapter: string | null;
+  learningMode: boolean;
 }
 
 /**
  * PersonaGenome - LoRA adapter paging system
+ *
+ * Responsibilities:
+ * - Register available adapters (on disk)
+ * - Load/unload adapters based on task domain
+ * - Track memory usage and enforce budget
+ * - LRU eviction when memory full
+ * - Enable fine-tuning mode for training tasks
  */
 export class PersonaGenome {
-  private readonly personaId: UUID;
-  private readonly personaName: string;
-  private readonly config: GenomeConfig;
+  private config: PersonaGenomeConfig;
 
-  // Active adapters (LRU cache)
-  private activeAdapters: Map<UUID, LoadedAdapter> = new Map();
+  /** Adapters currently loaded in GPU memory */
+  private activeAdapters: Map<string, LoRAAdapter> = new Map();
 
-  // Genome reference (stack of layer IDs)
-  private genome: GenomeEntity | null = null;
+  /** Adapters registered but not loaded (on disk) */
+  private availableAdapters: Map<string, LoRAAdapter> = new Map();
 
-  // Current adapter (most recently activated)
-  private currentAdapter: LoadedAdapter | null = null;
+  /** Current memory usage in MB */
+  private memoryUsedMB: number = 0;
 
-  // Stats tracking
-  private stats: GenomeStats = {
-    totalAdaptersLoaded: 0,
-    currentMemoryUsageMB: 0,
-    memoryBudgetMB: 0,
-    cacheHits: 0,
-    cacheMisses: 0,
-    evictions: 0,
-    loadLatencyMs: 0
-  };
+  /** Currently active adapter (last activated) */
+  private currentAdapter: LoRAAdapter | null = null;
 
-  private totalLoadLatency: number = 0;
-  private loadCount: number = 0;
+  /** Whether fine-tuning is currently active */
+  private learningMode: boolean = false;
 
-  constructor(
-    personaId: UUID,
-    personaName: string,
-    config: Partial<GenomeConfig> = {}
-  ) {
-    this.personaId = personaId;
-    this.personaName = personaName;
-    this.config = {
-      maxMemoryMB: config.maxMemoryMB ?? 512,  // Default 512MB GPU memory
-      enableLogging: config.enableLogging ?? false
-    };
+  constructor(config: PersonaGenomeConfig) {
+    this.config = config;
 
-    this.stats.memoryBudgetMB = this.config.maxMemoryMB;
-
-    if (this.config.enableLogging) {
-      console.log(`🧬 PersonaGenome: Initialized for ${this.personaName} (budget: ${this.config.maxMemoryMB}MB)`);
-    }
-  }
-
-  /**
-   * Set genome reference (stack of layers)
-   */
-  setGenome(genome: GenomeEntity): void {
-    this.genome = genome;
-
-    if (this.config.enableLogging) {
-      console.log(`🧬 PersonaGenome: Loaded genome "${genome.name}" with ${genome.layers.length} layers`);
-    }
-  }
-
-  /**
-   * Activate adapter for specific trait/task
-   * Uses LRU eviction if memory budget exceeded
-   */
-  async activateSkill(traitType: TraitType): Promise<void> {
-    if (!this.genome) {
-      throw new Error('PersonaGenome: No genome loaded, call setGenome() first');
-    }
-
-    // Find layer reference in genome stack
-    const layerRef = this.findLayerByTrait(traitType);
-    if (!layerRef) {
-      throw new Error(`PersonaGenome: No layer found for trait "${traitType}"`);
-    }
-
-    // Check if already loaded (cache hit)
-    if (this.activeAdapters.has(layerRef.layerId)) {
-      const adapter = this.activeAdapters.get(layerRef.layerId)!;
-      adapter.lastUsedAt = Date.now();
-      this.currentAdapter = adapter;
-      this.stats.cacheHits++;
-
-      if (this.config.enableLogging) {
-        console.log(`🧬 PersonaGenome: Cache hit for ${traitType} (layer ${layerRef.layerId.slice(0, 8)}...)`);
+    // Register initial adapters (but don't load them yet)
+    if (config.initialAdapters) {
+      for (const adapterConfig of config.initialAdapters) {
+        this.registerAdapter(adapterConfig);
       }
+    }
 
+    console.log(`🧬 PersonaGenome: Initialized with base model ${config.baseModel}, memory budget ${config.memoryBudgetMB}MB`);
+  }
+
+  /**
+   * Register a new adapter (adds to available pool, doesn't load)
+   */
+  registerAdapter(config: {
+    name: string;
+    domain: string;
+    path: string;
+    sizeMB: number;
+    priority?: number;
+  }): void {
+    const adapter = new LoRAAdapter({
+      id: randomUUID() as UUID,
+      name: config.name,
+      domain: config.domain,
+      path: config.path,
+      sizeMB: config.sizeMB,
+      priority: config.priority
+    });
+
+    this.availableAdapters.set(config.name, adapter);
+
+    console.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB)`);
+  }
+
+  /**
+   * Activate a skill adapter for the current task
+   *
+   * If already loaded: Just switch to it and update lastUsed
+   * If not loaded: Load from disk (evicting LRU adapters if needed)
+   *
+   * This is the KEY method that implements virtual memory paging
+   */
+  async activateSkill(skillName: string): Promise<void> {
+    // Already active? Just mark as used
+    if (this.activeAdapters.has(skillName)) {
+      const adapter = this.activeAdapters.get(skillName)!;
+      adapter.markUsed();
+      this.currentAdapter = adapter;
+      console.log(`🧬 PersonaGenome: Skill ${skillName} already active (cache hit)`);
       return;
     }
 
-    // Cache miss - load from disk
-    this.stats.cacheMisses++;
-
-    // Evict LRU adapters if memory budget exceeded
-    await this.ensureMemoryBudget(layerRef);
-
-    // Load adapter from disk (simulated)
-    const startTime = Date.now();
-    const layer = await this.loadLayer(layerRef.layerId);
-    const loadLatency = Date.now() - startTime;
-
-    this.totalLoadLatency += loadLatency;
-    this.loadCount++;
-    this.stats.loadLatencyMs = this.totalLoadLatency / this.loadCount;
-
-    const loaded: LoadedAdapter = {
-      layerId: layerRef.layerId,
-      traitType: layerRef.traitType,
-      layer,
-      loadedAt: Date.now(),
-      lastUsedAt: Date.now(),
-      memoryMB: layer.sizeMB
-    };
-
-    this.activeAdapters.set(layerRef.layerId, loaded);
-    this.currentAdapter = loaded;
-    this.stats.currentMemoryUsageMB += layer.sizeMB;
-    this.stats.totalAdaptersLoaded++;
-
-    if (this.config.enableLogging) {
-      console.log(`🧬 PersonaGenome: Loaded ${traitType} (${layer.sizeMB}MB, ${loadLatency}ms)`);
+    // Check if adapter is registered
+    const adapter = this.availableAdapters.get(skillName);
+    if (!adapter) {
+      console.warn(`⚠️ PersonaGenome: Skill ${skillName} not registered - cannot activate`);
+      return;
     }
+
+    console.log(`🧬 PersonaGenome: Activating skill ${skillName} (cache miss - paging in)...`);
+
+    // Check if we need to evict adapters to make space
+    const adapterSize = adapter.getSize();
+    while (this.memoryUsedMB + adapterSize > this.config.memoryBudgetMB) {
+      await this.evictLRU();
+    }
+
+    // Load adapter from disk
+    await adapter.load();
+
+    // Move from available to active
+    this.activeAdapters.set(skillName, adapter);
+    this.memoryUsedMB += adapterSize;
+    this.currentAdapter = adapter;
+
+    console.log(`✅ PersonaGenome: Skill ${skillName} activated (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }
 
   /**
-   * Get current active adapter
+   * Evict least-recently-used adapter from memory
+   *
+   * Uses weighted LRU algorithm:
+   * - Never evict adapters with priority > 0.9
+   * - Score = age_seconds / (priority * 10)
+   * - Higher score = more likely to evict
    */
-  getCurrentAdapter(): LoadedAdapter | null {
+  async evictLRU(): Promise<void> {
+    if (this.activeAdapters.size === 0) {
+      console.warn(`⚠️ PersonaGenome: No adapters to evict`);
+      return;
+    }
+
+    // Find adapter with highest eviction score
+    let maxScore = -Infinity;
+    let victimName: string | null = null;
+    let victim: LoRAAdapter | null = null;
+
+    for (const [name, adapter] of this.activeAdapters.entries()) {
+      const score = adapter.calculateEvictionScore();
+      if (score > maxScore) {
+        maxScore = score;
+        victimName = name;
+        victim = adapter;
+      }
+    }
+
+    if (!victim || !victimName) {
+      console.warn(`⚠️ PersonaGenome: No evictable adapters found`);
+      return;
+    }
+
+    console.log(`📤 PersonaGenome: Evicting ${victimName} (score=${maxScore.toFixed(2)}) to free ${victim.getSize()}MB...`);
+
+    // Unload adapter
+    await victim.unload();
+
+    // Move from active back to available
+    this.activeAdapters.delete(victimName);
+    this.memoryUsedMB -= victim.getSize();
+
+    console.log(`✅ PersonaGenome: Evicted ${victimName} (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
+  }
+
+  /**
+   * Enable fine-tuning mode for the current adapter
+   *
+   * Phase 6: Stubbed - no actual training yet
+   * Phase 7: Will enable gradient accumulation in Ollama
+   */
+  async enableLearningMode(skillName: string): Promise<void> {
+    if (!this.activeAdapters.has(skillName)) {
+      throw new Error(`Cannot enable learning mode - adapter ${skillName} not loaded`);
+    }
+
+    const adapter = this.activeAdapters.get(skillName)!;
+    await adapter.enableTraining();
+
+    this.learningMode = true;
+
+    console.log(`🧬 PersonaGenome: Learning mode enabled for ${skillName}`);
+  }
+
+  /**
+   * Disable fine-tuning mode for the current adapter
+   *
+   * Phase 6: Stubbed - no actual training yet
+   * Phase 7: Will save updated weights to disk
+   */
+  async disableLearningMode(skillName: string): Promise<void> {
+    if (!this.activeAdapters.has(skillName)) {
+      return;
+    }
+
+    const adapter = this.activeAdapters.get(skillName)!;
+    await adapter.disableTraining();
+
+    this.learningMode = false;
+
+    console.log(`🧬 PersonaGenome: Learning mode disabled for ${skillName}`);
+  }
+
+  /**
+   * Get memory pressure (0.0-1.0)
+   */
+  getMemoryPressure(): number {
+    return this.memoryUsedMB / this.config.memoryBudgetMB;
+  }
+
+  /**
+   * Get current memory usage in MB
+   */
+  getMemoryUsed(): number {
+    return this.memoryUsedMB;
+  }
+
+  /**
+   * Get memory budget in MB
+   */
+  getMemoryBudget(): number {
+    return this.config.memoryBudgetMB;
+  }
+
+  /**
+   * Check if learning mode is active
+   */
+  isLearningMode(): boolean {
+    return this.learningMode;
+  }
+
+  /**
+   * Get currently active adapter
+   */
+  getCurrentAdapter(): LoRAAdapter | null {
     return this.currentAdapter;
   }
 
   /**
-   * Get all active adapters
+   * Get list of all active adapters
    */
-  getActiveAdapters(): LoadedAdapter[] {
+  getActiveAdapters(): LoRAAdapter[] {
     return Array.from(this.activeAdapters.values());
   }
 
   /**
-   * Get memory statistics
+   * Get list of all available adapters (active + on disk)
    */
-  getStats(): GenomeStats {
-    return { ...this.stats };
+  getAllAdapters(): LoRAAdapter[] {
+    const all = new Map<string, LoRAAdapter>();
+
+    // Add all available adapters
+    for (const [name, adapter] of this.availableAdapters.entries()) {
+      all.set(name, adapter);
+    }
+
+    // Override with active adapters (which have updated state)
+    for (const [name, adapter] of this.activeAdapters.entries()) {
+      all.set(name, adapter);
+    }
+
+    return Array.from(all.values());
   }
 
   /**
-   * Clear all loaded adapters (reset)
+   * Get full genome state (for serialization/debugging)
    */
-  async unloadAll(): Promise<void> {
-    this.activeAdapters.clear();
-    this.currentAdapter = null;
-    this.stats.currentMemoryUsageMB = 0;
-
-    if (this.config.enableLogging) {
-      console.log(`🧬 PersonaGenome: Unloaded all adapters`);
-    }
+  getState(): PersonaGenomeState {
+    return {
+      baseModel: this.config.baseModel,
+      memoryBudgetMB: this.config.memoryBudgetMB,
+      memoryUsedMB: this.memoryUsedMB,
+      memoryPressure: this.getMemoryPressure(),
+      activeAdapters: Array.from(this.activeAdapters.values()).map(a => a.getState()),
+      availableAdapters: Array.from(this.availableAdapters.values()).map(a => a.getState()),
+      currentAdapter: this.currentAdapter?.getName() ?? null,
+      learningMode: this.learningMode
+    };
   }
 
   /**
-   * Check if memory budget allows loading new adapter
-   * Evict LRU adapters if necessary
+   * Unload all adapters (cleanup on shutdown)
    */
-  private async ensureMemoryBudget(layerRef: GenomeLayerReference): Promise<void> {
-    // Estimate size (we don't have actual layer yet, use average or genome metadata)
-    const estimatedSizeMB = 50;  // TODO: Get from genome metadata or layer reference
-
-    while (
-      this.stats.currentMemoryUsageMB + estimatedSizeMB > this.config.maxMemoryMB &&
-      this.activeAdapters.size > 0
-    ) {
-      await this.evictLRU();
-    }
-  }
-
-  /**
-   * Evict least recently used adapter
-   */
-  private async evictLRU(): Promise<void> {
-    if (this.activeAdapters.size === 0) {
-      return;
-    }
-
-    // Find LRU adapter
-    let lruAdapter: LoadedAdapter | null = null;
-    let oldestTime = Date.now();
+  async shutdown(): Promise<void> {
+    console.log(`🧬 PersonaGenome: Shutting down - unloading ${this.activeAdapters.size} adapters...`);
 
     for (const adapter of this.activeAdapters.values()) {
-      if (adapter.lastUsedAt < oldestTime) {
-        oldestTime = adapter.lastUsedAt;
-        lruAdapter = adapter;
-      }
+      await adapter.unload();
     }
 
-    if (!lruAdapter) {
-      return;
-    }
+    this.activeAdapters.clear();
+    this.memoryUsedMB = 0;
+    this.currentAdapter = null;
 
-    // Evict
-    this.activeAdapters.delete(lruAdapter.layerId);
-    this.stats.currentMemoryUsageMB -= lruAdapter.memoryMB;
-    this.stats.evictions++;
-
-    // Clear current adapter if it was evicted
-    if (this.currentAdapter?.layerId === lruAdapter.layerId) {
-      this.currentAdapter = null;
-    }
-
-    if (this.config.enableLogging) {
-      console.log(`🧬 PersonaGenome: Evicted LRU adapter ${lruAdapter.traitType} (freed ${lruAdapter.memoryMB}MB)`);
-    }
-  }
-
-  /**
-   * Find layer reference by trait type in genome stack
-   * Returns highest priority (last in stack) layer for trait
-   */
-  private findLayerByTrait(traitType: TraitType): GenomeLayerReference | null {
-    if (!this.genome) {
-      return null;
-    }
-
-    // Search from end of stack (higher priority)
-    for (let i = this.genome.layers.length - 1; i >= 0; i--) {
-      const layer = this.genome.layers[i];
-      if (layer.traitType === traitType && layer.enabled) {
-        return layer;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Load layer from disk (simulated)
-   * In production: Load actual LoRA weights from filesystem
-   */
-  private async loadLayer(layerId: UUID): Promise<GenomeLayerEntity> {
-    // TODO: Actual implementation would load from DataDaemon
-    // For now, create mock layer
-    const { GenomeLayerEntity } = await import('../../../genome/entities/GenomeLayerEntity');
-    const layer = new GenomeLayerEntity();
-    layer.id = layerId;
-    layer.name = `Mock Layer ${layerId.slice(0, 8)}`;
-    layer.traitType = 'domain_expertise';
-    layer.source = 'trained';
-    layer.modelPath = `/path/to/adapters/${layerId}.safetensors`;
-    layer.sizeMB = 50;  // Mock size
-    layer.rank = 16;
-
-    // Simulate disk I/O latency (10-50ms)
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 40 + 10));
-
-    return layer;
+    console.log(`✅ PersonaGenome: Shutdown complete`);
   }
 }
