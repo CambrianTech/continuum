@@ -23,6 +23,7 @@ import type { DataQueryCloseParams, DataQueryCloseResult } from '../../../../com
 import type { StateCreateParams, StateCreateResult } from '../../../../commands/state/create/shared/StateCreateTypes';
 import type { StateGetParams, StateGetResult } from '../../../../commands/state/get/shared/StateGetTypes';
 import type { StateUpdateParams, StateUpdateResult } from '../../../../commands/state/update/shared/StateUpdateTypes';
+import type { AdapterTestParams, AdapterTestResult, AllAdaptersTestResult } from '../../../../commands/ai/adapter/test/shared/AdapterTestTypes';
 
 /**
  * Command Registry - Maps command names to their param/result types
@@ -84,6 +85,10 @@ export interface CommandRegistry {
   'state/update': {
     params: StateUpdateParams;
     result: StateUpdateResult<any>;
+  };
+  'ai/adapter/test': {
+    params: AdapterTestParams;
+    result: AdapterTestResult | AllAdaptersTestResult;
   };
   // Add more commands here...
 }
