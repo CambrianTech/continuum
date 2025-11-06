@@ -153,8 +153,10 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
         connectivity = WidgetConnectivityTester.testDataConnectivity(widgetRef.element);
       }
 
-      // Extract entity COUNT from scroller - don't include full entities (too large)
+      // Extract entity COUNT and IDs from scroller
+      // Full entities are too large, but we need IDs for test verification
       let entityCount = 0;
+      let entityIds: string[] = [];
       const widget = widgetRef.element as any;
       if (widget.scroller && typeof widget.scroller === 'object') {
         // entities might be a getter function or array property
@@ -164,7 +166,16 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
 
         if (Array.isArray(entitiesValue)) {
           entityCount = entitiesValue.length;
-          logs.push(`📦 Found ${entityCount} entities in widget scroller (count only, not including full data)`);
+          // Extract just the IDs for verification (lightweight)
+          // Try multiple ID property names (id, _id, entityId, etc.)
+          entityIds = entitiesValue.map((e: any) => e?.id || e?._id || e?.entityId).filter(id => id !== undefined && id !== null);
+          logs.push(`📦 Found ${entityCount} entities in widget scroller (extracted ${entityIds.length} IDs for verification)`);
+          if (entityIds.length === 0 && entityCount > 0) {
+            // DEBUG: Log first entity structure to see what properties it has
+            const firstEntity = entitiesValue[0];
+            const keys = firstEntity ? Object.keys(firstEntity).slice(0, 10) : [];
+            logs.push(`⚠️ Entity ID extraction failed - first entity keys: ${keys.join(', ')}`);
+          }
         } else {
           logs.push(`⚠️ Widget has scroller but entities is not an array: ${typeof entitiesValue}`);
         }
@@ -201,6 +212,7 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
           messageCount: widgetState.messageCount,
           currentRoomId: widgetState.currentRoomId,
           entityCount,
+          entityIds, // Include entity IDs for test verification
         },
         messages,
         eventSystem,
