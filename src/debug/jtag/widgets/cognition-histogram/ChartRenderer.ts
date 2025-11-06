@@ -191,7 +191,7 @@ export abstract class ChartRenderer {
     }
 
     if (options.glow) {
-      rect.style.filter = `drop-shadow(0 0 4px ${fill})`;
+      // rect.style.filter = `drop-shadow(0 0 4px ${fill})`; // DISABLED for performance
     }
 
     return rect;
@@ -218,7 +218,7 @@ export abstract class ChartRenderer {
     polyline.setAttribute('stroke-linejoin', 'round');
 
     if (options.glow) {
-      polyline.style.filter = 'drop-shadow(0 0 4px rgba(255, 215, 0, 0.6))';
+      // polyline.style.filter = 'drop-shadow(0 0 4px rgba(255, 215, 0, 0.6))'; // DISABLED for performance
     }
 
     return polyline;
