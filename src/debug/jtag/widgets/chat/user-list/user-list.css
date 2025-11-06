@@ -183,6 +183,7 @@
     transparent 360deg
   );
   transition: opacity 0.3s ease;
+  will-change: transform; /* Promote to GPU layer for smooth rotation */
 }
 
 /* Active comet animations - show ::before and spin */

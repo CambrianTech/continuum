@@ -148,30 +148,21 @@ export class InfiniteScrollHelper {
 
   /**
    * Force intersection observer to re-evaluate after DOM changes
-   * Uses DOM events for proper timing with Shadow DOM
+   * DOM is already updated synchronously - no RAF needed
    */
   forceIntersectionCheck(): void {
     if (this.sentinel && this.scrollContainer && this.observer) {
       console.log('🔧 InfiniteScrollHelper: Forcing intersection check after DOM update');
 
-      // Use requestAnimationFrame to ensure DOM updates are complete
-      requestAnimationFrame(() => {
-        if (this.sentinel && this.scrollContainer) {
-          // Remove and re-add sentinel to force intersection observer update
-          this.sentinel.remove();
-          this.scrollContainer.insertBefore(this.sentinel, this.scrollContainer.firstChild);
-          console.log('🔧 InfiniteScrollHelper: Repositioned sentinel after DOM frame');
+      // DOM is already updated - remove/re-add sentinel immediately
+      this.sentinel.remove();
+      this.scrollContainer.insertBefore(this.sentinel, this.scrollContainer.firstChild);
+      console.log('🔧 InfiniteScrollHelper: Repositioned sentinel');
 
-          // Use another requestAnimationFrame for intersection observer timing
-          requestAnimationFrame(() => {
-            if (this.observer && this.sentinel) {
-              this.observer.unobserve(this.sentinel);
-              this.observer.observe(this.sentinel);
-              console.log('🔧 InfiniteScrollHelper: Re-observed sentinel after repositioning');
-            }
-          });
-        }
-      });
+      // Reset observer immediately - no RAF needed
+      this.observer.unobserve(this.sentinel);
+      this.observer.observe(this.sentinel);
+      console.log('🔧 InfiniteScrollHelper: Re-observed sentinel');
     }
   }
 

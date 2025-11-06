@@ -181,15 +181,13 @@ export class GenericInfiniteScroll<TItem, TCursor = string> {
       this.scrollContainer.appendChild(fragment);
     }
 
-    // Restore scroll position
-    requestAnimationFrame(() => {
-      const newScrollHeight = this.scrollContainer!.scrollHeight;
-      const heightDifference = newScrollHeight - scrollHeight;
-      this.scrollContainer!.scrollTop = scrollTop + heightDifference;
+    // Restore scroll position - DOM is already updated synchronously
+    const newScrollHeight = this.scrollContainer.scrollHeight;
+    const heightDifference = newScrollHeight - scrollHeight;
+    this.scrollContainer.scrollTop = scrollTop + heightDifference;
 
-      // Reset intersection observer after DOM changes
-      this.forceIntersectionCheck();
-    });
+    // Reset intersection observer after DOM changes
+    this.forceIntersectionCheck();
   }
 
   /**
@@ -198,21 +196,13 @@ export class GenericInfiniteScroll<TItem, TCursor = string> {
   private forceIntersectionCheck(): void {
     if (!this.sentinel || !this.scrollContainer || !this.observer) return;
 
-    requestAnimationFrame(() => {
-      if (this.sentinel && this.scrollContainer) {
-        // Reposition sentinel
-        this.sentinel.remove();
-        this.scrollContainer.insertBefore(this.sentinel, this.scrollContainer.firstChild);
+    // Reposition sentinel - DOM already updated, no RAF needed
+    this.sentinel.remove();
+    this.scrollContainer.insertBefore(this.sentinel, this.scrollContainer.firstChild);
 
-        // Reset observer
-        requestAnimationFrame(() => {
-          if (this.observer && this.sentinel) {
-            this.observer.unobserve(this.sentinel);
-            this.observer.observe(this.sentinel);
-          }
-        });
-      }
-    });
+    // Reset observer - synchronous, no RAF needed
+    this.observer.unobserve(this.sentinel);
+    this.observer.observe(this.sentinel);
   }
 
   /**

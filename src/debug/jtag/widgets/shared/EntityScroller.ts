@@ -99,6 +99,8 @@ export function createScroller<T extends BaseEntity>(
   let cursor: string | undefined;
   let observer: IntersectionObserver | undefined;
   let sentinel: HTMLElement | undefined;
+  let observerActive = false; // Track whether observer should be running
+  let idleTimeout: ReturnType<typeof setTimeout> | undefined;
 
   // Smart scroll utilities - check if user is near newest content
   const isNearEnd = (threshold: number = config.autoScroll?.threshold || 100): boolean => {
@@ -131,12 +133,11 @@ export function createScroller<T extends BaseEntity>(
   let resizeObserver: ResizeObserver | undefined;
 
   // Setup ResizeObserver for container (works inside shadow DOM)
+  // ONLY for chat widgets with autoScroll enabled
   if (config.autoScroll?.enabled) {
     resizeObserver = new ResizeObserver(() => {
-      // Always scroll to bottom on resize (user request: simpler behavior)
-      requestAnimationFrame(() => {
-        scrollToEnd('instant'); // Instant scroll on resize to avoid jank
-      });
+      // Scroll directly - no requestAnimationFrame
+      scrollToEnd('instant');
     });
     resizeObserver.observe(container);
   }
@@ -252,10 +253,11 @@ export function createScroller<T extends BaseEntity>(
     }
   };
 
-  // Intersection observer for infinite scroll
-  const setupObserver = (): void => {
+  // Activate observer ONLY when needed (lazy + event-driven)
+  const activateObserver = (): void => {
+    if (!hasMoreItems || observerActive) return;
+
     // Calculate rootMargin as 20% of container height for smooth loading before reaching top
-    // This provides enough buffer to trigger loading before user reaches the sentinel
     const rootMarginPx = Math.max(100, container.clientHeight * 0.2);
     const rootMarginStr = `${rootMarginPx}px`;
 
@@ -269,27 +271,61 @@ export function createScroller<T extends BaseEntity>(
       },
       {
         root: container,
-        // Use percentage-based rootMargin (20% of viewport, min 100px)
         rootMargin: config.rootMargin ?? rootMarginStr,
         threshold: config.threshold ?? 0.1
       }
     );
 
-    // Create sentinel
-    sentinel = document.createElement('div');
-    sentinel.className = 'entity-scroller-sentinel';
-    sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0;';
+    // Create sentinel if it doesn't exist
+    if (!sentinel) {
+      sentinel = document.createElement('div');
+      sentinel.className = 'entity-scroller-sentinel';
+      sentinel.style.cssText = 'height: 1px; opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0;';
 
-    // Discord/Slack pattern: newest at bottom, oldest at top
-    // Sentinel at DOM START (top) - when user scrolls up, load older messages
-    if (config.direction === 'newest-first') {
-      container.insertBefore(sentinel, container.firstChild);
-    } else {
-      container.appendChild(sentinel);
+      if (config.direction === 'newest-first') {
+        container.insertBefore(sentinel, container.firstChild);
+      } else {
+        container.appendChild(sentinel);
+      }
     }
 
     observer.observe(sentinel);
+    observerActive = true;
   };
+
+  // Deactivate observer when idle (go silent)
+  const deactivateObserver = (): void => {
+    if (!observerActive) return;
+
+    observer?.disconnect();
+    observer = undefined;
+    observerActive = false;
+  };
+
+  // Event-driven observer activation: activate on scroll, deactivate after idle
+  const IDLE_TIMEOUT_MS = 2000; // Go idle after 2 seconds of no scroll
+
+  const onUserScroll = (): void => {
+    // Clear any pending idle timeout
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+
+    // Activate observer when user scrolls (ONLY if there's more data)
+    if (hasMoreItems && !observerActive) {
+      activateObserver();
+    }
+
+    // Schedule deactivation after idle period
+    idleTimeout = setTimeout(() => {
+      deactivateObserver();
+    }, IDLE_TIMEOUT_MS);
+  };
+
+  // Listen for scroll events ONLY if there's potentially more data to load
+  if (hasMoreItems) {
+    container.addEventListener('scroll', onUserScroll, { passive: true });
+  }
 
   // The clean API object
   const scroller: EntityScroller<T> = {
@@ -315,17 +351,14 @@ export function createScroller<T extends BaseEntity>(
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
-          // Setup observer AFTER DOM is painted
-          requestAnimationFrame(() => {
-            setupObserver();
+          // For newest-first (chat), scroll to bottom to show latest messages
+          // DON'T use requestAnimationFrame - just scroll directly
+          if (config.direction === 'newest-first') {
+            scrollToEnd('instant');
+          }
 
-            // For newest-first (chat), scroll to bottom to show latest messages
-            if (config.direction === 'newest-first') {
-              scrollToEnd('instant'); // Instant scroll on initial load
-            }
-          });
-        } else {
-          setupObserver();
+          // Observer will activate lazily when user scrolls (event-driven)
+          // No need to setup observer here - it activates on scroll events
         }
       } catch (error) {
         console.error('❌ EntityScroller: Error during load():', error);
@@ -457,12 +490,8 @@ export function createScroller<T extends BaseEntity>(
 
       // Auto-scroll only if entity was genuinely added AND user was at bottom
       if (entityManager.count() > initialCount && wasAtBottom) {
-        // Double RAF to ensure DOM has been laid out and scrollHeight is updated
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            scrollToEnd();
-          });
-        });
+        // Scroll directly - DOM is already updated synchronously
+        scrollToEnd();
       }
     },
 
@@ -518,6 +547,10 @@ export function createScroller<T extends BaseEntity>(
       observer?.disconnect();
       resizeObserver?.disconnect();
       sentinel?.remove();
+      container.removeEventListener('scroll', onUserScroll);
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+      }
       entityManager.clear();
     }
   };
