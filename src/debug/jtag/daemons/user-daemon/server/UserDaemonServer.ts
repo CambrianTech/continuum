@@ -48,6 +48,25 @@ export class UserDaemonServer extends UserDaemon {
     this.setupEventSubscriptions().catch((error: Error) => {
       console.error('❌ UserDaemon: Failed to setup event subscriptions:', error);
     });
+
+    // Initialize all PersonaUser instances when DataDaemon is ready (event-driven, not setTimeout)
+    this.subscribeToSystemReady();
+  }
+
+  /**
+   * Subscribe to system ready event to initialize personas when DataDaemon is ready
+   */
+  private subscribeToSystemReady(): void {
+    // Import SYSTEM_EVENTS at top of file, use it here
+    const unsubReady = Events.subscribe('system:ready', async (payload: any) => {
+      if (payload?.daemon === 'data') {
+        console.log('📡 UserDaemon: Received system:ready from DataDaemon, initializing personas...');
+        await this.ensurePersonaClients().catch((error: Error) => {
+          console.error('❌ UserDaemon: Failed to initialize persona clients:', error);
+        });
+      }
+    });
+    this.unsubscribeFunctions.push(unsubReady);
   }
 
   /**

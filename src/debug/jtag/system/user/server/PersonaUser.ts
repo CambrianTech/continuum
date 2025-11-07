@@ -133,7 +133,8 @@ export class PersonaUser extends AIUser {
   public trainingAccumulator: TrainingDataAccumulator;
 
   // PHASE 3: Autonomous polling loop
-  private servicingLoop: NodeJS.Timeout | null = null;
+  private servicingLoop: NodeJS.Timeout | null = null; // Deprecated - now using continuous async loop
+  private servicingLoopActive: boolean = false; // Controls continuous service loop
 
   // PHASE 7.5.1: Training readiness check loop (runs less frequently than servicing loop)
   private trainingCheckLoop: NodeJS.Timeout | null = null;
@@ -608,7 +609,12 @@ export class PersonaUser extends AIUser {
       );
     }
 
-    // === FREE-FLOWING COORDINATION: Broadcast thought simultaneously with other AIs ===
+    // === AUTONOMOUS DECISION: Persona personality adapter decides ===
+    // REMOVED: Thoughtstream coordination (centralized blocking)
+    // Personas are organic decision makers - if their personality adapter says "respond", they respond
+    // Multiple AIs responding is natural conversation, not a problem to prevent
+
+    /* DISABLED: Thoughtstream centralized coordination (phase out)
     const coordinator = getChatCoordinator();
     const chatThought: ChatThought = {
       personaId: this.id,
@@ -677,6 +683,9 @@ export class PersonaUser extends AIUser {
     }
 
     console.log(`✅ ${this.displayName}: Granted permission by coordinator (conf=${gatingResult.confidence})`);
+    */
+
+    console.log(`✅ ${this.displayName}: Autonomous decision to respond (personality adapter, conf=${gatingResult.confidence})`);
 
     // 🔧 PHASE: Update RAG context
     console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
@@ -2001,13 +2010,14 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   // broadcastThought() method removed - now using getChatCoordinator().broadcastChatThought() directly
 
   /**
-   * PHASE 3: Start autonomous servicing loop (RTOS-inspired duty cycle)
+   * PHASE 3: Start autonomous servicing loop (Signal-based, not polling)
    *
-   * The persona continuously polls the inbox at an adaptive cadence based on mood:
-   * - idle: 3s (eager to work)
-   * - active: 5s (normal processing)
-   * - tired: 7s (moderate pace)
-   * - overwhelmed: 10s (back pressure)
+   * SIGNAL-BASED WAKEUP: No polling delay - instant response when work arrives
+   * The persona waits on EventEmitter signal with adaptive timeout based on mood:
+   * - idle: 3s timeout (eager to work, short rest)
+   * - active: 5s timeout (normal processing)
+   * - tired: 7s timeout (moderate pace, longer rest)
+   * - overwhelmed: 10s timeout (back pressure, recover energy)
    *
    * This is lifecycle-based - loop runs continuously while persona is "online"
    */
@@ -2015,12 +2025,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     const cadence = this.personaState.getCadence();
     const mood = this.personaState.getState().mood;
 
-    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (cadence=${cadence}ms, mood=${mood})`);
+    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (SIGNAL-BASED, timeout=${cadence}ms, mood=${mood})`);
 
-    // Create polling loop for inbox servicing
-    this.servicingLoop = setInterval(async () => {
-      await this.serviceInbox();
-    }, cadence);
+    // Create continuous async loop (not setInterval) - signal-based waiting
+    this.servicingLoopActive = true;
+    this.runServiceLoop().catch(error => {
+      console.error(`❌ ${this.displayName}: Service loop crashed: ${error}`);
+    });
 
     // PHASE 7.5.1: Create training check loop (every 60 seconds)
     // Checks less frequently than inbox servicing to avoid overhead
@@ -2028,6 +2039,22 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     this.trainingCheckLoop = setInterval(async () => {
       await this.checkTrainingReadiness();
     }, 60000); // 60 seconds
+  }
+
+  /**
+   * Continuous service loop - runs until servicingLoopActive = false
+   * Uses signal-based waiting (not polling) for instant response
+   */
+  private async runServiceLoop(): Promise<void> {
+    while (this.servicingLoopActive) {
+      try {
+        await this.serviceInbox();
+      } catch (error) {
+        console.error(`❌ ${this.displayName}: Error in service loop: ${error}`);
+        // Continue loop despite errors
+      }
+    }
+    console.log(`🛑 ${this.displayName}: Service loop stopped`);
   }
 
   /**
@@ -2204,12 +2231,15 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       console.error(`❌ ${this.displayName}: Error generating self-tasks: ${error}`);
     }
 
-    // STEP 2: Check if inbox has work (messages or tasks)
-    if (this.inbox.getSize() === 0) {
-      // No work - REST to recover energy
-      const cadence = this.personaState.getCadence();
-      await this.personaState.rest(cadence); // Rest for one polling cycle
-      console.log(`💤 ${this.displayName}: Resting (no work) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
+    // STEP 2: SIGNAL-BASED WAIT (not polling) - wait for work with optional timeout
+    // If no work available, block on signal until work arrives or timeout (adaptive cadence)
+    const cadence = this.personaState.getCadence();
+    const hasWork = await this.inbox.waitForWork(cadence);
+
+    if (!hasWork) {
+      // Timeout occurred - REST to recover energy
+      await this.personaState.rest(cadence);
+      console.log(`💤 ${this.displayName}: Resting (timeout, no work) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
       this.adjustCadence();
       return;
     }
