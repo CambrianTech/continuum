@@ -12,11 +12,12 @@ Research papers written in markdown, version-controlled alongside implementation
 **Evidence**: 50% pruning maintains 98% quality, perplexity 975→211, 2.26× speedup
 **Target**: NeurIPS (novel architecture)
 
-### 2. [RTOS-Inspired AI Scheduling](rtos-inspired-ai-scheduling/paper.md) (IMPLEMENTATION COMPLETE)
-**Status**: Phases 1-3 complete, 60+ tests passing
-**Key Contribution**: Multi-domain priority queue with energy/mood tracking and adaptive cadence
-**Evidence**: PersonaInbox + PersonaState + autonomous loop, graceful degradation under load
-**Target**: ICML or AAAI (AI systems)
+### 2. [RTOS-Inspired AI Scheduling](rtos-inspired-ai-scheduling/paper.md) (PHASE 4 COMPLETE - READY FOR SUBMISSION)
+**Status**: Phases 1-4 complete, CNS integrated, human-like behaviors operational
+**Key Contribution**: Multi-domain priority queue + Central Nervous System with capability-based cognitive schedulers (Deterministic/Heuristic/Neural)
+**Evidence**: PersonaInbox + PersonaState + CNS orchestration, continuous learning, memory consolidation, parallel processing
+**Novel**: Capability-based scheduler selection, autonomous continuous learning (6hr cycles), RAG→SQLite memory consolidation
+**Target**: ICML or AAAI (AI systems) - **Ready for draft refinement**
 
 ### 3. [Self-Managed AI Autonomy](self-managed-ai-autonomy/paper.md) (PHASE 4 COMPLETE)
 **Status**: Task system implemented, self-generation Phase 5+
