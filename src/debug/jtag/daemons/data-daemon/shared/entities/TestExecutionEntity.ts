@@ -124,7 +124,7 @@ export class TestExecutionEntity extends BaseEntity {
   completedAt?: Date;
 
   get collection(): string {
-    return 'test_executions';
+    return TestExecutionEntity.collection;
   }
 
   validate(): { success: boolean; error?: string } {
