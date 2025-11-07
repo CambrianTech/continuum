@@ -1,7 +1,8 @@
 /**
- * Dataset Create Server Command
+ * Dataset Create Server Command - Async/Background Execution
  *
  * Creates compressed archives of AI conversation history for training datasets.
+ * Returns UUID immediately, runs archive creation in background.
  */
 
 import { spawn } from 'child_process';
@@ -13,57 +14,188 @@ import { createDatasetCreateResult } from '../shared/DatasetCreateTypes';
 import type { DatasetConfig, DatasetProjectConfig, DatasetManifest } from '../../shared/DatasetConfig';
 import { DEFAULT_DATASET_CONFIG } from '../../shared/DatasetConfig';
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
+import type { DataCreateParams, DataUpdateParams, DataCreateResult as DataCreateResultType } from '../../../../../daemons/data-daemon/shared/DataTypes';
+import { DatasetExecutionEntity, type DatasetArchiveInfo } from '../../../../../daemons/data-daemon/shared/entities/DatasetExecutionEntity';
+import type { CompressionType } from '../../shared/DatasetConfig';
 
 export class DatasetCreateServerCommand {
   /**
-   * Execute dataset creation
+   * Execute - returns UUID immediately, runs archive creation in background
    */
   async execute(params: DatasetCreateParams): Promise<DatasetCreateResult> {
-    const startTime = Date.now();
-    const sessionId = generateUUID();
+    console.log('📦 Starting dataset creation (async mode)...', params);
 
-    // Load configuration
+    // Generate job ID
+    const jobId = generateUUID();
+
+    // Load configuration to determine project count
     const config = await this.loadConfig();
-
-    // Resolve output path
     const outputPath = params.outputPath || this.resolveEnvPath(config.defaultOutputPath);
-    await fs.mkdir(outputPath, { recursive: true });
-
-    // Determine which projects to archive
     const projectsToArchive = this.selectProjects(config, params);
 
-    if (projectsToArchive.length === 0) {
-      return createDatasetCreateResult(params.context, sessionId, {
-        success: false,
-        message: 'No projects found to archive',
-        archives: [],
-        totalSizeBytes: 0,
-        durationMs: Date.now() - startTime
-      });
+    // Create initial execution entity
+    const execution: DatasetExecutionEntity = new DatasetExecutionEntity();
+    execution.id = jobId;
+    execution.projectFilter = params.project;
+    execution.sourceFilter = params.source;
+    execution.outputPath = outputPath;
+    execution.compression = (params.compression || config.compression) as CompressionType;
+    execution.includeManifest = params.includeManifest !== false;
+    execution.status = 'queued';
+    execution.progress = {
+      totalProjects: projectsToArchive.length,
+      completedProjects: 0,
+      percentComplete: 0,
+    };
+    execution.archives = [];
+    execution.summary = {
+      total: projectsToArchive.length,
+      successful: 0,
+      failed: 0,
+      totalSizeBytes: 0,
+    };
+
+    // Save to database
+    const createResult = await Commands.execute<DataCreateParams<DatasetExecutionEntity>, DataCreateResultType>('data/create', {
+      collection: DatasetExecutionEntity.collection,
+      data: execution,
+      id: jobId,
+    });
+
+    if (!createResult.success) {
+      throw new Error(`Failed to create dataset execution: ${createResult.error?.message ?? 'Unknown error'}`);
     }
 
-    // Create archives
-    const archives: DatasetCreateResult['archives'] = [];
-    let totalSizeBytes = 0;
+    console.log(`✅ Dataset job ${jobId} queued (${projectsToArchive.length} projects)`);
 
-    for (const project of projectsToArchive) {
+    // Start background execution (non-blocking)
+    setImmediate(() => {
+      this.executeArchiveCreationInBackground(jobId, params, config, projectsToArchive, outputPath).catch(async (error) => {
+        console.error(`❌ Background archive creation failed: ${error}`);
+        try {
+          await this.updateJobStatus(jobId, {
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+            completedAt: Date.now(),
+          });
+        } catch (updateError) {
+          console.error(`❌ Failed to update job status after error: ${updateError}`);
+        }
+      });
+    });
+
+    // Return immediately with job ID
+    return createDatasetCreateResult(params.context, jobId, {
+      success: true,
+      message: `Dataset job queued with ID: ${jobId}`,
+      archives: [],
+      totalSizeBytes: 0,
+      durationMs: 0,
+    });
+  }
+
+  /**
+   * Execute archive creation in background
+   */
+  private async executeArchiveCreationInBackground(
+    jobId: string,
+    params: DatasetCreateParams,
+    config: DatasetConfig,
+    projectsToArchive: DatasetProjectConfig[],
+    outputPath: string
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    // Update status to running
+    await this.updateJobStatus(jobId, {
+      status: 'running',
+      startedAt: startTime,
+    });
+
+    console.log(`🚀 Dataset job ${jobId} started - archiving ${projectsToArchive.length} projects`);
+
+    // Create archives
+    const archives: DatasetArchiveInfo[] = [];
+    let totalSizeBytes = 0;
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < projectsToArchive.length; i++) {
+      const project = projectsToArchive[i];
+
       try {
         const archive = await this.createArchive(config, project, outputPath, params);
         archives.push(archive);
         totalSizeBytes += archive.sizeBytes;
+        successCount++;
 
-        console.log(`✅ Created ${archive.filename} (${this.formatBytes(archive.sizeBytes)})`);
+        console.log(`✅ [${i + 1}/${projectsToArchive.length}] Created ${archive.filename} (${this.formatBytes(archive.sizeBytes)})`);
+
+        // Update progress
+        await this.updateJobStatus(jobId, {
+          progress: {
+            totalProjects: projectsToArchive.length,
+            completedProjects: i + 1,
+            percentComplete: Math.round(((i + 1) / projectsToArchive.length) * 100),
+          },
+          archives,
+          summary: {
+            total: projectsToArchive.length,
+            successful: successCount,
+            failed: failCount,
+            totalSizeBytes,
+          },
+        });
       } catch (error) {
-        console.error(`❌ Failed to archive project ${project.name}:`, error);
+        console.error(`❌ [${i + 1}/${projectsToArchive.length}] Failed to archive project ${project.name}:`, error);
+        failCount++;
+
+        // Update failure count
+        await this.updateJobStatus(jobId, {
+          progress: {
+            totalProjects: projectsToArchive.length,
+            completedProjects: i + 1,
+            percentComplete: Math.round(((i + 1) / projectsToArchive.length) * 100),
+          },
+          summary: {
+            total: projectsToArchive.length,
+            successful: successCount,
+            failed: failCount,
+            totalSizeBytes,
+          },
+        });
       }
     }
 
-    return createDatasetCreateResult(params.context, sessionId, {
-      success: archives.length > 0,
-      message: `Created ${archives.length} dataset archive(s)`,
+    const durationMs = Date.now() - startTime;
+
+    // Mark as completed
+    await this.updateJobStatus(jobId, {
+      status: 'completed',
+      completedAt: Date.now(),
+      durationMs,
       archives,
-      totalSizeBytes,
-      durationMs: Date.now() - startTime
+      summary: {
+        total: projectsToArchive.length,
+        successful: successCount,
+        failed: failCount,
+        totalSizeBytes,
+      },
+    });
+
+    console.log(`✅ Dataset job ${jobId} completed in ${(durationMs / 1000).toFixed(1)}s`);
+    console.log(`   📊 Success: ${successCount}, Failed: ${failCount}, Total size: ${this.formatBytes(totalSizeBytes)}`);
+  }
+
+  /**
+   * Update job status in database
+   */
+  private async updateJobStatus(jobId: string, updates: Partial<DatasetExecutionEntity>): Promise<void> {
+    await Commands.execute<DataUpdateParams<DatasetExecutionEntity>, any>('data/update', {
+      collection: DatasetExecutionEntity.collection,
+      id: jobId,
+      data: updates,
     });
   }
 
@@ -110,7 +242,7 @@ export class DatasetCreateServerCommand {
     project: DatasetProjectConfig,
     outputPath: string,
     params: DatasetCreateParams
-  ): Promise<DatasetCreateResult['archives'][0]> {
+  ): Promise<DatasetArchiveInfo> {
     // Resolve source path
     const source = config.sources.find(s => s.id === project.sourceId);
     if (!source) {
@@ -134,7 +266,7 @@ export class DatasetCreateServerCommand {
     const archivePath = path.join(outputPath, filename);
 
     // Get compression flag
-    const compression = params.compression || config.compression;
+    const compression = (params.compression || config.compression) as CompressionType;
     const compFlag = this.getCompressionFlag(compression);
 
     // Create manifest if requested
@@ -162,7 +294,7 @@ export class DatasetCreateServerCommand {
       filename,
       path: archivePath,
       sizeBytes: stats.size,
-      compressionType: compression
+      compressionType: compression,
     };
   }
 
@@ -185,7 +317,7 @@ export class DatasetCreateServerCommand {
       projectId: project.id,
       projectName: project.name,
       createdAt: new Date().toISOString(),
-      compression: compression as any,
+      compression: compression as CompressionType,
       sourcePath,
       tags: project.tags || [],
       sizeBytes,
