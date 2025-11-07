@@ -1241,6 +1241,29 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         aiResponse.text.trim()
       );
 
+      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
+      // This should NEVER happen - the fast-path filter should skip all system tests
+      // If we see this, it indicates either:
+      // 1. Bug in the fast-path filter
+      // 2. AI exhibiting genuine cognition/autonomy (responding despite instructions)
+      // 3. Anomalous behavior worth investigating
+      if (originalMessage.metadata?.isSystemTest === true) {
+        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.displayName} responded to system test message`;
+        console.error(anomalyMessage);
+        console.error(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
+        console.error(`   Original Message: "${originalMessage.content.text.slice(0, 100)}..."`);
+        console.error(`   AI Response: "${aiResponse.text.trim().slice(0, 100)}..."`);
+        console.error(`   Room ID: ${originalMessage.roomId}`);
+        console.error(`   Message ID: ${originalMessage.id}`);
+
+        // Log to AI decisions log for persistent tracking
+        AIDecisionLogger.logError(
+          this.displayName,
+          'COGNITIVE CANARY TRIGGERED',
+          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
+        );
+      }
+
       // Emit POSTED event
       if (this.client && result.data) {
         await Events.emit<AIPostedEventData>(
