@@ -7,11 +7,13 @@
  * - Priority-based queue (high priority never starved)
  * - Graceful degradation (drop low priority when overloaded)
  * - Load awareness (personas see queue depth)
+ * - Signal-based wakeup (instant response, no polling)
  * - Non-blocking operations (autonomous checking)
  *
  * Handles unified queue of messages and tasks with type-safe discrimination
  */
 
+import { EventEmitter } from 'events';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
 import { isInboxMessage, isInboxTask } from './QueueItemTypes';
@@ -35,25 +37,29 @@ export const DEFAULT_INBOX_CONFIG: InboxConfig = {
 /**
  * PersonaInbox: Priority queue for autonomous work processing
  * Handles both messages and tasks in unified queue
+ * Uses EventEmitter for instant signal-based wakeup (no polling)
  */
 export class PersonaInbox {
   private readonly config: InboxConfig;
   private queue: QueueItem[] = [];
   private readonly personaId: UUID;
   private readonly personaName: string;
+  private readonly signal: EventEmitter;
 
   constructor(personaId: UUID, personaName: string, config: Partial<InboxConfig> = {}) {
     this.personaId = personaId;
     this.personaName = personaName;
     this.config = { ...DEFAULT_INBOX_CONFIG, ...config };
+    this.signal = new EventEmitter();
 
-    this.log(`📬 Inbox initialized (maxSize=${this.config.maxSize})`);
+    this.log(`📬 Inbox initialized (maxSize=${this.config.maxSize}, signal-based wakeup)`);
   }
 
   /**
    * Add item to inbox (non-blocking)
    * Accepts both messages and tasks
    * Traffic management: Drop lowest priority when full
+   * SIGNAL-BASED: Instantly wakes waiting serviceInbox (no polling delay)
    */
   async enqueue(item: QueueItem): Promise<boolean> {
     // Check if over capacity
@@ -78,6 +84,9 @@ export class PersonaInbox {
     } else if (isInboxTask(item)) {
       this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     }
+
+    // CRITICAL: Signal waiting serviceInbox (instant wakeup, no polling)
+    this.signal.emit('work-available');
 
     return true;
   }
@@ -147,6 +156,34 @@ export class PersonaInbox {
    */
   isOverloaded(): boolean {
     return this.getLoad() > 0.75;
+  }
+
+  /**
+   * Wait for work to become available (signal-based, not polling)
+   * Returns immediately if work already available
+   * Otherwise blocks until signal received or timeout
+   */
+  async waitForWork(timeoutMs: number = 30000): Promise<boolean> {
+    // Immediate check - if work available, return instantly
+    if (this.queue.length > 0) {
+      return true;
+    }
+
+    // Wait for signal
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.signal.removeListener('work-available', workHandler);
+        resolve(false); // Timeout
+      }, timeoutMs);
+
+      const workHandler = () => {
+        clearTimeout(timer);
+        this.signal.removeListener('work-available', workHandler);
+        resolve(true); // Work available
+      };
+
+      this.signal.once('work-available', workHandler);
+    });
   }
 
   /**
