@@ -87,8 +87,17 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
 
     // Start background execution (non-blocking)
     setImmediate(() => {
-      this.executeTestsInBackground(testId, params).catch(error => {
+      this.executeTestsInBackground(testId, params).catch(async (error) => {
         console.error(`❌ Background test execution failed: ${error}`);
+        // Update database status to failed so test isn't stuck in 'queued'
+        try {
+          await this.updateTestStatus(testId, {
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error)
+          });
+        } catch (updateError) {
+          console.error(`❌ Failed to update test status after error: ${updateError}`);
+        }
       });
     });
 
