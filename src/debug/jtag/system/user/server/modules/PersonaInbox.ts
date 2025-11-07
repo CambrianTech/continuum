@@ -18,8 +18,8 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
 import { isInboxMessage, isInboxTask } from './QueueItemTypes';
 
-// Re-export types for backward compatibility
-export type { InboxMessage, InboxTask } from './QueueItemTypes';
+// Re-export types for backward compatibility and external use
+export type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
 
 /**
  * Inbox configuration
