@@ -159,6 +159,8 @@ export class LoRAAdapter {
   async load(): Promise<void> {
     if (this.state.loaded) {
       console.log(`🧬 LoRAAdapter: ${this.state.name} already loaded`);
+      // Update LRU timestamp even if already loaded (fixes LRU eviction bug)
+      this.markUsed();
       return;
     }
 
