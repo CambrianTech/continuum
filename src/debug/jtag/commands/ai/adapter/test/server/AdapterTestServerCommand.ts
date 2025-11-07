@@ -7,7 +7,7 @@
  */
 
 import { CommandBase } from '../../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext } from '../../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type {
@@ -15,11 +15,17 @@ import type {
   AdapterTestResult,
   AllAdaptersTestResult,
   CapabilityTestResult,
+  AsyncTestResult,
 } from '../shared/AdapterTestTypes';
 import type { AIProviderAdapter, ModelCapability } from '../../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AIProviderDaemon } from '../../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import { Commands } from '../../../../../system/core/shared/Commands';
+import type { DataCreateParams, DataUpdateParams, DataCreateResult } from '../../../../../daemons/data-daemon/shared/DataTypes';
+import { TestExecutionEntity } from '../../../../../daemons/data-daemon/shared/entities/TestExecutionEntity';
+import { Events } from '../../../../../system/core/shared/Events';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
-export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, AdapterTestResult | AllAdaptersTestResult> {
+export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, AsyncTestResult> {
   constructor(
     context: JTAGContext,
     subpath: string,
@@ -27,22 +33,181 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Ada
   ) {
     super('ai/adapter/test', context, subpath, commander);
   }
-  async execute(params: AdapterTestParams): Promise<AdapterTestResult | AllAdaptersTestResult> {
-    console.log('🧪 Running AI adapter diagnostics...', params);
 
-    // Test all adapters if --all flag is set
-    if (params.all) {
-      const result = await this.testAllAdapters(params);
-      return transformPayload(params, result) as AllAdaptersTestResult;
-    }
+  /**
+   * Execute - returns UUID immediately, runs tests in background
+   */
+  async execute(params: AdapterTestParams): Promise<AsyncTestResult> {
+    console.log('🧪 Starting AI adapter test (async mode)...', params);
 
-    // Test specific adapter
-    if (!params.adapter) {
+    // Validate params
+    if (!params.adapter && !params.all) {
       throw new Error('Must specify --adapter or --all');
     }
 
-    const result = await this.testAdapter(params.adapter, params);
-    return transformPayload(params, result) as AdapterTestResult;
+    // Generate test ID
+    const testId = generateUUID();
+
+    // Create initial test execution entity
+    const execution: TestExecutionEntity = new TestExecutionEntity();
+    execution.id = testId;
+    execution.adapterName = params.adapter ?? 'all';
+    execution.modelName = params.model;
+    execution.capability = params.capability;
+    execution.fullTest = params.full ?? false;
+    execution.status = 'queued';
+    execution.progress = {
+      totalCapabilities: 0,
+      completedCapabilities: 0,
+      percentComplete: 0,
+    };
+    execution.testResults = [];
+    execution.available = false;
+    execution.healthy = false;
+    execution.declaredCapabilities = [];
+    execution.summary = {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+    };
+
+    // Save to database using data/create command
+    const createResult = await Commands.execute<DataCreateParams<TestExecutionEntity>, DataCreateResult>('data/create', {
+      collection: TestExecutionEntity.collection,
+      data: execution,
+      id: testId,
+    });
+
+    if (!createResult.success) {
+      throw new Error(`Failed to create test execution: ${createResult.error?.message ?? 'Unknown error'}`);
+    }
+
+    console.log(`✅ Test execution ${testId} queued`);
+
+    // Start background execution (non-blocking)
+    setImmediate(() => {
+      this.executeTestsInBackground(testId, params).catch(error => {
+        console.error(`❌ Background test execution failed: ${error}`);
+      });
+    });
+
+    // Return handle immediately
+    return transformPayload(params, {
+      testId,
+      status: 'queued' as const,
+      message: `Test execution ${testId} started. Use 'ai/adapter/test/status --testId=${testId}' to monitor progress.`,
+    }) as AsyncTestResult;
+  }
+
+  /**
+   * Background execution - updates database with progress
+   */
+  private async executeTestsInBackground(testId: string, params: AdapterTestParams): Promise<void> {
+    try {
+      // Update status to 'running'
+      await this.updateTestStatus(testId, {
+        status: 'running',
+        startedAt: new Date(),
+      });
+
+      console.log(`🏃 Test ${testId} running...`);
+
+      // Test all adapters or specific adapter
+      if (params.all) {
+        await this.testAllAdaptersBackground(testId, params);
+      } else if (params.adapter) {
+        await this.testAdapterBackground(testId, params.adapter, params);
+      }
+
+      // Mark as completed
+      await this.updateTestStatus(testId, {
+        status: 'completed',
+        completedAt: new Date(),
+      });
+
+      console.log(`✅ Test ${testId} completed`);
+
+      // Emit completion event
+      Events.emit('test:execution:completed', { testId });
+
+    } catch (error) {
+      console.error(`❌ Test ${testId} failed:`, error);
+
+      // Mark as failed
+      await this.updateTestStatus(testId, {
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+        completedAt: new Date(),
+      });
+
+      // Emit failure event
+      Events.emit('test:execution:failed', { testId, error });
+    }
+  }
+
+  /**
+   * Helper to update test status in database
+   */
+  private async updateTestStatus(testId: string, updates: Partial<TestExecutionEntity>): Promise<void> {
+    await Commands.execute<DataUpdateParams<TestExecutionEntity>, CommandResult>('data/update', {
+      collection: TestExecutionEntity.collection,
+      id: testId,
+      data: {
+        ...updates,
+        updatedAt: new Date(),
+      },
+    });
+  }
+
+  /**
+   * Test all registered adapters (background version)
+   */
+  private async testAllAdaptersBackground(testId: string, params: AdapterTestParams): Promise<void> {
+    const adapters = AIProviderDaemon.getAllAdapters();
+    let completed = 0;
+    const total = adapters.size;
+
+    for (const [providerId] of adapters) {
+      try {
+        await this.testAdapterBackground(testId, providerId, params);
+      } catch (error) {
+        console.log(`❌ Failed to test adapter ${providerId}:`, error);
+      }
+
+      completed++;
+      await this.updateTestStatus(testId, {
+        progress: {
+          totalCapabilities: total,
+          completedCapabilities: completed,
+          percentComplete: (completed / total) * 100,
+        },
+      });
+
+      // Emit progress event
+      Events.emit('test:execution:progress', {
+        testId,
+        progress: (completed / total) * 100,
+      });
+    }
+  }
+
+  /**
+   * Test a specific adapter (background version)
+   */
+  private async testAdapterBackground(testId: string, adapterName: string, params: AdapterTestParams): Promise<void> {
+    const result = await this.testAdapter(adapterName, params);
+
+    // Update database with results
+    await this.updateTestStatus(testId, {
+      available: result.available,
+      healthy: result.healthy,
+      declaredCapabilities: result.declaredCapabilities as string[],
+      testResults: result.testResults,
+      models: result.models,
+      summary: result.summary,
+      performance: result.performance,
+    });
   }
 
   /**
