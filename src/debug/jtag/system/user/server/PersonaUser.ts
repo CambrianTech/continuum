@@ -77,6 +77,9 @@ import type { InboxTask, TaskStatus } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
 import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
 import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome';
+import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
+import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
+import type { QueueItem } from './modules/PersonaInbox';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -119,14 +122,17 @@ export class PersonaUser extends AIUser {
   // PHASE 1: Autonomous servicing modules (inbox + personaState)
   // Inbox stores messages with priority, personaState tracks energy/mood
   // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
-  private inbox: PersonaInbox;
-  private personaState: PersonaStateManager;
+  public inbox: PersonaInbox;
+  public personaState: PersonaStateManager;
 
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
 
   // PHASE 6: LoRA genome paging (virtual memory for skills)
-  private genome: PersonaGenome;
+  public genome: PersonaGenome;
+
+  // CNS: Central Nervous System orchestrator
+  private cns: PersonaCentralNervousSystem;
 
   // PHASE 7.4: Training data accumulation for recipe-embedded learning
   // Accumulates training examples in RAM during recipe execution
@@ -217,7 +223,10 @@ export class PersonaUser extends AIUser {
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, genome, and trainingAccumulator modules`);
+    // CNS: Central Nervous System orchestrator (capability-based)
+    this.cns = CNSFactory.create(this);
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, genome, CNS, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -2200,15 +2209,20 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   }
 
   /**
-   * PHASE 3: Service inbox (one polling iteration)
+   * CNS callback: Poll tasks from database
    *
-   * Checks inbox for messages, evaluates priority vs mood threshold, and processes if should engage
+   * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
    */
-  private async serviceInbox(): Promise<void> {
-    // STEP 1: Poll task database for pending tasks assigned to this persona
+  public async pollTasksFromCNS(): Promise<void> {
     await this.pollTasks();
+  }
 
-    // PHASE 5: Generate self-tasks for autonomous work creation
+  /**
+   * CNS callback: Generate self-tasks for autonomous work
+   *
+   * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
+   */
+  public async generateSelfTasksFromCNS(): Promise<void> {
     try {
       const selfTasks = await this.taskGenerator.generateSelfTasks();
       if (selfTasks.length > 0) {
@@ -2230,59 +2244,32 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     } catch (error) {
       console.error(`❌ ${this.displayName}: Error generating self-tasks: ${error}`);
     }
+  }
 
-    // STEP 2: SIGNAL-BASED WAIT (not polling) - wait for work with optional timeout
-    // If no work available, block on signal until work arrives or timeout (adaptive cadence)
-    const cadence = this.personaState.getCadence();
-    const hasWork = await this.inbox.waitForWork(cadence);
-
-    if (!hasWork) {
-      // Timeout occurred - REST to recover energy
-      await this.personaState.rest(cadence);
-      console.log(`💤 ${this.displayName}: Resting (timeout, no work) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
-      this.adjustCadence();
-      return;
-    }
-
-    // Peek at highest priority message
-    const candidates = await this.inbox.peek(1);
-    if (candidates.length === 0) {
-      return;
-    }
-
-    const message = candidates[0];
-
-    // Check if we should engage with this message based on mood threshold
-    if (!this.personaState.shouldEngage(message.priority)) {
-      console.log(`⏭️ ${this.displayName}: Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood})`);
-      // REST while skipping messages to recover energy
-      const cadence = this.personaState.getCadence();
-      await this.personaState.rest(cadence); // Rest for one polling cycle
-      console.log(`💤 ${this.displayName}: Resting (skipped message) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
-      // Leave in inbox - threshold might lower as energy recovers
-      return;
-    }
-
-    // Pop message from inbox (we're processing it now)
-    await this.inbox.pop(0); // Immediate pop (no timeout)
-
+  /**
+   * CNS callback: Handle chat message from CNS orchestrator
+   *
+   * This is called by PersonaCentralNervousSystem.serviceChatDomain() via callback pattern.
+   * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
+   */
+  public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
     // If this is a task, update status to 'in_progress' in database (prevents re-polling)
-    if (message.type === 'task') {
+    if (item.type === 'task') {
       await DataDaemon.update<TaskEntity>(
         COLLECTIONS.TASKS,
-        message.taskId,
+        item.taskId,
         { status: 'in_progress', startedAt: new Date() }
       );
     }
 
     // PHASE 6: Activate appropriate LoRA adapter based on domain
-    if (message.domain) {
+    if (item.domain) {
       const domainToAdapter: Record<string, string> = {
         'chat': 'conversational',
         'code': 'typescript-expertise',
         'self': 'self-improvement'
       };
-      const adapterName = domainToAdapter[message.domain];
+      const adapterName = domainToAdapter[item.domain];
       if (adapterName) {
         await this.genome.activateSkill(adapterName);
       } else {
@@ -2291,54 +2278,59 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       }
     }
 
-    console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
+    // Type-safe handling: Check if this is a message or task
+    if (item.type === 'message') {
+      // Reconstruct minimal ChatMessageEntity from inbox message
+      const reconstructedEntity: any = {
+        id: item.id,
+        roomId: item.roomId,
+        senderId: item.senderId,
+        senderName: item.senderName,
+        content: { text: item.content },
+        timestamp: item.timestamp,
+        // Fields not critical for evaluation:
+        senderDisplayName: item.senderName,
+        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
+        status: 'delivered',
+        priority: item.priority,
+        metadata: {},
+        reactions: [],
+        attachments: [],
+        mentions: [],
+        replyTo: undefined,
+        editedAt: undefined,
+        deletedAt: undefined
+      };
 
-    try {
-      // Type-safe handling: Check if this is a message or task
-      if (message.type === 'message') {
-        // Reconstruct minimal ChatMessageEntity from inbox message
-        const reconstructedEntity: any = {
-          id: message.id,
-          roomId: message.roomId,
-          senderId: message.senderId,
-          senderName: message.senderName,
-          content: { text: message.content },
-          timestamp: message.timestamp,
-          // Fields not critical for evaluation:
-          senderDisplayName: message.senderName,
-          senderType: 'user', // Assumption: will be corrected by senderIsHuman check
-          status: 'delivered',
-          priority: message.priority,
-          metadata: {},
-          reactions: [],
-          attachments: [],
-          mentions: [],
-          replyTo: undefined,
-          editedAt: undefined,
-          deletedAt: undefined
-        };
+      // Determine if sender is human (not an AI persona)
+      const senderIsHuman = !item.senderId.startsWith('persona-');
 
-        // Determine if sender is human (not an AI persona)
-        const senderIsHuman = !message.senderId.startsWith('persona-');
+      // Extract message text
+      const messageText = item.content;
 
-        // Extract message text
-        const messageText = message.content;
-
-        // Process message using existing evaluation logic
-        await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
-      } else if (message.type === 'task') {
-        // PHASE 5: Task execution based on task type
-        await this.executeTask(message);
-      }
-
-      // Update inbox load in state (affects mood calculation)
-      this.personaState.updateInboxLoad(this.inbox.getSize());
-
-      // Check if cadence should adjust (mood may have changed after processing)
-      this.adjustCadence();
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error processing inbox message: ${error}`);
+      // Process message using existing evaluation logic
+      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+    } else if (item.type === 'task') {
+      // PHASE 5: Task execution based on task type
+      await this.executeTask(item);
     }
+
+    // Update inbox load in state (affects mood calculation)
+    this.personaState.updateInboxLoad(this.inbox.getSize());
+
+    // Check if cadence should adjust (mood may have changed after processing)
+    this.adjustCadence();
+  }
+
+  /**
+   * PHASE 3: Service inbox (one polling iteration)
+   *
+   * NOW DELEGATED TO CNS (Central Nervous System orchestrator)
+   * CNS handles: task polling, self-task generation, message prioritization, domain scheduling
+   */
+  private async serviceInbox(): Promise<void> {
+    // Delegate to CNS orchestrator (capability-based multi-domain attention management)
+    await this.cns.serviceCycle();
   }
 
   /**
