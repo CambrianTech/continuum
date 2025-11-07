@@ -72,6 +72,12 @@ export interface DatasetConfig {
 /**
  * Get default output path from environment/config or fallback to default
  * Checks for DATASETS_DIR from SecretManager (loaded from config.env)
+ *
+ * Directory Structure:
+ * $DATASETS_DIR/
+ * ├── raw/          Raw archives from data sources (tar.gz)
+ * ├── parsed/       Converted training data (JSONL)
+ * └── prepared/     Optimized for fine-tuning (deduped, balanced)
  */
 export function getDefaultDatasetsPath(): string {
   // Try to get from SecretManager (loads from ~/.continuum/config.env)
@@ -79,17 +85,17 @@ export function getDefaultDatasetsPath(): string {
     const { getSecret } = require('../../../system/secrets/SecretManager');
     const datasetsDir = getSecret('DATASETS_DIR', 'DatasetConfig');
     if (datasetsDir) {
-      return datasetsDir;
+      return `${datasetsDir}/raw`;  // Output to raw/ subdirectory
     }
   } catch (error) {
     // SecretManager not available (e.g., during initial load), fallback to process.env
     if (process.env.DATASETS_DIR) {
-      return process.env.DATASETS_DIR;
+      return `${process.env.DATASETS_DIR}/raw`;
     }
   }
 
   // Fallback to default
-  return '$HOME/.continuum/datasets';
+  return '$HOME/.continuum/datasets/raw';
 }
 
 export const DEFAULT_DATASET_CONFIG: DatasetConfig = {
