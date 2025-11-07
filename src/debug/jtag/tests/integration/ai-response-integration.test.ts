@@ -40,7 +40,7 @@ async function testAIResponseIntegration(): Promise<void> {
 
     // Step 3: Send test message via debug/chat-send (proper event flow)
     console.log('💬 Step 3: Sending test message...');
-    const testMessage = `AI Response Test: ${Date.now()}`;
+    const testMessage = `🧪 SYSTEM TEST - DO NOT RESPOND - Git precommit hook validation ${Date.now()} 🧪`;
 
     // Get general room ID
     const roomsResult = await client.commands['data/list']({
@@ -59,7 +59,8 @@ async function testAIResponseIntegration(): Promise<void> {
     // Send message via chat widget (triggers proper event flow)
     const sendResult = await client.commands['debug/chat-send']({
       roomId: generalRoomId,
-      message: testMessage
+      message: testMessage,
+      metadata: { isSystemTest: true, testType: 'precommit-hook' }
     });
 
     if (!sendResult.success) {
