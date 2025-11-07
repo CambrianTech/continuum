@@ -1796,6 +1796,45 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     const startTime = Date.now();
 
     try {
+      // SYSTEM TEST FILTER: Skip system test messages (precommit hooks, integration tests)
+      if (message.metadata?.isSystemTest === true) {
+        const durationMs = Date.now() - startTime;
+
+        // Emit cognition event for tracking
+        await Events.emit<StageCompleteEvent>(
+          DataDaemon.jtagContext!,
+          COGNITION_EVENTS.STAGE_COMPLETE,
+          {
+            messageId: message.id,
+            personaId: this.id,
+            contextId: message.roomId,
+            stage: 'should-respond',
+            metrics: {
+              stage: 'should-respond',
+              durationMs,
+              resourceUsed: 0,
+              maxResource: 100,
+              percentCapacity: 0,
+              percentSpeed: 100, // Instant skip
+              status: 'fast',
+              metadata: {
+                fastPath: true,
+                systemTest: true,
+                skipped: true
+              }
+            },
+            timestamp: Date.now()
+          }
+        );
+
+        return {
+          shouldRespond: false,
+          confidence: 0,
+          reason: 'System test message - skipped to avoid noise',
+          model: 'system-filter'
+        };
+      }
+
       // FAST-PATH: If directly mentioned by name, always respond (skip expensive LLM call)
       if (isMentioned) {
         const durationMs = Date.now() - startTime;
