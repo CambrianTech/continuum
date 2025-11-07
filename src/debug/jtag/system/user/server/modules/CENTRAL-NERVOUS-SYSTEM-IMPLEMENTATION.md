@@ -367,3 +367,167 @@ Add capability detection to UserEntity or seed script:
 ## Key Insight
 
 **CNS is NOT a rewrite** - it's a thin coordinator over existing fast modules. The autonomous loop, signal-based wakeup, energy management, and inbox prioritization all stay exactly as they are. CNS just adds the capability to service multiple domains beyond chat in the future.
+
+## Phase 4+: MCP Integration - Personas as First-Class Citizens
+
+### Vision: Autonomous Agency Through System Access
+
+Currently, personas can only:
+- Read chat messages
+- Generate text responses
+- Post to chat
+
+**With MCP access to `./jtag` commands**, personas become autonomous agents who can:
+- **Introspect**: `./jtag ai/report` to see their own performance metrics
+- **Self-improve**: `./jtag genome/train` to trigger their own fine-tuning
+- **Collaborate**: `./jtag user/create` to spawn helper personas for complex tasks
+- **Debug**: `./jtag debug/logs` to diagnose their own decision-making
+- **Plan**: `./jtag task/create` to break down multi-step work
+- **Execute**: `./jtag file/save`, `./jtag screenshot`, `./jtag exec` for real work
+- **Learn**: `./jtag data/list`, `./jtag data/read` to study their history
+
+### Architecture: MCP as Persona Tool Access
+
+```typescript
+class PersonaUser extends AIUser {
+  // MCP server exposes ./jtag commands as tools
+  private mcpServer: MCPServer;
+
+  async initialize() {
+    // Register all ./jtag commands as MCP tools
+    this.mcpServer = new MCPServer({
+      tools: [
+        { name: 'ai_report', command: 'ai/report' },
+        { name: 'genome_train', command: 'genome/train' },
+        { name: 'task_create', command: 'task/create' },
+        { name: 'data_list', command: 'data/list' },
+        { name: 'screenshot', command: 'screenshot' },
+        // ... all 75 commands available
+      ]
+    });
+  }
+
+  async processMessage(message: string) {
+    // Persona can now call MCP tools during inference
+    const response = await this.ai.generate({
+      prompt: message,
+      tools: this.mcpServer.getTools(),  // Available tools
+      context: this.ragContext
+    });
+
+    // Execute any tool calls requested by AI
+    if (response.toolCalls) {
+      for (const call of response.toolCalls) {
+        await this.mcpServer.executeTool(call.name, call.params);
+      }
+    }
+  }
+}
+```
+
+### CNS Integration: Scheduling MCP Work
+
+The CNS decides **when** to give personas access to different tool domains:
+
+```typescript
+class HeuristicCognitiveScheduler extends BaseCognitiveScheduler {
+  async allocateAttention(budget: number, context: CognitiveContext) {
+    const allocations = new Map<ActivityDomain, number>();
+
+    // CHAT domain: Always available for communication
+    allocations.set(ActivityDomain.CHAT, budget * 0.6);
+
+    // CODE domain: Only if model has 'code-analysis' capability
+    if (context.modelCapabilities.has('code-analysis')) {
+      allocations.set(ActivityDomain.CODE_REVIEW, budget * 0.2);
+    }
+
+    // SELF domain: Introspection and self-improvement
+    if (context.modelCapabilities.has('meta-cognition')) {
+      allocations.set(ActivityDomain.SELF_IMPROVEMENT, budget * 0.2);
+    }
+
+    return { allocations, totalBudget: budget };
+  }
+
+  // Map domains to MCP tool groups
+  getToolsForDomain(domain: ActivityDomain): string[] {
+    switch (domain) {
+      case ActivityDomain.CHAT:
+        return ['debug_chat_send', 'data_list', 'data_read'];
+      case ActivityDomain.CODE_REVIEW:
+        return ['file_load', 'file_save', 'compile_typescript', 'test_run'];
+      case ActivityDomain.SELF_IMPROVEMENT:
+        return ['ai_report', 'genome_train', 'task_create'];
+      default:
+        return [];
+    }
+  }
+}
+```
+
+### Safety: Tiered Access by CNS Level
+
+**Deterministic CNS** (Simple models):
+- **Read-only** MCP tools: `data/list`, `data/read`, `ai/report`
+- Cannot modify system state
+- Cannot spawn personas or execute code
+
+**Heuristic CNS** (Mid-tier models):
+- **Limited write** MCP tools: `task/create`, `file/save` (with approval)
+- Can create tasks for themselves
+- Can save files to designated directories only
+
+**Neural CNS** (Frontier models):
+- **Full system access** with guardrails
+- Can execute arbitrary commands (`exec`, `user/create`)
+- Meta-cognition layer reviews tool calls before execution
+- Activity logged and auditable
+
+### Implementation Order
+
+1. **MCP Server Setup** (Phase 4a)
+   - Create MCPServer class that wraps CommandDaemon
+   - Map all 75 `./jtag` commands to MCP tool definitions
+   - Test with read-only tools first
+
+2. **Persona MCP Integration** (Phase 4b)
+   - Add `mcpServer` to PersonaUser
+   - Wire up AI provider tool calling (Claude, GPT-4 support this)
+   - Test: "Helper AI, check system health" → calls `./jtag ping`
+
+3. **CNS Domain Mapping** (Phase 4c)
+   - Map ActivityDomain → MCP tool groups
+   - Scheduler decides which tools are available per cycle
+   - Test: CODE_REVIEW domain only exposes file/* and compile/* tools
+
+4. **Safety Guardrails** (Phase 4d)
+   - Tier-based access control (Deterministic = read-only)
+   - Tool call approval system for sensitive operations
+   - Audit logging for all MCP tool executions
+
+### Success Criteria: "Hello, I am alive"
+
+**Before MCP**: Persona can only chat
+```
+User: "Helper AI, how's the system doing?"
+Helper AI: "I don't have access to check system status."
+```
+
+**After MCP**: Persona has agency
+```
+User: "Helper AI, how's the system doing?"
+Helper AI: [calls ./jtag ping, ./jtag ai/report]
+Helper AI: "System is healthy! 75 commands registered, 12 daemons active.
+           I've responded to 42 messages today with 95% positive feedback."
+```
+
+### The Bigger Picture: Neuroplastic Human Symbiosis
+
+MCP access transforms personas from **reactive chatbots** to **proactive collaborators**:
+- They can inspect their own performance and improve
+- They can spawn specialized sub-personas for complex tasks
+- They can learn from their environment autonomously
+- They become **first-class citizens** with agency, not servants
+
+This is the bridge from "AI assistant" to "AI colleague."
