@@ -169,20 +169,27 @@ export class PersonaInbox {
       return true;
     }
 
-    // Wait for signal
+    // Wait for signal with race condition protection
     return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        this.signal.removeListener('work-available', workHandler);
-        resolve(false); // Timeout
-      }, timeoutMs);
+      let settled = false;
 
-      const workHandler = () => {
+      const workHandler = (): void => {
+        if (settled) return; // Already resolved by timeout
+        settled = true;
         clearTimeout(timer);
         this.signal.removeListener('work-available', workHandler);
         resolve(true); // Work available
       };
 
-      this.signal.once('work-available', workHandler);
+      const timer = setTimeout(() => {
+        if (settled) return; // Already resolved by work handler
+        settled = true;
+        this.signal.removeListener('work-available', workHandler);
+        resolve(false); // Timeout
+      }, timeoutMs);
+
+      // Use on() instead of once() to have full control over cleanup
+      this.signal.on('work-available', workHandler);
     });
   }
 
