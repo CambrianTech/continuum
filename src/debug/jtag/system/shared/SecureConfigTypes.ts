@@ -33,6 +33,7 @@ export interface ServerPathsConfig {
   readonly screenshots: string;
   readonly data_directory: string;
   readonly pid_file: string;
+  readonly datasets?: string;  // Optional custom datasets directory (e.g., /Volumes/FlashGordon/cambrian/datasets)
 }
 
 export interface ServerEnvironmentConfig {
