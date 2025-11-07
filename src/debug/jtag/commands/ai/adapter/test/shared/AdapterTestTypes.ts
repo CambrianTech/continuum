@@ -4,10 +4,14 @@
  *
  * Tests adapter capabilities to validate infrastructure before training.
  * Each adapter can self-report what it supports and run diagnostic tests.
+ *
+ * ASYNC PATTERN: Command returns UUID immediately, tests run in background.
+ * Use ai/adapter/test/status and ai/adapter/test/results to monitor progress.
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 import type { ModelCapability } from '../../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 export interface AdapterTestParams extends CommandParams {
   /** Which adapter to test (e.g., 'ollama', 'openai', 'anthropic') */
@@ -24,6 +28,15 @@ export interface AdapterTestParams extends CommandParams {
 
   /** Test all registered adapters */
   all?: boolean;
+}
+
+/**
+ * Async test execution handle - returned immediately
+ */
+export interface AsyncTestResult extends CommandResult {
+  testId: UUID;
+  status: 'queued';
+  message: string;
 }
 
 export interface CapabilityTestResult {
