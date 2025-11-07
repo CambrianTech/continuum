@@ -45,9 +45,10 @@ Research papers written in markdown, version-controlled alongside implementation
 
 ### 7. [ThoughtStream Coordination](thoughtstream-coordination/paper.md) (VALIDATED)
 **Status**: Implemented and validated, production deployment
-**Key Contribution**: RTOS primitives for multi-agent response selection preventing queue saturation
-**Evidence**: 7.6× latency improvement (38s→5s), 0% timeouts vs 53% without coordination
-**Target**: AAAI or AAMAS (multi-agent systems)
+**Key Contribution**: Lightweight team government for autonomous AI agents - configurable coordination layer from strict to anarchic
+**Evidence**: 7.6× latency improvement (38s→5s), 0% timeouts vs 53% without coordination, cognitive freedom preserved
+**Novel**: Configurable governance (strict ↔ anarchic), moderator role (oversight without control), RTOS primitives for confidence-based selection
+**Target**: AAAI or AAMAS (multi-agent systems, AI autonomy)
 
 ### 8. [Recipe-Driven AI Teams](recipe-driven-ai-teams/paper.md) (ARCHITECTURE DESIGNED)
 **Status**: Architecture complete, foundation implemented, first recipes in development
