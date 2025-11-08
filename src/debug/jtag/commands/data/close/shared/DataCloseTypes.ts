@@ -1,8 +1,8 @@
 /**
  * Data Close Command - Shared Types
  *
- * Closes a database handle, releasing resources.
- * Cannot close the 'default' handle - it remains open for the process lifetime.
+ * Closes a database handle and releases associated resources.
+ * Cannot close the default handle - it remains open for the lifetime of the process.
  *
  * See docs/MULTI-DATABASE-HANDLES.md for architecture
  */
@@ -25,7 +25,7 @@ export interface DataCloseParams extends JTAGPayload {
  */
 export interface DataCloseResult extends JTAGPayload {
   readonly success: boolean;
-  readonly dbHandle: DbHandle;  // The handle that was closed
+  readonly dbHandle: DbHandle;
   readonly timestamp: string;
   readonly error?: string;
 }

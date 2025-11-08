@@ -1,10 +1,5 @@
 /**
  * Data List-Handles Command - Shared Types
- *
- * Lists all open database handles with metadata.
- * Useful for debugging, monitoring, and handle management.
- *
- * See docs/MULTI-DATABASE-HANDLES.md for architecture
  */
 
 import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
@@ -20,11 +15,11 @@ import type {
  * Data List-Handles Parameters
  */
 export interface DataListHandlesParams extends JTAGPayload {
-  // No additional parameters needed - lists all handles
+  // No additional parameters needed
 }
 
 /**
- * Handle info returned by list-handles command
+ * Handle info returned by data/list-handles
  */
 export interface HandleInfo {
   readonly handle: DbHandle;
