@@ -6,6 +6,7 @@
  */
 
 import { GitHistoryParser } from '../commands/ai/dataset/shared/parsers/GitHistoryParser';
+import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 import { createWriteStream } from 'fs';
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -16,12 +17,16 @@ console.log('==================================\n');
 async function generateGitDataset() {
   const parser = new GitHistoryParser();
 
+  // Use environment variables with DATABASE_PATHS constant as fallback
+  const repoPath = process.env.REPO_PATH || process.cwd();
+  const datasetsDir = process.env.DATASETS_DIR || DATABASE_PATHS.DATASETS_DIR;
+
   // Parse last 6 months of commits
-  console.log('📝 Parsing continuum git history (last 6 months)...\n');
+  console.log(`📝 Parsing git history from ${repoPath} (last 6 months)...\n`);
 
   try {
     const examples = await parser.parse({
-      repoPath: '/Volumes/FlashGordon/cambrian/continuum',
+      repoPath,
       since: '6 months ago',
       minQuality: 0.5  // Only include quality commits
     });
@@ -29,7 +34,7 @@ async function generateGitDataset() {
     console.log(`✅ Successfully parsed ${examples.length} training examples\n`);
 
     // Create output directory
-    const outputDir = '/Volumes/FlashGordon/cambrian/datasets/parsed';
+    const outputDir = `${datasetsDir}/parsed`;
     await fs.mkdir(outputDir, { recursive: true });
 
     // Generate filename with timestamp
