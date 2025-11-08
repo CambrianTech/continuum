@@ -22,8 +22,7 @@
 import { DataStorageAdapter } from '../shared/DataStorageAdapter';
 import { SqliteStorageAdapter } from './SqliteStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
-import { generateUUID } from '../../../system/core/shared/CrossPlatformUUID';
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Database handle - opaque identifier for ANY storage adapter
@@ -129,12 +128,15 @@ export class DatabaseHandleRegistry {
 
     // Initialize default handle (SQLite main database)
     // This ensures backward compatibility - all existing code works without changes
-    const defaultAdapter = new SqliteStorageAdapter({
-      filename: DATABASE_PATHS.SQLITE
-    });
+    const defaultAdapter = new SqliteStorageAdapter();
 
     // Must call initialize() before use
-    defaultAdapter.initialize({}).then(() => {
+    // SqliteStorageAdapter expects StorageAdapterConfig with type and namespace
+    defaultAdapter.initialize({
+      type: 'sqlite',
+      namespace: 'default',
+      options: {}
+    }).then(() => {
       console.log(`🔌 DatabaseHandleRegistry: Default handle initialized (${DATABASE_PATHS.SQLITE})`);
     }).catch((error) => {
       console.error('❌ DatabaseHandleRegistry: Failed to initialize default handle:', error);
@@ -192,9 +194,18 @@ export class DatabaseHandleRegistry {
     switch (adapter) {
       case 'sqlite': {
         const sqliteConfig = config as SqliteConfig;
-        storageAdapter = new SqliteStorageAdapter({
-          filename: sqliteConfig.path,
-          // TODO: Map mode, poolSize, foreignKeys, wal to SqliteStorageAdapter constructor
+        storageAdapter = new SqliteStorageAdapter();
+        // Initialize with proper StorageAdapterConfig
+        await storageAdapter.initialize({
+          type: 'sqlite',
+          namespace: handle,  // Use handle as namespace
+          options: {
+            filename: sqliteConfig.path,
+            mode: sqliteConfig.mode,
+            poolSize: sqliteConfig.poolSize,
+            foreignKeys: sqliteConfig.foreignKeys,
+            wal: sqliteConfig.wal
+          }
         });
         break;
       }
@@ -207,9 +218,6 @@ export class DatabaseHandleRegistry {
       default:
         throw new Error(`Unknown adapter type: ${adapter}`);
     }
-
-    // Initialize adapter
-    await storageAdapter.initialize({});
 
     // Register handle
     this.handles.set(handle, storageAdapter);
