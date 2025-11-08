@@ -10,14 +10,18 @@
 import type { JTAGPayload, JTAGContext, JTAGEnvironment } from '../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
 /**
  * Base interface for all data command parameters
  * Uses JTAGEnvironment for routing capability
+ * Supports optional dbHandle for multi-database operations
  */
 export interface BaseDataParams extends JTAGPayload {
   readonly collection: string;
   readonly backend: JTAGEnvironment;
+  /** Optional database handle for multi-database operations (defaults to 'default') */
+  readonly dbHandle?: DbHandle;
 }
 
 /**
