@@ -52,7 +52,7 @@ export class DeterministicCognitiveScheduler extends BaseCognitiveScheduler {
   /**
    * Fixed service interval - no adaptation
    */
-  getNextServiceInterval(context: CognitiveContext): number {
+  getNextServiceInterval(_context: CognitiveContext): number {
     return 5000; // Fixed 5 second cadence
   }
 
@@ -61,7 +61,7 @@ export class DeterministicCognitiveScheduler extends BaseCognitiveScheduler {
    */
   async shouldServiceDomain(
     domain: ActivityDomain,
-    context: CognitiveContext
+    _context: CognitiveContext
   ): Promise<boolean> {
     // Check system overrides first
     if (!this.isDomainAllowed(domain)) {
@@ -75,7 +75,7 @@ export class DeterministicCognitiveScheduler extends BaseCognitiveScheduler {
   /**
    * Fixed priority order
    */
-  getDomainPriority(context: CognitiveContext): ActivityDomain[] {
+  getDomainPriority(_context: CognitiveContext): ActivityDomain[] {
     return [
       ActivityDomain.CHAT,        // Only priority
       ActivityDomain.BACKGROUND   // Maintenance if nothing else
@@ -85,7 +85,7 @@ export class DeterministicCognitiveScheduler extends BaseCognitiveScheduler {
   /**
    * No learning - deterministic doesn't adapt
    */
-  async updatePolicy(results: Map<ActivityDomain, ServiceResult>): Promise<void> {
+  async updatePolicy(_results: Map<ActivityDomain, ServiceResult>): Promise<void> {
     // NO-OP: Deterministic schedulers don't learn
     // Fixed rules forever
   }
