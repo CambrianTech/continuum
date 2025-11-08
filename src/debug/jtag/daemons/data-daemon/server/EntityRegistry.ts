@@ -20,6 +20,7 @@ import { TaskEntity } from '../../../system/data/entities/TaskEntity';
 import { TestExecutionEntity } from '../shared/entities/TestExecutionEntity';
 import { DatasetExecutionEntity } from '../shared/entities/DatasetExecutionEntity';
 import { TrainingDatasetEntity } from '../shared/entities/TrainingDatasetEntity';
+import { TrainingExampleEntity } from '../shared/entities/TrainingExampleEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -44,6 +45,7 @@ export function initializeEntityRegistry(): void {
   new TestExecutionEntity();
   new DatasetExecutionEntity();
   new TrainingDatasetEntity();
+  new TrainingExampleEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -60,6 +62,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(TestExecutionEntity.collection, TestExecutionEntity);
   registerEntity(DatasetExecutionEntity.collection, DatasetExecutionEntity);
   registerEntity(TrainingDatasetEntity.collection, TrainingDatasetEntity);
+  registerEntity(TrainingExampleEntity.collection, TrainingExampleEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }
