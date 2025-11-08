@@ -6,6 +6,9 @@
  * model doing simple status messages, or mid-tier model with full capabilities).
  */
 
+/* eslint-disable @typescript-eslint/prefer-nullish-coalescing */
+// Note: Using || instead of ?? because strictNullChecks is not enabled globally
+
 // Note: Avoiding direct PersonaUser import to prevent circular dependency
 // PersonaUser will import CNSFactory, so we use type-only reference
 import type { ModelCapabilities } from './CNSTypes';
@@ -13,32 +16,42 @@ import { CNSTier } from './CNSTypes';
 import { PersonaCentralNervousSystem } from './PersonaCentralNervousSystem';
 import { ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
 import { DeterministicCognitiveScheduler } from '../cognitive-schedulers/DeterministicCognitiveScheduler';
+import type { PersonaInbox } from '../PersonaInbox';
+import type { PersonaStateManager } from '../PersonaState';
+import type { PersonaGenome } from '../PersonaGenome';
 // Future imports:
 // import { HeuristicCognitiveScheduler } from '../cognitive-schedulers/HeuristicCognitiveScheduler';
 // import { NeuralCognitiveScheduler } from '../cognitive-schedulers/NeuralCognitiveScheduler';
 
 // Type for PersonaUser (avoid circular dependency)
 // Matches PersonaUser's interface for CNS creation
+// Uses actual class types to ensure compile-time safety
 interface PersonaUserLike {
   entity: {
     id: string;
     displayName?: string;  // UserEntity uses displayName, not name
-    capabilities?: any;  // UserCapabilities or Record<string, boolean>
+    modelConfig?: {
+      capabilities?: readonly string[];  // AI capabilities (e.g., ['advanced-reasoning'])
+    };
   };
-  inbox: any;
-  personaState: any;
-  genome: any;
-  handleChatMessageFromCNS: (item: any) => Promise<void>;
+  inbox: PersonaInbox;
+  personaState: PersonaStateManager;
+  genome: PersonaGenome;
+  handleChatMessageFromCNS: (item: QueueItem) => Promise<void>;
   pollTasksFromCNS: () => Promise<void>;
   generateSelfTasksFromCNS: () => Promise<void>;
 }
+
+// Import QueueItem type for handleChatMessageFromCNS signature
+import type { QueueItem } from '../PersonaInbox';
 
 export class CNSFactory {
   /**
    * Create CNS instance with appropriate scheduler based on persona's capabilities
    */
   static create(persona: PersonaUserLike): PersonaCentralNervousSystem {
-    const capabilities = persona.entity.capabilities as ModelCapabilities | undefined;
+    // Map string[] capabilities from modelConfig to ModelCapabilities object
+    const capabilities = this.parseCapabilities(persona.entity.modelConfig?.capabilities);
     const tier = this.selectTier(capabilities);
 
     switch (tier) {
@@ -47,18 +60,63 @@ export class CNSFactory {
 
       case CNSTier.HEURISTIC:
         // TODO: Phase 2 - Implement HeuristicCognitiveScheduler
-        console.warn(`Heuristic CNS not yet implemented, falling back to deterministic for ${persona.entity.displayName || persona.entity.id}`);
+        console.warn(`⚠️ Heuristic CNS not yet implemented, falling back to deterministic for ${persona.entity.displayName || persona.entity.id}`);
         return this.createDeterministicCNS(persona);
 
       case CNSTier.NEURAL:
         // TODO: Phase 3 - Implement NeuralCognitiveScheduler
-        console.warn(`Neural CNS not yet implemented, falling back to deterministic for ${persona.entity.displayName || persona.entity.id}`);
+        console.warn(`⚠️ Neural CNS not yet implemented, falling back to deterministic for ${persona.entity.displayName || persona.entity.id}`);
         return this.createDeterministicCNS(persona);
 
       default:
-        console.warn(`Unknown CNS tier: ${tier}, falling back to deterministic for ${persona.entity.displayName || persona.entity.id}`);
+        console.warn(`⚠️ Unknown CNS tier: ${tier}, falling back to deterministic for ${persona.entity.displayName || persona.entity.id}`);
         return this.createDeterministicCNS(persona);
     }
+  }
+
+  /**
+   * Parse string[] capabilities from modelConfig into ModelCapabilities object
+   * Maps UserEntity.modelConfig.capabilities (string[]) to CNS ModelCapabilities
+   */
+  private static parseCapabilities(capabilitiesArray: readonly string[] | undefined): ModelCapabilities | undefined {
+    if (!capabilitiesArray || capabilitiesArray.length === 0) {
+      return undefined;
+    }
+
+    // Build capabilities object with readonly properties
+    const capabilities: Partial<ModelCapabilities> = {};
+
+    for (const cap of capabilitiesArray) {
+      // Map string capabilities to ModelCapabilities keys
+      // Use type assertion since we're building the object
+      const mutableCaps = capabilities as Record<string, boolean>;
+
+      switch (cap) {
+        case 'advanced-reasoning':
+          mutableCaps['advanced-reasoning'] = true;
+          break;
+        case 'meta-cognition':
+          mutableCaps['meta-cognition'] = true;
+          break;
+        case 'long-context':
+          mutableCaps['long-context'] = true;
+          break;
+        case 'moderate-reasoning':
+          mutableCaps['moderate-reasoning'] = true;
+          break;
+        case 'pattern-recognition':
+          mutableCaps['pattern-recognition'] = true;
+          break;
+        case 'fast-inference':
+          mutableCaps['fast-inference'] = true;
+          break;
+        case 'template-responses':
+          mutableCaps['template-responses'] = true;
+          break;
+      }
+    }
+
+    return Object.keys(capabilities).length > 0 ? capabilities as ModelCapabilities : undefined;
   }
 
   /**
@@ -98,15 +156,15 @@ export class CNSFactory {
       genome: persona.genome,
       personaId: persona.entity.id,
       personaName: persona.entity.displayName || 'Unknown',
-      handleChatMessage: async (item) => {
+      handleChatMessage: async (item: QueueItem): Promise<void> => {
         // Delegate to PersonaUser's existing chat handler
         await persona.handleChatMessageFromCNS(item);
       },
-      pollTasks: async () => {
+      pollTasks: async (): Promise<void> => {
         // Delegate to PersonaUser's task polling
         await persona.pollTasksFromCNS();
       },
-      generateSelfTasks: async () => {
+      generateSelfTasks: async (): Promise<void> => {
         // Delegate to PersonaUser's self-task generation
         await persona.generateSelfTasksFromCNS();
       },
