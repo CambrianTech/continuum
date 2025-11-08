@@ -49,6 +49,47 @@ npm start                    # DEPLOYS code changes
 
 ---
 
+## 🚨 CONSTANTS: SINGLE SOURCE OF TRUTH
+
+**CRITICAL**: ALL system constants MUST be in ONE file: `system/shared/Constants.ts`
+
+### The Rule: ZERO TOLERANCE for scattered constants
+
+**❌ NEVER do this:**
+```typescript
+const datasetsDir = './datasets';  // WRONG - hardcoded
+const dbPath = '/tmp/training.db'; // WRONG - magic string
+```
+
+**✅ ALWAYS do this:**
+```typescript
+import { PATHS, resolvePath } from 'system/shared/Constants';
+
+// Use the constant
+const datasetsDir = PATHS.DATASETS;
+
+// With env var fallback
+const datasetsDir = process.env.DATASETS_DIR || PATHS.DATASETS;
+
+// Full priority resolution (param > env > constant)
+const dbPath = resolvePath(params.outputPath, 'DATASETS_DIR', PATHS.DATASETS);
+```
+
+**Location**: `src/debug/jtag/system/shared/Constants.ts`
+
+**What belongs there:**
+- ALL file system paths
+- ALL environment variable names
+- ALL collection names
+- ALL database configuration
+- EVERY constant that appears in multiple places
+
+**Why this exists**: Scattered constants create technical debt. Every hardcoded value is a future bug. ONE file makes it impossible to miss.
+
+**When you see a constant somewhere else**: Move it to Constants.ts IMMEDIATELY. Don't finish your current task first. Fix it NOW.
+
+---
+
 ## 🔥 AGGRESSIVE REFACTORING PRINCIPLE
 
 **CRITICAL**: I've been trained to be timid about refactoring existing code - only touch what's directly related to the task, don't "rock the boat", avoid scope creep. **That's how codebases rot.**

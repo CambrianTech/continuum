@@ -117,8 +117,9 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       }
     }
 
+    const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
     throw new Error(
-      'Sentinel server failed to start. Please start manually: cd /Volumes/FlashGordon/cambrian/sentinel-ai && ./server/start_server.sh'
+      `Sentinel server failed to start. Please start manually: cd ${sentinelPath} && ./server/start_server.sh`
     );
   }
 
@@ -151,7 +152,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
     try {
       // Get path to sentinel-ai project
-      const sentinelPath = process.env.SENTINEL_PATH || '/Volumes/FlashGordon/cambrian/sentinel-ai';
+      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
       const startScript = path.join(sentinelPath, 'server', 'start_server.sh');
 
       console.log(`🧬 Sentinel: Starting server from ${sentinelPath}...`);

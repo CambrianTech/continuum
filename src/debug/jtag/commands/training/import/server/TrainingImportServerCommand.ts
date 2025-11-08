@@ -19,6 +19,7 @@ import type { DataCreateResult } from '../../../data/create/shared/DataCreateTyp
 import type { DataCloseResult } from '../../../data/close/shared/DataCloseTypes';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type { TrainingMessage } from '../../../../daemons/data-daemon/shared/entities/TrainingExampleEntity';
+import { DATABASE_PATHS } from '../../../../system/data/config/DatabaseConfig';
 import * as fs from 'fs';
 import * as readline from 'readline';
 
@@ -245,10 +246,12 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
 
   /**
    * Generate default output path from parameters
+   * Uses DATASETS_DIR environment variable or DATABASE_PATHS.DATASETS_DIR constant
    */
   private getDefaultOutputPath(params: TrainingImportParams): string {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const safeName = params.datasetName.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-    return `/tmp/training-${safeName}-${timestamp}.sqlite`;
+    const datasetsDir = process.env.DATASETS_DIR || DATABASE_PATHS.DATASETS_DIR;
+    return `${datasetsDir}/prepared/${safeName}-${timestamp}.sqlite`;
   }
 }

@@ -13,11 +13,13 @@ console.log('==========================\n');
 async function testGitHistoryParser() {
   const parser = new GitHistoryParser();
 
-  console.log('📝 Parsing last 10 commits from continuum repo...\n');
+  const repoPath = process.env.REPO_PATH || process.cwd();
+
+  console.log(`📝 Parsing last 10 commits from ${repoPath}...\n`);
 
   try {
     const examples = await parser.parse({
-      repoPath: '/Volumes/FlashGordon/cambrian/continuum',
+      repoPath,
       maxCommits: 10,
       minQuality: 0.5  // Only include quality commits
     });

@@ -17,6 +17,9 @@ export const DATABASE_PATHS = {
   /** Backup directory path */
   BACKUP_DIR: '.continuum/jtag/backups',
 
+  /** Datasets directory path for training data */
+  DATASETS_DIR: '.continuum/datasets',
+
   /** Legacy database path (for migration reference) */
   LEGACY: '.continuum/database/continuum.db'
 } as const;
