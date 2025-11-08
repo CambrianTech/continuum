@@ -39,6 +39,10 @@ export const PATHS = {
   /** Screenshots */
   SCREENSHOTS: '.continuum/screenshots',
 
+  /** Media processing output */
+  MEDIA_OUTPUT: '.continuum/media',
+  MEDIA_TEMP: '.continuum/media/temp',
+
   /** Legacy (for migration) */
   LEGACY_DB: '.continuum/database/continuum.db'
 } as const;
