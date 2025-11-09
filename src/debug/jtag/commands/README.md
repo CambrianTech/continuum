@@ -225,7 +225,7 @@ public class RoomChatService {
 
 ### Shared Types
 ```typescript
-// shared/MyCommandTypes.ts
+// shared/MyCommandParams.ts
 export interface MyCommandParams extends CommandParams {
   readonly input: string;
   readonly options?: {
@@ -477,7 +477,7 @@ describe('MyCommandBrowserCommand', () => {
 
 ```typescript
 // 1. Create types
-// shared/NewCommandTypes.ts
+// shared/NewCommandParams.ts
 export interface NewCommandParams extends CommandParams {
   readonly input: string;
 }

@@ -122,6 +122,9 @@ export interface MediaProcessParams extends JTAGPayload {
   /** Install missing dependencies (requires user confirmation) */
   installDependencies?: boolean;
 
+  /** Minimum version requirement (e.g., ">=4.0", "^5.0.0") - defaults to ">=4.0" */
+  minVersion?: string;
+
   /** Emit progress events during processing */
   emitProgress?: boolean;
 }
@@ -196,7 +199,9 @@ export function createMediaProcessResult(
     dependencyInstalled: outcome.dependencyInstalled,
     error: outcome.error,
     warnings: outcome.warnings,
-    ffmpegOutput: outcome.ffmpegOutput
+    ffmpegOutput: outcome.ffmpegOutput,
+    context: params.context,
+    sessionId: params.sessionId
   };
 }
 

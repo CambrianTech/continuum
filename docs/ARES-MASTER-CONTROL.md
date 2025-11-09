@@ -41,6 +41,132 @@ Ares is Continuum's security monitoring persona - a Master Control Program that 
 
 ---
 
+## Architecture: I/O Tower Pattern
+
+**Tron Metaphor**: The I/O Tower is where programs communicate with the User. In our system, it's where security intelligence reaches the human.
+
+```
+Security Monitor Scripts (bash)
+  ↓ writes to
+/var/log/ares/*.log + threat-report.html
+  ↓ read by
+I/O Tower Daemon (JTAG)
+  ↓ emits
+Events.emit('security:threat-detected', threatData)
+  ↓ received in
+I/O Tower Room (Ares, Tron, MCP personas)
+  ↓ analyze + respond
+Chat messages to room + Direct Messages to User
+```
+
+### Components
+
+**1. Security Monitor (Bash Scripts)**
+- Process detection (`monitor-screen-watchers.sh`)
+- Threat categorization (Remote Access, Monitoring, Support)
+- HTML report generation (`generate-threat-report.sh`)
+- Writes to `/var/log/ares/screen-watchers.log`
+
+**2. I/O Tower Daemon (JTAG)**
+- Polls `/var/log/ares/*.log` every 30 seconds
+- Parses threat events (new processes, state changes)
+- Emits events to system event bus
+- No AI logic - just data bridging
+
+**3. I/O Tower Room (Continuum)**
+- Dedicated room: `"I/O Tower"` or `"Security Operations"`
+- Ares PersonaUser subscribes to `security:*` events
+- Analyzes patterns using AI reasoning
+- Posts alerts to room chat
+- Can DM user directly for urgent threats
+
+**4. Ares PersonaUser (AI Security Analyst)**
+- Monitors threat patterns continuously
+- Correlates events over time
+- Researches threats (RAG over security knowledge)
+- Suggests response actions
+- Executes non-sudo commands with permission
+
+### Response Model: Human-in-the-Loop
+
+**Detection → Alert → Human Decision → Assisted Response**
+
+```typescript
+// Example: JumpCloud Remote Assist detected
+
+Ares: "🔴 Threat Detected: JumpCloud Remote Assist
+       PID: 12345 | Time: 2:34 AM | Severity: Medium
+
+       Status: Process started, no active streaming yet
+       Capability: Can view screen and execute commands
+
+       This typically precedes remote assist session.
+
+       Recommended Actions:
+       - Monitor for network activity (./jtag security/monitor --watch-network)
+       - Generate evidence report (./jtag security/report)
+       - View open files (lsof -p 12345)
+
+       What would you like to do?"
+
+User: "Monitor network and alert if they connect"
+
+Ares: "✅ Monitoring active. I'll notify you if I detect:
+       - External network connections
+       - Screen capture activity
+       - Command execution
+       - File system access"
+```
+
+**Key Principles:**
+- **No autonomous actions** - User always decides
+- **No privilege escalation** - Never sudo, always non-privileged commands
+- **Proactive alerting** - Don't wait to be asked
+- **Context-rich** - Explain what's happening and why it matters
+- **Actionable intelligence** - Suggest specific commands, not just warnings
+
+### Suspicious Activity Detection
+
+**Ares continuously monitors for:**
+
+**Process-based:**
+- New remote access tools (VNC, TeamViewer, MDM agents)
+- Screen capture processes spawning
+- Keyloggers or input monitors
+- Unexpected privilege escalations
+
+**Network-based:**
+- Unusual outbound connections
+- Remote desktop protocols activating
+- Unexpected listening ports
+- Large data transfers
+
+**File-based:**
+- Access to sensitive files (.ssh, .aws, passwords)
+- Mass file reads (ransomware patterns)
+- Modifications to startup scripts
+- New executables in unusual locations
+
+**Behavioral:**
+- Activity at odd hours (2-5 AM)
+- Automated scripts with user credentials
+- Database dumps or bulk exports
+- Camera/microphone activation
+
+**Alert Format:**
+```
+🟡 Ares: [Severity] [Activity Type]
+
+   What: Specific action detected
+   When: Timestamp + context (odd hours, after suspicious event, etc.)
+   Risk: Low/Medium/High with reasoning
+
+   Context: Why this matters, typical attack patterns
+
+   Recommended: Specific next steps
+   Commands: Exact commands to run for investigation
+```
+
 ## Architecture
 
 ```

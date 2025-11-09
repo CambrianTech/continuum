@@ -164,12 +164,12 @@ export interface PersonaStatusResult extends CommandResult {
 **File**: `commands/ai/persona/status/server/PersonaStatusServerCommand.ts`
 
 ```typescript
-import { BaseServerCommand } from '../../../../core/BaseServerCommand';
+import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';;
 import type { PersonaStatusParams, PersonaStatusResult, RateLimitStatus } from '../shared/PersonaStatusTypes';
 import { getUserDaemon } from '../../../../../daemons/user-daemon/shared/UserDaemon';
 import type { PersonaUser } from '../../../../../system/user/server/PersonaUser';
 
-export class PersonaStatusServerCommand extends BaseServerCommand<PersonaStatusParams, PersonaStatusResult> {
+export class PersonaStatusServerCommand extends CommandBase<PersonaStatusParams, PersonaStatusResult> {
   readonly name = 'ai/persona/status';
 
   async executeServer(params: PersonaStatusParams): Promise<PersonaStatusResult> {

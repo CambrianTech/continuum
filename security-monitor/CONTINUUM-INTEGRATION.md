@@ -44,7 +44,7 @@ export interface ProcessInfo {
 **Server:**
 ```typescript
 // commands/security/scan/server/SecurityScanServerCommand.ts
-export class SecurityScanServerCommand extends BaseServerCommand<SecurityScanParams, SecurityScanResult> {
+export class SecurityScanServerCommand extends CommandBase<SecurityScanParams, SecurityScanResult> {
     async execute(params: SecurityScanParams): Promise<SecurityScanResult> {
         // Call monitor-screen-watchers.sh --once flag (create this)
         // Or exec detect-screen-watchers.sh directly

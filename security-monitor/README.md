@@ -38,6 +38,11 @@ brew install terminal-notifier
 
 # 3. View the HTML report anytime
 ./view-report.sh
+
+# 4. (Optional) Install transparent shell proxy for command logging
+sudo ln -sf $(pwd)/transparent-shell-proxy.sh /usr/local/bin/safebash
+echo "/usr/local/bin/safebash" | sudo tee -a /etc/shells
+chsh -s /usr/local/bin/safebash
 ```
 
 ## Configuration
@@ -214,6 +219,58 @@ cat threat-profiles.json | jq .
 
 # Manually test detection
 ps aux | grep -iE "jumpcloud|vnc|teamviewer"
+```
+
+## Transparent Shell Proxy (Optional)
+
+**Problem**: Restricting shell breaks your workflow (no npm, git, etc.)
+
+**Solution**: Transparent proxy that looks/acts like normal bash but logs JumpCloud activity.
+
+### How It Works
+
+```
+JumpCloud connects → transparent-shell-proxy.sh
+                     ├─ Detects JumpCloud (parent process check)
+                     ├─ Logs command to /var/log/ares/shell-commands.log
+                     ├─ Notifies Continuum (if running)
+                     └─ Passes through to /bin/bash (100% transparent)
+
+Your terminal → /bin/zsh (normal, no proxy)
+```
+
+### Installation
+
+```bash
+# Install
+sudo ln -sf /path/to/transparent-shell-proxy.sh /usr/local/bin/safebash
+echo "/usr/local/bin/safebash" | sudo tee -a /etc/shells
+chsh -s /usr/local/bin/safebash
+
+# Open new terminal - works exactly like normal bash
+npm install  # ✅ Works
+git status   # ✅ Works
+./your-script.sh  # ✅ Works
+
+# But JumpCloud commands are logged
+tail -f /var/log/ares/shell-commands.log
+```
+
+### Features
+
+- ✅ **Zero restrictions** - All commands work normally
+- ✅ **Selective logging** - Only logs when JumpCloud detected
+- ✅ **Real-time alerts** - Sends to Continuum via Unix socket
+- ✅ **Fallback logging** - File-based logs if Continuum not running
+- ✅ **Non-blocking** - Logging happens in background (fast)
+- ✅ **JumpCloud oblivious** - Sees normal bash, no suspicion
+
+### To Disable
+
+```bash
+# Switch back to zsh
+chsh -s /bin/zsh
+# Open new terminal
 ```
 
 ## Architecture

@@ -222,9 +222,16 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
         totalTokens += tokenCount;
         processedCount++;
 
-        // Log progress
-        if (processedCount % batchSize === 0) {
+        // Emit progress events for UI progress bars (every 100 rows)
+        const progressInterval = 100;
+        if (processedCount % progressInterval === 0) {
           console.log(`   Imported ${processedCount} examples (${totalTokens} tokens)...`);
+          // Future: Events.emit('training:import:progress', {
+          //   dbHandle,
+          //   processedCount,
+          //   totalTokens,
+          //   percentage: maxExamples !== Infinity ? (processedCount / maxExamples) * 100 : undefined
+          // });
         }
 
       } catch (error) {
