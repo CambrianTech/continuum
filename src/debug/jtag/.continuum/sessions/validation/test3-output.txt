@@ -10,7 +10,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (a32a9464-4e12-4a13-b1b4-920b0830cf66) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (84ad7906-4188-4771-9262-eff6786bce43) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -24,43 +24,43 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="@cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1762620331212_0umolmwa
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1762634926858_v6i2u3j9
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762620331212_0umolmwa
-✅ JTAGClient: Completed correlation client_1762620331212_0umolmwa
-🏷️ JTAGClientServer: Session updated to: 280ef27a-70d7-4e97-a3ec-3a9b449d7c1d (managed by base class)
+🔗 JTAGClient: Processing response for correlation client_1762634926858_v6i2u3j9
+✅ JTAGClient: Completed correlation client_1762634926858_v6i2u3j9
+🏷️ JTAGClientServer: Session updated to: b3a0eb25-e7a3-4866-bf18-628dff0e5c81 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1762620331250_5gbu3b95
+📤 RemoteConnection: Sending command 'list' with correlation client_1762634926909_7tpa9v56
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762620331250_5gbu3b95
-✅ JTAGClient: Completed correlation client_1762620331250_5gbu3b95
+🔗 JTAGClient: Processing response for correlation client_1762634926909_7tpa9v56
+✅ JTAGClient: Completed correlation client_1762634926909_7tpa9v56
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1762620331256_frinf4v0
+📤 RemoteConnection: Sending command 'list' with correlation client_1762634926912_ihb7zjoy
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762620331256_frinf4v0
-✅ JTAGClient: Completed correlation client_1762620331256_frinf4v0
+🔗 JTAGClient: Processing response for correlation client_1762634926912_ihb7zjoy
+✅ JTAGClient: Completed correlation client_1762634926912_ihb7zjoy
 ✅ JTAGClient: Bootstrap complete! Discovered 81 commands
 ✅ Server: JTAGClient connected with 81 commands
 📝 JTAGClient: Registered 'default' (server)
 ✅ Connected to JTAG system
 
 🔍 Step 2: Verifying system health...
-📤 RemoteConnection: Sending command 'ping' with correlation client_1762620331257_4aqv1x68
+📤 RemoteConnection: Sending command 'ping' with correlation client_1762634926914_3k1zpu4d
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762620331257_4aqv1x68
-✅ JTAGClient: Completed correlation client_1762620331257_4aqv1x68
+🔗 JTAGClient: Processing response for correlation client_1762634926914_3k1zpu4d
+✅ JTAGClient: Completed correlation client_1762634926914_3k1zpu4d
 ✅ System is healthy
 
 💬 Step 3: Sending test message...
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1762620331268_cpz4vlrf
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1762634926976_sen9oz7n
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762620331268_cpz4vlrf
-✅ JTAGClient: Completed correlation client_1762620331268_cpz4vlrf
+🔗 JTAGClient: Processing response for correlation client_1762634926976_sen9oz7n
+✅ JTAGClient: Completed correlation client_1762634926976_sen9oz7n
 ✅ Found general room: 5e71a0c8-0303-4eb8-a478-3a121248
-📤 RemoteConnection: Sending command 'debug/chat-send' with correlation client_1762620331341_29qy5rxf
+📤 RemoteConnection: Sending command 'debug/chat-send' with correlation client_1762634926981_atszppqd
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClientServer: Received event message, triggering local subscriptions
@@ -68,27 +68,29 @@
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:chat_messages:created
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762620331341_29qy5rxf
-✅ JTAGClient: Completed correlation client_1762620331341_29qy5rxf
-✅ Test message sent: "🧪 SYSTEM TEST - DO NOT RESPOND - Git precommit hook validation 1762620331268 🧪"
+🔗 JTAGClient: Processing response for correlation client_1762634926981_atszppqd
+✅ JTAGClient: Completed correlation client_1762634926981_atszppqd
+✅ Test message sent: "🧪 SYSTEM TEST - DO NOT RESPOND - Git precommit hook validation 1762634926976 🧪"
 
 📋 Step 4: Verifying AI system processed message...
-✅ AI system is active (log contains entries)
 
-🎉 AI Response Integration Test: PASSED
-=====================================
-✅ Message sent via chat widget
-✅ AI decision log exists and is active
-✅ Event system working
+❌ AI Response Integration Test: FAILED
+=========================================
+AI decisions log not found at: .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log
 
-Note: Actual AI responses may take 30-60s to appear in log.
-This test verifies the SYSTEM works, not response speed.
+💡 Debugging tips:
+   1. Check UserDaemon created PersonaUsers: grep "UserDaemon: Registered" .continuum/jtag/system/logs/npm-start.log
+   2. Check event subscriptions: grep "Subscribing to chat events" .continuum/jtag/system/logs/npm-start.log
+   3. Check ThoughtStream: grep "ThoughtStream" .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log
+   4. Check for errors: grep "ERROR" .continuum/jtag/system/logs/npm-start.log
 
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 280ef27a-70d7-4e97-a3ec-3a9b449d7c1d on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session b3a0eb25-e7a3-4866-bf18-628dff0e5c81 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...
 ✅ ConnectionBroker: Shutdown complete
 ✅ JTAGClient: Connection Broker shut down
-✅ AI response integration test completed successfully
+🚨 AI response integration test failed: Error: AI decisions log not found at: .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log
+    at testAIResponseIntegration (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/ai-response-integration.test.ts:77:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)

@@ -11,6 +11,7 @@ import type { MediaProcessParams, MediaProcessResult, MediaFormat, QualityPreset
 import { createMediaProcessResult, generateOutputPath } from '../shared/MediaProcessTypes';
 import { PATHS } from '../../../../system/shared/Constants';
 import { Events } from '../../../../system/core/shared/Events';
+import { compareVersions, VersionAction, formatActionMessage, type VersionRule } from '../../../../system/shared/VersionComparison';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -292,16 +293,45 @@ export class MediaProcessServerCommand extends CommandBase<MediaProcessParams, M
   }
 
   /**
-   * Check if ffmpeg is installed
+   * Check if ffmpeg is installed and meets version requirement
    */
   private async checkFFmpegDependency(params: MediaProcessParams): Promise<MediaProcessResult> {
     return new Promise((resolve) => {
       const checkProcess = spawn('ffmpeg', ['-version']);
+      let output = '';
+
+      checkProcess.stdout.on('data', (data: Buffer) => {
+        output += data.toString();
+      });
 
       checkProcess.on('close', (code: number | null) => {
+        if (code !== 0) {
+          resolve(createMediaProcessResult(params, {
+            success: true,
+            dependencyInstalled: false
+          }));
+          return;
+        }
+
+        // Parse version from output (e.g., "ffmpeg version 4.4.2-0ubuntu0.22.04.1")
+        const versionMatch = output.match(/ffmpeg version (\d+\.\d+(?:\.\d+)?)/);
+        const installedVersion = versionMatch ? versionMatch[1] : null;
+
+        // Default requirement: >= 4.0 (if not specified in params)
+        const versionRule: VersionRule = params.minVersion ?? '>=4.0';
+
+        const action = compareVersions(installedVersion, versionRule);
+        const message = formatActionMessage(action, installedVersion ?? 'unknown', versionRule);
+
+        console.log(`📦 ffmpeg version check: ${message}`);
+
+        // Determine result based on action
+        const needsAction = action === VersionAction.INSTALL || action === VersionAction.UPGRADE;
+
         resolve(createMediaProcessResult(params, {
           success: true,
-          dependencyInstalled: code === 0
+          dependencyInstalled: !needsAction,
+          warnings: needsAction ? [message] : undefined
         }));
       });
 

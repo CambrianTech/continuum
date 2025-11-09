@@ -242,10 +242,10 @@ export class SentinelGenomeAdapter extends BaseGenomeAdapter {
 
 ```typescript
 // system/genome/commands/sentinel/GenomeSentinelDemoServerCommand.ts
-import { BaseServerCommand } from 'system/core/server/BaseServerCommand';
+import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';;
 import { SentinelGenomeAdapter } from 'system/genome/models/sentinel/SentinelGenomeAdapter';
 
-export class GenomeSentinelDemoServerCommand extends BaseServerCommand {
+export class GenomeSentinelDemoServerCommand extends CommandBase {
   readonly name = 'genome/sentinel-demo';
   readonly description = 'Run Sentinel-AI demo on M1 (the ONE GOOD WIN)';
 
