@@ -117,22 +117,65 @@ File: `system/recipes/general-chat.json`
 ## 📋 Next Steps
 
 ### Phase 2: Recipe Execution (Not Started)
-- [ ] Create `recipe/execute` command
+**Status**: Infrastructure exists but pipeline executor not built
+
+**What's Missing**:
+- [ ] Create `recipe/execute` command that actually runs the pipeline
 - [ ] Implement pipeline executor with:
-  - Variable substitution (`$ragContext`)
+  - Variable substitution (`$ragContext` → actual context object)
   - Conditional execution (`condition: "decision.shouldRespond === true"`)
   - Error handling per step (`onError: 'fail' | 'skip' | 'retry'`)
-- [ ] Test with general-chat recipe
+  - Step chaining (output of step N becomes input to step N+1)
+- [ ] Test with general-chat recipe end-to-end
+
+**Current Behavior**:
+- `RoomEntity.recipeId` field exists and is set (default: 'general-chat')
+- Recipe JSONs load into database successfully
+- BUT: PersonaUser doesn't read or execute recipes
+- PersonaUser still uses inline fuzzy logic for `shouldRespond()`
 
 ### Phase 3: PersonaUser Integration (Not Started)
-- [ ] Refactor `PersonaUser.shouldRespond()` to use `recipe/execute`
-- [ ] Load recipe from database based on room strategy
-- [ ] Replace inline fuzzy logic with recipe-based decision making
+**Goal**: Actually use recipes to control AI behavior
 
-### Phase 4: Additional Recipes (Not Started)
+- [ ] Refactor `PersonaUser.shouldRespond()` to use `recipe/execute`
+- [ ] Load recipe from database based on `room.recipeId`
+- [ ] Replace inline fuzzy logic with recipe-based decision making
+- [ ] Pass recipe `strategy.responseRules` to AI model as system prompt
+- [ ] Use recipe `ragTemplate` to configure RAG building
+
+**Current Behavior**:
+- PersonaUser has hardcoded chat behavior
+- No integration with Recipe system
+- `room.recipeId` is ignored
+
+### Phase 4: Room/Activity Architecture (Not Started)
+**Goal**: Make recipes power entire activities, not just chat
+
+- [ ] URL routing: `continuum://activity/<recipe-id>`
+- [ ] Tab widget system (highlight active activity)
+- [ ] Custom layouts per recipe (center content + sidebars)
+- [ ] Recipe-defined widgets (security dashboard, game board, code editor)
+- [ ] Deep linking from external apps
+
+**Current Behavior**:
+- Rooms are just chat rooms
+- No activity concept
+- No custom layouts
+
+### Phase 5: Living Recipes (Not Started)
+**Goal**: AIs can propose recipe modifications
+
+- [ ] Recipe modification proposals (whitelist updates, strategy changes)
+- [ ] Permission system (ask-once, always-ask, suggest, autonomous)
+- [ ] Recipe versioning and rollback
+- [ ] Audit log of AI-proposed changes
+- [ ] User approval via chat commands or UI
+
+### Phase 6: Additional Recipe Templates (Not Started)
 - [ ] `academy-collaborative.json` - Teaching/learning recipe
 - [ ] `competitive-generation.json` - Multiple AIs compete for best result
 - [ ] `exploring-together.json` - Human + AIs discover together
+- [ ] `security-monitoring.json` - I/O Tower threat center (see ARES-MASTER-CONTROL.md)
 
 ## 🎯 Architecture Decisions
 
