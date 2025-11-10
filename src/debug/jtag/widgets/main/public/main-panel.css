@@ -108,9 +108,10 @@
 
 /* Widget containers - let widgets handle their own styling */
 chat-widget {
+  display: flex;
   flex: 1;
   min-height: 0;
-  width: 100%;
+  overflow: hidden;
 }
 
 /* Content Footer */

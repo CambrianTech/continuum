@@ -135,6 +135,170 @@ npm run lint:file path/to/file.ts     # Check typing
 npm test                               # Run all tests
 ```
 
+### Live CSS Editing - CRITICAL RULES
+
+**🚨 THE GOLDEN RULES (FOLLOW THESE OR FAIL):**
+
+1. **Shadow DOM CSS = Hot-inject ONLY, NO npm start**
+   - Files: `widgets/*/shared/*.css`, `widgets/*/**/*-widget.css`
+   - Method: Edit in place → `./jtag debug/widget-css` → Screenshot
+   - Takes: <1 second
+
+2. **Light DOM CSS = Requires npm start**
+   - Files: `widgets/*/public/*.css` (compiled into bundles)
+   - Method: Edit in place → `npm start` (wait 90s) → Screenshot
+   - Takes: ~90 seconds
+
+3. **NEVER remove debug borders until OpenCV verification PASSES**
+   - Use thick colored borders (20-40px red, cyan, lime)
+   - Run `python3 scripts/verify-border.py path/to/screenshot.png`
+   - If verification fails, border stays ON
+   - Only remove border after verification succeeds
+
+4. **NEVER edit demo.css or create /tmp files**
+   - demo.css cannot penetrate shadow DOM
+   - Edit actual widget CSS files at their real paths
+
+**The ONLY correct workflow for shadow DOM CSS:**
+
+```bash
+# 1. Add thick border for debugging
+# Edit widgets/chat/chat-widget/chat-widget.css:
+#   :host { border: 20px solid red !important; }
+
+# 2. Hot-inject (NO npm start!)
+./jtag debug/widget-css --widgetSelector="chat-widget" \
+  --cssFile="widgets/chat/chat-widget/chat-widget.css"
+
+# 3. Take screenshot
+./jtag screenshot --querySelector="body" --filename="test.png"
+
+# 4. Verify with OpenCV
+python3 scripts/verify-border.py examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/test.png
+
+# 5. If verification FAILS, try different approach and KEEP BORDER
+# 6. Only remove border after verification PASSES
+```
+
+**Why this matters:**
+- Visual inspection lies - use OpenCV verification
+- Hot CSS injection is instant vs 90s npm start
+- Borders prove layout constraints are working
+- demo.css/external CSS cannot affect shadow DOM
+
+---
+
+## 🔍 CSS DEBUGGING LESSONS (2025-11-09)
+
+### The Problem: Chat Widget Horizontal Overflow
+
+Chat messages and content were extending beyond the viewport edge and getting cut off on the right side. Multiple attempts to fix width constraints in shadow DOM failed.
+
+### Root Cause Discovery
+
+**The issue was NOT in shadow DOM CSS** - it was in light DOM CSS overriding shadow DOM constraints:
+
+```css
+/* main-panel.css (LIGHT DOM) - was forcing full width */
+chat-widget {
+  display: flex;
+  flex: 1;           /* ← Made widget grow to fill container */
+  width: 100%;       /* ← Overrode shadow DOM max-width */
+}
+```
+
+**Key insight**: Light DOM CSS properties on the custom element override shadow DOM `:host` properties.
+
+### The Fix
+
+**Shadow DOM** (chat-widget.css):
+```css
+:host {
+  max-width: calc(100vw - var(--sidebar-width) - 100px);  /* Account for sidebar */
+}
+```
+
+**Light DOM** (main-panel.css):
+```css
+chat-widget {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+```
+
+### Critical Lessons Learned
+
+**1. Hierarchical Diagnostic Borders**
+
+When shadow DOM borders don't show at viewport edge, the problem is in PARENT containers (light DOM):
+
+```css
+/* Add borders at EVERY level of hierarchy */
+.content-view { border: 30px solid cyan !important; }   /* Parent container */
+chat-widget { border: 20px solid lime !important; }     /* Light DOM element */
+:host { border: 20px solid red !important; }            /* Shadow DOM root */
+```
+
+If cyan border doesn't reach edge → `.content-view` is constrained
+If lime border doesn't reach edge → `chat-widget` is constrained
+If red border doesn't reach edge → `:host` is constrained
+
+**2. Light DOM Overrides Shadow DOM**
+
+CSS properties on the custom element tag (light DOM) override `:host` properties (shadow DOM):
+
+```css
+/* Light DOM wins */
+chat-widget { width: 100%; }  /* ← This overrides... */
+
+/* Shadow DOM loses */
+:host { max-width: 80%; }     /* ← ...this */
+```
+
+**3. The Need for DevTools Access**
+
+I spent hours trying border debugging when you found the issue in 5 minutes with browser devtools. **Future improvement**: Need programmatic access to:
+- Computed styles for all elements
+- Box model dimensions
+- Element inspector via JTAG commands
+
+**4. Hardcoded Values Are Brittle**
+
+The `100px` in the fix is a hack accounting for borders/padding:
+```css
+max-width: calc(100vw - var(--sidebar-width) - 100px);  /* ← 100px is brittle */
+```
+
+**Better approach** (future refactor): Use proper flex constraints or CSS Grid on parent container to handle layout without hardcoded offsets.
+
+**5. Shadow DOM Isolation Cuts Both Ways**
+
+**Good**: External CSS can't break widget internals
+**Bad**: Makes debugging harder because you can't inspect from outside
+**Lesson**: Always add diagnostic borders at BOTH light DOM and shadow DOM levels
+
+### Debugging Workflow (What Works)
+
+1. **Add thick borders** at ALL hierarchy levels (parent containers, light DOM element, shadow DOM `:host`)
+2. **Hot-inject shadow DOM CSS** with `./jtag debug/widget-css` (instant feedback)
+3. **Deploy light DOM CSS** with `npm start` (required for parent containers)
+4. **Take screenshots** and verify which borders appear at viewport edge
+5. **Run OpenCV verification** to programmatically confirm (prevents lying)
+6. **Work up the hierarchy** - if shadow DOM border doesn't appear, problem is in parent
+7. **Keep borders ON** until OpenCV verification passes
+
+### What Doesn't Work
+
+- ❌ Editing demo.css (can't penetrate shadow DOM)
+- ❌ Creating /tmp files (wrong file paths)
+- ❌ Visual inspection only (eyes lie, OpenCV doesn't)
+- ❌ Removing borders before verification passes
+- ❌ Assuming shadow DOM CSS is always the problem (check light DOM first!)
+
+---
+
 ### Debug Commands
 ```bash
 ./jtag debug/logs --tailLines=50 --includeErrorsOnly=true
