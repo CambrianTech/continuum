@@ -48,6 +48,8 @@ export interface MessageMetadata {
   resolved?: boolean;  // Mark message as resolved (no further AI responses needed)
   resolvedBy?: UUID;   // Who marked it resolved (moderator)
   resolvedAt?: number; // When it was marked resolved
+  isSystemTest?: boolean;  // Mark as system test (precommit hook, integration test) - AIs should skip
+  testType?: string;  // Type of test (e.g., 'precommit-hook', 'integration-test')
 }
 
 export interface MessageReaction {

@@ -101,25 +101,31 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
     // Try to auto-start the server
     console.log('🚀 Sentinel: Server not found, attempting auto-start...');
-    await this.startServer();
+    try {
+      await this.startServer();
 
-    // Wait for server to be ready
-    const maxWaitTime = 30000; // 30 seconds
-    const startTime = Date.now();
+      // Wait for server to be ready
+      const maxWaitTime = 30000; // 30 seconds
+      const startTime = Date.now();
 
-    while (Date.now() - startTime < maxWaitTime) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      while (Date.now() - startTime < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-      const checkHealth = await this.healthCheck();
-      if (checkHealth.status === 'healthy') {
-        console.log('✅ Sentinel: Server started and ready');
-        return;
+        const checkHealth = await this.healthCheck();
+        if (checkHealth.status === 'healthy') {
+          console.log('✅ Sentinel: Server started and ready');
+          return;
+        }
       }
-    }
 
-    throw new Error(
-      'Sentinel server failed to start. Please start manually: cd /Volumes/FlashGordon/cambrian/sentinel-ai && ./server/start_server.sh'
-    );
+      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
+      console.warn(
+        `⚠️  Sentinel: Server failed to start after 30s. Start manually: cd ${sentinelPath} && ./server/start_server.sh`
+      );
+    } catch (error) {
+      console.warn(`⚠️  Sentinel: Auto-start failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn('   Sentinel AI will be unavailable until manually started');
+    }
   }
 
   /**
@@ -151,13 +157,13 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
     try {
       // Get path to sentinel-ai project
-      const sentinelPath = process.env.SENTINEL_PATH || '/Volumes/FlashGordon/cambrian/sentinel-ai';
+      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
       const startScript = path.join(sentinelPath, 'server', 'start_server.sh');
 
       console.log(`🧬 Sentinel: Starting server from ${sentinelPath}...`);
 
       // Start server in background
-      this.serverProcess = spawn('bash', [startScript], {
+      this.serverProcess = spawn('/bin/bash', [startScript], {
         cwd: sentinelPath,
         detached: true,
         stdio: 'ignore',
@@ -165,6 +171,12 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
           ...process.env,
           SENTINEL_PORT: this.serverPort,
         },
+      });
+
+      // Handle spawn errors (e.g., bash not found, script doesn't exist)
+      this.serverProcess.on('error', (error) => {
+        console.error(`❌ Sentinel: Failed to spawn server process: ${error.message}`);
+        this.serverProcess = null;
       });
 
       // Allow process to run independently

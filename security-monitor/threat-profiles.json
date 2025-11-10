@@ -1,0 +1,115 @@
+{
+  "version": "1.0",
+  "profiles": [
+    {
+      "id": "jumpcloud-mdm",
+      "name": "JumpCloud MDM",
+      "category": "corporate-surveillance",
+      "threat_level": "high",
+      "indicators": {
+        "process_names": [
+          "jumpcloud",
+          "jumpcloud-agent",
+          "jumpcloud-assist",
+          "jcagent"
+        ],
+        "process_paths": [
+          "/opt/jc/bin/",
+          "/Applications/JumpCloud"
+        ],
+        "parent_args_patterns": [
+          ".*jumpcloud.*",
+          ".*assist.*"
+        ]
+      },
+      "response": {
+        "filter_mode": "appear-normal",
+        "log_level": "verbose",
+        "alert_user": true,
+        "strategies": [
+          "hide-investigation-tools",
+          "fake-normal-system",
+          "hide-external-drives"
+        ]
+      },
+      "description": "JumpCloud MDM - Corporate surveillance tool with root access",
+      "added": "2025-11-08",
+      "reason": "Unauthorized FaceTime activation, persistent Bluetooth attacks"
+    },
+    {
+      "id": "bluetooth-attacker-c08m",
+      "name": "C08MRSEM2330 Bluetooth Device",
+      "category": "bluetooth-attack",
+      "threat_level": "critical",
+      "indicators": {
+        "bluetooth_addresses": [
+          "C08MRSEM2330"
+        ]
+      },
+      "response": {
+        "auto_reject": true,
+        "log_level": "verbose",
+        "alert_user": true,
+        "capture_evidence": true
+      },
+      "description": "Persistent Bluetooth pairing attempts over 3+ months",
+      "added": "2025-11-08",
+      "reason": "Multiple unauthorized pairing attempts"
+    }
+  ],
+  
+  "categories": {
+    "corporate-surveillance": {
+      "default_response": "appear-normal",
+      "description": "MDM and corporate monitoring tools"
+    },
+    "bluetooth-attack": {
+      "default_response": "block",
+      "description": "Unauthorized Bluetooth pairing attempts"
+    },
+    "network-intrusion": {
+      "default_response": "honeypot",
+      "description": "SSH brute force, port scanning, etc"
+    },
+    "malware": {
+      "default_response": "isolate",
+      "description": "Known malware signatures"
+    }
+  },
+  
+  "response_strategies": {
+    "appear-normal": {
+      "description": "Make system look normal/healthy to attacker",
+      "actions": [
+        "filter-sensitive-paths",
+        "hide-investigation-tools",
+        "show-fake-processes",
+        "fake-normal-logs"
+      ]
+    },
+    "honeypot": {
+      "description": "Feed attacker fake but believable data",
+      "actions": [
+        "generate-fake-credentials",
+        "fake-file-listings",
+        "fake-sensitive-documents"
+      ]
+    },
+    "block": {
+      "description": "Actively block access",
+      "actions": [
+        "deny-commands",
+        "fake-errors",
+        "rate-limit"
+      ]
+    },
+    "isolate": {
+      "description": "Quarantine and monitor",
+      "actions": [
+        "sandbox-environment",
+        "log-everything",
+        "no-network-access"
+      ]
+    }
+  }
+}

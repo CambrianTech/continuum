@@ -36,7 +36,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
    * Get the project root directory
    *
    * From adapter location (src/debug/jtag/system/genome/fine-tuning/server/adapters),
-   * navigate up to the project root (/Volumes/FlashGordon/cambrian/continuum).
+   * navigate up to the project root (e.g., /path/to/project/continuum).
    *
    * Calculation: adapters → server → fine-tuning → genome → system → jtag → debug → src → continuum (9 levels)
    *

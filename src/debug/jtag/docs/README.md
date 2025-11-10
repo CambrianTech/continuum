@@ -10,6 +10,7 @@
 docs/
 ├── architecture/     - System architecture and design patterns
 ├── personas/         - PersonaUser, genomic, and fine-tuning architecture
+├── papers/           - Research papers on core innovations (RTOS, LoRA genomes)
 ├── recipes/          - Recipe system for AI learning and collaboration
 ├── testing/          - Testing strategies, reports, and findings
 ├── design/           - Design patterns and style guides
@@ -89,6 +90,23 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 - [LORA-GENOME-PAGING.md](../system/user/server/modules/LORA-GENOME-PAGING.md) - Virtual memory for skills
 - [ADAPTIVE-THRESHOLDS-ROADMAP.md](../system/user/server/modules/ADAPTIVE-THRESHOLDS-ROADMAP.md) - Dynamic thresholds
 - [FINE-TUNING-PROVIDER-RESEARCH.md](../system/user/server/modules/FINE-TUNING-PROVIDER-RESEARCH.md) - Provider comparison
+
+---
+
+## 📄 Research Papers
+
+**Academic Papers on Core Innovations:**
+- [papers/README.md](papers/README.md) - Research papers index
+- [papers/RTOS-COGNITIVE-ARCHITECTURE.md](papers/RTOS-COGNITIVE-ARCHITECTURE.md) - RTOS principles in AI cognition
+- [papers/LORA-GENOME-DEMOCRATIZATION.md](papers/LORA-GENOME-DEMOCRATIZATION.md) - Democratic AI through LoRA genomes
+
+**Key Topics Covered:**
+- RTOS infinite loop patterns for autonomous agents
+- CBAR Mobile-Home-SDK architecture (42fps on iPhone 7 with heavy AR workload)
+- Thought frame parallel processing and worker affinity
+- Economic accessibility of SOTA intelligence via LoRA adapters
+- Mentorship-based training and phenotype trading on Grid
+- Democratic mission: From AI oligopoly to ecosystem
 
 ---
 
@@ -224,6 +242,7 @@ Many system modules have their own documentation within their directories:
 **Organization Principles:**
 - **docs/architecture/** - Cross-cutting system architecture
 - **docs/personas/** - PersonaUser, genomic, fine-tuning architecture
+- **docs/papers/** - Academic research papers on core innovations
 - **docs/recipes/** - Recipe system architecture and guides
 - **docs/testing/** - Testing strategies and reports
 - **docs/design/** - Design patterns and philosophy
@@ -239,5 +258,5 @@ Many system modules have their own documentation within their directories:
 
 ---
 
-**Last Updated:** 2025-11-03
-**Total Documentation Files:** 63 in docs/, 49 in system/ subdirectories
+**Last Updated:** 2025-11-07
+**Total Documentation Files:** 66 in docs/ (including 3 research papers), 49 in system/ subdirectories

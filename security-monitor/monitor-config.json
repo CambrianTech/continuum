@@ -1,0 +1,9 @@
+{
+  "code_word": "System Update Available",
+  "alert_mode": "silent",
+  "notification_sound": "Tink",
+  "alert_once": true,
+  "scan_interval": 30,
+  "show_popup": true,
+  "auto_close_popup_seconds": 5
+}

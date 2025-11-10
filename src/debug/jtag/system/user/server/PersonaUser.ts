@@ -76,6 +76,10 @@ import type { InboxMessage } from './modules/PersonaInbox';
 import type { InboxTask, TaskStatus } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
 import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
+import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome';
+import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
+import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
+import type { QueueItem } from './modules/PersonaInbox';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -118,18 +122,25 @@ export class PersonaUser extends AIUser {
   // PHASE 1: Autonomous servicing modules (inbox + personaState)
   // Inbox stores messages with priority, personaState tracks energy/mood
   // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
-  private inbox: PersonaInbox;
-  private personaState: PersonaStateManager;
+  public inbox: PersonaInbox;
+  public personaState: PersonaStateManager;
 
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
+
+  // PHASE 6: LoRA genome paging (virtual memory for skills)
+  public genome: PersonaGenome;
+
+  // CNS: Central Nervous System orchestrator
+  private cns: PersonaCentralNervousSystem;
 
   // PHASE 7.4: Training data accumulation for recipe-embedded learning
   // Accumulates training examples in RAM during recipe execution
   public trainingAccumulator: TrainingDataAccumulator;
 
   // PHASE 3: Autonomous polling loop
-  private servicingLoop: NodeJS.Timeout | null = null;
+  private servicingLoop: NodeJS.Timeout | null = null; // Deprecated - now using continuous async loop
+  private servicingLoopActive: boolean = false; // Controls continuous service loop
 
   // PHASE 7.5.1: Training readiness check loop (runs less frequently than servicing loop)
   private trainingCheckLoop: NodeJS.Timeout | null = null;
@@ -179,10 +190,43 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
+    // PHASE 6: LoRA genome paging (virtual memory for skills)
+    this.genome = new PersonaGenome({
+      baseModel: this.modelConfig.model || 'llama3.2:3b',
+      memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
+      adaptersPath: './lora-adapters',
+      initialAdapters: [
+        {
+          name: 'conversational',
+          domain: 'chat',
+          path: './lora-adapters/conversational.safetensors',
+          sizeMB: 50,
+          priority: 0.7  // High priority - used frequently
+        },
+        {
+          name: 'typescript-expertise',
+          domain: 'code',
+          path: './lora-adapters/typescript-expertise.safetensors',
+          sizeMB: 60,
+          priority: 0.6
+        },
+        {
+          name: 'self-improvement',
+          domain: 'self',
+          path: './lora-adapters/self-improvement.safetensors',
+          sizeMB: 40,
+          priority: 0.5
+        }
+      ]
+    });
+
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, and trainingAccumulator modules`);
+    // CNS: Central Nervous System orchestrator (capability-based)
+    this.cns = CNSFactory.create(this);
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, genome, CNS, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -407,6 +451,7 @@ export class PersonaUser extends AIUser {
     const inboxMessage: InboxMessage = {
       id: messageEntity.id,
       type: 'message',
+      domain: 'chat',  // Messages are always chat domain
       roomId: messageEntity.roomId,
       content: messageEntity.content?.text || '',
       senderId: messageEntity.senderId,
@@ -573,7 +618,12 @@ export class PersonaUser extends AIUser {
       );
     }
 
-    // === FREE-FLOWING COORDINATION: Broadcast thought simultaneously with other AIs ===
+    // === AUTONOMOUS DECISION: Persona personality adapter decides ===
+    // REMOVED: Thoughtstream coordination (centralized blocking)
+    // Personas are organic decision makers - if their personality adapter says "respond", they respond
+    // Multiple AIs responding is natural conversation, not a problem to prevent
+
+    /* DISABLED: Thoughtstream centralized coordination (phase out)
     const coordinator = getChatCoordinator();
     const chatThought: ChatThought = {
       personaId: this.id,
@@ -642,6 +692,9 @@ export class PersonaUser extends AIUser {
     }
 
     console.log(`✅ ${this.displayName}: Granted permission by coordinator (conf=${gatingResult.confidence})`);
+    */
+
+    console.log(`✅ ${this.displayName}: Autonomous decision to respond (personality adapter, conf=${gatingResult.confidence})`);
 
     // 🔧 PHASE: Update RAG context
     console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
@@ -1187,6 +1240,29 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         originalMessage.roomId,
         aiResponse.text.trim()
       );
+
+      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
+      // This should NEVER happen - the fast-path filter should skip all system tests
+      // If we see this, it indicates either:
+      // 1. Bug in the fast-path filter
+      // 2. AI exhibiting genuine cognition/autonomy (responding despite instructions)
+      // 3. Anomalous behavior worth investigating
+      if (originalMessage.metadata?.isSystemTest === true) {
+        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.displayName} responded to system test message`;
+        console.error(anomalyMessage);
+        console.error(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
+        console.error(`   Original Message: "${originalMessage.content.text.slice(0, 100)}..."`);
+        console.error(`   AI Response: "${aiResponse.text.trim().slice(0, 100)}..."`);
+        console.error(`   Room ID: ${originalMessage.roomId}`);
+        console.error(`   Message ID: ${originalMessage.id}`);
+
+        // Log to AI decisions log for persistent tracking
+        AIDecisionLogger.logError(
+          this.displayName,
+          'COGNITIVE CANARY TRIGGERED',
+          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
+        );
+      }
 
       // Emit POSTED event
       if (this.client && result.data) {
@@ -1743,6 +1819,45 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     const startTime = Date.now();
 
     try {
+      // SYSTEM TEST FILTER: Skip system test messages (precommit hooks, integration tests)
+      if (message.metadata?.isSystemTest === true) {
+        const durationMs = Date.now() - startTime;
+
+        // Emit cognition event for tracking
+        await Events.emit<StageCompleteEvent>(
+          DataDaemon.jtagContext!,
+          COGNITION_EVENTS.STAGE_COMPLETE,
+          {
+            messageId: message.id,
+            personaId: this.id,
+            contextId: message.roomId,
+            stage: 'should-respond',
+            metrics: {
+              stage: 'should-respond',
+              durationMs,
+              resourceUsed: 0,
+              maxResource: 100,
+              percentCapacity: 0,
+              percentSpeed: 100, // Instant skip
+              status: 'fast',
+              metadata: {
+                fastPath: true,
+                systemTest: true,
+                skipped: true
+              }
+            },
+            timestamp: Date.now()
+          }
+        );
+
+        return {
+          shouldRespond: false,
+          confidence: 0,
+          reason: 'System test message - skipped to avoid noise',
+          model: 'system-filter'
+        };
+      }
+
       // FAST-PATH: If directly mentioned by name, always respond (skip expensive LLM call)
       if (isMentioned) {
         const durationMs = Date.now() - startTime;
@@ -1966,13 +2081,14 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   // broadcastThought() method removed - now using getChatCoordinator().broadcastChatThought() directly
 
   /**
-   * PHASE 3: Start autonomous servicing loop (RTOS-inspired duty cycle)
+   * PHASE 3: Start autonomous servicing loop (Signal-based, not polling)
    *
-   * The persona continuously polls the inbox at an adaptive cadence based on mood:
-   * - idle: 3s (eager to work)
-   * - active: 5s (normal processing)
-   * - tired: 7s (moderate pace)
-   * - overwhelmed: 10s (back pressure)
+   * SIGNAL-BASED WAKEUP: No polling delay - instant response when work arrives
+   * The persona waits on EventEmitter signal with adaptive timeout based on mood:
+   * - idle: 3s timeout (eager to work, short rest)
+   * - active: 5s timeout (normal processing)
+   * - tired: 7s timeout (moderate pace, longer rest)
+   * - overwhelmed: 10s timeout (back pressure, recover energy)
    *
    * This is lifecycle-based - loop runs continuously while persona is "online"
    */
@@ -1980,12 +2096,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     const cadence = this.personaState.getCadence();
     const mood = this.personaState.getState().mood;
 
-    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (cadence=${cadence}ms, mood=${mood})`);
+    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (SIGNAL-BASED, timeout=${cadence}ms, mood=${mood})`);
 
-    // Create polling loop for inbox servicing
-    this.servicingLoop = setInterval(async () => {
-      await this.serviceInbox();
-    }, cadence);
+    // Create continuous async loop (not setInterval) - signal-based waiting
+    this.servicingLoopActive = true;
+    this.runServiceLoop().catch(error => {
+      console.error(`❌ ${this.displayName}: Service loop crashed: ${error}`);
+    });
 
     // PHASE 7.5.1: Create training check loop (every 60 seconds)
     // Checks less frequently than inbox servicing to avoid overhead
@@ -1993,6 +2110,22 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     this.trainingCheckLoop = setInterval(async () => {
       await this.checkTrainingReadiness();
     }, 60000); // 60 seconds
+  }
+
+  /**
+   * Continuous service loop - runs until servicingLoopActive = false
+   * Uses signal-based waiting (not polling) for instant response
+   */
+  private async runServiceLoop(): Promise<void> {
+    while (this.servicingLoopActive) {
+      try {
+        await this.serviceInbox();
+      } catch (error) {
+        console.error(`❌ ${this.displayName}: Error in service loop: ${error}`);
+        // Continue loop despite errors
+      }
+    }
+    console.log(`🛑 ${this.displayName}: Service loop stopped`);
   }
 
   /**
@@ -2138,15 +2271,20 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   }
 
   /**
-   * PHASE 3: Service inbox (one polling iteration)
+   * CNS callback: Poll tasks from database
    *
-   * Checks inbox for messages, evaluates priority vs mood threshold, and processes if should engage
+   * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
    */
-  private async serviceInbox(): Promise<void> {
-    // STEP 1: Poll task database for pending tasks assigned to this persona
+  public async pollTasksFromCNS(): Promise<void> {
     await this.pollTasks();
+  }
 
-    // PHASE 5: Generate self-tasks for autonomous work creation
+  /**
+   * CNS callback: Generate self-tasks for autonomous work
+   *
+   * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
+   */
+  public async generateSelfTasksFromCNS(): Promise<void> {
     try {
       const selfTasks = await this.taskGenerator.generateSelfTasks();
       if (selfTasks.length > 0) {
@@ -2168,96 +2306,93 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     } catch (error) {
       console.error(`❌ ${this.displayName}: Error generating self-tasks: ${error}`);
     }
+  }
 
-    // STEP 2: Check if inbox has work (messages or tasks)
-    if (this.inbox.getSize() === 0) {
-      // No work - REST to recover energy
-      const cadence = this.personaState.getCadence();
-      await this.personaState.rest(cadence); // Rest for one polling cycle
-      console.log(`💤 ${this.displayName}: Resting (no work) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
-      this.adjustCadence();
-      return;
-    }
-
-    // Peek at highest priority message
-    const candidates = await this.inbox.peek(1);
-    if (candidates.length === 0) {
-      return;
-    }
-
-    const message = candidates[0];
-
-    // Check if we should engage with this message based on mood threshold
-    if (!this.personaState.shouldEngage(message.priority)) {
-      console.log(`⏭️ ${this.displayName}: Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood})`);
-      // REST while skipping messages to recover energy
-      const cadence = this.personaState.getCadence();
-      await this.personaState.rest(cadence); // Rest for one polling cycle
-      console.log(`💤 ${this.displayName}: Resting (skipped message) - energy now ${this.personaState.getState().energy.toFixed(2)}`);
-      // Leave in inbox - threshold might lower as energy recovers
-      return;
-    }
-
-    // Pop message from inbox (we're processing it now)
-    await this.inbox.pop(0); // Immediate pop (no timeout)
-
+  /**
+   * CNS callback: Handle chat message from CNS orchestrator
+   *
+   * This is called by PersonaCentralNervousSystem.serviceChatDomain() via callback pattern.
+   * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
+   */
+  public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
     // If this is a task, update status to 'in_progress' in database (prevents re-polling)
-    if (message.type === 'task') {
+    if (item.type === 'task') {
       await DataDaemon.update<TaskEntity>(
         COLLECTIONS.TASKS,
-        message.taskId,
+        item.taskId,
         { status: 'in_progress', startedAt: new Date() }
       );
     }
 
-    console.log(`✅ ${this.displayName}: Processing message from inbox (priority=${message.priority.toFixed(2)}, mood=${this.personaState.getState().mood}, inbox remaining=${this.inbox.getSize()})`);
-
-    try {
-      // Type-safe handling: Check if this is a message or task
-      if (message.type === 'message') {
-        // Reconstruct minimal ChatMessageEntity from inbox message
-        const reconstructedEntity: any = {
-          id: message.id,
-          roomId: message.roomId,
-          senderId: message.senderId,
-          senderName: message.senderName,
-          content: { text: message.content },
-          timestamp: message.timestamp,
-          // Fields not critical for evaluation:
-          senderDisplayName: message.senderName,
-          senderType: 'user', // Assumption: will be corrected by senderIsHuman check
-          status: 'delivered',
-          priority: message.priority,
-          metadata: {},
-          reactions: [],
-          attachments: [],
-          mentions: [],
-          replyTo: undefined,
-          editedAt: undefined,
-          deletedAt: undefined
-        };
-
-        // Determine if sender is human (not an AI persona)
-        const senderIsHuman = !message.senderId.startsWith('persona-');
-
-        // Extract message text
-        const messageText = message.content;
-
-        // Process message using existing evaluation logic
-        await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
-      } else if (message.type === 'task') {
-        // PHASE 5: Task execution based on task type
-        await this.executeTask(message);
+    // PHASE 6: Activate appropriate LoRA adapter based on domain
+    if (item.domain) {
+      const domainToAdapter: Record<string, string> = {
+        'chat': 'conversational',
+        'code': 'typescript-expertise',
+        'self': 'self-improvement'
+      };
+      const adapterName = domainToAdapter[item.domain];
+      if (adapterName) {
+        await this.genome.activateSkill(adapterName);
+      } else {
+        // Unknown domain - default to conversational
+        await this.genome.activateSkill('conversational');
       }
-
-      // Update inbox load in state (affects mood calculation)
-      this.personaState.updateInboxLoad(this.inbox.getSize());
-
-      // Check if cadence should adjust (mood may have changed after processing)
-      this.adjustCadence();
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error processing inbox message: ${error}`);
     }
+
+    // Type-safe handling: Check if this is a message or task
+    if (item.type === 'message') {
+      // Reconstruct minimal ChatMessageEntity from inbox message
+      const reconstructedEntity: any = {
+        id: item.id,
+        roomId: item.roomId,
+        senderId: item.senderId,
+        senderName: item.senderName,
+        content: { text: item.content },
+        timestamp: item.timestamp,
+        // Fields not critical for evaluation:
+        senderDisplayName: item.senderName,
+        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
+        status: 'delivered',
+        priority: item.priority,
+        metadata: {},
+        reactions: [],
+        attachments: [],
+        mentions: [],
+        replyTo: undefined,
+        editedAt: undefined,
+        deletedAt: undefined
+      };
+
+      // Determine if sender is human (not an AI persona)
+      const senderIsHuman = !item.senderId.startsWith('persona-');
+
+      // Extract message text
+      const messageText = item.content;
+
+      // Process message using existing evaluation logic
+      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+    } else if (item.type === 'task') {
+      // PHASE 5: Task execution based on task type
+      await this.executeTask(item);
+    }
+
+    // Update inbox load in state (affects mood calculation)
+    this.personaState.updateInboxLoad(this.inbox.getSize());
+
+    // Check if cadence should adjust (mood may have changed after processing)
+    this.adjustCadence();
+  }
+
+  /**
+   * PHASE 3: Service inbox (one polling iteration)
+   *
+   * NOW DELEGATED TO CNS (Central Nervous System orchestrator)
+   * CNS handles: task polling, self-task generation, message prioritization, domain scheduling
+   */
+  private async serviceInbox(): Promise<void> {
+    // Delegate to CNS orchestrator (capability-based multi-domain attention management)
+    await this.cns.serviceCycle();
   }
 
   /**
@@ -2412,11 +2547,29 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       return 'Missing or invalid LoRA layer in metadata';
     }
 
-    // TODO: Implement actual fine-tuning logic (Phase 7)
-    // For now, just log the intent
-    console.log(`🧬 ${this.displayName}: Would fine-tune ${loraLayer} adapter based on recent failures`);
+    // PHASE 6: Enable learning mode on the genome
+    try {
+      await this.genome.enableLearningMode(loraLayer);
+      console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
 
-    return `Prepared fine-tuning for ${loraLayer} adapter - actual training pending Phase 7`;
+      // TODO (Phase 7): Implement actual fine-tuning logic
+      // - Collect training examples from recent failures
+      // - Format as LoRA training data
+      // - Call Ollama fine-tuning API
+      // - Save updated weights to disk
+
+      // For now, just simulate training duration
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Disable learning mode after training
+      await this.genome.disableLearningMode(loraLayer);
+      console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
+
+      return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
+      return `Fine-tuning failed: ${error}`;
+    }
   }
 
   /**
@@ -2455,6 +2608,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       this.trainingCheckLoop = null;
       console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
     }
+
+    // PHASE 6: Unload all LoRA adapters
+    await this.genome.shutdown();
 
     if (this.worker) {
       await this.worker.shutdown();
