@@ -121,8 +121,9 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
     this.config = config;
     const options = config.options as SqliteOptions || {};
 
-    // Use centralized database path - no fallbacks
-    const dbPath = DATABASE_PATHS.SQLITE;
+    // Use explicit filename from options, or fall back to default database path
+    // This allows multi-database support (training DBs, etc.) while maintaining backward compatibility
+    const dbPath = options.filename || DATABASE_PATHS.SQLITE;
     console.log(`📍 SQLite: Using database path: ${dbPath}`);
 
     // Ensure directory exists with proper permissions

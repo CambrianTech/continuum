@@ -282,7 +282,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
   }
 
   /**
-   * Load training dataset from JSONL file
+   * Load training dataset from JSONL file or SQLite database
    */
   private async loadDatasetFromFile(
     filePath: string,
@@ -305,8 +305,142 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
         };
       }
 
+      // Detect file type by extension
+      const ext = path.extname(resolvedPath).toLowerCase();
+
+      if (ext === '.db') {
+        // Load from SQLite database
+        console.log('📦 Loading dataset from SQLite database (buffered)...');
+        return await this.loadDatasetFromDatabase(resolvedPath, personaId, personaName, traitType);
+      } else {
+        // Load from JSONL file (legacy support)
+        console.log('📄 Loading dataset from JSONL file (in-memory)...');
+        return await this.loadDatasetFromJSONL(resolvedPath, personaId, personaName, traitType);
+      }
+
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
+  /**
+   * Load training dataset from SQLite database (memory-efficient, buffered)
+   */
+  private async loadDatasetFromDatabase(
+    dbPath: string,
+    personaId: UUID,
+    personaName: string,
+    traitType: string
+  ): Promise<{ success: boolean; dataset?: any; error?: string }> {
+    const { Commands } = await import('../../../../system/core/shared/Commands');
+
+    let dbHandle = 'default';
+
+    try {
+      // Step 1: Open database with read-only mode
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const openResult = await Commands.execute('data/open', {
+        adapter: 'sqlite',
+        config: {
+          path: dbPath,
+          mode: 'readonly'
+        }
+      } as any) as any;
+
+      if (!openResult.success || !openResult.dbHandle) {
+        return {
+          success: false,
+          error: `Failed to open database: ${openResult.error ?? 'Unknown error'}`
+        };
+      }
+
+      dbHandle = openResult.dbHandle;
+      console.log(`✅ Database opened with handle: ${dbHandle}`);
+
+      // Step 2: Query all training examples (buffered via data/list)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const listResult = await Commands.execute('data/list', {
+        collection: 'training_examples',
+        dbHandle,
+        limit: 10000  // Large limit for training datasets
+      } as any) as any;
+
+      if (!listResult.success || !listResult.data) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await Commands.execute('data/close', { dbHandle } as any);
+        return {
+          success: false,
+          error: `Failed to query training examples: ${listResult.error ?? 'Unknown error'}`
+        };
+      }
+
+      const records = listResult.data;
+      console.log(`📚 Loaded ${records.length} training examples from database`);
+
+      // Step 3: Convert TrainingExampleEntity to training format
+      const examples = records.map((record: any) => ({
+        messages: record.messages
+      }));
+
+      // Step 4: Close database handle
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await Commands.execute('data/close', { dbHandle } as any);
+      console.log(`🔒 Database closed (handle: ${dbHandle})`);
+
+      // Step 5: Build TrainingDataset
+      const dataset = {
+        examples,
+        metadata: {
+          personaId,
+          personaName,
+          traitType,
+          createdAt: Date.now(),
+          source: 'database' as const,
+          totalExamples: examples.length
+        }
+      };
+
+      return {
+        success: true,
+        dataset
+      };
+
+    } catch (error) {
+      // Clean up handle on error
+      if (dbHandle !== 'default') {
+        try {
+          const { Commands } = await import('../../../../system/core/shared/Commands');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await Commands.execute('data/close', { dbHandle } as any);
+        } catch (closeError) {
+          console.error('Failed to close database after error:', closeError);
+        }
+      }
+
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
+  /**
+   * Load training dataset from JSONL file (legacy support, loads into memory)
+   */
+  private async loadDatasetFromJSONL(
+    filePath: string,
+    personaId: UUID,
+    personaName: string,
+    traitType: string
+  ): Promise<{ success: boolean; dataset?: any; error?: string }> {
+    try {
+      const fs = await import('fs');
+
       // Read JSONL file
-      const fileContent = fs.readFileSync(resolvedPath, 'utf-8');
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
       const lines = fileContent.split('\n').filter(line => line.trim().length > 0);
 
       // Parse each line as JSON

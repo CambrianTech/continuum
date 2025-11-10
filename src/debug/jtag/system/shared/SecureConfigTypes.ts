@@ -33,6 +33,7 @@ export interface ServerPathsConfig {
   readonly screenshots: string;
   readonly data_directory: string;
   readonly pid_file: string;
+  readonly datasets?: string;  // Optional custom datasets directory (set via DATASETS_DIR env var, e.g., /path/to/datasets)
 }
 
 export interface ServerEnvironmentConfig {

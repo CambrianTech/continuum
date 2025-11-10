@@ -20,6 +20,7 @@ export interface BaseQueueItem {
   type: 'message' | 'task';  // Discriminator for type narrowing
   priority: number;          // 0.0-1.0 for queue ordering (higher = more urgent)
   timestamp: number;         // When item was created (ms since epoch)
+  domain: TaskDomain;        // Which domain this work belongs to (chat, code, self, etc.)
 }
 
 /**
@@ -45,7 +46,6 @@ export interface InboxTask extends BaseQueueItem {
   taskId: UUID;              // Reference to full TaskEntity in database
   assigneeId: UUID;          // Who should do this (should match persona ID)
   createdBy: UUID;           // Who created this task
-  domain: TaskDomain;        // Which domain (chat, code, self, etc.)
   taskType: TaskType;        // Specific type within domain
   contextId: UUID;           // Domain-specific context (roomId, fileId, etc.)
   description: string;       // Human-readable task description

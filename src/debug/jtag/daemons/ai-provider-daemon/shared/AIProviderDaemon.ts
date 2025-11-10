@@ -351,6 +351,26 @@ export class AIProviderDaemon extends DaemonBase {
   }
 
   /**
+   * Get adapter by provider ID
+   * Used by diagnostic commands to test adapters directly
+   */
+  getAdapter(providerId: string): AIProviderAdapter | null {
+    const registration = this.adapters.get(providerId);
+    return registration ? registration.adapter : null;
+  }
+
+  /**
+   * Get all registered adapters (including disabled ones)
+   */
+  getAllAdapters(): Map<string, AIProviderAdapter> {
+    const result = new Map<string, AIProviderAdapter>();
+    for (const [providerId, registration] of this.adapters) {
+      result.set(providerId, registration.adapter);
+    }
+    return result;
+  }
+
+  /**
    * Register a new AI provider adapter
    * Protected so server subclass can register adapters
    */
@@ -596,5 +616,39 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     return pool;
+  }
+
+  /**
+   * Get adapter by provider ID with automatic instance injection - CLEAN INTERFACE
+   *
+   * @example
+   * const adapter = AIProviderDaemon.getAdapter('ollama');
+   * if (adapter) {
+   *   const models = await adapter.getAvailableModels();
+   * }
+   */
+  static getAdapter(providerId: string): AIProviderAdapter | null {
+    if (!AIProviderDaemon.sharedInstance) {
+      throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
+    }
+
+    return AIProviderDaemon.sharedInstance.getAdapter(providerId);
+  }
+
+  /**
+   * Get all registered adapters with automatic instance injection - CLEAN INTERFACE
+   *
+   * @example
+   * const adapters = AIProviderDaemon.getAllAdapters();
+   * for (const [providerId, adapter] of adapters) {
+   *   console.log(`Provider: ${providerId}`);
+   * }
+   */
+  static getAllAdapters(): Map<string, AIProviderAdapter> {
+    if (!AIProviderDaemon.sharedInstance) {
+      throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
+    }
+
+    return AIProviderDaemon.sharedInstance.getAllAdapters();
   }
 }

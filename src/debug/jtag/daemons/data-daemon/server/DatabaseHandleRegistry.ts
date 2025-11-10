@@ -1,0 +1,361 @@
+/**
+ * Database Handle Registry - Multi-Database Management System
+ *
+ * Storage-adapter-agnostic handle system for managing multiple database connections.
+ * A DbHandle is an opaque identifier that can point to ANY DataStorageAdapter implementation:
+ * - SQLite database
+ * - JSON file storage
+ * - Vector database (Qdrant, Pinecone)
+ * - Graph database (Neo4j)
+ * - Any future DataStorageAdapter
+ *
+ * **Design Principles**:
+ * 1. Backward Compatible: No dbHandle parameter = uses 'default' handle
+ * 2. Single Source of Truth: DATABASE_PATHS.SQLITE remains the default
+ * 3. Explicit Handles: Must call data/open to get non-default handles
+ * 4. Auto-cleanup: Handles close after inactivity or on explicit data/close
+ * 5. Thread-safe: Registry acts as connection pool
+ *
+ * See docs/MULTI-DATABASE-HANDLES.md for full architecture
+ */
+
+import { DataStorageAdapter } from '../shared/DataStorageAdapter';
+import { SqliteStorageAdapter } from './SqliteStorageAdapter';
+import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
+import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
+
+/**
+ * Database handle - opaque identifier for ANY storage adapter
+ * Can be:
+ * - 'default': Main database (DATABASE_PATHS.SQLITE)
+ * - UUID: Explicitly opened handle to any storage backend
+ */
+export type DbHandle = 'default' | UUID;
+
+/**
+ * Default handle constant - uses DATABASE_PATHS.SQLITE
+ */
+export const DEFAULT_HANDLE: DbHandle = 'default';
+
+/**
+ * Adapter types supported by the system
+ * Extensible - add new types as needed (vector, graph, etc.)
+ */
+export type AdapterType = 'sqlite' | 'json' | 'vector' | 'graph';
+
+/**
+ * Open mode for database connections
+ */
+export type OpenMode = 'readonly' | 'readwrite' | 'create';
+
+/**
+ * SQLite-specific configuration
+ */
+export interface SqliteConfig {
+  path: string;                        // Database file path
+  mode?: OpenMode;                     // Open mode (default: readwrite)
+  poolSize?: number;                   // Connection pool size
+  foreignKeys?: boolean;               // Enable foreign key constraints
+  wal?: boolean;                       // Write-Ahead Logging
+}
+
+/**
+ * JSON file storage configuration
+ */
+export interface JsonConfig {
+  path: string;                        // JSON file path
+  pretty?: boolean;                    // Pretty-print JSON
+  autoSave?: boolean;                  // Auto-save on changes
+}
+
+/**
+ * Vector database configuration (Qdrant, Pinecone, etc.)
+ */
+export interface VectorConfig {
+  endpoint: string;                    // Vector DB endpoint
+  collection: string;                  // Collection name
+  apiKey?: string;                     // API key (optional)
+}
+
+/**
+ * Graph database configuration (Neo4j, etc.)
+ */
+export interface GraphConfig {
+  endpoint: string;                    // Graph DB endpoint
+  database?: string;                   // Database name
+  username?: string;                   // Username
+  password?: string;                   // Password
+}
+
+/**
+ * Union type for all adapter configs
+ */
+export type AdapterConfig = SqliteConfig | JsonConfig | VectorConfig | GraphConfig;
+
+/**
+ * Handle metadata - tracks adapter type and config
+ */
+export interface HandleMetadata {
+  adapter: AdapterType;
+  config: AdapterConfig;
+  openedAt: number;
+  lastUsedAt: number;
+}
+
+/**
+ * Database Handle Registry
+ *
+ * Manages open storage adapters across ANY backend type.
+ * Singleton pattern ensures single connection pool per process.
+ *
+ * **Key Design**: Storage-adapter-agnostic!
+ * - Handles map to DataStorageAdapter interface
+ * - Works with SQLite, JSON, Vector DB, Graph DB, or any future adapter
+ * - Default handle always points to main database (DATABASE_PATHS.SQLITE)
+ */
+export class DatabaseHandleRegistry {
+  private static instance: DatabaseHandleRegistry;
+
+  // Map handles to ANY DataStorageAdapter implementation
+  private handles: Map<DbHandle, DataStorageAdapter>;
+
+  // Track metadata for each handle (adapter type, config, timestamps)
+  private handleMetadata: Map<DbHandle, HandleMetadata>;
+
+  private constructor() {
+    this.handles = new Map();
+    this.handleMetadata = new Map();
+
+    // Initialize default handle (SQLite main database)
+    // This ensures backward compatibility - all existing code works without changes
+    const defaultAdapter = new SqliteStorageAdapter();
+
+    // Must call initialize() before use
+    // SqliteStorageAdapter expects StorageAdapterConfig with type and namespace
+    defaultAdapter.initialize({
+      type: 'sqlite',
+      namespace: 'default',
+      options: {}
+    }).then(() => {
+      console.log(`🔌 DatabaseHandleRegistry: Default handle initialized (${DATABASE_PATHS.SQLITE})`);
+    }).catch((error) => {
+      console.error('❌ DatabaseHandleRegistry: Failed to initialize default handle:', error);
+    });
+
+    this.handles.set(DEFAULT_HANDLE, defaultAdapter);
+    this.handleMetadata.set(DEFAULT_HANDLE, {
+      adapter: 'sqlite',
+      config: { path: DATABASE_PATHS.SQLITE },
+      openedAt: Date.now(),
+      lastUsedAt: Date.now()
+    });
+  }
+
+  /**
+   * Get singleton instance
+   */
+  static getInstance(): DatabaseHandleRegistry {
+    if (!DatabaseHandleRegistry.instance) {
+      DatabaseHandleRegistry.instance = new DatabaseHandleRegistry();
+    }
+    return DatabaseHandleRegistry.instance;
+  }
+
+  /**
+   * Open a new database connection and return handle
+   *
+   * @param adapter - Adapter type ('sqlite', 'json', 'vector', 'graph')
+   * @param config - Adapter-specific configuration
+   * @returns DbHandle - Opaque identifier for this connection
+   *
+   * @example
+   * ```typescript
+   * // Open training database
+   * const handle = await registry.open('sqlite', {
+   *   path: '/datasets/prepared/continuum-git.sqlite',
+   *   mode: 'readonly'
+   * });
+   *
+   * // Open vector database
+   * const vectorHandle = await registry.open('vector', {
+   *   endpoint: 'http://localhost:6333',
+   *   collection: 'code-embeddings',
+   *   apiKey: process.env.QDRANT_API_KEY
+   * });
+   * ```
+   */
+  async open(adapter: AdapterType, config: AdapterConfig): Promise<DbHandle> {
+    const handle = generateUUID();
+
+    // Create adapter based on type
+    // TODO: Add JSON, Vector, Graph adapters when implemented
+    let storageAdapter: DataStorageAdapter;
+
+    switch (adapter) {
+      case 'sqlite': {
+        const sqliteConfig = config as SqliteConfig;
+        storageAdapter = new SqliteStorageAdapter();
+        // Initialize with proper StorageAdapterConfig
+        await storageAdapter.initialize({
+          type: 'sqlite',
+          namespace: handle,  // Use handle as namespace
+          options: {
+            filename: sqliteConfig.path,
+            mode: sqliteConfig.mode,
+            poolSize: sqliteConfig.poolSize,
+            foreignKeys: sqliteConfig.foreignKeys,
+            wal: sqliteConfig.wal
+          }
+        });
+        break;
+      }
+
+      case 'json':
+      case 'vector':
+      case 'graph':
+        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' is currently supported.`);
+
+      default:
+        throw new Error(`Unknown adapter type: ${adapter}`);
+    }
+
+    // Register handle
+    this.handles.set(handle, storageAdapter);
+    this.handleMetadata.set(handle, {
+      adapter,
+      config,
+      openedAt: Date.now(),
+      lastUsedAt: Date.now()
+    });
+
+    console.log(`🔌 DatabaseHandleRegistry: Opened ${adapter} handle ${handle}`);
+
+    return handle;
+  }
+
+  /**
+   * Get adapter for handle (returns default if handle not found or omitted)
+   *
+   * **Backward Compatibility**: If handle is undefined/null, returns default adapter.
+   * This ensures all existing code continues to work without modification.
+   *
+   * @param handle - Database handle (optional, defaults to 'default')
+   * @returns DataStorageAdapter - The storage adapter for this handle
+   *
+   * @example
+   * ```typescript
+   * // Get default adapter (backward compatible)
+   * const adapter = registry.getAdapter();
+   *
+   * // Get specific adapter by handle
+   * const trainingAdapter = registry.getAdapter(trainingHandle);
+   * ```
+   */
+  getAdapter(handle?: DbHandle): DataStorageAdapter {
+    const actualHandle = handle || DEFAULT_HANDLE;
+    const adapter = this.handles.get(actualHandle);
+
+    if (!adapter) {
+      console.warn(`⚠️  Database handle '${actualHandle}' not found, using default`);
+      return this.handles.get(DEFAULT_HANDLE)!;
+    }
+
+    // Update last used timestamp (for LRU eviction in future)
+    const metadata = this.handleMetadata.get(actualHandle);
+    if (metadata) {
+      metadata.lastUsedAt = Date.now();
+    }
+
+    return adapter;
+  }
+
+  /**
+   * Close database handle
+   *
+   * @param handle - Database handle to close
+   * @throws Error if attempting to close default handle
+   *
+   * @example
+   * ```typescript
+   * await registry.close(trainingHandle);
+   * ```
+   */
+  async close(handle: DbHandle): Promise<void> {
+    if (handle === DEFAULT_HANDLE) {
+      throw new Error('Cannot close default database handle');
+    }
+
+    const adapter = this.handles.get(handle);
+    if (adapter) {
+      await adapter.close();
+      this.handles.delete(handle);
+      this.handleMetadata.delete(handle);
+      console.log(`🔌 DatabaseHandleRegistry: Closed handle ${handle}`);
+    } else {
+      console.warn(`⚠️  Database handle '${handle}' not found (already closed?)`);
+    }
+  }
+
+  /**
+   * List all open handles
+   *
+   * @returns Array of handle info (handle, adapter type, config, timestamps)
+   *
+   * @example
+   * ```typescript
+   * const handles = registry.listHandles();
+   * console.log(`Open handles: ${handles.length}`);
+   * handles.forEach(h => console.log(`  ${h.handle}: ${h.adapter} (${h.config.path})`));
+   * ```
+   */
+  listHandles(): Array<{
+    handle: DbHandle;
+    adapter: AdapterType;
+    config: AdapterConfig;
+    isDefault: boolean;
+    openedAt: number;
+    lastUsedAt: number;
+  }> {
+    const result: Array<{
+      handle: DbHandle;
+      adapter: AdapterType;
+      config: AdapterConfig;
+      isDefault: boolean;
+      openedAt: number;
+      lastUsedAt: number;
+    }> = [];
+
+    for (const [handle, metadata] of this.handleMetadata.entries()) {
+      result.push({
+        handle,
+        adapter: metadata.adapter,
+        config: metadata.config,
+        isDefault: handle === DEFAULT_HANDLE,
+        openedAt: metadata.openedAt,
+        lastUsedAt: metadata.lastUsedAt
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Get handle metadata
+   *
+   * @param handle - Database handle
+   * @returns HandleMetadata or undefined if handle not found
+   */
+  getMetadata(handle: DbHandle): HandleMetadata | undefined {
+    return this.handleMetadata.get(handle);
+  }
+
+  /**
+   * Check if handle exists and is open
+   *
+   * @param handle - Database handle
+   * @returns true if handle exists and is open
+   */
+  isOpen(handle: DbHandle): boolean {
+    return this.handles.has(handle);
+  }
+}
