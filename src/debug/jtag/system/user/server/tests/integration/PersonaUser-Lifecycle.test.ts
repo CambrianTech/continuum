@@ -78,11 +78,12 @@ describe('PersonaUser Lifecycle (Baseline)', () => {
   });
 
   it('should have required modules after construction', () => {
-    // Check that internal modules exist (before refactoring, these are private properties)
+    // Check that internal modules exist (after Phase 2 refactoring)
     // We access them via bracket notation to bypass TypeScript private checking
     expect(personaUser['inbox']).toBeDefined();
     expect(personaUser['personaState']).toBeDefined();
-    expect(personaUser['genome']).toBeDefined();
+    expect(personaUser['memory']).toBeDefined(); // Phase 2: genome → memory
+    expect(personaUser['memory']['genome']).toBeDefined(); // genome is now inside memory
     expect(personaUser['rateLimiter']).toBeDefined();
     // CNS is initialized in initialize(), not constructor
   });

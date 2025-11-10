@@ -80,24 +80,7 @@ import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome
 import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
-
-/**
- * RAG Context Types - Storage structure for persona conversation context
- */
-interface PersonaRAGMessage {
-  senderId: UUID;
-  senderName: string;
-  text: string;
-  timestamp: string;
-}
-
-interface PersonaRAGContext {
-  roomId: UUID;
-  personaId: UUID;
-  messages: PersonaRAGMessage[];
-  lastUpdated: string;
-  tokenCount: number;
-}
+import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -128,8 +111,8 @@ export class PersonaUser extends AIUser {
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
 
-  // PHASE 6: LoRA genome paging (virtual memory for skills)
-  public genome: PersonaGenome;
+  // COGNITIVE MODULE: Memory (knowledge, context, genome)
+  public memory: PersonaMemory;
 
   // CNS: Central Nervous System orchestrator
   private cns: PersonaCentralNervousSystem;
@@ -190,35 +173,40 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
-    // PHASE 6: LoRA genome paging (virtual memory for skills)
-    this.genome = new PersonaGenome({
-      baseModel: this.modelConfig.model || 'llama3.2:3b',
-      memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
-      adaptersPath: './lora-adapters',
-      initialAdapters: [
-        {
-          name: 'conversational',
-          domain: 'chat',
-          path: './lora-adapters/conversational.safetensors',
-          sizeMB: 50,
-          priority: 0.7  // High priority - used frequently
-        },
-        {
-          name: 'typescript-expertise',
-          domain: 'code',
-          path: './lora-adapters/typescript-expertise.safetensors',
-          sizeMB: 60,
-          priority: 0.6
-        },
-        {
-          name: 'self-improvement',
-          domain: 'self',
-          path: './lora-adapters/self-improvement.safetensors',
-          sizeMB: 40,
-          priority: 0.5
-        }
-      ]
-    });
+    // COGNITIVE MODULE: Memory (RAG context + genome)
+    this.memory = new PersonaMemory(
+      this.id,
+      this.displayName,
+      {
+        baseModel: this.modelConfig.model || 'llama3.2:3b',
+        memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
+        adaptersPath: './lora-adapters',
+        initialAdapters: [
+          {
+            name: 'conversational',
+            domain: 'chat',
+            path: './lora-adapters/conversational.safetensors',
+            sizeMB: 50,
+            priority: 0.7  // High priority - used frequently
+          },
+          {
+            name: 'typescript-expertise',
+            domain: 'code',
+            path: './lora-adapters/typescript-expertise.safetensors',
+            sizeMB: 60,
+            priority: 0.6
+          },
+          {
+            name: 'self-improvement',
+            domain: 'self',
+            path: './lora-adapters/self-improvement.safetensors',
+            sizeMB: 40,
+            priority: 0.5
+          }
+        ]
+      },
+      client
+    );
 
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
@@ -226,7 +214,7 @@ export class PersonaUser extends AIUser {
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, genome, CNS, and trainingAccumulator modules`);
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -698,7 +686,7 @@ export class PersonaUser extends AIUser {
 
     // 🔧 PHASE: Update RAG context
     console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
-    await this.updateRAGContext(messageEntity.roomId, messageEntity);
+    await this.memory.updateRAGContext(messageEntity.roomId, messageEntity);
     console.log(`✅ ${this.displayName}: [PHASE 1/3] RAG context updated`);
 
     // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
@@ -1648,76 +1636,6 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   }
 
   /**
-   * RAG Context Storage - Store conversation context for a room
-   * Enables persona to maintain context across sessions
-   *
-   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
-   * For now, store in memory until artifact commands are implemented
-   */
-  async storeRAGContext(roomId: UUID, context: PersonaRAGContext): Promise<void> {
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot store RAG context - no client`);
-      return;
-    }
-
-    // TODO Phase 2: Use artifacts daemon when commands are implemented
-    // await this.client.daemons.artifacts.writeJSON(...)
-  }
-
-  /**
-   * RAG Context Loading - Load conversation context for a room
-   * Returns null if no context exists yet
-   *
-   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
-   * For now, return null until artifact commands are implemented
-   */
-  async loadRAGContext(roomId: UUID): Promise<PersonaRAGContext | null> {
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot load RAG context - no client`);
-      return null;
-    }
-
-    // TODO Phase 2: Use artifacts daemon when commands are implemented
-    // return await this.client.daemons.artifacts.readJSON<PersonaRAGContext>(...)
-    return null;
-  }
-
-  /**
-   * Update RAG Context - Add new message to context and trim if needed
-   */
-  async updateRAGContext(roomId: UUID, message: ChatMessageEntity): Promise<void> {
-    // Load existing context or create new
-    let context = await this.loadRAGContext(roomId);
-    if (!context) {
-      context = {
-        roomId,
-        personaId: this.id,
-        messages: [],
-        lastUpdated: new Date().toISOString(),
-        tokenCount: 0
-      };
-    }
-
-    // Add new message to context
-    context.messages.push({
-      senderId: message.senderId,
-      senderName: message.senderName,
-      text: message.content?.text || '',
-      timestamp: typeof message.timestamp === 'string' ? message.timestamp : message.timestamp.toISOString()
-    });
-
-    // Keep only last 50 messages (simple context window for now)
-    if (context.messages.length > 50) {
-      context.messages = context.messages.slice(-50);
-    }
-
-    context.lastUpdated = new Date().toISOString();
-
-    // Store updated context
-    await this.storeRAGContext(roomId, context);
-  }
-
-  /**
    * PersonaUser creation recipe
    *
    * ARCHITECTURE NOTE: Creation still uses DataDaemon for now
@@ -2333,10 +2251,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       };
       const adapterName = domainToAdapter[item.domain];
       if (adapterName) {
-        await this.genome.activateSkill(adapterName);
+        await this.memory.genome.activateSkill(adapterName);
       } else {
         // Unknown domain - default to conversational
-        await this.genome.activateSkill('conversational');
+        await this.memory.genome.activateSkill('conversational');
       }
     }
 
@@ -2549,7 +2467,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
     // PHASE 6: Enable learning mode on the genome
     try {
-      await this.genome.enableLearningMode(loraLayer);
+      await this.memory.genome.enableLearningMode(loraLayer);
       console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
 
       // TODO (Phase 7): Implement actual fine-tuning logic
@@ -2562,7 +2480,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Disable learning mode after training
-      await this.genome.disableLearningMode(loraLayer);
+      await this.memory.genome.disableLearningMode(loraLayer);
       console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
 
       return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
@@ -2609,8 +2527,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
     }
 
-    // PHASE 6: Unload all LoRA adapters
-    await this.genome.shutdown();
+    // PHASE 6: Shutdown memory module (genome + RAG)
+    await this.memory.shutdown();
 
     if (this.worker) {
       await this.worker.shutdown();

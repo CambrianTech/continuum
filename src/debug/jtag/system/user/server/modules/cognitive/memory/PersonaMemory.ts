@@ -12,9 +12,9 @@
  * Target: ~300 lines
  */
 
-import type { UUID } from '../../../../core/types/CrossPlatformUUID';
-import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
-import type { ChatMessageEntity } from '../../../../data/entities/ChatMessageEntity';
+import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
+import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
+import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
 
 /**
