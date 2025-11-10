@@ -23,6 +23,7 @@ import {
   type RecordData,
   type QueryExplanation
 } from '../shared/DataStorageAdapter';
+import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SqliteQueryBuilder } from './SqliteQueryBuilder';
@@ -100,12 +101,27 @@ export class SqlNamingConverter {
 /**
  * SQLite Storage Adapter with Proper Relational Schema
  */
-export class SqliteStorageAdapter extends DataStorageAdapter {
+export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
   private createdTables = new Set<string>(); // Track created tables
   private inTransaction: boolean = false; // Track transaction state to prevent nesting
+
+  /**
+   * SqlStorageAdapterBase abstract method implementations
+   */
+  protected getSqlDialect(): SqlDialect {
+    return 'sqlite';
+  }
+
+  protected async executeRawSql(sql: string, params?: SqlValue[]): Promise<Record<string, unknown>[]> {
+    return this.runSql(sql, params || []);
+  }
+
+  protected async executeRawStatement(sql: string, params?: SqlValue[]): Promise<{ lastID?: number; changes: number }> {
+    return this.runStatement(sql, params || []);
+  }
 
   /**
    * Initialize SQLite database with configuration
@@ -344,7 +360,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   /**
    * Map FieldType to SQL column type
    */
-  private mapFieldTypeToSql(fieldType: FieldType, options?: FieldMetadata['options']): string {
+  protected mapFieldTypeToSql(fieldType: FieldType, options?: FieldMetadata['options']): string {
     switch (fieldType) {
       case 'primary':
         return 'TEXT PRIMARY KEY';
@@ -371,7 +387,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   /**
    * Generate SQL CREATE TABLE statement from entity metadata
    */
-  private generateCreateTableSql(collectionName: string, entityClass: EntityConstructor): string {
+  protected generateCreateTableSql(collectionName: string, entityClass: EntityConstructor): string {
     const tableName = SqlNamingConverter.toTableName(collectionName);
     const fieldMetadata = getFieldMetadata(entityClass);
 
@@ -432,7 +448,7 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   /**
    * Generate CREATE INDEX statements for indexed fields
    */
-  private generateCreateIndexSql(collectionName: string, entityClass: EntityConstructor): string[] {
+  protected generateCreateIndexSql(collectionName: string, entityClass: EntityConstructor): string[] {
     const tableName = SqlNamingConverter.toTableName(collectionName);
     const fieldMetadata = getFieldMetadata(entityClass);
     const indexes: string[] = [];
