@@ -7,6 +7,7 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
+import { Commands } from '../../system/core/shared/Commands';
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
@@ -30,16 +31,19 @@ export class MainWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🎯 MainPanel: Initializing main content panel...');
-    
+
     // Initialize content tabs
     await this.initializeContentTabs();
-    
+
     // Initialize version info
     await this.updateVersionInfo();
-    
+
     // Initialize status buttons
     await this.initializeStatusButtons();
-    
+
+    // PHASE 3BIS: Track tab visibility for temperature
+    this.setupVisibilityTracking();
+
     console.log('✅ MainPanel: Main panel initialized');
   }
 
@@ -286,6 +290,32 @@ export class MainWidget extends BaseWidget {
     console.log(`📡 MainPanel: Subscribing to events for path: ${path}`);
     // The actual event subscription would happen here
     // For now, just log that we're subscribing to path-based events
+  }
+
+  /**
+   * PHASE 3BIS: Track tab visibility for temperature
+   */
+  private setupVisibilityTracking(): void {
+    document.addEventListener('visibilitychange', async () => {
+      // Extract roomId from currentPath (/chat/general → general)
+      const [, pathType, roomId] = this.currentPath.split('/');
+
+      if (pathType === 'chat' && roomId) {
+        const present = !document.hidden;
+
+        try {
+          await Commands.execute('activity/user-present', {
+            activityId: roomId,
+            present
+          } as any);  // Cast to any for new command not yet in type registry
+          console.log(`🌡️ MainPanel: User ${present ? 'present' : 'left'} in room ${roomId}`);
+        } catch (error) {
+          console.error('❌ MainPanel: Failed to track visibility:', error);
+        }
+      }
+    });
+
+    console.log('👁️ MainPanel: Visibility tracking initialized');
   }
 
   protected async onWidgetCleanup(): Promise<void> {
