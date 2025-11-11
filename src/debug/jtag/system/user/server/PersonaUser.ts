@@ -45,7 +45,7 @@ import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
 import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDecisionService';
 import { getModelConfigForProvider } from './config/PersonaModelConfigs';
-import { CoordinationDecisionLogger } from '../../coordination/server/CoordinationDecisionLogger';
+import { CoordinationDecisionLogger, type LogDecisionParams } from '../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
 import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
@@ -606,38 +606,28 @@ export class PersonaUser extends AIUser {
 
     // === RESPOND: LLM gating decided to respond, coordinate with other AIs ===
 
-    // PHASE 5C: Log coordination decision to database (fire-and-forget)
-    if (gatingResult.filteredRagContext) {
-      const decisionStartTime = Date.now();
-      const ragContext = this.buildCoordinationRAGContext(gatingResult.filteredRagContext);
-
-      // Fire-and-forget: Don't await, don't slow down critical path
-      CoordinationDecisionLogger.logDecision({
-        actorId: this.id,
-        actorName: this.displayName,
-        actorType: 'ai-persona',
-        triggerEventId: messageEntity.id,
-        ragContext,
-        visualContext: undefined,
-        action: 'POSTED',
-        confidence: gatingResult.confidence,
-        reasoning: gatingResult.reason,
-        responseContent: undefined,  // Will be filled after generation
-        modelUsed: gatingResult.model,
-        modelProvider: this.modelConfig.provider ?? 'ollama',
-        tokensUsed: undefined,
-        responseTime: Date.now() - decisionStartTime,
-        sessionId: DataDaemon.jtagContext!.uuid,
-        contextId: messageEntity.roomId,
-        tags: [
-          senderIsHuman ? 'human-sender' : 'ai-sender',
-          isMentioned ? 'mentioned' : 'not-mentioned',
-          'gating-respond'
-        ]
-      }).catch(error => {
-        console.error(`❌ ${this.displayName}: Failed to log RESPOND decision:`, error);
-      });
-    }
+    // PHASE 5C: Prepare decision context for logging AFTER response generation
+    // (We need the actual response content before we can log the complete decision)
+    const decisionContext = gatingResult.filteredRagContext ? {
+      actorId: this.id,
+      actorName: this.displayName,
+      actorType: 'ai-persona' as const,
+      triggerEventId: messageEntity.id,
+      ragContext: this.buildCoordinationRAGContext(gatingResult.filteredRagContext),
+      visualContext: undefined,
+      action: 'POSTED' as const,
+      confidence: gatingResult.confidence,
+      reasoning: gatingResult.reason,
+      modelUsed: gatingResult.model,
+      modelProvider: this.modelConfig.provider ?? 'ollama',
+      sessionId: DataDaemon.jtagContext!.uuid,
+      contextId: messageEntity.roomId,
+      tags: [
+        senderIsHuman ? 'human-sender' : 'ai-sender',
+        isMentioned ? 'mentioned' : 'not-mentioned',
+        'gating-respond'
+      ]
+    } : undefined;
 
     this.logAIDecision('RESPOND', gatingResult.reason, {
       message: messageText,
@@ -782,7 +772,7 @@ export class PersonaUser extends AIUser {
 
     // 🔧 PHASE: Generate and post response
     console.log(`🔧 ${this.displayName}: [PHASE 3/3] Calling respondToMessage...`);
-    await this.respondToMessage(messageEntity);
+    await this.respondToMessage(messageEntity, decisionContext);
     console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
 
     // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
@@ -960,7 +950,11 @@ export class PersonaUser extends AIUser {
    * Generate and post a response to a chat message
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
-  private async respondToMessage(originalMessage: ChatMessageEntity): Promise<void> {
+  private async respondToMessage(
+    originalMessage: ChatMessageEntity,
+    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
+  ): Promise<void> {
+    const generateStartTime = Date.now();  // Track total response time for decision logging
     try {
       // 🔧 SUB-PHASE 3.1: Build RAG context
       console.log(`🔧 ${this.displayName}: [PHASE 3.1] Building RAG context...`);
@@ -1157,6 +1151,21 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           console.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
           console.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
           aiResponse.text = cleanedResponse;
+        }
+
+        // PHASE 5C: Log coordination decision to database WITH complete response content
+        // This captures the complete decision pipeline: context → decision → actual response
+        if (decisionContext) {
+          console.log(`🔧 ${this.displayName}: [PHASE 5C] Logging decision with response content...`);
+          CoordinationDecisionLogger.logDecision({
+            ...decisionContext,
+            responseContent: aiResponse.text,  // ✅ FIX: Now includes actual response!
+            tokensUsed: aiResponse.text.length,  // Estimate based on character count
+            responseTime: Date.now() - generateStartTime
+          }).catch(error => {
+            console.error(`❌ ${this.displayName}: Failed to log POSTED decision:`, error);
+          });
+          console.log(`✅ ${this.displayName}: [PHASE 5C] Decision logged successfully`);
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1881,6 +1890,25 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       if (isMentioned) {
         const durationMs = Date.now() - startTime;
 
+        // Build RAG context for decision logging (even on fast-path)
+        const ragBuilder = new ChatRAGBuilder();
+        const fastPathRagContext = await ragBuilder.buildContext(
+          message.roomId,
+          this.id,
+          {
+            maxMessages: 20,
+            maxMemories: 0,
+            includeArtifacts: false,
+            includeMemories: false,
+            currentMessage: {
+              role: 'user',
+              content: message.content.text,
+              name: message.senderName,
+              timestamp: this.timestampToNumber(message.timestamp)
+            }
+          }
+        );
+
         // Emit cognition event for should-respond stage (fast-path)
         await Events.emit<StageCompleteEvent>(
           DataDaemon.jtagContext!,
@@ -1911,7 +1939,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           shouldRespond: true,
           confidence: 0.95 + Math.random() * 0.04, // 0.95-0.99 realistic range
           reason: 'Directly mentioned by name',
-          model: 'fast-path'
+          model: 'fast-path',
+          filteredRagContext: fastPathRagContext  // ✅ FIX: Include RAG context for decision logging
         };
       }
 
