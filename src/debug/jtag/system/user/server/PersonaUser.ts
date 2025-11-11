@@ -45,6 +45,8 @@ import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
 import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDecisionService';
 import { getModelConfigForProvider } from './config/PersonaModelConfigs';
+import { CoordinationDecisionLogger } from '../../coordination/server/CoordinationDecisionLogger';
+import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
 import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
@@ -537,6 +539,35 @@ export class PersonaUser extends AIUser {
     console.log(`${'='.repeat(80)}\n`);
 
     if (!gatingResult.shouldRespond) {
+      // PHASE 5C: Log coordination decision to database (fire-and-forget)
+      if (gatingResult.filteredRagContext) {
+        const decisionStartTime = Date.now();
+        const ragContext = this.buildCoordinationRAGContext(gatingResult.filteredRagContext);
+
+        // Fire-and-forget: Don't await, don't slow down critical path
+        CoordinationDecisionLogger.logDecision({
+          actorId: this.id,
+          actorName: this.displayName,
+          actorType: 'ai-persona',
+          triggerEventId: messageEntity.id,
+          ragContext,
+          visualContext: undefined,
+          action: 'SILENT',
+          confidence: gatingResult.confidence,
+          reasoning: gatingResult.reason,
+          responseContent: undefined,
+          modelUsed: gatingResult.model,
+          modelProvider: this.modelConfig.provider ?? 'ollama',
+          tokensUsed: undefined,
+          responseTime: Date.now() - decisionStartTime,
+          sessionId: DataDaemon.jtagContext!.uuid,
+          contextId: messageEntity.roomId,
+          tags: [senderIsHuman ? 'human-sender' : 'ai-sender', 'gating-silent']
+        }).catch(error => {
+          console.error(`❌ ${this.displayName}: Failed to log SILENT decision:`, error);
+        });
+      }
+
       this.logAIDecision('SILENT', gatingResult.reason, {
         message: messageText,
         sender: messageEntity.senderName,
@@ -574,6 +605,40 @@ export class PersonaUser extends AIUser {
     }
 
     // === RESPOND: LLM gating decided to respond, coordinate with other AIs ===
+
+    // PHASE 5C: Log coordination decision to database (fire-and-forget)
+    if (gatingResult.filteredRagContext) {
+      const decisionStartTime = Date.now();
+      const ragContext = this.buildCoordinationRAGContext(gatingResult.filteredRagContext);
+
+      // Fire-and-forget: Don't await, don't slow down critical path
+      CoordinationDecisionLogger.logDecision({
+        actorId: this.id,
+        actorName: this.displayName,
+        actorType: 'ai-persona',
+        triggerEventId: messageEntity.id,
+        ragContext,
+        visualContext: undefined,
+        action: 'POSTED',
+        confidence: gatingResult.confidence,
+        reasoning: gatingResult.reason,
+        responseContent: undefined,  // Will be filled after generation
+        modelUsed: gatingResult.model,
+        modelProvider: this.modelConfig.provider ?? 'ollama',
+        tokensUsed: undefined,
+        responseTime: Date.now() - decisionStartTime,
+        sessionId: DataDaemon.jtagContext!.uuid,
+        contextId: messageEntity.roomId,
+        tags: [
+          senderIsHuman ? 'human-sender' : 'ai-sender',
+          isMentioned ? 'mentioned' : 'not-mentioned',
+          'gating-respond'
+        ]
+      }).catch(error => {
+        console.error(`❌ ${this.displayName}: Failed to log RESPOND decision:`, error);
+      });
+    }
+
     this.logAIDecision('RESPOND', gatingResult.reason, {
       message: messageText,
       sender: messageEntity.senderName,
@@ -745,6 +810,36 @@ export class PersonaUser extends AIUser {
     await this.personaState.recordActivity(estimatedDurationMs, messageComplexity);
 
     console.log(`🧠 ${this.displayName}: State updated (energy=${this.personaState.getState().energy.toFixed(2)}, mood=${this.personaState.getState().mood})`);
+  }
+
+  /**
+   * Build CoordinationDecision RAGContext from ChatRAGBuilder output
+   * Converts domain-specific RAG format to universal decision logging format
+   */
+  private buildCoordinationRAGContext(filteredRagContext: any): RAGContext {
+    const systemPrompt = filteredRagContext.identity?.systemPrompt ??
+                         `You are ${this.displayName}. ${this.entity?.bio ?? ''}`;
+
+    return {
+      identity: {
+        systemPrompt,
+        bio: this.entity?.bio ?? '',
+        role: this.displayName
+      },
+      conversationHistory: (filteredRagContext.conversationHistory ?? []).map((msg: any) => ({
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp ?? Date.now()
+      })),
+      artifacts: filteredRagContext.artifacts ?? [],
+      privateMemories: filteredRagContext.privateMemories ?? [],
+      metadata: {
+        timestamp: Date.now(),
+        tokenCount: filteredRagContext.metadata?.messageCount ??
+                    filteredRagContext.conversationHistory?.length ?? 0,
+        contextWindow: 4096
+      }
+    };
   }
 
   /**
@@ -1738,6 +1833,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       content: string;
       timestamp?: number;
     }>;
+    filteredRagContext?: any;
   }> {
     const startTime = Date.now();
 
@@ -1958,7 +2054,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           name: msg.name ?? 'Unknown',
           content: msg.content,
           timestamp: msg.timestamp
-        }))
+        })),
+        filteredRagContext
       };
 
     } catch (error) {
