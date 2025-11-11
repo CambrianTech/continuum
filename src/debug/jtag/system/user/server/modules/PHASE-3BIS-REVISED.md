@@ -98,21 +98,27 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought> 
     return this.roomUserPresent.get(roomId) ?? true;
   }
 
-  // NEW: Temperature decay loop
+  // NEW: Temperature decay loop (exponential decay)
+  private static readonly DECAY_RATE = 0.95;      // 5% decay per interval
+  private static readonly DECAY_INTERVAL_MS = 10000;  // 10 seconds
+  private static readonly TEMP_FLOOR = 0.01;      // Minimum temperature (never fully cold)
+
   private startTemperatureDecay(): void {
     if (this.decayInterval) return;
 
     this.decayInterval = setInterval(() => {
       const now = Date.now();
       for (const [roomId, temp] of this.roomTemperatures) {
-        // Decay by 0.05 every 10 seconds if no recent activity
-        const recentThoughts = this.getRecentThoughts(roomId, 60000); // 1 minute
-        if (recentThoughts.length === 0) {
-          const newTemp = Math.max(0, temp - 0.05);
-          this.roomTemperatures.set(roomId, newTemp);
+        // Only decay if no recent activity (1 minute threshold)
+        const recentThoughts = this.getRecentThoughts(roomId, 60000);
+        if (recentThoughts.length === 0 && temp > ChatCoordinationStream.TEMP_FLOOR) {
+          // Exponential decay: temp * DECAY_RATE
+          // Hot rooms cool faster initially, cold rooms barely change
+          const newTemp = temp * ChatCoordinationStream.DECAY_RATE;
+          this.roomTemperatures.set(roomId, Math.max(ChatCoordinationStream.TEMP_FLOOR, newTemp));
         }
       }
-    }, 10000); // 10 seconds
+    }, ChatCoordinationStream.DECAY_INTERVAL_MS);
   }
 
   shutdown(): void {

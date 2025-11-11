@@ -421,6 +421,9 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // PHASE 3BIS: Update activity temperature (observation only, doesn't affect decisions yet)
+    getChatCoordinator().onHumanMessage(messageEntity.roomId);
+
     // PHASE 1: Calculate priority and enqueue to inbox
     const priority = calculateMessagePriority(
       {
@@ -717,6 +720,8 @@ export class PersonaUser extends AIUser {
     await this.respondToMessage(messageEntity);
     console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
 
+    // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
+    getChatCoordinator().onMessageServiced(messageEntity.roomId, this.id);
 
     // Track response for rate limiting
     this.rateLimiter.trackResponse(messageEntity.roomId);
