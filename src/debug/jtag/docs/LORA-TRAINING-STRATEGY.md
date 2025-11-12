@@ -414,7 +414,7 @@ const examples = [
 
 ### Quality Validation
 
-**1. Perplexity Check**
+**1. Perplexity Check** (Objective metric)
 ```bash
 # Lower perplexity = better fit
 python evaluate.py --adapter wine-expertise-v1.safetensors \
@@ -422,29 +422,230 @@ python evaluate.py --adapter wine-expertise-v1.safetensors \
 # Target: <2.0 perplexity on test set
 ```
 
-**2. Human Eval**
+**2. AI-Powered Evaluation** (Automated quality rating)
+
+Use other LLMs to rate outputs automatically - much faster than human eval!
+
 ```bash
-# Generate 100 test responses, rate 1-5
+# Automated evaluation using Claude/GPT-4 as judges
 ./jtag layer/evaluate wine-expertise-v1 \
   --test-prompts "./test-prompts.txt" \
+  --judge "claude-3.5-sonnet" \
+  --criteria "accuracy,helpfulness,conciseness" \
   --output "./eval-results.json"
-
-# Review outputs manually
-# Target: >4.0 average rating
 ```
 
-**3. A/B Testing**
+**Evaluation Workflow**:
 ```typescript
-// Compare base model vs. adapter
+// For each test prompt
+for (const prompt of testPrompts) {
+  // Generate response from trained adapter
+  const response = await ollama('llama3.1:8b', prompt, {
+    adapter: 'wine-expertise-v1'
+  });
 
-const prompt = "Explain the difference between Bordeaux and Burgundy wines.";
+  // Have Claude judge quality
+  const evaluation = await anthropic.messages.create({
+    model: 'claude-3-5-sonnet-20241022',
+    messages: [{
+      role: 'user',
+      content: `
+        Rate this wine expertise response on a scale of 1-5:
 
-const baseResponse = await ollama('llama3.1:8b', prompt);
-const adapterResponse = await ollama('llama3.1:8b', prompt, {
-  adapter: 'wine-expertise-v1'
+        Prompt: ${prompt}
+        Response: ${response}
+
+        Criteria:
+        - Accuracy: Are the facts correct?
+        - Helpfulness: Does it answer the question?
+        - Conciseness: Is it appropriately detailed?
+        - Style: Does it match expected tone?
+
+        Respond with JSON:
+        {
+          "accuracy": 1-5,
+          "helpfulness": 1-5,
+          "conciseness": 1-5,
+          "style": 1-5,
+          "overall": 1-5,
+          "reasoning": "brief explanation"
+        }
+      `
+    }]
+  });
+
+  results.push(JSON.parse(evaluation.content));
+}
+
+// Aggregate scores
+const avgScore = results.reduce((sum, r) => sum + r.overall, 0) / results.length;
+console.log(`Average quality: ${avgScore}/5`);
+```
+
+**Benefits**:
+- ✅ **Fast**: 100 evals in ~5 minutes vs hours of human review
+- ✅ **Consistent**: Same criteria applied every time
+- ✅ **Detailed**: Get specific feedback on what needs improvement
+- ✅ **Cheap**: $0.50-1.00 for 100 evaluations (Claude API)
+
+**Judge LLM Options**:
+- **Claude 3.5 Sonnet** - Best for nuanced evaluation ($3/M tokens)
+- **GPT-4o** - Good general evaluator ($2.50/M tokens)
+- **GPT-4o-mini** - Cheap for simple checks ($0.15/M tokens)
+- **Local LLMs** - Free but less reliable (use for quick checks only)
+
+**Example Output**:
+```json
+{
+  "layer": "wine-expertise-v1",
+  "testPrompts": 100,
+  "judge": "claude-3.5-sonnet",
+  "scores": {
+    "accuracy": 4.6,
+    "helpfulness": 4.8,
+    "conciseness": 4.2,
+    "style": 4.5,
+    "overall": 4.5
+  },
+  "pass": true,
+  "cost": "$0.85",
+  "recommendations": [
+    "Responses are accurate but sometimes overly verbose",
+    "Consider training with more concise examples"
+  ]
+}
+```
+
+**3. Comparative Evaluation** (A vs B)
+
+Compare two versions or base vs adapter:
+
+```bash
+# Compare base model vs adapter
+./jtag layer/compare \
+  --base "llama3.1:8b" \
+  --adapter "wine-expertise-v1" \
+  --test-prompts "./test-prompts.txt" \
+  --judge "claude-3.5-sonnet"
+
+# Output:
+# Base model:  3.2/5 average
+# With adapter: 4.6/5 average
+# Improvement: +1.4 points (44% better) ✓
+```
+
+**4. Continuous Quality Monitoring**
+
+For continuous learning, automatically evaluate each new version:
+
+```bash
+# Set up automated evaluation
+./jtag training/continuous wine-expertise-v1 \
+  --watch ./new-data/ \
+  --auto-eval \
+  --judge "claude-3.5-sonnet" \
+  --min-quality 4.0 \
+  --auto-deploy-if-better
+
+# Behavior:
+# 1. New data arrives → trigger training
+# 2. Training completes → auto-evaluate with judge LLM
+# 3. If quality >= 4.0 AND better than previous → auto-deploy
+# 4. If quality < 4.0 → keep old version, alert user
+```
+
+**5. Multi-Judge Consensus** (High-stakes evaluation)
+
+For critical layers, use multiple evaluators:
+
+```bash
+# Use PersonaUsers + cloud LLMs + humans as judges
+./jtag layer/evaluate wine-expertise-v1 \
+  --test-prompts "./test-prompts.txt" \
+  --judges "helper-ai,teacher-ai,claude,gpt4,joel" \
+  --require-consensus 0.8  # 80% agreement
+
+# Evaluator types:
+# - PersonaUsers (helper-ai, teacher-ai, etc.) - free, instant
+# - Cloud LLMs (claude, gpt4) - paid, high quality
+# - Humans (joel, sarah, etc.) - best quality, manual
+
+# If judges disagree significantly, flag for human review
+```
+
+**Why Use PersonaUsers as Judges?**
+
+PersonaUsers are perfect evaluators because:
+- ✅ **Free**: No API costs
+- ✅ **Fast**: Already running locally
+- ✅ **Specialized**: Can assign domain experts (e.g., Helper AI reviews code layers)
+- ✅ **Integrated**: Part of the same system
+- ✅ **Diverse**: Multiple personas = multiple perspectives
+
+**Example Evaluation Workflow**:
+
+```typescript
+// Send evaluation task to Helper AI persona
+await Commands.execute('chat/send-message', {
+  roomId: 'eval-room-uuid',
+  userId: 'helper-ai-uuid',
+  message: `
+    @Helper AI: Please evaluate this wine expertise response.
+
+    Prompt: "What is a natural wine?"
+    Response: "Natural wine is produced with minimal intervention..."
+
+    Rate 1-5 for:
+    - Accuracy (are facts correct?)
+    - Helpfulness (does it answer the question?)
+    - Conciseness (appropriate detail level?)
+
+    Respond with JSON only.
+  `
 });
 
-// Which is better? Should be obvious improvement
+// Helper AI responds after ~10 seconds
+// {
+//   "accuracy": 5,
+//   "helpfulness": 4,
+//   "conciseness": 5,
+//   "reasoning": "Accurate definition, could elaborate on sulfites"
+// }
+```
+
+**Distributed Evaluation Network**:
+
+```bash
+# Assign different personas to evaluate different aspects
+./jtag layer/evaluate wine-expertise-v1 \
+  --test-prompts "./test-prompts.txt" \
+  --judges-by-criteria '{
+    "accuracy": ["teacher-ai", "claude"],
+    "helpfulness": ["helper-ai", "gpt4"],
+    "style": ["joel", "general-ai"]
+  }'
+
+# Each persona/human evaluates their specialty
+# Aggregate scores across all judges
+# Fast + cheap (mostly free) + high quality
+```
+
+**Human-in-the-Loop**:
+
+```bash
+# For production layers, require human approval
+./jtag layer/evaluate wine-expertise-v1 \
+  --test-prompts "./test-prompts.txt" \
+  --judges "helper-ai,teacher-ai,claude" \
+  --require-human-approval \
+  --human-reviewers "joel,sarah"
+
+# Workflow:
+# 1. PersonaUsers + LLMs auto-evaluate (fast)
+# 2. If avg score >= 4.5, send to humans for final approval
+# 3. Humans review 10 random examples (5 min)
+# 4. If humans approve → deploy
+# 5. If humans reject → analyze failures, retrain
 ```
 
 ---
