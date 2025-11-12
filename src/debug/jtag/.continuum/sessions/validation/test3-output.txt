@@ -10,7 +10,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (6c7a2630-5f3c-4aaa-bbe4-2b06409b4d34) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (9a3e9bc0-64e7-4294-967a-e1fc1fb3fd80) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -24,66 +24,42 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="@cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1762932662263_e2lstkss
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:decision:respond
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:response:generating
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1762979212668_or6ny6o4
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932662263_e2lstkss
-✅ JTAGClient: Completed correlation client_1762932662263_e2lstkss
-🏷️ JTAGClientServer: Session updated to: 0d100c47-0b61-410e-a273-c0c023c789b2 (managed by base class)
+🔗 JTAGClient: Processing response for correlation client_1762979212668_or6ny6o4
+✅ JTAGClient: Completed correlation client_1762979212668_or6ny6o4
+🏷️ JTAGClientServer: Session updated to: 5daf0642-e76f-43e0-ad16-bcd03e5dc1e6 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1762932662275_fpnr76jk
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:decision:respond
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:response:generating
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:decision:respond
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:response:generating
+📤 RemoteConnection: Sending command 'list' with correlation client_1762979212682_arhjiazj
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932662275_fpnr76jk
-✅ JTAGClient: Completed correlation client_1762932662275_fpnr76jk
+🔗 JTAGClient: Processing response for correlation client_1762979212682_arhjiazj
+✅ JTAGClient: Completed correlation client_1762979212682_arhjiazj
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1762932662287_9g0t9zfl
+📤 RemoteConnection: Sending command 'list' with correlation client_1762979212686_3qyh91tj
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932662287_9g0t9zfl
-✅ JTAGClient: Completed correlation client_1762932662287_9g0t9zfl
-✅ JTAGClient: Bootstrap complete! Discovered 90 commands
-✅ Server: JTAGClient connected with 90 commands
+🔗 JTAGClient: Processing response for correlation client_1762979212686_3qyh91tj
+✅ JTAGClient: Completed correlation client_1762979212686_3qyh91tj
+✅ JTAGClient: Bootstrap complete! Discovered 92 commands
+✅ Server: JTAGClient connected with 92 commands
 📝 JTAGClient: Registered 'default' (server)
 ✅ Connected to JTAG system
 
 🔍 Step 2: Verifying system health...
-📤 RemoteConnection: Sending command 'ping' with correlation client_1762932662289_dzky5uih
+📤 RemoteConnection: Sending command 'ping' with correlation client_1762979212691_urg13e7f
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932662289_dzky5uih
-✅ JTAGClient: Completed correlation client_1762932662289_dzky5uih
+🔗 JTAGClient: Processing response for correlation client_1762979212691_urg13e7f
+✅ JTAGClient: Completed correlation client_1762979212691_urg13e7f
 ✅ System is healthy
 
 🗄️ Step 3: Querying AI decisions and generating report...
-📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1762932662330_iddka3jb
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:decision:respond
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:response:generating
+📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1762979212707_wvnm0knz
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932662330_iddka3jb
-✅ JTAGClient: Completed correlation client_1762932662330_iddka3jb
-✅ Report generated at: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/.continuum/reports/decisions-2025-11-12T07-31-03-048Z.md
+🔗 JTAGClient: Processing response for correlation client_1762979212707_wvnm0knz
+✅ JTAGClient: Completed correlation client_1762979212707_wvnm0knz
+✅ Report generated at: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/.continuum/reports/decisions-2025-11-12T20-26-53-467Z.md
 
 📊 Step 4: Validating report structure and content...
 ✅ Report structure validated (summary + verbose RAG context)
@@ -100,7 +76,7 @@
 This test validates the ENTIRE AI decision intelligence pipeline.
 
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 0d100c47-0b61-410e-a273-c0c023c789b2 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session 5daf0642-e76f-43e0-ad16-bcd03e5dc1e6 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

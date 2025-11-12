@@ -57,6 +57,9 @@ docs/
 - [DAEMON-RESPONSIBILITIES.md](architecture/DAEMON-RESPONSIBILITIES.md) - Daemon roles
 - [PASSKEY-AUTHENTICATION-DESIGN.md](architecture/PASSKEY-AUTHENTICATION-DESIGN.md) - Passkey auth
 
+**Training & Learning:**
+- [TRAINING-DATA-PIPELINE.md](architecture/TRAINING-DATA-PIPELINE.md) - **NEW** - Automatic training data from natural collaboration
+
 ---
 
 ## 🧬 PersonaUser & Genomic Architecture
@@ -116,6 +119,7 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 ## 📖 Recipe System
 
 **Recipe Architecture:**
+- [SCOPE-BASED-RECIPES.md](recipes/SCOPE-BASED-RECIPES.md) - **NEW** - Scope-based collaboration with hot-swappable LoRA genome layers
 - [RECIPES.md](recipes/RECIPES.md) - Recipe system overview
 - [RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) - Requirements and design
 - [RECIPE-SYSTEM-STATUS.md](recipes/RECIPE-SYSTEM-STATUS.md) - Implementation status
