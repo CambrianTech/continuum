@@ -54,7 +54,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
   /** Training configuration */
   private readonly config: TrainingConfig = {
-    enabledRooms: [ROOM_UNIQUE_IDS.DEV_UPDATES],
+    enabledRooms: [ROOM_UNIQUE_IDS.DEV_UPDATES, 'general'],  // Watch dev-updates and general rooms
     contextWindow: 10,  // Include last 10 messages as context
     minMessages: 3,     // Need at least 3 messages to form training example
     autoFineTuneThreshold: 50  // Auto fine-tune when 50+ examples accumulated
