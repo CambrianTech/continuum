@@ -70,7 +70,8 @@ export const COLLECTIONS = {
   TRAINING_EXAMPLES: 'training_examples',
   TRAINING_SESSIONS: 'training_sessions',
   TRAINING_CHECKPOINTS: 'training_checkpoints',
-  TRAINING_DATASETS: 'training_datasets'
+  TRAINING_DATASETS: 'training_datasets',
+  CODE_INDEX: 'code_index'
 } as const;
 
 /**

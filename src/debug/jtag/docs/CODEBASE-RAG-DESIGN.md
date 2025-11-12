@@ -282,39 +282,69 @@ private calculateKeywordScore(query: string, entry: CodeIndexEntry): number {
 - Combines strengths of both approaches
 - Falls back gracefully if embeddings missing (pure keyword)
 
-### 5. CodebaseRAGBuilder Integration
+### 5. Integration with Recipe System
 
-**Extends RAGBuilder**:
+**CRITICAL**: CodebaseRAGBuilder should NOT be standalone - it integrates with the recipe system!
+
+**The right architecture**:
 ```typescript
-class CodebaseRAGBuilder extends RAGBuilder {
-  readonly domain = 'code';
+// Recipe creates scoped room for code questions
+// system/recipes/templates/code-qa.json
+{
+  "id": "code-qa",
+  "displayName": "Code Q&A Session",
+  "strategy": {
+    "conversationPattern": "code-focused",
+    "responseRules": [
+      "Always include file references (file.ts:line)",
+      "Explain WHY code is structured this way",
+      "Use codebase RAG for context"
+    ],
+    "ragSource": "codebase"  // ← Signals to use CodebaseRAGBuilder
+  }
+}
 
-  async buildContext(contextId, personaId, options): Promise<RAGContext> {
-    // contextId = query text (e.g., "Why does PersonaUser have inbox?")
+// ChatRAGBuilder detects recipe wants codebase RAG
+class ChatRAGBuilder extends RAGBuilder {
+  async buildContext(roomId, personaId, options): Promise<RAGContext> {
+    const recipe = await this.loadRecipeStrategy(roomId);
 
-    // 1. Query indexed codebase
-    const results = await this.queryCodebase(contextId, options.maxMessages ?? 10);
+    // If recipe specifies codebase RAG, delegate
+    if (recipe?.ragSource === 'codebase') {
+      return await this.buildCodebaseContext(roomId, personaId, options);
+    }
 
-    // 2. Build system message with code context
-    const systemMessage = {
+    // Otherwise use normal chat RAG
+    return await this.buildChatContext(roomId, personaId, options);
+  }
+
+  private async buildCodebaseContext(roomId, personaId, options): Promise<RAGContext> {
+    // 1. Get recent messages from room (the conversation)
+    const messages = await this.loadConversationHistory(roomId, personaId, 20);
+
+    // 2. Extract latest question
+    const latestMessage = messages[messages.length - 1];
+    const query = latestMessage.content;
+
+    // 3. Query codebase with hybrid search
+    const codeResults = await this.queryCodebase(query, 10);
+
+    // 4. Build system message with code context
+    const codeContext = this.formatCodeResults(codeResults);
+    messages.unshift({
       role: 'system',
-      content: `Relevant code:\n${formatResults(results)}`
-    };
+      content: `Relevant code context:\n${codeContext}`
+    });
 
-    // 3. User's question
-    const userMessage = {
-      role: 'user',
-      content: contextId
-    };
-
-    // 4. Return RAGContext
+    // 5. Return RAGContext with recipe strategy
     return {
-      domain: 'code',
-      contextId,
+      domain: 'chat',  // Still chat domain, just enhanced with code
+      contextId: roomId,
       personaId,
-      identity: await this.loadPersonaIdentity(personaId),
-      conversationHistory: [systemMessage, userMessage],
-      artifacts: this.buildArtifacts(results),
+      identity: await this.loadPersonaIdentity(personaId, roomId),
+      recipeStrategy: recipe,  // ← Includes code-focused rules
+      conversationHistory: messages,
+      artifacts: this.buildCodeArtifacts(codeResults),
       privateMemories: [],
       metadata: { ... }
     };
@@ -322,11 +352,30 @@ class CodebaseRAGBuilder extends RAGBuilder {
 }
 ```
 
-**Why this works**:
-- Fits existing RAGBuilder pattern
-- System orchestrates query, AI just consumes results
-- No tool use by AI needed
-- Results formatted as conversation history
+**Why this is better**:
+- **Single conversation flow** - No separate "code mode"
+- **Recipe governs behavior** - Strategy defines response rules
+- **Natural collaboration** - Multiple personas in same room
+- **Training data unified** - All conversations in one place
+- **Scope-based** - Recipe can specify which directories to search
+
+**Example flow**:
+```bash
+# Create recipe-based code Q&A room
+./jtag recipe/create --recipeId="code-qa" --scope="/system/user/" --roomName="PersonaUser Architecture Q&A"
+
+# Recipe creates room with code-qa strategy
+# Helper AI joins room with code-focused persona
+
+# User asks in chat
+./jtag chat/send --roomId="<room-id>" --message="Why does PersonaUser have inbox?"
+
+# ChatRAGBuilder sees recipe.ragSource === 'codebase'
+# → Queries code index with hybrid search
+# → Finds PersonaInbox.ts, PersonaUser.ts
+# → Builds context with code snippets
+# → Helper AI responds with file references
+```
 
 ---
 
