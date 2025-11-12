@@ -67,7 +67,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
       {
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         filter: Object.keys(filter).length > 0 ? filter : undefined,
-        // No orderBy - createdAt doesn't exist in this table (Phase 5C bug)
+        orderBy: [{ field: 'createdAt', direction: 'desc' }],  // ✅ FIX: Order by newest first
         limit: params.limit ?? 100,
         context: params.context,
         sessionId: params.sessionId

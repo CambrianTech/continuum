@@ -1155,8 +1155,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         // PHASE 5C: Log coordination decision to database WITH complete response content
         // This captures the complete decision pipeline: context → decision → actual response
+        console.log(`🔍 ${this.displayName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${aiResponse.text.slice(0, 50)}..."`);
         if (decisionContext) {
-          console.log(`🔧 ${this.displayName}: [PHASE 5C] Logging decision with response content...`);
+          console.log(`🔧 ${this.displayName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
           CoordinationDecisionLogger.logDecision({
             ...decisionContext,
             responseContent: aiResponse.text,  // ✅ FIX: Now includes actual response!
@@ -1165,7 +1166,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           }).catch(error => {
             console.error(`❌ ${this.displayName}: Failed to log POSTED decision:`, error);
           });
-          console.log(`✅ ${this.displayName}: [PHASE 5C] Decision logged successfully`);
+          console.log(`✅ ${this.displayName}: [PHASE 5C] Decision logged with responseContent successfully`);
+        } else {
+          console.error(`❌ ${this.displayName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
