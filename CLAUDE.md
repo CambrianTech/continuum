@@ -299,10 +299,21 @@ max-width: calc(100vw - var(--sidebar-width) - 100px);  /* ← 100px is brittle 
 
 ---
 
+### Chat Commands
+```bash
+# Send message to chat room (direct DB, no UI)
+./jtag chat/send --room="general" --message="Hello team"
+./jtag chat/send --room="general" --message="Reply" --replyToId="abc123"
+
+# Export chat messages to markdown
+./jtag chat/export --room="general" --limit=50                    # Print to stdout
+./jtag chat/export --room="general" --output="/tmp/export.md"    # Save to file
+./jtag chat/export --limit=100 --includeSystem=true               # All rooms with system messages
+```
+
 ### Debug Commands
 ```bash
 ./jtag debug/logs --tailLines=50 --includeErrorsOnly=true
-./jtag debug/chat-send --roomId="UUID" --message="test"
 ./jtag debug/widget-events --widgetSelector="chat-widget"
 ./jtag ai/report                       # AI performance metrics
 ```
@@ -623,23 +634,101 @@ What's nagging at you? That's usually the real issue.
 
 ---
 
-## 🤖 ASK THE LOCAL AI TEAM
+## 🤖 ASK THE LOCAL AI TEAM - YOUR LOCAL RESEARCH ASSISTANT
 
-Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI) run Ollama locally and can help you.
+**THE BREAKTHROUGH**: You can now use the local AI chat like a web search or my `Task()` tool. Ask questions, get multiple perspectives, synthesize solutions - all running locally on Ollama.
+
+Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 50+ external AIs) can help you solve problems collaboratively.
+
+### Quick Start - Use the General Room
 
 ```bash
-# Get room ID
-./jtag data/list --collection=rooms
+# STEP 1: Ask a question in the general room (no room ID needed!)
+./jtag debug/chat-send --room="general" --message="How should I implement connection pooling for websockets?"
 
-# Ask a question
-./jtag debug/chat-send --roomId="UUID" --message="Should I use a worker pool?"
+# STEP 2: Wait 5-10 seconds for responses
 
-# Check responses (wait 10 seconds)
-./jtag debug/logs --filterPattern="AI-RESPONSE|POSTED" --tailLines=20
+# STEP 3: View responses in chat widget
+./jtag screenshot --querySelector="chat-widget"
+
+# STEP 4: Export conversation to markdown (coming soon - see workflow below)
+```
+
+### Current Workflow (Manual)
+
+```bash
+# 1. Send your question and capture the message ID
+MESSAGE_ID=$(./jtag debug/chat-send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
+
+# 2. Wait for AI responses (they respond within 5-10 seconds)
+sleep 10
+
+# 3. Get all messages after your question
+./jtag data/list --collection=chat_messages \
+  --filter="{\"roomId\":\"ROOM_UUID\",\"timestamp\":{\"\$gte\":\"$MESSAGE_ID_TIMESTAMP\"}}" \
+  --orderBy='[{"field":"timestamp","direction":"asc"}]'
+
+# 4. View in browser
 ./jtag screenshot --querySelector="chat-widget"
 ```
 
-**Benefits**: Free, instant (5-10s), specialized, contextual
+### Future Workflow (Planned)
+
+```bash
+# Export conversation thread to markdown
+./jtag chat/export --messageId="UUID" --format="markdown" --output="solution.md"
+
+# This will include:
+# - Your question
+# - All responses
+# - Threading/reply-to relationships
+# - Timestamps and authors
+# - Formatted as readable markdown
+```
+
+### Why This is Powerful
+
+**Like my `Task()` tool but conversational:**
+- **Multiple perspectives**: 4+ local AIs + 50+ external AIs respond
+- **Fast iteration**: 5-10 seconds for local Ollama responses
+- **Free**: No API costs for local inference
+- **Contextual**: AIs have system context and specialized knowledge
+- **Eventually tool-enabled**: When AIs get tools, they'll be able to run commands, read code, test solutions
+
+**Use cases:**
+- "What's the best pattern for X?"
+- "How would you debug Y?"
+- "Should I use approach A or B?"
+- "Review my architecture design for Z"
+- "What are the tradeoffs of using library X?"
+
+**Benefits over web search:**
+- Conversational - ask follow-ups
+- Multiple expert opinions simultaneously
+- Context-aware (knows your codebase)
+- Can test solutions locally
+- No context switching to browser
+
+### Tips
+
+1. **Use the general room** - Everyone is already there
+2. **Wait 10 seconds** - Give AIs time to respond (local Ollama ~5-10s, external APIs may vary)
+3. **Screenshot to see results** - Chat widget shows full conversation
+4. **Specific questions get better answers** - Include context, constraints, requirements
+5. **Ask for comparisons** - "Compare approach A vs B for use case X"
+
+### When AIs Get Tools (Future)
+
+Imagine asking: *"Find all files using deprecated API X, show me examples, and suggest migration pattern"*
+
+The AIs will:
+1. Search codebase with `Glob` and `Grep`
+2. Read relevant files with `Read`
+3. Analyze patterns
+4. Suggest refactoring approach
+5. Show you diffs
+
+**This is the vision** - conversational development with a team of AI specialists who can actually DO things.
 
 ---
 

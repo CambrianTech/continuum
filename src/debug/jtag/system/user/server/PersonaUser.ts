@@ -1507,7 +1507,19 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         id: messageEntity.id,
         content: messageEntity.content?.text ?? '',
         senderId: messageEntity.senderId,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        // Pass PersonaState for smarter evaluation
+        personaState: {
+          energy: this.state.energy,
+          attention: this.state.attention,
+          mood: this.state.mood,
+          inboxLoad: this.state.inboxLoad
+        },
+        // Pass config for threshold/temperature
+        config: {
+          responseThreshold: this.entity?.personaConfig?.responseThreshold ?? 50,
+          temperature: this.entity?.modelConfig?.temperature ?? 0.7
+        }
       }, 5000); // 5 second timeout
 
       // Apply age-based penalty (prioritize newer messages)

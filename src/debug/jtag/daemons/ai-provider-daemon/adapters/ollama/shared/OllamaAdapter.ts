@@ -100,6 +100,18 @@ class OllamaRequestQueue {
         enqueuedAt: Date.now()
       };
 
+      // Setup queue timeout - reject if request waits too long
+      queuedRequest.timeoutHandle = setTimeout(() => {
+        const queueIndex = this.queue.findIndex(req => req.requestId === requestId);
+        if (queueIndex !== -1) {
+          // Still in queue after timeout - reject it
+          this.queue.splice(queueIndex, 1);
+          const waitTime = Date.now() - queuedRequest.enqueuedAt;
+          console.error(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.REQUEST_TIMEOUT}ms)`);
+          reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.REQUEST_TIMEOUT}ms)`));
+        }
+      }, this.REQUEST_TIMEOUT);
+
       this.queue.push(queuedRequest);
       console.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
 
@@ -123,6 +135,13 @@ class OllamaRequestQueue {
     if (queueIndex !== -1) {
       const request = this.queue[queueIndex];
       this.queue.splice(queueIndex, 1);
+
+      // Clear timeout if it exists
+      if (request.timeoutHandle) {
+        clearTimeout(request.timeoutHandle);
+        request.timeoutHandle = undefined;
+      }
+
       request.reject(new Error('Request cancelled while queued'));
       console.log(`❌ Ollama Queue: Cancelled queued request ${requestId} (queue size: ${this.queue.length})`);
       return;
@@ -143,7 +162,14 @@ class OllamaRequestQueue {
     const request = this.queue.shift()!;
     this.activeRequestIds.add(request.requestId);
 
-    console.log(`▶️  Ollama Queue: Starting request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+    // Clear queue timeout - request is now active
+    if (request.timeoutHandle) {
+      clearTimeout(request.timeoutHandle);
+      request.timeoutHandle = undefined;
+    }
+
+    const queueWaitTime = Date.now() - request.enqueuedAt;
+    console.log(`▶️  Ollama Queue: Starting request ${request.requestId} after ${queueWaitTime}ms wait (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
 
     try {
       const result = await request.executor();

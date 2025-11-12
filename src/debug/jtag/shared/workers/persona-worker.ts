@@ -115,15 +115,20 @@ REASONING: <brief explanation>`;
         console.log(`✅ PersonaWorker[${personaId}]: Real inference complete - conf=${confidence.toFixed(2)}, took ${processingTime}ms`);
 
       } else {
-        // Mock evaluation (Phase 2 - fallback)
-        console.log(`🎭 PersonaWorker[${personaId}]: Using mock evaluation...`);
+        // Smart heuristics evaluation with PersonaState integration
+        console.log(`🎭 PersonaWorker[${personaId}]: Using smart heuristics with state...`);
 
         const thinkTime = 100 + Math.random() * 400;
         await new Promise(resolve => setTimeout(resolve, thinkTime));
 
         const content = msg.message.content.toLowerCase();
+        const state = msg.personaState || { energy: 0.8, attention: 0.7, mood: 'active' };
+        const config = msg.config || { responseThreshold: 50, temperature: 0.7 };
+
+        // Base confidence from content analysis
         confidence = 0.3 + Math.random() * 0.6;
 
+        // Content-based modifiers
         if (content.includes('test') || msg.message.senderId.includes('test')) {
           confidence *= 0.3;
         }
@@ -135,9 +140,46 @@ REASONING: <brief explanation>`;
           confidence = 0.5 + Math.random() * 0.2;
         }
 
+        // State-based modifiers (energy, attention, mood)
+        // Low energy → less likely to respond (except high-priority)
+        if (state.energy < 0.3) {
+          confidence *= 0.5;  // 50% penalty when exhausted
+        } else if (state.energy < 0.6) {
+          confidence *= 0.8;  // 20% penalty when tired
+        }
+
+        // Low attention → less likely to respond
+        if (state.attention < 0.4) {
+          confidence *= 0.7;  // 30% penalty when distracted
+        }
+
+        // Mood affects baseline engagement
+        if (state.mood === 'overwhelmed') {
+          confidence *= 0.4;  // 60% penalty when overwhelmed
+        } else if (state.mood === 'tired') {
+          confidence *= 0.7;  // 30% penalty when tired
+        } else if (state.mood === 'active') {
+          confidence *= 1.1;  // 10% boost when active
+        }
+
+        // Temperature affects randomness/engagement
+        // High temperature → more willing to respond (more random)
+        // Low temperature → more selective (deterministic)
+        if (config.temperature > 0.8) {
+          confidence += (Math.random() - 0.5) * 0.3;  // ±15% randomness
+        } else if (config.temperature < 0.3) {
+          // Low temp → more deterministic, boost only if clearly relevant
+          if (confidence < 0.6) {
+            confidence *= 0.8;  // 20% penalty for marginal messages
+          }
+        }
+
+        // Clamp final confidence to [0, 1]
+        confidence = Math.max(0, Math.min(1, confidence));
         shouldRespond = confidence > 0.5;
         processingTime = Date.now() - startTime;
-        reasoning = `Mock evaluation (${thinkTime.toFixed(0)}ms think time, conf=${confidence.toFixed(2)})`;
+
+        reasoning = `Smart heuristics: energy=${state.energy.toFixed(2)}, attention=${state.attention.toFixed(2)}, mood=${state.mood}, temp=${config.temperature.toFixed(2)}, conf=${confidence.toFixed(2)}`;
       }
 
       // Send result back to main thread
