@@ -83,6 +83,8 @@ import type { PersonaCentralNervousSystem } from './modules/central-nervous-syst
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
+import { DecisionAdapterChain } from './modules/cognition/DecisionAdapterChain';
+import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -115,6 +117,9 @@ export class PersonaUser extends AIUser {
 
   // COGNITIVE MODULE: Memory (knowledge, context, genome)
   public memory: PersonaMemory;
+
+  // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
+  private decisionChain: DecisionAdapterChain;
 
   // CNS: Central Nervous System orchestrator
   private cns: PersonaCentralNervousSystem;
@@ -209,6 +214,10 @@ export class PersonaUser extends AIUser {
       },
       client
     );
+
+    // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
+    this.decisionChain = new DecisionAdapterChain();
+    console.log(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
@@ -1821,10 +1830,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    */
 
   /**
-   * Evaluate whether to respond (delegates to ai/should-respond command)
+   * Evaluate whether to respond using Decision Adapter Chain
    *
-   * Returns the command's shouldRespond boolean directly - no threshold logic here!
-   * The command handles all gating logic internally.
+   * PHASE 6: Refactored to use adapter pattern (fast-path, thermal, LLM)
+   * Instead of hardcoded logic, delegates to chain of decision adapters.
    */
   private async evaluateShouldRespond(
     message: ChatMessageEntity,
@@ -1850,8 +1859,58 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     const startTime = Date.now();
 
     try {
+      // PHASE 6: Use Decision Adapter Chain for all decisions
+      const context: DecisionContext<ChatMessageEntity> = {
+        triggerEvent: message,
+        eventContent: message.content.text,
+        personaId: this.id,
+        personaDisplayName: this.displayName,
+        senderIsHuman,
+        isMentioned,
+        gatingModel: (this.entity?.personaConfig as any)?.gatingModel,
+        contextWindowMinutes: (this.entity?.personaConfig as any)?.contextWindowMinutes ?? 30,
+        minContextMessages: (this.entity?.personaConfig as any)?.minContextMessages ?? 15
+      };
+
+      const decision = await this.decisionChain.processDecision(context);
+
+      console.log(`🔗 ${this.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
+
+      // Build RAG context for decision logging (all adapters need this)
+      const ragBuilder = new ChatRAGBuilder();
+      const ragContext = await ragBuilder.buildContext(
+        message.roomId,
+        this.id,
+        {
+          maxMessages: 20,
+          maxMemories: 0,
+          includeArtifacts: false,
+          includeMemories: false,
+          currentMessage: {
+            role: 'user',
+            content: message.content.text,
+            name: message.senderName,
+            timestamp: this.timestampToNumber(message.timestamp)
+          }
+        }
+      );
+
+      return {
+        shouldRespond: decision.shouldRespond,
+        confidence: decision.confidence,
+        reason: decision.reason,
+        model: decision.model,
+        filteredRagContext: ragContext,
+        ragContextSummary: {
+          totalMessages: ragContext.conversationHistory.length,
+          filteredMessages: ragContext.conversationHistory.length,
+          timeWindowMinutes: context.contextWindowMinutes
+        }
+      };
+
+      // OLD LOGIC BELOW - KEPT FOR REFERENCE, REMOVE AFTER TESTING
       // SYSTEM TEST FILTER: Skip system test messages (precommit hooks, integration tests)
-      if (message.metadata?.isSystemTest === true) {
+      if (false && message.metadata?.isSystemTest === true) {
         const durationMs = Date.now() - startTime;
 
         // Emit cognition event for tracking
@@ -1949,8 +2008,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // Build RAG context for gating decision (recent messages only, max 5 minutes old)
       // Include recent context BUT filter out old messages from different conversation windows
-      const ragBuilder = new ChatRAGBuilder();
-      const ragContext = await ragBuilder.buildContext(
+      const ragBuilder2 = new ChatRAGBuilder();
+      const ragContext2 = await ragBuilder2.buildContext(
         message.roomId,
         this.id,
         {
@@ -1979,7 +2038,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       const minContextMessages = this.entity?.personaConfig?.minContextMessages ?? 15;
 
       // Filter conversation history to only include REAL messages (not system/welcome)
-      const nonSystemMessages = ragContext.conversationHistory.filter(msg => {
+      const nonSystemMessages = ragContext2.conversationHistory.filter(msg => {
         // Exclude system messages (welcome, announcements) from gating context
         // These confuse the AI into thinking there's an active conversation
         const isSystemMessage = msg.role === 'system' ||
@@ -2014,7 +2073,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // Use filtered context for gating decision
       const filteredRagContext = {
-        ...ragContext,
+        ...ragContext2,
         conversationHistory: recentHistory
       };
 
@@ -2078,7 +2137,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         reason: result.reason,
         model: result.model,
         ragContextSummary: {
-          totalMessages: ragContext.conversationHistory.length,
+          totalMessages: ragContext2.conversationHistory.length,
           filteredMessages: recentHistory.length,
           timeWindowMinutes: contextWindowMinutes
         },

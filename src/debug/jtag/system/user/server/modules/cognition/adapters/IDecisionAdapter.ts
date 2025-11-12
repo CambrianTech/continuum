@@ -11,9 +11,9 @@
  * - MultiModelDecisionAdapter: Vote across multiple models → high confidence
  */
 
-import type { BaseEntity } from '../../../../../../system/data/entities/BaseEntity';
-import type { UUID } from '../../../../../../types/CrossPlatformUUID';
-import type { RAGContext } from '../../../../../../system/rag/shared/RAGTypes';
+import type { BaseEntity } from '../../../../../data/entities/BaseEntity';
+import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
+import type { RAGContext } from '../../../../../rag/shared/RAGTypes';
 
 /**
  * Decision context passed to adapters
@@ -83,6 +83,11 @@ export interface IDecisionAdapter {
    * Adapter name (for logging)
    */
   readonly name: string;
+
+  /**
+   * Priority (higher = runs first)
+   */
+  readonly priority: number;
 
   /**
    * Evaluate if should respond
