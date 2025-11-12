@@ -251,20 +251,52 @@ export class OllamaLoRAAdapter extends BaseServerLoRATrainer {
 
   /**
    * Get Ollama model path from model name
+   * Uses `ollama show` to get the actual model file path
    * @private
    */
   private async getOllamaModelPath(modelName: string): Promise<string> {
-    // Ollama stores models in ~/.ollama/models/
-    // const ollamaDir = path.join(os.homedir(), '.ollama', 'models');
+    return new Promise((resolve, reject) => {
+      // Use `ollama show --modelfile` to get model info
+      const proc = spawn('ollama', ['show', '--modelfile', modelName]);
+      let stdout = '';
+      let stderr = '';
 
-    // Try to find the model file
-    // Format: blobs/sha256-{hash}
-    // For now, assume model is available and use a placeholder
-    // TODO: Actually query Ollama for model path
-    // const _modelPath = path.join(ollamaDir, 'blobs', modelName.replace(':', '-') + '.gguf');
+      proc.stdout.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
 
-    // If not found, return the model name (finetune will try to resolve it)
-    return modelName;
+      proc.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code: number | null) => {
+        if (code === 0) {
+          // Parse the modelfile output to get the actual GGUF path
+          // Look for FROM line: "FROM /path/to/model.gguf"
+          const fromMatch = stdout.match(/FROM\s+(.+\.gguf)/i);
+          if (fromMatch) {
+            resolve(fromMatch[1].trim());
+          } else {
+            // Fallback: construct path manually
+            // Ollama stores models in ~/.ollama/models/blobs/
+            const ollamaDir = path.join(os.homedir(), '.ollama', 'models', 'manifests');
+            const manifestPath = path.join(ollamaDir, modelName.replace(':', '/'));
+
+            // For now, return model name and let finetune try to resolve
+            console.warn(`   Could not parse model path from ollama show, using model name: ${modelName}`);
+            resolve(modelName);
+          }
+        } else {
+          reject(new Error(`Failed to get model path: ${stderr || 'unknown error'}`));
+        }
+      });
+
+      proc.on('error', (error: Error) => {
+        // If ollama command fails, return model name as fallback
+        console.warn(`   Ollama not available, using model name: ${modelName}`);
+        resolve(modelName);
+      });
+    });
   }
 
   /**
@@ -332,6 +364,38 @@ export class OllamaLoRAAdapter extends BaseServerLoRATrainer {
         reject(new Error(`Failed to spawn finetune: ${error.message}`));
       });
     });
+  }
+
+  /**
+   * Save trained adapter to permanent storage
+   * @protected
+   */
+  protected async saveAdapter(request: LoRATrainingRequest, tempDir: string): Promise<string> {
+    const adapterFilename = `${request.baseModel?.replace(/[:/]/g, '-')}-${request.traitType}-${Date.now()}.bin`;
+    const permanentDir = path.join('.continuum', 'genome', 'adapters');
+
+    // Ensure permanent directory exists
+    await fs.promises.mkdir(permanentDir, { recursive: true });
+
+    const sourcePath = path.join(tempDir, 'adapter.bin');
+    const destPath = path.join(permanentDir, adapterFilename);
+
+    // Copy adapter to permanent storage
+    await fs.promises.copyFile(sourcePath, destPath);
+
+    return destPath;
+  }
+
+  /**
+   * Clean up temporary training files
+   * @protected
+   */
+  protected async cleanupTempFiles(datasetPath: string): Promise<void> {
+    try {
+      await fs.promises.unlink(datasetPath);
+    } catch (error) {
+      console.warn(`   Failed to clean up temp file: ${datasetPath}`, error);
+    }
   }
 
   // ==================== FUTURE IMPLEMENTATION ====================

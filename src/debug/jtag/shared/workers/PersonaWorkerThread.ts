@@ -243,26 +243,28 @@ export class PersonaWorkerThread extends EventEmitter {
 
     const startTime = Date.now();
     this.messageCount++;
-    const requestId = `eval-${message.id}-${Date.now()}`;
 
-    // Build prompt (business logic - not in worker)
-    const prompt = `Evaluate if you should respond to this message.
-
-Message: "${message.content}"
-Sender: ${message.senderId}
-
-Respond with:
-CONFIDENCE: <number between 0.0 and 1.0>
-REASONING: <brief explanation>`;
-
-    // Send generic generate request to worker (worker is dumb router)
+    // Send evaluation request to worker with context
+    // Worker builds its own prompt for real inference, or uses smart heuristics
     this.worker.postMessage({
-      type: 'generate',
-      requestId: requestId,
-      prompt: prompt,
-      model: this.config.providerConfig?.model || 'llama3.2:1b',
-      temperature: 0.7,
-      maxTokens: 200,
+      type: 'evaluate',
+      message: {
+        id: message.id,
+        content: message.content,
+        senderId: message.senderId,
+        timestamp: message.timestamp
+      },
+      // Pass PersonaState for smarter heuristics
+      personaState: message.personaState || {
+        energy: 0.8,
+        attention: 0.7,
+        mood: 'active'
+      },
+      // Pass room/config settings
+      config: message.config || {
+        responseThreshold: 50,
+        temperature: 0.7
+      },
       timestamp: startTime
     });
 
@@ -282,22 +284,13 @@ REASONING: <brief explanation>`;
           const totalLatency = Date.now() - startTime;
           console.log(`📊 Worker ${this.personaId}: Evaluation complete in ${totalLatency}ms`);
 
-          // Parse raw response text (business logic - not in worker)
-          const responseText = data.text || '';
-          const confMatch = responseText.match(/CONFIDENCE:\s*([0-9.]+)/i);
-          const reasoningMatch = responseText.match(/REASONING:\s*(.+)/is);
-
-          const confidence = confMatch ? parseFloat(confMatch[1]) : 0.5;
-          const clampedConfidence = Math.max(0, Math.min(1, confidence));
-          const shouldRespond = clampedConfidence > 0.5;
-          const reasoning = reasoningMatch ? reasoningMatch[1].trim().substring(0, 200) : responseText.substring(0, 200);
-
+          // Worker returns structured data - just pass it through
           resolve({
-            messageId: message.id,
-            confidence: clampedConfidence,
-            shouldRespond: shouldRespond,
-            reasoning: reasoning,
-            processingTime: data.processingTime
+            messageId: data.messageId || message.id,
+            confidence: data.confidence,
+            shouldRespond: data.shouldRespond,
+            reasoning: data.reasoning,
+            processingTime: data.processingTime || totalLatency
           });
         }
         else if (msg.type === 'error') {
