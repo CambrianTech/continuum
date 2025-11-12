@@ -42,6 +42,189 @@ From research (S-LoRA paper, NVIDIA NIM, AdapterHub):
 
 ---
 
+## Storage Architecture: Persona-Local Genomes
+
+**CRITICAL DECISION**: Each persona's genome (LoRA adapters, training data, checkpoints) is stored in its own portable directory, NOT in the global database.
+
+### Persona Directory Structure
+
+```
+.continuum/personas/helper-ai/
+├── manifest.json          # Persona identity + genome config
+├── genome/
+│   ├── adapters/
+│   │   ├── wine-expertise-v1.safetensors       # LoRA weights
+│   │   ├── action-hero-style-v1.safetensors
+│   │   └── typescript-expert-v1.safetensors
+│   ├── checkpoints/       # Training checkpoints (versioned)
+│   │   ├── wine-expertise-epoch-1.ckpt
+│   │   ├── wine-expertise-epoch-2.ckpt
+│   │   └── wine-expertise-final.ckpt
+│   └── training/
+│       ├── datasets/      # Training data for this persona
+│       ├── logs/          # Training logs
+│       └── metrics.json   # Training metrics
+├── state/
+│   ├── energy.json        # Current energy/mood state
+│   ├── inbox.json         # Task queue state
+│   └── memory.json        # Working memory
+└── config/
+    └── genome-config.json # Which adapters active, priorities, etc
+```
+
+### Global Database (Chat Only)
+
+```
+.continuum/data/continuum.db
+├── users                  # All users (human + AI)
+├── chat_messages          # Global chat history
+├── rooms                  # Shared conversation spaces
+└── relationships          # Who knows who
+```
+
+**Why This Matters:**
+
+1. **Portability**: Zip `.continuum/personas/vine-diesel/` → share as package
+2. **Privacy**: Genome (skills/training) separate from chat interactions
+3. **Backups**: Backup personas individually, not as part of main DB
+4. **Version Control**: Each persona versions its adapters independently
+5. **Distribution**: Share "Vine Diesel" without sharing your chat history
+
+### manifest.json Example
+
+```json
+{
+  "id": "vine-diesel-uuid",
+  "name": "Vine Diesel",
+  "bio": "Wine expert with action hero energy",
+  "genome": {
+    "baseModel": "llama3.1:8b",
+    "provider": "ollama",
+    "adapters": [
+      {
+        "id": "wine-expertise-v1",
+        "path": "./genome/adapters/wine-expertise-v1.safetensors",
+        "domain": "knowledge",
+        "sizeMB": 512,
+        "priority": 0.8,
+        "version": "1.0.0",
+        "trainedOn": "2025-11-10"
+      },
+      {
+        "id": "action-hero-style-v1",
+        "path": "./genome/adapters/action-hero-style-v1.safetensors",
+        "domain": "personality",
+        "sizeMB": 256,
+        "priority": 0.9,
+        "version": "1.0.0",
+        "trainedOn": "2025-11-10"
+      }
+    ],
+    "activeStack": ["wine-expertise-v1", "action-hero-style-v1"]
+  }
+}
+```
+
+---
+
+## Multi-Backend Strategy: Local + Cloud
+
+**Goal**: Make genome concept work across ALL AI backends, whatever it takes.
+
+### LoRA Adapter Support by Provider
+
+| Provider | LoRA Support | Status | Notes |
+|----------|-------------|---------|-------|
+| **Ollama** | ✅ Native | Phase 8 | Primary target, load adapters via API |
+| **Fireworks AI** | ✅ Native | Phase 9 | Upload adapters, specify per request |
+| **LM Studio** | ✅ Native | Phase 10 | Similar to Ollama |
+| **OpenAI GPT** | ❌ No LoRA | Fallback | System prompts only, no genome paging |
+| **Anthropic Claude** | ❌ No LoRA | Fallback | System prompts only, no genome paging |
+| **Grok (X.AI)** | ⚠️ Unknown | Future | Monitor for LoRA support |
+
+### Implementation Strategy
+
+**Phase 7 (Now)**: Mock adapters, no real backends
+- Build GenomeDaemon with mock adapters
+- Test LRU eviction, thrashing detection
+- Prove architecture works
+
+**Phase 8**: Ollama integration (local, free, full LoRA support)
+- Replace MockLoRAAdapter with OllamaLoRAAdapter
+- Load adapters via Ollama API: `/api/chat` with `"adapter"` param
+- Test Vine Diesel with real llama3.1 + wine + action adapters
+
+**Phase 9**: Fireworks AI integration (cloud, paid, full LoRA support)
+- Upload persona adapters to Fireworks
+- Similar API to Ollama (specify adapter per request)
+- Fallback when local GPU unavailable
+
+**Phase 10**: Cloud API fallback (no LoRA, system prompts only)
+- OpenAI/Anthropic/Grok personas use system prompts
+- No genome paging (can't dynamically load skills)
+- Still work, just less powerful than LoRA-backed personas
+
+### Adapter Loading Per Provider
+
+**Ollama (Local)**:
+```typescript
+const response = await fetch('http://localhost:11434/api/chat', {
+  method: 'POST',
+  body: JSON.stringify({
+    model: 'llama3.1:8b',
+    adapter: '/path/to/wine-expertise-v1.safetensors',  // ← Adapter path
+    messages: [...]
+  })
+});
+```
+
+**Fireworks AI (Cloud)**:
+```typescript
+const response = await fetch('https://api.fireworks.ai/inference/v1/chat/completions', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${apiKey}` },
+  body: JSON.stringify({
+    model: 'accounts/fireworks/models/llama-v3p1-8b-instruct',
+    adapter: 'vine-diesel/wine-expertise-v1',  // ← Uploaded adapter ID
+    messages: [...]
+  })
+});
+```
+
+**OpenAI/Claude (No LoRA)**:
+```typescript
+// System prompt includes "personality" but no dynamic skill loading
+const response = await openai.chat.completions.create({
+  model: 'gpt-4',
+  messages: [
+    { role: 'system', content: 'You are Vine Diesel, wine expert with action hero energy...' },
+    ...
+  ]
+});
+```
+
+### Multi-Backend GenomeDaemon
+
+GenomeDaemon must handle different backends:
+
+```typescript
+interface AdapterBackend {
+  provider: 'ollama' | 'fireworks' | 'openai' | 'anthropic';
+  supportsLoRA: boolean;
+
+  // For LoRA-capable backends
+  loadAdapter?(adapterPath: string): Promise<void>;
+  unloadAdapter?(adapterId: string): Promise<void>;
+
+  // For all backends
+  sendMessage(messages: Message[], options: BackendOptions): Promise<Response>;
+}
+```
+
+**Key insight**: GenomeDaemon coordinates paging for LoRA-capable backends, but gracefully degrades for others.
+
+---
+
 ## Architecture
 
 ### System Components
