@@ -144,7 +144,7 @@ export class DecisionReportFormatter {
   /**
    * Format decisions chronologically
    */
-  private static formatChronological(decisions: DecisionForReport[], includeFullRAG?: boolean): string[] {
+  private static formatChronological(decisions: DecisionForReport[], verbose?: boolean): string[] {
     const lines: string[] = [];
 
     lines.push('## Decision Timeline');
@@ -153,7 +153,7 @@ export class DecisionReportFormatter {
     lines.push('');
 
     for (const decision of decisions) {
-      lines.push(...this.formatDecision(decision, includeFullRAG));
+      lines.push(...this.formatDecision(decision, verbose));
       lines.push('');
       lines.push('---');
       lines.push('');
@@ -165,7 +165,7 @@ export class DecisionReportFormatter {
   /**
    * Format decisions grouped by actor
    */
-  private static formatByActor(decisions: DecisionForReport[], includeFullRAG?: boolean): string[] {
+  private static formatByActor(decisions: DecisionForReport[], verbose?: boolean): string[] {
     const lines: string[] = [];
 
     // Group by actor
@@ -187,7 +187,7 @@ export class DecisionReportFormatter {
       lines.push('');
 
       for (const decision of actorDecisions) {
-        lines.push(...this.formatDecision(decision, includeFullRAG));
+        lines.push(...this.formatDecision(decision, verbose));
         lines.push('');
       }
 
@@ -201,7 +201,7 @@ export class DecisionReportFormatter {
   /**
    * Format a single decision
    */
-  private static formatDecision(decision: DecisionForReport, includeFullRAG?: boolean): string[] {
+  private static formatDecision(decision: DecisionForReport, verbose?: boolean): string[] {
     const lines: string[] = [];
 
     // Header
@@ -261,7 +261,7 @@ export class DecisionReportFormatter {
     lines.push('');
 
     // RAG context
-    if (includeFullRAG) {
+    if (verbose) {
       lines.push('**RAG Context (COMPLETE - EXACTLY what AI saw)**:');
       lines.push('');
 
@@ -274,7 +274,7 @@ export class DecisionReportFormatter {
 
       lines.push('**Identity**:');
       lines.push(`- Role: ${decision.ragContext.identity.role}`);
-      lines.push(`- Bio: ${decision.ragContext.identity.bio}`);
+      lines.push(`- Bio: ${decision.ragContext.identity.bio || ''}`);
       lines.push('');
 
       // FULL conversation history - every single message
