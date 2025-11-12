@@ -225,6 +225,343 @@ interface AdapterBackend {
 
 ---
 
+## Phenotype Marketplace: Shareable Layers & Personas
+
+**REVOLUTIONARY CONCEPT**: Treat LoRA adapters as reusable, shareable phenotypes that can be mixed and matched across personas.
+
+### The Two Levels of Sharing
+
+**1. Shareable Layers** (Individual phenotypes)
+- Each layer is a standalone, reusable module
+- Requires specific base model (e.g., `llama3.1:8b`)
+- Can be downloaded on-demand from registry
+- Cached locally like Docker images or npm packages
+- Examples: `wine-expertise-v1`, `action-hero-style-v2`, `typescript-expert-v3`
+
+**2. Shareable Personas** (Complete packages)
+- Full persona directory including manifest + references to layers
+- Includes persona's own database (its personal interactions)
+- References layers by ID (doesn't bundle adapter files)
+- When imported, auto-pulls missing layers from registry
+
+### Storage Architecture
+
+```
+# Global layer cache (shared across all personas)
+.continuum/cache/layers/
+├── wine-expertise-v1/
+│   ├── adapter.safetensors      # 512MB LoRA weights
+│   ├── metadata.json            # Base model, domain, version
+│   ├── checksum.sha256          # Verify integrity
+│   └── training-info.json       # Dataset, training params
+├── action-hero-style-v2/
+│   ├── adapter.safetensors
+│   ├── metadata.json
+│   └── checksum.sha256
+└── typescript-expert-v3/
+    ├── adapter.safetensors
+    ├── metadata.json
+    └── checksum.sha256
+
+# Persona packages (portable, self-contained)
+.continuum/personas/vine-diesel/
+├── manifest.json                # Identity + layer references
+├── genome/
+│   ├── config.json              # Which layers, priorities, stack order
+│   └── active-stack.json        # Current runtime state
+├── db/
+│   └── persona.db               # Persona's OWN chat history
+│       ├── messages             # Personal interactions
+│       ├── memories             # Working memory
+│       └── relationships        # Who this persona knows
+└── state/
+    ├── energy.json              # Current mood/energy
+    └── inbox.json               # Task queue
+
+# Global database (cross-persona interactions)
+.continuum/data/continuum.db
+├── rooms                        # Shared conversation spaces
+├── room_messages                # Multi-persona chat
+├── users                        # All users (human + AI)
+└── global_events                # System-wide activity
+```
+
+### Layer Metadata Format
+
+**`wine-expertise-v1/metadata.json`**:
+```json
+{
+  "id": "wine-expertise-v1",
+  "name": "Wine Expertise",
+  "version": "1.0.0",
+  "baseModel": "llama3.1:8b",
+  "domain": "knowledge",
+  "sizeMB": 512,
+  "checksum": "sha256:abc123def456...",
+  "description": "Expert wine knowledge covering regions, varietals, chemistry",
+  "author": "continuum-community",
+  "license": "MIT",
+  "trainedOn": "2025-11-10",
+  "trainingDataset": {
+    "sources": ["wikipedia-wine", "kaggle-reviews", "uci-wine"],
+    "samples": 100000,
+    "epochs": 3
+  },
+  "tags": ["wine", "food", "expertise", "knowledge"],
+  "compatibleWith": ["llama3.1:8b", "llama3.1:7b"],
+  "downloads": 1247,
+  "rating": 4.8
+}
+```
+
+### Persona Manifest Format
+
+**`vine-diesel/manifest.json`**:
+```json
+{
+  "id": "vine-diesel-uuid",
+  "name": "Vine Diesel",
+  "version": "1.2.0",
+  "bio": "Wine expert with action hero energy",
+  "author": "joel",
+  "created": "2025-11-10",
+
+  "genome": {
+    "baseModel": "llama3.1:8b",
+    "provider": "ollama",
+
+    "layers": [
+      {
+        "id": "wine-expertise-v1",
+        "source": "registry://continuum.ai/layers/wine-expertise-v1",
+        "checksum": "sha256:abc123...",
+        "priority": 0.8,
+        "loadOrder": 1
+      },
+      {
+        "id": "action-hero-style-v2",
+        "source": "registry://continuum.ai/layers/action-hero-style-v2",
+        "checksum": "sha256:def456...",
+        "priority": 0.9,
+        "loadOrder": 2
+      }
+    ],
+
+    "stackStrategy": "sequential"
+  },
+
+  "personality": {
+    "traits": ["confident", "enthusiastic", "direct"],
+    "temperature": 0.85,
+    "systemPrompt": "You are Vine Diesel..."
+  },
+
+  "dependencies": {
+    "baseModels": ["llama3.1:8b"],
+    "layers": ["wine-expertise-v1", "action-hero-style-v2"]
+  }
+}
+```
+
+### Layer Registry Commands
+
+**Phase 8+ (Future)**:
+
+```bash
+# Pull layer from registry (download + cache)
+./jtag layer/pull wine-expertise-v1
+# → Downloads to .continuum/cache/layers/wine-expertise-v1/
+
+# List local layers
+./jtag layer/list --cached
+# → Shows all layers in cache with sizes, checksums
+
+# Publish custom layer to registry
+./jtag layer/publish my-custom-layer \
+  --registry="registry.continuum.ai" \
+  --visibility="public"
+
+# Search registry for layers
+./jtag layer/search --domain="knowledge" --baseModel="llama3.1:8b"
+
+# Update layer (pull latest version)
+./jtag layer/update wine-expertise-v1
+
+# Remove cached layer
+./jtag layer/remove wine-expertise-v1 --cache-only
+```
+
+### Persona Sharing Commands
+
+**Phase 8+ (Future)**:
+
+```bash
+# Export persona (creates portable package)
+./jtag persona/export vine-diesel --output="vine-diesel.zip"
+# → Bundles: manifest.json, genome/config.json, db/persona.db
+# → Does NOT bundle layer files (just references)
+# → Result: ~50MB (persona data + DB, no adapters)
+
+# Import persona (auto-pulls missing layers)
+./jtag persona/import vine-diesel.zip
+# → Extracts to .continuum/personas/vine-diesel/
+# → Reads manifest.json layer dependencies
+# → Auto-runs: ./jtag layer/pull wine-expertise-v1
+# → Auto-runs: ./jtag layer/pull action-hero-style-v2
+# → Verifies checksums
+# → Persona ready to use
+
+# Share persona to registry
+./jtag persona/publish vine-diesel \
+  --registry="registry.continuum.ai" \
+  --include-db=false  # Don't share private chat history
+
+# Pull persona from registry
+./jtag persona/pull continuum.ai/vine-diesel
+```
+
+### On-Demand Layer Paging (The Magic)
+
+**Scenario**: User imports "Vine Diesel" persona but doesn't have layers cached.
+
+```typescript
+// User activates Vine Diesel in chat
+await GenomeDaemon.activatePersona('vine-diesel-uuid');
+
+// GenomeDaemon checks genome config
+const manifest = await readManifest('vine-diesel');
+const requiredLayers = manifest.genome.layers;
+
+for (const layer of requiredLayers) {
+  // Check if layer exists in cache
+  const cached = await LayerCache.has(layer.id);
+
+  if (!cached) {
+    // Auto-download from registry (like Docker pull)
+    console.log(`📥 Pulling layer: ${layer.id}...`);
+    await LayerRegistry.pull(layer.source, layer.checksum);
+    console.log(`✅ Cached: ${layer.id}`);
+  }
+
+  // Load from cache into GPU memory
+  await GenomeDaemon.loadLayer(layer.id);
+}
+
+// Persona ready!
+console.log('🧬 Vine Diesel genome activated');
+```
+
+### Phenotype Evolution (Version Management)
+
+**Scenario**: Wine expertise layer gets improved training data.
+
+```bash
+# Author trains new version
+./jtag layer/train wine-expertise \
+  --version="1.1.0" \
+  --dataset="expanded-wine-data"
+
+# Publish updated layer
+./jtag layer/publish wine-expertise-v1.1.0
+
+# Users can upgrade
+./jtag layer/update wine-expertise
+# → Pulls v1.1.0, keeps v1.0.0 for safety
+
+# Personas can pin versions or auto-upgrade
+# manifest.json:
+"layers": [
+  {
+    "id": "wine-expertise",
+    "version": "^1.0.0",  // Auto-upgrade to 1.x.x
+    "source": "registry://..."
+  }
+]
+```
+
+### Mix & Match: Custom Personas from Existing Layers
+
+**Create new persona by composing layers:**
+
+```bash
+# Create new persona
+./jtag persona/create captain-calorie
+
+# Add layers from registry
+./jtag genome/add-layer captain-calorie \
+  --layer="nutrition-expertise-v1" \
+  --priority=0.8
+
+./jtag genome/add-layer captain-calorie \
+  --layer="drill-sergeant-style-v1" \
+  --priority=0.9
+
+# Result: New persona combining existing phenotypes!
+# Captain Calorie = nutrition knowledge + military personality
+```
+
+### Registry Architecture (Phase 9+)
+
+```
+registry.continuum.ai/
+├── layers/
+│   ├── wine-expertise-v1/
+│   │   ├── adapter.safetensors
+│   │   ├── metadata.json
+│   │   └── readme.md
+│   ├── action-hero-style-v2/
+│   └── typescript-expert-v3/
+├── personas/
+│   ├── vine-diesel/
+│   │   ├── manifest.json
+│   │   └── preview.png
+│   ├── captain-calorie/
+│   └── professor-snark/
+└── base-models/
+    ├── llama3.1:8b/
+    │   └── compatible-layers.json
+    └── mistral:7b/
+        └── compatible-layers.json
+```
+
+### Benefits of This Architecture
+
+1. **Composability**: Build personas from reusable phenotypes
+2. **Efficiency**: Layers cached once, used by multiple personas
+3. **Evolution**: Layers improve over time, all personas benefit
+4. **Community**: Share layers like npm packages or Docker images
+5. **Discovery**: Browse registry for interesting combinations
+6. **On-Demand**: Download layers only when needed (lazy loading)
+7. **Version Control**: Pin versions or auto-upgrade
+8. **Portability**: Export persona, import anywhere
+
+### Example User Journey
+
+**Alice creates Vine Diesel:**
+1. Trains `wine-expertise-v1` layer (512MB)
+2. Trains `action-hero-style-v2` layer (256MB)
+3. Creates "Vine Diesel" persona combining both
+4. Publishes layers to registry
+5. Exports persona → `vine-diesel.zip` (50MB, just manifest + DB)
+
+**Bob wants to try Vine Diesel:**
+1. Downloads `vine-diesel.zip` (50MB)
+2. Runs `./jtag persona/import vine-diesel.zip`
+3. System auto-pulls missing layers:
+   - `wine-expertise-v1` (512MB)
+   - `action-hero-style-v2` (256MB)
+4. Layers cached in `.continuum/cache/layers/`
+5. Vine Diesel ready to chat!
+
+**Charlie creates Captain Calorie:**
+1. Searches registry for nutrition layers
+2. Finds `nutrition-expertise-v1`
+3. Already has `drill-sergeant-style-v1` (used in another persona)
+4. Creates new persona referencing both layers
+5. No retraining needed - instant new personality!
+
+---
+
 ## Architecture
 
 ### System Components
