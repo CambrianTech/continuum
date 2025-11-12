@@ -105,9 +105,12 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 - [papers/README.md](papers/README.md) - Research papers index
 - [papers/RTOS-COGNITIVE-ARCHITECTURE.md](papers/RTOS-COGNITIVE-ARCHITECTURE.md) - RTOS principles in AI cognition
 - [papers/LORA-GENOME-DEMOCRATIZATION.md](papers/LORA-GENOME-DEMOCRATIZATION.md) - Democratic AI through LoRA genomes
+- [papers/GRID-DECENTRALIZED-MARKETPLACE.md](papers/GRID-DECENTRALIZED-MARKETPLACE.md) - **NEW** - P2P marketplace vision (Phase 3+)
 
 **Vision Documents:**
-- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - **NEW** - Multi-layer learning through natural collaboration
+- [PRACTICAL-ROADMAP.md](PRACTICAL-ROADMAP.md) - **START HERE** - Phase 1 roadmap (current focus)
+- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - Multi-layer learning through natural collaboration
+- [COMPOSABLE-EXPERTISE.md](COMPOSABLE-EXPERTISE.md) - LoRA layer stacking architecture
 
 **Key Topics Covered:**
 - RTOS infinite loop patterns for autonomous agents
