@@ -23,6 +23,7 @@ import {
   type RecordData,
   type QueryExplanation
 } from '../shared/DataStorageAdapter';
+import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SqliteQueryBuilder } from './SqliteQueryBuilder';
@@ -93,19 +94,34 @@ export class SqlNamingConverter {
    * - No English grammar rules - use what's given
    */
   static toTableName(collectionName: string): string {
-    return this.toSnakeCase(collectionName);
+    return SqlNamingConverter.toSnakeCase(collectionName);
   }
 }
 
 /**
  * SQLite Storage Adapter with Proper Relational Schema
  */
-export class SqliteStorageAdapter extends DataStorageAdapter {
+export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
   private createdTables = new Set<string>(); // Track created tables
   private inTransaction: boolean = false; // Track transaction state to prevent nesting
+
+  /**
+   * SqlStorageAdapterBase abstract method implementations
+   */
+  protected getSqlDialect(): SqlDialect {
+    return 'sqlite';
+  }
+
+  protected async executeRawSql(sql: string, params?: SqlValue[]): Promise<Record<string, unknown>[]> {
+    return this.runSql(sql, params || []);
+  }
+
+  protected async executeRawStatement(sql: string, params?: SqlValue[]): Promise<{ lastID?: number; changes: number }> {
+    return this.runStatement(sql, params || []);
+  }
 
   /**
    * Initialize SQLite database with configuration
@@ -342,113 +358,6 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Map FieldType to SQL column type
-   */
-  private mapFieldTypeToSql(fieldType: FieldType, options?: FieldMetadata['options']): string {
-    switch (fieldType) {
-      case 'primary':
-        return 'TEXT PRIMARY KEY';
-      case 'foreign_key':
-        return 'TEXT' + (options?.nullable ? '' : ' NOT NULL');
-      case 'text':
-        const maxLength = options?.maxLength;
-        return maxLength ? `VARCHAR(${maxLength})` : 'TEXT';
-      case 'number':
-        return 'REAL';
-      case 'boolean':
-        return 'INTEGER'; // SQLite uses INTEGER for booleans (0/1)
-      case 'date':
-        return 'TEXT'; // ISO string format
-      case 'enum':
-        return 'TEXT';
-      case 'json':
-        return 'TEXT'; // JSON stored as TEXT
-      default:
-        return 'TEXT';
-    }
-  }
-
-  /**
-   * Generate SQL CREATE TABLE statement from entity metadata
-   */
-  private generateCreateTableSql(collectionName: string, entityClass: EntityConstructor): string {
-    const tableName = SqlNamingConverter.toTableName(collectionName);
-    const fieldMetadata = getFieldMetadata(entityClass);
-
-    const columns: string[] = [];
-    const constraints: string[] = [];
-
-    // Base entity fields come from @PrimaryField, @DateField, @NumberField decorators
-    // No hardcoded base fields - let the decorator system handle them
-
-    // Add entity-specific fields
-    for (const [fieldName, metadata] of fieldMetadata.entries()) {
-      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-      const columnType = this.mapFieldTypeToSql(metadata.fieldType, metadata.options);
-
-      let columnDef = `${columnName} ${columnType}`;
-
-      // Add constraints
-      if (metadata.options?.nullable === false && metadata.fieldType !== 'primary') {
-        columnDef += ' NOT NULL';
-      }
-
-      if (metadata.options?.unique) {
-        columnDef += ' UNIQUE';
-      }
-
-      if (metadata.options?.default !== undefined) {
-        columnDef += ` DEFAULT ${JSON.stringify(metadata.options.default)}`;
-      }
-
-      columns.push(columnDef);
-
-      // Handle foreign key references
-      if (metadata.fieldType === 'foreign_key' && metadata.options?.references) {
-        const ref = metadata.options.references;
-        // Parse "TableName.columnName" format
-        const [refTable, refColumn] = ref.split('.');
-        if (refTable && refColumn) {
-          const refTableName = SqlNamingConverter.toTableName(refTable);
-          const refColumnName = SqlNamingConverter.toSnakeCase(refColumn);
-          constraints.push(`FOREIGN KEY (${columnName}) REFERENCES ${refTableName}(${refColumnName})`);
-        }
-      }
-    }
-
-    // Build CREATE TABLE statement
-    let sql = `CREATE TABLE IF NOT EXISTS ${tableName} (\n`;
-    sql += '  ' + columns.join(',\n  ');
-
-    if (constraints.length > 0) {
-      sql += ',\n  ' + constraints.join(',\n  ');
-    }
-
-    sql += '\n)';
-
-    return sql;
-  }
-
-  /**
-   * Generate CREATE INDEX statements for indexed fields
-   */
-  private generateCreateIndexSql(collectionName: string, entityClass: EntityConstructor): string[] {
-    const tableName = SqlNamingConverter.toTableName(collectionName);
-    const fieldMetadata = getFieldMetadata(entityClass);
-    const indexes: string[] = [];
-
-    for (const [fieldName, metadata] of fieldMetadata.entries()) {
-      if (metadata.options?.index) {
-        const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-        const indexName = `idx_${tableName}_${columnName}`;
-        indexes.push(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(${columnName})`);
-      }
-    }
-
-    return indexes;
-  }
-
-  /**
    * Create table for entity if it doesn't exist
    */
   private async ensureEntityTable(collectionName: string): Promise<void> {
@@ -474,13 +383,23 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       await this.migrateTableSchema(collectionName, tableName, entityClass);
     } else {
       // Create new table
-      const createTableSql = this.generateCreateTableSql(collectionName, entityClass);
+      const createTableSql = this.generateCreateTableSql(
+        collectionName,
+        entityClass,
+        SqlNamingConverter.toTableName,
+        SqlNamingConverter.toSnakeCase
+      );
       await this.runSql(createTableSql);
       console.log(`✅ Table created: ${tableName}`);
     }
 
     // Create indexes (will skip if they already exist due to IF NOT EXISTS)
-    const indexSqls = this.generateCreateIndexSql(collectionName, entityClass);
+    const indexSqls = this.generateCreateIndexSql(
+      collectionName,
+      entityClass,
+      SqlNamingConverter.toTableName,
+      SqlNamingConverter.toSnakeCase
+    );
     for (const indexSql of indexSqls) {
       await this.runSql(indexSql);
     }
@@ -604,7 +523,12 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       console.log(`\n🏗️ ${collectionName} -> ${tableName}:`);
 
       // Log what CREATE TABLE would look like
-      const createTableSql = this.generateCreateTableSql(collectionName, entityClass);
+      const createTableSql = this.generateCreateTableSql(
+        collectionName,
+        entityClass,
+        SqlNamingConverter.toTableName,
+        SqlNamingConverter.toSnakeCase
+      );
       console.log('   CREATE TABLE SQL:');
       console.log('   ' + createTableSql.split('\n').join('\n   '));
 
@@ -617,7 +541,12 @@ export class SqliteStorageAdapter extends DataStorageAdapter {
       }
 
       // Log indexes
-      const indexSqls = this.generateCreateIndexSql(collectionName, entityClass);
+      const indexSqls = this.generateCreateIndexSql(
+        collectionName,
+        entityClass,
+        SqlNamingConverter.toTableName,
+        SqlNamingConverter.toSnakeCase
+      );
       if (indexSqls.length > 0) {
         console.log(`   🔍 Indexes: ${indexSqls.length}`);
         indexSqls.forEach(sql => console.log(`   • ${sql}`));
