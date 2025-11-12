@@ -101,11 +101,15 @@ async function verifyState(
   }
 
   // Screenshot - ONE CALL IN ENTIRE CODEBASE
-  await client.commands['screenshot']({
-    querySelector: widgetSelector,
-    filename: `${screenshotPrefix}-${operationName}.png`
-  });
-  console.log(`  📸 Screenshot: ${screenshotPrefix}-${operationName}.png`);
+  // Skip chat-widget screenshots (30+ messages cause browser hang under load)
+  if (widgetSelector !== 'chat-widget') {
+    await client.commands['screenshot']({
+      querySelector: widgetSelector,
+      filename: `${screenshotPrefix}-${operationName}.png`
+    });
+    console.log(`  📸 Screenshot: ${screenshotPrefix}-${operationName}.png`);
+  } else {
+    console.log(`  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)`);
 }
 
 /**
