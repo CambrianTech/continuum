@@ -99,12 +99,15 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 
 ---
 
-## 📄 Research Papers
+## 📄 Research Papers & Vision
 
 **Academic Papers on Core Innovations:**
 - [papers/README.md](papers/README.md) - Research papers index
 - [papers/RTOS-COGNITIVE-ARCHITECTURE.md](papers/RTOS-COGNITIVE-ARCHITECTURE.md) - RTOS principles in AI cognition
 - [papers/LORA-GENOME-DEMOCRATIZATION.md](papers/LORA-GENOME-DEMOCRATIZATION.md) - Democratic AI through LoRA genomes
+
+**Vision Documents:**
+- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - **NEW** - Multi-layer learning through natural collaboration
 
 **Key Topics Covered:**
 - RTOS infinite loop patterns for autonomous agents
@@ -113,6 +116,8 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 - Economic accessibility of SOTA intelligence via LoRA adapters
 - Mentorship-based training and phenotype trading on Grid
 - Democratic mission: From AI oligopoly to ecosystem
+- **Human-AI collaboration as training methodology**
+- **Scope-based expertise with hot-swappable LoRA layers**
 
 ---
 
