@@ -110,6 +110,7 @@ async function verifyState(
     console.log(`  📸 Screenshot: ${screenshotPrefix}-${operationName}.png`);
   } else {
     console.log(`  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)`);
+  }
 }
 
 /**
