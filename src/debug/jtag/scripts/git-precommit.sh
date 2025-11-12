@@ -135,9 +135,9 @@ TEST_OUTPUT2=$(cat .continuum/sessions/validation/test2-output.txt)
 echo "=================================================="
 
 echo ""
-echo "🧪 Running AI Response integration test..."
+echo "🧪 Running AI Decision Report integration test..."
 echo "=================================================="
-npx tsx tests/integration/ai-response-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test3-output.txt
+npx tsx tests/integration/ai-decision-report-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test3-output.txt
 TEST_EXIT_CODE3=${PIPESTATUS[0]}
 TEST_OUTPUT3=$(cat .continuum/sessions/validation/test3-output.txt)
 echo "=================================================="
@@ -146,10 +146,10 @@ echo ""
 # Check if all tests passed
 if [ $TEST_EXIT_CODE1 -eq 0 ] && [ $TEST_EXIT_CODE2 -eq 0 ] && [ $TEST_EXIT_CODE3 -eq 0 ]; then
     echo "✅ Precommit integration tests: ALL PASSED"
-    echo "📊 Test results: 3 of 3 tests passed (CRUD + State + AI Response Integration)"
+    echo "📊 Test results: 3 of 3 tests passed (CRUD + State + AI Decision Report)"
 
     # Store test results for commit message
-    TEST_SUMMARY="CRUD + State + AI Response Integration: 3/3 - ALL TESTS PASSED"
+    TEST_SUMMARY="CRUD + State + AI Decision Report: 3/3 - ALL TESTS PASSED"
 else
     echo ""
     echo "❌ PRECOMMIT INTEGRATION TESTS FAILED - BLOCKING COMMIT"
@@ -165,8 +165,8 @@ else
         echo "   Output shown above"
     fi
     if [ $TEST_EXIT_CODE3 -ne 0 ]; then
-        echo "❌ AI Response integration test FAILED (exit code: $TEST_EXIT_CODE3)"
-        echo "   Test file: tests/integration/ai-response-integration.test.ts"
+        echo "❌ AI Decision Report integration test FAILED (exit code: $TEST_EXIT_CODE3)"
+        echo "   Test file: tests/integration/ai-decision-report-integration.test.ts"
         echo "   Output shown above"
     fi
     echo ""
@@ -175,21 +175,7 @@ else
     exit 1
 fi
 
-# Phase 3: Screenshot Proof Collection
-echo ""
-echo "📸 Phase 3: Collecting visual proof"
-echo "-----------------------------------"
-
-echo "📸 Capturing widget screenshots for proof..."
-# Use timeout and don't fail commit if screenshots timeout during precommit load
-timeout 30 ./jtag screenshot --querySelector="user-list-widget" --filename="precommit-users.png" || echo "⚠️ User widget screenshot timed out (system under load)"
-timeout 30 ./jtag screenshot --querySelector="room-list-widget" --filename="precommit-rooms.png" || echo "⚠️ Room widget screenshot timed out (system under load)"
-timeout 30 ./jtag screenshot --querySelector="chat-widget" --filename="precommit-chat.png" || echo "⚠️ Chat widget screenshot timed out (system under load)"
-timeout 30 ./jtag screenshot --querySelector="body" --filename="precommit-system.png" || echo "⚠️ System screenshot timed out (system under load)"
-
-echo "✅ Screenshot proof collection complete"
-
-# Phase 4: Session Artifacts Collection (Following Legacy Git Hook Pattern)
+# Phase 3: Session Artifacts Collection (Following Legacy Git Hook Pattern)
 echo ""
 echo "📦 Phase 4: Collecting complete session artifacts for commit inclusion"
 echo "---------------------------------------------------------------------"
@@ -198,9 +184,9 @@ echo "---------------------------------------------------------------------"
 VALIDATION_ID="$(date +%Y%m%d-%H%M%S)-$$"
 VALIDATION_RUN_DIR=".continuum/sessions/validation/run_${VALIDATION_ID}"
 
-# Find the active browser session (where screenshots were saved)
+# Find the active browser session (where screenshots were saved by integration tests)
 # Don't rely on currentUser symlink - it may point to wrong session if system restarted
-SCREENSHOT_SESSION=$(find examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/precommit-*.png 2>/dev/null | head -1)
+SCREENSHOT_SESSION=$(find examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/*.png 2>/dev/null | head -1)
 if [ -n "$SCREENSHOT_SESSION" ]; then
     # Extract session directory from screenshot path
     SESSION_PATH=$(echo "$SCREENSHOT_SESSION" | sed 's|/screenshots/.*||')
@@ -266,8 +252,9 @@ EOF
         exit 1
     fi
 else
-    echo "❌ No precommit screenshots found - screenshot phase may have failed"
-    echo "   Expected: examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/precommit-*.png"
+    echo "❌ No screenshots found from integration tests"
+    echo "   Expected: examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/*.png"
+    echo "   This means the CRUD integration test didn't capture screenshots properly"
     exit 1
 fi
 

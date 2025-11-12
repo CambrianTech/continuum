@@ -60,6 +60,19 @@ export interface ChatStream extends BaseStream<ChatThought> {
 export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, ChatDecision, ChatStream> {
 
   // ============================================================================
+  // PHASE 3BIS: ACTIVITY AMBIENT STATE - Temperature tracking
+  // ============================================================================
+
+  private roomTemperatures = new Map<UUID, number>();
+  private roomUserPresent = new Map<UUID, boolean>();
+  private decayInterval: NodeJS.Timeout | null = null;
+
+  // Temperature decay constants (exponential/natural decay)
+  private static readonly DECAY_RATE = 0.95;           // 5% decay per interval (exponential)
+  private static readonly DECAY_INTERVAL_MS = 10000;   // 10 seconds
+  private static readonly TEMP_FLOOR = 0.01;           // Never fully cold (rooms stay "warm")
+
+  // ============================================================================
   // ABSTRACT METHOD IMPLEMENTATIONS - Required by base class
   // ============================================================================
 
@@ -184,6 +197,121 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
   getActiveMessageStreams(): Map<string, ChatStream> {
     return this.getStreams();
   }
+
+  // ============================================================================
+  // PHASE 3BIS: TEMPERATURE MANAGEMENT API
+  // ============================================================================
+
+  /**
+   * Called when a human sends a message (increases temperature)
+   */
+  onHumanMessage(roomId: UUID): void {
+    const current = this.roomTemperatures.get(roomId) ?? 0.5;  // Default to neutral
+    const newTemp = Math.min(1.0, current + 0.3);
+    this.roomTemperatures.set(roomId, newTemp);
+    this.log(`🌡️ Temperature +0.3 (human message): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
+  }
+
+  /**
+   * Called when a message is serviced by a persona (decreases temperature)
+   */
+  onMessageServiced(roomId: UUID, personaId?: UUID): void {
+    const current = this.roomTemperatures.get(roomId) ?? 0.5;
+    const newTemp = Math.max(0, current - 0.2);
+    this.roomTemperatures.set(roomId, newTemp);
+    const who = personaId ? ` by ${personaId.slice(0, 8)}` : '';
+    this.log(`🌡️ Temperature -0.2 (serviced${who}): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
+  }
+
+  /**
+   * Called when user enters/leaves tab (affects temperature and presence)
+   */
+  onUserPresent(roomId: UUID, present: boolean): void {
+    this.roomUserPresent.set(roomId, present);
+
+    if (!present) {
+      // User left - significant temperature drop
+      const current = this.roomTemperatures.get(roomId) ?? 0.5;
+      const newTemp = Math.max(0, current - 0.4);
+      this.roomTemperatures.set(roomId, newTemp);
+      this.log(`🌡️ Temperature -0.4 (user left): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
+    } else {
+      // User returned - moderate temperature increase
+      const current = this.roomTemperatures.get(roomId) ?? 0.5;
+      const newTemp = Math.min(1.0, current + 0.2);
+      this.roomTemperatures.set(roomId, newTemp);
+      this.log(`🌡️ Temperature +0.2 (user present): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
+    }
+  }
+
+  /**
+   * Get current temperature for a room (0.0-1.0)
+   */
+  getTemperature(roomId: UUID): number {
+    return this.roomTemperatures.get(roomId) ?? 0.5;  // Default to neutral
+  }
+
+  /**
+   * Get user presence status for a room
+   */
+  isUserPresent(roomId: UUID): boolean {
+    return this.roomUserPresent.get(roomId) ?? false;
+  }
+
+  /**
+   * Start exponential temperature decay loop (called on initialization)
+   */
+  private startTemperatureDecay(): void {
+    if (this.decayInterval) {
+      return;  // Already running
+    }
+
+    this.decayInterval = setInterval(() => {
+      for (const [roomId, temp] of this.roomTemperatures) {
+        // Only decay if no recent activity (no thoughts in last 60s)
+        const stream = this.getChatStream(roomId);
+        const recentThoughts = stream?.thoughts.filter(
+          t => Date.now() - t.timestamp < 60000
+        ) ?? [];
+
+        if (recentThoughts.length === 0 && temp > ChatCoordinationStream.TEMP_FLOOR) {
+          // Exponential decay: temp * DECAY_RATE (natural/ln decay)
+          const newTemp = temp * ChatCoordinationStream.DECAY_RATE;
+          const finalTemp = Math.max(ChatCoordinationStream.TEMP_FLOOR, newTemp);
+          this.roomTemperatures.set(roomId, finalTemp);
+          this.log(`🌡️ Temperature decay (exponential): room=${roomId.slice(0, 8)} ${temp.toFixed(2)} → ${finalTemp.toFixed(2)}`);
+        }
+      }
+    }, ChatCoordinationStream.DECAY_INTERVAL_MS);
+
+    this.log('🌡️ Temperature decay loop started (10s interval, exponential)');
+  }
+
+  /**
+   * Stop temperature decay loop (called on shutdown)
+   */
+  private stopTemperatureDecay(): void {
+    if (this.decayInterval) {
+      clearInterval(this.decayInterval);
+      this.decayInterval = null;
+      this.log('🌡️ Temperature decay loop stopped');
+    }
+  }
+
+  /**
+   * Override base class initialization to start temperature tracking
+   */
+  initialize(): void {
+    this.startTemperatureDecay();
+  }
+
+  /**
+   * Override base class shutdown to stop temperature tracking
+   */
+  override shutdown(): void {
+    this.stopTemperatureDecay();
+    super.shutdown();
+  }
 }
 
 // ============================================================================
@@ -198,6 +326,7 @@ let chatCoordinatorInstance: ChatCoordinationStream | null = null;
 export function getChatCoordinator(): ChatCoordinationStream {
   if (!chatCoordinatorInstance) {
     chatCoordinatorInstance = new ChatCoordinationStream();
+    chatCoordinatorInstance.initialize();  // Start temperature tracking
   }
   return chatCoordinatorInstance;
 }

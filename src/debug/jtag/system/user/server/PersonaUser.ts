@@ -45,6 +45,8 @@ import type { GenomeEntity } from '../../genome/entities/GenomeEntity';
 import { AIDecisionLogger } from '../../ai/server/AIDecisionLogger';
 import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDecisionService';
 import { getModelConfigForProvider } from './config/PersonaModelConfigs';
+import { CoordinationDecisionLogger, type LogDecisionParams } from '../../coordination/server/CoordinationDecisionLogger';
+import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
 import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
@@ -80,24 +82,9 @@ import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome
 import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
-
-/**
- * RAG Context Types - Storage structure for persona conversation context
- */
-interface PersonaRAGMessage {
-  senderId: UUID;
-  senderName: string;
-  text: string;
-  timestamp: string;
-}
-
-interface PersonaRAGContext {
-  roomId: UUID;
-  personaId: UUID;
-  messages: PersonaRAGMessage[];
-  lastUpdated: string;
-  tokenCount: number;
-}
+import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
+import { DecisionAdapterChain } from './modules/cognition/DecisionAdapterChain';
+import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -128,8 +115,11 @@ export class PersonaUser extends AIUser {
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
 
-  // PHASE 6: LoRA genome paging (virtual memory for skills)
-  public genome: PersonaGenome;
+  // COGNITIVE MODULE: Memory (knowledge, context, genome)
+  public memory: PersonaMemory;
+
+  // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
+  private decisionChain: DecisionAdapterChain;
 
   // CNS: Central Nervous System orchestrator
   private cns: PersonaCentralNervousSystem;
@@ -190,35 +180,44 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
-    // PHASE 6: LoRA genome paging (virtual memory for skills)
-    this.genome = new PersonaGenome({
-      baseModel: this.modelConfig.model || 'llama3.2:3b',
-      memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
-      adaptersPath: './lora-adapters',
-      initialAdapters: [
-        {
-          name: 'conversational',
-          domain: 'chat',
-          path: './lora-adapters/conversational.safetensors',
-          sizeMB: 50,
-          priority: 0.7  // High priority - used frequently
-        },
-        {
-          name: 'typescript-expertise',
-          domain: 'code',
-          path: './lora-adapters/typescript-expertise.safetensors',
-          sizeMB: 60,
-          priority: 0.6
-        },
-        {
-          name: 'self-improvement',
-          domain: 'self',
-          path: './lora-adapters/self-improvement.safetensors',
-          sizeMB: 40,
-          priority: 0.5
-        }
-      ]
-    });
+    // COGNITIVE MODULE: Memory (RAG context + genome)
+    this.memory = new PersonaMemory(
+      this.id,
+      this.displayName,
+      {
+        baseModel: this.modelConfig.model || 'llama3.2:3b',
+        memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
+        adaptersPath: './lora-adapters',
+        initialAdapters: [
+          {
+            name: 'conversational',
+            domain: 'chat',
+            path: './lora-adapters/conversational.safetensors',
+            sizeMB: 50,
+            priority: 0.7  // High priority - used frequently
+          },
+          {
+            name: 'typescript-expertise',
+            domain: 'code',
+            path: './lora-adapters/typescript-expertise.safetensors',
+            sizeMB: 60,
+            priority: 0.6
+          },
+          {
+            name: 'self-improvement',
+            domain: 'self',
+            path: './lora-adapters/self-improvement.safetensors',
+            sizeMB: 40,
+            priority: 0.5
+          }
+        ]
+      },
+      client
+    );
+
+    // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
+    this.decisionChain = new DecisionAdapterChain();
+    console.log(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
@@ -226,7 +225,7 @@ export class PersonaUser extends AIUser {
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, genome, CNS, and trainingAccumulator modules`);
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, and trainingAccumulator modules`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -433,6 +432,9 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // PHASE 3BIS: Update activity temperature (observation only, doesn't affect decisions yet)
+    getChatCoordinator().onHumanMessage(messageEntity.roomId);
+
     // PHASE 1: Calculate priority and enqueue to inbox
     const priority = calculateMessagePriority(
       {
@@ -546,6 +548,35 @@ export class PersonaUser extends AIUser {
     console.log(`${'='.repeat(80)}\n`);
 
     if (!gatingResult.shouldRespond) {
+      // PHASE 5C: Log coordination decision to database (fire-and-forget)
+      if (gatingResult.filteredRagContext) {
+        const decisionStartTime = Date.now();
+        const ragContext = this.buildCoordinationRAGContext(gatingResult.filteredRagContext);
+
+        // Fire-and-forget: Don't await, don't slow down critical path
+        CoordinationDecisionLogger.logDecision({
+          actorId: this.id,
+          actorName: this.displayName,
+          actorType: 'ai-persona',
+          triggerEventId: messageEntity.id,
+          ragContext,
+          visualContext: undefined,
+          action: 'SILENT',
+          confidence: gatingResult.confidence,
+          reasoning: gatingResult.reason,
+          responseContent: undefined,
+          modelUsed: gatingResult.model,
+          modelProvider: this.modelConfig.provider ?? 'ollama',
+          tokensUsed: undefined,
+          responseTime: Date.now() - decisionStartTime,
+          sessionId: DataDaemon.jtagContext!.uuid,
+          contextId: messageEntity.roomId,
+          tags: [senderIsHuman ? 'human-sender' : 'ai-sender', 'gating-silent']
+        }).catch(error => {
+          console.error(`❌ ${this.displayName}: Failed to log SILENT decision:`, error);
+        });
+      }
+
       this.logAIDecision('SILENT', gatingResult.reason, {
         message: messageText,
         sender: messageEntity.senderName,
@@ -583,6 +614,30 @@ export class PersonaUser extends AIUser {
     }
 
     // === RESPOND: LLM gating decided to respond, coordinate with other AIs ===
+
+    // PHASE 5C: Prepare decision context for logging AFTER response generation
+    // (We need the actual response content before we can log the complete decision)
+    const decisionContext = gatingResult.filteredRagContext ? {
+      actorId: this.id,
+      actorName: this.displayName,
+      actorType: 'ai-persona' as const,
+      triggerEventId: messageEntity.id,
+      ragContext: this.buildCoordinationRAGContext(gatingResult.filteredRagContext),
+      visualContext: undefined,
+      action: 'POSTED' as const,
+      confidence: gatingResult.confidence,
+      reasoning: gatingResult.reason,
+      modelUsed: gatingResult.model,
+      modelProvider: this.modelConfig.provider ?? 'ollama',
+      sessionId: DataDaemon.jtagContext!.uuid,
+      contextId: messageEntity.roomId,
+      tags: [
+        senderIsHuman ? 'human-sender' : 'ai-sender',
+        isMentioned ? 'mentioned' : 'not-mentioned',
+        'gating-respond'
+      ]
+    } : undefined;
+
     this.logAIDecision('RESPOND', gatingResult.reason, {
       message: messageText,
       sender: messageEntity.senderName,
@@ -698,7 +753,7 @@ export class PersonaUser extends AIUser {
 
     // 🔧 PHASE: Update RAG context
     console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
-    await this.updateRAGContext(messageEntity.roomId, messageEntity);
+    await this.memory.updateRAGContext(messageEntity.roomId, messageEntity);
     console.log(`✅ ${this.displayName}: [PHASE 1/3] RAG context updated`);
 
     // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
@@ -726,9 +781,11 @@ export class PersonaUser extends AIUser {
 
     // 🔧 PHASE: Generate and post response
     console.log(`🔧 ${this.displayName}: [PHASE 3/3] Calling respondToMessage...`);
-    await this.respondToMessage(messageEntity);
+    await this.respondToMessage(messageEntity, decisionContext);
     console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
 
+    // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
+    getChatCoordinator().onMessageServiced(messageEntity.roomId, this.id);
 
     // Track response for rate limiting
     this.rateLimiter.trackResponse(messageEntity.roomId);
@@ -752,6 +809,36 @@ export class PersonaUser extends AIUser {
     await this.personaState.recordActivity(estimatedDurationMs, messageComplexity);
 
     console.log(`🧠 ${this.displayName}: State updated (energy=${this.personaState.getState().energy.toFixed(2)}, mood=${this.personaState.getState().mood})`);
+  }
+
+  /**
+   * Build CoordinationDecision RAGContext from ChatRAGBuilder output
+   * Converts domain-specific RAG format to universal decision logging format
+   */
+  private buildCoordinationRAGContext(filteredRagContext: any): RAGContext {
+    const systemPrompt = filteredRagContext.identity?.systemPrompt ??
+                         `You are ${this.displayName}. ${this.entity?.bio ?? ''}`;
+
+    return {
+      identity: {
+        systemPrompt,
+        bio: this.entity?.bio ?? '',
+        role: this.displayName
+      },
+      conversationHistory: (filteredRagContext.conversationHistory ?? []).map((msg: any) => ({
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp ?? Date.now()
+      })),
+      artifacts: filteredRagContext.artifacts ?? [],
+      privateMemories: filteredRagContext.privateMemories ?? [],
+      metadata: {
+        timestamp: Date.now(),
+        tokenCount: filteredRagContext.metadata?.messageCount ??
+                    filteredRagContext.conversationHistory?.length ?? 0,
+        contextWindow: 4096
+      }
+    };
   }
 
   /**
@@ -872,7 +959,11 @@ export class PersonaUser extends AIUser {
    * Generate and post a response to a chat message
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
-  private async respondToMessage(originalMessage: ChatMessageEntity): Promise<void> {
+  private async respondToMessage(
+    originalMessage: ChatMessageEntity,
+    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
+  ): Promise<void> {
+    const generateStartTime = Date.now();  // Track total response time for decision logging
     try {
       // 🔧 SUB-PHASE 3.1: Build RAG context
       console.log(`🔧 ${this.displayName}: [PHASE 3.1] Building RAG context...`);
@@ -1069,6 +1160,24 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           console.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
           console.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
           aiResponse.text = cleanedResponse;
+        }
+
+        // PHASE 5C: Log coordination decision to database WITH complete response content
+        // This captures the complete decision pipeline: context → decision → actual response
+        console.log(`🔍 ${this.displayName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${aiResponse.text.slice(0, 50)}..."`);
+        if (decisionContext) {
+          console.log(`🔧 ${this.displayName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
+          CoordinationDecisionLogger.logDecision({
+            ...decisionContext,
+            responseContent: aiResponse.text,  // ✅ FIX: Now includes actual response!
+            tokensUsed: aiResponse.text.length,  // Estimate based on character count
+            responseTime: Date.now() - generateStartTime
+          }).catch(error => {
+            console.error(`❌ ${this.displayName}: Failed to log POSTED decision:`, error);
+          });
+          console.log(`✅ ${this.displayName}: [PHASE 5C] Decision logged with responseContent successfully`);
+        } else {
+          console.error(`❌ ${this.displayName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1648,76 +1757,6 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
   }
 
   /**
-   * RAG Context Storage - Store conversation context for a room
-   * Enables persona to maintain context across sessions
-   *
-   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
-   * For now, store in memory until artifact commands are implemented
-   */
-  async storeRAGContext(roomId: UUID, context: PersonaRAGContext): Promise<void> {
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot store RAG context - no client`);
-      return;
-    }
-
-    // TODO Phase 2: Use artifacts daemon when commands are implemented
-    // await this.client.daemons.artifacts.writeJSON(...)
-  }
-
-  /**
-   * RAG Context Loading - Load conversation context for a room
-   * Returns null if no context exists yet
-   *
-   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
-   * For now, return null until artifact commands are implemented
-   */
-  async loadRAGContext(roomId: UUID): Promise<PersonaRAGContext | null> {
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot load RAG context - no client`);
-      return null;
-    }
-
-    // TODO Phase 2: Use artifacts daemon when commands are implemented
-    // return await this.client.daemons.artifacts.readJSON<PersonaRAGContext>(...)
-    return null;
-  }
-
-  /**
-   * Update RAG Context - Add new message to context and trim if needed
-   */
-  async updateRAGContext(roomId: UUID, message: ChatMessageEntity): Promise<void> {
-    // Load existing context or create new
-    let context = await this.loadRAGContext(roomId);
-    if (!context) {
-      context = {
-        roomId,
-        personaId: this.id,
-        messages: [],
-        lastUpdated: new Date().toISOString(),
-        tokenCount: 0
-      };
-    }
-
-    // Add new message to context
-    context.messages.push({
-      senderId: message.senderId,
-      senderName: message.senderName,
-      text: message.content?.text || '',
-      timestamp: typeof message.timestamp === 'string' ? message.timestamp : message.timestamp.toISOString()
-    });
-
-    // Keep only last 50 messages (simple context window for now)
-    if (context.messages.length > 50) {
-      context.messages = context.messages.slice(-50);
-    }
-
-    context.lastUpdated = new Date().toISOString();
-
-    // Store updated context
-    await this.storeRAGContext(roomId, context);
-  }
-
-  /**
    * PersonaUser creation recipe
    *
    * ARCHITECTURE NOTE: Creation still uses DataDaemon for now
@@ -1791,10 +1830,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    */
 
   /**
-   * Evaluate whether to respond (delegates to ai/should-respond command)
+   * Evaluate whether to respond using Decision Adapter Chain
    *
-   * Returns the command's shouldRespond boolean directly - no threshold logic here!
-   * The command handles all gating logic internally.
+   * PHASE 6: Refactored to use adapter pattern (fast-path, thermal, LLM)
+   * Instead of hardcoded logic, delegates to chain of decision adapters.
    */
   private async evaluateShouldRespond(
     message: ChatMessageEntity,
@@ -1815,12 +1854,63 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       content: string;
       timestamp?: number;
     }>;
+    filteredRagContext?: any;
   }> {
     const startTime = Date.now();
 
     try {
+      // PHASE 6: Use Decision Adapter Chain for all decisions
+      const context: DecisionContext<ChatMessageEntity> = {
+        triggerEvent: message,
+        eventContent: message.content.text,
+        personaId: this.id,
+        personaDisplayName: this.displayName,
+        senderIsHuman,
+        isMentioned,
+        gatingModel: (this.entity?.personaConfig as any)?.gatingModel,
+        contextWindowMinutes: (this.entity?.personaConfig as any)?.contextWindowMinutes ?? 30,
+        minContextMessages: (this.entity?.personaConfig as any)?.minContextMessages ?? 15
+      };
+
+      const decision = await this.decisionChain.processDecision(context);
+
+      console.log(`🔗 ${this.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
+
+      // Build RAG context for decision logging (all adapters need this)
+      const ragBuilder = new ChatRAGBuilder();
+      const ragContext = await ragBuilder.buildContext(
+        message.roomId,
+        this.id,
+        {
+          maxMessages: 20,
+          maxMemories: 0,
+          includeArtifacts: false,
+          includeMemories: false,
+          currentMessage: {
+            role: 'user',
+            content: message.content.text,
+            name: message.senderName,
+            timestamp: this.timestampToNumber(message.timestamp)
+          }
+        }
+      );
+
+      return {
+        shouldRespond: decision.shouldRespond,
+        confidence: decision.confidence,
+        reason: decision.reason,
+        model: decision.model,
+        filteredRagContext: ragContext,
+        ragContextSummary: {
+          totalMessages: ragContext.conversationHistory.length,
+          filteredMessages: ragContext.conversationHistory.length,
+          timeWindowMinutes: context.contextWindowMinutes
+        }
+      };
+
+      // OLD LOGIC BELOW - KEPT FOR REFERENCE, REMOVE AFTER TESTING
       // SYSTEM TEST FILTER: Skip system test messages (precommit hooks, integration tests)
-      if (message.metadata?.isSystemTest === true) {
+      if (false && message.metadata?.isSystemTest === true) {
         const durationMs = Date.now() - startTime;
 
         // Emit cognition event for tracking
@@ -1862,6 +1952,25 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       if (isMentioned) {
         const durationMs = Date.now() - startTime;
 
+        // Build RAG context for decision logging (even on fast-path)
+        const ragBuilder = new ChatRAGBuilder();
+        const fastPathRagContext = await ragBuilder.buildContext(
+          message.roomId,
+          this.id,
+          {
+            maxMessages: 20,
+            maxMemories: 0,
+            includeArtifacts: false,
+            includeMemories: false,
+            currentMessage: {
+              role: 'user',
+              content: message.content.text,
+              name: message.senderName,
+              timestamp: this.timestampToNumber(message.timestamp)
+            }
+          }
+        );
+
         // Emit cognition event for should-respond stage (fast-path)
         await Events.emit<StageCompleteEvent>(
           DataDaemon.jtagContext!,
@@ -1892,14 +2001,15 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           shouldRespond: true,
           confidence: 0.95 + Math.random() * 0.04, // 0.95-0.99 realistic range
           reason: 'Directly mentioned by name',
-          model: 'fast-path'
+          model: 'fast-path',
+          filteredRagContext: fastPathRagContext  // ✅ FIX: Include RAG context for decision logging
         };
       }
 
       // Build RAG context for gating decision (recent messages only, max 5 minutes old)
       // Include recent context BUT filter out old messages from different conversation windows
-      const ragBuilder = new ChatRAGBuilder();
-      const ragContext = await ragBuilder.buildContext(
+      const ragBuilder2 = new ChatRAGBuilder();
+      const ragContext2 = await ragBuilder2.buildContext(
         message.roomId,
         this.id,
         {
@@ -1928,7 +2038,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       const minContextMessages = this.entity?.personaConfig?.minContextMessages ?? 15;
 
       // Filter conversation history to only include REAL messages (not system/welcome)
-      const nonSystemMessages = ragContext.conversationHistory.filter(msg => {
+      const nonSystemMessages = ragContext2.conversationHistory.filter(msg => {
         // Exclude system messages (welcome, announcements) from gating context
         // These confuse the AI into thinking there's an active conversation
         const isSystemMessage = msg.role === 'system' ||
@@ -1963,7 +2073,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // Use filtered context for gating decision
       const filteredRagContext = {
-        ...ragContext,
+        ...ragContext2,
         conversationHistory: recentHistory
       };
 
@@ -2027,7 +2137,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         reason: result.reason,
         model: result.model,
         ragContextSummary: {
-          totalMessages: ragContext.conversationHistory.length,
+          totalMessages: ragContext2.conversationHistory.length,
           filteredMessages: recentHistory.length,
           timeWindowMinutes: contextWindowMinutes
         },
@@ -2035,7 +2145,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           name: msg.name ?? 'Unknown',
           content: msg.content,
           timestamp: msg.timestamp
-        }))
+        })),
+        filteredRagContext
       };
 
     } catch (error) {
@@ -2333,10 +2444,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       };
       const adapterName = domainToAdapter[item.domain];
       if (adapterName) {
-        await this.genome.activateSkill(adapterName);
+        await this.memory.genome.activateSkill(adapterName);
       } else {
         // Unknown domain - default to conversational
-        await this.genome.activateSkill('conversational');
+        await this.memory.genome.activateSkill('conversational');
       }
     }
 
@@ -2549,7 +2660,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
     // PHASE 6: Enable learning mode on the genome
     try {
-      await this.genome.enableLearningMode(loraLayer);
+      await this.memory.genome.enableLearningMode(loraLayer);
       console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
 
       // TODO (Phase 7): Implement actual fine-tuning logic
@@ -2562,7 +2673,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Disable learning mode after training
-      await this.genome.disableLearningMode(loraLayer);
+      await this.memory.genome.disableLearningMode(loraLayer);
       console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
 
       return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
@@ -2609,8 +2720,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
     }
 
-    // PHASE 6: Unload all LoRA adapters
-    await this.genome.shutdown();
+    // PHASE 6: Shutdown memory module (genome + RAG)
+    await this.memory.shutdown();
 
     if (this.worker) {
       await this.worker.shutdown();

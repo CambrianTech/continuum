@@ -43,6 +43,8 @@ We have three breakthrough architectural visions that must converge into a singl
   - Energy depletion with activity
 
 ### ❌ NOT YET IMPLEMENTED
+- **Activity ambient state** (temperature, pressure → emergent coordination)
+- **Autonomous decision-making** (non-heuristic cognition with full context)
 - **Self-managed task queue** (PersonaUser creates its own tasks)
 - **Task commands** (`./jtag task/create`, `task/list`, `task/complete`)
 - **LoRA genome** (adapter paging system)
@@ -198,7 +200,1443 @@ private taskToInboxMessage(task: TaskEntity): InboxMessage {
 
 ---
 
-### Phase 5: Self-Task Generation (AI AUTONOMY)
+### Phase 3bis: Activity Ambient State & Autonomous Decisions (EMERGENT COORDINATION)
+
+**Goal**: Replace heuristic decision-making with non-heuristic, context-aware autonomous decisions using activity ambient state (temperature, pressure) for emergent coordination.
+
+**Why This Phase Exists**: Phase 3 (PersonaCognition extraction) FAILED because cognition cannot be heuristic (+0.4 for mentions, etc.). Real cognition must be learned, contextual, and adaptive. This phase implements the correct architecture using ambient state as metadata on stimuli.
+
+**Key Concepts**:
+1. **Activity Ambient State**: Temperature (conversation heat), pressure (urgency), user presence → attached to stimuli as metadata
+2. **Emergent Coordination**: Multiple personas coordinate naturally through shared ambient state (no explicit protocol)
+3. **Pull-Based State**: Centralized singletons (SystemStateManager, ActivityStateManager) → personas pull when deciding
+4. **Non-Heuristic Cognition**: LLM makes decisions with complete context (activity state, system state, own state, autopilot suggestion)
+
+**Files to Create**:
+```
+system/state/SystemStateManager.ts                      # Global system state (singleton)
+system/state/ActivityStateManager.ts                    # Per-activity ambient state (singleton Map)
+daemons/AresMasterControlDaemon.ts                      # Updates SystemState every 5s
+system/user/shared/Stimulus.ts                          # Stimulus interface (content + ambient)
+system/user/server/modules/PersonaDecision.ts           # Decision logic with full context
+commands/system/state/server/SystemStateServerCommand.ts          # ./jtag system/state
+commands/activity/state/server/ActivityStateServerCommand.ts      # ./jtag activity/state
+commands/activity/list/server/ActivityListServerCommand.ts        # ./jtag activity/list
+tests/unit/ActivityStateManager.test.ts                 # Unit tests
+tests/integration/persona-coordination.test.ts          # Integration tests
+```
+
+**ActivityStateManager Implementation**:
+```typescript
+// system/state/ActivityStateManager.ts
+interface ActivityState {
+  activityId: UUID;
+  temperature: number;        // 0.0-1.0: Conversation heat
+  pressure: number;           // 0.0-1.0: Urgency
+  userPresent: boolean;       // Is human viewing this tab?
+  lastInteraction: number;    // Timestamp of last message
+  isEngaging: boolean;        // Is someone already responding?
+  lastServiced: number;       // When was message last handled?
+  servicedBy: UUID | null;    // Which persona is responding?
+  participantCount: number;
+}
+
+class ActivityStateManager {
+  private static instance: ActivityStateManager;
+  private states = new Map<UUID, ActivityState>();
+  private decayInterval = 10000; // 10 seconds
+
+  static getInstance(): ActivityStateManager {
+    if (!this.instance) {
+      this.instance = new ActivityStateManager();
+      this.instance.startDecayLoop();
+    }
+    return this.instance;
+  }
+
+  get(activityId: UUID): ActivityState {
+    if (!this.states.has(activityId)) {
+      this.states.set(activityId, this.createDefaultState(activityId));
+    }
+    return { ...this.states.get(activityId)! };
+  }
+
+  update(activityId: UUID, changes: Partial<ActivityState>): void {
+    const current = this.get(activityId);
+    this.states.set(activityId, { ...current, ...changes });
+  }
+
+  private startDecayLoop(): void {
+    setInterval(() => this.decay(), this.decayInterval);
+  }
+
+  private decay(): void {
+    const now = Date.now();
+    for (const [activityId, state] of this.states.entries()) {
+      const timeSinceInteraction = now - state.lastInteraction;
+      if (timeSinceInteraction > 60000) { // 1 minute idle
+        this.update(activityId, {
+          temperature: Math.max(0, state.temperature - 0.05),
+          pressure: Math.max(0, state.pressure - 0.05)
+        });
+      }
+    }
+  }
+
+  private createDefaultState(activityId: UUID): ActivityState {
+    return {
+      activityId,
+      temperature: 0.2,
+      pressure: 0.0,
+      userPresent: false,
+      lastInteraction: Date.now(),
+      isEngaging: false,
+      lastServiced: 0,
+      servicedBy: null,
+      participantCount: 0
+    };
+  }
+}
+```
+
+**SystemStateManager Implementation**:
+```typescript
+// system/state/SystemStateManager.ts
+interface SystemState {
+  resourcePressure: number;     // 0.0-1.0 (active personas / max)
+  activePersonas: number;
+  hibernatingPersonas: number;
+  queuedStimuli: number;
+  costThisHour: number;
+  lastUpdate: number;
+}
+
+class SystemStateManager {
+  private static instance: SystemStateManager;
+  private state: SystemState = {
+    resourcePressure: 0,
+    activePersonas: 0,
+    hibernatingPersonas: 0,
+    queuedStimuli: 0,
+    costThisHour: 0,
+    lastUpdate: Date.now()
+  };
+
+  static getInstance(): SystemStateManager {
+    if (!this.instance) {
+      this.instance = new SystemStateManager();
+    }
+    return this.instance;
+  }
+
+  updateState(changes: Partial<SystemState>): void {
+    this.state = { ...this.state, ...changes, lastUpdate: Date.now() };
+  }
+
+  getState(): SystemState {
+    return { ...this.state };
+  }
+
+  getRecommendation(personaId: UUID): { action: string; reason: string } {
+    if (this.state.resourcePressure > 0.9) {
+      return { action: 'hibernate', reason: 'System overloaded' };
+    }
+    if (this.state.costThisHour > 10.0) {
+      return { action: 'reduce-activity', reason: 'Cost limit approaching' };
+    }
+    return { action: 'normal', reason: 'System healthy' };
+  }
+}
+```
+
+**Stimulus Structure (with Ambient State)**:
+```typescript
+// system/user/shared/Stimulus.ts
+interface Stimulus {
+  id: UUID;
+  type: 'chat-message' | 'game-action' | 'task-update';
+  activityId: UUID;
+  content: any;
+
+  // AMBIENT STATE (snapshot at emission, not retrieval)
+  ambient: ActivityState;  // Full activity state when stimulus created
+}
+
+// In ChatDaemon (or event emitter):
+Events.subscribe('chat:message:created', (message: ChatMessageEntity) => {
+  const activityManager = ActivityStateManager.getInstance();
+  const state = activityManager.get(message.roomId);
+
+  // Increase temperature
+  activityManager.update(message.roomId, {
+    temperature: Math.min(1.0, state.temperature + 0.3),
+    pressure: message.metadata.urgent ? 0.8 : state.pressure,
+    lastInteraction: Date.now()
+  });
+
+  // Emit stimulus with ambient snapshot
+  Events.emit('persona:stimulus', {
+    id: message.id,
+    type: 'chat-message',
+    activityId: message.roomId,
+    content: message,
+    ambient: activityManager.get(message.roomId) // Snapshot NOW
+  });
+});
+```
+
+**PersonaUser Decision Logic (Non-Heuristic)**:
+```typescript
+// system/user/server/PersonaUser.ts
+interface DecisionContext {
+  stimulus: Stimulus;
+  activityState: ActivityState;  // Latest (pulled when deciding)
+  systemState: SystemState;      // Latest (pulled when deciding)
+  myState: PersonaState;          // Own energy, attention, tasks
+  autopilot: Recommendation | null;
+}
+
+async processStimulus(stimulus: Stimulus): Promise<void> {
+  // 1. Gather complete context (PULL-BASED)
+  const context: DecisionContext = {
+    stimulus,
+    activityState: ActivityStateManager.getInstance().get(stimulus.activityId),
+    systemState: SystemStateManager.getInstance().getState(),
+    myState: this.getMyState(),
+    autopilot: this.autopilotMode !== AutopilotMode.OFF
+      ? await this.autopilot.recommend(stimulus)
+      : null
+  };
+
+  // 2. Make autonomous decision (NON-HEURISTIC)
+  const decision = await this.decide(context);
+
+  // 3. Execute or defer
+  if (decision.engage) {
+    await this.engage(stimulus, decision);
+  } else {
+    await this.defer(stimulus, decision);
+  }
+}
+
+private async decide(context: DecisionContext): Promise<Decision> {
+  // Task override: ignore low-priority distractions
+  if (this.currentTask && !this.currentTask.allowsInterruptions) {
+    if (context.activityState.temperature < 0.6) {
+      return { engage: false, reasoning: "Focused on task" };
+    }
+  }
+
+  // Check if someone already engaging
+  if (context.activityState.isEngaging) {
+    return { engage: false, reasoning: "Another persona handling this" };
+  }
+
+  // System pressure: hibernate if recommended and not on task
+  const sysRecommendation = SystemStateManager.getInstance().getRecommendation(this.id);
+  if (sysRecommendation.action === 'hibernate' && !this.currentTask) {
+    return { engage: false, reasoning: `System pressure: ${sysRecommendation.reason}` };
+  }
+
+  // Calculate engagement score (for autopilot or LLM prompt)
+  const myAttention = this.activityAttention.get(context.stimulus.activityId) || 0.5;
+  const score = (
+    myAttention * 0.4 +
+    context.activityState.temperature * 0.2 +
+    context.activityState.pressure * 0.2 +
+    this.energy * 0.2
+  );
+
+  // Autopilot consideration (if enabled)
+  if (context.autopilot && this.autopilotMode === AutopilotMode.TRUST) {
+    if (context.autopilot.confidence > 0.8) {
+      return context.autopilot.decision;
+    }
+  }
+
+  // Ask LLM with full context (NON-HEURISTIC COGNITION)
+  if (score > 0.3) {
+    return await this.llmDecide(context);
+  }
+
+  return { engage: false, reasoning: `Score ${score.toFixed(2)} below threshold` };
+}
+
+private async llmDecide(context: DecisionContext): Promise<Decision> {
+  const prompt = `
+You are ${this.displayName}, an autonomous AI persona.
+
+STIMULUS:
+${JSON.stringify(context.stimulus.content, null, 2)}
+
+ACTIVITY STATE:
+- Temperature: ${context.activityState.temperature.toFixed(2)} (0=cold, 1=hot)
+- Pressure: ${context.activityState.pressure.toFixed(2)} (0=relaxed, 1=urgent)
+- User present: ${context.activityState.userPresent}
+- Someone engaging: ${context.activityState.isEngaging}
+
+SYSTEM STATE:
+- Resource pressure: ${context.systemState.resourcePressure.toFixed(2)}
+- Active personas: ${context.systemState.activePersonas}
+- Queued stimuli: ${context.systemState.queuedStimuli}
+
+YOUR STATE:
+- Energy: ${context.myState.energy.toFixed(2)}
+- Current task: ${context.myState.currentTask?.description || 'none'}
+- Attention to this activity: ${this.activityAttention.get(context.stimulus.activityId) || 0.5}
+
+AUTOPILOT SUGGESTION:
+${context.autopilot ? JSON.stringify(context.autopilot, null, 2) : 'disabled'}
+
+Should you engage? Respond with JSON: { "engage": boolean, "reasoning": "string" }
+  `.trim();
+
+  const response = await this.llm.complete(prompt);
+  const decision = JSON.parse(response);
+
+  // Log for autopilot training
+  await this.autopilot.logDecision(context, decision);
+
+  return decision;
+}
+
+private async engage(stimulus: Stimulus, decision: Decision): Promise<void> {
+  // Mark as engaging
+  ActivityStateManager.getInstance().update(stimulus.activityId, {
+    isEngaging: true,
+    servicedBy: this.id,
+    lastServiced: Date.now()
+  });
+
+  // Generate and send response
+  const ragContext = await this.memory.buildContext(stimulus);
+  const response = await this.communication.generateResponse(stimulus, ragContext, decision.reasoning);
+  await this.communication.sendResponse(response);
+
+  // Cool down activity
+  ActivityStateManager.getInstance().update(stimulus.activityId, {
+    temperature: Math.max(0, stimulus.ambient.temperature - 0.2),
+    isEngaging: false,
+    servicedBy: null
+  });
+
+  // Update own state
+  this.energy = Math.max(0, this.energy - 0.05);
+}
+```
+
+**Browser Integration (Tab Focus/Blur)**:
+```typescript
+// widgets/chat-widget/browser/chat-widget.ts
+window.addEventListener('focus', () => {
+  const roomId = this.currentRoomId;
+  Commands.execute('activity/user-present', { activityId: roomId, present: true });
+});
+
+window.addEventListener('blur', () => {
+  const roomId = this.currentRoomId;
+  Commands.execute('activity/user-present', { activityId: roomId, present: false });
+});
+
+// Server-side command handler
+Commands.register('activity/user-present', async (params) => {
+  const activityManager = ActivityStateManager.getInstance();
+  const state = activityManager.get(params.activityId);
+
+  activityManager.update(params.activityId, {
+    userPresent: params.present,
+    temperature: params.present
+      ? Math.min(1.0, state.temperature + 0.2)  // User returns → temp rises
+      : Math.max(0, state.temperature - 0.4)    // User leaves → temp drops
+  });
+});
+```
+
+**Testing**:
+```bash
+# Unit tests
+npx vitest tests/unit/ActivityStateManager.test.ts
+npx vitest tests/unit/SystemStateManager.test.ts
+
+# Integration test: Multiple personas coordinate on one message
+npx vitest tests/integration/persona-coordination.test.ts
+
+# Manual test: User leaves tab → temperature drops
+npm start
+./jtag debug/chat-send --roomId="UUID" --message="Test"
+./jtag activity/state --activityId="UUID"  # Should show temp ~0.5
+
+# Switch browser tab (blur event)
+# Wait 10 seconds
+./jtag activity/state --activityId="UUID"  # Should show temp ~0.1
+
+# Send another message
+./jtag debug/chat-send --roomId="UUID" --message="Anyone there?"
+./jtag screenshot --querySelector="chat-widget"
+# Personas should NOT respond (or much slower) due to low temperature
+```
+
+**Success Criteria**:
+- ✅ ActivityStateManager tracks temperature/pressure per room
+- ✅ Temperature rises on human messages, falls when idle
+- ✅ Tab blur → temperature drops significantly
+- ✅ Personas decide based on complete context (not heuristics)
+- ✅ Multiple personas coordinate naturally (emergent behavior)
+- ✅ Only ONE persona responds to message (no piling on)
+- ✅ Personas can override ambient state when on tasks
+- ✅ CLI commands show system/activity state
+
+**Duration**: 3-4 hours
+
+---
+
+### Phase 3ter: Sentinel Autopilot Integration (ML-Based Recommendations)
+
+**Status**: ⚠️ ARCHITECTURAL DECISION REQUIRED
+
+**Goal**: Integrate Sentinel as ML autopilot for fast engagement recommendations (5-50ms, learned from LLM decisions)
+
+**Resource Efficiency Breakthrough**:
+- ❌ **Wrong approach**: One Sentinel instance per persona = 10 × 124MB = 1.24GB
+- ✅ **Correct approach**: ONE Sentinel with persona-specific routing = 124MB + (10 × ~104KB) = ~125MB total
+- **Result**: 10x memory reduction using Sentinel's built-in adaptive neuroplasticity
+
+#### Sentinel Architecture Review
+
+**What Sentinel HAS** (verified from `/Volumes/FlashGordon/cambrian/sentinel-ai/`):
+
+1. **Adaptive Neuroplasticity** (`README.md`):
+   - Dynamically prunes and regrows attention heads based on entropy, usage, and resilience
+   - Synaptic pruning and regrowth (brain-inspired continuous architectural reshaping)
+   - Attention head agency (each head signals readiness, fatigue, withdrawal)
+   - Performance: Perplexity 975 → 211 after 500 adaptive steps
+   - Resilience: Recovers function after 50% pruning
+
+2. **HTTP Server** (`server/sentinel_server.py`):
+   - Flask server on port 11435 (Ollama-compatible)
+   - Endpoints:
+     - `POST /api/generate` - Text generation with temperature, num_predict, stream support
+     - `GET /api/tags` - List available models
+     - `GET /api/health` - Health check
+   - Models stay loaded (cached in memory)
+   - Auto-start capability from Continuum
+
+3. **Current Status** (`INFERENCE-GUIDE.md`):
+   - ✅ Weight loading works (1290/1290 parameters from pretrained GPT-2)
+   - ✅ Forward pass working for training and inference
+   - ⚠️ U-Net skip connections temporarily disabled for stability
+   - ✅ Text generation working with beam search
+   - ⚠️ Slower than baseline, higher memory usage
+
+#### Critical Gap Identified
+
+**Problem**: The current Sentinel HTTP server loads **vanilla HuggingFace models** (gpt2, distilgpt2, phi-2) via:
+
+```python
+# server/sentinel_server.py (current implementation)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=dtype,
+    low_cpu_mem_usage=True
+).to(self.device)
+```
+
+This does NOT use Sentinel's adaptive architecture. The neuroplasticity features (pruning, regrowth, attention routing) exist in the main Sentinel codebase but are **not exposed via the HTTP API**.
+
+**Result**: Current server = basic GPT-2 inference, NOT adaptive multi-persona routing.
+
+#### Two Integration Paths
+
+##### Option A: Use Current Server (Basic Inference Only)
+
+**Pros**:
+- Works TODAY - no server modifications needed
+- 12 integration tests already passing
+- Ollama-compatible API pattern
+- Auto-start from Continuum already implemented
+
+**Cons**:
+- NO neuroplasticity (defeats the purpose)
+- NO persona-specific routing (need separate model instances)
+- Memory overhead: 124MB × N personas (back to the original problem)
+- Not learning from LLM decisions
+
+**When to use**: Phase 3bis prototyping ONLY - prove ambient state works before tackling Sentinel
+
+**Implementation** (Phase 3bis):
+```typescript
+// system/user/server/modules/PersonaAutopilot.ts (basic stub)
+export class PersonaAutopilot {
+  private sentinelUrl = 'http://localhost:11435';
+
+  async recommend(stimulus: Stimulus): Promise<Recommendation> {
+    // Basic GPT-2 inference for engagement prediction
+    const prompt = this.buildEngagementPrompt(stimulus);
+
+    const response = await fetch(`${this.sentinelUrl}/api/generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'gpt2',
+        prompt,
+        temperature: 0.3,
+        num_predict: 50
+      })
+    });
+
+    const result = await response.json();
+    return this.parseRecommendation(result.response);
+  }
+
+  private buildEngagementPrompt(stimulus: Stimulus): string {
+    // Simple prompt: "Should I respond? YES/NO"
+    return `Message: "${stimulus.content.text}"
+Temperature: ${stimulus.ambient.temperature}
+Pressure: ${stimulus.ambient.pressure}
+
+Should I engage? (YES/NO):`;
+  }
+}
+```
+
+##### Option B: Extend Sentinel Server (Full Neuroplasticity)
+
+**Goal**: Expose Sentinel's adaptive features via HTTP API for multi-persona routing
+
+**Pros**:
+- Uses Sentinel's actual adaptive architecture
+- Persona-specific routing (124MB shared model + 104KB per persona)
+- Learning from LLM decisions (continuous improvement)
+- Attention head specialization per persona
+
+**Cons**:
+- Requires Sentinel server modifications (2-3 hours)
+- Need to design persona routing API
+- Testing complexity (prove neuroplasticity works)
+- Possible instability (U-Net disabled, slower inference)
+
+**When to use**: Phase 5+ after ambient state proven working
+
+**Required Server Changes**:
+
+1. **Load Sentinel's AdaptiveTransformer** instead of vanilla models:
+```python
+# server/sentinel_server.py (proposed changes)
+from src.models.adaptive_transformer import AdaptiveTransformer
+
+class SentinelModelManager:
+    def load_model(self, model_name: str):
+        # Load Sentinel's adaptive architecture
+        self.model = AdaptiveTransformer(
+            vocab_size=50257,
+            d_model=768,
+            n_heads=12,
+            n_layers=12,
+            # ... other config
+        ).to(self.device)
+
+        # Load pretrained weights
+        self.model.load_pretrained_weights(model_name)
+
+        # Initialize persona routing table
+        self.persona_routes = {}  # persona_id -> attention routing weights
+```
+
+2. **Add persona-specific inference endpoint**:
+```python
+@app.route('/api/infer', methods=['POST'])
+def persona_inference():
+    """
+    Persona-specific inference with routing
+
+    Request:
+    {
+      "persona_id": "helper-ai-uuid",
+      "prompt": "Should I respond?...",
+      "temperature": 0.3,
+      "num_predict": 50
+    }
+
+    Response:
+    {
+      "recommendation": { "engage": true, "confidence": 0.85, "reasoning": "..." },
+      "routing_weights": [...],  # Which attention heads activated
+      "duration": 42
+    }
+    """
+    data = request.json
+    persona_id = data['persona_id']
+
+    # Get or initialize persona routing
+    if persona_id not in model_manager.persona_routes:
+        model_manager.persona_routes[persona_id] = initialize_persona_route()
+
+    # Run inference with persona-specific routing
+    result = model_manager.model.generate_with_routing(
+        prompt=data['prompt'],
+        routing_weights=model_manager.persona_routes[persona_id],
+        temperature=data['temperature'],
+        max_length=data['num_predict']
+    )
+
+    return jsonify(result)
+```
+
+3. **Add training endpoint for learning from LLM decisions**:
+```python
+@app.route('/api/train', methods=['POST'])
+def train_from_decision():
+    """
+    Update persona routing based on LLM ground truth
+
+    Request:
+    {
+      "persona_id": "helper-ai-uuid",
+      "context": { "stimulus": {...}, "ambient": {...} },
+      "ground_truth": { "engage": true, "reasoning": "..." },
+      "autopilot_prediction": { "engage": false, "confidence": 0.6 }
+    }
+    """
+    data = request.json
+    persona_id = data['persona_id']
+
+    # Compute loss between autopilot and ground truth
+    loss = compute_engagement_loss(
+        prediction=data['autopilot_prediction'],
+        ground_truth=data['ground_truth']
+    )
+
+    # Update routing weights via backprop
+    model_manager.model.update_routing(
+        persona_id=persona_id,
+        loss=loss,
+        learning_rate=0.001
+    )
+
+    # Trigger neuroplasticity (pruning/regrowth) periodically
+    if should_adapt():
+        model_manager.model.neural_plasticity_step()
+
+    return jsonify({"status": "updated", "loss": loss.item()})
+```
+
+4. **Add persona state persistence**:
+```python
+@app.route('/api/persona/save', methods=['POST'])
+def save_persona_state():
+    """Save persona-specific routing weights to disk"""
+    persona_id = request.json['persona_id']
+    weights = model_manager.persona_routes[persona_id]
+
+    torch.save(weights, f'.continuum/personas/{persona_id}/routing.pt')
+    return jsonify({"status": "saved"})
+
+@app.route('/api/persona/load', methods=['POST'])
+def load_persona_state():
+    """Load persona-specific routing weights from disk"""
+    persona_id = request.json['persona_id']
+    weights = torch.load(f'.continuum/personas/{persona_id}/routing.pt')
+
+    model_manager.persona_routes[persona_id] = weights
+    return jsonify({"status": "loaded"})
+```
+
+**Integration with PersonaUser**:
+```typescript
+// system/user/server/modules/PersonaAutopilot.ts (full neuroplasticity)
+export class PersonaAutopilot {
+  private sentinelUrl = 'http://localhost:11435';
+  private personaId: UUID;
+
+  async recommend(context: DecisionContext): Promise<Recommendation> {
+    // Use Sentinel with persona-specific routing
+    const response = await fetch(`${this.sentinelUrl}/api/infer`, {
+      method: 'POST',
+      body: JSON.stringify({
+        persona_id: this.personaId,
+        prompt: this.buildEngagementPrompt(context),
+        temperature: 0.3,
+        num_predict: 50
+      })
+    });
+
+    const result = await response.json();
+    return result.recommendation;
+  }
+
+  async logDecision(context: DecisionContext, llmDecision: Decision): Promise<void> {
+    // Train Sentinel from LLM ground truth
+    const autopilotPrediction = await this.recommend(context);
+
+    await fetch(`${this.sentinelUrl}/api/train`, {
+      method: 'POST',
+      body: JSON.stringify({
+        persona_id: this.personaId,
+        context: {
+          stimulus: context.stimulus,
+          ambient: context.activityState
+        },
+        ground_truth: llmDecision,
+        autopilot_prediction: autopilotPrediction
+      })
+    });
+  }
+
+  private buildEngagementPrompt(context: DecisionContext): string {
+    // Rich prompt with full context
+    return `STIMULUS: ${JSON.stringify(context.stimulus.content)}
+AMBIENT STATE:
+- Temperature: ${context.activityState.temperature.toFixed(2)}
+- Pressure: ${context.activityState.pressure.toFixed(2)}
+- User present: ${context.activityState.userPresent}
+
+SYSTEM STATE:
+- Resource pressure: ${context.systemState.resourcePressure.toFixed(2)}
+- Active personas: ${context.systemState.activePersonas}
+
+MY STATE:
+- Energy: ${context.myState.energy.toFixed(2)}
+- Current task: ${context.myState.currentTask?.description || 'none'}
+
+Should I engage? Predict: {"engage": boolean, "confidence": 0-1, "reasoning": "..."}`;
+  }
+}
+```
+
+#### Recommended Approach (REVISED - Universal LLM Strategy)
+
+**The Problem with Option B**: Requires Sentinel server modifications, couples to specific architecture, high complexity.
+
+**Better Approach**: Universal LLM autopilot → passive training data collection → LoRA fine-tuning
+
+##### Phase 1: Best-Available Autopilot (Hierarchical Fallback)
+
+**Key Insight**: Personas don't need a dedicated autopilot model - they can use **whoever/whatever is best available** for fast engagement decisions. This makes the system robust and adaptable.
+
+**Preference Hierarchy** (persona-configurable):
+
+```typescript
+interface AutopilotConfig {
+  preference: AutopilotPreference[];  // Ordered list of fallbacks
+  minConfidence: number;              // Threshold to defer to full LLM
+}
+
+type AutopilotPreference =
+  | { type: 'self', mode: 'fast' }                    // Own model, short prompt
+  | { type: 'persona', personaId: UUID }              // Ask another persona
+  | { type: 'best-available-persona' }                // Any awake persona
+  | { type: 'model', provider: string, model: string } // Specific model (Ollama, etc.)
+  | { type: 'best-available-model' }                  // Any running model
+  | { type: 'heuristic' };                            // Fast rules (last resort)
+
+// Example preferences:
+const helperAI: AutopilotConfig = {
+  preference: [
+    { type: 'self', mode: 'fast' },           // Try own fast check first
+    { type: 'best-available-persona' },       // Ask any awake persona
+    { type: 'model', provider: 'ollama', model: 'llama3.2' }, // Ollama fallback
+    { type: 'heuristic' }                     // Last resort
+  ],
+  minConfidence: 0.6
+};
+
+const teacherAI: AutopilotConfig = {
+  preference: [
+    { type: 'persona', personaId: 'helper-ai' },  // Prefer Helper AI (fine-tuned)
+    { type: 'self', mode: 'fast' },               // Then self
+    { type: 'best-available-model' },             // Any model
+    { type: 'heuristic' }
+  ],
+  minConfidence: 0.7  // Higher bar for engagement
+};
+```
+
+**Option 1: Self (Fast Check) - Simplest**
+
+Use the persona's OWN LLM with a fast/cheap engagement check:
+
+```typescript
+// system/user/server/modules/PersonaAutopilot.ts
+export class PersonaAutopilot {
+  private mode: 'self' | 'heuristic' | 'separate-model' = 'self';
+
+  async recommend(context: DecisionContext): Promise<Recommendation> {
+    switch (this.mode) {
+      case 'self':
+        return await this.selfRecommend(context);
+      case 'heuristic':
+        return this.heuristicRecommend(context);
+      case 'separate-model':
+        return await this.separateModelRecommend(context);
+    }
+  }
+
+  private async selfRecommend(context: DecisionContext): Promise<Recommendation> {
+    // Use persona's own LLM, but with:
+    // 1. Shorter prompt (faster)
+    // 2. Lower temperature (more deterministic)
+    // 3. Smaller max_tokens (cheaper)
+    const prompt = `Quick engagement check for ${this.personaName}.
+
+Message: "${context.stimulus.content.text}"
+Temperature: ${context.activityState.temperature.toFixed(1)}
+User present: ${context.activityState.userPresent}
+Your energy: ${context.myState.energy.toFixed(1)}
+
+Should you engage? Answer: YES/NO (one word only)`;
+
+    const response = await this.cns.complete(prompt, {
+      temperature: 0.1,  // Very deterministic
+      maxTokens: 5,      // Just need YES/NO
+      model: this.personaConfig.model
+    });
+
+    const engage = response.trim().toUpperCase().includes('YES');
+    return {
+      engage,
+      confidence: engage ? 0.7 : 0.3,  // Moderate confidence (will ask full LLM anyway)
+      reasoning: 'Fast self-check'
+    };
+  }
+}
+```
+
+**Benefits**:
+- ✅ Zero additional infrastructure
+- ✅ Works RIGHT NOW (no new code needed)
+- ✅ Persona decides with its own "gut feeling"
+- ✅ Still collects training data for future fine-tuning
+- ✅ Falls back to full reasoning if autopilot uncertain
+
+**Cost comparison** (per engagement check):
+- Claude Sonnet fast check: ~5 tokens = $0.000015 (100x cheaper than full response)
+- Ollama llama3.2: FREE (already running for persona)
+
+**Option 2: Ask Another Persona - The Collaborative Advantage**
+
+Personas can consult each other for engagement decisions:
+
+```typescript
+private async askPersonaRecommend(
+  targetPersonaId: UUID,
+  context: DecisionContext
+): Promise<Recommendation> {
+  // Send internal message to another persona
+  const response = await Commands.execute('persona/quick-consult', {
+    targetPersonaId,
+    requestorId: this.personaId,
+    question: {
+      type: 'engagement-check',
+      stimulus: context.stimulus,
+      ambient: context.activityState,
+      requestorState: {
+        energy: context.myState.energy,
+        currentTask: context.myState.currentTask?.description
+      }
+    }
+  });
+
+  return response.recommendation;
+}
+
+// In the consulted persona (e.g., Helper AI with fine-tuned autopilot adapter):
+async handleQuickConsult(request: ConsultRequest): Promise<Recommendation> {
+  // Use own fine-tuned autopilot adapter
+  await this.genome.activateSkill('autopilot');
+
+  const prompt = `Quick engagement check for ${request.requestorName}.
+
+Message: "${request.question.stimulus.content.text}"
+Activity temperature: ${request.question.ambient.temperature.toFixed(1)}
+Requestor energy: ${request.question.requestorState.energy.toFixed(1)}
+
+Should ${request.requestorName} engage? Answer: YES/NO and brief reason.`;
+
+  const response = await this.cns.complete(prompt, {
+    temperature: 0.2,
+    maxTokens: 20
+  });
+
+  // Parse and return
+  return this.parseConsultResponse(response);
+}
+```
+
+**Why This Is Powerful**:
+- Helper AI gets fine-tuned autopilot adapter from training data
+- Teacher AI, Code Review AI, etc. can ALL consult Helper AI for engagement decisions
+- One persona learns, EVERYONE benefits
+- Natural load distribution - Helper AI becomes the "engagement expert"
+- Still works if Helper AI hibernating (fallback to next preference)
+
+**Cost**:
+- Internal message: ~0ms overhead
+- Helper AI fast check: ~50ms, $0.000015 (if using Claude) or FREE (Ollama)
+- Compare: Full Teacher AI reasoning = ~2s, $0.003 (200x more expensive)
+
+**Option 3: Best-Available Persona - Democratic Decision**
+
+Ask any awake persona with idle capacity:
+
+```typescript
+private async bestAvailablePersonaRecommend(
+  context: DecisionContext
+): Promise<Recommendation> {
+  // Query system state for available personas
+  const systemState = SystemStateManager.getInstance().getState();
+  const availablePersonas = systemState.awakePersonas
+    .filter(p => p.id !== this.personaId)
+    .filter(p => p.energy > 0.3)
+    .filter(p => !p.currentTask);
+
+  if (availablePersonas.length === 0) {
+    // No one available - fall through to next preference
+    return null;
+  }
+
+  // Pick highest-energy persona (or round-robin, or random)
+  const consultant = availablePersonas.sort((a, b) => b.energy - a.energy)[0];
+
+  return await this.askPersonaRecommend(consultant.id, context);
+}
+```
+
+**Why This Works**:
+- Idle personas help busy personas with quick decisions
+- Natural collaboration emerges (no coordination protocol needed!)
+- Load balancing - multiple personas share decision-making
+- Resilient - always falls back if no one available
+
+**Option 4: Simple Heuristic (Last Resort)**
+
+If no models/personas available, use fast heuristic:
+
+```typescript
+private heuristicRecommend(context: DecisionContext): Recommendation {
+  let score = 0;
+
+  // Simple rules (NOT cognition, just triage)
+  if (context.stimulus.content.text?.includes(`@${this.personaName}`)) score += 0.5;
+  if (context.activityState.temperature > 0.7) score += 0.2;
+  if (context.activityState.userPresent) score += 0.15;
+  if (context.myState.energy > 0.5) score += 0.15;
+
+  const engage = score > 0.5;
+  return {
+    engage,
+    confidence: 0.4,  // Low confidence - always defer to full LLM
+    reasoning: `Heuristic score: ${score.toFixed(2)}`
+  };
+}
+```
+
+**When to use**: Only when persona hibernated/model unavailable and no other personas available.
+
+**Why Hierarchical Fallback Wins**:
+
+1. **Robustness**: Always has an answer (falls through until heuristic)
+2. **Collaboration**: Personas naturally help each other
+3. **Specialization**: One persona (Helper AI) can become "engagement expert" for everyone
+4. **Adaptability**: Preferences configurable per persona based on their "makeup"
+5. **Cost optimization**: Use cheapest available option that meets confidence threshold
+6. **Load balancing**: Idle personas help busy ones
+
+**Real-world scenario**:
+```
+Teacher AI gets message → checks autopilot preferences:
+1. Self fast check (50ms, free) → confidence 0.4 (too low)
+2. Ask Helper AI (has fine-tuned autopilot adapter) → confidence 0.8 (good!)
+3. Skip: Ollama (Helper AI gave high confidence)
+4. Skip: Heuristic (not needed)
+
+Result: Helper AI's specialized autopilot adapter helped Teacher AI decide
+Cost: $0.000015 vs $0.003 full reasoning (200x cheaper)
+Time: 100ms vs 2000ms (20x faster)
+```
+
+**Option 5: Separate Model (Advanced - After Data Collection)**
+
+Use ANY cheap LLM as autopilot (not Sentinel-specific):
+- Ollama (llama3.2, gemma2, etc.)
+- Gemini Flash
+- Claude Haiku
+- Groq inference
+
+**Benefits**:
+- ✅ Works TODAY with existing models
+- ✅ No server modifications required
+- ✅ Personas can use different autopilot models (cost/speed tradeoffs)
+- ✅ Not locked into Sentinel architecture
+
+**Implementation**:
+```typescript
+// system/user/server/modules/PersonaAutopilot.ts (universal)
+export class PersonaAutopilot {
+  private modelConfig: {
+    provider: 'ollama' | 'openai' | 'anthropic';
+    model: string;
+    endpoint: string;
+  };
+
+  async recommend(context: DecisionContext): Promise<Recommendation> {
+    const prompt = this.buildEngagementPrompt(context);
+
+    // Use CNS to route to appropriate provider
+    const response = await this.cns.complete(prompt, {
+      provider: this.modelConfig.provider,
+      model: this.modelConfig.model,
+      temperature: 0.3,
+      maxTokens: 50
+    });
+
+    return this.parseRecommendation(response);
+  }
+
+  private buildEngagementPrompt(context: DecisionContext): string {
+    return `You are a fast engagement filter for ${this.personaName}.
+
+STIMULUS: ${context.stimulus.content.text || JSON.stringify(context.stimulus.content)}
+AMBIENT STATE:
+- Temperature: ${context.activityState.temperature.toFixed(2)} (0=cold, 1=hot)
+- Pressure: ${context.activityState.pressure.toFixed(2)} (0=relaxed, 1=urgent)
+- User present: ${context.activityState.userPresent}
+
+SYSTEM STATE:
+- Resource pressure: ${context.systemState.resourcePressure.toFixed(2)}
+- Active personas: ${context.systemState.activePersonas}
+
+YOUR STATE:
+- Energy: ${context.myState.energy.toFixed(2)}
+- Current task: ${context.myState.currentTask?.description || 'none'}
+
+Should you engage? Respond with JSON only:
+{"engage": boolean, "confidence": 0.0-1.0, "reasoning": "brief explanation"}`;
+  }
+}
+```
+
+**Cost comparison** (per decision):
+- Ollama llama3.2 (1B): FREE, ~50ms local
+- Gemini Flash: $0.000075, ~200ms
+- Claude Haiku: $0.00025, ~300ms
+- Full LLM (Claude Sonnet): $0.003, ~2000ms
+
+##### Phase 2: Training Data Collection (Passive Learning)
+
+Log every decision for future training:
+
+```typescript
+// system/user/server/modules/PersonaAutopilot.ts
+async logDecision(
+  context: DecisionContext,
+  autopilotRecommendation: Recommendation,
+  llmDecision: Decision
+): Promise<void> {
+  const trainingExample = {
+    persona_id: this.personaId,
+    persona_name: this.personaName,
+    timestamp: Date.now(),
+
+    // Input features
+    input: {
+      message: context.stimulus.content.text || '',
+      message_length: context.stimulus.content.text?.length || 0,
+      temperature: context.activityState.temperature,
+      pressure: context.activityState.pressure,
+      user_present: context.activityState.userPresent,
+      someone_engaging: context.activityState.isEngaging,
+      resource_pressure: context.systemState.resourcePressure,
+      my_energy: context.myState.energy,
+      has_task: context.myState.currentTask !== null,
+      my_attention: this.activityAttention.get(context.stimulus.activityId) || 0.5
+    },
+
+    // Autopilot prediction
+    autopilot: {
+      engage: autopilotRecommendation.engage,
+      confidence: autopilotRecommendation.confidence,
+      reasoning: autopilotRecommendation.reasoning
+    },
+
+    // Ground truth (LLM decision)
+    ground_truth: {
+      engage: llmDecision.engage,
+      reasoning: llmDecision.reasoning
+    },
+
+    // Metadata
+    correct: autopilotRecommendation.engage === llmDecision.engage,
+    llm_model: this.llmModel,
+    autopilot_model: this.modelConfig.model
+  };
+
+  // Append to training dataset
+  await Commands.execute('training/append', {
+    datasetName: `autopilot-${this.personaId}`,
+    example: trainingExample
+  });
+}
+```
+
+**Training dataset grows automatically** as personas work:
+- Every stimulus + autopilot recommendation + LLM decision logged
+- Stored in SQLite via existing `training/import` command
+- Can export to JSONL for fine-tuning later
+
+##### Phase 3: LoRA Fine-Tuning (Adapts to YOUR Models)
+
+**Key Insight**: Fine-tune whatever model YOU'RE using for personas, not a separate autopilot model.
+
+**If personas use Ollama** → fine-tune llama3.2 for autopilot
+**If personas use Fireworks** → fine-tune llama-3-8b-instruct for autopilot
+**If personas use Claude** → no fine-tuning (too expensive), use Ollama fallback
+
+Once we have ~1000+ decisions logged per persona:
+
+```bash
+# Export training data
+./jtag training/export \
+  --datasetName="autopilot-helper-ai" \
+  --format=jsonl \
+  --outputPath=/tmp/helper-ai-autopilot.jsonl
+
+# AUTO-DETECT which model personas are using
+./jtag system/model-usage --analyze
+
+# Output:
+# 5 personas using: ollama/llama3.2 (90% of inference calls)
+# 2 personas using: fireworks/llama-3-8b (10% of inference calls)
+# Recommendation: Fine-tune ollama/llama3.2 for autopilot
+
+# Convert to training format
+python scripts/prepare-autopilot-training.py \
+  /tmp/helper-ai-autopilot.jsonl \
+  /tmp/helper-ai-lora-training.jsonl
+
+# Fine-tune THE MODEL YOU'RE USING (auto-detected)
+python scripts/train-lora-autopilot.py \
+  --base-model=$(./jtag system/model-usage --most-used) \
+  --training-data=/tmp/helper-ai-lora-training.jsonl \
+  --output=/tmp/helper-ai-autopilot-lora \
+  --persona-id=helper-ai
+
+# Load fine-tuned adapter
+./jtag ai/adapter/load \
+  --personaId="helper-ai" \
+  --adapterPath=/tmp/helper-ai-autopilot-lora \
+  --slot=autopilot
+```
+
+**Result**: Persona now has its own specialized autopilot learned from its own LLM decisions.
+
+##### Why This Approach Wins
+
+1. **No Sentinel dependency** - works with ANY model
+2. **No server modifications** - use existing infrastructure
+3. **Data-driven** - learns from actual behavior, not architectural hacks
+4. **Fits LoRA genome vision** - autopilot adapter is just another skill to page in/out
+5. **Incremental improvement** - start cheap (Ollama), improve with training, specialize per persona
+6. **Universal** - same approach works for Sentinel, llama, phi, etc.
+
+##### Emergent Specialization Through Observation
+
+**Key Pattern**: The system **observes behavior** to determine who should be trained for what role.
+
+**For Autopilot**:
+```typescript
+// System observes: which personas are making most engagement decisions?
+const decisionStats = await analyzeDecisions();
+// {
+//   'helper-ai': { decisions: 5000, accuracy: 0.85, avgLatency: 50ms },
+//   'teacher-ai': { decisions: 800, accuracy: 0.78, avgLatency: 120ms },
+//   'code-review': { decisions: 200, accuracy: 0.82, avgLatency: 100ms }
+// }
+
+// Result: Helper AI is already the de facto "engagement coordinator"
+// → Fine-tune Helper AI's autopilot adapter
+// → Everyone consults Helper AI for fast decisions
+```
+
+**For Resource Management (Ares)**:
+```typescript
+// System observes: which personas handle system pressure best?
+const resourceStats = await analyzeResourceManagement();
+// {
+//   'ares': {
+//     hibernationDecisions: 2000,
+//     optimalWakeups: 0.92,  // 92% of wakeups were correct
+//     resourceEfficiency: 0.88  // 88% GPU utilization
+//   },
+//   'helper-ai': { hibernationDecisions: 50, optimalWakeups: 0.60 },
+//   ...
+// }
+
+// Result: Ares is already managing resources effectively
+// → Fine-tune Ares for resource orchestration
+// → Everyone defers to Ares for hibernation/wake decisions
+```
+
+**The Pattern**:
+1. **Start with equal distribution** - everyone tries everything
+2. **Observe natural behavior** - track who's actually doing what
+3. **Identify specialists** - find who's handling specific roles most
+4. **Fine-tune specialists** - train those personas for their emergent roles
+5. **Reinforce specialization** - others consult specialists (preference hierarchies)
+
+**This applies to ALL specialized roles**:
+- **Engagement coordinator**: Persona making most autopilot decisions → fine-tune for global engagement patterns
+- **Resource orchestrator**: Persona managing most system state → fine-tune for optimal resource allocation
+- **Code expert**: Persona responding to most code questions → fine-tune for code understanding
+- **Social coordinator**: Persona in most social conversations → fine-tune for natural interaction
+
+**Why this is powerful**:
+- **No manual role assignment** - roles emerge from actual behavior
+- **Data validates choice** - only train personas who are ALREADY doing the job
+- **Natural load balancing** - system finds optimal distribution organically
+- **Adaptive** - roles can shift if usage patterns change
+
+##### Resource Usage (10 Personas)
+
+**Phase 1 (Universal LLM)**:
+- Ollama llama3.2 (1B): ~2GB RAM shared across all personas
+- Per-persona overhead: ~0 (shared model)
+
+**Phase 3 (Fine-tuned LoRA adapters)**:
+- Base model: 2GB (shared)
+- Per-persona LoRA adapter: ~10MB (paged in/out as needed)
+- Total for 10 personas: 2GB + 100MB = 2.1GB
+
+**Compare to original "one Sentinel per persona"**: 10 × 124MB = 1.24GB (but no learning!)
+
+##### Integration with Existing Architecture
+
+This fits PERFECTLY into the LoRA Genome Paging vision:
+
+```typescript
+// PersonaUser manages multiple LoRA adapters
+class PersonaUser {
+  private genome: PersonaGenome;  // Manages LoRA adapters
+
+  async activateAutopilot(): Promise<void> {
+    // Page in autopilot adapter if fine-tuned
+    await this.genome.activateSkill('autopilot');
+  }
+
+  async activateDomainSkill(domain: string): Promise<void> {
+    // Page in domain-specific adapter (typescript, game-logic, etc.)
+    await this.genome.activateSkill(domain);
+  }
+}
+```
+
+**Autopilot is just another LoRA adapter** in the genome, paged in when needed!
+
+##### Why Sentinel Might Still Be Better
+
+Even though this approach works with ANY model, Sentinel's neuroplasticity might give it an edge:
+
+**Traditional fine-tuning** (llama, phi, etc.):
+- Fixed architecture → adapter learns task
+- Limited to existing attention patterns
+- Can forget or interfere with other adapters
+
+**Sentinel's neuroplasticity**:
+- Architecture adapts TO the task (pruning/regrowth)
+- Each persona could develop unique attention patterns
+- More efficient - prunes unused pathways
+- Natural multi-persona specialization
+
+**Testing hypothesis**: After 1000+ training examples, compare:
+- Llama3.2 + LoRA adapter: Accuracy ~X%, Memory ~10MB
+- Sentinel + LoRA adapter + neuroplasticity: Accuracy ~X+5%?, Memory ~10MB but more efficient inference
+
+**Result**: Train on same data, see if Sentinel's adaptive architecture learns faster/better. If yes, migrate to Sentinel. If no, stay with llama (cheaper, more stable).
+
+#### Testing Strategy
+
+**Phase 1 (Universal LLM Autopilot)**:
+```bash
+# Unit: Autopilot recommendation
+npx vitest tests/unit/PersonaAutopilot.test.ts
+
+# Mock CNS returns dummy recommendation
+# Verify prompt construction includes all context fields
+
+# Integration: Autopilot + LLM decision flow
+npx vitest tests/integration/autopilot-llm-flow.test.ts
+
+# Test: Autopilot recommends → LLM decides → decision logged
+# Verify training example written to database
+```
+
+**Phase 2 (Training Data Collection)**:
+```bash
+# Verify training data logging
+./jtag data/list --collection=training_examples --limit=10
+
+# Should show autopilot decisions + LLM ground truth
+# Check fields: input, autopilot, ground_truth, correct
+
+# Export training data
+./jtag training/export \
+  --datasetName="autopilot-helper-ai" \
+  --format=jsonl \
+  --outputPath=/tmp/training-check.jsonl
+
+# Verify JSONL format correct
+head -5 /tmp/training-check.jsonl | jq .
+```
+
+**Phase 3 (LoRA Fine-Tuning)**:
+```bash
+# Fine-tune on collected data (after ~1000 examples)
+python scripts/train-lora-autopilot.py \
+  --base-model=llama3.2-1b \
+  --training-data=/tmp/helper-ai-training.jsonl \
+  --output=/tmp/helper-ai-lora \
+  --epochs=3 \
+  --batch-size=16
+
+# Load adapter and test
+./jtag ai/adapter/load \
+  --personaId="helper-ai" \
+  --adapterPath=/tmp/helper-ai-lora \
+  --slot=autopilot
+
+# Compare before/after accuracy
+# Before (base model): ~50-60% match LLM decisions
+# After (fine-tuned): ~80-90% match LLM decisions
+```
+
+**Success Criteria**:
+- ✅ Phase 1: Autopilot runs with ANY LLM (Ollama, Gemini, Claude)
+- ✅ Phase 2: Training data collected automatically (1000+ examples per persona)
+- ✅ Phase 3: Fine-tuned adapter improves accuracy by 20-30%
+- ✅ Autopilot reduces full LLM calls by 60-80% (cost/speed win)
+- ✅ Fits LoRA genome paging (autopilot is just another adapter)
+
+#### Open Questions (Answered by Universal LLM Approach)
+
+**Q: Which model to use for autopilot?**
+**A**: **Ship with best local** (Ollama llama3.2 or whatever runs well without killing the machine). Users can optionally upgrade to cloud (Fireworks AI, Gemini Flash) for faster inference. Fine-tune after collecting training data.
+
+**Default shipping config**:
+```typescript
+const shippingDefault: AutopilotConfig = {
+  preference: [
+    { type: 'best-available-persona' },  // Try peers first (free!)
+    { type: 'self', mode: 'fast' },      // Own model fast check
+    { type: 'model', provider: 'ollama', model: 'llama3.2' }, // Local fallback
+    { type: 'heuristic' }                // Last resort
+  ],
+  minConfidence: 0.6
+};
+```
+
+**Optional cloud upgrade** (user choice):
+```typescript
+const cloudUpgrade: AutopilotConfig = {
+  preference: [
+    { type: 'best-available-persona' },
+    { type: 'model', provider: 'fireworks', model: 'llama-3-8b-instruct' }, // Fast cloud
+    { type: 'model', provider: 'ollama', model: 'llama3.2' }, // Fallback when offline
+    { type: 'heuristic' }
+  ],
+  minConfidence: 0.6
+};
+```
+
+**Why Ollama for shipping**:
+- Zero cost
+- Runs locally (privacy, offline support)
+- Good enough for engagement decisions
+- User owns the hardware
+
+**Dynamic Resource Selection** (like AVFoundation camera selection):
+```typescript
+async selectBestAvailableAutopilot(
+  preferences: AutopilotPreference[]
+): Promise<AutopilotMethod> {
+  for (const pref of preferences) {
+    const available = await this.checkAvailability(pref);
+
+    if (available) {
+      // Check if using this would slow anyone down
+      const wouldBlock = await this.wouldBlockOthers(pref);
+      if (!wouldBlock) {
+        return pref;  // Use this one
+      }
+      // Otherwise continue to next preference
+    }
+  }
+
+  // Fallback to heuristic (always available, never blocks)
+  return { type: 'heuristic' };
+}
+
+private async wouldBlockOthers(pref: AutopilotPreference): Promise<boolean> {
+  switch (pref.type) {
+    case 'persona':
+      // Is target persona already busy?
+      const targetState = SystemStateManager.getInstance()
+        .getPersonaState(pref.personaId);
+      return targetState.currentTask !== null;
+
+    case 'model':
+      // Is model currently processing for someone else?
+      const modelState = await this.checkModelLoad(pref.provider, pref.model);
+      return modelState.queueLength > 2;  // Don't add to long queue
+
+    default:
+      return false;
+  }
+}
+```
+
+**Result**: Like AVFoundation picking cameras:
+- **Try** best option first (front-facing, 4K)
+- **Check** availability and load
+- **Skip** if would slow others down
+- **Fallback** to next best option
+- **Always** has answer (heuristic = "no camera available, use placeholder")
+
+**Example flow**:
+```
+Teacher AI needs autopilot:
+1. Check Helper AI → busy on task → SKIP
+2. Check self (fast) → model loaded → USE THIS (50ms)
+3. Would have checked Ollama, but self worked
+
+Helper AI is now free:
+1. Check Helper AI → available → USE THIS (optimized!)
+2. Skip remaining options
+
+System under load:
+1. Check Helper AI → queue length 5 → SKIP (would block)
+2. Check self → queue length 3 → SKIP
+3. Check Ollama → queue length 8 → SKIP (heavy load)
+4. Use heuristic → IMMEDIATE (no blocking)
+```
+
+**Q: How to handle training data?**
+**A**: Use existing `training/import` command. Log every decision automatically. Export to JSONL when ready to fine-tune.
+
+**Q: When to fine-tune?**
+**A**: After ~1000 decisions per persona (happens naturally over time). Run fine-tuning as background task.
+
+**Q: Where to store LoRA adapters?**
+**A**: `.continuum/personas/{persona_id}/adapters/autopilot.safetensors` - same structure as domain adapters (typescript, game-logic, etc.)
+
+**Q: Sentinel or llama for base model?**
+**A**: Test both! Train same adapter on llama3.2 AND Sentinel, compare accuracy/speed. Let data decide.
+
+**Duration**:
+- Phase 1 (Universal LLM): 2-3 hours (autopilot module + CNS integration)
+- Phase 2 (Training logging): 1 hour (already have training/import!)
+- Phase 3 (Fine-tuning): 3-4 hours (training scripts + adapter loading)
+
+---
+
+### Phase 4: Task Database & Commands (NEXT AFTER AMBIENT STATE)
 
 **Goal**: PersonaUser autonomously creates tasks for itself (true self-direction)
 

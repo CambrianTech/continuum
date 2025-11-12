@@ -59,7 +59,8 @@ export const COLLECTIONS = {
   CHAT_MESSAGES: 'chat_messages',
   ARTIFACTS: 'artifacts',
   SESSIONS: 'sessions',
-  TASKS: 'tasks'
+  TASKS: 'tasks',
+  COORDINATION_DECISIONS: 'coordination_decisions'
 } as const;
 
 export type CollectionName = typeof COLLECTIONS[keyof typeof COLLECTIONS];

@@ -17,6 +17,7 @@ import { EventEmitter } from 'events';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
 import { isInboxMessage, isInboxTask } from './QueueItemTypes';
+import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 
 // Re-export types for backward compatibility and external use
 export type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
@@ -241,6 +242,8 @@ export class PersonaInbox {
  * - Recent message: +0.2 (fresher = more relevant)
  * - Active conversation: +0.1 (persona recently active in room)
  * - Relevant expertise: +0.1 (matches persona's domain)
+ * - Hot conversation (temp ≥ 0.7): +0.15 (PHASE 3BIS)
+ * - Cold conversation (temp ≤ 0.3): -0.1 (PHASE 3BIS)
  *
  * Base: 0.2 (all messages have baseline relevance)
  */
@@ -283,6 +286,19 @@ export function calculateMessagePriority(
       priority += 0.1;
     }
   }
+
+  // PHASE 3BIS: Temperature-based priority adjustment (activity ambient state)
+  // Hot conversations = more responsive, Cold conversations = less urgent
+  const temperature = getChatCoordinator().getTemperature(message.roomId);
+
+  if (temperature >= 0.7) {
+    // Hot conversation - be more responsive
+    priority += 0.15;
+  } else if (temperature <= 0.3) {
+    // Cold conversation - less urgent (but still respond to mentions)
+    priority -= 0.1;
+  }
+  // Neutral temperature (0.3-0.7) - no adjustment
 
   return Math.min(1.0, priority); // Cap at 1.0
 }

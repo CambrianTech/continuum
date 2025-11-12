@@ -36,7 +36,9 @@ interface PersonaUserLike {
   };
   inbox: PersonaInbox;
   personaState: PersonaStateManager;
-  genome: PersonaGenome;
+  memory: {
+    genome: PersonaGenome;  // Phase 2: genome moved inside memory module
+  };
   handleChatMessageFromCNS: (item: QueueItem) => Promise<void>;
   pollTasksFromCNS: () => Promise<void>;
   generateSelfTasksFromCNS: () => Promise<void>;
@@ -153,7 +155,7 @@ export class CNSFactory {
       scheduler,
       inbox: persona.inbox,
       personaState: persona.personaState,
-      genome: persona.genome,
+      genome: persona.memory.genome,  // Phase 2: genome moved inside memory module
       personaId: persona.entity.id,
       personaName: persona.entity.displayName || 'Unknown',
       handleChatMessage: async (item: QueueItem): Promise<void> => {
