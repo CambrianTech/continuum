@@ -8,7 +8,7 @@
  * Phase 8+: Multiple adapters stacked, real GPU integration
  */
 
-import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { AdapterRegistry } from '../shared/AdapterRegistry';
 import { PersonaGenomeState } from '../shared/PersonaGenomeState';
 import { MockLoRAAdapter } from '../shared/MockLoRAAdapter';

@@ -8,7 +8,7 @@
  * Phase 8+: Multiple adapters stacked (genome)
  */
 
-import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 /**
  * Configuration for PersonaGenomeState initialization
