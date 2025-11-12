@@ -62,6 +62,8 @@ docs/
 ## 🧬 PersonaUser & Genomic Architecture
 
 **Core Persona Architecture:**
+- [THREADING-AS-THOUGHTSTREAM.md](THREADING-AS-THOUGHTSTREAM.md) - **NEW** - Threading = cognitive architecture for multi-persona coordination
+- [PERSONA-SYSTEM-AUDIT.md](PERSONA-SYSTEM-AUDIT.md) - **NEW** - Complete system audit (November 2025)
 - [PERSONA-GENOMIC-ARCHITECTURE.md](personas/PERSONA-GENOMIC-ARCHITECTURE.md) - Master genomic design
 - [ARTIFACTS-PERSONA-ARCHITECTURE.md](personas/ARTIFACTS-PERSONA-ARCHITECTURE.md) - Persona artifacts
 - [PERSONA_ENDTOEND_PLAN.md](personas/PERSONA_ENDTOEND_PLAN.md) - End-to-end implementation plan
@@ -258,5 +260,5 @@ Many system modules have their own documentation within their directories:
 
 ---
 
-**Last Updated:** 2025-11-07
-**Total Documentation Files:** 66 in docs/ (including 3 research papers), 49 in system/ subdirectories
+**Last Updated:** 2025-11-12
+**Total Documentation Files:** 68 in docs/ (including 3 research papers, 2 new threading/audit docs), 49 in system/ subdirectories
