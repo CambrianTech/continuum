@@ -49,9 +49,9 @@
 
 ---
 
-## ✅ Together AI - IMPLEMENTED
+## ⚠️ Together AI - API ISSUE
 
-**Status**: ✅ Adapter complete, ready for testing
+**Status**: ⚠️ Adapter implemented, API file upload failing
 
 **API Details** (from official cookbook):
 - File upload: `client.files.upload(file, check=True)` → returns `file_id`
@@ -75,13 +75,20 @@
 - ✅ Updated model list to Together models
 - ✅ ESLint passes (0 errors)
 
+**API Test Results** (2025-11-13):
+- ❌ File upload failing: `500 {"message":"Missing required fields"}`
+- Tried: Blob with `application/jsonl` type, `purpose: 'fine-tune'`
+- Issue: Together's file upload endpoint format differs from OpenAI
+- Python SDK uses simple `file="path"` but HTTP format undocumented
+- Need: Together's raw HTTP file upload documentation
+
 **Supported Models**:
 - meta-llama/Meta-Llama-3.1-8B-Instruct-Reference (default)
 - meta-llama/Meta-Llama-3.1-70B-Instruct-Reference
 - mistralai/Mixtral-8x7B-Instruct-v0.1
 - Qwen/Qwen2.5-7B-Instruct
 
-**Next Step**: Test with real TOGETHER_API_KEY
+**Next Step**: Research Together's HTTP file upload format or use Python SDK as reference
 
 ---
 
@@ -121,7 +128,7 @@
 | Provider | Remote API | Status | Adapter | Test | Handle Pattern | Compilation |
 |----------|------------|--------|---------|------|----------------|-------------|
 | OpenAI | ✅ Yes | ✅ Working | Complete | ✅ Passed | ✅ Refactored | ✅ 0 errors |
-| Together | ✅ Yes | ⏳ Untested | ✅ Complete | ❌ Not run | ✅ Implemented | ✅ 0 errors |
+| Together | ✅ Yes | ⚠️ API Issue | ✅ Complete | ⚠️ Upload fails | ✅ Implemented | ✅ 0 errors |
 | Fireworks | ✅ Yes | ⏳ Untested | Missing | ❌ Not run | ❌ Not implemented | N/A |
 | DeepSeek | ❌ No | N/A | Stub | N/A | N/A (local only) | N/A |
 

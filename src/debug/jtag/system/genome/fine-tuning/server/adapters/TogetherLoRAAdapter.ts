@@ -339,16 +339,18 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     // Upload dataset via Together API
     // POST https://api.together.xyz/v1/files
     const fileContent = await fs.promises.readFile(datasetPath, 'utf-8');
-    const blob = new Blob([fileContent], { type: 'application/json' });
+    const blob = new Blob([fileContent], { type: 'application/jsonl' });
 
     const formData = new FormData();
-    formData.append('file', blob, 'training.jsonl');
-    formData.append('purpose', 'fine-tune');
+    // Together API expects specific field names
+    formData.append('file', blob, path.basename(datasetPath));
+    formData.append('purpose', 'fine-tune'); // Must be 'fine-tune' with hyphen
 
     const response = await fetch('https://api.together.xyz/v1/files', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`
+        // Don't set Content-Type - let FormData set it with boundary
       },
       body: formData
     });
