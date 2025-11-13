@@ -208,7 +208,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
 
     try {
       const response = await fetch(
-        `https://api.fireworks.ai/v1/accounts/${accountId}/fineTuningJobs/${providerJobId}`,
+        `https://api.fireworks.ai/v1/accounts/${accountId}/supervisedFineTuningJobs/${providerJobId}`,
         {
           method: 'GET',
           headers: {
@@ -378,9 +378,10 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          name: datasetId,
-          displayName: `${request.personaName} - ${request.traitType}`,
-          description: `Training dataset for ${request.personaName} (${request.traitType} trait)`
+          datasetId: datasetId,
+          dataset: {
+            userUploaded: {}
+          }
         })
       }
     );
@@ -390,8 +391,9 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       throw new Error(`Dataset creation failed: ${response.status} ${error}`);
     }
 
-    const data: { name: string } = await response.json() as { name: string };
-    return data.name; // Dataset ID
+    const data = await response.json() as any;
+    // API returns the datasetId we sent in
+    return datasetId;
   }
 
   /**
@@ -489,9 +491,9 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
 
     // Create fine-tuning job
-    // POST https://api.fireworks.ai/v1/accounts/{account_id}/fineTuningJobs
+    // POST https://api.fireworks.ai/v1/accounts/{account_id}/supervisedFineTuningJobs
     const response = await fetch(
-      `https://api.fireworks.ai/v1/accounts/${accountId}/fineTuningJobs`,
+      `https://api.fireworks.ai/v1/accounts/${accountId}/supervisedFineTuningJobs`,
       {
         method: 'POST',
         headers: {
@@ -514,7 +516,8 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     }
 
     const data: { name: string } = await response.json() as { name: string };
-    return data.name; // Job ID
+    // Extract just the job ID from the full path (e.g., "accounts/continuum/supervisedFineTuningJobs/zupjmr19" -> "zupjmr19")
+    return data.name.split('/').pop() ?? data.name;
   }
 
   /**
