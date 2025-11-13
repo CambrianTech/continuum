@@ -92,19 +92,41 @@
 
 ---
 
-## ⏳ Fireworks - NOT TESTED
+## ✅ Fireworks - IMPLEMENTED
 
-**Status**: Adapter not implemented
+**Status**: ✅ Adapter implemented, ready for testing
 
-**Known from research**:
-- Different API structure (dataset name reference, not file upload)
-- Requires account ID in URL path
-- May need dataset pre-upload
+**API Details** (from official documentation):
+- Two-step process: Create dataset record → Upload file
+- Dataset reference: `accounts/{account_id}/datasets/{dataset_id}`
+- Job creation: `POST /v1/accounts/{account_id}/fineTuningJobs`
+- Status check: `GET /v1/accounts/{account_id}/fineTuningJobs/{job_id}`
+- API base: `https://api.fireworks.ai/v1`
 
-**Next Steps**:
-1. Research dataset upload strategy
-2. Implement adapter
-3. Test with real API
+**Key Differences from Others**:
+1. Two-step dataset upload (create record first, then upload)
+2. Requires `FIREWORKS_ACCOUNT_ID` in addition to API key
+3. Dataset validation step (wait for READY status)
+4. **UNIQUE**: Can download trained model weights (.safetensors)!
+
+**Implementation** (Completed 2025-11-13):
+- File: `system/genome/fine-tuning/server/adapters/FireworksLoRAAdapter.ts`
+- ✅ Copied template from OpenAILoRAAdapter.ts
+- ✅ Implemented two-step dataset upload workflow
+- ✅ Added dataset validation polling
+- ✅ Uses proper temp file location (PATHS.MEDIA_TEMP)
+- ✅ ESLint passes (0 errors)
+- ✅ Registered in GenomeTrainServerCommand.ts
+
+**Supported Models**:
+- accounts/fireworks/models/llama-v3-8b-instruct
+- accounts/fireworks/models/llama-v3-70b-instruct
+- accounts/fireworks/models/llama-v3p1-8b-instruct (default)
+- accounts/fireworks/models/llama-v3p1-70b-instruct
+- accounts/fireworks/models/mixtral-8x7b-instruct
+- accounts/fireworks/models/qwen2-72b-instruct
+
+**Next Step**: Test with real FIREWORKS_API_KEY and FIREWORKS_ACCOUNT_ID
 
 ---
 

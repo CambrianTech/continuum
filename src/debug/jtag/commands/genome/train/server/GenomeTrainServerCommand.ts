@@ -22,6 +22,8 @@ import { PEFTLoRAAdapter } from '../../../../system/genome/fine-tuning/server/ad
 import { OllamaLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OllamaLoRAAdapter';
 import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
 import { OpenAILoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OpenAILoRAAdapter';
+import { TogetherLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/TogetherLoRAAdapter';
+import { FireworksLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/FireworksLoRAAdapter';
 import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
 import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
 
@@ -518,6 +520,10 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
         return new DeepSeekLoRAAdapter();
       case 'openai':
         return new OpenAILoRAAdapter();
+      case 'together':
+        return new TogetherLoRAAdapter();
+      case 'fireworks':
+        return new FireworksLoRAAdapter();
       case 'anthropic':
         return new AnthropicLoRAAdapter();
       default:

@@ -23,9 +23,9 @@ import type {
 } from '../../shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
+import { PATHS } from '../../../../../system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 
 // Declare globals (Node.js 18+ built-ins)
 declare const fetch: typeof globalThis.fetch;
@@ -304,7 +304,10 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
-    const tempPath = path.join(os.tmpdir(), `openai-training-${Date.now()}.jsonl`);
+    // Use .continuum/media/temp to avoid filling up primary drive
+    const tempDir = PATHS.MEDIA_TEMP;
+    await fs.promises.mkdir(tempDir, { recursive: true });
+    const tempPath = path.join(tempDir, `openai-training-${Date.now()}.jsonl`);
 
     // Convert dataset to JSONL format
     const lines = dataset.examples.map(example => {
