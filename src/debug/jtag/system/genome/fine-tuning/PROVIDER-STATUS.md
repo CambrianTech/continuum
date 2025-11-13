@@ -49,9 +49,9 @@
 
 ---
 
-## ⏳ Together AI - READY TO IMPLEMENT
+## ✅ Together AI - IMPLEMENTED
 
-**Status**: API researched, 95% code reuse from OpenAI adapter
+**Status**: ✅ Adapter complete, ready for testing
 
 **API Details** (from official cookbook):
 - File upload: `client.files.upload(file, check=True)` → returns `file_id`
@@ -65,15 +65,23 @@
 3. Output format: `account/base-model:suffix:job-id`
 4. Supports `train_on_inputs`, `warmup_ratio`, `n_checkpoints` parameters
 
-**Implementation Plan**:
-1. Copy `OpenAILoRAAdapter.ts` → `TogetherLoRAAdapter.ts`
-2. Change API base URL to `https://api.together.xyz/v1`
-3. Add `lora: true` to create job payload
-4. Map `output_name` → `modelId` in `_queryStatus()`
-5. Use `TOGETHER_API_KEY` from SecretManager
-6. Test with Llama-3.1-8B model
+**Implementation** (Completed 2025-11-13):
+- File: `system/genome/fine-tuning/server/adapters/TogetherLoRAAdapter.ts`
+- ✅ Copied from OpenAILoRAAdapter.ts
+- ✅ Changed API base URL to `https://api.together.xyz/v1`
+- ✅ Added `lora: true` parameter to job creation
+- ✅ Mapped `output_name` → `modelId` in `_queryStatus()`
+- ✅ Uses `TOGETHER_API_KEY` from SecretManager
+- ✅ Updated model list to Together models
+- ✅ ESLint passes (0 errors)
 
-**Supported Models**: meta-llama/Meta-Llama-3.1-8B-Instruct-Reference, and others
+**Supported Models**:
+- meta-llama/Meta-Llama-3.1-8B-Instruct-Reference (default)
+- meta-llama/Meta-Llama-3.1-70B-Instruct-Reference
+- mistralai/Mixtral-8x7B-Instruct-v0.1
+- Qwen/Qwen2.5-7B-Instruct
+
+**Next Step**: Test with real TOGETHER_API_KEY
 
 ---
 
@@ -113,7 +121,7 @@
 | Provider | Remote API | Status | Adapter | Test | Handle Pattern | Compilation |
 |----------|------------|--------|---------|------|----------------|-------------|
 | OpenAI | ✅ Yes | ✅ Working | Complete | ✅ Passed | ✅ Refactored | ✅ 0 errors |
-| Together | ✅ Yes | ⏳ Untested | Missing | ❌ Not run | ❌ Not implemented | N/A |
+| Together | ✅ Yes | ⏳ Untested | ✅ Complete | ❌ Not run | ✅ Implemented | ✅ 0 errors |
 | Fireworks | ✅ Yes | ⏳ Untested | Missing | ❌ Not run | ❌ Not implemented | N/A |
 | DeepSeek | ❌ No | N/A | Stub | N/A | N/A (local only) | N/A |
 
@@ -123,8 +131,9 @@
 
 **Priority 1**: ✅ COMPLETE - Refactor OpenAI adapter to use handle pattern
 **Priority 2**: ✅ COMPLETE - Test refactored OpenAI adapter (created Job ID: ftjob-H4hhg5fRQLT51DTesUsozTjy)
-**Priority 3**: Implement Together adapter (95% code reuse from OpenAI)
-**Priority 4**: Research Fireworks dataset upload
-**Priority 5**: Document DeepSeek as local-only
+**Priority 3**: ✅ COMPLETE - Implement Together adapter (completed 2025-11-13)
+**Priority 4**: Test Together adapter with real API key
+**Priority 5**: Research Fireworks dataset upload
+**Priority 6**: Document DeepSeek as local-only
 
 **Refactoring Proven**: The async handle pattern successfully created a real OpenAI training job in 6.7 seconds (vs 10+ minutes with old blocking code). Ready for production use!
