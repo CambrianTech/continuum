@@ -27,6 +27,8 @@ import type { AdapterTestParams, AdapterTestResult, AllAdaptersTestResult } from
 import type { EmbeddingGenerateParams, EmbeddingGenerateResult } from '../../../../commands/ai/embedding/generate/shared/EmbeddingGenerateTypes';
 import type { IndexCreateParams, IndexCreateResult } from '../../../../commands/ai/rag/index/create/shared/IndexCreateTypes';
 import type { RagQueryOpenParams, RagQueryOpenResult } from '../../../../commands/ai/rag/query-open/shared/RagQueryOpenTypes';
+import type { RagQueryFetchParams, RagQueryFetchResult } from '../../../../commands/ai/rag/query-fetch/shared/RagQueryFetchTypes';
+import type { RagQueryCloseParams, RagQueryCloseResult } from '../../../../commands/ai/rag/query-close/shared/RagQueryCloseTypes';
 
 /**
  * Command Registry - Maps command names to their param/result types
@@ -104,6 +106,14 @@ export interface CommandRegistry {
   'ai/rag/query-open': {
     params: RagQueryOpenParams;
     result: RagQueryOpenResult;
+  };
+  'ai/rag/query-fetch': {
+    params: RagQueryFetchParams;
+    result: RagQueryFetchResult;
+  };
+  'ai/rag/query-close': {
+    params: RagQueryCloseParams;
+    result: RagQueryCloseResult;
   };
   // Add more commands here...
 }

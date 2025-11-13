@@ -9,6 +9,7 @@ import type { JTAGContext } from '../../../../../../system/core/types/JTAGTypes'
 import type { ICommandDaemon } from '../../../../../../daemons/command-daemon/shared/CommandBase';
 import type { IndexCreateParams, IndexCreateResult } from '../shared/IndexCreateTypes';
 import type { DataCreateResult } from '../../../../../data/create/shared/DataCreateTypes';
+import type { EmbeddingGenerateResult } from '../../../../embedding/generate/shared/EmbeddingGenerateTypes';
 import { CodeIndexEntity } from '../../../../../../system/data/entities/CodeIndexEntity';
 import { Commands } from '../../../../../../system/core/shared/Commands';
 
@@ -23,6 +24,34 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
     try {
       console.log(`📇 Creating code index entry for ${params.filePath}`);
 
+      // Generate embedding if not provided
+      let embedding = params.embedding;
+      const embeddingModel = params.embeddingModel || 'nomic-embed-text';
+
+      if (!embedding) {
+        console.log(`🧬 Generating embedding for content (${params.content.length} chars)`);
+        const embeddingResult = await Commands.execute('ai/embedding/generate', {
+          input: params.content,
+          model: embeddingModel,
+          context: this.context,
+          sessionId: params.sessionId
+        }) as EmbeddingGenerateResult;
+
+        if (!embeddingResult.success || !embeddingResult.embeddings || embeddingResult.embeddings.length === 0) {
+          console.error(`❌ Failed to generate embedding: ${embeddingResult.error || 'Unknown error'}`);
+          return {
+            success: false,
+            error: `Failed to generate embedding: ${embeddingResult.error || 'Unknown error'}`,
+            indexed: false,
+            context: this.context,
+            sessionId: params.sessionId
+          };
+        }
+
+        embedding = embeddingResult.embeddings[0];
+        console.log(`✅ Generated embedding: ${embedding.length} dimensions`);
+      }
+
       // Create CodeIndexEntity from params
       const entry = new CodeIndexEntity();
       entry.filePath = params.filePath;
@@ -33,8 +62,8 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
       entry.endLine = params.endLine;
       entry.exportType = params.exportType;
       entry.exportName = params.exportName;
-      entry.embedding = params.embedding;
-      entry.embeddingModel = params.embeddingModel;
+      entry.embedding = embedding;
+      entry.embeddingModel = embeddingModel;
       entry.imports = params.imports;
       entry.exports = params.exports;
       entry.tags = params.tags;
@@ -78,8 +107,8 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
       }
 
       console.log(`✅ Created code index entry ${result.data.id} in ${durationMs}ms`);
-      if (params.embedding) {
-        console.log(`   Stored embedding: ${params.embedding.length} dimensions (${params.embeddingModel})`);
+      if (embedding) {
+        console.log(`   Stored embedding: ${embedding.length} dimensions (${embeddingModel})`);
       }
 
       return {
