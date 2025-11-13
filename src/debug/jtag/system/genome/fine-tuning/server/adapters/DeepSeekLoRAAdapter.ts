@@ -22,8 +22,10 @@ import type {
   LoRATrainingResult,
   FineTuningCapabilities,
   FineTuningStrategy,
-  TrainingDataset
+  TrainingDataset,
+  TrainingStatus
 } from '../../shared/FineTuningTypes';
+import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -179,6 +181,14 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  /**
+   * Check training status - NOT IMPLEMENTED YET
+   * TODO: Implement async handle pattern for this adapter
+   */
+  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
+    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
   }
 
   /**

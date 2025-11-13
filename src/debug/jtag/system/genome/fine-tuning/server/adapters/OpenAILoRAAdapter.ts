@@ -1,49 +1,55 @@
 /**
- * OpenAILoRAAdapter - Remote API fine-tuning adapter (Phase 7.1)
- *
- * Philosophy: "Start simple, expand systematically"
- * - Phase 7.1: Basic OpenAI API integration
- * - Phase 7.2+: Advanced features, monitoring, optimization
+ * OpenAILoRAAdapter - Remote API fine-tuning adapter
  *
  * REMOTE API STRATEGY:
  * - Uses OpenAI API for cloud-based LoRA training
- * - Established provider with strong documentation
  * - No local GPU required
- * - Higher cost than DeepSeek ($15/1M input vs $0.55/1M)
- * - Supports GPT-3.5-turbo, GPT-4, GPT-4-turbo models
+ * - Supports GPT-3.5-turbo, GPT-4, GPT-4o, GPT-4o-mini models
+ *
+ * Implementation proven in /tmp/prototype-finetune-all.ts
+ * Successfully created model: ft:gpt-4o-mini-2024-07-18:personal::CbScXmaV
  *
  * SERVER-ONLY: Uses Node.js for HTTP requests and file system
  */
 
-import { BaseLoRATrainer } from '../../shared/BaseLoRATrainer';
+import { BaseLoRATrainerServer } from '../BaseLoRATrainerServer';
 import type {
   LoRATrainingRequest,
-  LoRATrainingResult,
   FineTuningCapabilities,
-  FineTuningStrategy
+  FineTuningStrategy,
+  TrainingDataset,
+  TrainingHandle,
+  TrainingStatus
 } from '../../shared/FineTuningTypes';
+import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { getSecret } from '../../../../../system/secrets/SecretManager';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+// Declare globals (Node.js 18+ built-ins)
+declare const fetch: typeof globalThis.fetch;
+/* eslint-disable @typescript-eslint/naming-convention */
+declare const FormData: typeof globalThis.FormData;
+declare const Blob: typeof globalThis.Blob;
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /**
  * OpenAI LoRA Adapter - Remote API training with OpenAI
  *
- * Current Status: MVP stub (interface only)
- * Full Implementation: Phase 7.1+
+ * Status: ✅ REFACTORED with async handle pattern
+ * Architecture: Implements _startTraining() and _queryStatus() primitives
  */
-export class OpenAILoRAAdapter extends BaseLoRATrainer {
+export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'openai';
 
   /**
    * Check if OpenAI supports fine-tuning
-   *
-   * MVP: Returns false (not implemented yet)
-   * Phase 7.1+: Check if API key configured
+   * Requires OPENAI_API_KEY in SecretManager
    */
   supportsFineTuning(): boolean {
-    // MVP: Not yet implemented
-    return false;
-
-    // TODO Phase 7.1: Check for OpenAI API key
-    // return !!process.env.OPENAI_API_KEY;
+    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+    return !!apiKey;
   }
 
   /**
@@ -52,10 +58,10 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
    * OpenAI capabilities (remote API training):
    * - LoRA rank: Fixed by provider (not directly configurable)
    * - Epochs: 1-50 (default: 3)
-   * - Higher cost: $15/1M input tokens, $60/1M output (27x more than DeepSeek)
    * - No GPU required (cloud-based)
    * - Requires internet connection
-   * - Supports GPT-3.5-turbo, GPT-4, GPT-4-turbo models
+   * - Minimum 10 training examples required
+   * - Supports GPT-3.5-turbo, GPT-4, GPT-4o, GPT-4o-mini models
    */
   getFineTuningCapabilities(): FineTuningCapabilities {
     return {
@@ -81,7 +87,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
       maxBatchSize: 32,
       defaultBatchSize: 4,
 
-      // Cost (higher than DeepSeek - 27x more expensive)
+      // Cost (per example)
       // Average example = ~100 tokens input + ~50 tokens output = ~$0.00405 per example
       costPerExample: 0.00405,
 
@@ -94,7 +100,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
         'gpt-4',
         'gpt-4-turbo',
         'gpt-4o',
-        'gpt-4o-mini'
+        'gpt-4o-mini-2024-07-18'
       ],
 
       // Requirements
@@ -103,28 +109,145 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
     };
   }
 
+  // ==================== ASYNC PRIMITIVES ====================
+
   /**
-   * Train LoRA adapter
+   * Start training - Returns handle immediately (FAST!)
    *
-   * MVP: Throws "not implemented" error
-   * Phase 7.1+: Upload dataset to OpenAI API and monitor training job
+   * Steps:
+   * 1. Export dataset to JSONL
+   * 2. Upload to OpenAI
+   * 3. Create fine-tuning job
+   * 4. Return handle with jobId and fileId
    *
-   * @param request Training configuration
-   * @returns Training result with model ID
+   * NO BLOCKING - Returns in seconds, not minutes!
    */
-  async trainLoRA(request: LoRATrainingRequest): Promise<LoRATrainingResult> {
-    // Validate request first
-    this.validateRequest(request);
+  /* eslint-disable @typescript-eslint/naming-convention */
+  protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
+  /* eslint-enable @typescript-eslint/naming-convention */
+    console.log('🚀 OpenAI: Starting training job (async pattern)...');
 
-    // MVP: Not implemented yet
-    throw new Error(
-      'OpenAI LoRA training not implemented yet (Phase 7.0 MVP). ' +
-      'Full implementation in Phase 7.1+ will use OpenAI API for cloud training.'
-    );
+    // 1. Export dataset to JSONL
+    console.log('   Exporting dataset...');
+    const datasetPath = await this.exportDatasetToJSONL(request.dataset);
+    console.log(`   Dataset exported: ${datasetPath}`);
 
-    // TODO Phase 7.1: Implement OpenAI API training
-    // const result = await this.trainWithOpenAIAPI(request);
-    // return result;
+    // 2. Upload dataset to OpenAI
+    console.log('   Uploading to OpenAI...');
+    const fileId = await this.uploadDataset(datasetPath);
+    console.log(`   File ID: ${fileId}`);
+
+    // 3. Create fine-tuning job
+    console.log('   Creating training job...');
+    const jobId = await this.createFineTuningJob(request, fileId);
+    console.log(`   Job ID: ${jobId}`);
+
+    // 4. Clean up temp file immediately
+    await this.cleanupTempFiles(datasetPath);
+
+    // 5. Return handle (training continues on OpenAI servers!)
+    return {
+      jobId,
+      fileId,
+      metadata: {
+        baseModel: request.baseModel,
+        epochs: request.epochs ?? 3
+      }
+    };
+  }
+
+  /**
+   * Query training status - Returns current status (FAST!)
+   *
+   * Steps:
+   * 1. Query OpenAI API for job status
+   * 2. Map OpenAI status to our status enum
+   * 3. Return current status
+   *
+   * NO BLOCKING - Returns in < 5 seconds!
+   */
+  /* eslint-disable @typescript-eslint/naming-convention */
+  protected async _queryStatus(
+    _sessionId: UUID,
+    providerJobId: string,
+    _metadata: Record<string, unknown>
+  ): Promise<TrainingStatus> {
+  /* eslint-enable @typescript-eslint/naming-convention */
+    console.log(`🔍 OpenAI: Querying job status: ${providerJobId}`);
+
+    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+    if (!apiKey) {
+      return {
+        status: 'failed',
+        error: 'OPENAI_API_KEY not configured'
+      };
+    }
+
+    try {
+      const response = await fetch(
+        `https://api.openai.com/v1/fine_tuning/jobs/${providerJobId}`,
+        {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return {
+          status: 'failed',
+          error: `OpenAI API error: ${response.status} - ${errorText}`
+        };
+      }
+
+      const job = await response.json();
+
+      // Map OpenAI status to our status
+      const status = this.mapOpenAIStatus(job.status);
+
+      return {
+        status,
+        modelId: job.fine_tuned_model ?? undefined,
+        error: job.error?.message,
+        metadata: {
+          openaiStatus: job.status,
+          createdAt: job.created_at,
+          finishedAt: job.finished_at,
+          trainedTokens: job.trained_tokens
+        }
+      };
+    } catch (error) {
+      console.error(`❌ OpenAI: Failed to query status:`, error);
+      return {
+        status: 'failed',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Map OpenAI status to our status enum
+   */
+  private mapOpenAIStatus(openaiStatus: string): 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' {
+    switch (openaiStatus) {
+      case 'validating_files':
+      case 'queued':
+        return 'pending';
+      case 'running':
+        return 'running';
+      case 'succeeded':
+        return 'completed';
+      case 'failed':
+        return 'failed';
+      case 'cancelled':
+        return 'cancelled';
+      default:
+        console.warn(`Unknown OpenAI status: ${openaiStatus}, treating as running`);
+        return 'running';
+    }
   }
 
   /**
@@ -174,93 +297,51 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
     return exampleCount * epochs * 800; // 800ms per example per epoch
   }
 
-  // ==================== FUTURE IMPLEMENTATION (Phase 7.1+) ====================
+  // ==================== IMPLEMENTATION ====================
 
   /**
-   * TODO Phase 7.1: Train LoRA adapter with OpenAI API
-   *
-   * Implementation steps:
-   * 1. Export dataset to JSONL
-   * 2. Upload dataset to OpenAI API
-   * 3. Create fine-tuning job via API
-   * 4. Poll job status until complete
-   * 5. Get trained model ID
-   * 6. Save adapter metadata
-   * 7. Return result with model ID and metrics
-   *
+   * Export dataset to JSONL file
    * @private
    */
-  /*
-  private async trainWithOpenAIAPI(request: LoRATrainingRequest): Promise<LoRATrainingResult> {
-    const startTime = Date.now();
-
-    // 1. Export dataset to JSONL
-    const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-
-    // 2. Upload dataset to OpenAI
-    const fileId = await this.uploadDataset(datasetPath);
-
-    // 3. Create fine-tuning job
-    const jobId = await this.createFineTuningJob(request, fileId);
-
-    // 4. Monitor job progress
-    const metrics = await this.monitorTrainingJob(jobId);
-
-    // 5. Get trained model ID
-    const modelId = await this.getTrainedModelId(jobId);
-
-    // 6. Save adapter metadata
-    await this.saveAdapterMetadata(request, modelId, metrics);
-
-    // 7. Clean up temp files
-    await this.cleanupTempFiles(datasetPath);
-
-    const trainingTime = Date.now() - startTime;
-
-    return {
-      success: true,
-      modelId,
-      metrics: {
-        trainingTime,
-        finalLoss: metrics.finalLoss,
-        examplesProcessed: request.dataset.examples.length,
-        epochs: request.epochs || 3
-      },
-      timestamp: Date.now()
-    };
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Export dataset to JSONL file
-   *
-   * @private
-   */
-  /*
   private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     const tempPath = path.join(os.tmpdir(), `openai-training-${Date.now()}.jsonl`);
-    const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
+
+    // Convert dataset to JSONL format
+    const lines = dataset.examples.map(example => {
+      if ('messages' in example) {
+        return JSON.stringify({ messages: example.messages });
+      } else {
+        return JSON.stringify({ messages: example });
+      }
+    });
+
+    const jsonl = lines.join('\n');
     await fs.promises.writeFile(tempPath, jsonl, 'utf-8');
+
     return tempPath;
   }
-  */
 
   /**
-   * TODO Phase 7.1: Upload dataset to OpenAI API
-   *
+   * Upload dataset to OpenAI API
    * @private
    */
-  /*
   private async uploadDataset(datasetPath: string): Promise<string> {
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
     if (!apiKey) {
-      throw new Error('OPENAI_API_KEY not configured');
+      throw new Error(
+        'OPENAI_API_KEY not configured. ' +
+        'Please add it to ~/.continuum/config.env:\n' +
+        'OPENAI_API_KEY=your-key-here'
+      );
     }
 
     // Upload dataset via OpenAI API
     // POST https://api.openai.com/v1/files
+    const fileContent = await fs.promises.readFile(datasetPath, 'utf-8');
+    const blob = new Blob([fileContent], { type: 'application/json' });
+
     const formData = new FormData();
-    formData.append('file', fs.createReadStream(datasetPath));
+    formData.append('file', blob, 'training.jsonl');
     formData.append('purpose', 'fine-tune');
 
     const response = await fetch('https://api.openai.com/v1/files', {
@@ -271,22 +352,27 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
       body: formData
     });
 
-    const data = await response.json();
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`File upload failed: ${response.status} ${error}`);
+    }
+
+    const data: { id: string } = await response.json() as { id: string };
     return data.id; // File ID
   }
-  */
 
   /**
-   * TODO Phase 7.1: Create fine-tuning job via API
-   *
+   * Create fine-tuning job via API
    * @private
    */
-  /*
   private async createFineTuningJob(
     request: LoRATrainingRequest,
     fileId: string
   ): Promise<string> {
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+
+    const capabilities = this.getFineTuningCapabilities();
+    const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
 
     // Create fine-tuning job
     // POST https://api.openai.com/v1/fine_tuning/jobs
@@ -298,118 +384,139 @@ export class OpenAILoRAAdapter extends BaseLoRATrainer {
       },
       body: JSON.stringify({
         training_file: fileId,
-        model: request.baseModel,
+        model: request.baseModel ?? 'gpt-4o-mini-2024-07-18',
         hyperparameters: {
-          n_epochs: request.epochs || 3,
-          learning_rate_multiplier: request.learningRate || 0.0001,
-          batch_size: request.batchSize || 4
+          n_epochs: epochs
         }
       })
     });
 
-    const data = await response.json();
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Job creation failed: ${response.status} ${error}`);
+    }
+
+    const data: { id: string } = await response.json() as { id: string };
     return data.id; // Job ID
   }
-  */
 
   /**
-   * TODO Phase 7.1: Monitor training job until complete
-   *
+   * Monitor training job until complete
+   * Returns the fine-tuned model ID
    * @private
    */
-  /*
-  private async monitorTrainingJob(jobId: string): Promise<TrainingMetrics> {
-    const apiKey = process.env.OPENAI_API_KEY;
+  private async monitorTrainingJob(jobId: string): Promise<string> {
+    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
 
-    // Poll job status every 10 seconds
-    while (true) {
-      const response = await fetch(`https://api.openai.com/v1/fine_tuning/jobs/${jobId}`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
+    const maxAttempts = 120; // 10 minutes max (5s * 120 = 600s)
+    let attempts = 0;
 
-      const job = await response.json();
+    // Poll job status every 5 seconds
+    while (attempts < maxAttempts) {
+      attempts++;
 
-      if (job.status === 'succeeded') {
-        return {
-          finalLoss: job.trained_tokens ? 0.5 : 1.0, // OpenAI doesn't expose loss
-          trainingSteps: job.trained_tokens,
-          examplesProcessed: job.training_file_count
+      try {
+        const response = await fetch(`https://api.openai.com/v1/fine_tuning/jobs/${jobId}`, {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+
+        if (!response.ok) {
+          console.warn(`   Poll attempt ${attempts}: HTTP ${response.status}`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        }
+
+        const job: {
+          status: string;
+          fine_tuned_model?: string;
+          error?: { message: string };
+        } = await response.json() as {
+          status: string;
+          fine_tuned_model?: string;
+          error?: { message: string };
         };
-      } else if (job.status === 'failed') {
-        throw new Error(`Training failed: ${job.error}`);
+
+        console.log(`   Status: ${job.status} (attempt ${attempts}/${maxAttempts})`);
+
+        if (job.status === 'succeeded') {
+          if (!job.fine_tuned_model) {
+            throw new Error('Training succeeded but no model ID returned');
+          }
+          return job.fine_tuned_model;
+        } else if (job.status === 'failed') {
+          const errorMsg = job.error?.message ?? 'unknown error';
+          throw new Error(`Training failed: ${errorMsg}`);
+        }
+
+        // Wait 5 seconds before next poll
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+      } catch (error) {
+        // Socket timeout or network error - job continues on server
+        if (error instanceof Error && error.message.includes('fetch failed')) {
+          console.warn(`   Socket error (attempt ${attempts}), job continues on server...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        }
+        throw error;
       }
-
-      // Wait 10 seconds before next poll
-      await new Promise(resolve => setTimeout(resolve, 10000));
     }
+
+    throw new Error(`Training timeout after ${maxAttempts} attempts (10 minutes)`);
   }
-  */
 
   /**
-   * TODO Phase 7.1: Get trained model ID
-   *
-   * @private
+   * Save adapter metadata to permanent storage
+   * @protected
    */
-  /*
-  private async getTrainedModelId(jobId: string): Promise<string> {
-    const apiKey = process.env.OPENAI_API_KEY;
-
-    const response = await fetch(`https://api.openai.com/v1/fine_tuning/jobs/${jobId}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` }
-    });
-
-    const job = await response.json();
-    return job.fine_tuned_model; // Model ID for inference
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Save adapter metadata
-   *
-   * @private
-   */
-  /*
-  private async saveAdapterMetadata(
+  protected async saveAdapterMetadata(
     request: LoRATrainingRequest,
     modelId: string,
-    metrics: TrainingMetrics
-  ): Promise<void> {
-    const metadataPath = path.join(
-      '.continuum/genome/adapters',
-      `${request.baseModel}-${request.traitType}-${Date.now()}.json`
-    );
+    fileId: string,
+    jobId: string,
+    outputPath?: string
+  ): Promise<string> {
+    const timestamp = Date.now();
+    const baseModelSafe = (request.baseModel ?? 'gpt-4o-mini').replace(/[:/]/g, '-');
+    const adapterFilename = `${baseModelSafe}-${request.traitType}-${timestamp}.json`;
 
-    await fs.promises.mkdir(path.dirname(metadataPath), { recursive: true });
+    // Use provided output path or default
+    const permanentDir = outputPath ?? path.join('.continuum', 'genome', 'adapters');
 
-    await fs.promises.writeFile(
-      metadataPath,
-      JSON.stringify({
-        modelId,
-        baseModel: request.baseModel,
-        traitType: request.traitType,
-        personaId: request.personaId,
-        personaName: request.personaName,
-        metrics,
-        createdAt: Date.now()
-      }, null, 2)
-    );
+    // Ensure permanent directory exists
+    await fs.promises.mkdir(permanentDir, { recursive: true });
+
+    const destPath = path.join(permanentDir, adapterFilename);
+
+    // Save adapter metadata (not the model itself - that's on OpenAI)
+    const metadata = {
+      providerId: this.providerId,
+      modelId,
+      baseModel: request.baseModel ?? 'gpt-4o-mini-2024-07-18',
+      traitType: request.traitType,
+      personaId: request.personaId,
+      personaName: request.personaName,
+      fileId,
+      jobId,
+      examplesCount: request.dataset.examples.length,
+      epochs: request.epochs ?? 3,
+      createdAt: timestamp
+    };
+
+    await fs.promises.writeFile(destPath, JSON.stringify(metadata, null, 2), 'utf-8');
+
+    return destPath;
   }
-  */
 
   /**
-   * TODO Phase 7.1: Clean up temporary files
-   *
-   * @private
+   * Clean up temporary training files
+   * @protected
    */
-  /*
-  private async cleanupTempFiles(...paths: string[]): Promise<void> {
-    for (const filePath of paths) {
-      try {
-        await fs.promises.unlink(filePath);
-      } catch (error) {
-        console.warn(`Failed to clean up temp file: ${filePath}`, error);
-      }
+  protected async cleanupTempFiles(datasetPath: string): Promise<void> {
+    try {
+      await fs.promises.unlink(datasetPath);
+    } catch (error) {
+      console.warn(`   Failed to clean up temp file: ${datasetPath}`, error);
     }
   }
-  */
 }

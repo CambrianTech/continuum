@@ -18,8 +18,11 @@ import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
-  FineTuningStrategy
+  FineTuningStrategy,
+  TrainingHandle,
+  TrainingStatus
 } from './FineTuningTypes';
+import type { UUID } from '../../../core/types/CrossPlatformUUID';
 
 /**
  * LoRA Trainer Interface
@@ -39,17 +42,34 @@ export interface LoRATrainer {
   getFineTuningCapabilities(): FineTuningCapabilities;
 
   /**
-   * Train a LoRA adapter
+   * Train a LoRA adapter - Returns immediately with session ID
+   *
+   * ASYNC ARCHITECTURE:
+   * - This method returns immediately (no blocking!)
+   * - Returns a session ID for tracking
+   * - Use checkStatus(sessionId) to query progress
+   * - Training continues on provider's servers/processes
    *
    * Implementation is provider-specific:
-   * - Ollama: Call llama.cpp locally
-   * - OpenAI: Upload dataset to API, create fine-tuning job
-   * - DeepSeek: Upload dataset to API, create fine-tuning job
+   * - Ollama: Call llama.cpp locally, return process handle
+   * - OpenAI: Upload dataset to API, create fine-tuning job, return job ID
+   * - DeepSeek: Upload dataset to API, create fine-tuning job, return job ID
    *
    * @param request Training configuration
-   * @returns Training result with adapter location and metrics
+   * @returns Training result with session ID and handle (returns immediately!)
    */
   trainLoRA(request: LoRATrainingRequest): Promise<LoRATrainingResult>;
+
+  /**
+   * Check training status for a session
+   *
+   * Fast query that returns current training status.
+   * Can be called anytime, even days after training started.
+   *
+   * @param sessionId Session ID returned by trainLoRA()
+   * @returns Current training status
+   */
+  checkStatus(sessionId: UUID): Promise<TrainingStatus>;
 
   /**
    * Get training strategy (local vs remote API)
@@ -94,6 +114,11 @@ export abstract class BaseLoRATrainer implements LoRATrainer {
    * Train LoRA adapter (provider-specific implementation)
    */
   abstract trainLoRA(request: LoRATrainingRequest): Promise<LoRATrainingResult>;
+
+  /**
+   * Check training status for a session
+   */
+  abstract checkStatus(sessionId: UUID): Promise<TrainingStatus>;
 
   /**
    * Get training strategy
