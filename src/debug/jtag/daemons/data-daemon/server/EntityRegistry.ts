@@ -68,6 +68,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(TrainingDatasetEntity.collection, TrainingDatasetEntity);
   registerEntity(TrainingExampleEntity.collection, TrainingExampleEntity);
   registerEntity(CoordinationDecisionEntity.collection, CoordinationDecisionEntity);
+  registerEntity(CodeIndexEntity.collection, CodeIndexEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }
