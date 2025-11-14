@@ -64,7 +64,8 @@ export class AnthropicAdapter implements AIProviderAdapter {
 
     const startTime = Date.now();
     const requestId = request.requestId || `req-${Date.now()}`;
-    const model = request.model || 'claude-3-5-sonnet-20241022';
+    // Use Claude 3.5 Sonnet v2 (updated January 2025)
+    const model = request.model || 'claude-3-5-sonnet-20250122';
 
     try {
       // Convert messages to Anthropic format
@@ -126,8 +127,19 @@ export class AnthropicAdapter implements AIProviderAdapter {
   async getAvailableModels(): Promise<ModelInfo[]> {
     return [
       {
+        id: 'claude-3-5-sonnet-20250122',
+        name: 'Claude 3.5 Sonnet v2',
+        provider: 'anthropic',
+        capabilities: ['text-generation', 'chat', 'multimodal'],
+        contextWindow: 200000,
+        maxOutputTokens: 8192,
+        costPer1kTokens: { input: 0.003, output: 0.015 },
+        supportsStreaming: true,
+        supportsFunctions: false,
+      },
+      {
         id: 'claude-3-5-sonnet-20241022',
-        name: 'Claude 3.5 Sonnet',
+        name: 'Claude 3.5 Sonnet (Legacy)',
         provider: 'anthropic',
         capabilities: ['text-generation', 'chat', 'multimodal'],
         contextWindow: 200000,
