@@ -186,7 +186,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
 
     try {
       const response = await fetch(
-        `https://api.together.xyz/v1/fine_tuning/jobs/${providerJobId}`,
+        `https://api.together.xyz/v1/fine-tunes/${providerJobId}`,
         {
           method: 'GET',
           headers: {
@@ -340,16 +340,18 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     }
 
     // Upload dataset via Together API
-    // POST https://api.together.xyz/v1/files
+    // POST https://api.together.xyz/v1/files/upload
+    // Together requires THREE fields: file, file_name, and purpose
     const fileContent = await fs.promises.readFile(datasetPath, 'utf-8');
     const blob = new Blob([fileContent], { type: 'application/jsonl' });
+    const filename = path.basename(datasetPath);
 
     const formData = new FormData();
-    // Together API expects specific field names
-    formData.append('file', blob, path.basename(datasetPath));
-    formData.append('purpose', 'fine-tune'); // Must be 'fine-tune' with hyphen
+    formData.append('file', blob, filename);
+    formData.append('file_name', filename);  // REQUIRED - Together needs this separately!
+    formData.append('purpose', 'fine-tune');
 
-    const response = await fetch('https://api.together.xyz/v1/files', {
+    const response = await fetch('https://api.together.xyz/v1/files/upload', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`
@@ -377,12 +379,10 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
   ): Promise<string> {
     const apiKey = getSecret('TOGETHER_API_KEY', 'TogetherLoRAAdapter');
 
-    const capabilities = this.getFineTuningCapabilities();
-    const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
-
     // Create fine-tuning job
-    // POST https://api.together.xyz/v1/fine_tuning/jobs
-    const response = await fetch('https://api.together.xyz/v1/fine_tuning/jobs', {
+    // POST https://api.together.xyz/v1/fine-tunes (NOT fine_tuning/jobs!)
+    // Together API uses simpler format than OpenAI
+    const response = await fetch('https://api.together.xyz/v1/fine-tunes', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -390,11 +390,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
       },
       body: JSON.stringify({
         training_file: fileId,
-        model: request.baseModel ?? 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference',
-        lora: true,
-        hyperparameters: {
-          n_epochs: epochs
-        }
+        model: request.baseModel ?? 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference'
       })
     });
 
