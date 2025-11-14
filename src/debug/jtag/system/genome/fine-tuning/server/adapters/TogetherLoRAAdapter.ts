@@ -24,7 +24,7 @@ import type {
   TrainingStatus
 } from '../../shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import { getSecret } from '../../../../../system/secrets/SecretManager';
+import { TogetherBaseConfig } from '../../../../../daemons/ai-provider-daemon/adapters/together/shared/TogetherBaseConfig';
 import { PATHS } from '../../../../../system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -41,17 +41,23 @@ declare const Blob: typeof globalThis.Blob;
  *
  * Status: ✅ REFACTORED with async handle pattern
  * Architecture: Implements _startTraining() and _queryStatus() primitives
+ * Architecture: Uses TogetherBaseConfig for shared state with inference adapter
  */
 export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'together';
+  private readonly config: TogetherBaseConfig;
+
+  constructor(apiKey?: string) {
+    super();
+    this.config = new TogetherBaseConfig(apiKey);
+  }
 
   /**
    * Check if Together supports fine-tuning
    * Requires TOGETHER_API_KEY in SecretManager
    */
   supportsFineTuning(): boolean {
-    const apiKey = getSecret('TOGETHER_API_KEY', 'TogetherLoRAAdapter');
-    return !!apiKey;
+    return this.config.hasApiKey();
   }
 
   /**
@@ -176,8 +182,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-enable @typescript-eslint/naming-convention */
     console.log(`🔍 Together: Querying job status: ${providerJobId}`);
 
-    const apiKey = getSecret('TOGETHER_API_KEY', 'TogetherLoRAAdapter');
-    if (!apiKey) {
+    if (!this.config.hasApiKey()) {
       return {
         status: 'failed',
         error: 'TOGETHER_API_KEY not configured'
@@ -186,11 +191,11 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
 
     try {
       const response = await fetch(
-        `https://api.together.xyz/v1/fine-tunes/${providerJobId}`,
+        `${this.config.baseUrl}/v1/fine-tunes/${providerJobId}`,
         {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'Authorization': `Bearer ${this.config.apiKey}`,
             'Content-Type': 'application/json'
           }
         }
@@ -330,8 +335,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async uploadDataset(datasetPath: string): Promise<string> {
-    const apiKey = getSecret('TOGETHER_API_KEY', 'TogetherLoRAAdapter');
-    if (!apiKey) {
+    if (!this.config.hasApiKey()) {
       throw new Error(
         'TOGETHER_API_KEY not configured. ' +
         'Please add it to ~/.continuum/config.env:\n' +
@@ -351,10 +355,10 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     formData.append('file_name', filename);  // REQUIRED - Together needs this separately!
     formData.append('purpose', 'fine-tune');
 
-    const response = await fetch('https://api.together.xyz/v1/files/upload', {
+    const response = await fetch(`${this.config.baseUrl}/v1/files/upload`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${this.config.apiKey}`
         // Don't set Content-Type - let FormData set it with boundary
       },
       body: formData
@@ -377,15 +381,13 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     request: LoRATrainingRequest,
     fileId: string
   ): Promise<string> {
-    const apiKey = getSecret('TOGETHER_API_KEY', 'TogetherLoRAAdapter');
-
     // Create fine-tuning job
     // POST https://api.together.xyz/v1/fine-tunes (NOT fine_tuning/jobs!)
     // Together API uses simpler format than OpenAI
-    const response = await fetch('https://api.together.xyz/v1/fine-tunes', {
+    const response = await fetch(`${this.config.baseUrl}/v1/fine-tunes`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${this.config.apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -407,10 +409,9 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
    * Monitor training job until complete
    * Returns the fine-tuned model ID
    * @private
+   * @deprecated This method is not used with async handle pattern - use _queryStatus() instead
    */
   private async monitorTrainingJob(jobId: string): Promise<string> {
-    const apiKey = getSecret('TOGETHER_API_KEY', 'TogetherLoRAAdapter');
-
     const maxAttempts = 120; // 10 minutes max (5s * 120 = 600s)
     let attempts = 0;
 
@@ -419,8 +420,8 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
       attempts++;
 
       try {
-        const response = await fetch(`https://api.together.xyz/v1/fine_tuning/jobs/${jobId}`, {
-          headers: { 'Authorization': `Bearer ${apiKey}` }
+        const response = await fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
+          headers: { 'Authorization': `Bearer ${this.config.apiKey}` }
         });
 
         if (!response.ok) {
