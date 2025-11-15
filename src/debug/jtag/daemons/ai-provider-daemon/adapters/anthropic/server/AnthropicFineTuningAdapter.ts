@@ -18,14 +18,14 @@
  *       This adapter is future-proofed for when they add support.
  */
 
-import { BaseLoRATrainer } from '../../shared/BaseLoRATrainer';
+import { BaseLoRATrainer } from '../../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
 import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
   FineTuningStrategy,
   TrainingStatus
-} from '../../shared/FineTuningTypes';
+} from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 /**

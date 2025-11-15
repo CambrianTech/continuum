@@ -17,15 +17,15 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 // Dataset builder
 import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
 
-// Adapters
+// Adapters (consolidated in daemons/ai-provider-daemon/adapters/)
 import { PEFTLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/PEFTLoRAAdapter';
-import { OllamaLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OllamaLoRAAdapter';
-import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
+import { OllamaLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/ollama/server/OllamaFineTuningAdapter';
+import { DeepSeekLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/deepseek/server/DeepSeekFineTuningAdapter';
 import { OpenAILoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/openai/server/OpenAIFineTuningAdapter';
 import { TogetherLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/together/server/TogetherFineTuningAdapter';
-import { FireworksLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/FireworksLoRAAdapter';
-import { MistralLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/MistralLoRAAdapter';
-import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
+import { FireworksLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/fireworks/server/FireworksFineTuningAdapter';
+import { MistralLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/mistral/server/MistralFineTuningAdapter';
+import { AnthropicLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/anthropic/server/AnthropicFineTuningAdapter';
 import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
 
 // Data access

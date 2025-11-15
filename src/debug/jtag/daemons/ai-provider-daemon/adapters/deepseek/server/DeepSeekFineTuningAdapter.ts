@@ -15,8 +15,8 @@
  * SERVER-ONLY: Uses Node.js for HTTP requests and file system
  */
 
-import { BaseLoRATrainer } from '../../shared/BaseLoRATrainer';
-import { TrainingDatasetBuilder } from '../TrainingDatasetBuilder';
+import { BaseLoRATrainer } from '../../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
+import { TrainingDatasetBuilder } from '../../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
 import type {
   LoRATrainingRequest,
   LoRATrainingResult,
@@ -24,7 +24,7 @@ import type {
   FineTuningStrategy,
   TrainingDataset,
   TrainingStatus
-} from '../../shared/FineTuningTypes';
+} from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';

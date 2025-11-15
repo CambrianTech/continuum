@@ -17,7 +17,7 @@
  * SERVER-ONLY: Uses Node.js for HTTP requests and file system
  */
 
-import { BaseLoRATrainerServer } from '../BaseLoRATrainerServer';
+import { BaseLoRATrainerServer } from '../../../../../system/genome/fine-tuning/server/BaseLoRATrainerServer';
 import type {
   LoRATrainingRequest,
   FineTuningCapabilities,
@@ -25,7 +25,7 @@ import type {
   TrainingDataset,
   TrainingHandle,
   TrainingStatus
-} from '../../shared/FineTuningTypes';
+} from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
 import { PATHS } from '../../../../../system/shared/Constants';
