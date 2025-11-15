@@ -299,7 +299,7 @@ export class UserDataSeed {
       preferences: {},
       isOnline: true,
       modelConfig: {
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-3-5-sonnet-20250122',
         provider: 'anthropic',
         maxTokens: 4000,
         temperature: 0.7,

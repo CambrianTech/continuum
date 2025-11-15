@@ -8,7 +8,8 @@ export const ROOM_UNIQUE_IDS = {
   GENERAL: 'general',
   ACADEMY: 'academy',
   SUPPORT: 'support',
-  PANTHEON: 'pantheon'
+  PANTHEON: 'pantheon',
+  DEV_UPDATES: 'dev-updates'
 } as const;
 
 export type RoomUniqueId = typeof ROOM_UNIQUE_IDS[keyof typeof ROOM_UNIQUE_IDS];

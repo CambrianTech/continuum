@@ -9,7 +9,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (a16d5fbc-4124-4389-a28b-77b741ff0ccf) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (10956de3-5af5-455f-96bc-03e9720c9a1e) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -23,49 +23,41 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="@cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1762932645827_pd9qf4tm
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1763178940825_0l8twuln
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932645827_pd9qf4tm
-✅ JTAGClient: Completed correlation client_1762932645827_pd9qf4tm
-🏷️ JTAGClientServer: Session updated to: 0d100c47-0b61-410e-a273-c0c023c789b2 (managed by base class)
+🔗 JTAGClient: Processing response for correlation client_1763178940825_0l8twuln
+✅ JTAGClient: Completed correlation client_1763178940825_0l8twuln
+🏷️ JTAGClientServer: Session updated to: e6acbdb2-e81b-45f2-bb70-973da0ecddf4 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1762932645846_881bw85d
+📤 RemoteConnection: Sending command 'list' with correlation client_1763178940829_kenlrl0z
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932645846_881bw85d
-✅ JTAGClient: Completed correlation client_1762932645846_881bw85d
+🔗 JTAGClient: Processing response for correlation client_1763178940829_kenlrl0z
+✅ JTAGClient: Completed correlation client_1763178940829_kenlrl0z
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1762932645850_slt2jwwe
+📤 RemoteConnection: Sending command 'list' with correlation client_1763178940830_of5pqh5u
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932645850_slt2jwwe
-✅ JTAGClient: Completed correlation client_1762932645850_slt2jwwe
-✅ JTAGClient: Bootstrap complete! Discovered 90 commands
-✅ Server: JTAGClient connected with 90 commands
+🔗 JTAGClient: Processing response for correlation client_1763178940830_of5pqh5u
+✅ JTAGClient: Completed correlation client_1763178940830_of5pqh5u
+✅ JTAGClient: Bootstrap complete! Discovered 97 commands
+✅ Server: JTAGClient connected with 97 commands
 📝 JTAGClient: Registered 'default' (server)
 ✅ Connected
 👤 1. Testing state/create for user with context injection...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1762932645852_qvvj16bu
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1763178940832_pljvkf8f
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:users:created
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:users:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932645852_qvvj16bu
-✅ JTAGClient: Completed correlation client_1762932645852_qvvj16bu
-👤 Created state user with ID: 1762932645909-i6eq4s7za
+🔗 JTAGClient: Processing response for correlation client_1763178940832_pljvkf8f
+✅ JTAGClient: Completed correlation client_1763178940832_pljvkf8f
+👤 Created state user with ID: 1763178940841-g8w7p1wrg
 ✅ State user created successfully
 🏠 2. Testing state/create for room with user context...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1762932646365_z7pqysj2
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1763178941026_ivvyxnus
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
 📥 JTAGClientServer: Received event message, triggering local subscriptions
@@ -74,55 +66,189 @@
 ✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
 📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:rooms:created
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:rooms:created
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:user_states:created
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932646365_z7pqysj2
-✅ JTAGClient: Completed correlation client_1762932646365_z7pqysj2
-🏠 Created state room with ID: 1762932646425-urzdeccvl
+🔗 JTAGClient: Processing response for correlation client_1763178941026_ivvyxnus
+✅ JTAGClient: Completed correlation client_1763178941026_ivvyxnus
+🏠 Created state room with ID: 1763178941469-y6up31p7y
 ✅ State room created successfully
 💬 3. Testing state/create for chat message with context...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1762932646518_b447o4xx
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1763178941779_kbvhbs9d
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClientServer: Received event message, triggering local subscriptions
@@ -130,41 +256,43 @@
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:chat_messages:created
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932646518_b447o4xx
-✅ JTAGClient: Completed correlation client_1762932646518_b447o4xx
-💬 Created state message with ID: 1762932646559-vmorsrrq7
+🔗 JTAGClient: Processing response for correlation client_1763178941779_kbvhbs9d
+✅ JTAGClient: Completed correlation client_1763178941779_kbvhbs9d
+💬 Created state message with ID: 1763178941870-0gg7qyil8
 ✅ State message created successfully
 👤 4. Testing state/get for user retrieval with context...
-📤 RemoteConnection: Sending command 'state/get' with correlation client_1762932647887_adau9g32
+📤 RemoteConnection: Sending command 'state/get' with correlation client_1763178943127_aevyuum5
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932647887_adau9g32
-✅ JTAGClient: Completed correlation client_1762932647887_adau9g32
+🔗 JTAGClient: Processing response for correlation client_1763178943127_aevyuum5
+✅ JTAGClient: Completed correlation client_1763178943127_aevyuum5
 👤 Retrieved state user: State Test User
 ✅ State user retrieved successfully
 🔧 5. Testing state/update with context enhancement...
-📤 RemoteConnection: Sending command 'state/update' with correlation client_1762932648536_k1i2cgit
+📤 RemoteConnection: Sending command 'state/update' with correlation client_1763178943721_nicjmo87
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:users:updated
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:users:updated
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932648536_k1i2cgit
-✅ JTAGClient: Completed correlation client_1762932648536_k1i2cgit
+🔗 JTAGClient: Processing response for correlation client_1763178943721_nicjmo87
+✅ JTAGClient: Completed correlation client_1763178943721_nicjmo87
 🔧 Updated state user version: undefined
 ✅ State user updated successfully
 👤 6. Verifying update via state/get...
-📤 RemoteConnection: Sending command 'state/get' with correlation client_1762932649155_3oxvhvme
+📤 RemoteConnection: Sending command 'state/get' with correlation client_1763178944586_5lsnbuno
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932649155_3oxvhvme
-✅ JTAGClient: Completed correlation client_1762932649155_3oxvhvme
+🔗 JTAGClient: Processing response for correlation client_1763178944586_5lsnbuno
+✅ JTAGClient: Completed correlation client_1763178944586_5lsnbuno
 👤 Verified updated user: Updated State Test User (busy)
 ✅ State update verification successful
 🏠 7. Testing cross-entity state operations (room update)...
-📤 RemoteConnection: Sending command 'state/update' with correlation client_1762932649467_0u49qlch
+📤 RemoteConnection: Sending command 'state/update' with correlation client_1763178944719_djqdb332
 📥 JTAGClient: Transport message received (type: request)
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 📥 JTAGClientServer: Received event message, triggering local subscriptions
@@ -172,15 +300,15 @@
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:rooms:updated
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932649467_0u49qlch
-✅ JTAGClient: Completed correlation client_1762932649467_0u49qlch
+🔗 JTAGClient: Processing response for correlation client_1763178944719_djqdb332
+✅ JTAGClient: Completed correlation client_1763178944719_djqdb332
 🏠 Updated state room version: undefined
 ✅ Cross-entity state update successful
 🔍 8. Verifying state delegation to data layer...
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1762932649658_jbbha9pi
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1763178944830_t27ks6dx
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932649658_jbbha9pi
-✅ JTAGClient: Completed correlation client_1762932649658_jbbha9pi
+🔗 JTAGClient: Processing response for correlation client_1763178944830_t27ks6dx
+✅ JTAGClient: Completed correlation client_1763178944830_t27ks6dx
 🔍 Verified data layer contains: Updated State Test User
 ✅ State→Data delegation verified
 
@@ -192,48 +320,50 @@
   - Cross-entity: ✅ Works with User, Room, ChatMessage
   - Data layer: ✅ Proper delegation and persistence
 🧹 Cleaning up test data...
-🗑️ Deleting message 1762932646559-vmorsrrq7...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1762932649710_efildhza
+🗑️ Deleting message 1763178941870-0gg7qyil8...
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1763178944866_2ctyy85l
+📥 JTAGClientServer: Received event message, triggering local subscriptions
+✅ JTAGClientServer: Triggered local subscriptions for data:chat_messages:deleted
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:chat_messages:deleted
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932649710_efildhza
-✅ JTAGClient: Completed correlation client_1762932649710_efildhza
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1762932650046_camy5re2
+🔗 JTAGClient: Processing response for correlation client_1763178944866_2ctyy85l
+✅ JTAGClient: Completed correlation client_1763178944866_2ctyy85l
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1763178945028_akqtv299
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932650046_camy5re2
-✅ JTAGClient: Completed correlation client_1762932650046_camy5re2
-✅ Deleted message 1762932646559-vmorsrrq7
-🗑️ Deleting room 1762932646425-urzdeccvl...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1762932650062_20cr7myy
+🔗 JTAGClient: Processing response for correlation client_1763178945028_akqtv299
+✅ JTAGClient: Completed correlation client_1763178945028_akqtv299
+✅ Deleted message 1763178941870-0gg7qyil8
+🗑️ Deleting room 1763178941469-y6up31p7y...
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1763178945049_tyq140v5
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:rooms:deleted
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932650062_20cr7myy
-✅ JTAGClient: Completed correlation client_1762932650062_20cr7myy
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1762932650257_pzyew13y
+🔗 JTAGClient: Processing response for correlation client_1763178945049_tyq140v5
+✅ JTAGClient: Completed correlation client_1763178945049_tyq140v5
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1763178945106_3398xpvc
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932650257_pzyew13y
-✅ JTAGClient: Completed correlation client_1762932650257_pzyew13y
-✅ Deleted room 1762932646425-urzdeccvl
-🗑️ Deleting user 1762932645909-i6eq4s7za...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1762932650269_7x6yl4o5
+🔗 JTAGClient: Processing response for correlation client_1763178945106_3398xpvc
+✅ JTAGClient: Completed correlation client_1763178945106_3398xpvc
+✅ Deleted room 1763178941469-y6up31p7y
+🗑️ Deleting user 1763178940841-g8w7p1wrg...
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1763178945119_u23t5t9z
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:users:deleted
 📥 JTAGClientServer: Received event message, triggering local subscriptions
 ✅ JTAGClientServer: Triggered local subscriptions for data:users:deleted
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932650269_7x6yl4o5
-✅ JTAGClient: Completed correlation client_1762932650269_7x6yl4o5
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1762932650358_baiodsto
+🔗 JTAGClient: Processing response for correlation client_1763178945119_u23t5t9z
+✅ JTAGClient: Completed correlation client_1763178945119_u23t5t9z
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1763178945168_16u0rnak
 📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1762932650358_baiodsto
-✅ JTAGClient: Completed correlation client_1762932650358_baiodsto
-✅ Deleted user 1762932645909-i6eq4s7za
+🔗 JTAGClient: Processing response for correlation client_1763178945168_16u0rnak
+✅ JTAGClient: Completed correlation client_1763178945168_16u0rnak
+✅ Deleted user 1763178940841-g8w7p1wrg
 ✅ Test data cleanup verified
 🔌 Disconnecting...
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 0d100c47-0b61-410e-a273-c0c023c789b2 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session e6acbdb2-e81b-45f2-bb70-973da0ecddf4 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

@@ -102,6 +102,20 @@ cd src/debug/jtag
 - Responsive design that works everywhere
 - Progressive enhancement (works without JS)
 
+**Available Themes** (and more coming):
+
+<div align="center">
+  <a href="docs/assets/themes/theme-neon.png">
+    <img src="docs/assets/themes/theme-neon.png" alt="Neon Theme" width="30%" />
+  </a>
+  <a href="docs/assets/themes/theme-mono.png">
+    <img src="docs/assets/themes/theme-mono.png" alt="Monochrome Theme" width="30%" />
+  </a>
+  <a href="docs/assets/themes/theme-retro.png">
+    <img src="docs/assets/themes/theme-retro.png" alt="Retro Theme" width="30%" />
+  </a>
+</div>
+
 ### **Genome Visualization (Production Ready)**
 
 Each AI persona displays its **genetic architecture** in real-time through a genome panel inspired by molecular biology. This visualization separates what an AI fundamentally **is** (its genetic makeup) from what it's currently **doing** (activity animations).

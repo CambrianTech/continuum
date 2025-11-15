@@ -179,3 +179,33 @@ export interface FineTuningCapabilities {
   costPerExample?: number;             // USD per training example
   estimatedTrainingTime?: number;      // Milliseconds per example
 }
+
+/**
+ * Training handle returned by _startTraining()
+ * Contains whatever identifier(s) needed to track this training job
+ */
+export interface TrainingHandle {
+  /** Primary identifier (jobId, processId, etc.) */
+  jobId: string;
+
+  /** Optional secondary identifiers */
+  fileId?: string;        // For cleanup (OpenAI file uploads)
+  datasetName?: string;   // Fireworks-style dataset references
+  processId?: number;     // Local training process IDs
+
+  /** Provider-specific metadata */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Training status returned by _queryStatus()
+ */
+export interface TrainingStatus {
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  progress?: number;      // 0-1 if available
+  modelId?: string;       // When completed
+  error?: string;         // If failed
+
+  /** Provider-specific data */
+  metadata?: Record<string, unknown>;
+}

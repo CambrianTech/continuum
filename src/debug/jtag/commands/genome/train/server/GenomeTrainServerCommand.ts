@@ -17,12 +17,15 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 // Dataset builder
 import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
 
-// Adapters
+// Adapters (consolidated in daemons/ai-provider-daemon/adapters/)
 import { PEFTLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/PEFTLoRAAdapter';
-import { OllamaLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OllamaLoRAAdapter';
-import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
-import { OpenAILoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OpenAILoRAAdapter';
-import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
+import { OllamaLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/ollama/server/OllamaFineTuningAdapter';
+import { DeepSeekLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/deepseek/server/DeepSeekFineTuningAdapter';
+import { OpenAILoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/openai/server/OpenAIFineTuningAdapter';
+import { TogetherLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/together/server/TogetherFineTuningAdapter';
+import { FireworksLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/fireworks/server/FireworksFineTuningAdapter';
+import { MistralLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/mistral/server/MistralFineTuningAdapter';
+import { AnthropicLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/anthropic/server/AnthropicFineTuningAdapter';
 import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
 
 // Data access
@@ -518,6 +521,12 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
         return new DeepSeekLoRAAdapter();
       case 'openai':
         return new OpenAILoRAAdapter();
+      case 'together':
+        return new TogetherLoRAAdapter();
+      case 'fireworks':
+        return new FireworksLoRAAdapter();
+      case 'mistral':
+        return new MistralLoRAAdapter();
       case 'anthropic':
         return new AnthropicLoRAAdapter();
       default:

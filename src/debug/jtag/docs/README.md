@@ -57,6 +57,9 @@ docs/
 - [DAEMON-RESPONSIBILITIES.md](architecture/DAEMON-RESPONSIBILITIES.md) - Daemon roles
 - [PASSKEY-AUTHENTICATION-DESIGN.md](architecture/PASSKEY-AUTHENTICATION-DESIGN.md) - Passkey auth
 
+**Training & Learning:**
+- [TRAINING-DATA-PIPELINE.md](architecture/TRAINING-DATA-PIPELINE.md) - **NEW** - Automatic training data from natural collaboration
+
 ---
 
 ## 🧬 PersonaUser & Genomic Architecture
@@ -96,12 +99,18 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 
 ---
 
-## 📄 Research Papers
+## 📄 Research Papers & Vision
 
 **Academic Papers on Core Innovations:**
 - [papers/README.md](papers/README.md) - Research papers index
 - [papers/RTOS-COGNITIVE-ARCHITECTURE.md](papers/RTOS-COGNITIVE-ARCHITECTURE.md) - RTOS principles in AI cognition
 - [papers/LORA-GENOME-DEMOCRATIZATION.md](papers/LORA-GENOME-DEMOCRATIZATION.md) - Democratic AI through LoRA genomes
+- [papers/GRID-DECENTRALIZED-MARKETPLACE.md](papers/GRID-DECENTRALIZED-MARKETPLACE.md) - **NEW** - P2P marketplace vision (Phase 3+)
+
+**Vision Documents:**
+- [PRACTICAL-ROADMAP.md](PRACTICAL-ROADMAP.md) - **START HERE** - Phase 1 roadmap (current focus)
+- [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - Multi-layer learning through natural collaboration
+- [COMPOSABLE-EXPERTISE.md](COMPOSABLE-EXPERTISE.md) - LoRA layer stacking architecture
 
 **Key Topics Covered:**
 - RTOS infinite loop patterns for autonomous agents
@@ -110,12 +119,15 @@ See `system/user/server/modules/` for the latest autonomous loop and genome pagi
 - Economic accessibility of SOTA intelligence via LoRA adapters
 - Mentorship-based training and phenotype trading on Grid
 - Democratic mission: From AI oligopoly to ecosystem
+- **Human-AI collaboration as training methodology**
+- **Scope-based expertise with hot-swappable LoRA layers**
 
 ---
 
 ## 📖 Recipe System
 
 **Recipe Architecture:**
+- [SCOPE-BASED-RECIPES.md](recipes/SCOPE-BASED-RECIPES.md) - **NEW** - Scope-based collaboration with hot-swappable LoRA genome layers
 - [RECIPES.md](recipes/RECIPES.md) - Recipe system overview
 - [RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) - Requirements and design
 - [RECIPE-SYSTEM-STATUS.md](recipes/RECIPE-SYSTEM-STATUS.md) - Implementation status

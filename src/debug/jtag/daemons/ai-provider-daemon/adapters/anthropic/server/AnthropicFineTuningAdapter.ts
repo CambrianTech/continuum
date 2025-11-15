@@ -18,13 +18,15 @@
  *       This adapter is future-proofed for when they add support.
  */
 
-import { BaseLoRATrainer } from '../../shared/BaseLoRATrainer';
+import { BaseLoRATrainer } from '../../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
 import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
-  FineTuningStrategy
-} from '../../shared/FineTuningTypes';
+  FineTuningStrategy,
+  TrainingStatus
+} from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
+import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Anthropic LoRA Adapter - Remote API training with Anthropic Claude
@@ -130,6 +132,14 @@ export class AnthropicLoRAAdapter extends BaseLoRATrainer {
     // TODO Future: Implement Anthropic API training when available
     // const result = await this.trainWithAnthropicAPI(request);
     // return result;
+  }
+
+  /**
+   * Check training status - NOT IMPLEMENTED YET
+   * TODO: Implement async handle pattern for this adapter
+   */
+  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
+    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
   }
 
   /**

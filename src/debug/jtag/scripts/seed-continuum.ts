@@ -823,7 +823,20 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom, pantheonRoom];
+      const devUpdatesRoom = createRoom(
+        'dev-updates-room-id',  // ID for dev-updates
+        'dev-updates',
+        'Dev Updates',
+        'GitHub PRs, CI/CD, and development activity notifications',
+        "Real-time development feed - where the team learns together",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["github", "ci", "development", "training"],
+        humanUser.id,
+        'dev-updates'
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);

@@ -17,14 +17,17 @@
  * SERVER-ONLY: Uses Node.js for file system and process spawning
  */
 
-import { BaseServerLoRATrainer } from '../BaseServerLoRATrainer';
+import { BaseLoRATrainerServer } from '../../../../../system/genome/fine-tuning/server/BaseLoRATrainerServer';
 import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
   FineTuningStrategy,
-  TrainingDataset
-} from '../../shared/FineTuningTypes';
+  TrainingDataset,
+  TrainingHandle,
+  TrainingStatus
+} from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
+import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -35,7 +38,7 @@ import * as os from 'os';
  *
  * Phase 7.1: Full implementation with llama.cpp finetune command
  */
-export class OllamaLoRAAdapter extends BaseServerLoRATrainer {
+export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'ollama';
 
   /**
@@ -117,11 +120,64 @@ export class OllamaLoRAAdapter extends BaseServerLoRATrainer {
     };
   }
 
+  // ==================== ASYNC PRIMITIVES (STUB - TODO: Implement properly) ====================
+
+  /**
+   * Start training - Currently runs synchronously and completes immediately
+   * TODO: Refactor for true async local training with background process
+   */
+  /* eslint-disable @typescript-eslint/naming-convention */
+  protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
+  /* eslint-enable @typescript-eslint/naming-convention */
+    // For now, run training synchronously and return completed handle
+    // This is a STUB - proper implementation should spawn background process
+    const result = await this.trainLoRA(request);
+
+    return {
+      jobId: `ollama-local-${Date.now()}`,
+      metadata: {
+        synchronous: true,
+        completed: true,
+        result
+      }
+    };
+  }
+
+  /**
+   * Query training status - Always returns completed for synchronous training
+   * TODO: Implement proper async polling when background training is added
+   */
+  /* eslint-disable @typescript-eslint/naming-convention */
+  protected async _queryStatus(
+    _sessionId: UUID,
+    _providerJobId: string,
+    metadata: Record<string, unknown>
+  ): Promise<TrainingStatus> {
+  /* eslint-enable @typescript-eslint/naming-convention */
+    // For synchronous training, always completed
+    const result = metadata.result as LoRATrainingResult | undefined;
+
+    if (result?.success) {
+      return {
+        status: 'completed',
+        modelId: result.modelPath
+      };
+    } else {
+      return {
+        status: 'failed',
+        error: result?.error ?? 'Unknown error'
+      };
+    }
+  }
+
+  // ==================== LEGACY SYNCHRONOUS METHOD ====================
+
   /**
    * Train LoRA adapter with llama.cpp finetune command
    *
    * @param request Training configuration
    * @returns Training result with adapter location
+   * @deprecated This method runs synchronously - will be refactored for async pattern
    */
   async trainLoRA(request: LoRATrainingRequest): Promise<LoRATrainingResult> {
     // Validate request first
@@ -182,6 +238,14 @@ export class OllamaLoRAAdapter extends BaseServerLoRATrainer {
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  /**
+   * Check training status - NOT IMPLEMENTED YET
+   * TODO: Implement async handle pattern for this adapter
+   */
+  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
+    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
   }
 
   /**

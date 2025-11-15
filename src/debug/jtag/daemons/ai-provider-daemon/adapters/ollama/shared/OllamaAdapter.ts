@@ -20,6 +20,8 @@ import type {
   HealthStatus,
   ProviderConfiguration,
   UsageMetrics,
+  EmbeddingRequest,
+  EmbeddingResponse,
 } from '../../../shared/AIProviderTypesV2';
 import {
   chatMessagesToPrompt,
@@ -59,6 +61,15 @@ interface OllamaGenerateResponse {
 
 interface OllamaListResponse {
   models: Array<{ name: string; modified_at: string; size: number }>;
+}
+
+interface OllamaEmbeddingRequest {
+  model: string;
+  prompt: string;
+}
+
+interface OllamaEmbeddingResponse {
+  embedding: number[];
 }
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { spawn } from 'child_process';
@@ -196,7 +207,7 @@ class OllamaRequestQueue {
 export class OllamaAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'ollama';
   readonly providerName = 'Ollama';
-  readonly supportedCapabilities = ['text-generation' as const, 'chat' as const];
+  readonly supportedCapabilities = ['text-generation' as const, 'chat' as const, 'embeddings' as const];
 
   private config: ProviderConfiguration;
   private healthCache: { status: HealthStatus; timestamp: number } | null = null;
@@ -328,6 +339,81 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         `Text generation failed: ${error instanceof Error ? error.message : String(error)}`,
         'adapter',
         'GENERATION_FAILED',
+        { requestId, responseTime, originalError: error }
+      );
+    }
+  }
+
+  async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    const startTime = Date.now();
+    const requestId = request.requestId ?? createRequestId();
+
+    try {
+      // Determine which model to use based on request
+      // Default to nomic-embed-text for general embeddings
+      // For code-specific embeddings, use qwen3-embedding if specified
+      const model = request.model ?? 'nomic-embed-text';
+
+      // Handle both string and string[] inputs
+      const inputs = Array.isArray(request.input) ? request.input : [request.input];
+
+      if (this.config.logRequests) {
+        console.log(`🔢 ${this.providerName}: Generating ${inputs.length} embedding(s) with model ${model}`);
+        console.log(`   Request ID: ${requestId}`);
+      }
+
+      // Generate embeddings for each input
+      const embeddings: number[][] = [];
+
+      for (const input of inputs) {
+        const ollamaRequest: OllamaEmbeddingRequest = {
+          model,
+          prompt: input,
+        };
+
+        const response = await this.makeRequest<OllamaEmbeddingResponse>(
+          '/api/embeddings',
+          ollamaRequest
+        );
+
+        embeddings.push(response.embedding);
+      }
+
+      const responseTime = Date.now() - startTime;
+
+      // Calculate usage metrics
+      const totalInputTokens = inputs.reduce((sum, input) => sum + estimateTokenCount(input), 0);
+      const usage: UsageMetrics = {
+        inputTokens: totalInputTokens,
+        outputTokens: 0, // Embeddings don't generate text
+        totalTokens: totalInputTokens,
+        estimatedCost: 0, // Ollama is free
+      };
+
+      if (this.config.logRequests) {
+        console.log(`✅ ${this.providerName}: Generated ${embeddings.length} embedding(s) in ${responseTime}ms`);
+        console.log(`   Embedding dimensions: ${embeddings[0]?.length || 0}`);
+        console.log(`   Input tokens: ${totalInputTokens}`);
+      }
+
+      return {
+        embeddings,
+        model,
+        provider: this.providerId,
+        usage,
+        responseTime,
+        requestId,
+      };
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+
+      console.error(`❌ ${this.providerName}: Embedding generation failed after ${responseTime}ms`);
+      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+
+      throw new AIProviderError(
+        `Embedding generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        'adapter',
+        'EMBEDDING_FAILED',
         { requestId, responseTime, originalError: error }
       );
     }

@@ -21,6 +21,13 @@ import type {
 } from '../../../shared/AIProviderTypesV2';
 import { AIProviderError } from '../../../shared/AIProviderTypesV2';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
+import {
+  ModelTier,
+  ModelTags,
+  ModelResolution,
+  CostTier,
+  calculateCostTier,
+} from '../../../shared/ModelTiers';
 
 export class AnthropicAdapter implements AIProviderAdapter {
   readonly providerId = 'anthropic';
@@ -64,7 +71,8 @@ export class AnthropicAdapter implements AIProviderAdapter {
 
     const startTime = Date.now();
     const requestId = request.requestId || `req-${Date.now()}`;
-    const model = request.model || 'claude-3-5-sonnet-20241022';
+    // Use Claude 3.5 Sonnet v2 (updated January 2025)
+    const model = request.model || 'claude-3-5-sonnet-20250122';
 
     try {
       // Convert messages to Anthropic format
@@ -126,8 +134,19 @@ export class AnthropicAdapter implements AIProviderAdapter {
   async getAvailableModels(): Promise<ModelInfo[]> {
     return [
       {
+        id: 'claude-3-5-sonnet-20250122',
+        name: 'Claude 3.5 Sonnet v2',
+        provider: 'anthropic',
+        capabilities: ['text-generation', 'chat', 'multimodal'],
+        contextWindow: 200000,
+        maxOutputTokens: 8192,
+        costPer1kTokens: { input: 0.003, output: 0.015 },
+        supportsStreaming: true,
+        supportsFunctions: false,
+      },
+      {
         id: 'claude-3-5-sonnet-20241022',
-        name: 'Claude 3.5 Sonnet',
+        name: 'Claude 3.5 Sonnet (Legacy)',
         provider: 'anthropic',
         capabilities: ['text-generation', 'chat', 'multimodal'],
         contextWindow: 200000,
@@ -280,5 +299,115 @@ export class AnthropicAdapter implements AIProviderAdapter {
     }
 
     throw lastError || new Error('Request failed after retries');
+  }
+
+  // =========================
+  // Semantic Model Tier Resolution
+  // =========================
+
+  /**
+   * Resolve semantic tier → actual model ID
+   * User requirement: "I think you are on the right track with 'fast', 'free', 'balanced'"
+   */
+  async resolveModelTier(tier: ModelTier): Promise<ModelResolution> {
+    // Anthropic tier mappings
+    const tierMappings: Record<ModelTier, string> = {
+      [ModelTier.FAST]: 'claude-3-haiku-20240307',
+      [ModelTier.BALANCED]: 'claude-3-5-sonnet-20250122', // Latest Sonnet
+      [ModelTier.PREMIUM]: 'claude-3-opus-20240229',
+      [ModelTier.LATEST]: 'claude-3-5-sonnet-20250122', // Always latest
+      [ModelTier.FREE]: 'claude-3-haiku-20240307', // Cheapest, not truly free
+    };
+
+    const modelId = tierMappings[tier];
+    if (!modelId) {
+      throw new AIProviderError(
+        `Unknown tier: ${tier}`,
+        'adapter',
+        'UNKNOWN_TIER'
+      );
+    }
+
+    // Get model info to populate full resolution
+    const models = await this.getAvailableModels();
+    const modelInfo = models.find(m => m.id === modelId);
+
+    if (!modelInfo) {
+      throw new AIProviderError(
+        `Model ${modelId} not found in available models`,
+        'adapter',
+        'MODEL_NOT_FOUND'
+      );
+    }
+
+    // Classify the model to get full tags
+    const tags = await this.classifyModel(modelId);
+
+    return {
+      modelId,
+      provider: this.providerId,
+      displayName: modelInfo.name,
+      tags: tags!,
+    };
+  }
+
+  /**
+   * Classify model ID → semantic tier (BIDIRECTIONAL)
+   * User requirement: "keep in mind you have to turn api results into these terms"
+   */
+  async classifyModel(modelId: string): Promise<ModelTags | null> {
+    const models = await this.getAvailableModels();
+    const modelInfo = models.find(m => m.id === modelId);
+
+    if (!modelInfo) {
+      return null;
+    }
+
+    // Determine tier based on model characteristics
+    let tier: ModelTier;
+    if (modelId.includes('haiku')) {
+      tier = ModelTier.FAST;
+    } else if (modelId.includes('sonnet')) {
+      // Latest sonnet is BALANCED, older versions also BALANCED
+      tier = ModelTier.BALANCED;
+    } else if (modelId.includes('opus')) {
+      tier = ModelTier.PREMIUM;
+    } else {
+      tier = ModelTier.BALANCED; // Default
+    }
+
+    const costTier = calculateCostTier(modelInfo.costPer1kTokens);
+
+    return {
+      tier,
+      costTier,
+      provider: this.providerId,
+      actualModelId: modelId,
+      displayName: modelInfo.name,
+      contextWindow: modelInfo.contextWindow,
+      costPer1kTokens: modelInfo.costPer1kTokens,
+      capabilities: modelInfo.capabilities as string[],
+      isLocal: false, // All Anthropic models are cloud-based
+    };
+  }
+
+  /**
+   * Get all models grouped by tier
+   * Useful for UI: show "fast", "balanced", "premium" options
+   */
+  async getModelsByTier(): Promise<Map<ModelTier, ModelInfo[]>> {
+    const models = await this.getAvailableModels();
+    const tierMap = new Map<ModelTier, ModelInfo[]>();
+
+    for (const model of models) {
+      const tags = await this.classifyModel(model.id);
+      if (tags) {
+        const existing = tierMap.get(tags.tier) || [];
+        existing.push(model);
+        tierMap.set(tags.tier, existing);
+      }
+    }
+
+    return tierMap;
   }
 }

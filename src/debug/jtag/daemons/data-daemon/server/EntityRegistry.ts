@@ -22,6 +22,7 @@ import { DatasetExecutionEntity } from '../shared/entities/DatasetExecutionEntit
 import { TrainingDatasetEntity } from '../shared/entities/TrainingDatasetEntity';
 import { TrainingExampleEntity } from '../shared/entities/TrainingExampleEntity';
 import { CoordinationDecisionEntity } from '../../../system/data/entities/CoordinationDecisionEntity';
+import { CodeIndexEntity } from '../../../system/data/entities/CodeIndexEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -48,6 +49,7 @@ export function initializeEntityRegistry(): void {
   new TrainingDatasetEntity();
   new TrainingExampleEntity();
   new CoordinationDecisionEntity();
+  new CodeIndexEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -66,6 +68,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(TrainingDatasetEntity.collection, TrainingDatasetEntity);
   registerEntity(TrainingExampleEntity.collection, TrainingExampleEntity);
   registerEntity(CoordinationDecisionEntity.collection, CoordinationDecisionEntity);
+  registerEntity(CodeIndexEntity.collection, CodeIndexEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }
