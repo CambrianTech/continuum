@@ -256,6 +256,28 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     return 'remote-api';
   }
 
+  // ==================== PUBLIC TEST API ====================
+
+  /**
+   * Public wrapper for _startTraining (for standalone testing)
+   * Bypasses database persistence - use trainLoRA() for production
+   */
+  async startTraining(sessionId: UUID, request: LoRATrainingRequest): Promise<TrainingHandle> {
+    return await this._startTraining(request);
+  }
+
+  /**
+   * Public wrapper for _queryStatus (for standalone testing)
+   * Bypasses database persistence - use checkStatus() for production
+   */
+  async queryStatus(
+    sessionId: UUID,
+    providerJobId: string,
+    metadata: Record<string, unknown>
+  ): Promise<TrainingStatus> {
+    return await this._queryStatus(sessionId, providerJobId, metadata);
+  }
+
   /**
    * Estimate training cost (OpenAI pricing)
    *

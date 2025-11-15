@@ -69,6 +69,9 @@ export const COLLECTIONS = {
   TASKS: 'tasks',
   TRAINING_EXAMPLES: 'training_examples',
   TRAINING_SESSIONS: 'training_sessions',
+  FINE_TUNING_JOBS: 'fine_tuning_jobs',
+  FINE_TUNING_DATASETS: 'fine_tuning_datasets',
+  FINE_TUNED_MODELS: 'fine_tuned_models',
   TRAINING_CHECKPOINTS: 'training_checkpoints',
   TRAINING_DATASETS: 'training_datasets',
   CODE_INDEX: 'code_index'
