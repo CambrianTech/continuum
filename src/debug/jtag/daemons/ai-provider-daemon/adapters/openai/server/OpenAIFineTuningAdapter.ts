@@ -22,7 +22,7 @@ import type {
   TrainingStatus
 } from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import { getSecret } from '../../../../../system/secrets/SecretManager';
+import { OpenAIBaseConfig } from '../shared/OpenAIBaseConfig';
 import { PATHS } from '../../../../../system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -42,14 +42,19 @@ declare const Blob: typeof globalThis.Blob;
  */
 export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'openai';
+  private readonly config: OpenAIBaseConfig;
+
+  constructor(apiKey?: string) {
+    super();
+    this.config = new OpenAIBaseConfig(apiKey);
+  }
 
   /**
    * Check if OpenAI supports fine-tuning
    * Requires OPENAI_API_KEY in SecretManager
    */
   supportsFineTuning(): boolean {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
-    return !!apiKey;
+    return this.config.hasApiKey();
   }
 
   /**
@@ -95,13 +100,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       estimatedTrainingTime: 800, // 800ms per example per epoch (API overhead)
 
       // Model support (OpenAI models)
-      supportedBaseModels: [
-        'gpt-3.5-turbo',
-        'gpt-4',
-        'gpt-4-turbo',
-        'gpt-4o',
-        'gpt-4o-mini-2024-07-18'
-      ],
+      supportedBaseModels: this.config.getSupportedFineTuningModels(),
 
       // Requirements
       requiresGPU: false, // Cloud-based training
@@ -175,7 +174,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-enable @typescript-eslint/naming-convention */
     console.log(`🔍 OpenAI: Querying job status: ${providerJobId}`);
 
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+    const apiKey = this.config.apiKey;
     if (!apiKey) {
       return {
         status: 'failed',
@@ -185,7 +184,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
 
     try {
       const response = await fetch(
-        `https://api.openai.com/v1/fine_tuning/jobs/${providerJobId}`,
+        `${this.config.baseUrl}/v1/fine_tuning/jobs/${providerJobId}`,
         {
           method: 'GET',
           headers: {
@@ -329,7 +328,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async uploadDataset(datasetPath: string): Promise<string> {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+    const apiKey = this.config.apiKey;
     if (!apiKey) {
       throw new Error(
         'OPENAI_API_KEY not configured. ' +
@@ -347,7 +346,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     formData.append('file', blob, 'training.jsonl');
     formData.append('purpose', 'fine-tune');
 
-    const response = await fetch('https://api.openai.com/v1/files', {
+    const response = await fetch(`${this.config.baseUrl}/v1/files`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`
@@ -372,14 +371,14 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     request: LoRATrainingRequest,
     fileId: string
   ): Promise<string> {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+    const apiKey = this.config.apiKey;
 
     const capabilities = this.getFineTuningCapabilities();
     const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
 
     // Create fine-tuning job
     // POST https://api.openai.com/v1/fine_tuning/jobs
-    const response = await fetch('https://api.openai.com/v1/fine_tuning/jobs', {
+    const response = await fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -409,7 +408,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async monitorTrainingJob(jobId: string): Promise<string> {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
+    const apiKey = this.config.apiKey;
 
     const maxAttempts = 120; // 10 minutes max (5s * 120 = 600s)
     let attempts = 0;
@@ -419,7 +418,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       attempts++;
 
       try {
-        const response = await fetch(`https://api.openai.com/v1/fine_tuning/jobs/${jobId}`, {
+        const response = await fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
           headers: { 'Authorization': `Bearer ${apiKey}` }
         });
 

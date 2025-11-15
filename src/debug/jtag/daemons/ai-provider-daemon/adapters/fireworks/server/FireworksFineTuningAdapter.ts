@@ -27,8 +27,9 @@ import type {
   TrainingStatus
 } from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import { getSecret } from '../../../../../system/secrets/SecretManager';
+import { FireworksBaseConfig } from '../shared/FireworksBaseConfig';
 import { PATHS } from '../../../../../system/shared/Constants';
+import { getSecret } from '../../../../../system/secrets/SecretManager'; // For FIREWORKS_ACCOUNT_ID (fine-tuning-specific)
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -47,15 +48,19 @@ declare const Blob: typeof globalThis.Blob;
  */
 export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'fireworks';
+  private readonly config: FireworksBaseConfig;
+
+  constructor(apiKey?: string) {
+    super();
+    this.config = new FireworksBaseConfig(apiKey);
+  }
 
   /**
    * Check if Fireworks supports fine-tuning
    * Requires FIREWORKS_API_KEY and FIREWORKS_ACCOUNT_ID in SecretManager
    */
   supportsFineTuning(): boolean {
-    const apiKey = getSecret('FIREWORKS_API_KEY', 'FireworksLoRAAdapter');
-    const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
-    return !!apiKey && !!accountId;
+    return this.config.hasApiKey();
   }
 
   /**
@@ -103,14 +108,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       estimatedTrainingTime: 600, // 600ms per example per epoch
 
       // Model support (Fireworks models)
-      supportedBaseModels: [
-        'accounts/fireworks/models/llama-v3-8b-instruct',
-        'accounts/fireworks/models/llama-v3-70b-instruct',
-        'accounts/fireworks/models/llama-v3p1-8b-instruct',
-        'accounts/fireworks/models/llama-v3p1-70b-instruct',
-        'accounts/fireworks/models/mixtral-8x7b-instruct',
-        'accounts/fireworks/models/qwen2-72b-instruct'
-      ],
+      supportedBaseModels: this.config.getSupportedFineTuningModels(),
 
       // Requirements
       requiresGPU: false, // Cloud-based training
@@ -196,7 +194,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-enable @typescript-eslint/naming-convention */
     console.log(`🔍 Fireworks: Querying job status: ${providerJobId}`);
 
-    const apiKey = getSecret('FIREWORKS_API_KEY', 'FireworksLoRAAdapter');
+    const apiKey = this.config.apiKey;
     const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
 
     if (!apiKey || !accountId) {
@@ -208,7 +206,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
 
     try {
       const response = await fetch(
-        `https://api.fireworks.ai/v1/accounts/${accountId}/supervisedFineTuningJobs/${providerJobId}`,
+        `${this.config.baseUrl}/v1/accounts/${accountId}/supervisedFineTuningJobs/${providerJobId}`,
         {
           method: 'GET',
           headers: {
@@ -353,7 +351,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async createDatasetRecord(request: LoRATrainingRequest): Promise<string> {
-    const apiKey = getSecret('FIREWORKS_API_KEY', 'FireworksLoRAAdapter');
+    const apiKey = this.config.apiKey;
     const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
 
     if (!apiKey || !accountId) {
@@ -366,11 +364,11 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     }
 
     // Create dataset record
-    // POST https://api.fireworks.ai/v1/accounts/{account_id}/datasets
+    // POST ${this.config.baseUrl}/v1/accounts/{account_id}/datasets
     const datasetId = `training-${request.personaId}-${Date.now()}`;
 
     const response = await fetch(
-      `https://api.fireworks.ai/v1/accounts/${accountId}/datasets`,
+      `${this.config.baseUrl}/v1/accounts/${accountId}/datasets`,
       {
         method: 'POST',
         headers: {
@@ -401,11 +399,11 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async uploadDatasetFile(datasetId: string, datasetPath: string): Promise<void> {
-    const apiKey = getSecret('FIREWORKS_API_KEY', 'FireworksLoRAAdapter');
+    const apiKey = this.config.apiKey;
     const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
 
     // Upload dataset file
-    // POST https://api.fireworks.ai/v1/accounts/{account_id}/datasets/{dataset_id}:upload
+    // POST ${this.config.baseUrl}/v1/accounts/{account_id}/datasets/{dataset_id}:upload
     const fileContent = await fs.promises.readFile(datasetPath, 'utf-8');
     const blob = new Blob([fileContent], { type: 'application/jsonl' });
 
@@ -413,7 +411,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     formData.append('file', blob, path.basename(datasetPath));
 
     const response = await fetch(
-      `https://api.fireworks.ai/v1/accounts/${accountId}/datasets/${datasetId}:upload`,
+      `${this.config.baseUrl}/v1/accounts/${accountId}/datasets/${datasetId}:upload`,
       {
         method: 'POST',
         headers: {
@@ -435,7 +433,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   private async waitForDatasetReady(datasetId: string): Promise<void> {
-    const apiKey = getSecret('FIREWORKS_API_KEY', 'FireworksLoRAAdapter');
+    const apiKey = this.config.apiKey;
     const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
 
     const maxAttempts = 60; // 5 minutes (5s * 60)
@@ -445,7 +443,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       attempts++;
 
       const response = await fetch(
-        `https://api.fireworks.ai/v1/accounts/${accountId}/datasets/${datasetId}`,
+        `${this.config.baseUrl}/v1/accounts/${accountId}/datasets/${datasetId}`,
         {
           method: 'GET',
           headers: {
@@ -484,16 +482,16 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     request: LoRATrainingRequest,
     datasetId: string
   ): Promise<string> {
-    const apiKey = getSecret('FIREWORKS_API_KEY', 'FireworksLoRAAdapter');
+    const apiKey = this.config.apiKey;
     const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
 
     const capabilities = this.getFineTuningCapabilities();
     const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
 
     // Create fine-tuning job
-    // POST https://api.fireworks.ai/v1/accounts/{account_id}/supervisedFineTuningJobs
+    // POST ${this.config.baseUrl}/v1/accounts/{account_id}/supervisedFineTuningJobs
     const response = await fetch(
-      `https://api.fireworks.ai/v1/accounts/${accountId}/supervisedFineTuningJobs`,
+      `${this.config.baseUrl}/v1/accounts/${accountId}/supervisedFineTuningJobs`,
       {
         method: 'POST',
         headers: {

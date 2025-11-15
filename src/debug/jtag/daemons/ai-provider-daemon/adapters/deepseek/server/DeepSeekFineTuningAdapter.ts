@@ -26,6 +26,7 @@ import type {
   TrainingStatus
 } from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { DeepSeekBaseConfig } from '../shared/DeepSeekBaseConfig';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -39,6 +40,12 @@ import { FormData } from 'formdata-node';
  */
 export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
   readonly providerId = 'deepseek';
+  private readonly config: DeepSeekBaseConfig;
+
+  constructor(apiKey?: string) {
+    super();
+    this.config = new DeepSeekBaseConfig(apiKey);
+  }
 
   /**
    * Check if DeepSeek supports fine-tuning
@@ -46,7 +53,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
    * Phase 7.1: Check if API key configured
    */
   supportsFineTuning(): boolean {
-    return !!process.env.DEEPSEEK_API_KEY;
+    return this.config.hasApiKey();
   }
 
   /**
@@ -92,11 +99,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
       estimatedTrainingTime: 1000, // 1000ms per example per epoch (API overhead)
 
       // Model support (DeepSeek models)
-      supportedBaseModels: [
-        'deepseek-chat',
-        'deepseek-coder',
-        'deepseek-r1'
-      ],
+      supportedBaseModels: this.config.getSupportedFineTuningModels(),
 
       // Requirements
       requiresGPU: false, // Cloud-based training
@@ -117,11 +120,11 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
     this.validateRequest(request);
 
     // Check API key
-    const apiKey = process.env.DEEPSEEK_API_KEY;
+    const apiKey = this.config.apiKey;
     if (!apiKey) {
       return {
         success: false,
-        error: 'DEEPSEEK_API_KEY environment variable not set'
+        error: 'DEEPSEEK_API_KEY not configured. Please add it to ~/.continuum/config.env'
       };
     }
 
@@ -266,7 +269,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
     formData.append('purpose', 'fine-tune');
 
     // Upload dataset via DeepSeek API
-    const response = await globalThis.fetch('https://api.deepseek.com/v1/files', {
+    const response = await globalThis.fetch('${this.config.baseUrl}/v1/files', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`
@@ -293,7 +296,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
     apiKey: string
   ): Promise<string> {
     // Create fine-tuning job
-    const response = await globalThis.fetch('https://api.deepseek.com/v1/fine_tuning/jobs', {
+    const response = await globalThis.fetch('${this.config.baseUrl}/v1/fine_tuning/jobs', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -329,7 +332,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
     const maxAttempts = 360; // 1 hour max (10s * 360 = 3600s)
 
     while (attempts < maxAttempts) {
-      const response = await globalThis.fetch(`https://api.deepseek.com/v1/fine_tuning/jobs/${jobId}`, {
+      const response = await globalThis.fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
         headers: { 'Authorization': `Bearer ${apiKey}` }
       });
 
@@ -367,7 +370,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
    * @private
    */
   private async getTrainedModelId(jobId: string, apiKey: string): Promise<string> {
-    const response = await globalThis.fetch(`https://api.deepseek.com/v1/fine_tuning/jobs/${jobId}`, {
+    const response = await globalThis.fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
       headers: { 'Authorization': `Bearer ${apiKey}` }
     });
 
