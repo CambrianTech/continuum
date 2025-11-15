@@ -46,20 +46,20 @@ fi
 echo -e "${GREEN}✅ Found test dataset (20 examples)${NC}"
 echo ""
 
-# Get or prompt for PersonaUser ID
+# Get or prompt for User ID (for fine-tuning tests, any user works)
 if [ -z "$PERSONA_ID" ]; then
-    echo -e "${YELLOW}📝 Finding existing PersonaUser...${NC}"
-    # Try to find an existing PersonaUser
-    PERSONA_ID=$(./jtag data/list --collection=users --filter='{"userType":"PersonaUser"}' --limit=1 | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    echo -e "${YELLOW}📝 Getting user ID from database...${NC}"
+    # Get any user from the database - parse JSON properly with jq or python
+    PERSONA_ID=$(./jtag data/list --collection=users --limit=1 2>/dev/null | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['items'][0]['id'] if data.get('items') and len(data['items']) > 0 else '')" 2>/dev/null)
 
     if [ -z "$PERSONA_ID" ]; then
-        echo -e "${YELLOW}No PersonaUser found, creating one...${NC}"
-        PERSONA_ID=$(./jtag data/create --collection=users --data='{"userType":"PersonaUser","displayName":"Training Test Bot","systemPrompt":"You are a coding assistant."}' | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+        echo -e "${RED}❌ No users found in database. Run 'npm run data:seed' first.${NC}"
+        exit 1
     fi
 
-    echo -e "${GREEN}✅ Using PersonaUser: $PERSONA_ID${NC}"
+    echo -e "${GREEN}✅ Using User ID: $PERSONA_ID${NC}"
 else
-    echo -e "${GREEN}✅ Using PersonaUser: $PERSONA_ID${NC}"
+    echo -e "${GREEN}✅ Using User ID: $PERSONA_ID${NC}"
 fi
 
 echo ""
@@ -80,26 +80,25 @@ test_provider() {
 
     echo -e "${BLUE}🧪 Testing $provider...${NC}"
 
-    # Check if API key exists
-    if ! ./jtag system/secrets/get --key="$env_var" 2>&1 | grep -q "value"; then
-        echo -e "${YELLOW}⚠️  $provider skipped (no $env_var in SecretManager)${NC}"
-        SKIPPED+=("$provider")
-        echo ""
-        return
-    fi
-
     # Submit training job (dry run to validate without actual training)
+    # The adapter will check for API keys internally via SecretManager
+    # If key is missing, adapter will fail gracefully with clear error message
     echo "  Submitting dry-run training job..."
-    if ./jtag genome/train \
+    ./jtag genome/train \
         --provider="$provider" \
         --datasetPath="$DATASET_PATH" \
         --personaId="$PERSONA_ID" \
         --dryRun=true \
         --epochs=1 \
-        --batchSize=1 2>&1 | tee /tmp/finetune-test-$provider.log | grep -q "Training job submitted\|Cost estimate\|would cost\|File uploaded"; then
+        --batchSize=1 > /tmp/finetune-test-$provider.log 2>&1
 
+    # Check if the JSON output contains "success": true
+    if grep -q '"success": true' /tmp/finetune-test-$provider.log; then
         echo -e "${GREEN}  ✅ $provider adapter working${NC}"
         PASSED+=("$provider")
+    elif grep -q "No API key found" /tmp/finetune-test-$provider.log; then
+        echo -e "${YELLOW}  ⚠️  $provider skipped (no $env_var configured)${NC}"
+        SKIPPED+=("$provider")
     else
         echo -e "${RED}  ❌ $provider adapter failed${NC}"
         echo "  See /tmp/finetune-test-$provider.log for details"
