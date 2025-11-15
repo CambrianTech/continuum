@@ -1,18 +1,20 @@
 /**
- * OpenAILoRAAdapter - Remote API fine-tuning adapter
+ * TogetherLoRAAdapter - Remote API fine-tuning adapter
  *
  * REMOTE API STRATEGY:
- * - Uses OpenAI API for cloud-based LoRA training
+ * - Uses Together AI API for cloud-based LoRA training
  * - No local GPU required
- * - Supports GPT-3.5-turbo, GPT-4, GPT-4o, GPT-4o-mini models
+ * - Supports Llama 3.1, Qwen, and other open-source models
  *
- * Implementation proven in /tmp/prototype-finetune-all.ts
- * Successfully created model: ft:gpt-4o-mini-2024-07-18:personal::CbScXmaV
+ * Based on TogetherLoRAAdapter with Together-specific changes:
+ * - API base: https://api.together.xyz/v1
+ * - Requires lora: true parameter
+ * - Returns output_name instead of fine_tuned_model
  *
  * SERVER-ONLY: Uses Node.js for HTTP requests and file system
  */
 
-import { BaseLoRATrainerServer } from '../BaseLoRATrainerServer';
+import { BaseLoRATrainerServer } from '../../../../../system/genome/fine-tuning/server/BaseLoRATrainerServer';
 import type {
   LoRATrainingRequest,
   FineTuningCapabilities,
@@ -20,9 +22,9 @@ import type {
   TrainingDataset,
   TrainingHandle,
   TrainingStatus
-} from '../../shared/FineTuningTypes';
+} from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import { getSecret } from '../../../../../system/secrets/SecretManager';
+import { TogetherBaseConfig } from '../shared/TogetherBaseConfig';
 import { PATHS } from '../../../../../system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -35,27 +37,33 @@ declare const Blob: typeof globalThis.Blob;
 /* eslint-enable @typescript-eslint/naming-convention */
 
 /**
- * OpenAI LoRA Adapter - Remote API training with OpenAI
+ * Together LoRA Adapter - Remote API training with Together
  *
  * Status: ✅ REFACTORED with async handle pattern
  * Architecture: Implements _startTraining() and _queryStatus() primitives
+ * Architecture: Uses TogetherBaseConfig for shared state with inference adapter
  */
-export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
-  readonly providerId = 'openai';
+export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
+  readonly providerId = 'together';
+  private readonly config: TogetherBaseConfig;
+
+  constructor(apiKey?: string) {
+    super();
+    this.config = new TogetherBaseConfig(apiKey);
+  }
 
   /**
-   * Check if OpenAI supports fine-tuning
-   * Requires OPENAI_API_KEY in SecretManager
+   * Check if Together supports fine-tuning
+   * Requires TOGETHER_API_KEY in SecretManager
    */
   supportsFineTuning(): boolean {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
-    return !!apiKey;
+    return this.config.hasApiKey();
   }
 
   /**
    * Get fine-tuning capabilities
    *
-   * OpenAI capabilities (remote API training):
+   * Together capabilities (remote API training):
    * - LoRA rank: Fixed by provider (not directly configurable)
    * - Epochs: 1-50 (default: 3)
    * - No GPU required (cloud-based)
@@ -94,13 +102,12 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       // Performance (API latency + training time)
       estimatedTrainingTime: 800, // 800ms per example per epoch (API overhead)
 
-      // Model support (OpenAI models)
+      // Model support (Together models)
       supportedBaseModels: [
-        'gpt-3.5-turbo',
-        'gpt-4',
-        'gpt-4-turbo',
-        'gpt-4o',
-        'gpt-4o-mini-2024-07-18'
+        'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference',
+        'meta-llama/Meta-Llama-3.1-70B-Instruct-Reference',
+        'mistralai/Mixtral-8x7B-Instruct-v0.1',
+        'Qwen/Qwen2.5-7B-Instruct'
       ],
 
       // Requirements
@@ -116,7 +123,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    *
    * Steps:
    * 1. Export dataset to JSONL
-   * 2. Upload to OpenAI
+   * 2. Upload to Together
    * 3. Create fine-tuning job
    * 4. Return handle with jobId and fileId
    *
@@ -125,15 +132,15 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-disable @typescript-eslint/naming-convention */
   protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log('🚀 OpenAI: Starting training job (async pattern)...');
+    console.log('🚀 Together: Starting training job (async pattern)...');
 
     // 1. Export dataset to JSONL
     console.log('   Exporting dataset...');
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
     console.log(`   Dataset exported: ${datasetPath}`);
 
-    // 2. Upload dataset to OpenAI
-    console.log('   Uploading to OpenAI...');
+    // 2. Upload dataset to Together
+    console.log('   Uploading to Together...');
     const fileId = await this.uploadDataset(datasetPath);
     console.log(`   File ID: ${fileId}`);
 
@@ -145,7 +152,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     // 4. Clean up temp file immediately
     await this.cleanupTempFiles(datasetPath);
 
-    // 5. Return handle (training continues on OpenAI servers!)
+    // 5. Return handle (training continues on Together servers!)
     return {
       jobId,
       fileId,
@@ -160,8 +167,8 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    * Query training status - Returns current status (FAST!)
    *
    * Steps:
-   * 1. Query OpenAI API for job status
-   * 2. Map OpenAI status to our status enum
+   * 1. Query Together API for job status
+   * 2. Map Together status to our status enum
    * 3. Return current status
    *
    * NO BLOCKING - Returns in < 5 seconds!
@@ -173,23 +180,22 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log(`🔍 OpenAI: Querying job status: ${providerJobId}`);
+    console.log(`🔍 Together: Querying job status: ${providerJobId}`);
 
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
-    if (!apiKey) {
+    if (!this.config.hasApiKey()) {
       return {
         status: 'failed',
-        error: 'OPENAI_API_KEY not configured'
+        error: 'TOGETHER_API_KEY not configured'
       };
     }
 
     try {
       const response = await fetch(
-        `https://api.openai.com/v1/fine_tuning/jobs/${providerJobId}`,
+        `${this.config.baseUrl}/v1/fine-tunes/${providerJobId}`,
         {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'Authorization': `Bearer ${this.config.apiKey}`,
             'Content-Type': 'application/json'
           }
         }
@@ -199,28 +205,28 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
         const errorText = await response.text();
         return {
           status: 'failed',
-          error: `OpenAI API error: ${response.status} - ${errorText}`
+          error: `Together API error: ${response.status} - ${errorText}`
         };
       }
 
       const job = await response.json();
 
-      // Map OpenAI status to our status
-      const status = this.mapOpenAIStatus(job.status);
+      // Map Together status to our status
+      const status = this.mapTogetherStatus(job.status);
 
       return {
         status,
-        modelId: job.fine_tuned_model ?? undefined,
+        modelId: job.output_name ?? undefined,
         error: job.error?.message,
         metadata: {
-          openaiStatus: job.status,
+          togetherStatus: job.status,
           createdAt: job.created_at,
           finishedAt: job.finished_at,
           trainedTokens: job.trained_tokens
         }
       };
     } catch (error) {
-      console.error(`❌ OpenAI: Failed to query status:`, error);
+      console.error(`❌ Together: Failed to query status:`, error);
       return {
         status: 'failed',
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -229,9 +235,9 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   }
 
   /**
-   * Map OpenAI status to our status enum
+   * Map Together status to our status enum
    */
-  private mapOpenAIStatus(openaiStatus: string): 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  private mapTogetherStatus(openaiStatus: string): 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' {
     switch (openaiStatus) {
       case 'validating_files':
       case 'queued':
@@ -245,7 +251,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       case 'cancelled':
         return 'cancelled';
       default:
-        console.warn(`Unknown OpenAI status: ${openaiStatus}, treating as running`);
+        console.warn(`Unknown Together status: ${openaiStatus}, treating as running`);
         return 'running';
     }
   }
@@ -258,7 +264,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   }
 
   /**
-   * Estimate training cost (OpenAI pricing)
+   * Estimate training cost (Together pricing)
    *
    * Pricing: $15/1M input tokens, $60/1M output tokens
    * Assumption: Average example = 100 tokens input + 50 tokens output
@@ -307,7 +313,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     // Use .continuum/media/temp to avoid filling up primary drive
     const tempDir = PATHS.MEDIA_TEMP;
     await fs.promises.mkdir(tempDir, { recursive: true });
-    const tempPath = path.join(tempDir, `openai-training-${Date.now()}.jsonl`);
+    const tempPath = path.join(tempDir, `together-training-${Date.now()}.jsonl`);
 
     // Convert dataset to JSONL format
     const lines = dataset.examples.map(example => {
@@ -325,32 +331,35 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   }
 
   /**
-   * Upload dataset to OpenAI API
+   * Upload dataset to Together API
    * @private
    */
   private async uploadDataset(datasetPath: string): Promise<string> {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
-    if (!apiKey) {
+    if (!this.config.hasApiKey()) {
       throw new Error(
-        'OPENAI_API_KEY not configured. ' +
+        'TOGETHER_API_KEY not configured. ' +
         'Please add it to ~/.continuum/config.env:\n' +
-        'OPENAI_API_KEY=your-key-here'
+        'TOGETHER_API_KEY=your-key-here'
       );
     }
 
-    // Upload dataset via OpenAI API
-    // POST https://api.openai.com/v1/files
+    // Upload dataset via Together API
+    // POST https://api.together.xyz/v1/files/upload
+    // Together requires THREE fields: file, file_name, and purpose
     const fileContent = await fs.promises.readFile(datasetPath, 'utf-8');
-    const blob = new Blob([fileContent], { type: 'application/json' });
+    const blob = new Blob([fileContent], { type: 'application/jsonl' });
+    const filename = path.basename(datasetPath);
 
     const formData = new FormData();
-    formData.append('file', blob, 'training.jsonl');
+    formData.append('file', blob, filename);
+    formData.append('file_name', filename);  // REQUIRED - Together needs this separately!
     formData.append('purpose', 'fine-tune');
 
-    const response = await fetch('https://api.openai.com/v1/files', {
+    const response = await fetch(`${this.config.baseUrl}/v1/files/upload`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${this.config.apiKey}`
+        // Don't set Content-Type - let FormData set it with boundary
       },
       body: formData
     });
@@ -372,25 +381,18 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     request: LoRATrainingRequest,
     fileId: string
   ): Promise<string> {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
-
-    const capabilities = this.getFineTuningCapabilities();
-    const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
-
     // Create fine-tuning job
-    // POST https://api.openai.com/v1/fine_tuning/jobs
-    const response = await fetch('https://api.openai.com/v1/fine_tuning/jobs', {
+    // POST https://api.together.xyz/v1/fine-tunes (NOT fine_tuning/jobs!)
+    // Together API uses simpler format than OpenAI
+    const response = await fetch(`${this.config.baseUrl}/v1/fine-tunes`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${this.config.apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         training_file: fileId,
-        model: request.baseModel ?? 'gpt-4o-mini-2024-07-18',
-        hyperparameters: {
-          n_epochs: epochs
-        }
+        model: request.baseModel ?? 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference'
       })
     });
 
@@ -407,10 +409,9 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    * Monitor training job until complete
    * Returns the fine-tuned model ID
    * @private
+   * @deprecated This method is not used with async handle pattern - use _queryStatus() instead
    */
   private async monitorTrainingJob(jobId: string): Promise<string> {
-    const apiKey = getSecret('OPENAI_API_KEY', 'OpenAILoRAAdapter');
-
     const maxAttempts = 120; // 10 minutes max (5s * 120 = 600s)
     let attempts = 0;
 
@@ -419,8 +420,8 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       attempts++;
 
       try {
-        const response = await fetch(`https://api.openai.com/v1/fine_tuning/jobs/${jobId}`, {
-          headers: { 'Authorization': `Bearer ${apiKey}` }
+        const response = await fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
+          headers: { 'Authorization': `Bearer ${this.config.apiKey}` }
         });
 
         if (!response.ok) {
@@ -491,11 +492,11 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
 
     const destPath = path.join(permanentDir, adapterFilename);
 
-    // Save adapter metadata (not the model itself - that's on OpenAI)
+    // Save adapter metadata (not the model itself - that's on Together)
     const metadata = {
       providerId: this.providerId,
       modelId,
-      baseModel: request.baseModel ?? 'gpt-4o-mini-2024-07-18',
+      baseModel: request.baseModel ?? 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference',
       traitType: request.traitType,
       personaId: request.personaId,
       personaName: request.personaName,

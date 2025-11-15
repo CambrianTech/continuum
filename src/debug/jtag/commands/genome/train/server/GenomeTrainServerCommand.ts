@@ -21,8 +21,8 @@ import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/se
 import { PEFTLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/PEFTLoRAAdapter';
 import { OllamaLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OllamaLoRAAdapter';
 import { DeepSeekLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/DeepSeekLoRAAdapter';
-import { OpenAILoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/OpenAILoRAAdapter';
-import { TogetherLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/TogetherLoRAAdapter';
+import { OpenAILoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/openai/server/OpenAIFineTuningAdapter';
+import { TogetherLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/together/server/TogetherFineTuningAdapter';
 import { FireworksLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/FireworksLoRAAdapter';
 import { MistralLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/MistralLoRAAdapter';
 import { AnthropicLoRAAdapter } from '../../../../system/genome/fine-tuning/server/adapters/AnthropicLoRAAdapter';
