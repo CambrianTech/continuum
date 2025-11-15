@@ -28,7 +28,7 @@ import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
 export class FireworksBaseConfig {
   readonly providerId = 'fireworks';
   readonly providerName = 'Fireworks AI';
-  readonly baseUrl = 'https://api.fireworks.ai';
+  readonly baseUrl = 'https://api.fireworks.ai/inference/v1';
   readonly apiKey: string;
 
   constructor(apiKey?: string) {
