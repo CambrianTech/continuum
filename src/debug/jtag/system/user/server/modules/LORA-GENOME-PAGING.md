@@ -51,15 +51,19 @@ Benefits:
 
 ## The Architecture (In Simple Terms)
 
-### Genome as Layered Attributes
+### Genome as Layered Attributes (UPDATED: Dynamic Composition)
 
 ```typescript
 interface PersonaGenome {
   baseModel: string;              // 'deepseek-coder-v2' (always loaded)
-  loraLayers: LoRALayer[];        // Available adapters
-  activeLayer?: string;           // Currently in GPU memory
+  loraLayers: LoRALayer[];        // Available adapters (modular!)
+  activeComposition: {            // MULTIPLE adapters loaded simultaneously
+    adapters: string[];           // ['wine-expertise', 'vin-diesel-style']
+    weights: number[];            // [0.7, 0.3]
+  };
   learningMode: boolean;          // Fine-tuning active?
   memoryBudget: number;           // Max GPU memory for adapters
+  maxActiveAdapters: number;      // Provider limit (PEFT: unlimited, Fireworks: 1)
 }
 
 interface LoRALayer {
@@ -69,10 +73,90 @@ interface LoRALayer {
   lastUsed: number;               // For LRU eviction
   size: number;                   // Memory footprint (MB)
   trainingActive: boolean;        // Currently fine-tuning?
+  type: 'domain' | 'personality'; // Modular layer type
 }
 ```
 
 **Key insight**: LoRA adapters are **just attributes** within PersonaUser, not separate processes!
+
+**BREAKTHROUGH (2025-11-15)**: PEFT supports **dynamic composition** via `set_adapters()` - multiple layers can be loaded and weighted at runtime with ZERO inference overhead!
+
+### Dynamic Composition: The Modular Training Strategy
+
+**The Problem We Solved:**
+- Training persona-specific models = combinatorial explosion
+- Example: 10 domains × 10 personalities = 100 training jobs
+- Cost: ~$15-20 per job × 100 = $1500-2000
+- Time: Weeks of sequential training
+
+**The Solution: Modular Layers + Dynamic Composition**
+```typescript
+// Train ONCE per domain (10 jobs)
+trainLoRA({ traitType: "wine-expertise", dataset: wineData });
+trainLoRA({ traitType: "typescript-expertise", dataset: codeData });
+trainLoRA({ traitType: "legal-knowledge", dataset: legalData });
+// ... 7 more domains
+
+// Train ONCE per personality (10 jobs)
+trainLoRA({ traitType: "vin-diesel-style", dataset: movieQuotes });
+trainLoRA({ traitType: "shakespeare-style", dataset: shakespeareText });
+trainLoRA({ traitType: "einstein-style", dataset: einsteinWriting });
+// ... 7 more personalities
+
+// Cost: 20 training jobs instead of 100
+// Get: 10 × 10 = 100 combinations dynamically!
+```
+
+**At Inference Time:**
+```python
+# PEFT dynamic composition (local inference)
+peft_model.load_adapter("wine-expertise", adapter_name="wine")
+peft_model.load_adapter("vin-diesel-style", adapter_name="personality")
+
+# Compose instantly - no merging needed!
+peft_model.set_adapters(["wine", "personality"], adapter_weights=[0.7, 0.3])
+response = peft_model.generate(prompt)  # Vin Diesel wine sommelier!
+
+# Switch composition instantly (< 1ms)
+peft_model.set_adapters(["wine", "shakespeare"], adapter_weights=[0.7, 0.3])
+response = peft_model.generate(prompt)  # Shakespearean wine sommelier!
+```
+
+**Benefits:**
+- **5x-10x cost reduction**: Train N+M instead of N×M
+- **Instant switching**: Change persona composition in milliseconds
+- **Independent distribution**: Push new domain layer, all personas can use it immediately
+- **Fast iteration**: Update one layer without retraining others
+
+### Two-Tier Architecture: PEFT (Local) + Remote APIs
+
+**Tier 1: PEFT (Unlimited Dynamic Composition)**
+```typescript
+interface PEFTGenome {
+  maxActiveAdapters: Infinity;     // No limit on composition
+  compositionMethod: 'set_adapters' | 'add_weighted_adapter';
+  supportedMerging: ['TIES', 'DARE', 'linear'];  // Advanced methods
+  inferenceLocation: 'local';       // Runs on our GPU
+  costPerInference: 0;              // Free (own hardware)
+}
+```
+
+**Tier 2: Remote APIs (Single Composite Only)**
+```typescript
+interface FireworksGenome {
+  maxActiveAdapters: 1;            // ONE composite adapter per inference
+  compositionMethod: 'offline_merge';  // Pre-merge before deployment
+  supportedMerging: ['PEFT merge'];    // Use PEFT locally, deploy result
+  inferenceLocation: 'remote';     // Fireworks cloud
+  costPerInference: 0.0000002;     // $0.2/1M tokens
+}
+```
+
+**Strategy:**
+1. **All PersonaUsers get modular layers** (wine, coding, personality, etc.)
+2. **Local PEFT personas**: Unlimited dynamic composition
+3. **Remote API personas**: Deploy popular pre-merged composites
+4. **Hybrid approach**: Train locally with PEFT, deploy winners to Fireworks for scale
 
 ### Paging System (Like OS Virtual Memory)
 

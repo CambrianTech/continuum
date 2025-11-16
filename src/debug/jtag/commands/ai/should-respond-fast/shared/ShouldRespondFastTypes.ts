@@ -21,13 +21,13 @@ export interface ResponseScoringWeights {
   /** Recent conversation participation (default: 30) */
   readonly conversationContext: number;
 
-  /** Question detected (?, how, what, why) (default: 20) */
+  /** Question detected (?, how, what, why) (default: 10) */
   readonly isQuestion: number;
 
-  /** Message directed at room (not DM) (default: 10) */
-  readonly publicMessage: number;
+  /** Unanswered question needs attention (default: 5) */
+  readonly unansweredQuestion: number;
 
-  /** High activity in room recently (default: 5) */
+  /** High activity in room recently (deprecated, default: 0) */
   readonly roomActivity: number;
 }
 
@@ -98,7 +98,7 @@ export interface ShouldRespondFastResult extends CommandResult {
     domainKeywords: number;
     conversationContext: number;
     isQuestion: number;
-    publicMessage: number;
+    unansweredQuestion: number;
     roomActivity: number;
   };
 
@@ -116,17 +116,30 @@ export interface ShouldRespondFastResult extends CommandResult {
 
 /**
  * Default scoring weights
+ *
+ * Philosophy: Distinguish "needs A response" from "needs MY response"
+ * - Direct mention = MUST respond (100+)
+ * - Domain expertise + context = Should respond (40+)
+ * - Unanswered question = Signal only, not decisive (5)
+ * - Room activity = Removed (was causing everyone to respond)
  */
 export const DEFAULT_SCORING_WEIGHTS: ResponseScoringWeights = {
-  directMention: 100,
-  domainKeyword: 50,
-  conversationContext: 30,
-  isQuestion: 20,
-  publicMessage: 10,
-  roomActivity: 5
+  directMention: 100,       // MUST respond - you were called
+  domainKeyword: 25,        // Reduced from 50 - expertise match
+  conversationContext: 20,  // Reduced from 30 - thread continuation
+  isQuestion: 10,           // Reduced from 20 - question signal
+  unansweredQuestion: 5,    // New: someone should answer, but who?
+  roomActivity: 0           // Disabled: was 5, caused noise
 };
 
 /**
  * Default response threshold
+ *
+ * With new weights:
+ * - Direct mention: 100 → Always respond
+ * - Domain + context: 25 + 20 = 45 → Respond (engaged expert)
+ * - Domain + question: 25 + 10 = 35 → Maybe respond (borderline)
+ * - Just question: 10 → Don't respond (let experts handle it)
+ * - Random message: 0 → Never respond
  */
-export const DEFAULT_RESPONSE_THRESHOLD = 50;
+export const DEFAULT_RESPONSE_THRESHOLD = 35;

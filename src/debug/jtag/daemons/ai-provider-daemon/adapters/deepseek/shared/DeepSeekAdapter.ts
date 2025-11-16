@@ -1,5 +1,6 @@
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
 import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
+import { DeepSeekBaseConfig } from './DeepSeekBaseConfig';
 
 /**
  * DeepSeek Adapter
@@ -21,45 +22,28 @@ import type { ModelInfo } from '../../../shared/AIProviderTypesV2';
  * - Excellent code generation (deepseek-coder)
  */
 export class DeepSeekAdapter extends BaseOpenAICompatibleAdapter {
-  constructor(apiKey: string) {
+  private readonly sharedConfig: DeepSeekBaseConfig;
+
+  constructor(apiKey?: string) {
+    // Create shared config (used by inference + fine-tuning)
+    const sharedConfig = new DeepSeekBaseConfig(apiKey);
+
     super({
-      providerId: 'deepseek',
-      providerName: 'DeepSeek',
-      apiKey: apiKey,
-      baseUrl: 'https://api.deepseek.com',
-      defaultModel: 'deepseek-chat',
+      providerId: sharedConfig.providerId,
+      providerName: sharedConfig.providerName,
+      apiKey: sharedConfig.apiKey,
+      baseUrl: sharedConfig.baseUrl,
+      defaultModel: sharedConfig.getDefaultModel(),
       timeout: 120000,
       supportedCapabilities: ['text-generation', 'chat'],
-      models: [
-        {
-          id: 'deepseek-chat',
-          name: 'DeepSeek Chat',
-          provider: 'deepseek',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 32000,
-          supportsStreaming: true,
-          supportsFunctions: true
-        },
-        {
-          id: 'deepseek-coder',
-          name: 'DeepSeek Coder',
-          provider: 'deepseek',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 64000,
-          supportsStreaming: true,
-          supportsFunctions: true
-        },
-        {
-          id: 'deepseek-reasoner',
-          name: 'DeepSeek Reasoner (R1)',
-          provider: 'deepseek',
-          capabilities: ['text-generation', 'chat'],
-          contextWindow: 32000,
-          supportsStreaming: true,
-          supportsFunctions: true
-        }
-      ]
+      models: sharedConfig.getAvailableModels(),
     });
+
+    this.sharedConfig = sharedConfig;
+  }
+
+  getSharedConfig(): DeepSeekBaseConfig {
+    return this.sharedConfig;
   }
 
   async getAvailableModels(): Promise<ModelInfo[]> {

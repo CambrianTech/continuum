@@ -151,6 +151,19 @@ export class TrainingSessionEntity extends BaseEntity {
   baseModel!: string;
 
   /**
+   * Provider name (e.g., 'openai', 'fireworks', 'mistral', 'together', 'ollama')
+   */
+  @TextField()
+  provider!: string;
+
+  /**
+   * Provider-specific job ID (e.g., OpenAI fine-tune job ID, Fireworks job ID)
+   * Used to query status from the provider API
+   */
+  @TextField()
+  providerJobId!: string;
+
+  /**
    * Hyperparameters for this training run
    */
   @JsonField()
@@ -239,6 +252,12 @@ export class TrainingSessionEntity extends BaseEntity {
     }
     if (!this.baseModel) {
       return { success: false, error: 'baseModel is required' };
+    }
+    if (!this.provider) {
+      return { success: false, error: 'provider is required' };
+    }
+    if (!this.providerJobId) {
+      return { success: false, error: 'providerJobId is required' };
     }
     if (!this.hyperparameters) {
       return { success: false, error: 'hyperparameters is required' };

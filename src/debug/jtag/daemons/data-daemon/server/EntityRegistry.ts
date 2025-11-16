@@ -9,7 +9,8 @@ import { registerEntity } from './SqliteStorageAdapter';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
-import { TrainingSessionEntity } from '../../../system/data/entities/TrainingSessionEntity';
+import { TrainingSessionEntity as AcademyTrainingSessionEntity } from '../../../system/data/entities/TrainingSessionEntity';
+import { TrainingSessionEntity as FineTuningTrainingSessionEntity } from '../shared/entities/TrainingSessionEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../../../system/data/entities/ContentTypeEntity';
 import { RecipeEntity } from '../../../system/data/entities/RecipeEntity';
@@ -22,6 +23,10 @@ import { DatasetExecutionEntity } from '../shared/entities/DatasetExecutionEntit
 import { TrainingDatasetEntity } from '../shared/entities/TrainingDatasetEntity';
 import { TrainingExampleEntity } from '../shared/entities/TrainingExampleEntity';
 import { CoordinationDecisionEntity } from '../../../system/data/entities/CoordinationDecisionEntity';
+import { CodeIndexEntity } from '../../../system/data/entities/CodeIndexEntity';
+import { FineTuningDatasetEntity } from '../shared/entities/FineTuningDatasetEntity';
+import { FineTuningJobEntity } from '../shared/entities/FineTuningJobEntity';
+import { FineTunedModelEntity } from '../shared/entities/FineTunedModelEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -35,7 +40,8 @@ export function initializeEntityRegistry(): void {
   new UserEntity();
   new RoomEntity();
   new ChatMessageEntity();
-  new TrainingSessionEntity();
+  new AcademyTrainingSessionEntity();
+  new FineTuningTrainingSessionEntity();
   new UserStateEntity();
   new ContentTypeEntity();
   new RecipeEntity();
@@ -48,12 +54,17 @@ export function initializeEntityRegistry(): void {
   new TrainingDatasetEntity();
   new TrainingExampleEntity();
   new CoordinationDecisionEntity();
+  new CodeIndexEntity();
+  new FineTuningDatasetEntity();
+  new FineTuningJobEntity();
+  new FineTunedModelEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
   // Enable ChatMessage relational ORM with individual columns for optimal querying
   registerEntity(ChatMessageEntity.collection, ChatMessageEntity);
-  registerEntity(TrainingSessionEntity.collection, TrainingSessionEntity);
+  registerEntity(AcademyTrainingSessionEntity.collection, AcademyTrainingSessionEntity);
+  registerEntity(FineTuningTrainingSessionEntity.collection, FineTuningTrainingSessionEntity);
   registerEntity(UserStateEntity.collection, UserStateEntity);
   registerEntity(ContentTypeEntity.collection, ContentTypeEntity);
   registerEntity(RecipeEntity.collection, RecipeEntity);
@@ -66,6 +77,10 @@ export function initializeEntityRegistry(): void {
   registerEntity(TrainingDatasetEntity.collection, TrainingDatasetEntity);
   registerEntity(TrainingExampleEntity.collection, TrainingExampleEntity);
   registerEntity(CoordinationDecisionEntity.collection, CoordinationDecisionEntity);
+  registerEntity(CodeIndexEntity.collection, CodeIndexEntity);
+  registerEntity(FineTuningDatasetEntity.collection, FineTuningDatasetEntity);
+  registerEntity(FineTuningJobEntity.collection, FineTuningJobEntity);
+  registerEntity(FineTunedModelEntity.collection, FineTunedModelEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }

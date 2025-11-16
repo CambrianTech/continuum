@@ -24,6 +24,11 @@ import type { StateCreateParams, StateCreateResult } from '../../../../commands/
 import type { StateGetParams, StateGetResult } from '../../../../commands/state/get/shared/StateGetTypes';
 import type { StateUpdateParams, StateUpdateResult } from '../../../../commands/state/update/shared/StateUpdateTypes';
 import type { AdapterTestParams, AdapterTestResult, AllAdaptersTestResult } from '../../../../commands/ai/adapter/test/shared/AdapterTestTypes';
+import type { EmbeddingGenerateParams, EmbeddingGenerateResult } from '../../../../commands/ai/embedding/generate/shared/EmbeddingGenerateTypes';
+import type { IndexCreateParams, IndexCreateResult } from '../../../../commands/ai/rag/index/create/shared/IndexCreateTypes';
+import type { RagQueryOpenParams, RagQueryOpenResult } from '../../../../commands/ai/rag/query-open/shared/RagQueryOpenTypes';
+import type { RagQueryFetchParams, RagQueryFetchResult } from '../../../../commands/ai/rag/query-fetch/shared/RagQueryFetchTypes';
+import type { RagQueryCloseParams, RagQueryCloseResult } from '../../../../commands/ai/rag/query-close/shared/RagQueryCloseTypes';
 
 /**
  * Command Registry - Maps command names to their param/result types
@@ -89,6 +94,26 @@ export interface CommandRegistry {
   'ai/adapter/test': {
     params: AdapterTestParams;
     result: AdapterTestResult | AllAdaptersTestResult;
+  };
+  'ai/embedding/generate': {
+    params: EmbeddingGenerateParams;
+    result: EmbeddingGenerateResult;
+  };
+  'ai/rag/index/create': {
+    params: IndexCreateParams;
+    result: IndexCreateResult;
+  };
+  'ai/rag/query-open': {
+    params: RagQueryOpenParams;
+    result: RagQueryOpenResult;
+  };
+  'ai/rag/query-fetch': {
+    params: RagQueryFetchParams;
+    result: RagQueryFetchResult;
+  };
+  'ai/rag/query-close': {
+    params: RagQueryCloseParams;
+    result: RagQueryCloseResult;
   };
   // Add more commands here...
 }

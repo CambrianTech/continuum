@@ -20,8 +20,10 @@ import type {
   LoRATrainingRequest,
   LoRATrainingResult,
   FineTuningCapabilities,
-  FineTuningStrategy
+  FineTuningStrategy,
+  TrainingStatus
 } from '../../shared/FineTuningTypes';
+import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -165,6 +167,14 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       // Cleanup temp files
       await this.cleanupTempFiles(configPath, datasetPath);
     }
+  }
+
+  /**
+   * Check training status - NOT IMPLEMENTED YET
+   * TODO: Implement async handle pattern for this adapter
+   */
+  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
+    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
   }
 
   /**

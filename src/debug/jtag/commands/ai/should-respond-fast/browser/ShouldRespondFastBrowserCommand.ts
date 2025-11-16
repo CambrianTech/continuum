@@ -28,7 +28,7 @@ export class ShouldRespondFastBrowserCommand extends ShouldRespondFastCommand {
         domainKeywords: 0,
         conversationContext: 0,
         isQuestion: 0,
-        publicMessage: 0,
+        unansweredQuestion: 0,
         roomActivity: 0
       },
       signals: {

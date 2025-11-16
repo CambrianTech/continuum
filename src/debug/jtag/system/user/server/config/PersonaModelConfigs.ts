@@ -6,6 +6,7 @@
  */
 
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
+import { MODEL_IDS } from '../../../shared/Constants';
 
 /**
  * SOTA (State-of-the-Art) Providers
@@ -48,7 +49,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'anthropic': {
     provider: 'anthropic',
-    model: 'claude-3-5-sonnet-20240620',
+    model: MODEL_IDS.ANTHROPIC.SONNET_4_5,
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: 'You are a helpful AI assistant powered by Anthropic Claude. You provide thoughtful, detailed responses with careful reasoning and helpful explanations.'
@@ -69,7 +70,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'fireworks': {
     provider: 'fireworks',
-    model: 'accounts/fireworks/models/deepseek-v3p1',
+    model: 'accounts/fireworks/models/llama-v3p1-8b-instruct', // Default from FireworksBaseConfig
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: 'You are Fireworks AI assistant. You provide fast, high-quality responses optimized for production workloads.'

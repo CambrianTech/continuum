@@ -1,0 +1,198 @@
+# Continuum Cloud Fine-Tuning Service
+# Docker Compose configuration for production deployment
+#
+# This enables the business model:
+# - Open source core (JTAG)
+# - Paid cloud fine-tuning service
+# - Revenue funds open source development
+#
+# Usage:
+#   docker-compose up -d
+#
+# Environment variables (set in .env or docker-compose.override.yml):
+#   - OPENAI_API_KEY
+#   - DEEPSEEK_API_KEY
+#   - FIREWORKS_API_KEY
+#   - TOGETHER_API_KEY
+#   - AWS_ACCESS_KEY_ID
+#   - AWS_SECRET_ACCESS_KEY
+#   - AWS_REGION
+#   - AWS_BEDROCK_S3_BUCKET
+#   - AWS_BEDROCK_ROLE_ARN
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # Fine-Tuning API Service
+  # ============================================================================
+  fine-tuning-api:
+    build:
+      context: ../../../../../../..
+      dockerfile: system/genome/fine-tuning/server/adapters/api-tests/deployment/Dockerfile
+    image: continuum/fine-tuning-api:latest
+    container_name: continuum-fine-tuning
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+
+      # Provider API Keys (from secret manager)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - FIREWORKS_API_KEY=${FIREWORKS_API_KEY}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY}
+
+      # AWS Credentials (for Bedrock)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_BEDROCK_S3_BUCKET=${AWS_BEDROCK_S3_BUCKET}
+      - AWS_BEDROCK_ROLE_ARN=${AWS_BEDROCK_ROLE_ARN}
+
+      # Service Configuration
+      - MAX_CONCURRENT_JOBS=5
+      - JOB_TIMEOUT_MS=1800000  # 30 minutes
+      - POLLING_INTERVAL_MS=5000  # 5 seconds
+
+    volumes:
+      # Job data persistence
+      - fine-tuning-data:/app/data
+      - fine-tuning-logs:/app/logs
+
+    networks:
+      - continuum-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
+  # Job Queue (Redis)
+  # ============================================================================
+  job-queue:
+    image: redis:7-alpine
+    container_name: continuum-job-queue
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - continuum-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Job Database (PostgreSQL)
+  # ============================================================================
+  job-database:
+    image: postgres:15-alpine
+    container_name: continuum-job-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=continuum_jobs
+      - POSTGRES_USER=continuum
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - continuum-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U continuum"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Monitoring (Prometheus + Grafana) - Optional
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: continuum-prometheus
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - continuum-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: continuum-grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - continuum-network
+    depends_on:
+      - prometheus
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  fine-tuning-data:
+    driver: local
+  fine-tuning-logs:
+    driver: local
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  continuum-network:
+    driver: bridge
+
+# ============================================================================
+# Usage Examples
+# ============================================================================
+#
+# Start all services:
+#   docker-compose up -d
+#
+# Start with monitoring:
+#   docker-compose --profile monitoring up -d
+#
+# View logs:
+#   docker-compose logs -f fine-tuning-api
+#
+# Stop all services:
+#   docker-compose down
+#
+# Full cleanup (including volumes):
+#   docker-compose down -v
+#
+# Scale fine-tuning workers:
+#   docker-compose up -d --scale fine-tuning-api=3
