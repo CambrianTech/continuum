@@ -48,7 +48,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'anthropic': {
     provider: 'anthropic',
-    model: 'claude-3-5-sonnet-20250122', // Updated to latest Sonnet v2 (Jan 2025)
+    model: 'claude-3-5-sonnet-20241022', // Latest Claude 3.5 Sonnet (Oct 2024)
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: 'You are a helpful AI assistant powered by Anthropic Claude. You provide thoughtful, detailed responses with careful reasoning and helpful explanations.'
