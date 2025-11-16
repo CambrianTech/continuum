@@ -13,6 +13,7 @@ import { BaseUser } from '../../domain/user/BaseUser';
 import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { BaseUserDataWithRelationships } from '../../domain/user/UserRelationships';
 import { USER_IDS, USER_CONFIG, COLLECTIONS } from './SeedConstants';
+import { MODEL_IDS } from '../../system/shared/Constants';
 
 // Rust-like branded type for strict typing
 export type UserId = string & { readonly __brand: 'UserId' };
@@ -299,7 +300,7 @@ export class UserDataSeed {
       preferences: {},
       isOnline: true,
       modelConfig: {
-        model: 'claude-3-5-sonnet-20250122',
+        model: MODEL_IDS.ANTHROPIC.SONNET_4_5,
         provider: 'anthropic',
         maxTokens: 4000,
         temperature: 0.7,
