@@ -83,6 +83,48 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
   ): Promise<TrainingStatus>;
   /* eslint-enable @typescript-eslint/naming-convention */
 
+  // ==========================================================================
+  // Protected Helper Methods (Available to Subclasses)
+  // ==========================================================================
+
+  /**
+   * Export dataset to standard JSONL format
+   *
+   * This is the unified JSONL exporter for ALL providers.
+   * Uses OpenAI Chat Completions format: {"messages": [...]}
+   *
+   * CRITICAL: Only includes messages field, strips metadata to avoid validation errors
+   *
+   * @param dataset - Training dataset with examples
+   * @param outputPath - Where to write the JSONL file
+   * @returns Path to the exported JSONL file
+   */
+  protected async exportDatasetToJSONL(
+    dataset: import('../shared/FineTuningTypes').TrainingDataset,
+    outputPath: string
+  ): Promise<string> {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    // Ensure directory exists
+    const dir = path.dirname(outputPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    // Convert to JSONL (only messages field, strip metadata)
+    const lines = (dataset.examples ?? []).map(example => {
+      return JSON.stringify({ messages: example.messages });
+    });
+
+    fs.writeFileSync(outputPath, lines.join('\n'), 'utf-8');
+    return outputPath;
+  }
+
+  // ==========================================================================
+  // Public API Methods
+  // ==========================================================================
+
   /**
    * Universal trainLoRA implementation
    *
@@ -201,7 +243,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
         provider: this.providerId as 'openai' | 'deepseek' | 'peft' | 'mlx' | 'anthropic',
         status: 'running',
         baseModel: request.baseModel,
-        datasetHandle: '', // TODO: Get from request if available
+        datasetHandle: handle.fileId || handle.datasetName || `dataset-${handle.jobId}`, // Provider's file/dataset ID
         hyperparameters: {
           learningRate: request.learningRate ?? 0.0001,
           batchSize: request.batchSize ?? 4,

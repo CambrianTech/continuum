@@ -9,7 +9,8 @@ import { registerEntity } from './SqliteStorageAdapter';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
-import { TrainingSessionEntity } from '../../../system/data/entities/TrainingSessionEntity';
+import { TrainingSessionEntity as AcademyTrainingSessionEntity } from '../../../system/data/entities/TrainingSessionEntity';
+import { TrainingSessionEntity as FineTuningTrainingSessionEntity } from '../shared/entities/TrainingSessionEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../../../system/data/entities/ContentTypeEntity';
 import { RecipeEntity } from '../../../system/data/entities/RecipeEntity';
@@ -39,7 +40,8 @@ export function initializeEntityRegistry(): void {
   new UserEntity();
   new RoomEntity();
   new ChatMessageEntity();
-  new TrainingSessionEntity();
+  new AcademyTrainingSessionEntity();
+  new FineTuningTrainingSessionEntity();
   new UserStateEntity();
   new ContentTypeEntity();
   new RecipeEntity();
@@ -61,7 +63,8 @@ export function initializeEntityRegistry(): void {
   registerEntity(RoomEntity.collection, RoomEntity);
   // Enable ChatMessage relational ORM with individual columns for optimal querying
   registerEntity(ChatMessageEntity.collection, ChatMessageEntity);
-  registerEntity(TrainingSessionEntity.collection, TrainingSessionEntity);
+  registerEntity(AcademyTrainingSessionEntity.collection, AcademyTrainingSessionEntity);
+  registerEntity(FineTuningTrainingSessionEntity.collection, FineTuningTrainingSessionEntity);
   registerEntity(UserStateEntity.collection, UserStateEntity);
   registerEntity(ContentTypeEntity.collection, ContentTypeEntity);
   registerEntity(RecipeEntity.collection, RecipeEntity);

@@ -15,11 +15,77 @@ import type {
 } from '../shared/GenomeJobCreateTypes';
 import { FineTuningJobEntity } from '../../../../daemons/data-daemon/shared/entities/FineTuningJobEntity';
 import { PARAMETER_RANGES, type JobConfiguration } from '../../../../daemons/data-daemon/shared/entities/FineTuningTypes';
-import { COLLECTIONS } from '../../../../system/shared/Constants';
+import { COLLECTIONS, FINE_TUNING_PROVIDERS } from '../../../../system/shared/Constants';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
+import type { DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
+import type { LoRATrainingRequest, TrainingDataset } from '../../../../system/genome/fine-tuning/shared/FineTuningTypes';
+import { getSecret } from '../../../../system/secrets/SecretManager';
+import * as fs from 'fs';
+
+/**
+ * Create fine-tuning adapter instance for a given provider
+ * Fire-and-forget pattern - instantiate when needed, let it handle persistence
+ */
+async function createFineTuningAdapter(provider: string): Promise<BaseLoRATrainer> {
+  switch (provider) {
+    case 'openai': {
+      const apiKey = await getSecret('OPENAI_API_KEY');
+      const { OpenAILoRAAdapter } = await import('../../../../daemons/ai-provider-daemon/adapters/openai/server/OpenAIFineTuningAdapter');
+      return new OpenAILoRAAdapter(apiKey);
+    }
+    case 'fireworks': {
+      const apiKey = await getSecret('FIREWORKS_API_KEY');
+      const { FireworksLoRAAdapter } = await import('../../../../daemons/ai-provider-daemon/adapters/fireworks/server/FireworksFineTuningAdapter');
+      return new FireworksLoRAAdapter(apiKey);
+    }
+    case 'deepseek': {
+      const apiKey = await getSecret('DEEPSEEK_API_KEY');
+      const { DeepSeekLoRAAdapter } = await import('../../../../daemons/ai-provider-daemon/adapters/deepseek/server/DeepSeekFineTuningAdapter');
+      return new DeepSeekLoRAAdapter(apiKey);
+    }
+    case 'mistral': {
+      const { MistralLoRAAdapter } = await import('../../../../daemons/ai-provider-daemon/adapters/mistral/server/MistralFineTuningAdapter');
+      return new MistralLoRAAdapter();
+    }
+    case 'together': {
+      const apiKey = await getSecret('TOGETHER_API_KEY');
+      const { TogetherLoRAAdapter } = await import('../../../../daemons/ai-provider-daemon/adapters/together/server/TogetherFineTuningAdapter');
+      return new TogetherLoRAAdapter(apiKey);
+    }
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+/**
+ * Load training dataset from file path
+ * Uses fs.promises for proper async file I/O
+ */
+async function loadTrainingDatasetFromFile(filePath: string, personaId: UUID): Promise<TrainingDataset> {
+  const content = await fs.promises.readFile(filePath, 'utf-8');
+  const lines = content.trim().split('\n').filter(line => line.trim());
+
+  const examples = lines.map(line => {
+    const parsed = JSON.parse(line);
+    return parsed;
+  });
+
+  return {
+    examples,
+    metadata: {
+      personaId,
+      personaName: 'PersonaUser', // TODO: Look up from users table via data/read
+      traitType: 'custom',
+      createdAt: Date.now(),
+      source: 'conversations',
+      totalExamples: examples.length
+    }
+  };
+}
 
 export class GenomeJobCreateServerCommand extends CommandBase<
   GenomeJobCreateParams,
@@ -61,11 +127,10 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       }
 
       // 2. Validate provider
-      const validProviders = ['openai', 'deepseek', 'fireworks', 'together'];
-      if (!validProviders.includes(createParams.provider)) {
+      if (!FINE_TUNING_PROVIDERS.includes(createParams.provider as any)) {
         return transformPayload(params, {
           success: false,
-          error: `Invalid provider: ${createParams.provider}. Must be one of: ${validProviders.join(', ')}`
+          error: `Invalid provider: ${createParams.provider}. Must be one of: ${FINE_TUNING_PROVIDERS.join(', ')}`
         });
       }
 
@@ -194,18 +259,77 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       console.log(`✅ GENOME JOB CREATE: Job created with ID ${jobId}`);
 
-      // 7. Estimate training duration (rough estimate based on epochs)
-      // Real implementation would consider dataset size, batch size, GPU type
+      // 7. Load training dataset from file
+      console.log(`📂 GENOME JOB CREATE: Loading training dataset from ${jobEntity.trainingFileId}`);
+      const dataset = await loadTrainingDatasetFromFile(jobEntity.trainingFileId, createParams.personaId);
+      console.log(`   Loaded ${dataset.examples.length} examples`);
+
+      // 8. Instantiate adapter and start training
+      console.log(`🚀 GENOME JOB CREATE: Starting training with ${createParams.provider} adapter`);
+      const adapter = await createFineTuningAdapter(createParams.provider);
+
+      const trainingRequest: LoRATrainingRequest = {
+        personaId: createParams.personaId,
+        personaName: dataset.metadata.personaName,
+        traitType: dataset.metadata.traitType,
+        baseModel: config.model.baseModel,
+        dataset,
+        rank: config.method.loraConfig?.rank,
+        alpha: config.method.loraConfig?.alpha,
+        epochs: config.schedule.epochs,
+        learningRate: config.optimizer.learningRate,
+        batchSize: config.schedule.batchSize
+      };
+
+      const trainingResult = await adapter.trainLoRA(trainingRequest);
+
+      if (!trainingResult.success) {
+        // Training failed - update job status
+        await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>('data/update', {
+          collection: COLLECTIONS.FINE_TUNING_JOBS,
+          id: jobId,
+          updates: {
+            status: 'failed',
+            error: {
+              code: 'TRAINING_START_FAILED',
+              message: trainingResult.error || 'Unknown error starting training'
+            },
+            updatedAt: new Date()
+          }
+        });
+
+        return transformPayload(params, {
+          success: false,
+          error: `Failed to start training: ${trainingResult.error}`
+        });
+      }
+
+      // Training started successfully - update job with real provider job ID
+      console.log(`✅ GENOME JOB CREATE: Training started, session ID: ${trainingResult.modelId}`);
+
+      // Update job entity with training session info
+      await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>('data/update', {
+        collection: COLLECTIONS.FINE_TUNING_JOBS,
+        id: jobId,
+        updates: {
+          status: 'running',
+          providerJobId: trainingResult.modelId || jobEntity.providerJobId,
+          startedAt: Date.now(),
+          updatedAt: new Date()
+        }
+      });
+
+      // 9. Estimate training duration (rough estimate based on epochs)
       const estimatedDuration = config.schedule.epochs * 600000; // 10 minutes per epoch (placeholder)
 
-      // 8. Return job details
+      // 10. Return job details
       return transformPayload(params, {
         success: true,
         job: {
           jobId: jobEntity.id,
-          providerJobId: jobEntity.providerJobId,
+          providerJobId: trainingResult.modelId || jobEntity.providerJobId,
           provider: jobEntity.provider,
-          status: jobEntity.status,
+          status: 'running',
           baseModel: jobEntity.baseModel,
           trainingFileId: jobEntity.trainingFileId,
           validationFileId: jobEntity.validationFileId,

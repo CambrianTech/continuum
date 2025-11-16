@@ -112,7 +112,13 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
 
       // Requirements
       requiresGPU: false, // Cloud-based training
-      requiresInternet: true // API calls
+      requiresInternet: true, // API calls
+
+      // Genome capabilities (adapter composition)
+      maxActiveLayers: 1,              // Together: single layer per inference
+      supportsDownload: true,           // Can download adapter weights
+      supportsLocalComposition: false,  // Downloadable but must compose locally with PEFT
+      compositionMethods: []            // No native composition, use PEFT after download
     };
   }
 
@@ -309,7 +315,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
    * Export dataset to JSONL file
    * @private
    */
-  private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
+  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     // Use .continuum/media/temp to avoid filling up primary drive
     const tempDir = PATHS.MEDIA_TEMP;
     await fs.promises.mkdir(tempDir, { recursive: true });
@@ -392,7 +398,11 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
       },
       body: JSON.stringify({
         training_file: fileId,
-        model: request.baseModel ?? 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference'
+        model: request.baseModel ?? 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference',
+        n_epochs: request.epochs ?? 3,
+        learning_rate: request.learningRate ?? 0.0001,
+        batch_size: Math.max(request.batchSize ?? 8, 8), // Together requires minimum batch size of 8
+        n_checkpoints: Math.min(request.epochs ?? 3, 3) // Must be 1 <= n_checkpoints <= n_epochs
       })
     });
 

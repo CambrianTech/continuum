@@ -88,6 +88,19 @@ export const DB_CONFIG = {
 } as const;
 
 /**
+ * Fine-Tuning Providers - Supported providers for LoRA training
+ */
+export const FINE_TUNING_PROVIDERS = [
+  'deepseek',
+  'fireworks',
+  'mistral',
+  'openai',
+  'together'
+] as const;
+
+export type FineTuningProvider = typeof FINE_TUNING_PROVIDERS[number];
+
+/**
  * Helper: Get path with env var fallback
  * Usage: getPathWithEnvFallback('DATASETS_DIR', PATHS.DATASETS)
  */

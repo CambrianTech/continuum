@@ -104,7 +104,13 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
 
       // Requirements
       requiresGPU: false, // Cloud-based training
-      requiresInternet: true // API calls
+      requiresInternet: true, // API calls
+
+      // Genome capabilities (adapter composition)
+      maxActiveLayers: 1,              // OpenAI: single layer only
+      supportsDownload: false,          // API-only models, cannot download
+      supportsLocalComposition: false,  // No local PEFT composition
+      compositionMethods: []            // No composition support
     };
   }
 
@@ -324,7 +330,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
    * Export dataset to JSONL file
    * @private
    */
-  private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
+  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     // Use .continuum/media/temp to avoid filling up primary drive
     const tempDir = PATHS.MEDIA_TEMP;
     await fs.promises.mkdir(tempDir, { recursive: true });

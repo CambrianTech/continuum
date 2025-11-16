@@ -73,8 +73,13 @@ const PROVIDERS = [
     method: TrainingMethod.LORA,
   },
   {
+    name: 'mistral',
+    baseModel: 'open-mistral-7b',
+    method: TrainingMethod.LORA,
+  },
+  {
     name: 'together',
-    baseModel: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+    baseModel: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Reference',
     method: TrainingMethod.LORA,
   },
 ] as const;
@@ -118,7 +123,7 @@ async function phase1_submitJobs(): Promise<JobRecord[]> {
         },
         schedule: {
           epochs: 1,
-          batchSize: 1,
+          batchSize: 4, // Most providers require >= 2, using 4 as safe default
           sequenceLength: 512,
         },
         optimizer: {
@@ -161,12 +166,12 @@ async function phase1_submitJobs(): Promise<JobRecord[]> {
         status: createResult.job.status,
       };
 
-      jobRecords.push(record);
-
       console.log(`   ✅ SUCCESS`);
-      console.log(`   Job ID: ${job.jobId}`);
-      console.log(`   Provider Job ID: ${job.providerJobId}`);
-      console.log(`   Status: ${job.status}`);
+      console.log(`   Job ID: ${createResult.job.jobId}`);
+      console.log(`   Provider Job ID: ${createResult.job.providerJobId}`);
+      console.log(`   Status: ${createResult.job.status}`);
+
+      jobRecords.push(record);
 
     } catch (error) {
       console.error(`   ❌ ERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -195,7 +200,7 @@ async function phase1_submitJobs(): Promise<JobRecord[]> {
 }
 
 /**
- * Phase 2: Check status of all submitted jobs
+ * Phase 2: Check status of all submitted jobs using genome/job-status
  */
 async function phase2_checkStatus(jobRecords: JobRecord[]): Promise<JobRecord[]> {
   console.log('\n📊 PHASE 2: Checking Job Status');
@@ -214,13 +219,14 @@ async function phase2_checkStatus(jobRecords: JobRecord[]): Promise<JobRecord[]>
     console.log(`   Job ID: ${record.jobId}`);
 
     try {
+      // Use genome/job-status command (wraps data/read with proper typing)
       const result = await runJtagCommand(
-        `genome/job-status --jobId="${record.jobId}" --refresh=true`
+        `genome/job-status --jobId="${record.jobId}" --refresh=false`
       );
 
       if (!result.success || !result.job) {
-        console.error(`   ❌ FAILED: ${result.error || 'Unknown error'}`);
-        record.error = result.error as string;
+        console.error(`   ❌ FAILED: ${result.error || 'Job not found'}`);
+        record.error = result.error as string || 'Job not found';
         continue;
       }
 
@@ -297,8 +303,9 @@ async function phase3_waitForCompletion(jobRecords: JobRecord[]): Promise<JobRec
       allComplete = false;
 
       try {
+        // Use genome/job-status command
         const result = await runJtagCommand(
-          `genome/job-status --jobId="${record.jobId}" --refresh=true`
+          `genome/job-status --jobId="${record.jobId}" --refresh=false`
         );
 
         if (result.success && result.job) {

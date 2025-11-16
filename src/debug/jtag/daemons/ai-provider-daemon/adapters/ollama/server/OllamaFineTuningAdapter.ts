@@ -545,7 +545,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
    * @private
    */
   /*
-  private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
+  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     const tempPath = path.join(os.tmpdir(), `jtag-training-${Date.now()}.jsonl`);
     const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
     await fs.promises.writeFile(tempPath, jsonl, 'utf-8');

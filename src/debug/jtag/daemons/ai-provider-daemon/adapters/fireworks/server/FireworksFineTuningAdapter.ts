@@ -10,9 +10,10 @@
  * 1. Create dataset record (POST /datasets)
  * 2. Upload file to that dataset (POST /datasets/{id}:upload)
  *
- * UNIQUE FEATURE: Can download trained model weights (.safetensors)!
- * - Unlike OpenAI/Together which lock you into their API
- * - Can version control and share fine-tuned adapters
+ * DOWNLOADABLE: Can download trained adapter weights (PEFT format)
+ * - Unlike OpenAI which is API-only
+ * - Useful for backup, portability, and version control
+ * - Primary use case: Keep modelId, use via Fireworks API inference
  *
  * SERVER-ONLY: Uses Node.js for HTTP requests and file system
  */
@@ -49,6 +50,8 @@ declare const Blob: typeof globalThis.Blob;
 export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'fireworks';
   private readonly config: FireworksBaseConfig;
+  // Fine-tuning API uses different base URL than inference API
+  private readonly fineTuningBaseUrl = 'https://api.fireworks.ai/v1';
 
   constructor(apiKey?: string) {
     super();
@@ -112,7 +115,13 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
 
       // Requirements
       requiresGPU: false, // Cloud-based training
-      requiresInternet: true // API calls
+      requiresInternet: true, // API calls
+
+      // Genome capabilities (adapter composition)
+      maxActiveLayers: 1,              // Fireworks: single layer per inference
+      supportsDownload: true,           // Can download .safetensors weights
+      supportsLocalComposition: false,  // Downloadable but must compose locally with PEFT
+      compositionMethods: []            // No native composition, use PEFT after download
     };
   }
 
@@ -206,7 +215,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
 
     try {
       const response = await fetch(
-        `${this.config.baseUrl}/v1/accounts/${accountId}/supervisedFineTuningJobs/${providerJobId}`,
+        `${this.fineTuningBaseUrl}/accounts/${accountId}/supervisedFineTuningJobs/${providerJobId}`,
         {
           method: 'GET',
           headers: {
@@ -324,7 +333,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
    * Export dataset to JSONL file
    * @private
    */
-  private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
+  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     // Use .continuum/media/temp to avoid filling up primary drive
     const tempDir = PATHS.MEDIA_TEMP;
     await fs.promises.mkdir(tempDir, { recursive: true });
@@ -364,11 +373,10 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     }
 
     // Create dataset record
-    // POST ${this.config.baseUrl}/v1/accounts/{account_id}/datasets
     const datasetId = `training-${request.personaId}-${Date.now()}`;
 
     const response = await fetch(
-      `${this.config.baseUrl}/v1/accounts/${accountId}/datasets`,
+      `${this.fineTuningBaseUrl}/accounts/${accountId}/datasets`,
       {
         method: 'POST',
         headers: {
@@ -411,7 +419,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     formData.append('file', blob, path.basename(datasetPath));
 
     const response = await fetch(
-      `${this.config.baseUrl}/v1/accounts/${accountId}/datasets/${datasetId}:upload`,
+      `${this.fineTuningBaseUrl}/accounts/${accountId}/datasets/${datasetId}:upload`,
       {
         method: 'POST',
         headers: {
@@ -443,7 +451,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       attempts++;
 
       const response = await fetch(
-        `${this.config.baseUrl}/v1/accounts/${accountId}/datasets/${datasetId}`,
+        `${this.fineTuningBaseUrl}/accounts/${accountId}/datasets/${datasetId}`,
         {
           method: 'GET',
           headers: {
@@ -489,9 +497,8 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     const epochs = request.epochs ?? capabilities.defaultEpochs ?? 3;
 
     // Create fine-tuning job
-    // POST ${this.config.baseUrl}/v1/accounts/{account_id}/supervisedFineTuningJobs
     const response = await fetch(
-      `${this.config.baseUrl}/v1/accounts/${accountId}/supervisedFineTuningJobs`,
+      `${this.fineTuningBaseUrl}/accounts/${accountId}/supervisedFineTuningJobs`,
       {
         method: 'POST',
         headers: {

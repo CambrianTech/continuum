@@ -103,7 +103,13 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
 
       // Requirements
       requiresGPU: false, // Cloud-based training
-      requiresInternet: true // API calls
+      requiresInternet: true, // API calls
+
+      // Genome capabilities (adapter composition)
+      maxActiveLayers: 1,              // DeepSeek: single layer per inference
+      supportsDownload: true,           // Can download adapter weights
+      supportsLocalComposition: false,  // Downloadable but must compose locally with PEFT
+      compositionMethods: []            // No native composition, use PEFT after download
     };
   }
 
@@ -247,7 +253,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
    * Export dataset to JSONL file
    * @private
    */
-  private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
+  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
     const tempPath = path.join(os.tmpdir(), `deepseek-training-${Date.now()}.jsonl`);
     const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
     await fs.promises.writeFile(tempPath, jsonl, 'utf-8');
@@ -269,7 +275,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
     formData.append('purpose', 'fine-tune');
 
     // Upload dataset via DeepSeek API
-    const response = await globalThis.fetch('${this.config.baseUrl}/v1/files', {
+    const response = await globalThis.fetch(`${this.config.baseUrl}/v1/files`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`
@@ -296,7 +302,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
     apiKey: string
   ): Promise<string> {
     // Create fine-tuning job
-    const response = await globalThis.fetch('${this.config.baseUrl}/v1/fine_tuning/jobs', {
+    const response = await globalThis.fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,

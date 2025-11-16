@@ -1,0 +1,28 @@
+# PEFT Dynamic Composition - Python Dependencies
+# Phase 1: PEFT Integration for modular LoRA composition
+
+# Core PEFT library (dynamic adapter composition)
+peft>=0.7.0
+
+# Transformers (base model loading)
+transformers>=4.36.0
+
+# PyTorch (inference engine)
+torch>=2.1.0
+
+# Accelerate (multi-GPU support, future)
+accelerate>=0.25.0
+
+# Safetensors (efficient adapter storage format)
+safetensors>=0.4.0
+
+# HuggingFace Hub (download models/adapters)
+huggingface-hub>=0.19.0
+
+# Utilities
+requests>=2.31.0
+tqdm>=4.66.0
+
+# Optional: For advanced merging methods
+# scipy>=1.11.0  # TIES merging
+# numpy>=1.24.0   # Weight manipulation

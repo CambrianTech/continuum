@@ -103,7 +103,11 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
         'pixtral-12b-latest'
       ],
 
-      // Removed capabilities field - not part of FineTuningCapabilities interface
+      // Genome capabilities (adapter composition)
+      maxActiveLayers: 1,              // Mistral: single layer per inference
+      supportsDownload: true,           // Can download adapter weights
+      supportsLocalComposition: false,  // Downloadable but must compose locally with PEFT
+      compositionMethods: []            // No native composition, use PEFT after download
     };
   }
 
@@ -135,21 +139,16 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
     const fileId = await this.uploadDataset(datasetPath);
     console.log(`   File ID: ${fileId}`);
 
-    // 3. Create fine-tuning job (auto_start: false)
+    // 3. Create fine-tuning job (auto_start: true to avoid timing issues)
     console.log('   Creating training job...');
     const jobId = await this.createFineTuningJob(request, fileId);
     console.log(`   Job ID: ${jobId}`);
-
-    // 4. Start job
-    console.log('   Starting job...');
-    await this.startJob(jobId);
-    console.log('   Job started!');
+    console.log('   Job will auto-start after validation');
 
     // 5. Clean up temp file immediately
     await this.cleanupTempFiles(datasetPath);
 
     // 6. Return handle (training continues on Mistral servers!)
-    const exampleCount = request.dataset.examples?.length ?? 100;
     const epochs = request.epochs ?? 3;
 
     return {
@@ -157,7 +156,7 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
       fileId,
       metadata: {
         baseModel: request.baseModel,
-        trainingSteps: exampleCount * epochs,
+        trainingSteps: epochs, // Mistral: 1 epoch = 1 training step
         learningRate: request.learningRate ?? 0.0001
       }
     };
@@ -360,11 +359,11 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
     }
 
     // Convert epochs to training_steps
-    // Mistral uses training_steps instead of epochs
-    // Estimate: training_steps = examples * epochs
-    const exampleCount = request.dataset.examples?.length ?? 100;
+    // Mistral uses training_steps differently than other providers
+    // According to Mistral API: "1 epoch should complete within 1 training step"
+    // So training_steps = epochs (NOT examples * epochs)
     const epochs = request.epochs ?? 3;
-    const trainingSteps = exampleCount * epochs;
+    const trainingSteps = epochs;
 
     const response = await fetch('https://api.mistral.ai/v1/fine_tuning/jobs', {
       method: 'POST',
@@ -384,7 +383,7 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
           training_steps: trainingSteps,
           learning_rate: request.learningRate ?? 0.0001
         },
-        auto_start: false // We'll start it manually
+        auto_start: true // Auto-start after validation to avoid timing issues
       })
     });
 
@@ -426,25 +425,15 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
   }
 
   /**
-   * Export dataset to JSONL format
+   * Export dataset to JSONL format (delegates to base class)
    * Mistral expects conversational format with messages array
+   *
+   * Format: {"messages": [{"role": "...", "content": "..."}]}
+   * CRITICAL: Only include messages field, strip metadata to avoid validation errors
    */
-  private async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
-    const tempDir = PATHS.MEDIA_TEMP;
-    const tempFile = path.join(tempDir, `mistral-training-${Date.now()}.jsonl`);
-
-    // Ensure temp directory exists
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    // Convert dataset to JSONL (each line is a JSON object with messages array)
-    const lines = (dataset.examples ?? []).map(example => {
-      return JSON.stringify(example); // Use example directly - it already has messages array
-    });
-
-    fs.writeFileSync(tempFile, lines.join('\n'));
-    return tempFile;
+  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
+    const tempFile = path.join(PATHS.MEDIA_TEMP, `mistral-training-${Date.now()}.jsonl`);
+    return super.exportDatasetToJSONL(dataset, tempFile);
   }
 
   /**

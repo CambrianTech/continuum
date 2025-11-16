@@ -171,6 +171,12 @@ export interface FineTuningCapabilities {
   maxBatchSize?: number;
   defaultBatchSize?: number;          // Default batch size
 
+  // Genome capabilities (adapter composition)
+  maxActiveLayers?: number;           // Max LoRA layers active simultaneously (undefined = unlimited)
+  supportsDownload?: boolean;         // Can download trained adapter weights
+  supportsLocalComposition?: boolean;  // Can compose locally with PEFT
+  compositionMethods?: Array<'stack' | 'weighted' | 'TIES' | 'DARE'>;  // Supported composition methods
+
   // System requirements
   requiresGPU?: boolean;              // Does this strategy require a GPU?
   requiresInternet?: boolean;         // Does this strategy require internet?
