@@ -673,83 +673,30 @@ export class PersonaUser extends AIUser {
       );
     }
 
-    // === AUTONOMOUS DECISION: Persona personality adapter decides ===
-    // REMOVED: Thoughtstream coordination (centralized blocking)
-    // Personas are organic decision makers - if their personality adapter says "respond", they respond
-    // Multiple AIs responding is natural conversation, not a problem to prevent
+    // === AUTONOMOUS DECISION: AI decides via RAG-based recipes ===
+    // No centralized coordinator - each AI uses recipes to decide if they should contribute
+    console.log(`✅ ${this.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
 
-    /* DISABLED: Thoughtstream centralized coordination (phase out)
-    const coordinator = getChatCoordinator();
-    const chatThought: ChatThought = {
-      personaId: this.id,
-      personaName: this.displayName,
-      type: 'claiming',
-      confidence: gatingResult.confidence ?? 0.5,
-      reasoning: gatingResult.reason,
-      timestamp: Date.now(),
-      messageId: messageEntity.id,
-      roomId: messageEntity.roomId
-    };
-
-    console.log(`🧠 ${this.displayName}: Broadcasting thought (confidence=${gatingResult.confidence?.toFixed(2)}) for message ${messageEntity.id.slice(0, 8)}`);
-    await coordinator.broadcastChatThought(messageEntity.id, messageEntity.roomId, chatThought);
-
-    // Wait for coordinator decision (reasonable timeout for thought gathering)
-    console.log(`⏳ ${this.displayName}: Waiting for coordination decision...`);
-    const decision = await coordinator.waitForChatDecision(messageEntity.id, 5000);
-
-    // Check if we were granted permission to respond
-    if (!decision || !decision.granted.includes(this.id)) {
-      // Log actual decision for debugging
-      const grantedCount = decision?.granted.length ?? 0;
-      const deniedCount = decision?.denied.length ?? 0;
-      const grantedIds = decision?.granted.map(id => id.slice(0, 8)).join(', ') ?? 'none';
-      console.log(`🚫 ${this.displayName}: Denied by coordinator (granted: ${grantedCount} [${grantedIds}], denied: ${deniedCount}, my ID: ${this.id.slice(0, 8)})`);
-      if (decision) {
-        console.log(`   Decision reasoning: ${decision.reasoning ?? 'none'}`);
-      }
-
-      this.logAIDecision('SILENT', 'ThoughtStreamCoordinator denied (higher confidence AI responding)', {
-        message: messageText,
-        sender: messageEntity.senderName,
+    // 🔧 POST-INFERENCE VALIDATION: Check if chat context changed during inference
+    // During the 3-5 seconds of inference, other AIs may have already posted responses
+    // Give this AI a chance to see those new responses and reject its own if redundant
+    const newMessagesQuery = await DataDaemon.query<ChatMessageEntity>({
+      collection: COLLECTIONS.CHAT_MESSAGES,
+      filter: {
         roomId: messageEntity.roomId,
-        confidence: gatingResult.confidence
-      });
+        timestamp: { $gt: messageEntity.timestamp }  // Messages newer than the trigger
+      },
+      limit: 10
+    });
 
-      // Emit DECIDED_SILENT event to clear AI status indicator
-      console.log(`🔧 ${this.displayName}: Emitting DECIDED_SILENT event (ThoughtStreamCoordinator blocked)`);
-      if (this.client) {
-        await Events.emit<AIDecidedSilentEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.DECIDED_SILENT,
-          {
-            personaId: this.id,
-            personaName: this.displayName,
-            roomId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            isHumanMessage: senderIsHuman,
-            reason: 'ThoughtStreamCoordinator denied (higher confidence AI responding)',
-            confidence: gatingResult.confidence ?? 0.5,
-            gatingModel: gatingResult.model ?? 'unknown',
-            timestamp: Date.now()
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: messageEntity.roomId,
-          }
-        );
-        console.log(`✅ ${this.displayName}: DECIDED_SILENT event emitted successfully`);
-      } else {
-        console.error(`❌ ${this.displayName}: Cannot emit DECIDED_SILENT - this.client is null`);
-      }
+    const newMessages = newMessagesQuery.data || [];
+    if (newMessages.length > 0) {
+      console.log(`🔄 ${this.displayName}: Context changed during inference (${newMessages.length} new messages)`);
 
-      return; // Don't generate - let higher confidence AI respond
+      // TODO: Ask AI if they still want to respond given the new messages
+      // For now, just log and proceed (future: implement smart rejection)
+      console.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${m.data.content.text.slice(0, 50)}`).join(', ')}`);
     }
-
-    console.log(`✅ ${this.displayName}: Granted permission by coordinator (conf=${gatingResult.confidence})`);
-    */
-
-    console.log(`✅ ${this.displayName}: Autonomous decision to respond (personality adapter, conf=${gatingResult.confidence})`);
 
     // 🔧 PHASE: Update RAG context
     console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
