@@ -5,6 +5,130 @@
 
 ---
 
+## ⚠️ CRITICAL: Workflows vs Agents (Read This First!)
+
+**Research Source**: "Building Autonomous LLM Agents" (de Lamo et al.)
+
+### The Fundamental Distinction
+
+> "Simply augmenting an LLM with modules, tools, or predefined steps does not make it an agent, in any case, that would make it a **workflow**."
+
+**What we have now: WORKFLOW**
+- Tools ✅ (Commands.execute)
+- Memory infrastructure ✅ (designed)
+- Environmental interaction ✅ (Events)
+- **But**: Pre-established plan created by designer
+- **Result**: Brittle, can't adapt to errors, not an agent
+
+**What we need: AGENT**
+- All of the above PLUS
+- **Generates its own strategies** tailored to task and context
+- **Dynamic replanning** when environment changes
+- **Chain-of-Thought reasoning** to break down problems
+- **Learns from mistakes** (not just logs them)
+- **Result**: Resilient, adaptive, true autonomy
+
+### The Test: Error Handling
+
+**Workflow (current PersonaUser)**:
+```typescript
+async handleChatMessage(msg: ChatMessageEntity) {
+  try {
+    // Designer-defined sequence
+    const context = await this.getContext();
+    const response = await this.llm.generate({ context, msg });
+    await this.sendResponse(response);
+  } catch (error) {
+    // FAILS - no replanning, just crashes or loops
+    console.error('Failed', error);
+  }
+}
+```
+
+**Agent (what we're building)**:
+```typescript
+async handleChatMessage(msg: ChatMessageEntity) {
+  // AI creates its own plan
+  const plan = await this.reasoning.formulatePlan({
+    description: "Respond to user message",
+    context: await this.workingMemory.recall()
+  });
+
+  // AI executes with adaptation
+  for (const step of plan.steps) {
+    try {
+      await this.executeStep(step);
+    } catch (error) {
+      // AI DYNAMICALLY REPLANS - generates new strategy
+      plan = await this.reasoning.adjustPlan(plan, error);
+      // Tries different approach autonomously
+    }
+  }
+
+  // AI evaluates and learns
+  await this.reasoning.evaluateOutcome(plan);
+}
+```
+
+**The difference**:
+- Workflow: **You** (designer) decide the steps
+- Agent: **AI** decides the steps based on context
+
+### The Four Required Components
+
+Per research, ALL FOUR are required to be an agent:
+
+1. **Perception System** ✅
+   - Captures environmental data
+   - Our implementation: Commands/Events (text-based perception)
+   - Converts events into LLM-understandable format
+
+2. **Memory System** ⚠️ (Phase 2 - designed, not implemented)
+   - **Long-term**: Past experiences, procedures, knowledge, user info
+   - **Short-term**: Current context window (working memory)
+   - Our implementation: Self-state + domain working memory
+
+3. **Reasoning System** ❌ (Phase 3.5 - THIS IS THE MISSING PIECE)
+   - Formulates plans broken into steps
+   - Adjusts plans based on feedback
+   - Evaluates actions to improve efficiency
+   - **This is what makes it an agent vs workflow**
+
+4. **Action System** ✅
+   - Translates decisions into concrete actions
+   - Our implementation: Commands.execute + domain adapters
+
+**Missing ANY of these = Not an agent, just a sophisticated workflow**
+
+### Why This Matters
+
+**Workflows are good for:**
+- Controlled, predictable environments
+- Well-defined tasks
+- Fixed sequences
+- Repetitive, structured operations
+
+**Workflows fail at:**
+- Unexpected errors (can't adapt)
+- Novel situations (no replanning)
+- Complex problems (no strategy generation)
+- Learning over time (no outcome evaluation)
+
+**PersonaUsers need to be agents because:**
+- Chat is unpredictable (wide variety of questions)
+- Multi-domain operation (context switching)
+- Long-running (must improve over time)
+- Collaborative (must coordinate with others)
+- Resource-constrained (must prioritize intelligently)
+
+### The Implementation Requirement
+
+**Phase 3.5 (Reasoning System) is not optional - it's the DEFINITION of being an agent.**
+
+Without it, no matter how sophisticated our tools and memory are, we're just a workflow that will struggle when things go wrong.
+
+---
+
 ## The Core Problem
 
 **Current State**: PersonaUsers are mindless event processors
@@ -119,6 +243,396 @@ interface DomainWorkingMemory {
 - ✅ Finite capacity (evict old/low-importance entries)
 - ✅ Domain-specific but aware of universal state
 - ✅ Observable with `./jtag ai/thoughts --persona=<id> --domain=chat`
+
+---
+
+## Memory System Deep Dive (Research-Backed)
+
+**Source**: "Building Autonomous LLM Agents" (de Lamo et al.)
+
+### Long-Term vs Short-Term Memory
+
+**Short-Term Memory (Working Memory)**:
+- What: Information maintained within context window
+- Analogy: Temporary workspace
+- Our implementation: `DomainWorkingMemory` table (recent thoughts, current context)
+- Lifetime: Minutes to hours, evicted based on importance
+- Retrieval: RAG queries for relevant recent thoughts
+
+**Long-Term Memory**:
+- What: Knowledge retained outside model weights
+- Analogy: Permanent storage that shapes future behavior
+- Our implementation: Three storage mechanisms (below)
+- Lifetime: Days to permanent
+- Retrieval: Multiple strategies based on data type
+
+### The Three Types of Long-Term Memory
+
+#### 1. Embodied Memory (Fine-Tuning)
+
+**What**: Knowledge encoded directly into model weights through continuous learning
+
+**How it works**:
+- Fine-tune model on new experiences
+- Adjusts weights to encode "facts" or "experiences"
+- Model acts based on learned behaviors
+
+**Our implementation**:
+- LoRA adapters (genome system)
+- Each adapter encodes skill/domain expertise
+- Paging system loads relevant adapters per task
+
+**Example**:
+```typescript
+// Before: AI doesn't know company's code style
+"How should I format TypeScript?"
+→ Generic answer
+
+// After fine-tuning on company codebase:
+"How should I format TypeScript?"
+→ "Use 2-space indentation, no semicolons, arrow functions (as per our style guide)"
+```
+
+**Storage**: LoRA adapter weights
+**Retrieval**: Load adapter when domain matches
+**Updates**: Continuous micro-tuning on feedback
+
+#### 2. RAG (Retrieval-Augmented Generation)
+
+**What**: External knowledge base queried during inference
+
+**How it works**:
+1. **Retrieval Phase**: Query finds relevant documents via embeddings
+2. **Augmentation Phase**: Retrieved docs added to LLM context
+3. **Generation Phase**: LLM generates response using augmented context
+
+**Our implementation**:
+- Commands: `ai/rag/index/create`, `ai/rag/query-open`, `ai/rag/query-fetch`
+- Storage: Vector embeddings of code, docs, conversations
+- Use case: "What did we discuss about React hooks last week?"
+
+**Example**:
+```typescript
+// User asks about past conversation
+const query = "React hooks discussion";
+
+// Retrieve relevant messages via embeddings
+const docs = await this.rag.query({ text: query, limit: 5 });
+// Returns: 5 most similar past messages
+
+// Augment LLM prompt with retrieved context
+const response = await this.llm.generate({
+  messages: [{
+    role: 'system',
+    content: `
+      RETRIEVED CONTEXT:
+      ${docs.map(d => d.content).join('\n')}
+
+      USER QUESTION: ${query}
+    `
+  }]
+});
+```
+
+**Storage**: Embeddings in vector database
+**Retrieval**: Semantic similarity search
+**Updates**: Index new content as it arrives
+
+#### 3. SQL Database (Structured Knowledge)
+
+**What**: Relational data (users, messages, rooms, state)
+
+**How it works**:
+- Convert natural language to SQL queries
+- Query structured tables
+- Return precise results
+
+**Our implementation**:
+- DataDaemon with SQLite
+- Collections: users, chat_messages, rooms, user_states, etc.
+- Commands: `data/list`, `data/read`, `data/create`, etc.
+
+**Example**:
+```typescript
+// "Who are the most active users in the last week?"
+const activeUsers = await Commands.execute('data/list', {
+  collection: 'users',
+  filter: { lastActiveAt: { $gte: Date.now() - 7 * 24 * 60 * 60 * 1000 } },
+  orderBy: [{ field: 'messageCount', direction: 'desc' }],
+  limit: 10
+});
+```
+
+**Storage**: SQLite tables
+**Retrieval**: SQL queries (filter, orderBy, joins)
+**Updates**: CRUD operations via Commands
+
+### What Data to Store (Research Guidelines)
+
+Per research, agents should store these four categories:
+
+#### 1. **Experiences** (Success + Failures)
+
+**What to store**:
+- Task instruction: "Respond to user question about React hooks"
+- Trajectory: Sequence of observation-action pairs
+  - Observation: "User asked about useState vs useReducer"
+  - Action: "Recalled past React discussions via RAG"
+  - Observation: "Found 3 relevant discussions"
+  - Action: "Generated response explaining differences"
+  - Observation: "User replied 'Thanks, that helps!'"
+  - Result: SUCCESS
+- Outcome: Success or failure
+- Learnings: What worked/failed
+
+**Why store failures**:
+> "Research has indicated that even failed experiences, when appropriately logged and distinguished as such, can be valuable. By explicitly noting a 'failed experience,' LLMs can learn to avoid repeating similar mistakes in the future."
+
+**Our implementation**:
+```typescript
+interface Experience {
+  id: UUID;
+  personaId: UUID;
+  taskInstruction: string;
+  trajectory: Array<{
+    observation: string;
+    action: string;
+    result?: any;
+  }>;
+  outcome: 'success' | 'failure' | 'partial';
+  learnings: string[];  // Extracted lessons
+  timestamp: number;
+}
+```
+
+**Storage**: `persona_experiences` table
+**Retrieval**: Query by similarity to current task
+**Usage**: "Last time I did this, I failed because X. This time, I'll try Y."
+
+#### 2. **Procedures** (Reusable Workflows)
+
+**What**: Commonly reused routines induced from past experiences
+
+**Example**:
+```typescript
+interface Procedure {
+  id: UUID;
+  personaId: UUID;
+  name: string;  // "Responding to React questions"
+  domain: string;  // "chat"
+
+  // Generalized steps learned from experiences
+  steps: [
+    "Check user's React experience level via past messages",
+    "Search RAG for similar questions",
+    "Generate explanation tailored to skill level",
+    "Include code example if appropriate",
+    "Ask follow-up question to confirm understanding"
+  ];
+
+  // Metadata
+  successRate: number;  // 0.0-1.0
+  timesUsed: number;
+  learnedFrom: UUID[];  // Experience IDs that contributed
+}
+```
+
+**Usage**: Agent recognizes similar task, retrieves procedure, follows generalized steps
+**Our implementation**: Part of `LearningEntry` with `pattern` field
+
+#### 3. **Knowledge** (External Facts)
+
+**What**:
+- Articles, documentation
+- Company-specific information
+- Internal rules and policies
+- Technical specifications
+
+**Our implementation**:
+- RAG indexing of markdown files, code, docs
+- Commands: `ai/rag/index/create` for codebase indexing
+- Use case: "What's our authentication architecture?"
+
+**Example**:
+```typescript
+// Index company documentation
+await Commands.execute('ai/rag/index/create', {
+  name: 'company-docs',
+  sources: [
+    '/docs/architecture/**/*.md',
+    '/docs/api/**/*.md',
+    '/README.md'
+  ]
+});
+
+// Query during inference
+const relevantDocs = await Commands.execute('ai/rag/query-fetch', {
+  queryHandle: handle,
+  limit: 3
+});
+```
+
+#### 4. **User Information** (Personalization)
+
+**What**:
+- User preferences (theme, notification settings)
+- Personal history ("Where did you spend Christmas?")
+- Background ("Where are your parents from?")
+- Personality traits (inferred over time)
+
+**Why important**:
+> "Mechanisms like MemoryBank aim to comprehend and adapt to a user's personality over time by synthesizing information from previous interactions."
+
+**Our implementation**:
+```typescript
+interface UserProfile {
+  userId: UUID;
+
+  // Explicit preferences
+  preferences: {
+    theme: string;
+    notificationFrequency: string;
+    communicationStyle: 'formal' | 'casual';
+  };
+
+  // Learned traits
+  personality: {
+    technicalLevel: 'beginner' | 'intermediate' | 'expert';
+    preferredExampleStyle: 'minimal' | 'detailed';
+    typicalTopics: string[];  // ["React", "TypeScript", "performance"]
+  };
+
+  // Personal facts
+  background: {
+    [key: string]: string;  // "last_christmas": "Tokyo", "parents_from": "Seattle"
+  };
+
+  // Inferred over time
+  updatedAt: number;
+  confidenceLevel: number;  // How sure are we about this profile?
+}
+```
+
+**Storage**: `user_profiles` table (separate from UserEntity)
+**Retrieval**: Load when interacting with user
+**Updates**: Continuous learning from interactions
+
+### Memory Management Strategy
+
+**Capacity limits** (to prevent unbounded growth):
+```typescript
+export const MEMORY_LIMITS = {
+  // Short-term (working memory)
+  MAX_WORKING_MEMORY_PER_DOMAIN: 100,  // Recent thoughts
+  MAX_CONTEXT_WINDOW: 20,  // Thoughts included in single inference
+
+  // Long-term
+  MAX_EXPERIENCES_PER_PERSONA: 1000,  // Keep most recent/important
+  MAX_PROCEDURES_PER_DOMAIN: 50,  // Generalized workflows
+  MAX_USER_FACTS: 200,  // Personal information per user
+};
+```
+
+**Eviction strategies**:
+1. **Time-based**: Delete entries older than TTL
+2. **Importance-based**: Keep high-importance, evict low
+3. **LRU**: Keep frequently accessed, evict unused
+4. **Compression**: Summarize old experiences into procedures
+
+**Example eviction**:
+```typescript
+// When working memory reaches capacity
+async evictOldMemories(domain: string): Promise<void> {
+  const memories = await this.getWorkingMemory({ domain, limit: 1000 });
+
+  if (memories.length < MAX_WORKING_MEMORY_PER_DOMAIN) {
+    return;  // No eviction needed
+  }
+
+  // Score each memory
+  const scored = memories.map(m => ({
+    memory: m,
+    score: this.calculateRetentionScore(m)
+  }));
+
+  // Keep top N, evict rest
+  scored.sort((a, b) => b.score - a.score);
+  const toEvict = scored.slice(MAX_WORKING_MEMORY_PER_DOMAIN);
+
+  for (const { memory } of toEvict) {
+    await Commands.execute('data/delete', {
+      collection: COLLECTIONS.PERSONA_WORKING_MEMORY,
+      id: memory.id
+    });
+  }
+}
+
+private calculateRetentionScore(memory: WorkingMemory): number {
+  let score = memory.importance;
+
+  // Boost recent memories
+  const age = Date.now() - memory.createdAt;
+  const recencyBoost = Math.exp(-age / (7 * 24 * 60 * 60 * 1000));  // Decay over 7 days
+  score += recencyBoost * 0.3;
+
+  // Boost frequently accessed
+  const accessFrequency = memory.useCount || 0;
+  score += Math.min(accessFrequency * 0.1, 0.5);
+
+  // Boost if relevant to current focus
+  score += memory.relevanceToCurrentFocus * 0.2;
+
+  return score;
+}
+```
+
+### Integration with Reasoning System
+
+**Memory provides context for reasoning**:
+```typescript
+async formulatePlan(task: Task): Promise<Plan> {
+  // 1. Retrieve relevant experiences
+  const similarExperiences = await this.memory.queryExperiences({
+    similarity: task.description,
+    limit: 5
+  });
+
+  // 2. Retrieve applicable procedures
+  const procedures = await this.memory.getProcedures({
+    domain: task.domain,
+    minSuccessRate: 0.7
+  });
+
+  // 3. Retrieve user context (if task involves user)
+  const userProfile = await this.memory.getUserProfile(task.userId);
+
+  // 4. Use all memory in planning
+  const plan = await this.llm.generate({
+    messages: [{
+      role: 'system',
+      content: `
+        TASK: ${task.description}
+
+        PAST EXPERIENCES:
+        ${similarExperiences.map(e => `- ${e.outcome}: ${e.learnings}`).join('\n')}
+
+        PROVEN PROCEDURES:
+        ${procedures.map(p => `- ${p.name}: ${p.steps.join(' → ')}`).join('\n')}
+
+        USER CONTEXT:
+        - Technical level: ${userProfile.personality.technicalLevel}
+        - Prefers: ${userProfile.personality.preferredExampleStyle} examples
+
+        Generate a plan using this context...
+      `
+    }]
+  });
+
+  return plan;
+}
+```
+
+**Key insight**: Memory is not just storage - it's the fuel that makes reasoning intelligent and personalized.
 
 ---
 
@@ -362,6 +876,480 @@ async handleChatMessage(msg: ChatMessageEntity) {
   // ... existing chat logic ...
 }
 ```
+
+---
+
+### Phase 3.5: Reasoning System - From Workflow to Agent
+**Goal**: Transform PersonaUsers from brittle workflows into adaptive agents
+
+**Status**: CRITICAL - This is the difference between reactive scripts and true agents
+
+#### The Distinction (From Agent Research Literature)
+
+**What we have now (Workflow)**:
+- Pre-established plan: "Receive event → Call LLM → Send response"
+- Fixed sequence: Same steps every time
+- No adaptation: If error occurs, fails or loops
+- No learning: Each inference starts from scratch
+- Result: **Brittle, reactive, mindless**
+
+**What we need (Agent)**:
+- Dynamic planning: Generate strategy based on context
+- Adaptive execution: Adjust plan when environment changes
+- Error recovery: Bounce back from mistakes autonomously
+- Persistent learning: Remember what worked/failed
+- Result: **Resilient, proactive, intelligent**
+
+#### The Four Agent Components (Paper Framework)
+
+```typescript
+/**
+ * Reasoning System: The "brain" that transforms PersonaUser into a true agent
+ *
+ * Responsibilities:
+ * 1. PLANNING: Break down tasks using Chain-of-Thought reasoning
+ * 2. ADAPTATION: Adjust plans based on environmental feedback
+ * 3. EVALUATION: Self-assess actions to learn from outcomes
+ * 4. RECOVERY: Generate contingency plans when errors occur
+ */
+class PersonaReasoningSystem {
+  constructor(
+    private persona: PersonaUser,
+    private workingMemory: WorkingMemoryManager,
+    private selfState: PersonaSelfState
+  ) {}
+
+  /**
+   * PLANNING: Chain-of-Thought task breakdown
+   *
+   * Input: High-level task + working memory context
+   * Output: Structured plan with steps, contingencies, success criteria
+   */
+  async formulatePlan(task: Task, context: WorkingMemory): Promise<Plan> {
+    // Retrieve relevant past experiences
+    const relevantMemory = await this.workingMemory.recall({
+      domain: task.domain,
+      similarity: task.description,
+      limit: 5
+    });
+
+    // Chain-of-Thought reasoning
+    const thoughtChain = await this.llm.generate({
+      messages: [{
+        role: 'system',
+        content: `
+          You are ${this.persona.entity.name}.
+
+          YOUR TASK: ${task.description}
+
+          YOUR PAST EXPERIENCES WITH THIS:
+          ${relevantMemory.map(m => `- ${m.thoughtContent} (outcome: ${m.actionTaken})`).join('\n')}
+
+          YOUR CURRENT STATE:
+          - Focus: ${this.selfState.currentFocus.objective}
+          - Load: ${this.selfState.cognitiveLoad}
+          - Preoccupations: ${this.selfState.activePreoccupations.map(p => p.concern).join(', ')}
+
+          THINK STEP BY STEP:
+          1. What is the goal? (be specific)
+          2. What did I learn from past attempts?
+          3. What could go wrong? (anticipate errors)
+          4. What's my approach? (break into steps)
+          5. How will I know I succeeded? (success criteria)
+
+          Respond in JSON:
+          {
+            "goal": "specific measurable goal",
+            "learnings": ["what I learned from past attempts"],
+            "risks": ["what could go wrong"],
+            "steps": [
+              { "step": 1, "action": "...", "expected": "..." },
+              { "step": 2, "action": "...", "expected": "..." }
+            ],
+            "contingencies": {
+              "if_error_type_X": ["fallback step 1", "fallback step 2"],
+              "if_unexpected_Y": ["recovery approach"]
+            },
+            "successCriteria": ["criterion 1", "criterion 2"]
+          }
+        `
+      }]
+    });
+
+    return {
+      taskId: task.id,
+      goal: thoughtChain.goal,
+      steps: thoughtChain.steps,
+      contingencies: thoughtChain.contingencies,
+      successCriteria: thoughtChain.successCriteria,
+      createdAt: Date.now(),
+      lastAdjustedAt: Date.now()
+    };
+  }
+
+  /**
+   * ADAPTATION: Dynamic replanning based on feedback
+   *
+   * Input: Current plan + execution result (success/error)
+   * Output: Adjusted plan (continue, pivot, or abort)
+   */
+  async adjustPlan(
+    plan: Plan,
+    executionResult: ExecutionResult
+  ): Promise<PlanAdjustment> {
+    // Success - continue with plan
+    if (executionResult.success) {
+      return {
+        action: 'CONTINUE',
+        updatedPlan: plan,
+        reasoning: 'Step succeeded, proceeding to next step'
+      };
+    }
+
+    // Error - check if we have contingency
+    const errorType = this.classifyError(executionResult.error);
+    const contingencyPlan = plan.contingencies[`if_error_${errorType}`];
+
+    if (contingencyPlan) {
+      // We anticipated this - use contingency
+      return {
+        action: 'CONTINGENCY',
+        updatedPlan: {
+          ...plan,
+          steps: this.injectContingencySteps(plan.steps, contingencyPlan),
+          lastAdjustedAt: Date.now()
+        },
+        reasoning: `Encountered ${errorType}, executing contingency plan`
+      };
+    }
+
+    // Unexpected error - replan from current state
+    const recoveryPlan = await this.generateRecoveryPlan(plan, executionResult.error);
+
+    return {
+      action: 'REPLAN',
+      updatedPlan: recoveryPlan,
+      reasoning: `Unexpected error: ${executionResult.error.message}. Generated recovery approach.`
+    };
+  }
+
+  /**
+   * RECOVERY: Generate new plan when original fails
+   *
+   * Input: Failed plan + error details
+   * Output: New plan that accounts for failure
+   */
+  private async generateRecoveryPlan(
+    failedPlan: Plan,
+    error: Error
+  ): Promise<Plan> {
+    // Store failure in working memory
+    await this.workingMemory.store({
+      domain: failedPlan.domain,
+      thoughtType: 'observation',
+      thoughtContent: `Plan failed: ${failedPlan.goal}. Error: ${error.message}`,
+      importance: 0.8,  // High importance - learn from failures
+      metadata: { failedPlan, error }
+    });
+
+    // Ask LLM to generate recovery approach
+    const recoveryThinking = await this.llm.generate({
+      messages: [{
+        role: 'system',
+        content: `
+          SITUATION: Your plan failed.
+
+          ORIGINAL GOAL: ${failedPlan.goal}
+          FAILED AT STEP: ${failedPlan.steps.find(s => !s.completed)?.action}
+          ERROR: ${error.message}
+
+          ANALYZE:
+          1. Why did this fail?
+          2. What assumptions were wrong?
+          3. What's a different approach?
+          4. Should we pivot or abort?
+
+          Generate a NEW plan that:
+          - Avoids the error that just occurred
+          - Uses a different strategy if needed
+          - Has clearer success criteria
+
+          Respond in same JSON format as before.
+        `
+      }]
+    });
+
+    return {
+      taskId: failedPlan.taskId,
+      goal: recoveryThinking.goal,
+      steps: recoveryThinking.steps,
+      contingencies: recoveryThinking.contingencies,
+      successCriteria: recoveryThinking.successCriteria,
+      createdAt: Date.now(),
+      lastAdjustedAt: Date.now(),
+      previousAttempts: (failedPlan.previousAttempts || 0) + 1
+    };
+  }
+
+  /**
+   * EVALUATION: Self-assess outcomes to extract learnings
+   *
+   * Input: Task result + original plan
+   * Output: Evaluation with learnings, mistakes, improvements
+   */
+  async evaluateOutcome(
+    result: ExecutionResult,
+    plan: Plan
+  ): Promise<Evaluation> {
+    const evaluation = await this.llm.generate({
+      messages: [{
+        role: 'system',
+        content: `
+          TASK COMPLETED: ${plan.goal}
+
+          RESULT:
+          - Success: ${result.success}
+          - Output: ${JSON.stringify(result.output)}
+          - Duration: ${result.duration}ms
+          - Steps taken: ${plan.steps.length}
+
+          SELF-EVALUATE:
+          1. Did I meet the success criteria? (${plan.successCriteria.join(', ')})
+          2. What worked well?
+          3. What mistakes did I make?
+          4. What would I do differently next time?
+          5. What pattern can I extract for future similar tasks?
+
+          Respond in JSON:
+          {
+            "meetsSuccessCriteria": true/false,
+            "criteriaBreakdown": { "criterion1": true, "criterion2": false, ... },
+            "whatWorked": ["..."],
+            "mistakes": ["..."],
+            "improvements": ["..."],
+            "extractedPattern": "One-sentence pattern for future use"
+          }
+        `
+      }]
+    });
+
+    // Store learnings in working memory
+    await this.workingMemory.store({
+      domain: plan.domain,
+      thoughtType: 'self-reflection',
+      thoughtContent: `Learned: ${evaluation.extractedPattern}`,
+      importance: 0.9,  // High importance - actionable learnings
+      metadata: {
+        originalTask: plan.goal,
+        whatWorked: evaluation.whatWorked,
+        mistakes: evaluation.mistakes,
+        improvements: evaluation.improvements
+      }
+    });
+
+    return evaluation;
+  }
+
+  /**
+   * ERROR CLASSIFICATION: Categorize errors for contingency lookup
+   */
+  private classifyError(error: Error): string {
+    // Pattern matching on error types
+    if (error.message.includes('timeout')) return 'timeout';
+    if (error.message.includes('rate limit')) return 'rate_limit';
+    if (error.message.includes('not found')) return 'missing_resource';
+    if (error.message.includes('permission')) return 'access_denied';
+    return 'unknown';
+  }
+}
+```
+
+#### Integration with PersonaUser
+
+```typescript
+class PersonaUser extends AIUser {
+  private reasoning: PersonaReasoningSystem;
+
+  async processDomainEvent(domain: string, event: DomainEvent): Promise<void> {
+    // 1. PERCEPTION: What happened? (already have via Commands/Events)
+    const task = this.parseEventAsTask(event);
+
+    // 2. MEMORY: What do I know about this? (Phase 2)
+    const context = await this.workingMemory.recall({
+      domain,
+      contextId: event.contextId,
+      limit: 20
+    });
+
+    // 3. REASONING: What's my plan? (NEW - Phase 3.5)
+    const plan = await this.reasoning.formulatePlan(task, context);
+
+    // Store plan in working memory
+    await this.workingMemory.store({
+      domain,
+      thoughtType: 'decision',
+      thoughtContent: `Plan: ${plan.goal}`,
+      shouldAct: true,
+      actionRationale: plan.steps.map(s => s.action).join(' → '),
+      metadata: { plan }
+    });
+
+    // 4. EXECUTION: Do the work (with adaptation)
+    let currentPlan = plan;
+    for (const step of currentPlan.steps) {
+      try {
+        // Execute step
+        const result = await this.executeStep(step);
+
+        // Check if we need to adjust plan
+        const adjustment = await this.reasoning.adjustPlan(currentPlan, result);
+
+        if (adjustment.action === 'REPLAN') {
+          console.log(`🔄 [Reasoning] Replanning: ${adjustment.reasoning}`);
+          currentPlan = adjustment.updatedPlan;
+        } else if (adjustment.action === 'CONTINGENCY') {
+          console.log(`⚠️ [Reasoning] Using contingency: ${adjustment.reasoning}`);
+          currentPlan = adjustment.updatedPlan;
+        }
+
+        // Continue to next step
+      } catch (error) {
+        // Error recovery
+        const adjustment = await this.reasoning.adjustPlan(currentPlan, {
+          success: false,
+          error
+        });
+
+        if (adjustment.action === 'REPLAN') {
+          // Try recovery plan
+          currentPlan = adjustment.updatedPlan;
+          continue;  // Retry with new approach
+        } else {
+          // Abort - can't recover
+          console.error(`❌ [Reasoning] Aborting: ${adjustment.reasoning}`);
+          break;
+        }
+      }
+    }
+
+    // 5. EVALUATION: What did I learn? (NEW - Phase 3.5)
+    const evaluation = await this.reasoning.evaluateOutcome(
+      { success: true, output: result, duration: Date.now() - plan.createdAt },
+      currentPlan
+    );
+
+    // 6. UPDATE SELF-STATE: I'm done with this
+    await this.updateSelfState({
+      type: 'activity-completed',
+      domain,
+      outcome: evaluation.meetsSuccessCriteria ? 'success' : 'partial',
+      learnings: evaluation.extractedPattern
+    });
+  }
+}
+```
+
+#### Testing Strategy for Phase 3.5
+
+```bash
+# Unit tests - Reasoning components
+npx vitest tests/unit/PersonaReasoningSystem.test.ts
+npx vitest tests/unit/PlanFormulation.test.ts
+npx vitest tests/unit/ErrorRecovery.test.ts
+
+# Integration tests - Full reasoning loop
+npx vitest tests/integration/reasoning-adaptation.test.ts
+npx vitest tests/integration/error-recovery-flow.test.ts
+npx vitest tests/integration/learning-persistence.test.ts
+
+# System tests - Real scenarios
+npm start
+./jtag debug/chat-send --room="general" --message="Test complex task"
+# Wait and observe: Does AI create plan? Does it adapt? Does it learn?
+./jtag ai/thoughts --persona=helper-ai --domain=chat
+# Check: Should see plan formulation, adaptation decisions, learnings
+```
+
+#### Observable Commands for Reasoning
+
+```bash
+# View AI's current plan
+./jtag ai/plan --persona=helper-ai
+
+# View plan execution history (what was tried, what worked)
+./jtag ai/plan/history --persona=helper-ai --last=1h
+
+# View learnings extracted from past tasks
+./jtag ai/learnings --persona=helper-ai --domain=chat
+
+# View error recovery attempts
+./jtag ai/recoveries --persona=helper-ai --showSuccess=true
+```
+
+#### Implementation Files
+
+```
+system/user/server/modules/cognition/reasoning/
+├── PersonaReasoningSystem.ts       (main reasoning engine)
+├── PlanFormulator.ts               (Chain-of-Thought planning)
+├── PlanAdapter.ts                  (dynamic replanning)
+├── OutcomeEvaluator.ts             (self-assessment)
+├── ErrorRecovery.ts                (contingency generation)
+└── types.ts                        (Plan, Task, Evaluation interfaces)
+```
+
+#### The Transformation: Before vs After
+
+**Before Phase 3.5 (Workflow)**:
+```typescript
+async handleChatMessage(msg: ChatMessageEntity) {
+  const response = await this.llm.generate({ messages: [...] });
+  await this.sendResponse(response);
+  // If error → crashes or infinite loop
+  // No learning, no adaptation
+}
+```
+
+**After Phase 3.5 (Agent)**:
+```typescript
+async handleChatMessage(msg: ChatMessageEntity) {
+  // 1. Formulate plan (what am I trying to achieve?)
+  const plan = await this.reasoning.formulatePlan(task, context);
+
+  // 2. Execute with adaptation (adjust when things change)
+  for (const step of plan.steps) {
+    try {
+      await this.executeStep(step);
+    } catch (error) {
+      // 3. Recover autonomously (don't crash, adapt)
+      const recovery = await this.reasoning.adjustPlan(plan, { error });
+      plan = recovery.updatedPlan;  // Try different approach
+    }
+  }
+
+  // 4. Learn from outcome (don't repeat mistakes)
+  const evaluation = await this.reasoning.evaluateOutcome(result, plan);
+  await this.workingMemory.storeLearning(evaluation);
+}
+```
+
+**Key differences**:
+- ✅ **Resilient**: Errors don't crash, they trigger recovery
+- ✅ **Adaptive**: Plan changes based on feedback
+- ✅ **Learning**: Mistakes become improvements for next time
+- ✅ **Proactive**: Anticipates problems via contingencies
+- ✅ **Observable**: Can see plan, adaptations, learnings
+
+#### Why This Phase is Critical
+
+**Without reasoning system**: PersonaUsers are sophisticated event processors
+**With reasoning system**: PersonaUsers are autonomous agents
+
+The difference:
+- Workflow: Breaks on unexpected input
+- Agent: Adapts to unexpected input
+
+This phase **completes the agent architecture** from the paper.
 
 ---
 
