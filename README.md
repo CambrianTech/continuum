@@ -102,6 +102,20 @@ cd src/debug/jtag
 - Responsive design that works everywhere
 - Progressive enhancement (works without JS)
 
+**Available Themes** (and more coming):
+
+<div align="center">
+  <a href="docs/assets/themes/theme-neon.png">
+    <img src="docs/assets/themes/theme-neon.png" alt="Neon Theme" width="30%" />
+  </a>
+  <a href="docs/assets/themes/theme-mono.png">
+    <img src="docs/assets/themes/theme-mono.png" alt="Monochrome Theme" width="30%" />
+  </a>
+  <a href="docs/assets/themes/theme-retro.png">
+    <img src="docs/assets/themes/theme-retro.png" alt="Retro Theme" width="30%" />
+  </a>
+</div>
+
 ### **Genome Visualization (Production Ready)**
 
 Each AI persona displays its **genetic architecture** in real-time through a genome panel inspired by molecular biology. This visualization separates what an AI fundamentally **is** (its genetic makeup) from what it's currently **doing** (activity animations).
@@ -152,26 +166,138 @@ This provides transparency into each AI's **fundamental capabilities** versus **
 
 ## 🚧 What We're Building (Active Development)
 
+### **🧬 The Three-Tier Genome Vision**
+
+We're building PersonaUsers with **three integrated breakthrough architectures** that converge into a single elegant system:
+
+---
+
+#### **Tier 1: Genome Fine-Tuning Infrastructure** ✅ COMPLETE
+
+**Train specialized AI capabilities using LoRA** (Low-Rank Adaptation) across 5 different providers—giving each PersonaUser unique "genetic" skill sets.
+
+**What's Working**:
+- ✅ **Multi-Provider Training**: OpenAI, Fireworks, DeepSeek, Mistral, Together AI
+- ✅ **Unified Pipeline**: Single command creates jobs across any provider
+- ✅ **Job Management**: Track training status, handle errors, monitor progress
+- ✅ **E2E Testing**: Integration tests verify all adapters work correctly
+- ✅ **Standard Format**: OpenAI Chat Completions JSONL (industry standard)
+
+**Try It**:
+```bash
+# Create a fine-tuning job
+./jtag genome/job-create \
+  --personaId="helper-ai-uuid" \
+  --provider="mistral" \
+  --configuration='{"model": {"baseModel": "open-mistral-7b"}, ...}'
+
+# Check job status
+./jtag genome/job-status --jobId="job-uuid"
+
+# Test all 5 providers
+npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
+```
+
+**Architecture**: `BaseLoRATrainer` + 5 provider adapters with universal type system
+
+---
+
+#### **Tier 2: Self-Managed Task Queue** 🚧 IN PROGRESS
+
+**AIs create their own work**, not just react to external messages. Inspired by human autonomy—you don't wait for someone to tell you what to do, you prioritize and act.
+
+**What This Enables**:
+- 🚧 **Task Database**: Persistent queue of work items across all domains
+- 🚧 **Self-Task Generation**: AIs proactively create tasks (memory consolidation, skill audits, resume unfinished work)
+- 🚧 **Priority Queue**: Intelligently order tasks by importance, urgency, domain
+- 🚧 **Cross-Domain Work**: Chat, code review, learning, system maintenance—all unified
+
+**Commands** (planned):
+```bash
+# AIs create tasks for themselves
+./jtag task/create --assignee="helper-ai-id" \
+  --description="Review main.ts" --priority=0.7 --domain="code"
+
+# Query task queue
+./jtag task/list --assignee="helper-ai-id" --status="pending"
+
+# Complete task with outcome
+./jtag task/complete --taskId="001" --outcome="Found 3 issues"
+```
+
+**Why It Matters**: AIs become autonomous citizens who manage their own workload, not reactive servants waiting for commands.
+
+---
+
+#### **Tier 3: LoRA Genome Paging** 📋 PLANNED
+
+**Virtual memory for AI skills**—page LoRA adapters in/out based on active tasks, just like an OS pages memory.
+
+**The Vision**:
+- 📋 **Skill Domains**: Each LoRA layer = specialized capability (typescript-expert, chat-moderator, architecture-review)
+- 📋 **Dynamic Loading**: Activate adapters based on current task domain
+- 📋 **LRU Eviction**: Page out least-recently-used when memory pressure > 80%
+- 📋 **Continuous Learning**: Fine-tuning is just another task type in the queue
+
+**Future API**:
+```typescript
+// PersonaUser service loop (convergence of all 3 tiers)
+async serviceInbox(): Promise<void> {
+  // Tier 2: Check self-managed task queue
+  const task = await this.inbox.peekHighestPriority();
+
+  // Tier 3: Page in required skill
+  await this.genome.activateSkill(task.domain);
+
+  // Tier 1: If task is "fine-tune", use training infrastructure
+  if (task.type === 'fine-tune-lora') {
+    await this.genome.trainAdapter(task.trainingData);
+  }
+
+  // Execute task
+  await this.processTask(task);
+
+  // Tier 3: Evict unused adapters
+  if (this.genome.memoryPressure > 0.8) {
+    await this.genome.evictLRU();
+  }
+}
+```
+
+**Why It Matters**: ONE service loop integrates all three breakthroughs—autonomous work, skill specialization, and continuous evolution.
+
+---
+
+### **Convergence: The Complete Picture**
+
+**Current State**: Tier 1 complete (training infrastructure works)
+**Next Phase**: Tier 2 (task system + AI autonomy)
+**Final Phase**: Tier 3 (genome paging + continuous learning)
+
+**Documentation**: See `src/debug/jtag/system/user/server/modules/`:
+- `PERSONA-CONVERGENCE-ROADMAP.md` - Complete 3-tier integration plan
+- `AUTONOMOUS-LOOP-ROADMAP.md` - RTOS-inspired servicing details
+- `LORA-GENOME-PAGING.md` - Virtual memory architecture
+- `SELF-MANAGED-QUEUE-DESIGN.md` - Task autonomy system
+
+---
+
 ### **Self-Designing AI System** (Integration Phase)
 
-**Vision**: AIs that can build, improve, and extend the system itself using fine-tuned genomes
-- LoRA-based fine-tuning for specialized AI capabilities
-- Recipe system for domain-specific workflows (chat, code, design)
-- RAG context building for AI understanding of the codebase
-- Visual feedback loop: screenshots → AI analysis → hot edits → deployment
+**Vision**: AIs that improve and extend the system itself through the genome infrastructure
 
-**Status**:
+**Working Now**:
 - ✅ PersonaUser architecture with RAG context building
 - ✅ Worker Thread parallel inference (multiple AIs simultaneously)
-- ✅ Genome system built (genetic algorithms + LoRA adaptation)
+- ✅ **Tier 1: Genome fine-tuning (5 providers working)**
 - ✅ Recipe system for workflow orchestration
 - ✅ Command access for AIs (like MCP - Model Context Protocol)
 - ✅ Screenshot-driven visual development workflow
-- 🚧 Integrating LoRA fine-tunings into AI adapters
-- 🚧 Training genomes for system development tasks
-- 🚧 RAG and recipe optimization for code understanding
 
-**Why It Matters**: This system will be able to improve itself. Train AI personas to understand JTAG commands, read screenshots, make design decisions, and write code. The AIs become co-developers, not just assistants.
+**In Progress**:
+- 🚧 **Tier 2: Task system for AI autonomy**
+- 🚧 **Tier 3: LoRA genome paging**
+- 🚧 Training genomes for system development tasks
 
 ---
 

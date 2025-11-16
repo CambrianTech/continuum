@@ -31,6 +31,8 @@ import type {
   AIProviderAdapter,
   TextGenerationRequest,
   TextGenerationResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
   HealthStatus,
   ProviderRegistration,
 } from './AIProviderTypesV2';
@@ -314,6 +316,47 @@ export class AIProviderDaemon extends DaemonBase {
   }
 
   /**
+   * Create embeddings using AI provider
+   */
+  async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    if (!this.initialized) {
+      throw new AIProviderError(
+        'AIProviderDaemon is not initialized',
+        'daemon',
+        'NOT_INITIALIZED'
+      );
+    }
+
+    // Select provider
+    const adapter = this.selectAdapter(request.preferredProvider);
+    if (!adapter) {
+      throw new AIProviderError(
+        'No suitable AI provider available',
+        'daemon',
+        'NO_PROVIDER_AVAILABLE',
+        { preferredProvider: request.preferredProvider }
+      );
+    }
+
+    // Check if adapter supports embeddings
+    if (!adapter.createEmbedding) {
+      throw new AIProviderError(
+        `Adapter ${adapter.providerId} does not support embeddings`,
+        'adapter',
+        'UNSUPPORTED_OPERATION'
+      );
+    }
+
+    try {
+      const response = await adapter.createEmbedding(request);
+      return response;
+    } catch (error) {
+      console.error(`❌ AIProviderDaemon: Embedding generation failed with ${adapter.providerId}`);
+      throw error;
+    }
+  }
+
+  /**
    * Check health of all providers
    */
   async checkProviderHealth(): Promise<Map<string, HealthStatus>> {
@@ -567,6 +610,24 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     return await AIProviderDaemon.sharedInstance.generateText(request);
+  }
+
+  /**
+   * Create embeddings with automatic instance injection - CLEAN INTERFACE
+   *
+   * @example
+   * const response = await AIProviderDaemon.createEmbedding({
+   *   input: 'Hello, world!',
+   *   model: 'nomic-embed-text',
+   *   preferredProvider: 'ollama'
+   * });
+   */
+  static async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
+    if (!AIProviderDaemon.sharedInstance) {
+      throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
+    }
+
+    return await AIProviderDaemon.sharedInstance.createEmbedding(request);
   }
 
   /**

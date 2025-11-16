@@ -171,6 +171,12 @@ export interface FineTuningCapabilities {
   maxBatchSize?: number;
   defaultBatchSize?: number;          // Default batch size
 
+  // Genome capabilities (adapter composition)
+  maxActiveLayers?: number;           // Max LoRA layers active simultaneously (undefined = unlimited)
+  supportsDownload?: boolean;         // Can download trained adapter weights
+  supportsLocalComposition?: boolean;  // Can compose locally with PEFT
+  compositionMethods?: Array<'stack' | 'weighted' | 'TIES' | 'DARE'>;  // Supported composition methods
+
   // System requirements
   requiresGPU?: boolean;              // Does this strategy require a GPU?
   requiresInternet?: boolean;         // Does this strategy require internet?
@@ -178,4 +184,34 @@ export interface FineTuningCapabilities {
   // Pricing (for API-based training)
   costPerExample?: number;             // USD per training example
   estimatedTrainingTime?: number;      // Milliseconds per example
+}
+
+/**
+ * Training handle returned by _startTraining()
+ * Contains whatever identifier(s) needed to track this training job
+ */
+export interface TrainingHandle {
+  /** Primary identifier (jobId, processId, etc.) */
+  jobId: string;
+
+  /** Optional secondary identifiers */
+  fileId?: string;        // For cleanup (OpenAI file uploads)
+  datasetName?: string;   // Fireworks-style dataset references
+  processId?: number;     // Local training process IDs
+
+  /** Provider-specific metadata */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Training status returned by _queryStatus()
+ */
+export interface TrainingStatus {
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  progress?: number;      // 0-1 if available
+  modelId?: string;       // When completed
+  error?: string;         // If failed
+
+  /** Provider-specific data */
+  metadata?: Record<string, unknown>;
 }

@@ -9,24 +9,36 @@
  * - Custom fine-tuning with LoRA
  *
  * API: OpenAI-compatible format
- * Base URL: https://api.fireworks.ai/inference/v1
+ * Base URL: https://api.fireworks.ai/inference
+ * Full endpoint: https://api.fireworks.ai/inference/v1/chat/completions
  * Docs: https://docs.fireworks.ai/
  */
 
 import { BaseOpenAICompatibleAdapter } from '../../../shared/adapters/BaseOpenAICompatibleAdapter';
-import { getSecret } from '../../../../../system/secrets/SecretManager';
+import { FireworksBaseConfig } from './FireworksBaseConfig';
 
 export class FireworksAdapter extends BaseOpenAICompatibleAdapter {
+  private readonly sharedConfig: FireworksBaseConfig;
+
   constructor(apiKey?: string) {
+    // Create shared config (used by inference + fine-tuning)
+    const sharedConfig = new FireworksBaseConfig(apiKey);
+
     super({
-      providerId: 'fireworks',
-      providerName: 'Fireworks AI',
-      apiKey: apiKey || getSecret('FIREWORKS_API_KEY', 'FireworksAdapter') || '',
-      baseUrl: 'https://api.fireworks.ai/inference',
-      defaultModel: 'accounts/fireworks/models/deepseek-v3p1',
+      providerId: sharedConfig.providerId,
+      providerName: sharedConfig.providerName,
+      apiKey: sharedConfig.apiKey,
+      baseUrl: sharedConfig.baseUrl,
+      defaultModel: sharedConfig.getDefaultModel(),
       timeout: 60000,
       supportedCapabilities: ['text-generation', 'chat', 'embeddings'],
-      // Fireworks provides models via API, no need to hardcode
+      models: sharedConfig.getAvailableModels(),
     });
+
+    this.sharedConfig = sharedConfig;
+  }
+
+  getSharedConfig(): FireworksBaseConfig {
+    return this.sharedConfig;
   }
 }

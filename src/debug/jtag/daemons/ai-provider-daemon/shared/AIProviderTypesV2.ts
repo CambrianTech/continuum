@@ -15,6 +15,7 @@
  */
 
 import type { JTAGContext, UUID } from '../../../system/core/types/JTAGTypes';
+import type { ModelTier, ModelTags, ModelResolution } from './ModelTiers';
 
 // ========================
 // Model Capabilities
@@ -298,6 +299,28 @@ export interface AIProviderAdapter {
   // Metadata
   getAvailableModels(): Promise<ModelInfo[]>;
   healthCheck(): Promise<HealthStatus>;
+
+  // Semantic Model Tier Resolution (NEW)
+  // Bidirectional mapping: tier ↔ model ID
+  // User requirement: "turn api results into these terms"
+
+  /**
+   * Resolve semantic tier to actual model ID
+   * Example: tier='balanced' → 'claude-3-5-sonnet-20250122'
+   */
+  resolveModelTier?(tier: ModelTier): Promise<ModelResolution>;
+
+  /**
+   * Classify model ID back into semantic tier (BIDIRECTIONAL)
+   * Example: 'claude-3-5-sonnet-20250122' → { tier: 'balanced', costTier: 'medium', ... }
+   */
+  classifyModel?(modelId: string): Promise<ModelTags | null>;
+
+  /**
+   * Get all models grouped by tier
+   * Useful for UI showing "fast", "balanced", "premium", "free" options
+   */
+  getModelsByTier?(): Promise<Map<ModelTier, ModelInfo[]>>;
 
   // Lifecycle
   initialize(): Promise<void>;
