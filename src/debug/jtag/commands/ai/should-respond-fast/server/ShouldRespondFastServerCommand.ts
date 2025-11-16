@@ -83,7 +83,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
           domainKeywords: 0,
           conversationContext: 0,
           isQuestion: 0,
-          publicMessage: 0,
+          unansweredQuestion: 0,
           roomActivity: 0
         },
         signals: {
@@ -137,7 +137,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       domainKeywords: 0,
       conversationContext: 0,
       isQuestion: 0,
-      publicMessage: 0,
+      unansweredQuestion: 0,
       roomActivity: 0
     };
 
@@ -182,14 +182,18 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       scoreBreakdown.isQuestion = config.weights.isQuestion;
       signals.isQuestion = true;
       console.log(`❓ Message is a question`);
+
+      // 4a. Check if question is unanswered (someone should respond)
+      const hasRecentResponse = await this.hasRecentResponse(params.messageId, params.contextId);
+      if (!hasRecentResponse) {
+        scoreBreakdown.unansweredQuestion = config.weights.unansweredQuestion;
+        console.log(`❗ Unanswered question - needs attention`);
+      }
     }
 
-    // 5. Public message (always true for chat rooms)
-    scoreBreakdown.publicMessage = config.weights.publicMessage;
-
-    // 6. Room activity - recent messages in last 5 minutes
+    // 5. Room activity - recent messages in last 5 minutes (deprecated, usually 0)
     const roomActivity = await this.getRoomActivity(params.contextId);
-    if (roomActivity > 3) {
+    if (roomActivity > 3 && config.weights.roomActivity > 0) {
       scoreBreakdown.roomActivity = config.weights.roomActivity;
       console.log(`📈 High room activity: ${roomActivity} messages in 5min`);
     }
@@ -200,7 +204,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       scoreBreakdown.domainKeywords +
       scoreBreakdown.conversationContext +
       scoreBreakdown.isQuestion +
-      scoreBreakdown.publicMessage +
+      scoreBreakdown.unansweredQuestion +
       scoreBreakdown.roomActivity;
 
     return { score, scoreBreakdown, signals };
@@ -234,6 +238,41 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
     } catch (error) {
       console.warn('⚠️ Failed to check recent activity:', error);
       return false;
+    }
+  }
+
+  /**
+   * Check if question has received a response in last 2 minutes
+   */
+  private async hasRecentResponse(messageId: string, contextId: string): Promise<boolean> {
+    try {
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+        collection: 'chat_messages',
+        filter: { roomId: contextId },
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 20 // Check last 20 messages
+      });
+
+      if (result.success && result.items) {
+        // Find the original message
+        const originalIndex = result.items.findIndex((msg: ChatMessageEntity) => msg.id === messageId);
+        if (originalIndex === -1) return false;
+
+        // Check if any subsequent messages exist after the original
+        const subsequentMessages = result.items.slice(0, originalIndex);
+        if (subsequentMessages.length > 0) {
+          const lastReply = subsequentMessages[0];
+          const replyTime = new Date(lastReply.timestamp);
+          return replyTime > twoMinutesAgo;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      console.warn('⚠️ Failed to check for recent responses:', error);
+      return false; // Assume unanswered if check fails
     }
   }
 
@@ -290,7 +329,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
         domainKeywords: 0,
         conversationContext: 0,
         isQuestion: 0,
-        publicMessage: 0,
+        unansweredQuestion: 0,
         roomActivity: 0
       },
       signals: extra.signals ?? {

@@ -9,7 +9,8 @@
  * - Custom fine-tuning with LoRA
  *
  * API: OpenAI-compatible format
- * Base URL: https://api.fireworks.ai/inference/v1
+ * Base URL: https://api.fireworks.ai/inference
+ * Full endpoint: https://api.fireworks.ai/inference/v1/chat/completions
  * Docs: https://docs.fireworks.ai/
  */
 
