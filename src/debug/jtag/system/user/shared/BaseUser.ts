@@ -153,6 +153,9 @@ export abstract class BaseUser {
       // Pass userId+roomId as subscriberId to enable per-room deduplication
       // This ensures: 1 subscription per user per room, replacing old subscriptions on re-init
       Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
+        console.log(`🔔 ${this.constructor.name} ${this.displayName}: EVENT HANDLER TRIGGERED for message ${messageData.id} in room ${roomId.slice(0,8)}`);
+        console.log(`   Message: "${messageData.content?.text?.slice(0, 100)}"`);
+        console.log(`   From: ${messageData.senderName} (${messageData.senderId.slice(0,8)})`);
         await handler(messageData);
       }, { where: { roomId } }, `${this.id}_${roomId}`);
 

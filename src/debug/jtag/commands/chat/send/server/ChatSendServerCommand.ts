@@ -67,32 +67,22 @@ export class ChatSendServerCommand extends ChatSendCommand {
       };
     }
 
-    // 4. Store message using Commands.execute (same pattern as PersonaUser)
-    // This broadcasts events properly across all WebSocket connections
-    const result = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
-      'data/create',
-      {
-        context: params.context,
-        sessionId: params.sessionId,
-        collection: ChatMessageEntity.collection,
-        backend: 'server',
-        data: messageEntity
-      }
+    // 4. Store message using DataDaemon.store (clean server-side interface)
+    // DataDaemon.store() handles event broadcast to BOTH local (PersonaUsers) AND remote (browser) subscribers
+    const storedEntity = await DataDaemon.store<ChatMessageEntity>(
+      ChatMessageEntity.collection,
+      messageEntity
     );
 
-    if (!result.success || !result.data) {
-      throw new Error(`Failed to create message: ${result.error || 'Unknown error'}`);
-    }
-
     // 5. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
-    const shortId = result.data.id.slice(-6);
+    const shortId = storedEntity.id.slice(-6);
 
     console.log(`✅ Message sent: #${shortId} to ${room.entity.name}`);
 
     return transformPayload(params, {
       success: true,
       message: `Message sent to ${room.entity.name} (#${shortId})`,
-      messageEntity: result.data,
+      messageEntity: storedEntity,
       shortId: shortId,
       roomId: room.id
     });

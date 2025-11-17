@@ -688,12 +688,18 @@ export class DataDaemon {
     }
     const entity = await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context);
 
-    // ✨ Universal event emission - works anywhere!
+    // ✨ Dual event emission - trigger BOTH local AND remote subscribers
     const eventName = BaseEntity.getEventName(collection, 'created');
-    console.log(`🔔 DataDaemon.store: Emitting event ${eventName} for ${collection}`);
-    console.log(`🔔 DataDaemon.store: Context UUID: ${DataDaemon.jtagContext.uuid}, Entity ID: ${entity.id}`);
-    await Events.emit(DataDaemon.jtagContext, eventName, entity);
-    console.log(`✅ DataDaemon.store: Event emitted successfully`);
+
+    // 1. Emit to WebSocket clients (browser, remote CLI clients)
+    if (DataDaemon.jtagContext) {
+      await Events.emit(DataDaemon.jtagContext, eventName, entity);
+    }
+
+    // 2. Directly trigger local server-side subscriptions (PersonaUsers, etc.)
+    // Events.emit() routes through WebSocket but doesn't trigger local server subscribers
+    Events.checkWildcardSubscriptions(eventName, entity);
+    console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
 
     return entity;
   }

@@ -852,6 +852,7 @@ export class PersonaUser extends AIUser {
       ragContextSummary: gatingResult.ragContextSummary,
       conversationHistory: gatingResult.conversationHistory
     });
+    console.log(`🔧 TRACE-POINT-E: After logAIDecision (timestamp=${Date.now()}, client=${!!this.client})`);
 
     // Emit DECIDED_RESPOND event
     if (this.client) {
@@ -879,6 +880,7 @@ export class PersonaUser extends AIUser {
     // === AUTONOMOUS DECISION: AI decides via RAG-based recipes ===
     // No centralized coordinator - each AI uses recipes to decide if they should contribute
     console.log(`✅ ${this.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
+    console.log(`🔧 TRACE-POINT-A: About to check for new messages (timestamp=${Date.now()})`);
 
     // 🔧 POST-INFERENCE VALIDATION: Check if chat context changed during inference
     // During the 3-5 seconds of inference, other AIs may have already posted responses
@@ -930,8 +932,10 @@ export class PersonaUser extends AIUser {
     console.log(`✅ ${this.displayName}: [PHASE 2/3] GENERATING event emitted`);
 
     // 🔧 PHASE: Generate and post response
+    console.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
     console.log(`🔧 ${this.displayName}: [PHASE 3/3] Calling respondToMessage...`);
     await this.respondToMessage(messageEntity, decisionContext);
+    console.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
     console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
 
     // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
@@ -1116,6 +1120,7 @@ export class PersonaUser extends AIUser {
     originalMessage: ChatMessageEntity,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {
+    console.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     const generateStartTime = Date.now();  // Track total response time for decision logging
     try {
       // 🔧 SUB-PHASE 3.1: Build RAG context

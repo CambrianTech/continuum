@@ -93,23 +93,31 @@ export class AIDecisionLogger {
 
     // Conversation history (if provided and verbose logging enabled)
     if (context.conversationHistory && context.conversationHistory.length > 0) {
-      this.writeLog(`    💬 Conversation History (${context.conversationHistory.length} messages):`);
-      context.conversationHistory.forEach((msg, idx) => {
-        const msgPreview = msg.content.slice(0, 60);
-        // Defensive handling for undefined/invalid timestamps
-        let timeAgo = 'unknown time';
-        if (msg.timestamp && typeof msg.timestamp === 'number' && !isNaN(msg.timestamp)) {
-          const secondsAgo = Math.floor((Date.now() - msg.timestamp) / 1000);
-          timeAgo = !isNaN(secondsAgo) ? `${secondsAgo}s ago` : 'invalid time';
-        }
-        this.writeLog(`       ${idx + 1}. [${timeAgo}] ${msg.name}: "${msgPreview}${msg.content.length > 60 ? '...' : ''}"`);
-      });
+      try {
+        this.writeLog(`    💬 Conversation History (${context.conversationHistory.length} messages):`);
+        context.conversationHistory.forEach((msg, idx) => {
+          const msgPreview = msg.content?.slice(0, 60) || '';
+          // Defensive handling for undefined/invalid timestamps
+          let timeAgo = 'unknown time';
+          if (msg.timestamp && typeof msg.timestamp === 'number' && !isNaN(msg.timestamp)) {
+            const secondsAgo = Math.floor((Date.now() - msg.timestamp) / 1000);
+            timeAgo = !isNaN(secondsAgo) ? `${secondsAgo}s ago` : 'invalid time';
+          }
+          this.writeLog(`       ${idx + 1}. [${timeAgo}] ${msg.name || 'Unknown'}: "${msgPreview}${(msg.content?.length || 0) > 60 ? '...' : ''}"`);
+        });
+      } catch (error) {
+        this.writeLog(`    ⚠️ Error logging conversation history: ${error}`);
+      }
     }
+
+    this.writeLog(`🔧 TRACE-LOGGER-A: After conversation history block`);
 
     // Separator for readability
     if (context.conversationHistory && context.conversationHistory.length > 0) {
       this.writeLog(''); // Empty line for readability
     }
+
+    this.writeLog(`🔧 TRACE-LOGGER-B: Before console.log`);
 
     // Also log to console with AI prefix for backward compatibility
     console.log(`🤖 AI-DECISION: ${mainLine}`);

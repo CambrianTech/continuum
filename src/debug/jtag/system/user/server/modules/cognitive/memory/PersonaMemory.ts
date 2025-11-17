@@ -110,11 +110,25 @@ export class PersonaMemory {
     }
 
     // Add new message to context
+    // Handle different timestamp formats: Date object, ISO string, or number (Unix timestamp)
+    let timestampStr: string;
+    if (typeof message.timestamp === 'string') {
+      timestampStr = message.timestamp;
+    } else if (message.timestamp instanceof Date) {
+      timestampStr = message.timestamp.toISOString();
+    } else if (typeof message.timestamp === 'number') {
+      timestampStr = new Date(message.timestamp).toISOString();
+    } else {
+      // Fallback to current time if timestamp is invalid
+      console.warn(`⚠️ PersonaMemory: Invalid timestamp type for message ${message.id}, using current time`);
+      timestampStr = new Date().toISOString();
+    }
+
     context.messages.push({
       senderId: message.senderId,
       senderName: message.senderName,
       text: message.content?.text || '',
-      timestamp: typeof message.timestamp === 'string' ? message.timestamp : message.timestamp.toISOString()
+      timestamp: timestampStr
     });
 
     // Keep only last 50 messages (simple context window for now)
