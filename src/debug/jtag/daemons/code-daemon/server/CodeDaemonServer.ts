@@ -109,8 +109,8 @@ let codeDaemonInstance: CodeDaemonImpl | undefined;
 export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<void> {
   console.log('🔧 CodeDaemonServer: Initializing CodeDaemon...');
 
-  // Determine repository root (go up from src/debug/jtag/daemons/code-daemon/server)
-  const repositoryRoot = path.resolve(__dirname, '../../../../../../..');
+  // Determine repository root (go up from daemons/code-daemon/server to jtag root)
+  const repositoryRoot = path.resolve(__dirname, '../../..');
 
   const config: CodeDaemonConfig = {
     repositoryRoot,

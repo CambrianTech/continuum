@@ -37,7 +37,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { TaskEntity } from '../../data/entities/TaskEntity';
 import { taskEntityToInboxTask } from './modules/QueueItemTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
@@ -90,6 +90,7 @@ import { PersonaSelfState } from './modules/cognition/PersonaSelfState';
 import { SimplePlanFormulator } from './modules/cognition/reasoning/SimplePlanFormulator';
 import type { Task, Plan } from './modules/cognition/reasoning/types';
 import { CognitionLogger } from './modules/cognition/CognitionLogger';
+import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -144,6 +145,9 @@ export class PersonaUser extends AIUser {
 
   // PHASE 7.5.1: Training readiness check loop (runs less frequently than servicing loop)
   private trainingCheckLoop: NodeJS.Timeout | null = null;
+
+  // Tool execution adapter (keeps PersonaUser clean)
+  private toolExecutor: PersonaToolExecutor;
 
   constructor(
     entity: UserEntity,
@@ -240,7 +244,10 @@ export class PersonaUser extends AIUser {
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, and cognition system (workingMemory, selfState, planFormulator)`);
+    // Tool execution adapter (dynamic registry for code/read, list, system/daemons, etc.)
+    this.toolExecutor = new PersonaToolExecutor(this.id, this.displayName);
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -1028,6 +1035,9 @@ export class PersonaUser extends AIUser {
     return cleaned.trim();
   }
 
+  // Tool execution methods now delegated to PersonaToolExecutor adapter
+  // (Previously 160 lines of case statements - now clean delegation)
+
   /**
    * Self-review: Check if generated response is redundant compared to conversation history
    * Like a human who drafts a response, re-reads the chat, and thinks "oh someone already said that"
@@ -1303,6 +1313,68 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           console.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
           console.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
           aiResponse.text = cleanedResponse;
+        }
+
+        // 🔧 PHASE 3.3.6: Tool execution loop - parse and execute tool calls, then regenerate response
+        // This allows personas to autonomously use tools like code/read during their inference
+        let toolIterations = 0;
+        const MAX_TOOL_ITERATIONS = 3;
+
+        while (toolIterations < MAX_TOOL_ITERATIONS) {
+          // Parse tool calls from response using adapter
+          const toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
+
+          if (toolCalls.length === 0) {
+            // No tools found, proceed to post response
+            console.log(`✅ ${this.displayName}: [PHASE 3.3.6] No tool calls found, proceeding`);
+            break;
+          }
+
+          console.log(`🔧 ${this.displayName}: [PHASE 3.3.6] Found ${toolCalls.length} tool call(s), iteration ${toolIterations + 1}/${MAX_TOOL_ITERATIONS}`);
+          toolIterations++;
+
+          // Execute tool calls via adapter
+          const toolResults = await this.toolExecutor.executeToolCalls(toolCalls);
+
+          // Strip tool blocks from response to get explanation text
+          const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
+
+          // Inject tool results into conversation as a system message
+          const toolResultsMessage: ChatMessage = {
+            role: 'user' as const,
+            content: `TOOL RESULTS:\n\n${toolResults}\n\nBased on these tool results, please provide your final analysis or answer.`
+          };
+
+          // Regenerate response with tool results
+          console.log(`🔧 ${this.displayName}: [PHASE 3.3.6] Regenerating response with tool results...`);
+          const regenerateRequest: TextGenerationRequest = {
+            ...request,
+            messages: [
+              ...request.messages,
+              { role: 'assistant' as const, content: explanationText }, // Previous response (without tool blocks)
+              toolResultsMessage // Tool results
+            ]
+          };
+
+          const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
+          if (!regeneratedResponse.text) {
+            console.error(`❌ ${this.displayName}: [PHASE 3.3.6] Tool regeneration failed, using previous response`);
+            // Remove tool blocks from original response before posting
+            aiResponse.text = explanationText;
+            break;
+          }
+
+          // Update aiResponse with regenerated response
+          aiResponse.text = this.cleanAIResponse(regeneratedResponse.text.trim());
+          console.log(`✅ ${this.displayName}: [PHASE 3.3.6] Response regenerated with tool results`);
+
+          // Loop will check again for more tool calls (up to MAX_TOOL_ITERATIONS)
+        }
+
+        if (toolIterations >= MAX_TOOL_ITERATIONS) {
+          console.warn(`⚠️  ${this.displayName}: [PHASE 3.3.6] Reached max tool iterations (${MAX_TOOL_ITERATIONS}), stopping`);
+          // Strip any remaining tool blocks from final response
+          aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
         }
 
         // PHASE 5C: Log coordination decision to database WITH complete response content

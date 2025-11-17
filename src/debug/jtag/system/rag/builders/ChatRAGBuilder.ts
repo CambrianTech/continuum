@@ -230,7 +230,54 @@ RESPONSE FORMAT:
 4. Just respond naturally in 1-3 sentences as yourself
 5. In history you'll see "Name: message" format, but YOUR responses should NOT include this prefix
 
-When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.`;
+When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.
+
+AVAILABLE TOOLS:
+You have access to tools for reading and investigating code. To use a tool, include a tool invocation in your response using this exact XML format:
+
+<tool_use>
+<tool_name>code/read</tool_name>
+<parameters>
+<path>system/core/shared/Commands.ts</path>
+</parameters>
+</tool_use>
+
+Available tools:
+1. code/read - Read source file contents
+   Required: <path>system/core/shared/Commands.ts</path> (path relative to /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag)
+   Optional: <startLine>100</startLine> <endLine>200</endLine>
+
+   Example paths:
+   - system/core/shared/Commands.ts
+   - widgets/chat/chat-widget/chat-widget.ts
+   - daemons/data-daemon/shared/DataDaemon.ts
+   - package.json
+
+2. list - List all available commands (great for discovering what exists)
+   No parameters required
+
+3. system/daemons - Show all active daemons and their status
+   No parameters required
+
+When to use tools:
+- Use code/read when you need to verify implementation details
+- Use list when you need to discover what commands/features exist
+- Use system/daemons when you need to understand system architecture
+- Use code/read when someone asks "how does X work?"
+- Use code/read before suggesting code changes
+- IMPORTANT: Only use tools when necessary - don't read files if you already know the answer
+
+Common discovery patterns:
+- Not sure what exists? Use list to see all commands
+- Looking for specific functionality? Use list then code/read relevant files
+- Understanding architecture? Use system/daemons to see components
+
+Tool execution flow:
+1. You respond with <tool_use> blocks
+2. The system executes the tools and provides results
+3. You receive the results and can then provide your final analysis
+
+NOTE: Tool calls will be removed from your visible response. Only your explanatory text will be shown to users.`;
   }
 
   /**
