@@ -29,6 +29,9 @@ import { FineTuningJobEntity } from '../shared/entities/FineTuningJobEntity';
 import { FineTunedModelEntity } from '../shared/entities/FineTunedModelEntity';
 import { CognitionStateEntity } from '../../../system/data/entities/CognitionStateEntity';
 import { CognitionPlanEntity } from '../../../system/data/entities/CognitionPlanEntity';
+import { ToolExecutionLogEntity } from '../../../system/data/entities/ToolExecutionLogEntity';
+import { AdapterDecisionLogEntity } from '../../../system/data/entities/AdapterDecisionLogEntity';
+import { ResponseGenerationLogEntity } from '../../../system/data/entities/ResponseGenerationLogEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -62,6 +65,9 @@ export function initializeEntityRegistry(): void {
   new FineTunedModelEntity();
   new CognitionStateEntity();
   new CognitionPlanEntity();
+  new ToolExecutionLogEntity();
+  new AdapterDecisionLogEntity();
+  new ResponseGenerationLogEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -87,6 +93,9 @@ export function initializeEntityRegistry(): void {
   registerEntity(FineTunedModelEntity.collection, FineTunedModelEntity);
   registerEntity(CognitionStateEntity.collection, CognitionStateEntity);
   registerEntity(CognitionPlanEntity.collection, CognitionPlanEntity);
+  registerEntity(ToolExecutionLogEntity.collection, ToolExecutionLogEntity);
+  registerEntity(AdapterDecisionLogEntity.collection, AdapterDecisionLogEntity);
+  registerEntity(ResponseGenerationLogEntity.collection, ResponseGenerationLogEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }

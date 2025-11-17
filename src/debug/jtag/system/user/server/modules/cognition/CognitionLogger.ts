@@ -20,7 +20,7 @@ import { Commands } from '../../../../core/shared/Commands';
 import { COLLECTIONS } from '../../../../shared/Constants';
 import { DataDaemon } from '../../../../../daemons/data-daemon/shared/DataDaemon';
 import { generateUUID } from '../../../../core/types/CrossPlatformUUID';
-import type { DataListResult } from '../../../../../commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '../../../../../commands/data/list/shared/DataListTypes';
 import type {
   CognitionStateEntity,
   FocusSnapshot,
@@ -36,6 +36,9 @@ import type {
 } from '../../../../data/entities/CognitionPlanEntity';
 import type { Task, Plan, PlanAdjustment, Evaluation } from './reasoning/types';
 import type { SelfStateEntry, WorkingMemoryEntry } from './memory/InMemoryCognitionStorage';
+import type { ToolExecutionStatus } from '../../../../data/entities/ToolExecutionLogEntity';
+import type { AdapterDecision, DecisionContextMetadata } from '../../../../data/entities/AdapterDecisionLogEntity';
+import type { ResponseStatus } from '../../../../data/entities/ResponseGenerationLogEntity';
 
 /**
  * CognitionLogger - Static utility for logging cognition events
@@ -43,6 +46,9 @@ import type { SelfStateEntry, WorkingMemoryEntry } from './memory/InMemoryCognit
 export class CognitionLogger {
   private static stateSequenceCounters = new Map<UUID, number>();
   private static planSequenceCounters = new Map<UUID, number>();
+  private static toolSequenceCounters = new Map<UUID, number>();
+  private static adapterSequenceCounters = new Map<UUID, number>();
+  private static responseSequenceCounters = new Map<UUID, number>();
 
   /**
    * Log a cognition state snapshot
@@ -234,14 +240,14 @@ export class CognitionLogger {
   ): Promise<void> {
     try {
       // Find the plan record in database
-      const planRecords = await Commands.execute<any, DataListResult<CognitionPlanEntity>>('data/list', {
+      const planRecords = await Commands.execute('data/list', {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         filter: { planId },
         limit: 1,
         backend: 'server',
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
-      });
+      }) as DataListResult<CognitionPlanEntity>;
 
       if (!planRecords.items || planRecords.items.length === 0) {
         console.warn(`⚠️ CognitionLogger: No plan record found for planId=${planId}`);
@@ -302,14 +308,14 @@ export class CognitionLogger {
   ): Promise<void> {
     try {
       // Find the plan record in database
-      const planRecords = await Commands.execute<any, DataListResult<CognitionPlanEntity>>('data/list', {
+      const planRecords = await Commands.execute('data/list', {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         filter: { planId },
         limit: 1,
         backend: 'server',
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
-      });
+      }) as DataListResult<CognitionPlanEntity>;
 
       if (!planRecords.items || planRecords.items.length === 0) {
         console.warn(`⚠️ CognitionLogger: No plan record found for planId=${planId}`);
@@ -353,6 +359,235 @@ export class CognitionLogger {
       console.log(`🔄 CognitionLogger: Logged plan adjustment (planId=${planId}, action=${adjustment.action})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan adjustment:`, error);
+    }
+  }
+
+  /**
+   * Log tool execution
+   * Called before/after every tool or command execution
+   */
+  static async logToolExecution(
+    personaId: UUID,
+    personaName: string,
+    toolName: string,
+    toolParams: unknown,
+    executionStatus: ToolExecutionStatus,
+    durationMs: number,
+    domain: string,
+    contextId: UUID,
+    options: {
+      planId?: UUID;
+      toolResult?: unknown;
+      errorMessage?: string;
+      triggeredBy?: string;
+    } = {}
+  ): Promise<void> {
+    try {
+      // Get sequence number
+      const currentSeq = this.toolSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.toolSequenceCounters.set(personaId, sequenceNumber);
+
+      const completedAt = Date.now();
+      const startedAt = completedAt - durationMs;
+
+      // Create entity data
+      const entityData = {
+        id: generateUUID(),
+        timestamp: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        version: 0,
+
+        // Identity
+        personaId,
+        personaName,
+        planId: options.planId,
+
+        // Tool info
+        toolName,
+        toolParams,
+        executionStatus,
+        toolResult: options.toolResult,
+        errorMessage: options.errorMessage,
+
+        // Timing
+        durationMs,
+        startedAt,
+        completedAt,
+
+        // Metadata
+        domain,
+        contextId,
+        triggeredBy: options.triggeredBy,
+        sequenceNumber
+      };
+
+      // Store to database (fire-and-forget)
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🔧 CognitionLogger: Logged tool execution (seq=${sequenceNumber}, tool=${toolName}, status=${executionStatus}, duration=${durationMs}ms)`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log tool execution:`, error);
+    }
+  }
+
+  /**
+   * Log adapter decision
+   * Called for each adapter in the decision chain
+   */
+  static async logAdapterDecision(
+    personaId: UUID,
+    personaName: string,
+    adapterName: string,
+    decision: AdapterDecision,
+    confidence: number,
+    reasoning: string,
+    decisionContext: DecisionContextMetadata,
+    evaluationDurationMs: number,
+    domain: string,
+    contextId: UUID,
+    planId?: UUID
+  ): Promise<void> {
+    try {
+      // Get sequence number
+      const currentSeq = this.adapterSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.adapterSequenceCounters.set(personaId, sequenceNumber);
+
+      // Create entity data
+      const entityData = {
+        id: generateUUID(),
+        timestamp: Date.now(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        version: 0,
+
+        // Identity
+        personaId,
+        personaName,
+        planId,
+
+        // Decision info
+        adapterName,
+        decision,
+        confidence,
+        reasoning,
+        decisionContext,
+
+        // Timing
+        evaluationDurationMs,
+
+        // Metadata
+        domain,
+        contextId,
+        sequenceNumber
+      };
+
+      // Store to database (fire-and-forget)
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🎯 CognitionLogger: Logged adapter decision (seq=${sequenceNumber}, adapter=${adapterName}, decision=${decision}, confidence=${confidence.toFixed(2)})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log adapter decision:`, error);
+    }
+  }
+
+  /**
+   * Log AI response generation
+   * Called for every AI model invocation
+   */
+  static async logResponseGeneration(
+    personaId: UUID,
+    personaName: string,
+    provider: string,
+    model: string,
+    promptSummary: string,
+    promptTokens: number,
+    completionTokens: number,
+    estimatedCost: number,
+    responseSummary: string,
+    durationMs: number,
+    status: ResponseStatus,
+    temperature: number,
+    domain: string,
+    contextId: UUID,
+    options: {
+      planId?: UUID;
+      errorMessage?: string;
+    } = {}
+  ): Promise<void> {
+    try {
+      // Get sequence number
+      const currentSeq = this.responseSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.responseSequenceCounters.set(personaId, sequenceNumber);
+
+      const totalTokens = promptTokens + completionTokens;
+
+      // Create entity data
+      const entityData = {
+        id: generateUUID(),
+        timestamp: Date.now(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        version: 0,
+
+        // Identity
+        personaId,
+        personaName,
+        planId: options.planId,
+
+        // Model info
+        provider,
+        model,
+
+        // Content (truncated)
+        promptSummary,
+        responseSummary,
+
+        // Token usage
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        estimatedCost,
+
+        // Generation info
+        durationMs,
+        status,
+        errorMessage: options.errorMessage,
+        temperature,
+
+        // Metadata
+        domain,
+        contextId,
+        sequenceNumber
+      };
+
+      // Store to database (fire-and-forget)
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🤖 CognitionLogger: Logged response generation (seq=${sequenceNumber}, provider=${provider}, model=${model}, tokens=${totalTokens}, cost=$${estimatedCost.toFixed(4)})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log response generation:`, error);
     }
   }
 }

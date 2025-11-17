@@ -87,7 +87,12 @@ export const COLLECTIONS = {
 
   // Cognition Observability Collections (Phase 1B: Monitoring)
   COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
-  COGNITION_PLAN_RECORDS: 'cognition_plan_records'
+  COGNITION_PLAN_RECORDS: 'cognition_plan_records',
+
+  // Detailed Activity Logs (Phase 2: Complete Observability)
+  TOOL_EXECUTION_LOGS: 'tool_execution_logs',
+  ADAPTER_DECISION_LOGS: 'adapter_decision_logs',
+  RESPONSE_GENERATION_LOGS: 'response_generation_logs'
 } as const;
 
 /**
