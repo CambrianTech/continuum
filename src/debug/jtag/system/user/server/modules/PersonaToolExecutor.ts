@@ -7,6 +7,8 @@
 
 import { Commands } from '../../../core/shared/Commands';
 import { CodeDaemon } from '../../../../daemons/code-daemon/shared/CodeDaemon';
+import { CognitionLogger } from './cognition/CognitionLogger';
+import type { UUID } from '../../../core/types/CrossPlatformUUID';
 
 /**
  * Parsed tool call from AI response
@@ -36,9 +38,11 @@ type ToolHandler = (params: Record<string, string>) => Promise<ToolResult>;
  */
 export class PersonaToolExecutor {
   private toolHandlers: Map<string, ToolHandler> = new Map();
+  private personaId: UUID;
   private personaName: string;
 
-  constructor(personaId: string, personaName: string) {
+  constructor(personaId: UUID, personaName: string) {
+    this.personaId = personaId;
     this.personaName = personaName;
     this.registerDefaultTools();
   }
@@ -190,7 +194,7 @@ export class PersonaToolExecutor {
   /**
    * Execute tool calls and return formatted results
    */
-  async executeToolCalls(toolCalls: ToolCall[]): Promise<string> {
+  async executeToolCalls(toolCalls: ToolCall[], contextId: UUID): Promise<string> {
     if (toolCalls.length === 0) return '';
 
     console.log(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
@@ -210,9 +214,41 @@ export class PersonaToolExecutor {
 
           console.log(`✅ ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
 
+          // Log tool execution to cognition database (for interrogation)
+          await CognitionLogger.logToolExecution(
+            this.personaId,
+            this.personaName,
+            toolCall.toolName,
+            toolCall.parameters,
+            result.success ? 'success' : 'error',
+            duration,
+            'chat',  // Domain
+            contextId,
+            {
+              toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
+              errorMessage: result.error
+            }
+          );
+
           results.push(this.formatToolResult(result));
         } else {
+          const duration = Date.now() - startTime;
           console.error(`❌ ${this.personaName}: [TOOL] Unknown tool: ${toolCall.toolName}`);
+
+          // Log unknown tool execution
+          await CognitionLogger.logToolExecution(
+            this.personaId,
+            this.personaName,
+            toolCall.toolName,
+            toolCall.parameters,
+            'error',
+            duration,
+            'chat',
+            contextId,
+            {
+              errorMessage: `Unknown tool: ${toolCall.toolName}`
+            }
+          );
 
           results.push(this.formatToolResult({
             toolName: toolCall.toolName,
@@ -225,6 +261,21 @@ export class PersonaToolExecutor {
         const duration = Date.now() - startTime;
 
         console.error(`❌ ${this.personaName}: [TOOL] ${toolCall.toolName} failed (${duration}ms):`, errorMessage);
+
+        // Log failed tool execution
+        await CognitionLogger.logToolExecution(
+          this.personaId,
+          this.personaName,
+          toolCall.toolName,
+          toolCall.parameters,
+          'error',
+          duration,
+          'chat',
+          contextId,
+          {
+            errorMessage
+          }
+        );
 
         results.push(this.formatToolResult({
           toolName: toolCall.toolName,

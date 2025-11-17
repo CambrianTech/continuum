@@ -1282,6 +1282,24 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const generateDuration = Date.now() - generateStartTime;
         console.log(`✅ ${this.displayName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
+        // Log AI response generation to cognition database (for interrogation)
+        await CognitionLogger.logResponseGeneration(
+          this.id,
+          this.displayName,
+          this.modelConfig.provider || 'ollama',
+          this.modelConfig.model || 'llama3.2:3b',
+          `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
+          messages.reduce((sum, m) => sum + m.content.length, 0),  // Rough token estimate
+          aiResponse.text.length,  // Completion tokens estimate
+          0.0,  // Cost (TODO: calculate based on provider)
+          aiResponse.text.slice(0, 500),  // First 500 chars of response
+          generateDuration,
+          'success',
+          this.modelConfig.temperature ?? 0.7,
+          'chat',  // Domain
+          originalMessage.roomId  // Context ID
+        );
+
         // Emit cognition event for generate stage
         await Events.emit<StageCompleteEvent>(
           DataDaemon.jtagContext!,
@@ -1338,7 +1356,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           toolIterations++;
 
           // Execute tool calls via adapter
-          const toolResults = await this.toolExecutor.executeToolCalls(toolCalls);
+          const toolResults = await this.toolExecutor.executeToolCalls(toolCalls, originalMessage.roomId);
 
           // Strip tool blocks from response to get explanation text
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
@@ -1401,6 +1419,26 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`❌ ${this.displayName}: [PHASE 3.3] AI generation failed:`, errorMessage);
+
+        // Log failed AI response generation to cognition database
+        const generateDuration = Date.now() - generateStartTime;
+        await CognitionLogger.logResponseGeneration(
+          this.id,
+          this.displayName,
+          this.modelConfig.provider || 'ollama',
+          this.modelConfig.model || 'llama3.2:3b',
+          `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,
+          messages.reduce((sum, m) => sum + m.content.length, 0),
+          0,  // No completion tokens on error
+          0.0,  // No cost
+          '',  // No response
+          generateDuration,
+          'error',  // Status
+          this.modelConfig.temperature ?? 0.7,
+          'chat',
+          originalMessage.roomId,
+          { errorMessage }  // Include error details
+        );
 
         // Emit ERROR event for UI display
         if (this.client) {
