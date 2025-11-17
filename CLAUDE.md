@@ -1044,3 +1044,4 @@ Commands.execute() and Events.subscribe()/emit() - the two primitives everything
 
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy with npm start, just edit and test again e.g npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
+- need to remember to npm run build:ts before deploying with npm start, just to make sure there's no compilation issues

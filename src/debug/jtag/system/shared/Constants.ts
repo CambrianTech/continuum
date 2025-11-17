@@ -74,7 +74,20 @@ export const COLLECTIONS = {
   FINE_TUNED_MODELS: 'fine_tuned_models',
   TRAINING_CHECKPOINTS: 'training_checkpoints',
   TRAINING_DATASETS: 'training_datasets',
-  CODE_INDEX: 'code_index'
+  CODE_INDEX: 'code_index',
+
+  // Cognition System Collections (Phase 1: Agent Architecture)
+  PERSONA_SELF_STATE: 'persona_self_state',
+  PERSONA_WORKING_MEMORY: 'persona_working_memory',
+  PERSONA_EXPERIENCES: 'persona_experiences',
+  PERSONA_PROCEDURES: 'persona_procedures',
+  PERSONA_PLANS: 'persona_plans',
+  PERSONA_LEARNINGS: 'persona_learnings',
+  USER_PROFILES: 'user_profiles',
+
+  // Cognition Observability Collections (Phase 1B: Monitoring)
+  COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
+  COGNITION_PLAN_RECORDS: 'cognition_plan_records'
 } as const;
 
 /**

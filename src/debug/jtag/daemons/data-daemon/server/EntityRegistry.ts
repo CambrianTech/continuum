@@ -27,6 +27,8 @@ import { CodeIndexEntity } from '../../../system/data/entities/CodeIndexEntity';
 import { FineTuningDatasetEntity } from '../shared/entities/FineTuningDatasetEntity';
 import { FineTuningJobEntity } from '../shared/entities/FineTuningJobEntity';
 import { FineTunedModelEntity } from '../shared/entities/FineTunedModelEntity';
+import { CognitionStateEntity } from '../../../system/data/entities/CognitionStateEntity';
+import { CognitionPlanEntity } from '../../../system/data/entities/CognitionPlanEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -58,6 +60,8 @@ export function initializeEntityRegistry(): void {
   new FineTuningDatasetEntity();
   new FineTuningJobEntity();
   new FineTunedModelEntity();
+  new CognitionStateEntity();
+  new CognitionPlanEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -81,6 +85,8 @@ export function initializeEntityRegistry(): void {
   registerEntity(FineTuningDatasetEntity.collection, FineTuningDatasetEntity);
   registerEntity(FineTuningJobEntity.collection, FineTuningJobEntity);
   registerEntity(FineTunedModelEntity.collection, FineTunedModelEntity);
+  registerEntity(CognitionStateEntity.collection, CognitionStateEntity);
+  registerEntity(CognitionPlanEntity.collection, CognitionPlanEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }

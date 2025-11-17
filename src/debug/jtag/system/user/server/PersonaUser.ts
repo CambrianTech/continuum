@@ -85,6 +85,11 @@ import type { QueueItem } from './modules/PersonaInbox';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 import { DecisionAdapterChain } from './modules/cognition/DecisionAdapterChain';
 import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
+import { WorkingMemoryManager } from './modules/cognition/memory/WorkingMemoryManager';
+import { PersonaSelfState } from './modules/cognition/PersonaSelfState';
+import { SimplePlanFormulator } from './modules/cognition/reasoning/SimplePlanFormulator';
+import type { Task, Plan } from './modules/cognition/reasoning/types';
+import { CognitionLogger } from './modules/cognition/CognitionLogger';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -127,6 +132,11 @@ export class PersonaUser extends AIUser {
   // PHASE 7.4: Training data accumulation for recipe-embedded learning
   // Accumulates training examples in RAM during recipe execution
   public trainingAccumulator: TrainingDataAccumulator;
+
+  // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
+  public workingMemory: WorkingMemoryManager;
+  public selfState: PersonaSelfState;
+  public planFormulator: SimplePlanFormulator;
 
   // PHASE 3: Autonomous polling loop
   private servicingLoop: NodeJS.Timeout | null = null; // Deprecated - now using continuous async loop
@@ -222,10 +232,15 @@ export class PersonaUser extends AIUser {
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
 
+    // COGNITION SYSTEM: Agent architecture components
+    this.workingMemory = new WorkingMemoryManager(this.id);
+    this.selfState = new PersonaSelfState(this.id);
+    this.planFormulator = new SimplePlanFormulator(this.id, this.displayName);
+
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, and trainingAccumulator modules`);
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -474,7 +489,188 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Evaluate message and possibly respond WITH COGNITION (called with exclusive evaluation lock)
+   *
+   * NEW: Wraps existing chat logic with plan-based reasoning:
+   * 1. Create Task from message
+   * 2. Generate Plan using SimplePlanFormulator
+   * 3. Execute plan steps (existing chat logic runs inside)
+   * 4. Store thoughts in WorkingMemory
+   * 5. Update SelfState with focus and cognitive load
+   */
+  private async evaluateAndPossiblyRespondWithCognition(
+    messageEntity: ChatMessageEntity,
+    senderIsHuman: boolean,
+    messageText: string
+  ): Promise<void> {
+    const taskStartTime = Date.now();
+
+    // STEP 1: Create Task from message
+    const task: Task = {
+      id: `task-${messageEntity.id}` as UUID,
+      domain: 'chat',
+      contextId: messageEntity.roomId,
+      description: `Respond to: "${messageText.slice(0, 100)}"`,
+      priority: calculateMessagePriority(
+        {
+          content: messageText,
+          timestamp: this.timestampToNumber(messageEntity.timestamp),
+          roomId: messageEntity.roomId
+        },
+        {
+          displayName: this.displayName,
+          id: this.id,
+          recentRooms: Array.from(this.myRoomIds)
+        }
+      ),
+      triggeredBy: messageEntity.senderId,
+      createdAt: Date.now()
+    };
+
+    console.log(`🧠 ${this.displayName}: COGNITION - Created task for message from ${messageEntity.senderName}`);
+
+    // STEP 2: Generate Plan
+    const plan = await this.planFormulator.formulatePlan(task);
+    console.log(`📋 ${this.displayName}: COGNITION - Plan: ${plan.goal}`);
+    console.log(`   Steps: ${plan.steps.map(s => s.action).join(' → ')}`);
+
+    // LOG: Plan formulation
+    await CognitionLogger.logPlanFormulation(
+      this.id,
+      this.displayName,
+      task,
+      plan,
+      'chat',
+      messageEntity.roomId,
+      'template-based'  // SimplePlanFormulator uses templates
+    );
+
+    // STEP 3: Update SelfState - set focus
+    await this.selfState.updateFocus({
+      activity: 'chat-response',
+      objective: plan.goal,
+      intensity: task.priority
+    });
+    await this.selfState.updateLoad(0.2); // Chat response adds cognitive load
+
+    // LOG: State snapshot after focus/load update
+    const selfState = await this.selfState.get();
+    const workingMemoryEntries = await this.workingMemory.recall({
+      domain: 'chat',
+      contextId: messageEntity.roomId,
+      limit: 100
+    });
+    const capacity = await this.workingMemory.getCapacity('chat');
+
+    await CognitionLogger.logStateSnapshot(
+      this.id,
+      this.displayName,
+      selfState,
+      workingMemoryEntries,
+      {
+        used: capacity.used,
+        max: capacity.max,
+        byDomain: { chat: capacity.used }
+      },
+      {
+        domain: 'chat',
+        contextId: messageEntity.roomId,
+        triggerEvent: 'message-received'
+      }
+    );
+
+    // STEP 4: Store initial observation in WorkingMemory
+    await this.workingMemory.store({
+      domain: 'chat',
+      contextId: messageEntity.roomId,
+      thoughtType: 'observation',
+      thoughtContent: `Received message from ${messageEntity.senderName}: "${messageText.slice(0, 200)}"`,
+      importance: task.priority
+    });
+
+    // STEP 5: Execute plan steps (existing chat logic inside)
+    try {
+      // Mark step 1 complete: "Recall relevant context"
+      plan.steps[0].completed = true;
+      plan.steps[0].completedAt = Date.now();
+
+      // Execute step 2: "Generate thoughtful response" (existing logic)
+      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
+
+      // If we got here, response was generated (or decision was SILENT)
+      plan.steps[1].completed = true;
+      plan.steps[1].completedAt = Date.now();
+
+      // Note: Step 3 "Post message" happens inside evaluateAndPossiblyRespond if decision was RESPOND
+      if (plan.steps.length > 2) {
+        plan.steps[2].completed = true;
+        plan.steps[2].completedAt = Date.now();
+      }
+
+      // STEP 6: Store outcome in WorkingMemory
+      await this.workingMemory.store({
+        domain: 'chat',
+        contextId: messageEntity.roomId,
+        thoughtType: 'reflection',
+        thoughtContent: `Completed response plan for message from ${messageEntity.senderName}`,
+        importance: 0.5
+      });
+
+      console.log(`✅ ${this.displayName}: COGNITION - Plan completed successfully`);
+
+      // LOG: Plan completion
+      await CognitionLogger.logPlanCompletion(
+        plan.id,
+        'completed',
+        plan.steps.map(s => ({
+          stepNumber: s.stepNumber,
+          action: s.action,
+          expectedOutcome: s.expectedOutcome,
+          completed: s.completed,
+          completedAt: s.completedAt,
+          result: s.result
+        }))
+      );
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: COGNITION - Plan execution failed:`, error);
+
+      // Store error in WorkingMemory
+      await this.workingMemory.store({
+        domain: 'chat',
+        contextId: messageEntity.roomId,
+        thoughtType: 'observation',
+        thoughtContent: `Error during response: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        importance: 0.8 // High importance for errors
+      });
+
+      // LOG: Plan failure
+      await CognitionLogger.logPlanCompletion(
+        plan.id,
+        'failed',
+        plan.steps.map(s => ({
+          stepNumber: s.stepNumber,
+          action: s.action,
+          expectedOutcome: s.expectedOutcome,
+          completed: s.completed,
+          completedAt: s.completedAt,
+          result: s.result,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }))
+      );
+    } finally {
+      // STEP 7: Clear focus and reduce cognitive load
+      await this.selfState.clearFocus();
+      await this.selfState.updateLoad(-0.2); // Remove the load we added
+
+      const duration = Date.now() - taskStartTime;
+      console.log(`🧠 ${this.displayName}: COGNITION - Task complete (${duration}ms)`);
+    }
+  }
+
+  /**
    * Evaluate message and possibly respond (called with exclusive evaluation lock)
+   *
+   * NOTE: Now called from evaluateAndPossiblyRespondWithCognition wrapper
    */
   private async evaluateAndPossiblyRespond(
     messageEntity: ChatMessageEntity,
@@ -2440,8 +2636,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // Extract message text
       const messageText = item.content;
 
-      // Process message using existing evaluation logic
-      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
+      // Process message using cognition-enhanced evaluation logic
+      await this.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);
     } else if (item.type === 'task') {
       // PHASE 5: Task execution based on task type
       await this.executeTask(item);
