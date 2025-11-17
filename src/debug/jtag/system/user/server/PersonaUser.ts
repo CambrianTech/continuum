@@ -852,7 +852,6 @@ export class PersonaUser extends AIUser {
       ragContextSummary: gatingResult.ragContextSummary,
       conversationHistory: gatingResult.conversationHistory
     });
-    console.log(`🔧 TRACE-POINT-E: After logAIDecision (timestamp=${Date.now()}, client=${!!this.client})`);
 
     // Emit DECIDED_RESPOND event
     if (this.client) {

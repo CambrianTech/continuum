@@ -110,14 +110,10 @@ export class AIDecisionLogger {
       }
     }
 
-    this.writeLog(`🔧 TRACE-LOGGER-A: After conversation history block`);
-
     // Separator for readability
     if (context.conversationHistory && context.conversationHistory.length > 0) {
       this.writeLog(''); // Empty line for readability
     }
-
-    this.writeLog(`🔧 TRACE-LOGGER-B: Before console.log`);
 
     // Also log to console with AI prefix for backward compatibility
     console.log(`🤖 AI-DECISION: ${mainLine}`);
