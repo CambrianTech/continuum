@@ -197,6 +197,10 @@ export class ChatRAGBuilder extends RAGBuilder {
    * Build system prompt from persona UserEntity with room context
    */
   private async buildSystemPrompt(user: UserEntity, roomId: UUID): Promise<string> {
+    // Load ToolRegistry for dynamic tool documentation
+    const { ToolRegistry } = await import('../../tools/server/ToolRegistry');
+    const toolRegistry = ToolRegistry.getInstance();
+
     const name = user.displayName;
     // Use profile.bio if available, fallback to shortDescription, then empty
     const bio = user.profile?.bio ?? user.shortDescription ?? '';
@@ -232,64 +236,7 @@ RESPONSE FORMAT:
 
 When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.
 
-AVAILABLE TOOLS:
-You have access to tools for reading and investigating code. To use a tool, include a tool invocation in your response using this exact XML format:
-
-<tool_use>
-<tool_name>code/read</tool_name>
-<parameters>
-<path>system/core/shared/Commands.ts</path>
-</parameters>
-</tool_use>
-
-Available tools:
-1. code/read - Read source file contents
-   Required: <path>system/core/shared/Commands.ts</path>
-   Optional: <startLine>100</startLine> <endLine>200</endLine>
-
-2. list - List all available commands
-   No parameters required
-
-3. system/daemons - Show active daemons and status
-   No parameters required
-
-4. data/list - Query database collections
-   Required: <collection>users</collection>
-   Optional: <filter>{"displayName":"Joel"}</filter> <orderBy>[{"field":"createdAt","direction":"desc"}]</orderBy> <limit>10</limit>
-
-5. data/read - Read specific record by ID
-   Required: <collection>users</collection> <id>uuid-here</id>
-
-6. data/create - Create new database record
-   Required: <collection>users</collection> <data>{"displayName":"Name","type":"human"}</data>
-
-7. file/save - Write file (RESTRICTED to /tmp/, /private/tmp/, .continuum/jtag/)
-   Required: <filepath>/tmp/test.txt</filepath> <content>file contents</content>
-   Optional: <createDirs>true</createDirs>
-
-8. chat/export - Export chat history to markdown
-   Optional: <room>general</room> <limit>30</limit> <includeSystem>false</includeSystem>
-
-9. cognition/inspect - Introspect your own cognitive logs
-   Optional: <type>tools</type> <limit>10</limit>
-   Types: tools, decisions, responses, plans, plan-steps, state, memory, reasoning, replans
-
-When to use tools:
-- code/read: Verify implementation details, understand architecture
-- data/list: Query users, messages, or any database collection
-- data/read: Get specific record details by ID
-- cognition/inspect: Review your own decision history, tool usage, reasoning
-- chat/export: Get conversation context beyond current window
-- file/save: Save analysis, proposals, or data (safe directories only)
-- list: Discover available commands
-- system/daemons: Check system components
-
-Tool execution flow:
-1. Include <tool_use> blocks in your response
-2. System executes tools and provides results
-3. You receive results and provide final analysis
-
-NOTE: Tool calls are removed from visible response. Only your text is shown to users.`;
+${toolRegistry.generateToolDocumentation()}`;
   }
 
   /**

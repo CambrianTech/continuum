@@ -61,12 +61,33 @@ export class UserDaemonServer extends UserDaemon {
     const unsubReady = Events.subscribe('system:ready', async (payload: any) => {
       if (payload?.daemon === 'data') {
         console.log('📡 UserDaemon: Received system:ready from DataDaemon, initializing personas...');
+
         await this.ensurePersonaClients().catch((error: Error) => {
           console.error('❌ UserDaemon: Failed to initialize persona clients:', error);
         });
       }
     });
     this.unsubscribeFunctions.push(unsubReady);
+
+    // Initialize ToolRegistry immediately in constructor (not async event-based)
+    // This prevents race conditions where personas need tools before system:ready fires
+    this.initializeToolRegistry().catch((error: Error) => {
+      console.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
+    });
+  }
+
+  /**
+   * Initialize ToolRegistry for dynamic tool discovery
+   */
+  private async initializeToolRegistry(): Promise<void> {
+    console.log('⚙️ UserDaemon: Initializing ToolRegistry...');
+    const { ToolRegistry } = await import('../../../system/tools/server/ToolRegistry');
+    try {
+      await ToolRegistry.getInstance().initialize();
+      console.log('✅ UserDaemon: ToolRegistry initialized');
+    } catch (error) {
+      console.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
+    }
   }
 
   /**

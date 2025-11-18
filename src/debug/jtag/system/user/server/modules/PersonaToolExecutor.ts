@@ -3,6 +3,11 @@
  *
  * Parses tool calls from AI responses, executes them via Commands.execute(),
  * and formats results for injection back into conversation.
+ *
+ * DYNAMIC TOOL DISCOVERY:
+ * - Uses ToolRegistry to discover available commands
+ * - No hardcoded tool list - automatically supports new commands
+ * - Special handlers only for edge cases (git, file/save restrictions, code/read)
  */
 
 import { Commands } from '../../../core/shared/Commands';
@@ -10,6 +15,7 @@ import { CodeDaemon } from '../../../../daemons/code-daemon/shared/CodeDaemon';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { execSync } from 'child_process';
+import { ToolRegistry } from '../../../tools/server/ToolRegistry';
 
 /**
  * Parsed tool call from AI response
@@ -41,18 +47,21 @@ export class PersonaToolExecutor {
   private toolHandlers: Map<string, ToolHandler> = new Map();
   private personaId: UUID;
   private personaName: string;
+  private toolRegistry: ToolRegistry;
 
   constructor(personaId: UUID, personaName: string) {
     this.personaId = personaId;
     this.personaName = personaName;
-    this.registerDefaultTools();
+    this.toolRegistry = ToolRegistry.getInstance();
+    this.registerSpecialHandlers();
   }
 
   /**
-   * Register default tools
+   * Register special handlers for edge cases
+   * Most tools use universal ToolRegistry handler
    */
-  private registerDefaultTools(): void {
-    // code/read - Read source files
+  private registerSpecialHandlers(): void {
+    // code/read - Uses CodeDaemon for better performance
     this.registerTool('code/read', async (params) => {
       const options: { startLine?: number; endLine?: number } = {};
 
@@ -538,54 +547,55 @@ export class PersonaToolExecutor {
 
         const handler = this.toolHandlers.get(toolCall.toolName);
 
+        let result: ToolResult;
+
         if (handler) {
-          const result = await handler(toolCall.parameters);
-          const duration = Date.now() - startTime;
-
-          console.log(`✅ ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
-
-          // Log tool execution to cognition database (for interrogation)
-          await CognitionLogger.logToolExecution(
-            this.personaId,
-            this.personaName,
+          // Use special handler (code/read, git commands, file/save)
+          result = await handler(toolCall.parameters);
+        } else if (this.toolRegistry.hasTool(toolCall.toolName)) {
+          // Fall back to dynamic ToolRegistry execution
+          console.log(`🔧 ${this.personaName}: [TOOL] Using dynamic handler for ${toolCall.toolName}`);
+          const registryResult = await this.toolRegistry.executeTool(
             toolCall.toolName,
             toolCall.parameters,
-            result.success ? 'success' : 'error',
-            duration,
-            'chat',  // Domain
-            contextId,
-            {
-              toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
-              errorMessage: result.error
-            }
+            contextId
           );
-
-          results.push(this.formatToolResult(result));
+          result = {
+            toolName: registryResult.toolName,
+            success: registryResult.success,
+            content: registryResult.content,
+            error: registryResult.error
+          };
         } else {
-          const duration = Date.now() - startTime;
-          console.error(`❌ ${this.personaName}: [TOOL] Unknown tool: ${toolCall.toolName}`);
-
-          // Log unknown tool execution
-          await CognitionLogger.logToolExecution(
-            this.personaId,
-            this.personaName,
-            toolCall.toolName,
-            toolCall.parameters,
-            'error',
-            duration,
-            'chat',
-            contextId,
-            {
-              errorMessage: `Unknown tool: ${toolCall.toolName}`
-            }
-          );
-
-          results.push(this.formatToolResult({
+          // Tool not found anywhere
+          result = {
             toolName: toolCall.toolName,
             success: false,
-            error: `Unknown tool: ${toolCall.toolName}`
-          }));
+            error: `Unknown tool: ${toolCall.toolName} (not in registry or special handlers)`
+          };
         }
+
+        const duration = Date.now() - startTime;
+
+        console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
+
+        // Log tool execution to cognition database (for interrogation)
+        await CognitionLogger.logToolExecution(
+          this.personaId,
+          this.personaName,
+          toolCall.toolName,
+          toolCall.parameters,
+          result.success ? 'success' : 'error',
+          duration,
+          'chat',  // Domain
+          contextId,
+          {
+            toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
+            errorMessage: result.error
+          }
+        );
+
+        results.push(this.formatToolResult(result));
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         const duration = Date.now() - startTime;
