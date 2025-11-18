@@ -99,7 +99,11 @@ export const COLLECTIONS = {
   COGNITION_SELF_STATE_UPDATES: 'cognition_self_state_updates',
   COGNITION_MEMORY_OPERATIONS: 'cognition_memory_operations',
   ADAPTER_REASONING_LOGS: 'adapter_reasoning_logs',
-  COGNITION_PLAN_REPLANS: 'cognition_plan_replans'
+  COGNITION_PLAN_REPLANS: 'cognition_plan_replans',
+
+  // Democratic Voting System
+  FILE_VOTE_PROPOSALS: 'file_vote_proposals',
+  DECISION_PROPOSALS: 'decision_proposals'
 } as const;
 
 /**

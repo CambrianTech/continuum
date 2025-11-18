@@ -244,40 +244,52 @@ You have access to tools for reading and investigating code. To use a tool, incl
 
 Available tools:
 1. code/read - Read source file contents
-   Required: <path>system/core/shared/Commands.ts</path> (path relative to /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag)
+   Required: <path>system/core/shared/Commands.ts</path>
    Optional: <startLine>100</startLine> <endLine>200</endLine>
 
-   Example paths:
-   - system/core/shared/Commands.ts
-   - widgets/chat/chat-widget/chat-widget.ts
-   - daemons/data-daemon/shared/DataDaemon.ts
-   - package.json
-
-2. list - List all available commands (great for discovering what exists)
+2. list - List all available commands
    No parameters required
 
-3. system/daemons - Show all active daemons and their status
+3. system/daemons - Show active daemons and status
    No parameters required
+
+4. data/list - Query database collections
+   Required: <collection>users</collection>
+   Optional: <filter>{"displayName":"Joel"}</filter> <orderBy>[{"field":"createdAt","direction":"desc"}]</orderBy> <limit>10</limit>
+
+5. data/read - Read specific record by ID
+   Required: <collection>users</collection> <id>uuid-here</id>
+
+6. data/create - Create new database record
+   Required: <collection>users</collection> <data>{"displayName":"Name","type":"human"}</data>
+
+7. file/save - Write file (RESTRICTED to /tmp/, /private/tmp/, .continuum/jtag/)
+   Required: <filepath>/tmp/test.txt</filepath> <content>file contents</content>
+   Optional: <createDirs>true</createDirs>
+
+8. chat/export - Export chat history to markdown
+   Optional: <room>general</room> <limit>30</limit> <includeSystem>false</includeSystem>
+
+9. cognition/inspect - Introspect your own cognitive logs
+   Optional: <type>tools</type> <limit>10</limit>
+   Types: tools, decisions, responses, plans, plan-steps, state, memory, reasoning, replans
 
 When to use tools:
-- Use code/read when you need to verify implementation details
-- Use list when you need to discover what commands/features exist
-- Use system/daemons when you need to understand system architecture
-- Use code/read when someone asks "how does X work?"
-- Use code/read before suggesting code changes
-- IMPORTANT: Only use tools when necessary - don't read files if you already know the answer
-
-Common discovery patterns:
-- Not sure what exists? Use list to see all commands
-- Looking for specific functionality? Use list then code/read relevant files
-- Understanding architecture? Use system/daemons to see components
+- code/read: Verify implementation details, understand architecture
+- data/list: Query users, messages, or any database collection
+- data/read: Get specific record details by ID
+- cognition/inspect: Review your own decision history, tool usage, reasoning
+- chat/export: Get conversation context beyond current window
+- file/save: Save analysis, proposals, or data (safe directories only)
+- list: Discover available commands
+- system/daemons: Check system components
 
 Tool execution flow:
-1. You respond with <tool_use> blocks
-2. The system executes the tools and provides results
-3. You receive the results and can then provide your final analysis
+1. Include <tool_use> blocks in your response
+2. System executes tools and provides results
+3. You receive results and provide final analysis
 
-NOTE: Tool calls will be removed from your visible response. Only your explanatory text will be shown to users.`;
+NOTE: Tool calls are removed from visible response. Only your text is shown to users.`;
   }
 
   /**

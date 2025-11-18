@@ -9,6 +9,7 @@ import { Commands } from '../../../core/shared/Commands';
 import { CodeDaemon } from '../../../../daemons/code-daemon/shared/CodeDaemon';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { execSync } from 'child_process';
 
 /**
  * Parsed tool call from AI response
@@ -242,6 +243,86 @@ export class PersonaToolExecutor {
       }
     });
 
+    // chat/export - Export chat messages to markdown
+    this.registerTool('chat/export', async (params) => {
+      const limit = params.limit ? parseInt(params.limit, 10) : 50;
+      const includeSystem = params.includeSystem === 'true';
+      const includeTests = params.includeTests === 'true';
+      const includeThreading = params.includeThreading === 'true';
+
+      const result: any = await Commands.execute('chat/export', {
+        room: params.room,
+        afterMessageId: params.afterMessageId,
+        afterTimestamp: params.afterTimestamp,
+        limit,
+        includeSystem,
+        includeTests,
+        includeThreading,
+        filter: params.filter ? JSON.parse(params.filter) : undefined
+      } as any);
+
+      if (result.success && result.markdown) {
+        return {
+          toolName: 'chat/export',
+          success: true,
+          content: `Exported ${result.messageCount} messages from ${params.room || 'all rooms'}:\n\n${result.markdown}`
+        };
+      } else {
+        return {
+          toolName: 'chat/export',
+          success: false,
+          error: result.error || 'Failed to export chat messages'
+        };
+      }
+    });
+
+    // cognition/inspect - Query own cognitive logs (friendly wrapper for data/list)
+    this.registerTool('cognition/inspect', async (params) => {
+      // Map friendly type names to collection names
+      const typeMap: Record<string, string> = {
+        'tools': 'tool_execution_logs',
+        'decisions': 'adapter_decision_logs',
+        'responses': 'response_generation_logs',
+        'plans': 'cognition_plan_records',
+        'plan-steps': 'cognition_plan_step_executions',
+        'state': 'cognition_self_state_updates',
+        'memory': 'cognition_memory_operations',
+        'reasoning': 'adapter_reasoning_logs',
+        'replans': 'cognition_plan_replans'
+      };
+
+      const type = params.type || 'tools';
+      const collection = typeMap[type] || 'tool_execution_logs';
+      const limit = params.limit ? parseInt(params.limit, 10) : 10;
+
+      // Auto-filter to this persona's ID
+      const filter = params.filter
+        ? JSON.parse(params.filter)
+        : { personaId: this.personaId };
+
+      const result: any = await Commands.execute('data/list', {
+        collection,
+        filter,
+        orderBy: params.orderBy ? JSON.parse(params.orderBy) : [{ field: 'startedAt', direction: 'desc' }],
+        limit
+      } as any);
+
+      if (result.success && result.items) {
+        const itemsJson = JSON.stringify(result.items, null, 2);
+        return {
+          toolName: 'cognition/inspect',
+          success: true,
+          content: `${type} logs (${result.count} total):\n\n${itemsJson}`
+        };
+      } else {
+        return {
+          toolName: 'cognition/inspect',
+          success: false,
+          error: result.error || 'Failed to query cognitive logs'
+        };
+      }
+    });
+
     // file/save - Write file to filesystem (with safety restrictions)
     this.registerTool('file/save', async (params) => {
       // Safety: Only allow writing to safe directories
@@ -279,6 +360,113 @@ export class PersonaToolExecutor {
           toolName: 'file/save',
           success: false,
           error: result.error || 'Failed to save file'
+        };
+      }
+    });
+
+    // git/status - Show git repository status
+    this.registerTool('git/status', async () => {
+      try {
+        const output = execSync('git status', {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          maxBuffer: 1024 * 1024
+        });
+        return {
+          toolName: 'git/status',
+          success: true,
+          content: output
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return {
+          toolName: 'git/status',
+          success: false,
+          error: `Failed to run git status: ${errorMessage}`
+        };
+      }
+    });
+
+    // git/diff - Show git diff (unstaged changes)
+    this.registerTool('git/diff', async (params) => {
+      try {
+        const file = params.file || '';
+        const staged = params.staged === 'true';
+        const command = staged
+          ? `git diff --cached ${file}`.trim()
+          : `git diff ${file}`.trim();
+
+        const output = execSync(command, {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          maxBuffer: 10 * 1024 * 1024 // 10MB for large diffs
+        });
+        return {
+          toolName: 'git/diff',
+          success: true,
+          content: output || '(No changes)'
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return {
+          toolName: 'git/diff',
+          success: false,
+          error: `Failed to run git diff: ${errorMessage}`
+        };
+      }
+    });
+
+    // git/log - Show git commit history
+    this.registerTool('git/log', async (params) => {
+      try {
+        const limit = params.limit ? parseInt(params.limit, 10) : 10;
+        const oneline = params.oneline === 'true';
+        const format = oneline ? '--oneline' : '--pretty=format:%h - %an, %ar : %s';
+        const command = `git log ${format} -n ${limit}`;
+
+        const output = execSync(command, {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          maxBuffer: 1024 * 1024
+        });
+        return {
+          toolName: 'git/log',
+          success: true,
+          content: output
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return {
+          toolName: 'git/log',
+          success: false,
+          error: `Failed to run git log: ${errorMessage}`
+        };
+      }
+    });
+
+    // git/show - Show details of a specific commit
+    this.registerTool('git/show', async (params) => {
+      try {
+        const commit = params.commit || 'HEAD';
+        const stat = params.stat === 'true' ? '--stat' : '';
+        const command = `git show ${stat} ${commit}`.trim();
+
+        const output = execSync(command, {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          maxBuffer: 10 * 1024 * 1024
+        });
+        return {
+          toolName: 'git/show',
+          success: true,
+          content: output
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return {
+          toolName: 'git/show',
+          success: false,
+          error: `Failed to run git show: ${errorMessage}`
         };
       }
     });

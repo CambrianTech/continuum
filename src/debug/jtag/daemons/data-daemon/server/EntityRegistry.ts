@@ -37,6 +37,8 @@ import { CognitionSelfStateUpdateEntity } from '../../../system/data/entities/Co
 import { CognitionMemoryOperationEntity } from '../../../system/data/entities/CognitionMemoryOperationEntity';
 import { AdapterReasoningLogEntity } from '../../../system/data/entities/AdapterReasoningLogEntity';
 import { CognitionPlanReplanEntity } from '../../../system/data/entities/CognitionPlanReplanEntity';
+import { FileVoteProposalEntity } from '../../../system/data/entities/FileVoteProposalEntity';
+import { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -78,6 +80,8 @@ export function initializeEntityRegistry(): void {
   new CognitionMemoryOperationEntity();
   new AdapterReasoningLogEntity();
   new CognitionPlanReplanEntity();
+  new FileVoteProposalEntity();
+  new DecisionProposalEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -111,6 +115,8 @@ export function initializeEntityRegistry(): void {
   registerEntity(CognitionMemoryOperationEntity.collection, CognitionMemoryOperationEntity);
   registerEntity(AdapterReasoningLogEntity.collection, AdapterReasoningLogEntity);
   registerEntity(CognitionPlanReplanEntity.collection, CognitionPlanReplanEntity);
+  registerEntity(FileVoteProposalEntity.collection, FileVoteProposalEntity);
+  registerEntity(DecisionProposalEntity.collection, DecisionProposalEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }
