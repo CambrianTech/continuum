@@ -147,57 +147,52 @@ export class ToolRegistry {
       };
     }
 
-    try {
-      // Parse JSON parameters if needed
-      const parsedParams: Record<string, any> = {};
-      const toolDef = this.getTool(toolName)!;
+    // NO try-catch - let exceptions bubble to PersonaResponseGenerator
+    // Commands.execute (via CommandDaemon) returns {success: false, error} for expected command failures
+    // Only UNEXPECTED exceptions (system crashes) should bubble up as exceptions
 
-      for (const [key, value] of Object.entries(parameters)) {
-        const paramDef = toolDef.parameters[key];
+    // Parse JSON parameters if needed
+    const parsedParams: Record<string, any> = {};
+    const toolDef = this.getTool(toolName)!;
 
-        // Try to parse JSON for complex types
-        if (paramDef && (paramDef.type === 'object' || paramDef.type === 'array')) {
-          try {
-            parsedParams[key] = JSON.parse(value);
-          } catch {
-            parsedParams[key] = value; // Fallback to string
-          }
-        } else if (paramDef && paramDef.type === 'number') {
-          parsedParams[key] = parseInt(value, 10);
-        } else if (paramDef && paramDef.type === 'boolean') {
-          parsedParams[key] = value === 'true';
-        } else {
-          parsedParams[key] = value;
+    for (const [key, value] of Object.entries(parameters)) {
+      const paramDef = toolDef.parameters[key];
+
+      // Try to parse JSON for complex types
+      if (paramDef && (paramDef.type === 'object' || paramDef.type === 'array')) {
+        try {
+          parsedParams[key] = JSON.parse(value);
+        } catch {
+          parsedParams[key] = value; // Fallback to string
         }
+      } else if (paramDef && paramDef.type === 'number') {
+        parsedParams[key] = parseInt(value, 10);
+      } else if (paramDef && paramDef.type === 'boolean') {
+        parsedParams[key] = value === 'true';
+      } else {
+        parsedParams[key] = value;
       }
+    }
 
-      // Execute command via Commands.execute
-      const result: any = await Commands.execute(toolName as any, parsedParams as any);
+    // Execute command via Commands.execute
+    const result: any = await Commands.execute(toolName as any, parsedParams as any);
 
-      if (!result.success) {
-        return {
-          toolName,
-          success: false,
-          error: result.error || 'Command execution failed'
-        };
-      }
-
-      // Format result based on command type
-      const content = this.formatToolResult(toolName, result);
-
-      return {
-        toolName,
-        success: true,
-        content
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+    if (!result.success) {
       return {
         toolName,
         success: false,
-        error: errorMessage
+        error: result.error || 'Command execution failed'
       };
     }
+
+    // Format result based on command type
+    const content = this.formatToolResult(toolName, result);
+
+    return {
+      toolName,
+      success: true,
+      content
+    };
   }
 
   /**

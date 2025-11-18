@@ -100,71 +100,46 @@ export class PersonaToolExecutor {
 
     for (const toolCall of toolCalls) {
       const startTime = Date.now();
-      try {
-        console.log(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName}`, toolCall.parameters);
 
-        // Use ToolRegistry for ALL commands - no special cases
-        const registryResult = await this.toolRegistry.executeTool(
-          toolCall.toolName,
-          toolCall.parameters,
-          contextId
-        );
+      console.log(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName}`, toolCall.parameters);
 
-        const result: ToolResult = {
-          toolName: registryResult.toolName,
-          success: registryResult.success,
-          content: registryResult.content,
-          error: registryResult.error
-        };
+      // Use ToolRegistry for ALL commands - no special cases
+      // NO try-catch - let exceptions bubble to PersonaResponseGenerator
+      // ToolRegistry returns {success: false, error} for expected failures
+      const registryResult = await this.toolRegistry.executeTool(
+        toolCall.toolName,
+        toolCall.parameters,
+        contextId
+      );
 
-        const duration = Date.now() - startTime;
+      const result: ToolResult = {
+        toolName: registryResult.toolName,
+        success: registryResult.success,
+        content: registryResult.content,
+        error: registryResult.error
+      };
 
-        console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
+      const duration = Date.now() - startTime;
 
-        // Log tool execution to cognition database (for interrogation)
-        await CognitionLogger.logToolExecution(
-          this.personaId,
-          this.personaName,
-          toolCall.toolName,
-          toolCall.parameters,
-          result.success ? 'success' : 'error',
-          duration,
-          'chat',  // Domain
-          contextId,
-          {
-            toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
-            errorMessage: result.error
-          }
-        );
+      console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
 
-        results.push(this.formatToolResult(result));
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        const duration = Date.now() - startTime;
+      // Log tool execution to cognition database (for interrogation)
+      await CognitionLogger.logToolExecution(
+        this.personaId,
+        this.personaName,
+        toolCall.toolName,
+        toolCall.parameters,
+        result.success ? 'success' : 'error',
+        duration,
+        'chat',  // Domain
+        contextId,
+        {
+          toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
+          errorMessage: result.error
+        }
+      );
 
-        console.error(`❌ ${this.personaName}: [TOOL] ${toolCall.toolName} failed (${duration}ms):`, errorMessage);
-
-        // Log failed tool execution
-        await CognitionLogger.logToolExecution(
-          this.personaId,
-          this.personaName,
-          toolCall.toolName,
-          toolCall.parameters,
-          'error',
-          duration,
-          'chat',
-          contextId,
-          {
-            errorMessage
-          }
-        );
-
-        results.push(this.formatToolResult({
-          toolName: toolCall.toolName,
-          success: false,
-          error: errorMessage
-        }));
-      }
+      results.push(this.formatToolResult(result));
     }
 
     const successCount = results.filter(r => r.includes('<status>success</status>')).length;
