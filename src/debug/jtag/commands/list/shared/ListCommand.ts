@@ -227,6 +227,16 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
           includeDescription: { type: 'boolean', required: false, description: 'Include descriptions' },
           includeSignature: { type: 'boolean', required: false, description: 'Include parameter signatures' }
         }
+      },
+
+      'tree': {
+        description: 'Display hierarchical command structure',
+        params: {
+          filter: { type: 'string', required: false, description: 'Filter to specific command path (e.g., "ai" shows ai/*)' },
+          showDescriptions: { type: 'boolean', required: false, description: 'Show command descriptions alongside names' },
+          showCategories: { type: 'boolean', required: false, description: 'Show command categories [browser, server, system]' },
+          maxDepth: { type: 'number', required: false, description: 'Maximum depth to display (1 = top level only, 2 = one level deep, etc.)' }
+        }
       }
     };
 
