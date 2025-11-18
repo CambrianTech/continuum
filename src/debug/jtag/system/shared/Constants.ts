@@ -92,7 +92,14 @@ export const COLLECTIONS = {
   // Detailed Activity Logs (Phase 2: Complete Observability)
   TOOL_EXECUTION_LOGS: 'tool_execution_logs',
   ADAPTER_DECISION_LOGS: 'adapter_decision_logs',
-  RESPONSE_GENERATION_LOGS: 'response_generation_logs'
+  RESPONSE_GENERATION_LOGS: 'response_generation_logs',
+
+  // Granular Cognitive Logs (Phase 3: Deep Observability)
+  COGNITION_PLAN_STEP_EXECUTIONS: 'cognition_plan_step_executions',
+  COGNITION_SELF_STATE_UPDATES: 'cognition_self_state_updates',
+  COGNITION_MEMORY_OPERATIONS: 'cognition_memory_operations',
+  ADAPTER_REASONING_LOGS: 'adapter_reasoning_logs',
+  COGNITION_PLAN_REPLANS: 'cognition_plan_replans'
 } as const;
 
 /**

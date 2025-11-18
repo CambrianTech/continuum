@@ -49,6 +49,11 @@ export class CognitionLogger {
   private static toolSequenceCounters = new Map<UUID, number>();
   private static adapterSequenceCounters = new Map<UUID, number>();
   private static responseSequenceCounters = new Map<UUID, number>();
+  private static stepSequenceCounters = new Map<UUID, number>();
+  private static stateUpdateSequenceCounters = new Map<UUID, number>();
+  private static memoryOpSequenceCounters = new Map<UUID, number>();
+  private static adapterReasoningSequenceCounters = new Map<UUID, number>();
+  private static replanSequenceCounters = new Map<UUID, number>();
 
   /**
    * Log a cognition state snapshot
@@ -588,6 +593,293 @@ export class CognitionLogger {
       console.log(`🤖 CognitionLogger: Logged response generation (seq=${sequenceNumber}, provider=${provider}, model=${model}, tokens=${totalTokens}, cost=$${estimatedCost.toFixed(4)})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log response generation:`, error);
+    }
+  }
+
+  /**
+   * Log individual plan step execution
+   * Called on step start/completion
+   */
+  static async logPlanStepExecution(
+    personaId: UUID,
+    personaName: string,
+    planId: UUID,
+    stepNumber: number,
+    action: string,
+    status: 'started' | 'completed' | 'failed',
+    domain: string,
+    contextId: UUID,
+    options: {
+      result?: unknown;
+      errorMessage?: string;
+      durationMs?: number;
+    } = {}
+  ): Promise<void> {
+    try {
+      const currentSeq = this.stepSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.stepSequenceCounters.set(personaId, sequenceNumber);
+
+      const timestamp = new Date();
+      const entityData = {
+        id: generateUUID(),
+        timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        version: 0,
+        personaId,
+        personaName,
+        planId,
+        stepNumber,
+        action,
+        status,
+        result: options.result,
+        errorMessage: options.errorMessage,
+        durationMs: options.durationMs,
+        domain,
+        contextId,
+        sequenceNumber
+      };
+
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🪜 CognitionLogger: Logged plan step execution (seq=${sequenceNumber}, planId=${planId}, step=${stepNumber}, status=${status})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log plan step execution:`, error);
+    }
+  }
+
+  /**
+   * Log self-state update
+   * Tracks incremental changes to beliefs/goals/preoccupations
+   */
+  static async logSelfStateUpdate(
+    personaId: UUID,
+    personaName: string,
+    updateType: 'belief' | 'goal' | 'preoccupation',
+    previousValue: unknown,
+    newValue: unknown,
+    reason: string,
+    domain: string,
+    contextId: UUID,
+    planId?: UUID
+  ): Promise<void> {
+    try {
+      const currentSeq = this.stateUpdateSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.stateUpdateSequenceCounters.set(personaId, sequenceNumber);
+
+      const timestamp = new Date();
+      const entityData = {
+        id: generateUUID(),
+        timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        version: 0,
+        personaId,
+        personaName,
+        planId,
+        updateType,
+        previousValue,
+        newValue,
+        reason,
+        domain,
+        contextId,
+        sequenceNumber
+      };
+
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🔄 CognitionLogger: Logged self-state update (seq=${sequenceNumber}, type=${updateType})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log self-state update:`, error);
+    }
+  }
+
+  /**
+   * Log memory operation
+   * Tracks add/remove/evict in working memory
+   */
+  static async logMemoryOperation(
+    personaId: UUID,
+    personaName: string,
+    operation: 'add' | 'remove' | 'evict',
+    memoryId: UUID,
+    thoughtType: string,
+    thoughtContent: string,
+    importance: number,
+    reason: string,
+    domain: string,
+    contextId: UUID,
+    planId?: UUID
+  ): Promise<void> {
+    try {
+      const currentSeq = this.memoryOpSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.memoryOpSequenceCounters.set(personaId, sequenceNumber);
+
+      const timestamp = new Date();
+      const entityData = {
+        id: generateUUID(),
+        timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        version: 0,
+        personaId,
+        personaName,
+        planId,
+        operation,
+        memoryId,
+        thoughtType,
+        thoughtContent,
+        importance,
+        reason,
+        domain,
+        contextId,
+        sequenceNumber
+      };
+
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🧠 CognitionLogger: Logged memory operation (seq=${sequenceNumber}, op=${operation}, memoryId=${memoryId})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log memory operation:`, error);
+    }
+  }
+
+  /**
+   * Log adapter reasoning
+   * Captures intermediate evaluation steps
+   */
+  static async logAdapterReasoning(
+    personaId: UUID,
+    personaName: string,
+    adapterName: string,
+    stepDescription: string,
+    intermediateResult: unknown,
+    confidence: number,
+    durationMs: number,
+    domain: string,
+    contextId: UUID,
+    planId?: UUID
+  ): Promise<void> {
+    try {
+      const currentSeq = this.adapterReasoningSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.adapterReasoningSequenceCounters.set(personaId, sequenceNumber);
+
+      const timestamp = new Date();
+      const entityData = {
+        id: generateUUID(),
+        timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        version: 0,
+        personaId,
+        personaName,
+        planId,
+        adapterName,
+        stepDescription,
+        intermediateResult,
+        confidence,
+        durationMs,
+        domain,
+        contextId,
+        sequenceNumber
+      };
+
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.ADAPTER_REASONING_LOGS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🤔 CognitionLogger: Logged adapter reasoning (seq=${sequenceNumber}, adapter=${adapterName}, confidence=${confidence.toFixed(2)})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log adapter reasoning:`, error);
+    }
+  }
+
+  /**
+   * Log plan replan
+   * Tracks full replanning events
+   */
+  static async logPlanReplan(
+    personaId: UUID,
+    personaName: string,
+    oldPlanId: UUID,
+    newPlan: Plan,
+    reason: string,
+    domain: string,
+    contextId: UUID,
+    modelUsed?: string
+  ): Promise<void> {
+    try {
+      const currentSeq = this.replanSequenceCounters.get(personaId) ?? 0;
+      const sequenceNumber = currentSeq + 1;
+      this.replanSequenceCounters.set(personaId, sequenceNumber);
+
+      // Build new plan snapshot similar to logPlanFormulation
+      const stepsSnapshot: PlanStepSnapshot[] = newPlan.steps.map(s => ({
+        stepNumber: s.stepNumber,
+        action: s.action,
+        expectedOutcome: s.expectedOutcome,
+        completed: s.completed,
+        completedAt: s.completedAt,
+        result: s.result
+      }));
+
+      const timestamp = new Date();
+      const entityData = {
+        id: generateUUID(),
+        timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        version: 0,
+        personaId,
+        personaName,
+        oldPlanId,
+        newPlanId: newPlan.id,
+        goal: newPlan.goal,
+        steps: stepsSnapshot,
+        reason,
+        domain,
+        contextId,
+        sequenceNumber,
+        modelUsed
+      };
+
+      await Commands.execute('data/create', {
+        collection: COLLECTIONS.COGNITION_PLAN_REPLANS,
+        data: entityData,
+        backend: 'server',
+        context: DataDaemon.jtagContext!,
+        sessionId: DataDaemon.jtagContext!.uuid
+      });
+
+      console.log(`🔄 CognitionLogger: Logged plan replan (seq=${sequenceNumber}, oldPlanId=${oldPlanId}, newPlanId=${newPlan.id})`);
+    } catch (error) {
+      console.error(`❌ CognitionLogger: Failed to log plan replan:`, error);
     }
   }
 }
