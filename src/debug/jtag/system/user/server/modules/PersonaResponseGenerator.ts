@@ -333,9 +333,20 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
 
           // Inject tool results into conversation as a system message
+          // Count successes and failures
+          const failedTools = toolCalls.filter((_, i) => {
+            const resultXML = toolResults.split('<tool_result>')[i + 1];
+            return resultXML && resultXML.includes('<status>error</status>');
+          });
+
+          const hasFailures = failedTools.length > 0;
+          const failureWarning = hasFailures
+            ? `\n\n⚠️ IMPORTANT: ${failedTools.length} tool(s) FAILED. You MUST mention these failures in your response and explain what went wrong. Do NOT retry the same failed command without changing your approach.\n`
+            : '';
+
           const toolResultsMessage: ChatMessage = {
             role: 'user' as const,
-            content: `TOOL RESULTS:\n\n${toolResults}\n\nBased on these tool results, please provide your final analysis or answer.`
+            content: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
           };
 
           // Regenerate response with tool results

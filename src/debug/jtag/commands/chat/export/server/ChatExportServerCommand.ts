@@ -205,6 +205,16 @@ export class ChatExportServerCommand extends ChatExportCommand {
     lines.push(`Exported: ${new Date().toISOString()}`);
     lines.push(`Messages: ${messages.length}`);
     lines.push('');
+
+    // Message ID bookmarks (for pagination)
+    if (messages.length > 0) {
+      const startMessageId = messages[0].id?.slice(-6) || 'unknown';
+      const stopMessageId = messages[messages.length - 1].id?.slice(-6) || 'unknown';
+      lines.push(`startMessageId: #${startMessageId}`);
+      lines.push(`stopMessageId: #${stopMessageId}`);
+      lines.push('');
+    }
+
     lines.push('---');
     lines.push('');
 

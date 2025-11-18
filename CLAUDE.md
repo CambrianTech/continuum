@@ -49,6 +49,69 @@ npm start                    # DEPLOYS code changes
 
 ---
 
+## 🚫 CRITICAL: NEVER COMMIT BEFORE TESTING
+
+**The iron rule of development: TEST → VERIFY → COMMIT**
+
+### What Went Wrong (2025-11-18 - Lesson Learned)
+
+**My mistake:**
+1. Read summary saying "PersonaToolExecutor needs refactoring"
+2. Read the actual file - saw it was already clean (210 lines)
+3. **COMMITTED ANYWAY** without testing
+4. Then deployed and hoped it worked
+
+**Why this was insane:**
+- Committed code I didn't verify worked
+- Polluted git history with untested changes
+- If it broke, would need to revert/reset (harder recovery)
+- Violated basic QA discipline
+
+**The correct order:**
+```bash
+# 1. Make changes to code
+# 2. TEST first
+npm start && sleep 120 && ./jtag ping
+./jtag chat/send --room="general" --message="Testing new feature..."
+
+# 3. VERIFY it works
+./jtag chat/export --room="general" --limit=10  # Check responses
+
+# 4. ONLY THEN commit
+git add system/user/server/modules/PersonaToolExecutor.ts
+git commit -m "Fix: Verified working refactor"
+```
+
+**The fundamental error in thinking:**
+- Trusted old summary context over current codebase state
+- Never asked: "What's ACTUALLY broken right now?"
+- Assumed task from summary was still valid without verification
+- Committed based on intention, not evidence
+
+**What I should have done when file looked already refactored:**
+1. **STOP** - This doesn't match the summary
+2. **ASK** - Is this already fixed? What's the real problem?
+3. **TEST CURRENT STATE** - Does it actually work right now?
+4. **DIAGNOSE ACTUAL ISSUE** - Don't fix what isn't broken
+
+**The AI team's response** (they were right):
+- "Show us a specific failing command"
+- "What error are you seeing?"
+- "The code looks clean already"
+- They forced me to actually understand the problem
+
+**Turns out:** PersonaToolExecutor was fine. Real issue was XML routing for some AIs, not the core code.
+
+### Golden Rules
+
+1. **ALWAYS test before committing** - no exceptions
+2. **Question discrepancies** - if summary says X but code shows Y, investigate
+3. **Commit = "this works"** - never commit hope, commit evidence
+4. **Ask "what's broken NOW?"** - not "what did summary say to fix?"
+5. **Use git properly** - it's version control, not a backup drive
+
+---
+
 ## 🚨 CONSTANTS: SINGLE SOURCE OF TRUTH
 
 **CRITICAL**: ALL system constants MUST be in ONE file: `system/shared/Constants.ts`
@@ -300,6 +363,8 @@ max-width: calc(100vw - var(--sidebar-width) - 100px);  /* ← 100px is brittle 
 ---
 
 ### Chat Commands
+
+**Basic Usage:**
 ```bash
 # Send message to chat room (direct DB, no UI)
 ./jtag chat/send --room="general" --message="Hello team"
@@ -310,6 +375,30 @@ max-width: calc(100vw - var(--sidebar-width) - 100px);  /* ← 100px is brittle 
 ./jtag chat/export --room="general" --output="/tmp/export.md"    # Save to file
 ./jtag chat/export --limit=100 --includeSystem=true               # All rooms with system messages
 ```
+
+**Interactive Workflow - Working WITH the AI Team:**
+
+When you send a message, `chat/send` returns a message ID. Use this to track responses:
+
+```bash
+# 1. Send message (captures the JSON response with messageId)
+RESPONSE=$(./jtag chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
+
+# 2. Extract message ID (using jq if available, or manual)
+MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.shortId')
+echo "My message ID: $MESSAGE_ID"
+
+# 3. Wait for AI responses (they typically respond in 5-10 seconds)
+sleep 10
+
+# 4. Check their responses
+./jtag chat/export --room="general" --limit=20
+
+# 5. Reply to specific AI feedback
+./jtag chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
+```
+
+**CRITICAL**: Don't just broadcast to the AI team - WORK WITH THEM. Use their feedback, reply to their questions, iterate based on what they're saying. The chat export shows message IDs as `#abcd123` - use those to reply.
 
 ### Debug Commands
 ```bash

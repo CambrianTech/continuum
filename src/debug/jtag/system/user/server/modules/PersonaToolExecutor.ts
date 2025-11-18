@@ -186,10 +186,15 @@ ${result.content}
 </content>
 </tool_result>`;
     } else {
+      // Wrap error in code block for better UI readability
       return `<tool_result>
 <tool_name>${result.toolName}</tool_name>
 <status>error</status>
-<error>${result.error || 'Unknown error'}</error>
+<error>
+\`\`\`
+${result.error || 'Unknown error'}
+\`\`\`
+</error>
 </tool_result>`;
     }
   }
