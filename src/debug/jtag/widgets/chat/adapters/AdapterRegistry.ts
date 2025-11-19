@@ -8,8 +8,8 @@
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { AbstractMessageAdapter } from './AbstractMessageAdapter';
 import { TextMessageAdapter } from './TextMessageAdapter';
+import { ImageMessageAdapter } from './ImageMessageAdapter';
 // Future imports:
-// import { ImageMessageAdapter } from './ImageMessageAdapter';
 // import { VideoMessageAdapter } from './VideoMessageAdapter';
 // import { URLCardAdapter } from './URLCardAdapter';
 
@@ -23,8 +23,8 @@ export class AdapterRegistry {
 
     // Register available adapters
     this.adapters.set('text', new TextMessageAdapter());
+    this.adapters.set('image', new ImageMessageAdapter());
     // Future registrations:
-    // this.adapters.set('image', new ImageMessageAdapter());
     // this.adapters.set('video', new VideoMessageAdapter());
     // this.adapters.set('url_card', new URLCardAdapter());
   }

@@ -4,7 +4,7 @@
  */
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
-import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import { ChatMessageEntity, type MediaItem, type MediaType } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -23,6 +23,7 @@ import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
+// MessageComposerWidget removed - using inline HTML instead
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLInputElement;
@@ -33,10 +34,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private totalMessageCount: number = 0; // Total messages in database (not just loaded)
   private loadedMessageCount: number = 0; // Number of messages actually loaded so far
   private adapterRegistry: AdapterRegistry; // Selects adapters per message based on content
-  private inputEnhancer?: MessageInputEnhancer; // Markdown shortcuts for message input
   private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
   private aiStatusContainer?: HTMLElement; // Container for AI status indicators
   private headerUpdateTimeout?: number; // Debounce timeout for header updates
+  private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
 
   constructor() {
     super({
@@ -173,13 +174,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   // Required by EntityScrollerWidget
   protected getScrollerPreset(): ScrollerConfig {
-    // Enable auto-scroll when user is at bottom (within threshold)
-    // Preserves scroll position when user has scrolled up to read history
+    // Disable auto-scroll - ONLY scroll when user sends their own message
+    // Manual scroll triggered in sendMessage() at line 655
     return {
       ...SCROLLER_PRESETS.CHAT,
       autoScroll: {
-        enabled: true, // Auto-scroll for new messages when at bottom
-        threshold: 100, // Only auto-scroll if within 100px of bottom
+        enabled: false, // Disabled - only scroll on user's own messages
+        threshold: 100,
         behavior: 'smooth' as const
       }
     };
@@ -401,17 +402,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     `;
   }
 
-  // Custom footer with message input - the ONLY unique part
+  // Custom footer with message input
   protected renderFooter(): string {
     return `
       <div class="input-container">
-        <input type="text" class="message-input" id="messageInput" placeholder="Type a message...">
+        <input type="text" class="message-input" id="messageInput" placeholder="Type a message... (or drag & drop files)">
         <button class="send-button" id="sendButton">Send</button>
       </div>
     `;
   }
 
-  // Override to setup message input after EntityScroller initialization
+  // Override to setup message composer after EntityScroller initialization
   protected override async renderWidget(): Promise<void> {
     await super.renderWidget();
 
@@ -431,35 +432,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLInputElement;
     this.setupMessageInputHandlers();
 
-    // Enable markdown shortcuts for message input (Cmd+B for bold, etc.)
-    if (this.messageInput) {
-      this.inputEnhancer = new MessageInputEnhancer(this.messageInput, {
-        enableShortcuts: true,
-        enableAutoFormat: true, // Auto-complete ``` to code blocks
-        enablePreview: false // Preview can be added later if needed
-      });
+    // Add drag-and-drop to entire chat widget
+    const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
+    if (container) {
+      container.addEventListener('dragover', (e) => this.handleDragOver(e));
+      container.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+      container.addEventListener('drop', (e) => this.handleDrop(e));
     }
   }
 
-  // Setup input event listeners - the ONLY unique ChatWidget functionality
-  private setupMessageInputHandlers(): void {
-    if (!this.messageInput) return;
-
-    const keydownHandler = (e: KeyboardEvent): void => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        this.sendMessage();
-      }
-    };
-
-    const sendButton = this.shadowRoot?.getElementById('sendButton');
-    const clickHandler = (): void => { this.sendMessage(); };
-
-    // Use passive for better scroll performance, but we need to preventDefault on Enter
-    // So we can't use passive. Instead, return early for non-Enter keys
-    this.messageInput.addEventListener('keydown', keydownHandler);
-    sendButton?.addEventListener('click', clickHandler);
-  }
 
   /**
    * Load room data and member information
@@ -601,10 +582,43 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }, 0) as unknown as number;
   }
 
-  // Send message - the only business logic ChatWidget needs
+  /**
+   * Setup handlers for message input (send button, Enter key)
+   */
+  private setupMessageInputHandlers(): void {
+    if (!this.messageInput) return;
+
+    const sendButton = this.shadowRoot?.getElementById('sendButton') as HTMLButtonElement;
+
+    // Send on button click
+    sendButton?.addEventListener('click', () => this.sendMessage());
+
+    // Send on Enter key (Shift+Enter for newline if we upgrade to textarea)
+    this.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    });
+  }
+
+  /**
+   * Send message with text and any pending attachments
+   */
   private async sendMessage(): Promise<void> {
-    const content = this.messageInput?.value.trim();
-    if (!content) return;
+    console.log('🔧 SEND-MESSAGE-CALLED-' + Date.now());
+
+    if (!this.messageInput) return;
+
+    const text = this.messageInput.value.trim();
+    console.log('🔧 MESSAGE-TEXT-LENGTH-' + text.length);
+    console.log('🔧 PENDING-ATTACHMENTS-COUNT-' + this.pendingAttachments.length);
+
+    // Must have either text or attachments
+    if (!text && this.pendingAttachments.length === 0) {
+      console.log('🔧 SEND-ABORTED-NO-CONTENT');
+      return;
+    }
 
     // Can't send message without a room selected
     if (!this.currentRoomId) {
@@ -612,19 +626,81 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       return;
     }
 
-    this.messageInput!.value = ''; // Clear input
-
     // Create message entity
     const messageEntity = new ChatMessageEntity();
-    messageEntity.roomId = this.currentRoomId; // Use centralized roomId
+    messageEntity.roomId = this.currentRoomId;
     messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
     messageEntity.senderName = 'Joel';
-    messageEntity.senderType = 'human'; // Denormalized user type (human messages from UI)
-    messageEntity.content = { text: content, media: [] };
-    messageEntity.status = 'sent'; // Message is sent when saved to DB
+    messageEntity.senderType = 'human';
+    messageEntity.content = {
+      text,
+      media: this.pendingAttachments.length > 0 ? this.pendingAttachments : undefined
+    };
+    messageEntity.status = 'sent';
     messageEntity.priority = 'normal';
     messageEntity.timestamp = new Date();
     messageEntity.reactions = [];
+
+    console.log('🔧 MESSAGE-ENTITY-MEDIA-COUNT-' + (messageEntity.content.media?.length ?? 0));
+    if (messageEntity.content.media && messageEntity.content.media.length > 0) {
+      console.log('🔧 FIRST-MEDIA-ITEM-' + JSON.stringify({
+        type: messageEntity.content.media[0].type,
+        filename: messageEntity.content.media[0].filename,
+        size: messageEntity.content.media[0].size,
+        base64Length: messageEntity.content.media[0].base64?.length ?? 0
+      }));
+    }
+
+    try {
+      const result = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+        collection: ChatMessageEntity.collection,
+        data: messageEntity,
+        backend: 'server'
+      });
+
+      console.log('🔧 COMMAND-RESULT-' + JSON.stringify(result).substring(0, 200));
+      console.log(`✅ Message sent${this.pendingAttachments.length > 0 ? ` with ${this.pendingAttachments.length} attachment(s)` : ''}`);
+
+      // Clear input and pending attachments
+      this.messageInput.value = '';
+      this.pendingAttachments = [];
+      this.messageInput.placeholder = 'Type a message... (or drag & drop files)';
+
+      // Scroll to bottom after sending OWN message
+      if (this.scroller) {
+        this.scroller.scrollToEnd();
+      }
+    } catch (error) {
+      console.error('❌ Failed to send message:', error);
+    }
+  }
+
+  // Handle message send from composer widget (legacy - kept for compatibility)
+  private async handleMessageSend(event: { text: string; media?: readonly MediaItem[]; replyToId?: string }): Promise<void> {
+    const { text, media, replyToId } = event;
+
+    // Can't send message without a room selected
+    if (!this.currentRoomId) {
+      console.warn('Cannot send message: no room selected');
+      return;
+    }
+
+    // Create message entity
+    const messageEntity = new ChatMessageEntity();
+    messageEntity.roomId = this.currentRoomId;
+    messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
+    messageEntity.senderName = 'Joel';
+    messageEntity.senderType = 'human';
+    messageEntity.content = { text, media };
+    messageEntity.status = 'sent';
+    messageEntity.priority = 'normal';
+    messageEntity.timestamp = new Date();
+    messageEntity.reactions = [];
+
+    // Add reply-to field if present
+    if (replyToId) {
+      messageEntity.replyToId = replyToId as UUID;
+    }
 
     try {
       await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
@@ -634,15 +710,132 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       });
       console.log('✅ Message sent successfully');
 
-      // Scroll to bottom after sending OWN message (not for other users' messages)
-      // This ensures user sees their sent message immediately
+      // Scroll to bottom after sending OWN message
       if (this.scroller) {
         this.scroller.scrollToEnd();
       }
     } catch (error) {
       console.error('❌ Failed to send message:', error);
-      this.messageInput!.value = content; // Restore on error
     }
+  }
+
+  // Drag-and-drop handlers for the entire widget
+  private handleDragOver(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    // Add visual feedback
+    const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
+    if (container) {
+      container.classList.add('drag-over');
+    }
+  }
+
+  private handleDragLeave(e: DragEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    // Remove visual feedback
+    const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
+    if (container) {
+      container.classList.remove('drag-over');
+    }
+  }
+
+  private async handleDrop(e: DragEvent): Promise<void> {
+    e.preventDefault();
+    e.stopPropagation();
+
+    console.log('🔧 DROP-EVENT-FIRED-' + Date.now());
+
+    // Remove visual feedback
+    const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
+    if (container) {
+      container.classList.remove('drag-over');
+    }
+
+    const files = e.dataTransfer?.files;
+    console.log('🔧 FILES-DROPPED-COUNT-' + (files?.length ?? 0));
+
+    if (files && files.length > 0) {
+      console.log(`📎 Processing ${files.length} dropped file(s)...`);
+
+      // Convert all files to MediaItems
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        console.log('🔧 PROCESSING-FILE-' + file.name + '-TYPE-' + file.type + '-SIZE-' + file.size);
+        try {
+          const mediaItem = await this.fileToMediaItem(file);
+          this.pendingAttachments.push(mediaItem);
+          console.log(`✅ Added ${file.name} (${this.formatFileSize(file.size)})`);
+          console.log('🔧 PENDING-ATTACHMENTS-NOW-' + this.pendingAttachments.length);
+        } catch (error) {
+          console.error(`❌ Failed to process ${file.name}:`, error);
+        }
+      }
+
+      // Update input placeholder to show attachment count
+      if (this.messageInput && this.pendingAttachments.length > 0) {
+        this.messageInput.placeholder = `Type a message... (${this.pendingAttachments.length} file${this.pendingAttachments.length > 1 ? 's' : ''} attached)`;
+      }
+    }
+  }
+
+  /**
+   * Convert a File object to a MediaItem with base64 encoding
+   */
+  private async fileToMediaItem(file: File): Promise<MediaItem> {
+    const base64 = await this.readFileAsBase64(file);
+    const mediaType = this.inferMediaType(file.type);
+
+    return {
+      type: mediaType,
+      base64,
+      filename: file.name,
+      mimeType: file.type,
+      size: file.size,
+      uploadedAt: Date.now(),
+      uploadedBy: DEFAULT_USERS.HUMAN as UUID
+    };
+  }
+
+  /**
+   * Read a file as base64 string
+   */
+  private readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Strip the data URL prefix (e.g., "data:image/png;base64,")
+        const base64 = result.split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /**
+   * Infer MediaType from MIME type
+   */
+  private inferMediaType(mimeType: string): MediaType {
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType.startsWith('application/pdf') ||
+        mimeType.startsWith('application/msword') ||
+        mimeType.startsWith('application/vnd.openxmlformats')) {
+      return 'document';
+    }
+    return 'file';
+  }
+
+  /**
+   * Format file size for display
+   */
+  private formatFileSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
 }
