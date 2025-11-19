@@ -102,6 +102,13 @@ export class ChatRAGBuilder extends RAGBuilder {
     // Bug #5 fix: Calculate adjusted maxTokens based on actual input size (dimension 2)
     const budgetCalculation = this.calculateAdjustedMaxTokens(conversationHistory, options);
 
+    console.log(`🔍 [ChatRAGBuilder] Budget calculation for model ${options?.modelId || 'unknown'}:`, {
+      inputTokenCount: budgetCalculation.inputTokenCount,
+      adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
+      requestedMaxTokens: options?.maxTokens,
+      conversationHistoryLength: conversationHistory.length
+    });
+
     const ragContext: RAGContext = {
       domain: 'chat',
       contextId,

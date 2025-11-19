@@ -852,9 +852,23 @@ async function seedViaJTAG() {
     // Create all personas using config-driven loop (eliminates repetition)
     for (const persona of PERSONA_CONFIGS) {
       if (missingUsers.includes(persona.uniqueId)) {
+        // Only create Sentinel if SENTINEL_PATH is configured
+        if (persona.provider === 'sentinel') {
+          if (!process.env.SENTINEL_PATH) {
+            console.log(`⏭️  Skipping Sentinel (SENTINEL_PATH not configured)`);
+            continue;
+          }
+        }
+
         const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
         if (user) {
           userMap[persona.uniqueId] = user;
+        }
+      } else {
+        // User already exists - load from database using uniqueId
+        const existingUser = await loadUserByUniqueId(persona.uniqueId);
+        if (existingUser) {
+          userMap[persona.uniqueId] = existingUser;
         }
       }
     }

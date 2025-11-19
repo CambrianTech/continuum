@@ -359,8 +359,15 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
       const effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
 
-      console.log(`📊 ${this.personaName}: Using maxTokens=${effectiveMaxTokens}` +
-        (fullRAGContext.metadata.adjustedMaxTokens ? ` (adjusted from ${this.modelConfig.maxTokens ?? 3000})` : ' (config default)'));
+      console.log(`📊 ${this.personaName}: RAG metadata check:`, {
+        hasAdjustedMaxTokens: !!fullRAGContext.metadata.adjustedMaxTokens,
+        adjustedMaxTokens: fullRAGContext.metadata.adjustedMaxTokens,
+        inputTokenCount: fullRAGContext.metadata.inputTokenCount,
+        configMaxTokens: this.modelConfig.maxTokens,
+        effectiveMaxTokens: effectiveMaxTokens,
+        model: this.modelConfig.model,
+        provider: this.modelConfig.provider
+      });
 
       const request: TextGenerationRequest = {
         messages,

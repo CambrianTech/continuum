@@ -87,7 +87,7 @@ async function sendTestMessage(roomId: string): Promise<void> {
   console.log('📤 Sending test message to General room...');
   console.log(`   Message: "${message}"\n`);
 
-  const { stdout } = await execAsync(`./jtag debug/chat-send --roomId="${roomId}" --message="${message}"`);
+  const { stdout } = await execAsync(`./jtag chat/send --room="${roomId}" --message="${message}"`);
   const result = JSON.parse(stdout);
 
   if (!result.success) {
