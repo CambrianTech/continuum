@@ -136,8 +136,12 @@ export function createScroller<T extends BaseEntity>(
   // ONLY for chat widgets with autoScroll enabled
   if (config.autoScroll?.enabled) {
     resizeObserver = new ResizeObserver(() => {
-      // Scroll directly - no requestAnimationFrame
-      scrollToEnd('instant');
+      // Use larger threshold for resize events (new messages growing the container)
+      // This prevents stopping auto-scroll when error messages cause slight scrolls
+      const threshold = 200; // More forgiving than the 10px user scroll threshold
+      if (isNearEnd(threshold)) {
+        scrollToEnd('instant');
+      }
     });
     resizeObserver.observe(container);
   }

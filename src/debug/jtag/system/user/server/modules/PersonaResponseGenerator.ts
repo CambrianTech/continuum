@@ -21,7 +21,7 @@ import { Commands } from '../../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
@@ -234,7 +234,7 @@ export class PersonaResponseGenerator {
         {
           modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
           maxMemories: 10,
-          includeArtifacts: false, // Skip artifacts for now (image attachments)
+          includeArtifacts: false, // TODO: Implement proper on-demand image loading via tools
           includeMemories: false,   // Skip private memories for now
           // ✅ FIX: Include current message even if not yet persisted to database
           currentMessage: {
@@ -249,7 +249,9 @@ export class PersonaResponseGenerator {
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM
       console.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      // ✅ Support multimodal content (images, audio, video) for vision-capable models
+      // Adapters will transform based on model capability (raw images vs text descriptions)
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
 
       // System prompt from RAG builder (includes room membership!)
       messages.push({

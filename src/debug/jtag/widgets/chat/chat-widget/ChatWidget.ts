@@ -184,13 +184,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   // Required by EntityScrollerWidget
   protected getScrollerPreset(): ScrollerConfig {
-    // Disable auto-scroll - ONLY scroll when user sends their own message
-    // Manual scroll triggered in sendMessage() at line 655
+    // Enable auto-scroll only when user is at bottom
     return {
       ...SCROLLER_PRESETS.CHAT,
       autoScroll: {
-        enabled: false, // Disabled - only scroll on user's own messages
-        threshold: 100,
+        enabled: true, // Auto-scroll when new messages arrive
+        threshold: 200, // Forgiving threshold - tolerates error message scrolls while preventing aggressive yanking
         behavior: 'smooth' as const
       }
     };
@@ -607,6 +606,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        console.log('🔧 ENTER-KEY-PRESSED - text:', this.messageInput?.value, 'attachments:', this.pendingAttachments.length);
         this.sendMessage();
       }
     });

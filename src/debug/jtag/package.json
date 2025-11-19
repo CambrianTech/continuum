@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.5027",
+  "version": "1.0.5047",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -138,7 +138,7 @@
     "system:run": "npx tsx scripts/launch-active-example.ts",
     "start-continuum-with-browser": "npx tsx scripts/launch-active-example.ts",
     "system:deploy": "npx tsx scripts/smart-deploy.ts",
-    "system:start": "npm run build && tsx scripts/launch-and-capture.ts --verbose; npm run data:seed",
+    "system:start": "npm run system:stop && npm run build && tsx scripts/launch-and-capture.ts --verbose; npm run data:seed",
     "system:start:quiet": "tsx scripts/launch-and-capture.ts",
     "system:start:test": "tsx scripts/launch-and-capture.ts --test --no-check",
     "restart": "npm run smart-build && npm run system:deploy && npm run system:run",

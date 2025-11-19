@@ -284,7 +284,23 @@ ${toolRegistry.generateToolDocumentation()}`;
 
       // Convert to LLM message format
       const llmMessages = orderedMessages.map(msg => {
-        const messageText = msg.content?.text || '';
+        let messageText = msg.content?.text || '';
+
+        // Add media metadata to message text so AIs know images exist
+        // AIs can use data/read command with full messageId to fetch image data
+        if (msg.content?.media && msg.content.media.length > 0) {
+          const mediaDescriptions = msg.content.media.map((item, idx) => {
+            const parts = [
+              `[${item.type || 'attachment'}${idx + 1}]`,
+              item.filename || 'unnamed',
+              item.mimeType ? `(${item.mimeType})` : ''
+            ].filter(Boolean);
+            return parts.join(' ');
+          });
+
+          const mediaNote = `\n[Attachments: ${mediaDescriptions.join(', ')} - messageId: ${msg.id}]`;
+          messageText += mediaNote;
+        }
 
         // Determine role based on whether THIS persona sent the message
         // ONLY messages from THIS persona → 'assistant'
@@ -307,7 +323,7 @@ ${toolRegistry.generateToolDocumentation()}`;
 
         return {
           role,
-          content: messageText,  // Clean message text without markers
+          content: messageText,  // Message text with media metadata appended
           name: msg.senderName,  // Speaker identity (LLM API uses this for multi-party conversation)
           timestamp: timestampMs
         };
