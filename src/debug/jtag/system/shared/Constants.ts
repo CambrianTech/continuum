@@ -44,7 +44,10 @@ export const PATHS = {
   MEDIA_TEMP: '.continuum/media/temp',
 
   /** Legacy (for migration) */
-  LEGACY_DB: '.continuum/database/continuum.db'
+  LEGACY_DB: '.continuum/database/continuum.db',
+
+  /** Default working directory for shell commands */
+  DEFAULT_WORKING_DIR: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
 } as const;
 
 /**
@@ -185,7 +188,7 @@ export const MODEL_IDS = {
 
   /** xAI models */
   XAI: {
-    GROK_BETA: 'grok-beta',
+    GROK_3: 'grok-3',  // Updated from grok-beta (deprecated 2025-09-15)
     GROK_4: 'grok-4'
   },
 

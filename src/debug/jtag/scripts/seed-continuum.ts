@@ -777,8 +777,11 @@ async function seedViaJTAG() {
 
     userMap['humanUser'] = humanUser;
 
-    // Step 2: Check if this is first run (need to create rooms)
-    const isFirstRun = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+    // Step 2: Check if rooms need to be created (check rooms, not users!)
+    const roomCheckResult = await execAsync(`./jtag data/list --collection=rooms 2>&1`);
+    const roomData = JSON.parse(roomCheckResult.stdout);
+    const roomExists = roomData.success && roomData.data && roomData.data.length > 0;
+    const isFirstRun = !roomExists;  // Create rooms if none exist
 
     if (isFirstRun) {
       // Create and persist rooms BEFORE creating other users

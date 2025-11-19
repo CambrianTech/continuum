@@ -126,6 +126,12 @@ export class CodeFindServerCommand extends CodeFindCommand {
         // Skip hidden files/directories if not requested
         if (!includeHidden && entry.name.startsWith('.')) continue;
 
+        // Skip massive directories that cause timeouts
+        const excludeDirs = ['node_modules', 'dist', '.continuum', '.git', 'examples/dist', 'coverage'];
+        if (excludeDirs.includes(entry.name)) {
+          continue;
+        }
+
         const fullPath = path.join(dirPath, entry.name);
         const relativePath = path.relative(repoRoot, fullPath);
 

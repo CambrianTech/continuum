@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.4905",
+  "version": "1.0.4945",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -281,7 +281,9 @@
     "dev:iterate": "npx tsx scripts/autonomous-dev-toolkit.ts iterate",
     "dev:stress": "npx tsx scripts/autonomous-dev-toolkit.ts stress",
     "dev:fix": "npx tsx scripts/autonomous-dev-toolkit.ts diagnose",
-    "data:clear": "npx tsx scripts/data-clear.ts",
+    "data:backup": "mkdir -p .continuum/jtag/backups && cp .continuum/jtag/data/database.sqlite .continuum/jtag/backups/database-backup-$(date +%Y-%m-%dT%H-%M-%S).sqlite && echo '✅ Backed up to .continuum/jtag/backups/' && ls -lh .continuum/jtag/backups/ | tail -5",
+    "data:restore": "ls -lht .continuum/jtag/backups/*.sqlite | head -10 && echo '\nUsage: cp .continuum/jtag/backups/<backup-file> .continuum/jtag/data/database.sqlite'",
+    "data:clear": "npm run data:backup && npx tsx scripts/data-clear.ts",
     "data:seed": "npx tsx scripts/seed-continuum.ts",
     "data:reseed": "npm run data:clear && npm run data:seed",
     "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'"

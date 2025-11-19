@@ -1028,11 +1028,24 @@ export class PersonaUser extends AIUser {
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    *
    * DELEGATED to PersonaResponseGenerator module (extracted for clean separation)
+   *
+   * **Dormancy filtering**: Checks dormancy state before responding
    */
   private async respondToMessage(
     originalMessage: ChatMessageEntity,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {
+    // Check dormancy state before responding
+    const shouldRespond = this.responseGenerator.shouldRespondToMessage(
+      originalMessage,
+      this.state.dormancyState
+    );
+
+    if (!shouldRespond) {
+      // Dormancy filtered - skip response
+      return;
+    }
+
     await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
   }
 
@@ -1503,7 +1516,7 @@ export class PersonaUser extends AIUser {
         message.roomId,
         this.id,
         {
-          maxMessages: 20,
+          modelId: decision.model,  // Bug #5 fix: Pass model ID for dynamic message count calculation
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
@@ -1574,12 +1587,13 @@ export class PersonaUser extends AIUser {
         const durationMs = Date.now() - startTime;
 
         // Build RAG context for decision logging (even on fast-path)
+        // Note: No modelId on fast-path since decision hasn't been made yet
+        // Falls back to conservative default (10 messages) which is fine for @mentions
         const ragBuilder = new ChatRAGBuilder();
         const fastPathRagContext = await ragBuilder.buildContext(
           message.roomId,
           this.id,
           {
-            maxMessages: 20,
             maxMemories: 0,
             includeArtifacts: false,
             includeMemories: false,

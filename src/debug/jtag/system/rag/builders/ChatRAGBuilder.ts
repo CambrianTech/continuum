@@ -52,7 +52,8 @@ export class ChatRAGBuilder extends RAGBuilder {
   ): Promise<RAGContext> {
     const startTime = Date.now();
 
-    const maxMessages = options?.maxMessages ?? 20;
+    // Calculate safe message count based on model context window (Bug #5 fix)
+    const maxMessages = this.calculateSafeMessageCount(options);
     const maxMemories = options?.maxMemories ?? 10;
     const includeArtifacts = options?.includeArtifacts ?? true;
     const includeMemories = options?.includeMemories ?? true;
@@ -98,6 +99,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     // 6. Load learning configuration (Phase 2: Per-participant learning mode)
     const learningConfig = await this.loadLearningConfig(contextId, personaId);
 
+    // Bug #5 fix: Calculate adjusted maxTokens based on actual input size (dimension 2)
+    const budgetCalculation = this.calculateAdjustedMaxTokens(conversationHistory, options);
+
     const ragContext: RAGContext = {
       domain: 'chat',
       contextId,
@@ -116,7 +120,11 @@ export class ChatRAGBuilder extends RAGBuilder {
         memoryCount: privateMemories.length,
         builtAt: new Date(),
         recipeId: recipeStrategy?.conversationPattern,
-        recipeName: recipeStrategy ? `${recipeStrategy.conversationPattern} conversation` : undefined
+        recipeName: recipeStrategy ? `${recipeStrategy.conversationPattern} conversation` : undefined,
+
+        // Bug #5 fix: Two-dimensional budget (message count + maxTokens adjustment)
+        adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
+        inputTokenCount: budgetCalculation.inputTokenCount
       }
     };
 
@@ -503,5 +511,149 @@ ${toolRegistry.generateToolDocumentation()}`;
       console.error(`❌ ChatRAGBuilder: Error loading learning config:`, error);
       return undefined;
     }
+  }
+
+  /**
+   * Calculate safe message count based on model context window (Bug #5 fix)
+   * Uses same logic as RAGBudgetServerCommand to prevent context overflow
+   */
+  private calculateSafeMessageCount(options?: RAGBuildOptions): number {
+    // If maxMessages explicitly provided, use it (allows manual override)
+    if (options?.maxMessages !== undefined) {
+      return options.maxMessages;
+    }
+
+    // If no modelId provided, fall back to conservative default
+    if (!options?.modelId) {
+      console.log('⚠️ ChatRAGBuilder: No modelId provided, using default maxMessages=10');
+      return 10;
+    }
+
+    // Model context windows (same as RAGBudgetServerCommand)
+    const contextWindows: Record<string, number> = {
+      // OpenAI
+      'gpt-4': 8192,
+      'gpt-4-turbo': 128000,
+      'gpt-4o': 128000,
+      'gpt-3.5-turbo': 16385,
+
+      // Anthropic
+      'claude-3-opus': 200000,
+      'claude-3-sonnet': 200000,
+      'claude-3-haiku': 200000,
+      'claude-3-5-sonnet': 200000,
+
+      // Local/Ollama (common models)
+      'llama3.2:3b': 128000,
+      'llama3.1:70b': 128000,
+      'deepseek-coder:6.7b': 16000,
+      'qwen2.5:7b': 128000,
+      'mistral:7b': 32768,
+
+      // External APIs
+      'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
+      'deepseek-chat': 64000
+    };
+
+    const modelId = options.modelId;
+    const maxTokens = options.maxTokens ?? 3000;
+    const systemPromptTokens = options.systemPromptTokens ?? 500;
+    const targetUtilization = 0.8;  // 80% target, 20% safety margin
+    const avgTokensPerMessage = 250;  // Conservative estimate
+
+    // Get context window (default 8K if unknown)
+    const contextWindow = contextWindows[modelId] || 8192;
+
+    // Calculate available tokens for messages
+    const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
+
+    // Target 80% of available (20% safety margin)
+    const targetTokens = availableForMessages * targetUtilization;
+
+    // Calculate safe message count
+    const safeMessageCount = Math.floor(targetTokens / avgTokensPerMessage);
+
+    // Clamp between 5 and 50
+    const clampedMessageCount = Math.max(5, Math.min(50, safeMessageCount));
+
+    console.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
+  Context Window: ${contextWindow} tokens
+  Available for Messages: ${availableForMessages}
+  Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
+
+    return clampedMessageCount;
+  }
+
+  /**
+   * Calculate adjusted maxTokens based on actual input size (Bug #5 fix - dimension 2)
+   *
+   * The AI team identified this issue: we trim messages to fit, but still request
+   * 3000 completion tokens, causing: inputTokens + 3000 > contextWindow
+   *
+   * Solution: adjustedMaxTokens = Math.min(maxTokens, contextWindow - inputTokens - safetyMargin)
+   *
+   * @param conversationHistory - The actual messages being sent (after trimming)
+   * @param options - Build options with modelId and maxTokens
+   * @returns {adjustedMaxTokens, inputTokenCount} for use in LLM call
+   */
+  private calculateAdjustedMaxTokens(
+    conversationHistory: LLMMessage[],
+    options?: RAGBuildOptions
+  ): { adjustedMaxTokens: number; inputTokenCount: number } {
+    // If no modelId, can't calculate - return original maxTokens
+    if (!options?.modelId) {
+      const defaultMaxTokens = options?.maxTokens ?? 3000;
+      console.log('⚠️ ChatRAGBuilder: No modelId for maxTokens adjustment, using default:', defaultMaxTokens);
+      return { adjustedMaxTokens: defaultMaxTokens, inputTokenCount: 0 };
+    }
+
+    // Model context windows (same table as calculateSafeMessageCount)
+    const contextWindows: Record<string, number> = {
+      'gpt-4': 8192,
+      'gpt-4-turbo': 128000,
+      'gpt-4o': 128000,
+      'gpt-3.5-turbo': 16385,
+      'claude-3-opus': 200000,
+      'claude-3-sonnet': 200000,
+      'claude-3-haiku': 200000,
+      'claude-3-5-sonnet': 200000,
+      'llama3.2:3b': 128000,
+      'llama3.1:70b': 128000,
+      'deepseek-coder:6.7b': 16000,
+      'qwen2.5:7b': 128000,
+      'mistral:7b': 32768,
+      'grok-3': 131072,
+      'deepseek-chat': 64000
+    };
+
+    const modelId = options.modelId;
+    const requestedMaxTokens = options.maxTokens ?? 3000;
+    const systemPromptTokens = options.systemPromptTokens ?? 500;
+    const safetyMargin = 100;  // Extra buffer for formatting/metadata
+    const contextWindow = contextWindows[modelId] || 8192;
+
+    // Estimate input tokens (conversationHistory + system prompt)
+    // Using 250 tokens per message average (same as calculateSafeMessageCount)
+    const avgTokensPerMessage = 250;
+    const estimatedMessageTokens = conversationHistory.length * avgTokensPerMessage;
+    const inputTokenCount = estimatedMessageTokens + systemPromptTokens;
+
+    // Calculate available tokens for completion
+    const availableForCompletion = contextWindow - inputTokenCount - safetyMargin;
+
+    // Adjust maxTokens to fit within available space
+    const adjustedMaxTokens = Math.max(
+      500,  // Minimum 500 tokens for meaningful response
+      Math.min(requestedMaxTokens, availableForCompletion)
+    );
+
+    console.log(`📊 ChatRAGBuilder: Two-dimensional budget for ${modelId}:
+  Context Window: ${contextWindow} tokens
+  Input Tokens (estimated): ${inputTokenCount} (${conversationHistory.length} messages + ${systemPromptTokens} system)
+  Available for Completion: ${availableForCompletion}
+  Requested maxTokens: ${requestedMaxTokens}
+  Adjusted maxTokens: ${adjustedMaxTokens}${adjustedMaxTokens < requestedMaxTokens ? ' ⚠️ REDUCED' : ' ✓'}`);
+
+    return { adjustedMaxTokens, inputTokenCount };
   }
 }

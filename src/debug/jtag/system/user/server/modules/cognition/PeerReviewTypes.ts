@@ -322,7 +322,7 @@ export const MODEL_INTELLIGENCE_WEIGHTS: Record<string, number> = {
 
   // xAI
   'xai:grok-4': 0.85,
-  'xai:grok-beta': 0.8,
+  'xai:grok-3': 0.8,  // Updated from grok-beta (deprecated 2025-09-15)
 
   // Ollama (local models)
   'ollama:llama3.2:3b': 0.3,

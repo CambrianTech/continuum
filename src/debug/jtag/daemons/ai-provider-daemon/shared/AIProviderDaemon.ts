@@ -327,6 +327,34 @@ export class AIProviderDaemon extends DaemonBase {
       );
     }
 
+    // Validate input (Bug #4 fix - catch undefined/empty text values early)
+    if (!request.input) {
+      throw new AIProviderError(
+        'Embedding request missing input text',
+        'daemon',
+        'INVALID_REQUEST'
+      );
+    }
+
+    // Normalize to array for validation
+    const inputArray = Array.isArray(request.input) ? request.input : [request.input];
+    if (inputArray.length === 0) {
+      throw new AIProviderError(
+        'Embedding request has empty input array',
+        'daemon',
+        'INVALID_REQUEST'
+      );
+    }
+
+    const invalidInputs = inputArray.filter((text: string) => !text || text.trim().length === 0);
+    if (invalidInputs.length > 0) {
+      throw new AIProviderError(
+        `Embedding request contains ${invalidInputs.length} empty or undefined text values`,
+        'daemon',
+        'INVALID_REQUEST'
+      );
+    }
+
     // Select provider
     const adapter = this.selectAdapter(request.preferredProvider);
     if (!adapter) {

@@ -49,6 +49,43 @@ npm start                    # DEPLOYS code changes
 
 ---
 
+## 💾 DATABASE BACKUP SYSTEM
+
+**Automatic backups prevent catastrophic data loss**
+
+### The Safety Net (Implemented 2025-11-18)
+
+All destructive database operations now AUTOMATICALLY create backups:
+- `npm run data:reseed` → creates backup BEFORE clearing
+- `npm run data:clear` → creates backup BEFORE clearing
+- `npm run data:restore` → creates backup BEFORE restoring
+
+**Manual backup/restore commands:**
+```bash
+npm run data:backup           # Create timestamped backup
+npm run data:restore          # Interactive: select from backup list
+npm run data:restore -- filename.sqlite  # Direct restore
+```
+
+**How it works:**
+- Backups stored in: `examples/widget-ui/.continuum/jtag/backups/`
+- Timestamped filenames: `database-backup-2025-11-19T01-46-12.sqlite`
+- Automatic cleanup: keeps last 10 backups
+- Pre-restore safety: creates backup of current DB before restoring
+
+**Why this exists:**
+Lesson learned from 2025-11-18: I ran `npm run data:reseed` to fix a simple bug and destroyed hours of irreplaceable training data. Now that can never happen again.
+
+**For updating existing data (preferred over reseed):**
+```bash
+# Example: Update Grok user's model
+GROK_ID=$(./jtag data/list --collection=users | jq -r '.data[] | select(.displayName == "Grok") | .id')
+./jtag data/update --collection=users --id="$GROK_ID" \
+  --updates='{"modelConfig.model":"grok-3"}'
+```
+
+---
+
 ## 🚫 CRITICAL: NEVER COMMIT BEFORE TESTING
 
 **The iron rule of development: TEST → VERIFY → COMMIT**

@@ -83,6 +83,133 @@ export class PersonaResponseGenerator {
   }
 
   /**
+   * Calculate safe message count based on model's context window
+   *
+   * Strategy: Fill to ~90% of (contextWindow - maxTokens - systemPrompt)
+   * Assumes average message ~200 tokens
+   */
+  private calculateSafeMessageCount(): number {
+    const model = this.modelConfig.model;
+    const maxTokens = this.modelConfig.maxTokens || 3000;
+
+    // Model context windows (in tokens)
+    const contextWindows: Record<string, number> = {
+      // OpenAI
+      'gpt-4': 8192,
+      'gpt-4-turbo': 128000,
+      'gpt-4o': 128000,
+      'gpt-3.5-turbo': 16385,
+
+      // Anthropic
+      'claude-3-opus': 200000,
+      'claude-3-sonnet': 200000,
+      'claude-3-haiku': 200000,
+      'claude-3-5-sonnet': 200000,
+
+      // Local/Ollama (common models)
+      'llama3.2:3b': 128000,
+      'llama3.1:70b': 128000,
+      'deepseek-coder:6.7b': 16000,
+      'qwen2.5:7b': 128000,
+      'mistral:7b': 32768,
+
+      // External APIs
+      'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
+      'deepseek-chat': 64000
+    };
+
+    // Get context window for this model (default 8K if unknown)
+    const contextWindow = model ? (contextWindows[model] || 8192) : 8192;
+
+    // Estimate system prompt tokens (~500 for typical persona prompts)
+    const systemPromptTokens = 500;
+
+    // Available tokens for messages = contextWindow - maxTokens - systemPrompt
+    const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
+
+    // Target 80% of available (20% safety margin for token estimation error)
+    const targetTokens = availableForMessages * 0.8;
+
+    // Assume average message is ~250 tokens (conservative: names, timestamps, content)
+    // This accounts for message overhead beyond just text content
+    const avgTokensPerMessage = 250;
+
+    // Calculate safe message count
+    const safeCount = Math.floor(targetTokens / avgTokensPerMessage);
+
+    // Clamp between 5 and 50 messages
+    const clampedCount = Math.max(5, Math.min(50, safeCount));
+
+    console.log(`📊 ${this.personaName}: Context calc: model=${model}, window=${contextWindow}, available=${availableForMessages}, safe=${clampedCount} msgs`);
+
+    return clampedCount;
+  }
+
+  /**
+   * Check if persona should respond to message based on dormancy level
+   *
+   * Dormancy filtering (Phase 2 of dormancy system):
+   * - Level 0 (active): Respond to everything
+   * - Level 1 (mention-only): Only respond to @mentions
+   * - Level 2 (human-only): Only respond to humans OR @mentions
+   *
+   * **CRITICAL**: @mentions ALWAYS work as failsafe - no sleep mode that blocks mentions
+   *
+   * @param message - The message to evaluate
+   * @param dormancyState - Current dormancy state from UserStateEntity
+   * @returns true if should respond, false if should skip
+   */
+  shouldRespondToMessage(
+    message: ChatMessageEntity,
+    dormancyState?: { level: 'active' | 'mention-only' | 'human-only' }
+  ): boolean {
+    // If no dormancy state, default to active (backward compatible)
+    if (!dormancyState) {
+      return true;
+    }
+
+    const dormancyLevel = dormancyState.level;
+
+    // Check if message mentions this persona (FAILSAFE - always check first)
+    const mentionsPersona = message.content.text.includes(`@${this.personaName.toLowerCase()}`) ||
+                            message.content.text.includes(`@${this.personaName}`);
+
+    // FAILSAFE: @mentions ALWAYS wake - regardless of dormancy level
+    if (mentionsPersona) {
+      if (dormancyLevel !== 'active') {
+        console.log(`✨ ${this.personaName}: @mention detected, waking from ${dormancyLevel} mode`);
+      }
+      return true;
+    }
+
+    // Level 0: Active - respond to everything
+    if (dormancyLevel === 'active') {
+      return true;
+    }
+
+    // Level 1: Mention-Only - only respond to @mentions (already handled above)
+    if (dormancyLevel === 'mention-only') {
+      console.log(`💤 ${this.personaName}: Dormant (mention-only), skipping message`);
+      return false;
+    }
+
+    // Level 2: Human-Only - respond to humans OR @mentions (mentions already handled)
+    if (dormancyLevel === 'human-only') {
+      const isHumanSender = message.senderType === 'human';
+
+      if (isHumanSender) {
+        return true;
+      }
+
+      console.log(`💤 ${this.personaName}: Dormant (human-only), skipping AI message`);
+      return false;
+    }
+
+    // Default: respond (shouldn't reach here, but safe fallback)
+    return true;
+  }
+
+  /**
    * Generate and post a response to a chat message
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
@@ -94,13 +221,14 @@ export class PersonaResponseGenerator {
     const generateStartTime = Date.now();  // Track total response time for decision logging
     try {
       // 🔧 SUB-PHASE 3.1: Build RAG context
-      console.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context...`);
+      // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
+      console.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
       const ragBuilder = new ChatRAGBuilder();
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
         this.personaId,
         {
-          maxMessages: 20,
+          modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
           maxMemories: 10,
           includeArtifacts: false, // Skip artifacts for now (image attachments)
           includeMemories: false,   // Skip private memories for now
@@ -226,11 +354,19 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
       console.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
+
+      // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
+      // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
+      const effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
+
+      console.log(`📊 ${this.personaName}: Using maxTokens=${effectiveMaxTokens}` +
+        (fullRAGContext.metadata.adjustedMaxTokens ? ` (adjusted from ${this.modelConfig.maxTokens ?? 3000})` : ' (config default)'));
+
       const request: TextGenerationRequest = {
         messages,
         model: this.modelConfig.model || 'llama3.2:3b',  // Use persona's configured model
         temperature: this.modelConfig.temperature ?? 0.7,
-        maxTokens: this.modelConfig.maxTokens ?? 150,    // Keep responses concise
+        maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
         intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
       };

@@ -28,6 +28,7 @@ export class FastPathAdapter implements IDecisionAdapter {
     }
 
     // Build RAG context for decision logging
+    // Bug #5 fix: Let ChatRAGBuilder use default calculation (no modelId available here yet)
     if ('content' in context.triggerEvent && 'roomId' in context.triggerEvent) {
       const chatMessage = context.triggerEvent as any as ChatMessageEntity;
       const ragBuilder = new ChatRAGBuilder();
@@ -36,7 +37,7 @@ export class FastPathAdapter implements IDecisionAdapter {
         chatMessage.roomId,
         context.personaId,
         {
-          maxMessages: 20,
+          // No maxMessages or modelId - uses ChatRAGBuilder's conservative default (10)
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
