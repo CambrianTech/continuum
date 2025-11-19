@@ -103,7 +103,6 @@ export class TreeCommand extends CommandBase<TreeParams, TreeResult> {
           fullPath: currentPath,
           isCommand: isLeaf,
           description: isLeaf ? cmd.description : undefined,
-          category: isLeaf ? cmd.category : undefined,
           children: []
         };
 
@@ -181,11 +180,6 @@ export class TreeCommand extends CommandBase<TreeParams, TreeResult> {
       // Add description if requested and available
       if (params.showDescriptions && node.description) {
         line += ` - ${node.description}`;
-      }
-
-      // Add category if requested and available
-      if (params.showCategories && node.category) {
-        line += ` [${node.category}]`;
       }
 
       lines.push(line);

@@ -18,14 +18,9 @@ export interface HelpParams extends JTAGPayload {
 
   /**
    * Command name to get help for (e.g., "tree", "data/read", "screenshot")
-   * If omitted, shows general help about the help system
+   * Defaults to "help" (shows how to use help command)
    */
-  commandName?: string;
-
-  /**
-   * Show usage examples (default: true)
-   */
-  showExamples?: boolean;
+  readonly commandName?: string;
 }
 
 /**
@@ -36,14 +31,8 @@ export interface HelpResult extends CommandResult {
   readonly sessionId: UUID;
   readonly success: boolean;
 
-  /** Command signature with full parameter details */
+  /** Command signature with metadata */
   readonly signature?: CommandSignature;
-
-  /** Human-readable help text */
-  readonly helpText: string;
-
-  /** Usage examples if available */
-  readonly examples?: string[];
 
   readonly error?: string;
 }
@@ -60,8 +49,6 @@ export function createHelpResultFromParams(
     sessionId: params.sessionId,
     success: data.success ?? false,
     signature: data.signature,
-    helpText: data.helpText ?? '',
-    examples: data.examples,
     error: data.error
   };
 }

@@ -93,8 +93,8 @@ export class ToolRegistry {
         const toolDef: ToolDefinition = {
           name: cmd.name,
           description: cmd.description,
-          category: cmd.category,
-          parameters: cmd.params
+          category: 'command',  // All commands are category 'command'
+          parameters: cmd.params || {}
         };
         this.tools.set(cmd.name, toolDef);
       }
@@ -210,7 +210,7 @@ export class ToolRegistry {
     // Handle specific command patterns
     if (toolName === 'list' && result.commands) {
       return result.commands
-        .map((cmd: any) => `${cmd.name} - ${cmd.description} [${cmd.category}]`)
+        .map((cmd: any) => `${cmd.name} - ${cmd.description}`)
         .join('\n');
     }
 

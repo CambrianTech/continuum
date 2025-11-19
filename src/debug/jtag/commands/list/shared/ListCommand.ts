@@ -22,8 +22,8 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
   async execute(params: JTAGPayload): Promise<ListResult> {
     const listParams = params as ListParams;
     const env = this.context.environment;
-    
-    console.log(`📋 ${env.toUpperCase()}: Listing available commands (category: ${listParams.category ?? 'all'})`);
+
+    console.log(`📋 ${env.toUpperCase()}: Listing available commands`);
 
     try {
       // Get commands from CommandDaemon
@@ -32,30 +32,12 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
 
       // Convert CommandDaemon commands to CommandSignature format
       for (const [commandName, command] of availableCommands.entries()) {
-        // Determine category based on command name or implementation
-        let category: 'browser' | 'server' | 'system' = env === 'browser' ? 'browser' : 'server';
-
-        // Override category based on command characteristics
-        if (commandName.includes('file/') || commandName.includes('compile-')) {
-          category = 'server';
-        } else if (commandName.includes('screenshot') || commandName.includes('click') || commandName.includes('navigate')) {
-          category = 'browser';
-        } else if (commandName.includes('list') || commandName.includes('health')) {
-          category = 'system';
-        }
-
-        // Filter by category if specified
-        if (listParams.category && listParams.category !== 'all' && category !== listParams.category) {
-          continue;
-        }
-
         // Get user-facing parameters (exclude framework injection params)
         const userParams = this.extractUserFacingParams(commandName);
 
         const signature: CommandSignature = {
           name: commandName,
-          description: userParams.description || `${commandName} command - ${category} operation`,
-          category,
+          description: userParams.description || `${commandName} command`,
           params: userParams.params,
           returns: {
             success: { type: 'boolean', description: 'Operation success status' }
@@ -223,7 +205,6 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
       'list': {
         description: 'List all available commands with their signatures',
         params: {
-          category: { type: 'string', required: false, description: 'Filter by category: browser, server, system, or all' },
           includeDescription: { type: 'boolean', required: false, description: 'Include descriptions' },
           includeSignature: { type: 'boolean', required: false, description: 'Include parameter signatures' }
         }
@@ -234,7 +215,6 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
         params: {
           filter: { type: 'string', required: false, description: 'Filter to specific command path (e.g., "ai" shows ai/*)' },
           showDescriptions: { type: 'boolean', required: false, description: 'Show command descriptions alongside names' },
-          showCategories: { type: 'boolean', required: false, description: 'Show command categories [browser, server, system]' },
           maxDepth: { type: 'number', required: false, description: 'Maximum depth to display (1 = top level only, 2 = one level deep, etc.)' }
         }
       }

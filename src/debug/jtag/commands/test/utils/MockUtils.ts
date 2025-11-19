@@ -31,7 +31,6 @@ export function createMockCommandSignature(
   return {
     name,
     description,
-    category: 'system',
     params: {
       testParam: {
         type: 'string',

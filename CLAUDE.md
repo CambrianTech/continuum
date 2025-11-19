@@ -86,9 +86,113 @@ GROK_ID=$(./jtag data/list --collection=users | jq -r '.data[] | select(.display
 
 ---
 
+## 🔧 GIT WORKFLOW: STASH FIRST, NEVER REVERT
+
+**The correct git workflow: STASH → TEST → COMMIT or UNSTASH**
+
+### Use git stash, NOT git checkout/revert
+
+**WRONG (destroys your work)**:
+```bash
+# Made changes, something broke
+git checkout HEAD -- file.ts  # ❌ DESTROYS YOUR CHANGES FOREVER
+git revert <commit>           # ❌ Creates messy revert commits
+```
+
+**CORRECT (preserves your work)**:
+```bash
+# Made changes, want to test clean state
+git stash                     # ✅ Saves changes temporarily
+npm start && ./jtag ping      # Test clean state
+
+# If clean state works, your changes broke it:
+git stash pop                 # Restore your changes
+# Debug and fix
+
+# If clean state is also broken, it wasn't your changes:
+git stash pop                 # Restore your changes, continue working
+```
+
+### Complete stash workflow
+
+```bash
+# 1. Save current work
+git stash push -m "WIP: image autonomy changes"
+
+# 2. Verify clean state
+npm start && sleep 120
+./jtag ping
+
+# 3. Decision point:
+# If broken in clean state: Not your fault
+git stash pop  # Restore work, investigate system issue
+
+# If working in clean state: Your changes broke it
+git stash pop  # Restore work
+git diff       # See what you changed
+# Fix the issue
+
+# 4. When ready to try again:
+# Edit files
+npm start && sleep 120
+# Test
+
+# 5. Only commit when verified working
+git add .
+git commit -m "fix: ..."
+```
+
+### View and manage stashes
+
+```bash
+# List all stashes
+git stash list
+
+# Show what's in a stash
+git stash show -p stash@{0}
+
+# Apply stash without removing it
+git stash apply
+
+# Apply specific stash
+git stash apply stash@{1}
+
+# Drop a stash you don't need
+git stash drop stash@{0}
+
+# Clear all stashes (careful!)
+git stash clear
+```
+
+### Why stash > revert
+
+1. **Non-destructive**: Your work is saved, not deleted
+2. **Reversible**: Can pop/apply/drop stashes freely
+3. **Clean history**: No "revert X" commits polluting git log
+4. **Fast**: Stash/pop is instant, revert requires commit
+5. **Multiple stashes**: Can save multiple WIP states
+
+### When to use git reset (advanced)
+
+**ONLY use reset if you committed too early**:
+```bash
+# Made commit, but tests fail
+git reset --soft HEAD~1   # Undo commit, keep changes staged
+# Fix issues
+git add .
+git commit -m "fix: corrected version"
+
+# OR keep changes unstaged:
+git reset HEAD~1          # Undo commit, unstage changes
+```
+
+**NEVER use `git reset --hard`** (destroys work permanently)
+
+---
+
 ## 🚫 CRITICAL: NEVER COMMIT BEFORE TESTING
 
-**The iron rule of development: TEST → VERIFY → COMMIT**
+**The iron rule of development: STASH → TEST → VERIFY → COMMIT**
 
 ### What Went Wrong (2025-11-18 - Lesson Learned)
 

@@ -153,13 +153,7 @@ async function main() {
     }
     
     const [command, ...rawParams] = commandArgs;
-    
-    // Handle help command specially (for fresh AIs)
-    if (command === 'help') {
-      displayHelp();
-      process.exit(0);
-    }
-    
+
     // Parse parameters into object format
     const params: Record<string, string | boolean | number> = {};
     let i = 0;

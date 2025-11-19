@@ -15,6 +15,8 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ToolRegistry } from '../../../tools/server/ToolRegistry';
 import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Parsed tool call from AI response
@@ -49,6 +51,8 @@ export interface ToolResult {
  * PersonaToolExecutor - Clean tool execution via ToolRegistry
  */
 export class PersonaToolExecutor {
+  private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/system/logs/cognition.log');
+
   private personaId: UUID;
   private personaName: string;
   private toolRegistry: ToolRegistry;
@@ -57,6 +61,15 @@ export class PersonaToolExecutor {
     this.personaId = personaId;
     this.personaName = personaName;
     this.toolRegistry = ToolRegistry.getInstance();
+  }
+
+  /**
+   * Log to dedicated cognition file (separate from main logs)
+   */
+  private static logToCognitionFile(message: string): void {
+    const timestamp = new Date().toISOString();
+    const logLine = `[${timestamp}] ${message}\n`;
+    fs.appendFileSync(PersonaToolExecutor.COGNITION_LOG_PATH, logLine, 'utf8');
   }
 
   /**
@@ -120,6 +133,7 @@ export class PersonaToolExecutor {
     }
 
     console.log(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
+    PersonaToolExecutor.logToCognitionFile(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
     const results: string[] = [];
     const allMedia: MediaItem[] = [];
@@ -128,6 +142,7 @@ export class PersonaToolExecutor {
       const startTime = Date.now();
 
       console.log(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName}`, toolCall.parameters);
+      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(toolCall.parameters)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
       // NO try-catch - let exceptions bubble to PersonaResponseGenerator
@@ -149,6 +164,7 @@ export class PersonaToolExecutor {
       const duration = Date.now() - startTime;
 
       console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
+      PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Check if THIS persona wants media
       if (result.media && context.personaConfig.autoLoadMedia) {

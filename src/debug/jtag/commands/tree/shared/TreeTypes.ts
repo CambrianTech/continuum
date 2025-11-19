@@ -27,12 +27,6 @@ export interface TreeParams extends JTAGPayload {
   showDescriptions?: boolean;
 
   /**
-   * Show command categories [browser, server, system]
-   * @default false
-   */
-  showCategories?: boolean;
-
-  /**
    * Maximum depth to display (1 = top level only, 2 = one level deep, etc.)
    * Omit for unlimited depth
    */
@@ -54,9 +48,6 @@ export interface TreeNode {
 
   /** Command description (if isCommand=true) */
   description?: string;
-
-  /** Command category (if isCommand=true) */
-  category?: 'browser' | 'server' | 'system';
 
   /** Child nodes */
   children: TreeNode[];
