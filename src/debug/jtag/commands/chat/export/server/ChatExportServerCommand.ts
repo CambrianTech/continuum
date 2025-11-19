@@ -239,11 +239,12 @@ export class ChatExportServerCommand extends ChatExportCommand {
       lines.push(msg.content.text);
       lines.push('');
 
-      // Attachments
-      if (msg.content.attachments && msg.content.attachments.length > 0) {
-        lines.push('**Attachments:**');
-        for (const attachment of msg.content.attachments) {
-          lines.push(`- ${attachment.name || attachment.type}`);
+      // Media attachments
+      if (msg.content.media && msg.content.media.length > 0) {
+        lines.push('**Media:**');
+        for (const mediaItem of msg.content.media) {
+          const label = mediaItem.filename ?? mediaItem.alt ?? mediaItem.type;
+          lines.push(`- ${label}`);
         }
         lines.push('');
       }

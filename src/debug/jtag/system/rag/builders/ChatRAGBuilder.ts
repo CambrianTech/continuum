@@ -345,21 +345,21 @@ ${toolRegistry.generateToolDocumentation()}`;
       const artifacts: RAGArtifact[] = [];
 
       for (const msg of messages) {
-        if (msg.content?.attachments && msg.content.attachments.length > 0) {
-          for (const attachment of msg.content.attachments) {
-            // Handle different attachment formats
+        if (msg.content?.media && msg.content.media.length > 0) {
+          for (const mediaItem of msg.content.media) {
+            // Handle different media formats
             const artifact: RAGArtifact = {
-              type: this.detectArtifactType(attachment),
-              url: attachment.url,
-              base64: attachment.base64 ?? attachment.data,
-              content: attachment.content,
+              type: this.detectArtifactType(mediaItem),
+              url: mediaItem.url,
+              base64: mediaItem.base64,
+              content: mediaItem.description ?? mediaItem.alt,
               metadata: {
                 messageId: msg.id,
                 senderName: msg.senderName,
                 timestamp: msg.timestamp,
-                filename: attachment.filename,
-                mimeType: attachment.mimeType ?? attachment.type,
-                size: attachment.size
+                filename: mediaItem.filename,
+                mimeType: mediaItem.mimeType ?? mediaItem.type,
+                size: mediaItem.size
               }
             };
 

@@ -44,7 +44,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     messageEntity.senderType = sender.entity.type;
     messageEntity.content = {
       text: params.message,
-      attachments: []
+      media: []
     };
     messageEntity.status = 'sent';
     messageEntity.priority = 'normal';

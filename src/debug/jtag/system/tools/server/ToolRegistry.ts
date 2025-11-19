@@ -18,6 +18,7 @@
 import { Commands } from '../../core/shared/Commands';
 import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { MediaItem } from '../../data/entities/ChatMessageEntity';
 
 /**
  * Tool metadata for AI consumption
@@ -35,12 +36,13 @@ export interface ToolDefinition {
 }
 
 /**
- * Tool execution result
+ * Tool execution result with structured media support
  */
 export interface ToolExecutionResult {
   toolName: string;
   success: boolean;
   content?: string;
+  media?: MediaItem[];  // Structured media from command results
   error?: string;
 }
 
@@ -185,13 +187,19 @@ export class ToolRegistry {
       };
     }
 
+    // Extract media if present (screenshot, file/read, etc.)
+    const media: MediaItem[] | undefined = result.media
+      ? (Array.isArray(result.media) ? result.media : [result.media])
+      : undefined;
+
     // Format result based on command type
     const content = this.formatToolResult(toolName, result);
 
     return {
       toolName,
       success: true,
-      content
+      content,
+      media  // ← Preserve structured media
     };
   }
 

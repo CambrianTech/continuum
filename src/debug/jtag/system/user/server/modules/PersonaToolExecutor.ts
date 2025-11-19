@@ -13,6 +13,8 @@
 import { CognitionLogger } from './cognition/CognitionLogger';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ToolRegistry } from '../../../tools/server/ToolRegistry';
+import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
+import type { PersonaMediaConfig } from './PersonaMediaConfig';
 
 /**
  * Parsed tool call from AI response
@@ -23,12 +25,23 @@ export interface ToolCall {
 }
 
 /**
- * Tool execution result
+ * Tool execution context with media configuration
+ */
+export interface ToolExecutionContext {
+  personaId: UUID;
+  personaName: string;
+  contextId: UUID;
+  personaConfig: PersonaMediaConfig;
+}
+
+/**
+ * Tool execution result with structured media
  */
 export interface ToolResult {
   toolName: string;
   success: boolean;
   content?: string;
+  media?: MediaItem[];  // Structured media from tool execution
   error?: string;
 }
 
@@ -89,14 +102,27 @@ export class PersonaToolExecutor {
   }
 
   /**
-   * Execute tool calls and return formatted results
+   * Execute tool calls and return formatted results + optional media
+   *
+   * @param toolCalls - Array of parsed tool calls
+   * @param context - Execution context with media configuration
+   * @returns Object with formatted text results and optional media array
    */
-  async executeToolCalls(toolCalls: ToolCall[], contextId: UUID): Promise<string> {
-    if (toolCalls.length === 0) return '';
+  async executeToolCalls(
+    toolCalls: ToolCall[],
+    context: ToolExecutionContext
+  ): Promise<{
+    formattedResults: string;
+    media?: MediaItem[];
+  }> {
+    if (toolCalls.length === 0) {
+      return { formattedResults: '' };
+    }
 
     console.log(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
     const results: string[] = [];
+    const allMedia: MediaItem[] = [];
 
     for (const toolCall of toolCalls) {
       const startTime = Date.now();
@@ -109,19 +135,35 @@ export class PersonaToolExecutor {
       const registryResult = await this.toolRegistry.executeTool(
         toolCall.toolName,
         toolCall.parameters,
-        contextId
+        context.contextId
       );
 
       const result: ToolResult = {
         toolName: registryResult.toolName,
         success: registryResult.success,
         content: registryResult.content,
+        media: registryResult.media,  // ← Preserve structured media
         error: registryResult.error
       };
 
       const duration = Date.now() - startTime;
 
       console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
+
+      // Check if THIS persona wants media
+      if (result.media && context.personaConfig.autoLoadMedia) {
+        // Filter by supported types
+        const supportedMedia = result.media.filter(m =>
+          context.personaConfig.supportedMediaTypes.includes(m.type)
+        );
+
+        if (supportedMedia.length > 0) {
+          console.log(`📸 ${this.personaName}: [MEDIA] Loading ${supportedMedia.length} media item(s) (types: ${supportedMedia.map(m => m.type).join(', ')})`);
+          allMedia.push(...supportedMedia);
+        }
+      } else if (result.media && result.media.length > 0) {
+        console.log(`🚫 ${this.personaName}: [MEDIA] Skipping ${result.media.length} media item(s) (autoLoadMedia=false)`);
+      }
 
       // Log tool execution to cognition database (for interrogation)
       await CognitionLogger.logToolExecution(
@@ -132,20 +174,24 @@ export class PersonaToolExecutor {
         result.success ? 'success' : 'error',
         duration,
         'chat',  // Domain
-        contextId,
+        context.contextId,
         {
           toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
           errorMessage: result.error
         }
       );
 
+      // Always include text description (for non-vision AIs or logging)
       results.push(this.formatToolResult(result));
     }
 
     const successCount = results.filter(r => r.includes('<status>success</status>')).length;
-    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful`);
+    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media item(s) loaded`);
 
-    return results.join('\n\n');
+    return {
+      formattedResults: results.join('\n\n'),
+      media: allMedia.length > 0 ? allMedia : undefined
+    };
   }
 
   /**

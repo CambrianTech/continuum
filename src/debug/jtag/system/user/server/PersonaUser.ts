@@ -92,6 +92,7 @@ import type { Task, Plan } from './modules/cognition/reasoning/types';
 import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
+import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -109,6 +110,9 @@ export class PersonaUser extends AIUser {
 
   // AI model configuration (provider, model, temperature, etc.)
   private modelConfig: ModelConfig;
+
+  // Media configuration (opt-in for images/audio/video)
+  public mediaConfig: PersonaMediaConfig;
 
   // Rate limiting module (TODO: Replace with AI-based coordination when ThoughtStream is solid)
   private rateLimiter: RateLimiter;
@@ -170,7 +174,10 @@ export class PersonaUser extends AIUser {
       maxTokens: 150
     };
 
-    console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}`);
+    // Extract mediaConfig from entity, default to opt-out (no auto-loading)
+    this.mediaConfig = (entity as any).mediaConfig || DEFAULT_MEDIA_CONFIG;
+
+    console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}, autoLoadMedia=${this.mediaConfig.autoLoadMedia}`);
 
     // Initialize rate limiter (TODO: Replace with AI-based coordination)
     this.rateLimiter = new RateLimiter({
@@ -258,7 +265,8 @@ export class PersonaUser extends AIUser {
       entity: this.entity,
       modelConfig: this.modelConfig,
       client,
-      toolExecutor: this.toolExecutor
+      toolExecutor: this.toolExecutor,
+      mediaConfig: this.mediaConfig
     });
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, and cognition system (workingMemory, selfState, planFormulator)`);

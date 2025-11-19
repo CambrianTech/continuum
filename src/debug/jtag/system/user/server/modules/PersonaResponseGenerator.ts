@@ -39,6 +39,7 @@ import {
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
+import type { PersonaMediaConfig } from './PersonaMediaConfig';
 
 /**
  * Response generation result
@@ -60,6 +61,7 @@ export interface PersonaResponseGeneratorConfig {
   modelConfig: ModelConfig;
   client?: JTAGClient;
   toolExecutor: PersonaToolExecutor;
+  mediaConfig: PersonaMediaConfig;
 }
 
 /**
@@ -72,6 +74,7 @@ export class PersonaResponseGenerator {
   private modelConfig: ModelConfig;
   private client?: JTAGClient;
   private toolExecutor: PersonaToolExecutor;
+  private mediaConfig: PersonaMediaConfig;
 
   constructor(config: PersonaResponseGeneratorConfig) {
     this.personaId = config.personaId;
@@ -80,6 +83,7 @@ export class PersonaResponseGenerator {
     this.modelConfig = config.modelConfig;
     this.client = config.client;
     this.toolExecutor = config.toolExecutor;
+    this.mediaConfig = config.mediaConfig;
   }
 
   /**
@@ -469,8 +473,18 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           console.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Found ${toolCalls.length} tool call(s), iteration ${toolIterations + 1}/${MAX_TOOL_ITERATIONS}`);
           toolIterations++;
 
-          // Execute tool calls via adapter
-          const toolResults = await this.toolExecutor.executeToolCalls(toolCalls, originalMessage.roomId);
+          // Execute tool calls via adapter with media configuration
+          const toolExecutionContext = {
+            personaId: this.personaId,
+            personaName: this.personaName,
+            contextId: originalMessage.roomId,
+            personaConfig: this.mediaConfig
+          };
+
+          const { formattedResults: toolResults, media: toolMedia } = await this.toolExecutor.executeToolCalls(
+            toolCalls,
+            toolExecutionContext
+          );
 
           // Strip tool blocks from response to get explanation text
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
@@ -487,10 +501,32 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             ? `\n\n⚠️ IMPORTANT: ${failedTools.length} tool(s) FAILED. You MUST mention these failures in your response and explain what went wrong. Do NOT retry the same failed command without changing your approach.\n`
             : '';
 
-          const toolResultsMessage: ChatMessage = {
-            role: 'user' as const,
-            content: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
-          };
+          // Build tool results message with optional media
+          const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
+            ? {
+                role: 'user' as const,
+                content: [
+                  {
+                    type: 'text',
+                    text: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
+                  },
+                  ...toolMedia.map(m => {
+                    if (m.type === 'image') {
+                      return { type: 'image' as const, image: m };
+                    } else if (m.type === 'audio') {
+                      return { type: 'audio' as const, audio: m };
+                    } else if (m.type === 'video') {
+                      return { type: 'video' as const, video: m };
+                    }
+                    // Fallback: treat as image if type is unclear
+                    return { type: 'image' as const, image: m };
+                  })
+                ]
+              }
+            : {
+                role: 'user' as const,
+                content: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
+              };
 
           // Regenerate response with tool results
           console.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
@@ -638,7 +674,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       responseMessage.senderId = this.personaId;
       responseMessage.senderName = this.personaName;
       responseMessage.senderType = this.entity.type; // Denormalize from UserEntity (persona)
-      responseMessage.content = { text: aiResponse.text.trim(), attachments: [] };
+      responseMessage.content = { text: aiResponse.text.trim(), media: [] };
       responseMessage.status = 'sent';
       responseMessage.priority = 'normal';
       responseMessage.timestamp = new Date();

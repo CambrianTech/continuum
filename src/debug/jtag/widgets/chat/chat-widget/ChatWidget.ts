@@ -620,7 +620,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     messageEntity.senderId = DEFAULT_USERS.HUMAN as UUID;
     messageEntity.senderName = 'Joel';
     messageEntity.senderType = 'human'; // Denormalized user type (human messages from UI)
-    messageEntity.content = { text: content, attachments: [] };
+    messageEntity.content = { text: content, media: [] };
     messageEntity.status = 'sent'; // Message is sent when saved to DB
     messageEntity.priority = 'normal';
     messageEntity.timestamp = new Date();

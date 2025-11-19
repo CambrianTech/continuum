@@ -29,45 +29,63 @@ export class WebSearchServerCommand extends CommandBase<WebSearchParams, WebSear
 
       // Encode query for URL
       const encodedQuery = encodeURIComponent(searchParams.query);
-      const url = `https://duckduckgo.com/html/?q=${encodedQuery}`;
+      const url = `https://www.google.com/search?q=${encodedQuery}&num=${maxResults}`;
 
-      // Fetch with proper headers to avoid bot detection
+      // Fetch with proper headers to look like a real browser
       const response = await fetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1'
         },
         redirect: 'follow'
       });
 
       if (!response.ok) {
-        throw new Error(`DuckDuckGo returned ${response.status}`);
+        throw new Error(`Google returned ${response.status}`);
       }
 
       const html = await response.text();
       const results: SearchResult[] = [];
 
-      // Parse DuckDuckGo HTML results
-      // DuckDuckGo structure: <div class="result">
-      const resultRegex = /<div class="result[^"]*"[\s\S]*?<\/div>/g;
-      const matches = html.matchAll(resultRegex);
+      // Parse Google search results
+      // Google structure: <div class="g"> or <div data-sokoban-container>
+      // Look for divs containing search results
+      const resultDivRegex = /<div[^>]*class="[^"]*\bg\b[^"]*"[^>]*>[\s\S]*?<\/div>/g;
+      const matches = html.matchAll(resultDivRegex);
 
       for (const match of matches) {
         const resultHtml = match[0];
 
-        // Extract title from result__a class
-        const titleMatch = resultHtml.match(/<a[^>]*class="result__a"[^>]*>(.*?)<\/a>/);
+        // Extract title from <h3> tag
+        const titleMatch = resultHtml.match(/<h3[^>]*>(.*?)<\/h3>/s);
         const title = titleMatch ? this.stripHtml(titleMatch[1]) : '';
 
-        // Extract URL from result__url or uddg parameter
-        const urlMatch = resultHtml.match(/<a[^>]*href="\/\/duckduckgo\.com\/l\/\?uddg=([^"&]*)/)
-          || resultHtml.match(/<a[^>]*href="([^"]*)"[^>]*class="result__url"/);
-        let resultUrl = urlMatch ? decodeURIComponent(urlMatch[1]) : '';
+        // Extract URL from href in <a> tag
+        const urlMatch = resultHtml.match(/<a[^>]*href="([^"]*)"[^>]*>/);
+        let resultUrl = urlMatch ? urlMatch[1] : '';
 
-        // Extract snippet
-        const snippetMatch = resultHtml.match(/<span class="result__snippet"[^>]*>(.*?)<\/span>/);
-        const snippet = snippetMatch ? this.stripHtml(snippetMatch[1]) : '';
+        // Google URLs are sometimes /url?q=actual_url format
+        if (resultUrl.startsWith('/url?q=')) {
+          const actualUrl = resultUrl.match(/\/url\?q=([^&]*)/);
+          if (actualUrl) {
+            resultUrl = decodeURIComponent(actualUrl[1]);
+          }
+        }
+
+        // Skip Google's internal links
+        if (!resultUrl || resultUrl.startsWith('/') || resultUrl.includes('google.com/search')) {
+          continue;
+        }
+
+        // Extract snippet from <div> with specific class patterns
+        const snippetMatch = resultHtml.match(/<div[^>]*class="[^"]*\b(VwiC3b|s3v9rd|st)\b[^"]*"[^>]*>(.*?)<\/div>/s)
+          || resultHtml.match(/<span[^>]*class="[^"]*\bst\b[^"]*"[^>]*>(.*?)<\/span>/s);
+        const snippet = snippetMatch ? this.stripHtml(snippetMatch[2]) : '';
 
         if (title && resultUrl) {
           // Extract domain
