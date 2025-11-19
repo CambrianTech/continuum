@@ -73,7 +73,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
             data-loaded="false"
             data-width="${mediaItem.width ?? ''}"
             data-height="${mediaItem.height ?? ''}"
-            style="display: none;"
+            style="display: block; max-width: 100%; height: auto;"
           />
           <div class="image-error" style="display: none;">
             <span class="error-icon">🖼️</span>

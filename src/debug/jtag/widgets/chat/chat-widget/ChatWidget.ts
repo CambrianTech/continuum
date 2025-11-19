@@ -94,6 +94,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         </div>
       `;
 
+      // Initialize adapter content loading (e.g., image load handlers)
+      if (adapter && adapter.handleContentLoading) {
+        const contentDiv = messageElement.querySelector('.message-content');
+        if (contentDiv) {
+          adapter.handleContentLoading(contentDiv as HTMLElement).catch((err) => {
+            console.error('Failed to handle content loading:', err);
+          });
+        }
+      }
+
       return messageElement;
     };
   }
