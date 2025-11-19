@@ -155,6 +155,24 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         });
       }
 
+      // Validate max_tokens doesn't exceed context window
+      const modelInfo = this.config.models?.find(m => m.id === model);
+      const contextWindow = modelInfo?.contextWindow || 8192; // Default to conservative 8K
+
+      // Estimate input tokens (rough: 1 token ~= 4 chars)
+      const messagesText = messages.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ');
+      const estimatedInputTokens = Math.ceil(messagesText.length / 4);
+
+      // Calculate available tokens for output
+      const availableOutputTokens = contextWindow - estimatedInputTokens - 100; // Reserve 100 for formatting overhead
+
+      // Cap max_tokens to fit within context window
+      let adjustedMaxTokens = request.maxTokens;
+      if (availableOutputTokens < (request.maxTokens || 0)) {
+        adjustedMaxTokens = Math.max(100, availableOutputTokens); // Minimum 100 tokens output
+        console.warn(`⚠️  ${this.providerName} (${model}): Requested ${request.maxTokens} output tokens, but only ${availableOutputTokens} available (context: ${contextWindow}, input: ${estimatedInputTokens}). Capping to ${adjustedMaxTokens}.`);
+      }
+
       // Make API request
       const response = await this.makeRequest<any>('/v1/chat/completions', {
         method: 'POST',
@@ -166,7 +184,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
           model,
           messages,
           temperature: request.temperature ?? 0.7,
-          max_tokens: request.maxTokens,
+          max_tokens: adjustedMaxTokens,
           top_p: request.topP,
           stop: request.stopSequences,
           stream: false,
