@@ -59,27 +59,18 @@ export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
             description: `Get help documentation for a specific command.
 
 TOOL FORMAT (use this XML structure for ALL commands):
-<tool_use>
-<tool_name>command/name</tool_name>
-<parameters>
+<tool name="command/name">
 <paramName>value</paramName>
-</parameters>
-</tool_use>
+</tool>
 
 Example with parameters:
-<tool_use>
-<tool_name>code/read</tool_name>
-<parameters>
+<tool name="code/read">
 <path>system/tools/server/ToolRegistry.ts</path>
-</parameters>
-</tool_use>
+</tool>
 
 Example without parameters:
-<tool_use>
-<tool_name>list</tool_name>
-<parameters>
-</parameters>
-</tool_use>
+<tool name="list">
+</tool>
 
 To see a specific command's parameters: help --commandName="command/name"
 To see all available commands: list`,
@@ -126,11 +117,8 @@ To see all available commands: list`,
 
       const usageExample = `
 USAGE:
-<tool_use>
-<tool_name>${commandName}</tool_name>
-<parameters>${paramsExample}
-</parameters>
-</tool_use>`;
+<tool name="${commandName}">${paramsExample}
+</tool>`;
 
       // Enhance description with usage example
       const enhancedSchema = {

@@ -318,8 +318,8 @@ export class ToolRegistry {
     }).join('\n\n');
 
     return `AVAILABLE TOOLS:
-Format: <tool_use><tool_name>name</tool_name><parameters><param>value</param></parameters></tool_use>
-Run "help" or "list" commands first to see correct parameter names.
+Format: <tool name="command/name"><param>value</param></tool>
+Run "help" or "list" to see command parameters.
 
 ${toolDescriptions}`;
   }

@@ -75,38 +75,28 @@ export class PersonaToolExecutor {
 
   /**
    * Parse tool calls from AI response text
-   * Extracts <tool_use> XML blocks
+   * Extracts <tool name="..."> XML blocks
    */
   parseToolCalls(responseText: string): ToolCall[] {
     const toolCalls: ToolCall[] = [];
 
-    // Match <tool_use>...</tool_use> blocks
-    const toolUseRegex = /<tool_use>(.*?)<\/tool_use>/gs;
-    const matches = responseText.matchAll(toolUseRegex);
+    // Match <tool name="...">...</tool> blocks
+    const toolRegex = /<tool\s+name="([^"]+)">(.*?)<\/tool>/gs;
+    const matches = responseText.matchAll(toolRegex);
 
     for (const match of matches) {
-      const toolBlock = match[1];
+      const toolName = match[1].trim();
+      const toolBlock = match[2];
 
-      // Extract tool_name
-      const toolNameMatch = toolBlock.match(/<tool_name>(.*?)<\/tool_name>/s);
-      if (!toolNameMatch) continue;
-      const toolName = toolNameMatch[1].trim();
-
-      // Extract parameters
+      // Extract parameters - direct children tags
       const parameters: Record<string, string> = {};
-      const parametersMatch = toolBlock.match(/<parameters>(.*?)<\/parameters>/s);
-      if (parametersMatch) {
-        const paramsBlock = parametersMatch[1];
+      const paramRegex = /<(\w+)>(.*?)<\/\1>/gs;
+      const paramMatches = toolBlock.matchAll(paramRegex);
 
-        // Extract individual parameter tags
-        const paramRegex = /<(\w+)>(.*?)<\/\1>/gs;
-        const paramMatches = paramsBlock.matchAll(paramRegex);
-
-        for (const paramMatch of paramMatches) {
-          const paramName = paramMatch[1];
-          const paramValue = paramMatch[2].trim();
-          parameters[paramName] = paramValue;
-        }
+      for (const paramMatch of paramMatches) {
+        const paramName = paramMatch[1];
+        const paramValue = paramMatch[2].trim();
+        parameters[paramName] = paramValue;
       }
 
       toolCalls.push({ toolName, parameters });
@@ -242,7 +232,7 @@ ${result.error || 'Unknown error'}
    * Strip tool blocks from response text to get clean user-facing message
    */
   stripToolBlocks(responseText: string): string {
-    return responseText.replace(/<tool_use>.*?<\/tool_use>/gs, '').trim();
+    return responseText.replace(/<tool\s+name="[^"]+">.*?<\/tool>/gs, '').trim();
   }
 
   /**
