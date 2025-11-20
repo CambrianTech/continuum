@@ -24,6 +24,21 @@ export class GitIssueCreateServerCommand extends CommandBase<GitIssueCreateParam
   async execute(params: JTAGPayload): Promise<GitIssueCreateResult> {
     const createParams = params as GitIssueCreateParams;
 
+    // Validate required parameters
+    if (!createParams.title) {
+      return transformPayload(createParams, {
+        success: false,
+        error: 'Missing required parameter: title'
+      });
+    }
+
+    if (!createParams.body) {
+      return transformPayload(createParams, {
+        success: false,
+        error: 'Missing required parameter: body'
+      });
+    }
+
     try {
       // Validate environment
       const validation = await this.validateGitEnvironment();
