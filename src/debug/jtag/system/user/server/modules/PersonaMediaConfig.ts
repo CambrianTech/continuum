@@ -27,7 +27,7 @@ export interface PersonaMediaConfig {
    * Supported media types for this persona
    * @default ['image', 'audio', 'video', 'file', 'document']
    */
-  supportedMediaTypes: MediaType[];
+  supportedMediaTypes: readonly MediaType[];
 }
 
 /**

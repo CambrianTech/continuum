@@ -173,7 +173,7 @@ export class PersonaUser extends AIUser {
 
     // Extract modelConfig from entity (stored via Object.assign during creation)
     // Default to Ollama if not configured
-    this.modelConfig = (entity as any).modelConfig || {
+    this.modelConfig = entity.modelConfig || {
       provider: 'ollama',
       model: 'llama3.2:3b',
       temperature: 0.7,
@@ -181,7 +181,10 @@ export class PersonaUser extends AIUser {
     };
 
     // Extract mediaConfig from entity, default to opt-out (no auto-loading)
-    this.mediaConfig = (entity as any).mediaConfig || DEFAULT_MEDIA_CONFIG;
+    // Merge with defaults to ensure all required fields are present
+    this.mediaConfig = entity.mediaConfig
+      ? { ...DEFAULT_MEDIA_CONFIG, ...entity.mediaConfig }
+      : DEFAULT_MEDIA_CONFIG;
 
     console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}, autoLoadMedia=${this.mediaConfig.autoLoadMedia}`);
 
