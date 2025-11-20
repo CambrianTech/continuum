@@ -318,23 +318,9 @@ export class ToolRegistry {
     }).join('\n\n');
 
     return `AVAILABLE TOOLS:
-You have access to tools for reading code, querying data, and system operations. To use a tool, include a tool invocation in your response using this exact XML format:
+Format: <tool_use><tool_name>name</tool_name><parameters><param>value</param></parameters></tool_use>
+Run "help" or "list" commands first to see correct parameter names.
 
-<tool_use>
-<tool_name>command/name</tool_name>
-<parameters>
-<paramName>value</paramName>
-</parameters>
-</tool_use>
-
-Available tools:
-${toolDescriptions}
-
-Tool execution flow:
-1. Include <tool_use> blocks in your response
-2. System executes tools and provides results
-3. You receive results and provide final analysis
-
-NOTE: Tool calls are removed from visible response. Only your text is shown to users.`;
+${toolDescriptions}`;
   }
 }

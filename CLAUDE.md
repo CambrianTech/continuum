@@ -874,7 +874,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # STEP 1: Ask a question in the general room (no room ID needed!)
-./jtag debug/chat-send --room="general" --message="How should I implement connection pooling for websockets?"
+./jtag chat/send --room="general" --message="How should I implement connection pooling for websockets?"
 
 # STEP 2: Wait 5-10 seconds for responses
 
@@ -888,7 +888,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # 1. Send your question and capture the message ID
-MESSAGE_ID=$(./jtag debug/chat-send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
+MESSAGE_ID=$(./jtag chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
 
 # 2. Wait for AI responses (they respond within 5-10 seconds)
 sleep 10

@@ -50,13 +50,39 @@ export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
     console.log(`📚 SERVER: Getting help for ${commandName}`);
 
     try {
-      // Special case: Help for help command itself
+      // Special case: Help for help command itself OR general tool format help
       if (commandName === 'help') {
         return createHelpResultFromParams(helpParams, {
           success: true,
           signature: {
             name: 'help',
-            description: 'Get help documentation for a specific command',
+            description: `Get help documentation for a specific command.
+
+TOOL FORMAT (use this XML structure for ALL commands):
+<tool_use>
+<tool_name>command/name</tool_name>
+<parameters>
+<paramName>value</paramName>
+</parameters>
+</tool_use>
+
+Example with parameters:
+<tool_use>
+<tool_name>code/read</tool_name>
+<parameters>
+<path>system/tools/server/ToolRegistry.ts</path>
+</parameters>
+</tool_use>
+
+Example without parameters:
+<tool_use>
+<tool_name>list</tool_name>
+<parameters>
+</parameters>
+</tool_use>
+
+To see a specific command's parameters: help --commandName="command/name"
+To see all available commands: list`,
             params: {
               commandName: {
                 type: 'string',
@@ -91,9 +117,30 @@ export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
         });
       }
 
+      // Generate exact XML format example for this command
+      const paramsExample = Object.keys(schema.params || {}).length > 0
+        ? '\n' + Object.entries(schema.params || {})
+            .map(([name, def]) => `<${name}>${def.description || 'value'}</${name}>`)
+            .join('\n')
+        : '';
+
+      const usageExample = `
+USAGE:
+<tool_use>
+<tool_name>${commandName}</tool_name>
+<parameters>${paramsExample}
+</parameters>
+</tool_use>`;
+
+      // Enhance description with usage example
+      const enhancedSchema = {
+        ...schema,
+        description: schema.description + usageExample
+      };
+
       return createHelpResultFromParams(helpParams, {
         success: true,
-        signature: schema
+        signature: enhancedSchema
       });
 
     } catch (error) {
