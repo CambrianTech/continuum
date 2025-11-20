@@ -95,6 +95,7 @@ import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
+import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 
@@ -170,6 +171,9 @@ export class PersonaUser extends AIUser {
 
   // Response generation module (extracted from PersonaUser)
   private responseGenerator: PersonaResponseGenerator;
+
+  // Message evaluation module (extracted from PersonaUser for modularity)
+  private messageEvaluator: PersonaMessageEvaluator;
 
   constructor(
     entity: UserEntity,
@@ -299,7 +303,10 @@ export class PersonaUser extends AIUser {
       getSessionId: () => this.sessionId  // Dynamically get sessionId (set during initialize())
     });
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, and cognition system (workingMemory, selfState, planFormulator)`);
+    // Message evaluation module (pass PersonaUser reference for dependency injection)
+    this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -1057,8 +1064,9 @@ export class PersonaUser extends AIUser {
 
   /**
    * Convert timestamp to number (handles Date, number, or undefined from JSON serialization)
+   * PUBLIC: Used by PersonaMessageEvaluator module
    */
-  private timestampToNumber(timestamp: Date | number | undefined): number {
+  timestampToNumber(timestamp: Date | number | undefined): number {
     if (timestamp === undefined) {
       return Date.now(); // Use current time if timestamp missing
     }
