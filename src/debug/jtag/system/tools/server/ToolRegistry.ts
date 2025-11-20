@@ -19,6 +19,32 @@ import { Commands } from '../../core/shared/Commands';
 import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
+import type { CommandParams, CommandResult } from '../../core/types/JTAGTypes';
+
+/**
+ * Type guard for command results that include a success field
+ * Many commands add success: boolean to their result type
+ */
+interface ResultWithSuccess {
+  success: boolean;
+  error?: string;
+}
+
+function hasSuccessField(result: CommandResult): result is CommandResult & ResultWithSuccess {
+  return 'success' in result && typeof (result as { success?: unknown }).success === 'boolean';
+}
+
+/**
+ * Type guard for command results that include media
+ * Some commands (screenshot, file/read, etc.) include media in their results
+ */
+interface ResultWithMedia {
+  media?: MediaItem | MediaItem[];
+}
+
+function hasMediaField(result: CommandResult): result is CommandResult & ResultWithMedia {
+  return 'media' in result;
+}
 
 /**
  * Tool metadata for AI consumption
@@ -139,6 +165,7 @@ export class ToolRegistry {
   async executeTool(
     toolName: string,
     parameters: Record<string, string>,
+    sessionId: UUID,  // SessionId of the tool executor (AI's own session for sandboxing)
     contextId: UUID
   ): Promise<ToolExecutionResult> {
     if (!this.hasTool(toolName)) {
@@ -177,9 +204,21 @@ export class ToolRegistry {
     }
 
     // Execute command via Commands.execute
-    const result: any = await Commands.execute(toolName as any, parsedParams as any);
+    // Pass sessionId explicitly to override auto-injected value (AI's own sessionId for sandboxing)
+    // Note: context (JTAGContext) is auto-injected by Commands.execute from global.__JTAG_CONTEXT__
+    // We only override sessionId to use the AI's own session for proper attribution
+    // Add contextId to parsedParams if command expects it (e.g., roomId for chat commands)
+    const commandParams = {
+      sessionId,  // Pass AI's sessionId for proper attribution
+      contextId,  // Some commands may use this (will be ignored if not needed)
+      ...parsedParams
+    };
 
-    if (!result.success) {
+    const result = await Commands.execute(toolName, commandParams);
+
+    // Check if command executed successfully (if result has success field)
+    // Not all commands have success field, so we check first with type guard
+    if (hasSuccessField(result) && !result.success) {
       return {
         toolName,
         success: false,
@@ -188,7 +227,8 @@ export class ToolRegistry {
     }
 
     // Extract media if present (screenshot, file/read, etc.)
-    const media: MediaItem[] | undefined = result.media
+    // Not all commands return media, so we check first with type guard
+    const media: MediaItem[] | undefined = hasMediaField(result) && result.media
       ? (Array.isArray(result.media) ? result.media : [result.media])
       : undefined;
 

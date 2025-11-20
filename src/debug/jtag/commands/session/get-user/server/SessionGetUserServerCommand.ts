@@ -9,7 +9,9 @@ import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-da
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload, JTAGMessageFactory } from '../../../../system/core/types/JTAGTypes';
 import type { SessionGetUserParams, SessionGetUserResult } from '../shared/SessionGetUserTypes';
-import type { GetSessionParams, GetSessionResult } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import type { GetSessionParams } from '../../../../daemons/session-daemon/shared/SessionTypes';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import { type GetSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
@@ -25,7 +27,7 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
 
     try {
       // Use targetSessionId if provided, otherwise use caller's sessionId
-      const lookupSessionId = getUserParams.targetSessionId || getUserParams.sessionId;
+      const lookupSessionId = getUserParams.targetSessionId ?? getUserParams.sessionId;
 
       // Get SessionDaemon to look up session metadata
       const sessionDaemon = this.commander.router.getSubscriber('session-daemon');
@@ -47,12 +49,21 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
       );
 
       // Call SessionDaemon to get session metadata
-      const sessionResponse = await sessionDaemon.handleMessage(sessionMessage) as GetSessionResult;
+      const sessionResponse = await sessionDaemon.handleMessage(sessionMessage) as GetSessionResult | SessionErrorResponse;
 
+      // Check if it's an error response
+      if ('error' in sessionResponse) {
+        return transformPayload(getUserParams, {
+          success: false,
+          error: sessionResponse.error
+        });
+      }
+
+      // Check if session was found
       if (!sessionResponse.success || !sessionResponse.session) {
         return transformPayload(getUserParams, {
           success: false,
-          error: sessionResponse.error || `Session not found: ${lookupSessionId}`
+          error: `Session not found: ${lookupSessionId}`
         });
       }
 

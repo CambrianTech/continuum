@@ -32,6 +32,7 @@ export interface ToolCall {
 export interface ToolExecutionContext {
   personaId: UUID;
   personaName: string;
+  sessionId: UUID;  // AI's own sessionId for sandboxed tool execution
   contextId: UUID;
   personaConfig: PersonaMediaConfig;
 }
@@ -150,6 +151,7 @@ export class PersonaToolExecutor {
       const registryResult = await this.toolRegistry.executeTool(
         toolCall.toolName,
         toolCall.parameters,
+        context.sessionId,  // Pass AI's sessionId for proper attribution
         context.contextId
       );
 

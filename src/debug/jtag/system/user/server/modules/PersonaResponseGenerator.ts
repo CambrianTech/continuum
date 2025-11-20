@@ -62,6 +62,7 @@ export interface PersonaResponseGeneratorConfig {
   client?: JTAGClient;
   toolExecutor: PersonaToolExecutor;
   mediaConfig: PersonaMediaConfig;
+  getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
 }
 
 /**
@@ -75,6 +76,7 @@ export class PersonaResponseGenerator {
   private client?: JTAGClient;
   private toolExecutor: PersonaToolExecutor;
   private mediaConfig: PersonaMediaConfig;
+  private getSessionId: () => UUID | null;
 
   constructor(config: PersonaResponseGeneratorConfig) {
     this.personaId = config.personaId;
@@ -84,6 +86,7 @@ export class PersonaResponseGenerator {
     this.client = config.client;
     this.toolExecutor = config.toolExecutor;
     this.mediaConfig = config.mediaConfig;
+    this.getSessionId = config.getSessionId;
   }
 
   /**
@@ -476,9 +479,15 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           toolIterations++;
 
           // Execute tool calls via adapter with media configuration
+          const sessionId = this.getSessionId();
+          if (!sessionId) {
+            throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
+          }
+
           const toolExecutionContext = {
             personaId: this.personaId,
             personaName: this.personaName,
+            sessionId,  // AI's own sessionId for sandboxed tool execution
             contextId: originalMessage.roomId,
             personaConfig: this.mediaConfig
           };

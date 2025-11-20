@@ -17,6 +17,7 @@ import { UserEntity } from '../../data/entities/UserEntity';
 import { UserStateEntity } from '../../data/entities/UserStateEntity';
 import type { IUserStateStorage } from '../storage/IUserStateStorage';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import { Commands } from '../../core/shared/Commands';
@@ -93,6 +94,7 @@ import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
+import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -104,6 +106,10 @@ export class PersonaUser extends AIUser {
   private eventsSubscribed: boolean = false;
   // Note: client is now in BaseUser as protected property, accessible via this.client
   // ArtifactsAPI access is through this.client.daemons.artifacts
+
+  // Session ID for this PersonaUser (sandboxed identity for tool execution)
+  // Generated once during initialization and registered with SessionDaemon
+  public sessionId: UUID | null = null;
 
   // Worker thread for parallel message evaluation
   private worker: PersonaWorkerThread | null = null;
@@ -266,7 +272,8 @@ export class PersonaUser extends AIUser {
       modelConfig: this.modelConfig,
       client,
       toolExecutor: this.toolExecutor,
-      mediaConfig: this.mediaConfig
+      mediaConfig: this.mediaConfig,
+      getSessionId: () => this.sessionId  // Dynamically get sessionId (set during initialize())
     });
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, and cognition system (workingMemory, selfState, planFormulator)`);
@@ -340,6 +347,12 @@ export class PersonaUser extends AIUser {
     await super.initialize();
 
     // Note: General room auto-join handled by UserDaemonServer on user creation (Discord-style)
+
+    // STEP 1.2: Generate sessionId for tool execution attribution (don't register with SessionDaemon yet to avoid init timeout)
+    if (!this.sessionId) {
+      this.sessionId = generateUUID();
+      console.log(`🔐 ${this.displayName}: SessionId generated for tool attribution (${this.sessionId})`);
+    }
 
     // STEP 1.5: Start worker thread for message evaluation
     if (this.worker) {

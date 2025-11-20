@@ -28,7 +28,7 @@ export class UserGetMeServerCommand extends CommandBase<UserGetMeParams, UserGet
       if (!userResult.success || !userResult.user) {
         return transformPayload(getMeParams, {
           success: false,
-          error: userResult.error || 'Failed to look up user from session'
+          error: userResult.error ?? 'Failed to look up user from session'
         });
       }
 
