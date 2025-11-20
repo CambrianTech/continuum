@@ -97,6 +97,7 @@ import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
+import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 
@@ -171,6 +172,9 @@ export class PersonaUser extends AIUser {
 
   // Message evaluation module (extracted from PersonaUser for modularity)
   private messageEvaluator: PersonaMessageEvaluator;
+
+  // Genome management module (extracted from PersonaUser for better genomic daemon integration)
+  private genomeManager: PersonaGenomeManager;
 
   constructor(
     entity: UserEntity,
@@ -302,6 +306,14 @@ export class PersonaUser extends AIUser {
 
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
+
+    // Genome management module (delegated for genomic daemon integration)
+    this.genomeManager = new PersonaGenomeManager(
+      this.id,
+      this.displayName,
+      () => this.entity,
+      () => this.client
+    );
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
@@ -934,74 +946,21 @@ export class PersonaUser extends AIUser {
    * Get genome for this persona (Phase 1.2)
    * Loads the genome entity from database if genomeId is set
    * Returns null if no genome is assigned
+   *
+   * DELEGATED TO: PersonaGenomeManager.getGenome()
    */
   async getGenome(): Promise<GenomeEntity | null> {
-    if (!this.entity.genomeId) {
-      return null;
-    }
-
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot load genome - no client`);
-      return null;
-    }
-
-    try {
-      const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeEntity>>('data/read', {
-        collection: 'genomes',
-        id: this.entity.genomeId,
-        context: this.client.context,
-        sessionId: this.client.sessionId,
-        backend: 'server'
-      });
-
-      if (!result.success || !result.found || !result.data) {
-        console.warn(`⚠️  PersonaUser ${this.displayName}: Genome ${this.entity.genomeId} not found`);
-        return null;
-      }
-
-      return result.data;
-
-    } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Error loading genome:`, error);
-      return null;
-    }
+    return await this.genomeManager.getGenome();
   }
 
   /**
    * Set genome for this persona (Phase 1.2)
    * Updates the genomeId field and persists to database
+   *
+   * DELEGATED TO: PersonaGenomeManager.setGenome()
    */
   async setGenome(genomeId: UUID): Promise<boolean> {
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot set genome - no client`);
-      return false;
-    }
-
-    try {
-      // Update entity
-      this.entity.genomeId = genomeId;
-
-      // Persist to database
-      const result = await this.client.daemons.commands.execute<DataUpdateParams<UserEntity>, DataUpdateResult<UserEntity>>('data/update', {
-        collection: COLLECTIONS.USERS,
-        id: this.entity.id,
-        data: { genomeId },
-        context: this.client.context,
-        sessionId: this.client.sessionId,
-        backend: 'server'
-      });
-
-      if (!result.success) {
-        console.error(`❌ PersonaUser ${this.displayName}: Failed to update genome: ${result.error}`);
-        return false;
-      }
-
-      return true;
-
-    } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Error setting genome:`, error);
-      return false;
-    }
+    return await this.genomeManager.setGenome(genomeId);
   }
 
   /**
