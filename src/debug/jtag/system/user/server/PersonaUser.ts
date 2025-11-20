@@ -92,6 +92,8 @@ import { SimplePlanFormulator } from './modules/cognition/reasoning/SimplePlanFo
 import type { Task, Plan } from './modules/cognition/reasoning/types';
 import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
+import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
+import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
@@ -144,6 +146,12 @@ export class PersonaUser extends AIUser {
   // PHASE 7.4: Training data accumulation for recipe-embedded learning
   // Accumulates training examples in RAM during recipe execution
   public trainingAccumulator: TrainingDataAccumulator;
+
+  // Task execution module (extracted from PersonaUser for modularity)
+  private taskExecutor: PersonaTaskExecutor;
+
+  // Training management module (extracted from PersonaUser for modularity)
+  private trainingManager: PersonaTrainingManager;
 
   // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
   public workingMemory: WorkingMemoryManager;
@@ -255,6 +263,18 @@ export class PersonaUser extends AIUser {
 
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
+
+    // Task execution module (delegated for modularity)
+    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
+
+    // Training management module (delegated for modularity)
+    this.trainingManager = new PersonaTrainingManager(
+      this.id,
+      this.displayName,
+      this.trainingAccumulator,
+      () => this.state,
+      () => this.saveState()
+    );
 
     // COGNITION SYSTEM: Agent architecture components
     this.workingMemory = new WorkingMemoryManager(this.id);
@@ -1905,95 +1925,11 @@ export class PersonaUser extends AIUser {
    * domain buffers are ready for training. When threshold reached, automatically
    * triggers genome/train command for that domain.
    *
-   * This enables continuous learning: PersonaUsers improve through recipe execution
-   * without manual intervention.
+   * Delegates to PersonaTrainingManager module for actual execution.
    */
   private async checkTrainingReadiness(): Promise<void> {
-    try {
-      const domains = this.trainingAccumulator.getDomains();
-
-      if (domains.length === 0) {
-        return; // No accumulated training data
-      }
-
-      for (const domain of domains) {
-        if (this.trainingAccumulator.shouldMicroTune(domain)) {
-          const bufferSize = this.trainingAccumulator.getBufferSize(domain);
-          const threshold = this.trainingAccumulator.getBatchThreshold(domain);
-
-          console.log(`🧬 ${this.displayName}: Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
-
-          const provider = 'unsloth'; // Default provider
-          const estimatedTime = bufferSize * 25; // 25ms per example estimate
-
-          // Update learning state in UserStateEntity
-          if (!this.state.learningState) {
-            this.state.learningState = { isLearning: false };
-          }
-          this.state.learningState.isLearning = true;
-          this.state.learningState.domain = domain;
-          this.state.learningState.provider = provider;
-          this.state.learningState.startedAt = Date.now();
-          this.state.learningState.exampleCount = bufferSize;
-          this.state.learningState.estimatedCompletion = Date.now() + estimatedTime;
-          await this.saveState(); // Persist state to database
-
-          // Emit training started event
-          const trainingStartedData: AITrainingStartedEventData = {
-            personaId: this.id,
-            personaName: this.displayName ?? 'AI Assistant',
-            domain,
-            provider,
-            exampleCount: bufferSize,
-            estimatedTime,
-            timestamp: Date.now()
-          };
-          await Events.emit(AI_LEARNING_EVENTS.TRAINING_STARTED, trainingStartedData);
-
-          // Consume training data from buffer
-          const examples = await this.trainingAccumulator.consumeTrainingData(domain);
-
-          console.log(`📊 ${this.displayName}: Consumed ${examples.length} examples for ${domain} training`);
-
-          // TODO Phase 7.5.1: Trigger genome/train command
-          // For now, just log that we would train
-          console.log(`🚀 ${this.displayName}: Would train ${domain} adapter with ${examples.length} examples`);
-
-          // Clear learning state
-          this.state.learningState.isLearning = false;
-          this.state.learningState.domain = undefined;
-          this.state.learningState.provider = undefined;
-          this.state.learningState.startedAt = undefined;
-          this.state.learningState.exampleCount = undefined;
-          this.state.learningState.estimatedCompletion = undefined;
-          await this.saveState(); // Persist state to database
-
-          // Simulate training completion for UI feedback
-          const trainingCompleteData: AITrainingCompleteEventData = {
-            personaId: this.id,
-            personaName: this.displayName ?? 'AI Assistant',
-            domain,
-            provider,
-            examplesProcessed: examples.length,
-            trainingTime: examples.length * 25,
-            finalLoss: 0.5,
-            timestamp: Date.now()
-          };
-          await Events.emit(AI_LEARNING_EVENTS.TRAINING_COMPLETE, trainingCompleteData);
-
-          // Future implementation:
-          // await Commands.execute('genome/train', {
-          //   personaId: this.id,
-          //   provider: 'unsloth',
-          //   domain,
-          //   trainingExamples: examples,
-          //   dryRun: false
-          // });
-        }
-      }
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error checking training readiness:`, error);
-    }
+    // Delegate to training manager module
+    await this.trainingManager.checkTrainingReadiness();
   }
 
   /**
@@ -2169,177 +2105,11 @@ export class PersonaUser extends AIUser {
    * PHASE 5: Execute a task based on its type
    *
    * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work, etc.
+   * Delegates to PersonaTaskExecutor module for actual execution.
    */
   private async executeTask(task: InboxTask): Promise<void> {
-    console.log(`🎯 ${this.displayName}: Executing task: ${task.taskType} - ${task.description}`);
-
-    const startTime = Date.now();
-    let outcome = '';
-    let status: TaskStatus = 'completed';
-
-    try {
-      switch (task.taskType) {
-        case 'memory-consolidation':
-          outcome = await this.executeMemoryConsolidation(task);
-          break;
-
-        case 'skill-audit':
-          outcome = await this.executeSkillAudit(task);
-          break;
-
-        case 'resume-work':
-          outcome = await this.executeResumeWork(task);
-          break;
-
-        case 'fine-tune-lora':
-          outcome = await this.executeFineTuneLora(task);
-          break;
-
-        default:
-          outcome = `Unknown task type: ${task.taskType}`;
-          status = 'failed';
-          console.warn(`⚠️  ${this.displayName}: ${outcome}`);
-      }
-
-      console.log(`✅ ${this.displayName}: Task completed: ${task.taskType} - ${outcome}`);
-    } catch (error) {
-      status = 'failed';
-      outcome = `Error executing task: ${error}`;
-      console.error(`❌ ${this.displayName}: ${outcome}`);
-    }
-
-    // Update task in database with completion status
-    const duration = Date.now() - startTime;
-    await DataDaemon.update<TaskEntity>(
-      COLLECTIONS.TASKS,
-      task.taskId,
-      {
-        status,
-        completedAt: new Date(),
-        result: {
-          success: status === 'completed',
-          output: outcome,
-          error: status === 'failed' ? outcome : undefined,
-          metrics: {
-            latencyMs: duration
-          }
-        }
-      }
-    );
-
-    // Record activity in persona state (affects energy/mood)
-    const complexity = task.priority; // Use priority as proxy for complexity
-    await this.personaState.recordActivity(duration, complexity);
-  }
-
-  /**
-   * PHASE 5: Memory consolidation task
-   * Reviews recent activities and consolidates important memories
-   */
-  private async executeMemoryConsolidation(_task: InboxTask): Promise<string> {
-    // TODO: Implement memory consolidation logic
-    // For now, just log and return success
-    console.log(`🧠 ${this.displayName}: Consolidating memories...`);
-
-    // Query recent messages from rooms this persona is in
-    const recentMessages = await DataDaemon.query({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: {
-        // Get messages from last hour
-        timestamp: { $gte: Date.now() - 3600000 }
-      },
-      limit: 50
-    });
-
-    const messageCount = recentMessages.data?.length || 0;
-    return `Reviewed ${messageCount} recent messages for memory consolidation`;
-  }
-
-  /**
-   * PHASE 5: Skill audit task
-   * Evaluates current capabilities and identifies areas for improvement
-   */
-  private async executeSkillAudit(_task: InboxTask): Promise<string> {
-    // TODO: Implement skill audit logic
-    console.log(`🔍 ${this.displayName}: Auditing skills...`);
-
-    // Query recent tasks to evaluate performance by domain
-    const recentTasks = await DataDaemon.query<TaskEntity>({
-      collection: COLLECTIONS.TASKS,
-      filter: {
-        assigneeId: this.id,
-        completedAt: { $gte: new Date(Date.now() - 21600000) } // Last 6 hours
-      },
-      limit: 100
-    });
-
-    const tasks = recentTasks.data || [];
-    const domainStats: Record<string, { completed: number; failed: number }> = {};
-
-    for (const record of tasks) {
-      const t = record.data;
-      if (!domainStats[t.domain]) {
-        domainStats[t.domain] = { completed: 0, failed: 0 };
-      }
-      if (t.status === 'completed') domainStats[t.domain].completed++;
-      if (t.status === 'failed') domainStats[t.domain].failed++;
-    }
-
-    const report = Object.entries(domainStats)
-      .map(([domain, stats]) => `${domain}: ${stats.completed} completed, ${stats.failed} failed`)
-      .join('; ');
-
-    return `Skill audit complete - ${report || 'No recent tasks'}`;
-  }
-
-  /**
-   * PHASE 5: Resume work task
-   * Continues work on a previously started task that became stale
-   */
-  private async executeResumeWork(_task: InboxTask): Promise<string> {
-    console.log(`♻️  ${this.displayName}: Resuming unfinished work...`);
-
-    // TODO: Implement resume logic - query for stale in_progress tasks and re-enqueue them
-    // For now, just acknowledge the task
-    return 'Resume work task acknowledged - full implementation pending';
-  }
-
-  /**
-   * PHASE 5: Fine-tune LoRA task
-   * Trains a LoRA adapter on recent failure examples to improve performance
-   */
-  private async executeFineTuneLora(task: InboxTask): Promise<string> {
-    console.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
-
-    // Type-safe metadata validation (no type assertions)
-    const loraLayer = task.metadata?.loraLayer;
-    if (typeof loraLayer !== 'string') {
-      return 'Missing or invalid LoRA layer in metadata';
-    }
-
-    // PHASE 6: Enable learning mode on the genome
-    try {
-      await this.memory.genome.enableLearningMode(loraLayer);
-      console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
-
-      // TODO (Phase 7): Implement actual fine-tuning logic
-      // - Collect training examples from recent failures
-      // - Format as LoRA training data
-      // - Call Ollama fine-tuning API
-      // - Save updated weights to disk
-
-      // For now, just simulate training duration
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Disable learning mode after training
-      await this.memory.genome.disableLearningMode(loraLayer);
-      console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
-
-      return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
-      return `Fine-tuning failed: ${error}`;
-    }
+    // Delegate to task executor module
+    await this.taskExecutor.executeTask(task);
   }
 
   /**
