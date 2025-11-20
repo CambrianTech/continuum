@@ -94,6 +94,7 @@ import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
+import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
@@ -154,17 +155,13 @@ export class PersonaUser extends AIUser {
   // Training management module (extracted from PersonaUser for modularity)
   private trainingManager: PersonaTrainingManager;
 
+  // Autonomous servicing loop module (extracted from PersonaUser for modularity)
+  private autonomousLoop: PersonaAutonomousLoop;
+
   // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
   public workingMemory: WorkingMemoryManager;
   public selfState: PersonaSelfState;
   public planFormulator: SimplePlanFormulator;
-
-  // PHASE 3: Autonomous polling loop
-  private servicingLoop: NodeJS.Timeout | null = null; // Deprecated - now using continuous async loop
-  private servicingLoopActive: boolean = false; // Controls continuous service loop
-
-  // PHASE 7.5.1: Training readiness check loop (runs less frequently than servicing loop)
-  private trainingCheckLoop: NodeJS.Timeout | null = null;
 
   // Tool execution adapter (keeps PersonaUser clean)
   private toolExecutor: PersonaToolExecutor;
@@ -306,7 +303,10 @@ export class PersonaUser extends AIUser {
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, and cognition system (workingMemory, selfState, planFormulator)`);
+    // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
+    this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -1891,98 +1891,9 @@ export class PersonaUser extends AIUser {
    * This is lifecycle-based - loop runs continuously while persona is "online"
    */
   private startAutonomousServicing(): void {
-    const cadence = this.personaState.getCadence();
-    const mood = this.personaState.getState().mood;
-
-    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (SIGNAL-BASED, timeout=${cadence}ms, mood=${mood})`);
-
-    // Create continuous async loop (not setInterval) - signal-based waiting
-    this.servicingLoopActive = true;
-    this.runServiceLoop().catch(error => {
-      console.error(`❌ ${this.displayName}: Service loop crashed: ${error}`);
-    });
-
-    // PHASE 7.5.1: Create training check loop (every 60 seconds)
-    // Checks less frequently than inbox servicing to avoid overhead
-    console.log(`🧬 ${this.displayName}: Starting training readiness checks (every 60s)`);
-    this.trainingCheckLoop = setInterval(async () => {
-      await this.checkTrainingReadiness();
-    }, 60000); // 60 seconds
+    this.autonomousLoop.startAutonomousServicing();
   }
 
-  /**
-   * Continuous service loop - runs until servicingLoopActive = false
-   * Uses signal-based waiting (not polling) for instant response
-   */
-  private async runServiceLoop(): Promise<void> {
-    while (this.servicingLoopActive) {
-      try {
-        await this.serviceInbox();
-      } catch (error) {
-        console.error(`❌ ${this.displayName}: Error in service loop: ${error}`);
-        // Continue loop despite errors
-      }
-    }
-    console.log(`🛑 ${this.displayName}: Service loop stopped`);
-  }
-
-  /**
-   * PHASE 7.5.1: Check training readiness and trigger micro-tuning
-   *
-   * Called periodically (less frequently than serviceInbox) to check if any
-   * domain buffers are ready for training. When threshold reached, automatically
-   * triggers genome/train command for that domain.
-   *
-   * Delegates to PersonaTrainingManager module for actual execution.
-   */
-  private async checkTrainingReadiness(): Promise<void> {
-    // Delegate to training manager module
-    await this.trainingManager.checkTrainingReadiness();
-  }
-
-  /**
-   * Poll task database for pending tasks assigned to this persona
-   * Convert TaskEntity → InboxTask and enqueue in inbox
-   */
-  private async pollTasks(): Promise<void> {
-    try {
-      // Query for pending tasks assigned to this persona
-      const queryResult = await DataDaemon.query<TaskEntity>({
-        collection: COLLECTIONS.TASKS,
-        filter: {
-          assigneeId: this.id,
-          status: 'pending'
-        },
-        limit: 10 // Poll top 10 pending tasks
-      });
-
-      if (!queryResult.success || !queryResult.data || queryResult.data.length === 0) {
-        return; // No pending tasks
-      }
-
-      // Convert each TaskEntity to InboxTask and enqueue
-      for (const record of queryResult.data) {
-        const task = record.data;
-
-        // Convert to InboxTask using helper
-        // Note: DataDaemon stores ID separately from data, so we need to inject it
-        const inboxTask = taskEntityToInboxTask({
-          ...task,
-          id: record.id // Inject ID from record root
-        });
-
-        // Enqueue in inbox (unified priority queue)
-        await this.inbox.enqueue(inboxTask);
-
-        console.log(`📋 ${this.displayName}: Enqueued task ${task.taskType} (priority=${task.priority.toFixed(2)})`);
-      }
-
-      console.log(`✅ ${this.displayName}: Polled ${queryResult.data.length} pending tasks`);
-
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error polling tasks:`, error);
-    }
-  }
 
   /**
    * CNS callback: Poll tasks from database
@@ -1990,7 +1901,7 @@ export class PersonaUser extends AIUser {
    * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
    */
   public async pollTasksFromCNS(): Promise<void> {
-    await this.pollTasks();
+    await this.autonomousLoop.pollTasksFromCNS();
   }
 
   /**
@@ -1999,27 +1910,7 @@ export class PersonaUser extends AIUser {
    * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
    */
   public async generateSelfTasksFromCNS(): Promise<void> {
-    try {
-      const selfTasks = await this.taskGenerator.generateSelfTasks();
-      if (selfTasks.length > 0) {
-        console.log(`🧠 ${this.displayName}: Generated ${selfTasks.length} self-tasks`);
-
-        // Persist each task to database and enqueue in inbox
-        for (const task of selfTasks) {
-          const storedTask = await DataDaemon.store(COLLECTIONS.TASKS, task);
-          if (storedTask) {
-            // Convert to InboxTask and enqueue (use storedTask which has database ID)
-            const inboxTask = taskEntityToInboxTask(storedTask);
-            await this.inbox.enqueue(inboxTask);
-            console.log(`📋 ${this.displayName}: Created self-task: ${task.description}`);
-          } else {
-            console.error(`❌ ${this.displayName}: Failed to create self-task`);
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error generating self-tasks: ${error}`);
-    }
+    await this.autonomousLoop.generateSelfTasksFromCNS();
   }
 
   /**
@@ -2029,84 +1920,7 @@ export class PersonaUser extends AIUser {
    * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
    */
   public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
-    // If this is a task, update status to 'in_progress' in database (prevents re-polling)
-    if (item.type === 'task') {
-      await DataDaemon.update<TaskEntity>(
-        COLLECTIONS.TASKS,
-        item.taskId,
-        { status: 'in_progress', startedAt: new Date() }
-      );
-    }
-
-    // PHASE 6: Activate appropriate LoRA adapter based on domain
-    if (item.domain) {
-      const domainToAdapter: Record<string, string> = {
-        'chat': 'conversational',
-        'code': 'typescript-expertise',
-        'self': 'self-improvement'
-      };
-      const adapterName = domainToAdapter[item.domain];
-      if (adapterName) {
-        await this.memory.genome.activateSkill(adapterName);
-      } else {
-        // Unknown domain - default to conversational
-        await this.memory.genome.activateSkill('conversational');
-      }
-    }
-
-    // Type-safe handling: Check if this is a message or task
-    if (item.type === 'message') {
-      // Reconstruct minimal ChatMessageEntity from inbox message
-      const reconstructedEntity: any = {
-        id: item.id,
-        roomId: item.roomId,
-        senderId: item.senderId,
-        senderName: item.senderName,
-        content: { text: item.content },
-        timestamp: item.timestamp,
-        // Fields not critical for evaluation:
-        senderDisplayName: item.senderName,
-        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
-        status: 'delivered',
-        priority: item.priority,
-        metadata: {},
-        reactions: [],
-        attachments: [],
-        mentions: [],
-        replyTo: undefined,
-        editedAt: undefined,
-        deletedAt: undefined
-      };
-
-      // Determine if sender is human (not an AI persona)
-      const senderIsHuman = !item.senderId.startsWith('persona-');
-
-      // Extract message text
-      const messageText = item.content;
-
-      // Process message using cognition-enhanced evaluation logic
-      await this.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);
-    } else if (item.type === 'task') {
-      // PHASE 5: Task execution based on task type
-      await this.executeTask(item);
-    }
-
-    // Update inbox load in state (affects mood calculation)
-    this.personaState.updateInboxLoad(this.inbox.getSize());
-
-    // Check if cadence should adjust (mood may have changed after processing)
-    this.adjustCadence();
-  }
-
-  /**
-   * PHASE 3: Service inbox (one polling iteration)
-   *
-   * NOW DELEGATED TO CNS (Central Nervous System orchestrator)
-   * CNS handles: task polling, self-task generation, message prioritization, domain scheduling
-   */
-  private async serviceInbox(): Promise<void> {
-    // Delegate to CNS orchestrator (capability-based multi-domain attention management)
-    await this.cns.serviceCycle();
+    await this.autonomousLoop.handleChatMessageFromCNS(item);
   }
 
   /**
@@ -2121,41 +1935,11 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * PHASE 3: Adjust polling cadence if mood changed
-   *
-   * Dynamically adjusts the setInterval cadence when mood transitions occur
-   */
-  private adjustCadence(): void {
-    const currentCadence = this.personaState.getCadence();
-
-    // Get current interval (we need to restart to change cadence)
-    if (this.servicingLoop) {
-      clearInterval(this.servicingLoop);
-      this.servicingLoop = setInterval(async () => {
-        await this.serviceInbox();
-      }, currentCadence);
-
-      console.log(`⏱️ ${this.displayName}: Adjusted cadence to ${currentCadence}ms (mood=${this.personaState.getState().mood})`);
-    }
-  }
-
-  /**
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
-    // PHASE 3: Stop autonomous servicing loop
-    if (this.servicingLoop) {
-      clearInterval(this.servicingLoop);
-      this.servicingLoop = null;
-      console.log(`🔄 ${this.displayName}: Stopped autonomous servicing loop`);
-    }
-
-    // PHASE 7.5.1: Stop training check loop
-    if (this.trainingCheckLoop) {
-      clearInterval(this.trainingCheckLoop);
-      this.trainingCheckLoop = null;
-      console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
-    }
+    // Stop autonomous servicing loop
+    await this.autonomousLoop.stopServicing();
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();
