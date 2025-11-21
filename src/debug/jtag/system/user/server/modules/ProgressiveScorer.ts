@@ -1,8 +1,13 @@
 /**
  * Progressive Scorer - Token-window analysis for real-time complexity reassessment
  *
- * Analyzes AI response streams to detect upgrade indicators (hedging, uncertainty,
- * self-correction, etc.) and determine when to upgrade to more capable models.
+ * Analyzes AI response streams to detect upgrade indicators and determine when
+ * to upgrade to more capable models. Now uses PLUGGABLE detection via
+ * ComplexityDetector interface.
+ *
+ * **Architecture**: Scoring logic separated from detection logic
+ * - ProgressiveScorer = evaluates thresholds and makes upgrade decisions
+ * - ComplexityDetector = detects indicators (RegExp, embeddings, ML, etc.)
  *
  * **Purpose**: Enable mid-stream model upgrades when lower-tier models show signs
  * of struggling, maintaining cost-efficiency while preserving quality.
@@ -14,6 +19,7 @@
  *
  * @see PHASE2-PROGRESSIVE-SCORING-PLAN.md - Implementation plan
  * @see ADAPTIVE-COMPLEXITY-ROUTING.md - Full architecture
+ * @see COMPLEXITY-DETECTOR-REFACTORING.md - Plug-and-play pattern
  */
 
 import type {
@@ -23,81 +29,15 @@ import type {
   UpgradeIndicator
 } from '../../../shared/ComplexityTypes';
 import { DEFAULT_PROGRESSIVE_SCORER_CONFIG } from '../../../shared/ComplexityTypes';
-
-/**
- * Upgrade indicator patterns - RegExp patterns for detecting complexity signals
- *
- * Based on linguistic research on uncertainty markers and meta-cognitive language
- * Used to identify when AI models are struggling and may benefit from upgrade
- */
-const INDICATOR_PATTERNS: Record<UpgradeIndicator['type'], RegExp[]> = {
-  /**
-   * Hedging language - Indicates uncertainty or qualification
-   * Examples: "it depends", "possibly", "might", "may", "could be"
-   */
-  hedging: [
-    /\b(it depends|depending on)\b/i,
-    /\b(possibly|perhaps|maybe)\b/i,
-    /\b(might|may|could)\b(?![\w\s]+\b(not|never)\b)/i,  // Avoid false positives
-    /\b(likely|probably|potentially)\b/i,
-    /\b(seems to|appears to|tends to)\b/i
-  ],
-
-  /**
-   * Self-correction - Model reconsidering or revising previous statements
-   * Examples: "actually", "on second thought", "wait", "I should clarify"
-   */
-  'self-correction': [
-    /\b(actually|in fact)\b/i,
-    /\b(on second thought|thinking about it)\b/i,
-    /\b(wait|hold on)\b/i,
-    /\b(I should (clarify|correct|revise))\b/i,
-    /\b(let me (rephrase|reconsider))\b/i
-  ],
-
-  /**
-   * Multi-perspective reasoning - Considering multiple angles or viewpoints
-   * Examples: "on one hand", "alternatively", "conversely", "however"
-   */
-  'multi-perspective': [
-    /\b(on (one|the other) hand)\b/i,
-    /\b(alternatively|conversely)\b/i,
-    /\b(however|nevertheless|nonetheless)\b/i,
-    /\b(from (another|a different) (perspective|angle|viewpoint))\b/i,
-    /\b(that said|having said that)\b/i
-  ],
-
-  /**
-   * Uncertainty admission - Explicit acknowledgment of complexity or unknowns
-   * Examples: "I'm not sure", "this is complex", "it's unclear", "difficult to say"
-   */
-  uncertainty: [
-    /\b(I'?m not (sure|certain|confident))\b/i,
-    /\b(this is (complex|complicated|nuanced|difficult))\b/i,
-    /\b(it'?s (unclear|ambiguous|hard to say))\b/i,
-    /\b(without more (information|context|details))\b/i,
-    /\b(difficult to (determine|know|say))\b/i
-  ],
-
-  /**
-   * Clarification requests - Asking for more information or details
-   * Examples: "could you clarify", "I need more information", "can you specify"
-   */
-  clarification: [
-    /\b(could you (clarify|specify|elaborate))\b/i,
-    /\b(I need (more|additional) (information|details|context))\b/i,
-    /\b(can you (provide|give|share) more)\b/i,
-    /\b(what (specifically|exactly) do you mean)\b/i,
-    /\b(to better (understand|answer|help))\b/i
-  ]
-};
+import type { ComplexityDetector } from './ComplexityDetector';
+import { ComplexityDetectorFactory } from './ComplexityDetector';
 
 /**
  * ProgressiveScorer - Analyzes token windows for upgrade indicators
  *
  * State machine that tracks indicators across streaming generation:
  * 1. Accumulates text in sliding window
- * 2. Detects patterns using regex matching
+ * 2. Delegates detection to pluggable ComplexityDetector
  * 3. Scores confidence based on indicator types and counts
  * 4. Determines if upgrade thresholds exceeded
  * 5. Recommends complexity level for upgrade
@@ -105,8 +45,12 @@ const INDICATOR_PATTERNS: Record<UpgradeIndicator['type'], RegExp[]> = {
  * **Thread-safe**: Single instance per response generation
  * **Stateful**: Tracks indicators and tokens analyzed
  * **Resettable**: Can be reused across multiple analyses
+ * **Pluggable**: Accepts any ComplexityDetector implementation
  */
 export class ProgressiveScorer {
+  /** Pluggable complexity detector (RegExp, embedding, ML, etc.) */
+  private detector: ComplexityDetector;
+
   /** Configuration (window size, thresholds) */
   private config: ProgressiveScorerConfig;
 
@@ -117,11 +61,36 @@ export class ProgressiveScorer {
   private tokensAnalyzed: number = 0;
 
   /**
-   * Create a progressive scorer with optional custom configuration
+   * Create a progressive scorer with pluggable detector
    *
-   * @param config - Partial config to override defaults
+   * @param detector - ComplexityDetector implementation (optional, defaults to regex)
+   * @param config - Partial config to override defaults (optional)
+   *
+   * @example
+   * // Default (regex)
+   * const scorer = new ProgressiveScorer();
+   *
+   * @example
+   * // Custom detector
+   * const detector = new EmbeddingComplexityDetector();
+   * const scorer = new ProgressiveScorer(detector);
+   *
+   * @example
+   * // Custom detector + config
+   * const detector = ComplexityDetectorFactory.create('ml');
+   * const scorer = new ProgressiveScorer(detector, {
+   *   windowSize: 500,
+   *   thresholds: { indicatorCount: 5 }
+   * });
    */
-  constructor(config?: Partial<ProgressiveScorerConfig>) {
+  constructor(
+    detector?: ComplexityDetector,
+    config?: Partial<ProgressiveScorerConfig>
+  ) {
+    // Use provided detector or default to regex
+    this.detector = detector ?? ComplexityDetectorFactory.createDefault();
+
+    // Merge config with defaults
     this.config = {
       ...DEFAULT_PROGRESSIVE_SCORER_CONFIG,
       ...config,
@@ -135,8 +104,7 @@ export class ProgressiveScorer {
   /**
    * Analyze text chunk for upgrade indicators
    *
-   * Performs pattern matching against all indicator types, scores confidence,
-   * and determines if upgrade thresholds have been exceeded.
+   * Delegates detection to pluggable detector, then evaluates upgrade thresholds.
    *
    * **Token estimation**: ~4 characters per token (rough heuristic)
    *
@@ -149,79 +117,12 @@ export class ProgressiveScorer {
     const estimatedTokens = Math.floor(chunk.length / 4);
     this.tokensAnalyzed += estimatedTokens;
 
-    // Detect indicators in this chunk
-    const newIndicators = this.detectIndicators(chunk, offset);
+    // Delegate detection to pluggable detector
+    const newIndicators = this.detector.analyze(chunk, offset);
     this.indicators.push(...newIndicators);
 
-    // Check if upgrade thresholds exceeded
+    // Evaluate upgrade thresholds (scoring logic)
     return this.evaluateUpgrade();
-  }
-
-  /**
-   * Detect upgrade indicators in text chunk
-   *
-   * Scans chunk with all pattern types, records matches with metadata
-   *
-   * @param chunk - Text to scan
-   * @param offset - Token offset for recording position
-   * @returns Array of detected indicators
-   */
-  private detectIndicators(chunk: string, offset: number): UpgradeIndicator[] {
-    const detected: UpgradeIndicator[] = [];
-
-    // Scan each indicator type
-    for (const [type, patterns] of Object.entries(INDICATOR_PATTERNS)) {
-      for (const pattern of patterns) {
-        const matches = chunk.matchAll(new RegExp(pattern, 'gi'));
-
-        for (const match of matches) {
-          // Calculate confidence based on pattern strength
-          const confidence = this.calculateConfidence(type as UpgradeIndicator['type'], match[0]);
-
-          detected.push({
-            type: type as UpgradeIndicator['type'],
-            pattern: match[0],
-            offset: offset + (match.index ?? 0),
-            confidence
-          });
-        }
-      }
-    }
-
-    return detected;
-  }
-
-  /**
-   * Calculate confidence score for a matched indicator
-   *
-   * Factors:
-   * - Indicator type (uncertainty > hedging > clarification)
-   * - Pattern specificity (longer/more specific = higher confidence)
-   * - Context (surrounded by technical language = lower false positive)
-   *
-   * @param type - Indicator type
-   * @param matchedText - Actual matched text
-   * @returns Confidence score (0.0-1.0)
-   */
-  private calculateConfidence(type: UpgradeIndicator['type'], matchedText: string): number {
-    // Base confidence by type
-    const typeConfidence: Record<UpgradeIndicator['type'], number> = {
-      uncertainty: 0.9,        // Strongest signal
-      'self-correction': 0.8,  // Clear meta-cognitive marker
-      clarification: 0.7,      // Moderate signal
-      'multi-perspective': 0.6, // Weaker (might be intentional)
-      hedging: 0.5            // Weakest (common in technical writing)
-    };
-
-    let confidence = typeConfidence[type];
-
-    // Boost confidence for longer/more specific patterns
-    if (matchedText.length > 15) {
-      confidence += 0.1;
-    }
-
-    // Cap at 1.0
-    return Math.min(confidence, 1.0);
   }
 
   /**
@@ -249,7 +150,7 @@ export class ProgressiveScorer {
       if (avgConfidence >= this.config.thresholds.confidence) {
         return {
           shouldUpgrade: true,
-          reason: `Detected ${this.indicators.length} complexity indicators (confidence: ${avgConfidence.toFixed(2)})`,
+          reason: `Detected ${this.indicators.length} complexity indicators (confidence: ${avgConfidence.toFixed(2)}) using ${this.detector.getName()}`,
           newLevel: this.determineTargetLevel()
         };
       }
@@ -305,7 +206,7 @@ export class ProgressiveScorer {
   /**
    * Reset scorer state for new analysis
    *
-   * Clears indicators and token count, reusing config
+   * Clears indicators and token count, reusing config and detector
    * Allows single instance to analyze multiple responses
    */
   reset(): void {
@@ -323,11 +224,17 @@ export class ProgressiveScorer {
    *
    * @returns Current state snapshot
    */
-  getState(): { indicatorsDetected: number; tokensAnalyzed: number; indicators: UpgradeIndicator[] } {
+  getState(): {
+    indicatorsDetected: number;
+    tokensAnalyzed: number;
+    indicators: UpgradeIndicator[];
+    detectorName: string;
+  } {
     return {
       indicatorsDetected: this.indicators.length,
       tokensAnalyzed: this.tokensAnalyzed,
-      indicators: [...this.indicators] // Return copy to prevent mutation
+      indicators: [...this.indicators], // Return copy to prevent mutation
+      detectorName: this.detector.getName()
     };
   }
 
@@ -342,5 +249,25 @@ export class ProgressiveScorer {
    */
   getConfig(): ProgressiveScorerConfig {
     return { ...this.config };
+  }
+
+  /**
+   * Get detector name for logging/debugging
+   *
+   * @returns Name of current detector implementation
+   */
+  getDetectorName(): string {
+    return this.detector.getName();
+  }
+
+  /**
+   * Swap detector at runtime (advanced use case)
+   *
+   * Useful for A/B testing or dynamic switching based on performance
+   *
+   * @param detector - New detector to use
+   */
+  setDetector(detector: ComplexityDetector): void {
+    this.detector = detector;
   }
 }
