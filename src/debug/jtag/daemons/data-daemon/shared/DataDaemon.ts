@@ -262,10 +262,30 @@ export class DataDaemon {
     collection: string,
     id: UUID,
     data: Partial<T>,
-    context: DataOperationContext,
+    _context: DataOperationContext,
     incrementVersion: boolean = true
   ): Promise<T> {
     await this.ensureInitialized();
+
+    // Read existing entity to merge with partial update
+    const readResult = await this.adapter.read(collection, id);
+    if (!readResult.success || !readResult.data?.data) {
+      throw new Error(`Entity not found for update: ${collection}/${id}`);
+    }
+
+    // Merge partial update with existing entity data
+    const existingEntity = readResult.data.data;
+    const mergedData = { ...existingEntity, ...data };
+
+    // Validate the merged data before persisting
+    const validationResult = this.validateSchema(collection, mergedData as Record<string, unknown>);
+    if (!validationResult.success) {
+      const errors = validationResult.errors?.join(', ') ?? 'Unknown validation error';
+      console.error(`❌ DataDaemon: Update validation failed for ${collection}/${id}:`, errors);
+      throw new Error(`Data validation failed for update: ${errors}`);
+    }
+
+    // Validation passed - proceed with update
     const result = await this.adapter.update<T>(collection, id, data, incrementVersion);
     if (result.success && result.data) {
       const entity = result.data.data;
