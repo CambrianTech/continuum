@@ -18,7 +18,7 @@ export interface DataReadResult<T extends BaseEntity = BaseEntity> extends BaseD
   readonly data?: T;
   readonly found: boolean;
   readonly id: UUID;
-  readonly media: MediaItem[];
+  readonly media?: MediaItem[];
 }
 
 export const createDataReadParams = (
