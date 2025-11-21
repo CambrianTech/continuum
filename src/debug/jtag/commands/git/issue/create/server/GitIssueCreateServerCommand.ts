@@ -52,27 +52,39 @@ export class GitIssueCreateServerCommand extends CommandBase<GitIssueCreateParam
       // Automatically add attribution for PersonaUsers
       let body = createParams.body;
 
-      console.log('🔍 Attribution Debug: sessionId =', createParams.sessionId);
+      if (process.env.DEBUG === 'true') {
+        console.log('🔍 Attribution Debug: sessionId =', createParams.sessionId);
+      }
 
       try {
         // Call session/get-user without targetSessionId - it will use the caller's sessionId automatically
         const userResult = await Commands.execute<SessionGetUserParams, SessionGetUserResult>('session/get-user', {}) as SessionGetUserResult;
 
-        console.log('🔍 Attribution Debug: session/get-user result =', JSON.stringify(userResult, null, 2));
+        if (process.env.DEBUG === 'true') {
+          console.log('🔍 Attribution Debug: session/get-user result =', JSON.stringify(userResult, null, 2));
+        }
 
         if (userResult.success && userResult.user) {
-          console.log('🔍 Attribution Debug: user found, userType =', userResult.user.userType, 'displayName =', userResult.user.displayName);
+          if (process.env.DEBUG === 'true') {
+            console.log('🔍 Attribution Debug: user found, userType =', userResult.user.userType, 'displayName =', userResult.user.displayName);
+          }
 
           if (userResult.user.userType === 'persona') {
             const displayName = userResult.user.displayName || userResult.user.uniqueId || 'Unknown AI';
             const timestamp = new Date().toISOString();
             body += `\n\n---\n**Created by:** ${displayName} (AI)\n**Timestamp:** ${timestamp}`;
-            console.log('✅ Attribution added for PersonaUser:', displayName);
+            if (process.env.DEBUG === 'true') {
+              console.log('✅ Attribution added for PersonaUser:', displayName);
+            }
           } else {
-            console.log('⏭️  Attribution skipped: userType is not "persona"');
+            if (process.env.DEBUG === 'true') {
+              console.log('⏭️  Attribution skipped: userType is not "persona"');
+            }
           }
         } else {
-          console.log('⚠️  Attribution skipped: user lookup failed or returned no user');
+          if (process.env.DEBUG === 'true') {
+            console.log('⚠️  Attribution skipped: user lookup failed or returned no user');
+          }
         }
       } catch (error) {
         // If user lookup fails, continue without attribution
