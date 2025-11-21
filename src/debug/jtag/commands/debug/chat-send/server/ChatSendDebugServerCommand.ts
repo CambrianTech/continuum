@@ -15,7 +15,11 @@ export class ChatSendDebugServerCommand extends CommandBase<ChatSendDebugParams,
   }
 
   async execute(params: ChatSendDebugParams): Promise<ChatSendDebugResult> {
-    // Server always delegates to browser for widget interaction
-    return await this.remoteExecute(params);
+    // debug/chat-send is deprecated - users should use chat/send instead
+    throw new Error(
+      'The debug/chat-send command is deprecated. Please use chat/send instead:\n\n' +
+      `  ./jtag chat/send --room="${params.roomId ?? 'general'}" --message="${params.message ?? 'your message'}"\n\n` +
+      'The chat/send command provides the same functionality with proper error handling and validation.'
+    );
   }
 }
