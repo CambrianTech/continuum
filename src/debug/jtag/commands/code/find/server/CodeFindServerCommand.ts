@@ -40,7 +40,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
 
     try {
       const repositoryRoot = CodeDaemon.getRepositoryRoot();
-      const baseDir = params.baseDir || '.';
+      const baseDir = params.baseDir ?? '.';
       const searchPath = path.join(repositoryRoot, baseDir);
 
       // Validate base directory exists
@@ -52,16 +52,17 @@ export class CodeFindServerCommand extends CodeFindCommand {
             error: `Base directory is not a directory: ${baseDir}`
           });
         }
-      } catch (error) {
+      } catch {
         return createCodeFindResultFromParams(params, {
           success: false,
           error: `Base directory not found: ${baseDir}`
         });
       }
 
-      const maxResults = params.maxResults || 50;
+      const maxResults = params.maxResults ?? 50;
       const caseInsensitive = params.caseInsensitive !== false; // Default true
       const includeHidden = params.includeHidden === true; // Default false
+      const excludeDirs = params.excludeDirs ?? ['node_modules', 'dist', '.continuum', '.git', 'examples/dist', 'coverage'];
 
       // Prepare pattern for minimatch
       const pattern = caseInsensitive ? params.pattern.toLowerCase() : params.pattern;
@@ -76,6 +77,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
         pattern,
         caseInsensitive,
         includeHidden,
+        excludeDirs,
         matches,
         maxResults,
         () => totalMatches++
@@ -109,6 +111,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
     pattern: string,
     caseInsensitive: boolean,
     includeHidden: boolean,
+    excludeDirs: string[],
     matches: FileMatch[],
     maxResults: number,
     onMatch: () => void
@@ -126,8 +129,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
         // Skip hidden files/directories if not requested
         if (!includeHidden && entry.name.startsWith('.')) continue;
 
-        // Skip massive directories that cause timeouts
-        const excludeDirs = ['node_modules', 'dist', '.continuum', '.git', 'examples/dist', 'coverage'];
+        // Skip excluded directories (configurable, defaults to massive dirs that cause timeouts)
         if (excludeDirs.includes(entry.name)) {
           continue;
         }
@@ -142,7 +144,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
           fileStat = await stat(fullPath);
           if (fileStat.isDirectory()) fileType = 'directory';
           else if (fileStat.isSymbolicLink()) fileType = 'symlink';
-        } catch (error) {
+        } catch {
           // Skip files we can't stat
           continue;
         }
@@ -170,6 +172,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
             pattern,
             caseInsensitive,
             includeHidden,
+            excludeDirs,
             matches,
             maxResults,
             onMatch

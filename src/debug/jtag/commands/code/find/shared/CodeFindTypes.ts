@@ -33,6 +33,9 @@ export interface CodeFindParams extends BaseCodeParams {
 
   /** Include hidden files/directories (default: false) */
   readonly includeHidden?: boolean;
+
+  /** Directories to exclude from search (default: ['node_modules', 'dist', '.continuum', '.git', 'examples/dist', 'coverage']) */
+  readonly excludeDirs?: string[];
 }
 
 /**
@@ -96,7 +99,8 @@ export const createCodeFindParams = (
     baseDir: data.baseDir,
     caseInsensitive: data.caseInsensitive,
     maxResults: data.maxResults,
-    includeHidden: data.includeHidden
+    includeHidden: data.includeHidden,
+    excludeDirs: data.excludeDirs
   };
 };
 

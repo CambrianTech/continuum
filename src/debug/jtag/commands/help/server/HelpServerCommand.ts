@@ -15,6 +15,8 @@ import * as path from 'path';
 
 export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
   private schemas: Record<string, CommandSignature> = {};
+  private schemasLoaded: boolean = false;
+  private schemasLoadError: string | null = null;
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('help', context, subpath, commander);
@@ -26,16 +28,23 @@ export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
       // Load pre-generated schemas from build-time script
       const schemasPath = path.join(__dirname, '../../../generated/command-schemas.json');
 
-      if (fs.existsSync(schemasPath)) {
-        const schemasJson = fs.readFileSync(schemasPath, 'utf-8');
-        this.schemas = JSON.parse(schemasJson);
-        console.log(`📚 Loaded ${Object.keys(this.schemas).length} command schemas from generated file`);
-      } else {
+      if (!fs.existsSync(schemasPath)) {
+        this.schemasLoadError = 'Command schemas file not found';
         console.warn(`⚠️  Command schemas file not found: ${schemasPath}`);
-        console.warn(`   Run: npx tsx scripts/generate-command-schemas.ts`);
+        console.warn(`   This means help documentation will be limited for commands.`);
+        console.warn(`   To generate schemas, run: npx tsx scripts/generate-command-schemas.ts`);
+        return;
       }
+
+      const schemasJson = fs.readFileSync(schemasPath, 'utf-8');
+      this.schemas = JSON.parse(schemasJson);
+      this.schemasLoaded = true;
+      console.log(`📚 Loaded ${Object.keys(this.schemas).length} command schemas from generated file`);
     } catch (error) {
+      this.schemasLoadError = error instanceof Error ? error.message : 'Unknown error loading schemas';
       console.error(`❌ Failed to load command schemas:`, error);
+      console.error(`   Help documentation will be limited. Try regenerating schemas with:`);
+      console.error(`   npx tsx scripts/generate-command-schemas.ts`);
     }
   }
 
@@ -45,7 +54,7 @@ export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
    */
   async execute(params: JTAGPayload): Promise<HelpResult> {
     const helpParams = params as HelpParams;
-    const commandName = helpParams.commandName || 'help';
+    const commandName = helpParams.commandName ?? 'help';
 
     console.log(`📚 SERVER: Getting help for ${commandName}`);
 
@@ -97,21 +106,25 @@ To see all available commands: list`,
           });
         }
 
-        // Command exists but no schema generated yet
+        // Command exists but no schema available
+        const missingSchemaMessage = this.schemasLoadError
+          ? `\n\nNote: Command schemas failed to load (${this.schemasLoadError}). Run: npx tsx scripts/generate-command-schemas.ts`
+          : `\n\nNote: Schema not available for this command. Run: npx tsx scripts/generate-command-schemas.ts`;
+
         return createHelpResultFromParams(helpParams, {
           success: true,
           signature: {
             name: commandName,
-            description: `${commandName} command`,
+            description: `${commandName} command - Basic information only.${missingSchemaMessage}`,
             params: {}
           }
         });
       }
 
       // Generate exact XML format example for this command
-      const paramsExample = Object.keys(schema.params || {}).length > 0
-        ? '\n' + Object.entries(schema.params || {})
-            .map(([name, def]) => `<${name}>${def.description || 'value'}</${name}>`)
+      const paramsExample = Object.keys(schema.params ?? {}).length > 0
+        ? '\n' + Object.entries(schema.params ?? {})
+            .map(([name, def]) => `<${name}>${def.description ?? 'value'}</${name}>`)
             .join('\n')
         : '';
 
