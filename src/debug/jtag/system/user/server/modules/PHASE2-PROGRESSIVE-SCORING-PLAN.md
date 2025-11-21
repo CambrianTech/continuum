@@ -304,6 +304,171 @@ Complex analysis → Claude 3.5 Sonnet → $0.003 per message (from start)
 
 ---
 
+## Integration with Persona Genomic Layers (PEFT)
+
+**CRITICAL**: Phase 2 Progressive Scoring is **explicitly designed** to work with the upcoming Persona Genomic Layers system, which implements PEFT (Parameter-Efficient Fine-Tuning) via LoRA adapters.
+
+### The Vision: Phenotype Trading
+
+**Concept**: Each PersonaUser has a "genome" of specialized LoRA adapters (phenotypes) that can be paged in/out like virtual memory. Progressive scoring determines **which base model tier** to use, while genomic paging determines **which domain specialization** to load.
+
+```
+User Message → Progressive Scoring → Base Model Selection → Genomic Paging → Specialized Response
+              ↓                      ↓                       ↓
+              "What's the          ModelTier:              Domain:
+               bug in this         'ollama-capable'        'typescript-debugging'
+               TypeScript?"        ↓                       ↓
+                                   llama3.1:70b            + LoRA adapter
+                                                           ↓
+                                                           Specialized response
+```
+
+### The AdaptiveGenome Interface
+
+From `ADAPTIVE-COMPLEXITY-ROUTING.md` lines 630-666, the architecture defines:
+
+```typescript
+interface AdaptiveGenome extends LoRAGenome {
+  // Paging based on BOTH domain AND complexity
+  async activateSkill(domain: TaskDomain, tier: ModelTier): Promise<void> {
+    // 1. Page in domain-specific LoRA adapter
+    const adapter = await this.pageIn(domain);
+
+    // 2. Select base model based on tier (from Progressive Scoring)
+    const baseModel = this.selectBaseModel(tier);
+
+    // 3. Load adapter onto base model
+    await this.attachAdapter(adapter, baseModel);
+
+    // 4. Track for LRU eviction
+    this.updateAccessTime(adapter);
+  }
+
+  selectBaseModel(tier: ModelTier): string {
+    switch (tier) {
+      case 'local-fast': return 'qwen2.5:7b';           // 8K context, free
+      case 'ollama-capable': return 'llama3.1:70b';    // 128K context, free
+      case 'api-cheap': return 'deepseek-chat';        // 64K context, $0.0001/msg
+      case 'api-premium': return 'claude-3-5-sonnet';  // 200K context, $0.003/msg
+    }
+  }
+}
+```
+
+### Two-Axis Optimization
+
+**Axis 1: Complexity (Progressive Scoring)**
+- Start with cheap/free models
+- Detect complexity indicators during generation
+- Upgrade to more capable tiers only when needed
+
+**Axis 2: Domain Specialization (Genomic Paging)**
+- Load domain-specific LoRA adapters (code, chat, debugging, analysis)
+- Page adapters in/out based on task domain
+- LRU eviction when memory pressure high
+
+**Result**: Specialized + Cost-Efficient = Best of Both Worlds
+
+### Example: Code Debugging Flow
+
+```typescript
+// User asks: "Why is this TypeScript function failing?"
+
+// 1. Phase 1: Initial complexity assessment
+const initialAssessment = await complexityClassifier.assess(message);
+// Result: level='moderate', tier='ollama-capable'
+
+// 2. Phase 2: Progressive scoring during generation
+const scorer = new ProgressiveScorer();
+for await (const chunk of streamResponse('llama3.1:70b', message)) {
+  const scoring = scorer.analyze(chunk, offset);
+
+  if (scoring.shouldUpgrade) {
+    // Detected struggling (hedging, uncertainty)
+    // Upgrade: ollama-capable → api-premium
+    currentModel = 'claude-3-5-sonnet';
+  }
+}
+
+// 3. Genomic layer: Page in domain adapter
+await genome.activateSkill('typescript-debugging', 'api-premium');
+// Loads: claude-3-5-sonnet + typescript-debugging.lora
+// Result: Premium model power + specialized debugging expertise
+```
+
+### Why Genomic Integration Comes AFTER Cognition
+
+**Phase Order**:
+1. ✅ **Phase 1**: Complexity assessment + model routing (PR #188 - merged)
+2. 🚧 **Phase 2**: Progressive scoring (THIS PR)
+3. 📋 **Phase 3**: Mid-stream upgrade mechanism (THE SPIKE)
+4. 📋 **Phase 4**: Genomic paging infrastructure
+5. 📋 **Phase 5**: PEFT training pipeline
+
+**Rationale**: Need to perfect **decision-making** (Phases 1-3) before adding **specialization** (Phases 4-5). Progressive scoring establishes the foundation for intelligent model selection, which genomic layers then enhance with domain expertise.
+
+### Synergy Benefits
+
+**Before (single-axis optimization)**:
+```
+Simple query → Claude 3.5 Sonnet → $0.003 (overkill)
+Complex query → Claude 3.5 Sonnet → $0.003 (appropriate)
+```
+
+**After Phase 2 (complexity-only)**:
+```
+Simple query → qwen2.5:7b → $0.000 (appropriate)
+Complex query → Claude 3.5 Sonnet → $0.003 (appropriate)
+```
+
+**After Phase 2 + Genomic (two-axis optimization)**:
+```
+Simple code query → qwen2.5:7b + code-assistant.lora → $0.000 (specialized + free)
+Complex code query → llama3.1:70b + typescript-expert.lora → $0.000 (specialized + free)
+Very complex code → claude-3-5-sonnet + debugging-expert.lora → $0.003 (specialized + premium)
+```
+
+**Key Insight**: Most complex queries can be handled by **local models + domain LoRA** without ever hitting premium APIs. Progressive scoring determines complexity, genomic paging provides specialization.
+
+### Technical Prerequisites
+
+**Phase 2 provides**:
+- ComplexityLevel and ModelTier type definitions
+- ScoringResult interface for upgrade decisions
+- ResponseContext with routing metadata
+- Token-window analysis infrastructure
+
+**Genomic layers will add**:
+- TaskDomain type ('code', 'chat', 'debugging', 'analysis', etc.)
+- LoRAAdapter class with paging/eviction
+- AdapterPool with LRU management
+- Training pipeline for continuous learning
+
+**Integration point**: `ResponseContext.routing.tier` from Phase 2 feeds into `AdaptiveGenome.selectBaseModel()` in Phase 4.
+
+### Cost Impact with Genomic Layers
+
+**Current democratization targets** (Phase 2 only):
+- 80% local, 15% cheap APIs, 5% premium
+- $3-10/month vs $100+/month (90% savings)
+
+**Enhanced targets** (Phase 2 + Genomic):
+- 95% local (with domain LoRA), 4% cheap APIs, 1% premium
+- $1-5/month vs $100+/month (95%+ savings)
+- **Why**: Domain specialization eliminates most API calls
+
+### Integration Status
+
+✅ **Designed for genomic integration** - ModelTier type system ready
+✅ **Routing metadata captured** - ResponseContext tracks all decisions
+✅ **Extensibility hooks** - ScoringResult can include domain hints
+✅ **LRU-aware** - Progressive scoring tracks token usage for adapter eviction
+✅ **Context preservation** - Upgrade mechanism preserves conversation state
+
+**Answer to user's question**: YES, Phase 2 is explicitly factored to work with genomic layers and PEFT phenotype trading. The architecture document (ADAPTIVE-COMPLEXITY-ROUTING.md lines 630-666) defines the AdaptiveGenome interface that combines both systems.
+
+---
+
 ## Success Metrics
 
 ### Cost Reduction
