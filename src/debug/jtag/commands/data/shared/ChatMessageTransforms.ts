@@ -35,7 +35,10 @@ export interface MediaExtractionResult<T extends BaseEntity> {
  * Creates a new entity with media moved from content.media to a separate array,
  * preventing large media data from being duplicated in both locations.
  *
- * @param entity - The chat message entity to transform
+ * This function is designed to work with any BaseEntity but only performs
+ * transformation if the entity has the ChatMessageEntity structure with media.
+ *
+ * @param entity - The entity to check and potentially transform
  * @returns Object containing the cleaned entity and extracted media array
  *
  * @example
@@ -49,9 +52,23 @@ export interface MediaExtractionResult<T extends BaseEntity> {
 export function extractMediaFromMessage<T extends BaseEntity>(
   entity: T
 ): MediaExtractionResult<T> {
-  // Type guard: only process if this is a chat message with media
-  const messageData = entity as unknown as ChatMessageEntity;
-  if (!messageData.content?.media || !Array.isArray(messageData.content.media)) {
+  // Type-safe check: verify this entity has the chat message structure
+  // We check for the specific properties we need before casting
+  if (!('content' in entity)) {
+    // Not a chat message - return entity unchanged
+    return {
+      entity,
+      media: []
+    };
+  }
+
+  const content = (entity as { content?: unknown }).content;
+  if (
+    !content ||
+    typeof content !== 'object' ||
+    !('media' in content) ||
+    !Array.isArray((content as { media?: unknown }).media)
+  ) {
     // No media to extract - return entity unchanged
     return {
       entity,
@@ -59,11 +76,14 @@ export function extractMediaFromMessage<T extends BaseEntity>(
     };
   }
 
-  // Extract media array
-  const media = messageData.content.media;
+  // Now we can safely cast since we've verified the structure
+  const messageData = entity as unknown as ChatMessageEntity;
+  const media = messageData.content.media!;
 
   // Create cleaned entity without media duplication
-  // Uses Object.assign with prototype preservation to maintain entity behavior
+  // IMPORTANT: We use Object.assign with Object.create to preserve the prototype chain.
+  // This is critical for entity instances which may have methods or behaviors.
+  // A simple spread operator would lose the prototype and break entity functionality.
   const cleanedEntity = Object.assign(
     Object.create(Object.getPrototypeOf(messageData)),
     messageData,
