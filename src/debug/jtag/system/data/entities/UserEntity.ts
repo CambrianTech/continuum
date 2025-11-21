@@ -7,6 +7,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { MediaType } from './ChatMessageEntity';
 
 // User-specific types for three-tier citizen architecture
 export type UserType = 'human' | 'agent' | 'persona' | 'system';
@@ -123,6 +124,15 @@ export class UserEntity extends BaseEntity {
     capabilities?: readonly string[];
     ragCertified?: boolean;  // Has this model been tested with our complex RAG system?
     requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned
+  };
+
+  // Media configuration (for AI users that can process images/audio/video)
+  // Controls whether persona automatically loads media from tool results
+  @JsonField({ nullable: true })
+  mediaConfig?: {
+    autoLoadMedia?: boolean;             // Whether to auto-load media from tools
+    requestMediaByDefault?: boolean;     // Whether to request media by default
+    supportedMediaTypes?: readonly MediaType[];  // ['image', 'audio', 'video', 'file', 'document']
   };
 
   // Intelligence level for AI personas/agents (1-100 scale)

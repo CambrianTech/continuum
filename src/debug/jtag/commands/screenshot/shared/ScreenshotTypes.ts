@@ -8,6 +8,7 @@ import type { CommandParams, CommandResult, JTAGContext } from '../../../system/
 import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { MediaItem } from '../../../system/data/entities/ChatMessageEntity';
 
 export type ResultType = 'file' | 'bytes' | 'both';
 export type ScreenshotFormat = 'png' | 'jpeg' | 'webp';
@@ -181,6 +182,7 @@ export interface ScreenshotResult extends CommandResult {
   metadata?: ScreenshotMetadata;
   dataUrl?: string; // Browser-captured image data
   bytes?: Uint8Array; // Raw image bytes for 'bytes' or 'both' destinations
+  media?: MediaItem; // Structured media item for AI cognition
 }
 
 /**

@@ -1,6 +1,28 @@
 # Decision Adapter Implementation Plan
 
-## Context
+**Status**: SUPERSEDED by two-layer cognition architecture
+**Date**: 2025-11-16
+**Last Updated**: 2025-11-16
+
+---
+
+## ⚠️ Architecture Pivot
+
+**Original plan**: Extract decision logic into adapters (FastPathDecisionAdapter, LLMDecisionAdapter, etc.).
+
+**New understanding**: Decision adapters are a good pattern, but they're solving a symptom. The real problem is AIs have no persistent self-awareness or working memory.
+
+**NEW PRIORITY**: Build two-layer cognition architecture FIRST:
+1. **Universal Self-State** - Persistent awareness (current focus, cognitive load, preoccupations)
+2. **Domain Working Memory** - Database-backed thought storage per activity
+
+**When to revisit this**: After working memory exists, decision adapters become the "perception" layer in domain cognitive adapters. The `shouldEngageWith()` universal gate will use adapter pattern but with access to self-state and working memory.
+
+**See `COGNITION-ARCHITECTURE.md` for complete design.**
+
+---
+
+## Context (Original Plan - Still Valid Pattern)
 
 **Problem**: PersonaUser.evaluateShouldRespond() has hardcoded decision logic mixing fast-path (mention check) and LLM evaluation. This breaks cognitive architecture abstraction.
 
@@ -9,7 +31,7 @@
 **Status**:
 - ✅ Bug fix deployed (fast-path now captures RAG context for decision logging)
 - ✅ IDecisionAdapter interface created
-- 🚧 Adapters to implement
+- 🚧 Adapters to implement (DEFERRED until after working memory)
 
 ---
 

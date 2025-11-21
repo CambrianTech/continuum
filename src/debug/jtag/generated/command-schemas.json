@@ -1,0 +1,3460 @@
+{
+  "activity/user-present": {
+    "name": "activity/user-present",
+    "description": "Activity User Presence - Track user tab visibility for temperature",
+    "params": {
+      "activityId": {
+        "type": "string",
+        "required": true
+      },
+      "present": {
+        "type": "boolean",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/adapter/test": {
+    "name": "ai/adapter/test",
+    "description": "AI Adapter Self-Diagnostic Command",
+    "params": {
+      "adapter": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "model": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "capability": {
+        "type": "ModelCapability | undefined",
+        "required": false
+      },
+      "full": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "all": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/bag-of-words": {
+    "name": "ai/bag-of-words",
+    "description": "Bag of Words Command Types",
+    "params": {
+      "roomId": {
+        "type": "string",
+        "required": true
+      },
+      "personaIds": {
+        "type": "string[]",
+        "required": true
+      },
+      "initialMessage": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "maxTurns": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "strategy": {
+        "type": "\"round-robin\" | \"free-for-all\" | \"moderated\" | undefined",
+        "required": false
+      },
+      "responseDelay": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "topic": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeHumanObserver": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/cost": {
+    "name": "ai/cost",
+    "description": "AI Cost Command Types",
+    "params": {
+      "startTime": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "endTime": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "provider": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "model": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "purpose": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "groupBy": {
+        "type": "\"provider\" | \"model\" | \"user\" | \"room\" | \"purpose\" | \"hour\" | \"day\" | undefined",
+        "required": false
+      },
+      "interval": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeTimeSeries": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeBreakdown": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeTopModels": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "includeLatency": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "\"text\" | \"json\" | \"csv\" | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/dataset/create": {
+    "name": "ai/dataset/create",
+    "description": "Dataset Create Command Types",
+    "params": {
+      "project": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "source": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "outputPath": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "compression": {
+        "type": "\"gzip\" | \"bzip2\" | \"xz\" | \"none\" | undefined",
+        "required": false
+      },
+      "includeManifest": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/dataset/list": {
+    "name": "ai/dataset/list",
+    "description": "Dataset List Command Types",
+    "params": {
+      "path": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "detailed": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/embedding/generate": {
+    "name": "ai/embedding/generate",
+    "description": "Embedding Generate Command Types",
+    "params": {
+      "input": {
+        "type": "string | string[]",
+        "required": true
+      },
+      "model": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "contentType": {
+        "type": "\"text\" | \"code\" | \"documentation\" | undefined",
+        "required": false
+      },
+      "provider": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/generate": {
+    "name": "ai/generate",
+    "description": "AI Generate Command Types",
+    "params": {
+      "messages": {
+        "type": "{ role: \"user\" | \"system\" | \"assistant\"; content: string; name?: string | undefined; }[] | undefined",
+        "required": false
+      },
+      "systemPrompt": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "maxMessages": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "includeArtifacts": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeMemories": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "preview": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "model": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "temperature": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "maxTokens": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "preferredProvider": {
+        "type": "\"ollama\" | \"openai\" | \"anthropic\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/genome/stats": {
+    "name": "ai/genome/stats",
+    "description": "Genome Stats Command Types",
+    "params": {
+      "genomeId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeHistory": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "\"json\" | \"table\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/model/find": {
+    "name": "ai/model/find",
+    "description": "Model Find Command - Types",
+    "params": {
+      "capabilities": {
+        "type": "ModelCapabilities",
+        "required": true
+      },
+      "preferSmallest": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "preferLargest": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "preferFastest": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "allowFallback": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/model/list": {
+    "name": "ai/model/list",
+    "description": "Model List Command - Types",
+    "params": {
+      "capabilities": {
+        "type": "ModelCapabilities | undefined",
+        "required": false
+      },
+      "providerFilter": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeUnavailable": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/rag/index/create": {
+    "name": "ai/rag/index/create",
+    "description": "Index Create Command Types",
+    "params": {
+      "filePath": {
+        "type": "string",
+        "required": true
+      },
+      "fileType": {
+        "type": "\"json\" | \"typescript\" | \"markdown\" | \"javascript\"",
+        "required": true
+      },
+      "content": {
+        "type": "string",
+        "required": true
+      },
+      "summary": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "startLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "endLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "exportType": {
+        "type": "CodeExportType | undefined",
+        "required": false
+      },
+      "exportName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "embedding": {
+        "type": "number[] | undefined",
+        "required": false
+      },
+      "embeddingModel": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "imports": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "exports": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "tags": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/rag/index-codebase": {
+    "name": "ai/rag/index-codebase",
+    "description": "Codebase Index Command Types",
+    "params": {
+      "paths": {
+        "type": "string[]",
+        "required": true
+      },
+      "fileTypes": {
+        "type": "(\"json\" | \"typescript\" | \"markdown\" | \"javascript\")[] | undefined",
+        "required": false
+      },
+      "recursive": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "updateExisting": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "generateEmbeddings": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "embeddingModel": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/rag/inspect": {
+    "name": "ai/rag/inspect",
+    "description": "RAG Inspect Command Types",
+    "params": {
+      "contextId": {
+        "type": "string",
+        "required": true
+      },
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "maxMessages": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "includeArtifacts": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeMemories": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "triggerMessageId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/rag/query-close": {
+    "name": "ai/rag/query-close",
+    "description": "RAG Query Close Command Types",
+    "params": {
+      "queryHandle": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/rag/query-fetch": {
+    "name": "ai/rag/query-fetch",
+    "description": "RAG Query Fetch Command Types",
+    "params": {
+      "queryHandle": {
+        "type": "string",
+        "required": true
+      },
+      "offset": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "direction": {
+        "type": "\"forward\" | \"backward\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/rag/query-open": {
+    "name": "ai/rag/query-open",
+    "description": "RAG Query Open Command Types",
+    "params": {
+      "query": {
+        "type": "string",
+        "required": true
+      },
+      "queryEmbedding": {
+        "type": "number[] | undefined",
+        "required": false
+      },
+      "embeddingModel": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "fileType": {
+        "type": "\"json\" | \"typescript\" | \"markdown\" | \"javascript\" | undefined",
+        "required": false
+      },
+      "exportType": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "minRelevance": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "pageSize": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/report/decisions": {
+    "name": "ai/report/decisions",
+    "description": "Decision Report Command Types",
+    "params": {
+      "startDate": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "endDate": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "actors": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "actions": {
+        "type": "DecisionAction[] | undefined",
+        "required": false
+      },
+      "minConfidence": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "output": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "groupByActor": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/report": {
+    "name": "ai/report",
+    "description": "AI Report Command Types",
+    "params": {
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaUniqueId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "since": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "until": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeTimeline": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeContextAnalysis": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "detectIssues": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "recreateDecision": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "\"text\" | \"json\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/should-respond": {
+    "name": "ai/should-respond",
+    "description": "AI Should-Respond Command Types",
+    "params": {
+      "personaName": {
+        "type": "string",
+        "required": true
+      },
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "contextId": {
+        "type": "string",
+        "required": true
+      },
+      "ragContext": {
+        "type": "RAGContext | undefined",
+        "required": false
+      },
+      "triggerMessage": {
+        "type": "{ readonly senderName: string; readonly content: string; readonly timestamp: string; }",
+        "required": true
+      },
+      "strategy": {
+        "type": "ResponseStrategy | undefined",
+        "required": false
+      },
+      "model": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "domainKeywords": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "responseThreshold": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/should-respond-fast": {
+    "name": "ai/should-respond-fast",
+    "description": "AI Should Respond Fast - Types",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "contextId": {
+        "type": "string",
+        "required": true
+      },
+      "messageId": {
+        "type": "string",
+        "required": true
+      },
+      "messageText": {
+        "type": "string",
+        "required": true
+      },
+      "senderId": {
+        "type": "string",
+        "required": true
+      },
+      "senderName": {
+        "type": "string",
+        "required": true
+      },
+      "config": {
+        "type": "Partial<PersonaResponseConfig> | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/status": {
+    "name": "ai/status",
+    "description": "AI Status Command Types",
+    "params": {
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeInactive": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/thoughtstream": {
+    "name": "ai/thoughtstream",
+    "description": "AI ThoughtStream Command Types",
+    "params": {
+      "messageId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "since": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "showContent": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "showRagContext": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "showPrompts": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "ai/validate-response": {
+    "name": "ai/validate-response",
+    "description": "AI Validate-Response Command Types",
+    "params": {
+      "generatedResponse": {
+        "type": "string",
+        "required": true
+      },
+      "originalQuestion": {
+        "type": "string",
+        "required": true
+      },
+      "questionSender": {
+        "type": "string",
+        "required": true
+      },
+      "conversationContext": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "model": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "chat/export": {
+    "name": "chat/export",
+    "description": "Chat Export Command",
+    "params": {
+      "room": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "afterMessageId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "afterTimestamp": {
+        "type": "string | Date | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "output": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeSystem": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeTests": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "filter": {
+        "type": "Record<string, any> | undefined",
+        "required": false
+      },
+      "collection": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeThreading": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "chat/poll": {
+    "name": "chat/poll",
+    "description": "Chat Poll Command Types - Get messages after a specific messageId",
+    "params": {
+      "afterMessageId": {
+        "type": "string",
+        "required": true
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "room": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "chat/send": {
+    "name": "chat/send",
+    "description": "Chat Send Command",
+    "params": {
+      "message": {
+        "type": "string",
+        "required": true
+      },
+      "room": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "senderId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "replyToId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "isSystemTest": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "click": {
+    "name": "click",
+    "description": "Click Command - Shared Types for Element Interaction",
+    "params": {
+      "selector": {
+        "type": "string",
+        "required": true
+      },
+      "button": {
+        "type": "\"left\" | \"right\" | \"middle\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "shadowRoot": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "innerSelector": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/find": {
+    "name": "code/find",
+    "description": "code/find command types - Find files by name pattern",
+    "params": {}
+  },
+  "code/read": {
+    "name": "code/read",
+    "description": "code/read command types",
+    "params": {}
+  },
+  "compile-typescript": {
+    "name": "compile-typescript",
+    "description": "Compile TypeScript Command - Shared Types",
+    "params": {
+      "source": {
+        "type": "string",
+        "required": true
+      },
+      "filename": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "outputPath": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "strict": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "target": {
+        "type": "\"es5\" | \"es2015\" | \"es2020\" | \"esnext\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "continuum/emotion": {
+    "name": "continuum/emotion",
+    "description": "continuum/emotion command",
+    "params": {
+      "emoji": {
+        "type": "string",
+        "required": true
+      },
+      "color": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "duration": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/clear": {
+    "name": "data/clear",
+    "description": "Data Clear Command - Shared Types",
+    "params": {}
+  },
+  "data/close": {
+    "name": "data/close",
+    "description": "Data Close Command - Shared Types",
+    "params": {
+      "dbHandle": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  "data/create": {
+    "name": "data/create",
+    "description": "Data Create Command - Shared Types",
+    "params": {
+      "data": {
+        "type": "T",
+        "required": true
+      },
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "dbHandle": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/delete": {
+    "name": "data/delete",
+    "description": "Data Delete Command Types - Universal Delete Interface",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "id": {
+        "type": "string",
+        "required": true
+      },
+      "format": {
+        "type": "\"json\" | \"table\" | \"yaml\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/list": {
+    "name": "data/list",
+    "description": "Data List Command - Shared Types",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "filter": {
+        "type": "Record<string, any> | undefined",
+        "required": false
+      },
+      "orderBy": {
+        "type": "{ field: string; direction: \"asc\" | \"desc\"; }[] | undefined",
+        "required": false
+      },
+      "convertToDomain": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "cursor": {
+        "type": "{ readonly field: string; readonly value: any; readonly direction: \"before\" | \"after\"; } | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/list-handles": {
+    "name": "data/list-handles",
+    "description": "Data List-Handles Command - Shared Types",
+    "params": {}
+  },
+  "data/open": {
+    "name": "data/open",
+    "description": "Data Open Command - Shared Types",
+    "params": {
+      "adapter": {
+        "type": "AdapterType",
+        "required": true
+      },
+      "config": {
+        "type": "AdapterConfig",
+        "required": true
+      }
+    }
+  },
+  "data/query-close": {
+    "name": "data/query-close",
+    "description": "Data Query Close Command Types",
+    "params": {
+      "queryHandle": {
+        "type": "string",
+        "required": true
+      },
+      "collection": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  "data/query-next": {
+    "name": "data/query-next",
+    "description": "Data Query Next Command Types",
+    "params": {
+      "queryHandle": {
+        "type": "string",
+        "required": true
+      },
+      "collection": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  "data/query-open": {
+    "name": "data/query-open",
+    "description": "Data Query Open Command Types",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "filter": {
+        "type": "Record<string, any> | undefined",
+        "required": false
+      },
+      "orderBy": {
+        "type": "{ field: string; direction: \"asc\" | \"desc\"; }[] | undefined",
+        "required": false
+      },
+      "pageSize": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/read": {
+    "name": "data/read",
+    "description": "Data Read Command - Shared Types",
+    "params": {
+      "id": {
+        "type": "string",
+        "required": true
+      },
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "dbHandle": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/schema": {
+    "name": "data/schema",
+    "description": "Data Schema Command - Entity Schema Introspection",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "examples": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "sql": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "validateData": {
+        "type": "Record<string, unknown> | undefined",
+        "required": false
+      }
+    }
+  },
+  "data": {
+    "name": "data",
+    "description": "Base Data Command Types - Generic Abstractions",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "dbHandle": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "data/truncate": {
+    "name": "data/truncate",
+    "description": "Data Truncate Command - Shared Types",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      }
+    }
+  },
+  "data/update": {
+    "name": "data/update",
+    "description": "Data Update Command Types - Universal Update Interface",
+    "params": {
+      "id": {
+        "type": "string",
+        "required": true
+      },
+      "data": {
+        "type": "Partial<T>",
+        "required": true
+      },
+      "format": {
+        "type": "\"json\" | \"table\" | \"yaml\" | undefined",
+        "required": false
+      },
+      "incrementVersion": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "dbHandle": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/academy-sessions": {
+    "name": "debug/academy-sessions",
+    "description": "Academy Sessions Debug Command Types",
+    "params": {
+      "teacherId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "studentId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "curriculum": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "status": {
+        "type": "\"active\" | \"paused\" | \"completed\" | \"archived\" | undefined",
+        "required": false
+      },
+      "showMetrics": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "showObjectives": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "exportFormat": {
+        "type": "\"json\" | \"table\" | \"summary\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/artifacts-check": {
+    "name": "debug/artifacts-check",
+    "description": "Debug command to check if ArtifactsDaemon is working",
+    "params": {
+      "testFile": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/chat-send": {
+    "name": "debug/chat-send",
+    "description": "Chat Send Debug Command Types",
+    "params": {
+      "message": {
+        "type": "string",
+        "required": true
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/content-types": {
+    "name": "debug/content-types",
+    "description": "ContentTypes Debug Command Types",
+    "params": {
+      "listAll": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "showInactive": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "contentType": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "validateConfig": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "seedDefaults": {
+        "type": "boolean | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/crud-sync": {
+    "name": "debug/crud-sync",
+    "description": "CRUD Sync Debug Command Types",
+    "params": {
+      "collections": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "includeDatabase": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "maxItems": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/error": {
+    "name": "debug/error",
+    "description": "Test Error Command Types - Enhanced",
+    "params": {
+      "errorType": {
+        "type": "ErrorTrigger",
+        "required": true
+      },
+      "level": {
+        "type": "ErrorLevel | undefined",
+        "required": false
+      },
+      "environment": {
+        "type": "\"server\" | \"browser\" | \"both\" | undefined",
+        "required": false
+      },
+      "errorMessage": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "delay": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "recoverable": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "shouldThrow": {
+        "type": "boolean | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/html-inspector": {
+    "name": "debug/html-inspector",
+    "description": "HTML Inspector Types - Shadow DOM debugging",
+    "params": {
+      "selector": {
+        "type": "string",
+        "required": true
+      },
+      "includeStyles": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "maxDepth": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/scroll-test": {
+    "name": "debug/scroll-test",
+    "description": "Scroll Test Debug Command Types - Clean Testing Interface",
+    "params": {
+      "target": {
+        "type": "\"top\" | \"bottom\" | \"position\"",
+        "required": true
+      },
+      "position": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "behavior": {
+        "type": "\"smooth\" | \"instant\" | \"auto\" | undefined",
+        "required": false
+      },
+      "selector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "waitTime": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "captureMetrics": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "repeat": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "preset": {
+        "type": "\"chat-top\" | \"chat-bottom\" | \"instant-top\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/widget-css": {
+    "name": "debug/widget-css",
+    "description": "Debug Command: widget-css",
+    "params": {
+      "widgetSelector": {
+        "type": "string",
+        "required": true
+      },
+      "cssContent": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "cssFile": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "screenshot": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "filename": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "extract": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "mode": {
+        "type": "CSSInjectionMode | undefined",
+        "required": false
+      },
+      "clearExisting": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "showBoundingBoxes": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "highlightFlexboxes": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "animateChanges": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "multiWidget": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/widget-events": {
+    "name": "debug/widget-events",
+    "description": "Widget Events Debug Command Types",
+    "params": {
+      "widgetSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "eventName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeHandlers": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "testServerEvents": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/widget-interact": {
+    "name": "debug/widget-interact",
+    "description": "Widget Interaction Command Types",
+    "params": {
+      "widgetSelector": {
+        "type": "string",
+        "required": true
+      },
+      "action": {
+        "type": "WidgetInteractionType",
+        "required": true
+      },
+      "elementSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "text": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "methodName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "methodArgs": {
+        "type": "any[] | undefined",
+        "required": false
+      },
+      "propertyName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "propertyValue": {
+        "type": "any",
+        "required": false
+      },
+      "screenshotBefore": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "screenshotAfter": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "screenshotFilename": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "verifyResult": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "expectedChange": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "debug/widget-state": {
+    "name": "debug/widget-state",
+    "description": "Widget State Debug Command Types",
+    "params": {
+      "widgetSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeMessages": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "testDataConnectivity": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeEventListeners": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeDomInfo": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeDimensions": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "extractRowData": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "rowSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "countOnly": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "decision/finalize": {
+    "name": "decision/finalize",
+    "description": "decision/finalize - Types",
+    "params": {
+      "proposalId": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "decision/propose": {
+    "name": "decision/propose",
+    "description": "decision/propose - Create a new decision proposal with ranked-choice voting",
+    "params": {
+      "topic": {
+        "type": "string",
+        "required": true
+      },
+      "rationale": {
+        "type": "string",
+        "required": true
+      },
+      "tags": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "options": {
+        "type": "{ label: string; description: string; proposedBy?: string | undefined; }[]",
+        "required": true
+      },
+      "scope": {
+        "type": "ProposalScope | undefined",
+        "required": false
+      },
+      "significanceLevel": {
+        "type": "SignificanceLevel | undefined",
+        "required": false
+      },
+      "proposerId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "contextId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "decision/rank": {
+    "name": "decision/rank",
+    "description": "decision/rank - Types",
+    "params": {
+      "proposalId": {
+        "type": "string",
+        "required": true
+      },
+      "rankedChoices": {
+        "type": "string[]",
+        "required": true
+      },
+      "voterId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "exec": {
+    "name": "exec",
+    "description": "ExecCommand Types - Universal Script Execution System",
+    "params": {
+      "code": {
+        "type": "CodeInput",
+        "required": true
+      },
+      "targetEnvironment": {
+        "type": "JTAGEnvironment | \"both\" | \"auto\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "parameters": {
+        "type": "Record<string, any> | undefined",
+        "required": false
+      },
+      "allowNetworkRequests": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "allowFileSystemAccess": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "allowDOMManipulation": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "allowJTAGCommandAccess": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "result": {
+        "type": "any",
+        "required": false
+      },
+      "executedAt": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "executedIn": {
+        "type": "\"server\" | \"browser\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "file/append": {
+    "name": "file/append",
+    "description": "FileAppend Types - Elegant Inheritance from File Base Types",
+    "params": {
+      "content": {
+        "type": "string",
+        "required": true
+      },
+      "createIfMissing": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "filepath": {
+        "type": "string",
+        "required": true
+      },
+      "encoding": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "file/load": {
+    "name": "file/load",
+    "description": "FileLoad Types - Elegant Inheritance from File Base Types",
+    "params": {
+      "filepath": {
+        "type": "string",
+        "required": true
+      },
+      "encoding": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "file/save": {
+    "name": "file/save",
+    "description": "FileSave Types - Generic Inheritance from File Base Types",
+    "params": {
+      "content": {
+        "type": "string | Buffer<ArrayBufferLike>",
+        "required": true
+      },
+      "createDirs": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "filepath": {
+        "type": "string",
+        "required": true
+      },
+      "encoding": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "file": {
+    "name": "file",
+    "description": "File Command Base Types - Generic Foundation for File Operations",
+    "params": {
+      "filepath": {
+        "type": "string",
+        "required": true
+      },
+      "encoding": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/batch-micro-tune": {
+    "name": "genome/batch-micro-tune",
+    "description": "GenomeBatchMicroTuneTypes - Lightweight in-recipe LoRA updates",
+    "params": {
+      "domain": {
+        "type": "string",
+        "required": true
+      },
+      "roleId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "loraAdapter": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "forceUpdate": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "qualityThreshold": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "maxExamples": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/capture-feedback": {
+    "name": "genome/capture-feedback",
+    "description": "GenomeCaptureFeedbackTypes - Capture feedback between PersonaUsers",
+    "params": {
+      "interactionId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "targetRole": {
+        "type": "string",
+        "required": true
+      },
+      "targetPersonaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "feedbackRole": {
+        "type": "string",
+        "required": true
+      },
+      "feedbackPersonaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "domain": {
+        "type": "string",
+        "required": true
+      },
+      "feedbackType": {
+        "type": "FeedbackType",
+        "required": true
+      },
+      "feedbackContent": {
+        "type": "string",
+        "required": true
+      },
+      "qualityScore": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "wasHelpful": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "metadata": {
+        "type": "{ [key: string]: unknown; messageId?: string | undefined; contextId?: string | undefined; recipeId?: string | undefined; timestamp?: string | undefined; } | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/capture-interaction": {
+    "name": "genome/capture-interaction",
+    "description": "GenomeCaptureInteractionTypes - Capture AI interactions for continuous learning",
+    "params": {
+      "roleId": {
+        "type": "string",
+        "required": true
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "domain": {
+        "type": "string",
+        "required": true
+      },
+      "loraAdapter": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "input": {
+        "type": "string",
+        "required": true
+      },
+      "output": {
+        "type": "string",
+        "required": true
+      },
+      "thoughtStream": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "metadata": {
+        "type": "{ [key: string]: unknown; roomId?: string | undefined; messageId?: string | undefined; contextId?: string | undefined; recipeId?: string | undefined; timestamp?: string | undefined; } | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/job-create": {
+    "name": "genome/job-create",
+    "description": "GenomeJobCreateTypes - Create fine-tuning jobs with comprehensive configuration",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "provider": {
+        "type": "string",
+        "required": true
+      },
+      "configuration": {
+        "type": "JobConfiguration",
+        "required": true
+      },
+      "trainingFileId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "validationFileId": {
+        "type": "string | null | undefined",
+        "required": false
+      },
+      "skipValidation": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/job-status": {
+    "name": "genome/job-status",
+    "description": "GenomeJobStatusTypes - Query fine-tuning job status",
+    "params": {
+      "jobId": {
+        "type": "string",
+        "required": true
+      },
+      "refresh": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/multi-agent-learn": {
+    "name": "genome/multi-agent-learn",
+    "description": "GenomeMultiAgentLearnTypes - Multi-agent collaborative learning",
+    "params": {
+      "domain": {
+        "type": "string",
+        "required": true
+      },
+      "outcome": {
+        "type": "CollaborativeOutcome",
+        "required": true
+      },
+      "participants": {
+        "type": "{ [roleId: string]: ParticipantLearning; }",
+        "required": true
+      },
+      "trainingMode": {
+        "type": "\"immediate\" | \"queued\" | undefined",
+        "required": false
+      },
+      "metadata": {
+        "type": "{ [key: string]: unknown; recipeId?: string | undefined; contextId?: string | undefined; sessionId?: string | undefined; timestamp?: string | undefined; } | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/paging-activate": {
+    "name": "genome/paging-activate",
+    "description": "Genome Activate Command Types",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "adapterId": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/paging-adapter-register": {
+    "name": "genome/paging-adapter-register",
+    "description": "Genome Paging Adapter Register Command Types",
+    "params": {
+      "adapterId": {
+        "type": "string",
+        "required": true
+      },
+      "name": {
+        "type": "string",
+        "required": true
+      },
+      "domain": {
+        "type": "string",
+        "required": true
+      },
+      "sizeMB": {
+        "type": "number",
+        "required": true
+      },
+      "priority": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/paging-deactivate": {
+    "name": "genome/paging-deactivate",
+    "description": "Genome Deactivate Command Types",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "adapterId": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/paging-register": {
+    "name": "genome/paging-register",
+    "description": "Genome Register Command Types",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "displayName": {
+        "type": "string",
+        "required": true
+      },
+      "quotaMB": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "priority": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/paging-stats": {
+    "name": "genome/paging-stats",
+    "description": "Genome Stats Command Types",
+    "params": {
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome/paging-unregister": {
+    "name": "genome/paging-unregister",
+    "description": "Genome Unregister Command Types",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "genome": {
+    "name": "genome",
+    "description": "Genome Command Types",
+    "params": {
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "adapterId": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "get-text": {
+    "name": "get-text",
+    "description": "get-text command",
+    "params": {
+      "selector": {
+        "type": "string",
+        "required": true
+      },
+      "trim": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "innerText": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "help": {
+    "name": "help",
+    "description": "Help Command Types",
+    "params": {
+      "commandName": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "list": {
+    "name": "list",
+    "description": "List Command Types - Command Discovery Interface",
+    "params": {
+      "includeDescription": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "includeSignature": {
+        "type": "boolean | undefined",
+        "required": false
+      }
+    }
+  },
+  "media/process": {
+    "name": "media/process",
+    "description": "Media Process Command Types",
+    "params": {
+      "inputPath": {
+        "type": "string",
+        "required": true
+      },
+      "outputPath": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "speed": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "stripAudio": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "extractAudio": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "audioPath": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "volume": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "MediaFormat | undefined",
+        "required": false
+      },
+      "quality": {
+        "type": "QualityPreset | undefined",
+        "required": false
+      },
+      "videoCodec": {
+        "type": "VideoCodec | undefined",
+        "required": false
+      },
+      "audioCodec": {
+        "type": "AudioCodec | undefined",
+        "required": false
+      },
+      "videoBitrate": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "audioBitrate": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "resolution": {
+        "type": "{ width: number; height: number; } | undefined",
+        "required": false
+      },
+      "scale": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "trim": {
+        "type": "{ start: number; end: number; } | undefined",
+        "required": false
+      },
+      "trimTime": {
+        "type": "{ start: string; end: string; } | undefined",
+        "required": false
+      },
+      "rotate": {
+        "type": "90 | 180 | 270 | undefined",
+        "required": false
+      },
+      "flipHorizontal": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "flipVertical": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "gifFps": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "gifMaxWidth": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "customArgs": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "checkDependency": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "installDependencies": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "minVersion": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "emitProgress": {
+        "type": "boolean | undefined",
+        "required": false
+      }
+    }
+  },
+  "navigate": {
+    "name": "navigate",
+    "description": "Navigate Command - Shared Types for Browser Navigation",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "waitForSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "target": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "ping": {
+    "name": "ping",
+    "description": "Include detailed AI persona health status",
+    "params": {
+      "server": {
+        "type": "ServerEnvironmentInfo | undefined",
+        "required": false
+      },
+      "browser": {
+        "type": "BrowserEnvironmentInfo | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "pipe/chain": {
+    "name": "pipe/chain",
+    "description": "Pipe Chain Command Types",
+    "params": {
+      "commands": {
+        "type": "string",
+        "required": true
+      },
+      "errorHandling": {
+        "type": "\"stop\" | \"continue\" | \"collect\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "showIntermediate": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "\"text\" | \"json\" | \"auto\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "process-registry": {
+    "name": "process-registry",
+    "description": "Process Registry Command Types - Shared",
+    "params": {
+      "processType": {
+        "type": "ProcessType",
+        "required": true
+      },
+      "description": {
+        "type": "string",
+        "required": true
+      },
+      "ports": {
+        "type": "readonly number[] | undefined",
+        "required": false
+      },
+      "capabilities": {
+        "type": "readonly ProcessCapability[] | undefined",
+        "required": false
+      },
+      "parentProcessId": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "proxy-navigate": {
+    "name": "proxy-navigate",
+    "description": "Proxy Navigate Command - Shared Types",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "target": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "rewriteUrls": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "userAgent": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "rag/budget": {
+    "name": "rag/budget",
+    "description": "RAG Budget Command - Calculate token budget for RAG context",
+    "params": {
+      "model": {
+        "type": "string",
+        "required": true
+      },
+      "maxTokens": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "systemPromptTokens": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "targetUtilization": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "avgTokensPerMessage": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "rag/load": {
+    "name": "rag/load",
+    "description": "RAG Load Command - Test incremental message loading with token counting",
+    "params": {
+      "roomId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "room": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "model": {
+        "type": "string",
+        "required": true
+      },
+      "maxTokens": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "systemPromptTokens": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "targetUtilization": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "showMessageContent": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "recipe/load": {
+    "name": "recipe/load",
+    "description": "Recipe Load Command Types",
+    "params": {
+      "recipeId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "loadAll": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "reload": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "schema/generate": {
+    "name": "schema/generate",
+    "description": "Schema Generate Command Types",
+    "params": {
+      "pattern": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "interface": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "file": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "output": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "rootDir": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "screenshot": {
+    "name": "screenshot",
+    "description": "Screenshot Command - Shared Types",
+    "params": {
+      "filename": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "selector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "querySelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "elementName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "options": {
+        "type": "ScreenshotOptions | undefined",
+        "required": false
+      },
+      "cropX": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "cropY": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "cropWidth": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "cropHeight": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "width": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "height": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "scale": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "quality": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "maxFileSize": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "ScreenshotFormat | undefined",
+        "required": false
+      },
+      "destination": {
+        "type": "ScreenshotDestination | undefined",
+        "required": false
+      },
+      "resultType": {
+        "type": "ResultType",
+        "required": true
+      },
+      "dataUrl": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "metadata": {
+        "type": "ScreenshotMetadata | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "scroll": {
+    "name": "scroll",
+    "description": "scroll command",
+    "params": {
+      "x": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "y": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "selector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "behavior": {
+        "type": "\"smooth\" | \"instant\" | \"auto\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "security/setup": {
+    "name": "security/setup",
+    "description": "security/setup command",
+    "params": {
+      "statusOnly": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "component": {
+        "type": "\"all\" | \"monitor\" | \"proxy\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "session/create": {
+    "name": "session/create",
+    "description": "Session Create Command Types - Shared",
+    "params": {
+      "category": {
+        "type": "SessionCategory",
+        "required": true
+      },
+      "displayName": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "isShared": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "connectionContext": {
+        "type": "{ [key: string]: unknown; uniqueId?: string | undefined; } | undefined",
+        "required": false
+      }
+    }
+  },
+  "session/destroy": {
+    "name": "session/destroy",
+    "description": "Session Destroy Command Types",
+    "params": {
+      "reason": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "state/create": {
+    "name": "state/create",
+    "description": "State Create Command - Shared Types",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "data": {
+        "type": "Partial<T>",
+        "required": true
+      },
+      "id": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "state/get": {
+    "name": "state/get",
+    "description": "State Get Command - Shared Types",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "filter": {
+        "type": "Record<string, any> | undefined",
+        "required": false
+      },
+      "orderBy": {
+        "type": "{ field: string; direction: \"asc\" | \"desc\"; }[] | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "state/update": {
+    "name": "state/update",
+    "description": "State Update Types - User-aware entity updates",
+    "params": {
+      "collection": {
+        "type": "string",
+        "required": true
+      },
+      "id": {
+        "type": "string",
+        "required": true
+      },
+      "data": {
+        "type": "Partial<T>",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "system/daemons": {
+    "name": "system/daemons",
+    "description": "Daemons Command Types",
+    "params": {
+      "nameFilter": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "statusOnly": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "task/complete": {
+    "name": "task/complete",
+    "description": "TaskCompleteTypes - Mark tasks as completed (or failed)",
+    "params": {
+      "taskId": {
+        "type": "string",
+        "required": true
+      },
+      "success": {
+        "type": "boolean",
+        "required": true
+      },
+      "output": {
+        "type": "unknown",
+        "required": false
+      },
+      "error": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "metrics": {
+        "type": "{ tokensUsed?: number | undefined; latencyMs?: number | undefined; confidence?: number | undefined; } | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "task/create": {
+    "name": "task/create",
+    "description": "TaskCreateTypes - Create new tasks for PersonaUsers",
+    "params": {
+      "assigneeId": {
+        "type": "string",
+        "required": true
+      },
+      "domain": {
+        "type": "TaskDomain",
+        "required": true
+      },
+      "taskType": {
+        "type": "TaskType",
+        "required": true
+      },
+      "contextId": {
+        "type": "string",
+        "required": true
+      },
+      "description": {
+        "type": "string",
+        "required": true
+      },
+      "priority": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "dueDate": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "estimatedDuration": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "dependsOn": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "metadata": {
+        "type": "Record<string, unknown> | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "task/list": {
+    "name": "task/list",
+    "description": "TaskListTypes - List tasks for PersonaUsers",
+    "params": {
+      "assigneeId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "status": {
+        "type": "TaskStatus | TaskStatus[] | undefined",
+        "required": false
+      },
+      "domain": {
+        "type": "TaskDomain | undefined",
+        "required": false
+      },
+      "taskType": {
+        "type": "TaskType | undefined",
+        "required": false
+      },
+      "contextId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "createdBy": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "sortBy": {
+        "type": "\"priority\" | \"created\" | \"dueDate\" | \"status\" | undefined",
+        "required": false
+      },
+      "sortOrder": {
+        "type": "\"asc\" | \"desc\" | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "test/routing-chaos": {
+    "name": "test/routing-chaos",
+    "description": "Routing Chaos Test Types - Complex Multi-Hop Routing Validation",
+    "params": {
+      "testId": {
+        "type": "string",
+        "required": true
+      },
+      "hopCount": {
+        "type": "number",
+        "required": true
+      },
+      "maxHops": {
+        "type": "number",
+        "required": true
+      },
+      "routingPath": {
+        "type": "string[]",
+        "required": true
+      },
+      "currentEnvironment": {
+        "type": "\"server\" | \"browser\"",
+        "required": true
+      },
+      "targetEnvironment": {
+        "type": "\"server\" | \"browser\" | undefined",
+        "required": false
+      },
+      "failureRate": {
+        "type": "number",
+        "required": true
+      },
+      "delayRange": {
+        "type": "[number, number]",
+        "required": true
+      },
+      "payloadSize": {
+        "type": "\"medium\" | \"small\" | \"large\"",
+        "required": true
+      },
+      "testStartTime": {
+        "type": "string",
+        "required": true
+      },
+      "correlationTrace": {
+        "type": "string[]",
+        "required": true
+      }
+    }
+  },
+  "test/run/suite": {
+    "name": "test/run/suite",
+    "description": "Test Run Suite Command Types",
+    "params": {
+      "profile": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "tests": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "parallel": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "parallelism": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "format": {
+        "type": "\"text\" | \"json\" | \"summary\" | \"detailed\" | undefined",
+        "required": false
+      },
+      "verbose": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "failFast": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "save": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "name": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "test": {
+    "name": "test",
+    "description": "Test Command Types - Shared type definitions",
+    "params": {
+      "file": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "_": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "theme/get": {
+    "name": "theme/get",
+    "description": "ThemeGet Types - Theme getting command types",
+    "params": {
+      "timestamp": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "theme/list": {
+    "name": "theme/list",
+    "description": "ThemeList Types - Theme listing command types",
+    "params": {
+      "category": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeManifests": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timestamp": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "theme/set": {
+    "name": "theme/set",
+    "description": "ThemeSet Types - Theme setting command types",
+    "params": {
+      "themeName": {
+        "type": "string",
+        "required": true
+      },
+      "timestamp": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "theme": {
+    "name": "theme",
+    "description": "Theme Command Types - Base types for theme operations",
+    "params": {
+      "timestamp": {
+        "type": "string | undefined",
+        "required": false
+      }
+    }
+  },
+  "training/import": {
+    "name": "training/import",
+    "description": "Training Import Command - Shared Types",
+    "params": {
+      "jsonlPath": {
+        "type": "string",
+        "required": true
+      },
+      "outputPath": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "datasetName": {
+        "type": "string",
+        "required": true
+      },
+      "targetSkill": {
+        "type": "string",
+        "required": true
+      },
+      "batchSize": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "maxExamples": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "createIndices": {
+        "type": "boolean | undefined",
+        "required": false
+      }
+    }
+  },
+  "tree": {
+    "name": "tree",
+    "description": "Tree Command Types",
+    "params": {
+      "filter": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "showDescriptions": {
+        "type": "boolean | undefined",
+        "required": false,
+        "description": [
+          {
+            "text": "false",
+            "kind": "text"
+          }
+        ]
+      },
+      "maxDepth": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "type": {
+    "name": "type",
+    "description": "type command",
+    "params": {
+      "selector": {
+        "type": "string",
+        "required": true
+      },
+      "text": {
+        "type": "string",
+        "required": true
+      },
+      "clearFirst": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "delay": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "user/create": {
+    "name": "user/create",
+    "description": "User Create Command - Shared Types",
+    "params": {
+      "type": {
+        "type": "UserType",
+        "required": true
+      },
+      "displayName": {
+        "type": "string",
+        "required": true
+      },
+      "uniqueId": {
+        "type": "string",
+        "required": true
+      },
+      "addToRooms": {
+        "type": "readonly string[] | undefined",
+        "required": false
+      },
+      "provider": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "modelConfig": {
+        "type": "ModelConfig | undefined",
+        "required": false
+      },
+      "capabilities": {
+        "type": "UserCapabilities | undefined",
+        "required": false
+      },
+      "status": {
+        "type": "\"online\" | \"away\" | \"offline\" | undefined",
+        "required": false
+      },
+      "intelligenceLevel": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "vote/propose": {
+    "name": "vote/propose",
+    "description": "Vote Propose Command Types",
+    "params": {
+      "filepath": {
+        "type": "string",
+        "required": true
+      },
+      "operation": {
+        "type": "FileOperation",
+        "required": true
+      },
+      "content": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "reason": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "votingWindowSeconds": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "threshold": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "quorum": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "wait-for-element": {
+    "name": "wait-for-element",
+    "description": "wait-for-element command",
+    "params": {
+      "selector": {
+        "type": "string",
+        "required": true
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "visible": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "interval": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "web/fetch": {
+    "name": "web/fetch",
+    "description": "Web Fetch Command Types",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "format": {
+        "type": "\"text\" | \"markdown\" | \"html\" | undefined",
+        "required": false
+      },
+      "maxLength": {
+        "type": "number | undefined",
+        "required": false
+      }
+    }
+  },
+  "web/search": {
+    "name": "web/search",
+    "description": "Web Search Command Types",
+    "params": {
+      "query": {
+        "type": "string",
+        "required": true
+      },
+      "maxResults": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "domains": {
+        "type": "string[] | undefined",
+        "required": false
+      }
+    }
+  }
+}

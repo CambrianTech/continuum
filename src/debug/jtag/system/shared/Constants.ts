@@ -44,7 +44,10 @@ export const PATHS = {
   MEDIA_TEMP: '.continuum/media/temp',
 
   /** Legacy (for migration) */
-  LEGACY_DB: '.continuum/database/continuum.db'
+  LEGACY_DB: '.continuum/database/continuum.db',
+
+  /** Default working directory for shell commands */
+  DEFAULT_WORKING_DIR: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
 } as const;
 
 /**
@@ -74,7 +77,36 @@ export const COLLECTIONS = {
   FINE_TUNED_MODELS: 'fine_tuned_models',
   TRAINING_CHECKPOINTS: 'training_checkpoints',
   TRAINING_DATASETS: 'training_datasets',
-  CODE_INDEX: 'code_index'
+  CODE_INDEX: 'code_index',
+
+  // Cognition System Collections (Phase 1: Agent Architecture)
+  PERSONA_SELF_STATE: 'persona_self_state',
+  PERSONA_WORKING_MEMORY: 'persona_working_memory',
+  PERSONA_EXPERIENCES: 'persona_experiences',
+  PERSONA_PROCEDURES: 'persona_procedures',
+  PERSONA_PLANS: 'persona_plans',
+  PERSONA_LEARNINGS: 'persona_learnings',
+  USER_PROFILES: 'user_profiles',
+
+  // Cognition Observability Collections (Phase 1B: Monitoring)
+  COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
+  COGNITION_PLAN_RECORDS: 'cognition_plan_records',
+
+  // Detailed Activity Logs (Phase 2: Complete Observability)
+  TOOL_EXECUTION_LOGS: 'tool_execution_logs',
+  ADAPTER_DECISION_LOGS: 'adapter_decision_logs',
+  RESPONSE_GENERATION_LOGS: 'response_generation_logs',
+
+  // Granular Cognitive Logs (Phase 3: Deep Observability)
+  COGNITION_PLAN_STEP_EXECUTIONS: 'cognition_plan_step_executions',
+  COGNITION_SELF_STATE_UPDATES: 'cognition_self_state_updates',
+  COGNITION_MEMORY_OPERATIONS: 'cognition_memory_operations',
+  ADAPTER_REASONING_LOGS: 'adapter_reasoning_logs',
+  COGNITION_PLAN_REPLANS: 'cognition_plan_replans',
+
+  // Democratic Voting System
+  FILE_VOTE_PROPOSALS: 'file_vote_proposals',
+  DECISION_PROPOSALS: 'decision_proposals'
 } as const;
 
 /**
@@ -156,7 +188,7 @@ export const MODEL_IDS = {
 
   /** xAI models */
   XAI: {
-    GROK_BETA: 'grok-beta',
+    GROK_3: 'grok-3',  // Updated from grok-beta (deprecated 2025-09-15)
     GROK_4: 'grok-4'
   },
 

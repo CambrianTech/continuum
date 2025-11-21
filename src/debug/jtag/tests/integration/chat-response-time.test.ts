@@ -54,10 +54,10 @@ async function sendMessageAndWaitForResponse(
 
     console.log(`📊 Messages before: ${messagesBefore}`);
 
-    // Send message using proper debug/chat-send command
+    // Send message using proper chat/send command
     console.log(`📨 Sending message: "${messageText}"`);
     const sendResult = await runJtagCommand(
-      `debug/chat-send --roomId="${GENERAL_ROOM_ID}" --message="${messageText}"`
+      `chat/send --room="${GENERAL_ROOM_ID}" --message="${messageText}"`
     );
 
     if (!sendResult?.success) {

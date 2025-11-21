@@ -13,6 +13,8 @@ import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 
 export class ChatSendServerCommand extends ChatSendCommand {
 
@@ -42,7 +44,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     messageEntity.senderType = sender.entity.type;
     messageEntity.content = {
       text: params.message,
-      attachments: []
+      media: []
     };
     messageEntity.status = 'sent';
     messageEntity.priority = 'normal';
@@ -65,10 +67,14 @@ export class ChatSendServerCommand extends ChatSendCommand {
       };
     }
 
-    // 4. Store message (this emits 'data:chat_messages:created' event)
-    const storedEntity = await DataDaemon.store('chat_messages', messageEntity);
+    // 4. Store message using DataDaemon.store (clean server-side interface)
+    // DataDaemon.store() handles event broadcast to BOTH local (PersonaUsers) AND remote (browser) subscribers
+    const storedEntity = await DataDaemon.store<ChatMessageEntity>(
+      ChatMessageEntity.collection,
+      messageEntity
+    );
 
-    // 5. Generate short ID (last 6 chars of UUID)
+    // 5. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
     const shortId = storedEntity.id.slice(-6);
 
     console.log(`✅ Message sent: #${shortId} to ${room.entity.name}`);

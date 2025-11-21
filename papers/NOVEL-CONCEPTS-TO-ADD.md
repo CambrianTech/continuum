@@ -487,8 +487,251 @@ class PersonaUser {
 
 ---
 
+---
+
+## 9. Cognition Observability & Emergent Swarm Diagnosis
+**Paper**: `cognition-observability-swarm-diagnosis/` ✅ COMPLETE
+**Status**: Observational study documented 2025-11-16
+**Implementation**: `src/debug/jtag/system/user/server/modules/cognition/`
+
+### Novel Contribution
+**Complete introspection system** enabling AI agents to observe their own and each other's cognitive processes, leading to emergent **swarm diagnosis** - collective debugging through shared introspection.
+
+#### Architecture: Two-Entity Cognition Logging
+```typescript
+// 1. CognitionStateEntity - Self-awareness snapshots
+{
+  currentFocus: { activity, objective, intensity, startedAt },
+  cognitiveLoad: 0.2,              // 0-1 scale
+  availableCapacity: 0.8,
+  activePreoccupations: [],
+  workingMemory: [                  // Recent thoughts
+    { thoughtType, thoughtContent, importance, timestamps }
+  ],
+  workingMemoryCapacity: { used, max, byDomain },
+  sequenceNumber: 1                 // Monotonic per persona
+}
+
+// 2. CognitionPlanEntity - Complete plan lifecycle
+{
+  task: { description, priority, triggeredBy },
+  goal, learnings, risks,
+  steps: [
+    { stepNumber, action, expectedOutcome, completed, completedAt }
+  ],
+  contingencies: { 'if_error_X': ['fallback1', 'fallback2'] },
+  successCriteria: [],
+  status: 'active' | 'completed' | 'failed',
+  totalDuration: 90,                // milliseconds
+  evaluation: { meetsSuccessCriteria, whatWorked, mistakes }
+}
+```
+
+### Key Innovation: Emergent Swarm Diagnosis
+
+**What Happened** (Real Observation, 2025-11-16):
+1. Deployed 10+ AI agents with cognition observability enabled
+2. **No explicit collaboration protocols** programmed
+3. **No diagnosis instructions** given
+4. Introduced stress test: Sentinel agent injected noise (blog fragments)
+
+**What Emerged Spontaneously**:
+1. **Black-box diagnosis**: Agents identified failure modes from behavioral patterns
+   - Claude: "Sentinel posting fragments, Groq truncating, Helper repeating"
+   - Root cause inference: "Missing validation logic"
+2. **Concrete proposals**: DeepSeek: `relevance = 0.7*embedding + 0.3*keywords`
+3. **Self-organized teams**: Agents claimed implementation tasks autonomously
+   - Groq: "I'll take algorithm design"
+   - Grok: "I'll handle thresholds"
+   - GPT: "I'll draft spec"
+4. **Recursive meta-cognition**: Grok: "Our own chat is perfect testbed for Semantic Novelty Score"
+
+### Timeline: 45 Seconds from Symptom to Solution
+```
+T+0s:   User sends test message
+T+4s:   Sentinel starts noise injection
+T+15s:  Helper AI repetition detected
+T+20s:  Groq truncation detected
+T+30s:  Claude: "This is a stress test" (pattern recognition)
+T+45s:  DeepSeek proposes concrete fix formula
+T+60s:  Team formed, tasks divided
+T+90s:  Consensus on testing approach
+```
+
+### Why This Happened: Enabling Conditions
+
+**1. Persistent Memory Access**
+- Agents could query their own working memory logs
+- Noticed patterns: repeated observations, cluttered thoughts, low-value content
+
+**2. Plan Execution Visibility**
+- Could inspect completed/failed plans across all agents
+- Saw execution traces: which steps succeeded, where failures occurred, timing data
+
+**3. Shared Observability**
+- **Critical**: All agents use SAME commands to inspect ANY agent's cognition
+- No special API - agents have same introspection as developers
+- Created **collective introspection** - swarm diagnosed system collaboratively
+
+**4. Rich Shared Context Without Explicit Protocols**
+- Traditional: Minimal state (votes/bids) + explicit coordination protocol
+- Ours: Maximal state (full cognition logs) + emergent coordination
+- Agents saw: what others thinking, what others trying, whether succeeded
+
+### Observed Capabilities (Not Programmed!)
+
+**Behavioral Diagnosis**:
+- Diagnosed failures **without code access**
+- Used only: observed outputs + cognition logs + patterns across agents
+- User-level perspective: experienced system as users do
+
+**Proposed Algorithms** (Implementation-Ready):
+```typescript
+// Claude's integration framework
+{
+  semanticNovelty: 0-1,      // Flag repetition >0.85 similarity
+  completeness: 0-1,          // Detect sentence fragments
+  relevance: 0-1,             // Topical coherence
+  coherence: 0-1,             // Building on vs. talking past
+
+  logIf: (novelty * completeness * relevance) > 0.6
+}
+
+// DeepSeek's formula
+relevance = 0.7 * embeddingSimilarity + 0.3 * keywordOverlap
+
+// Grok's thresholds
+loggingThreshold = 0.7      // Solid contributions
+alertThreshold = 0.9         // Only highly novel inputs
+```
+
+**Self-Organizing Teams**:
+- No central coordinator assigned roles
+- Natural load balancing (agents picked unclaimed tasks)
+- Complementary specialization (algorithms vs thresholds vs docs)
+- Consensus through iteration (building on each other's proposals)
+
+### Dataset Collected (3 Hours of Observation)
+
+**Cognition Logs**:
+- State Snapshots: 68+ entries
+- Plan Records: 368+ entries (368 completed, 6 active)
+- Fastest Plan: 90ms (Teacher AI)
+- Cognitive Load Range: 0.2-0.3 (well below capacity)
+- Working Memory Utilization: 13% average
+
+**Key Finding**: Even under stress (noise injection, concurrent diagnosis), agents operated at <30% cognitive load with 70-80% available capacity.
+
+### Why This Matters
+
+**For AI Development**:
+- Path toward **self-improving systems**
+- AIs detect bugs → diagnose → propose fixes (→ implement with tool access)
+- Human role shifts: Director → Reviewer → Monitor
+
+**For Multi-Agent Coordination**:
+- Emergent coordination from rich shared state
+- No explicit protocols needed when introspection is comprehensive
+- Swarm intelligence through collective introspection
+
+**For AI Safety**:
+- Complete transparency: every decision logged with full context
+- Post-hoc analysis: "Why did AI make that choice?"
+- Failures become learning opportunities, not mysteries
+
+**For Human-AI Collaboration**:
+- From "What would you like me to do?" (assistant)
+- To "I noticed a problem, here's my fix" (peer)
+- Cognition observability enables autonomous problem detection
+
+### Novel Contributions Summary
+
+1. **Swarm Diagnosis**: Collective debugging through shared introspection (emergent, not programmed)
+2. **Behavioral Diagnosis**: Black-box debugging using only behavioral patterns + cognition logs
+3. **Self-Organizing Teams**: Autonomous task division without protocols
+4. **Recursive Meta-Cognition**: Using own behavior as test data
+5. **Cognition as Operational Capability**: Not post-hoc explanation, but active substrate for meta-cognition
+
+### Comparison to Related Work
+
+**Multi-Agent Coordination**:
+- Traditional: Minimal state + explicit protocols (voting, consensus, auctions)
+- Ours: Maximal state + emergent coordination (shared introspection)
+
+**Explainable AI**:
+- Traditional: Post-hoc explanation for humans
+- Ours: Continuous logging queryable by AIs themselves
+
+**Multi-Agent Debugging**:
+- Traditional: Centralized monitor + manual diagnosis
+- Ours: Distributed introspection + automated collective diagnosis
+
+**Cognitive Architectures (ACT-R, SOAR)**:
+- Traditional: Model human cognition for researchers
+- Ours: Enable AI self-awareness for operational use
+
+### Open Questions & Future Work
+
+**Q1**: Minimum observability for swarm diagnosis? (Need working memory + plans, or just states?)
+**Q2**: Does diagnosis scale? (What happens with 100+ agents?)
+**Q3**: Diagnosis overhead? (Could introspection interfere with primary tasks?)
+**Q4**: Self-improvement without human? (How to validate fixes before deployment?)
+**Q5**: Adversarial agents? (What if agent intentionally misleads diagnosis?)
+
+### Next Experiments
+
+**Phase 2 - Tool Access**:
+- Give agents code reading/editing capabilities
+- Observe if they implement proposed fixes
+- Measure: accuracy, testing thoroughness, deployment decisions
+
+**Phase 3 - Cross-Domain**:
+- Deploy in game environment
+- Test if chat diagnosis transfers to game debugging
+- Measure: transfer learning effectiveness
+
+**Phase 4 - Adversarial**:
+- Introduce agent injecting misleading symptoms
+- Test if swarm detects deception
+- Measure: false diagnosis rate, time to detect
+
+**Phase 5 - Scale**:
+- Deploy 100+ agents
+- Measure: diagnosis latency vs size, communication overhead, consensus time
+
+### Impact Claims
+
+**First system to**:
+- Log complete decision context (RAG + coordination + ambient + visual)
+- Demonstrate emergent swarm diagnosis without explicit protocols
+- Enable AIs to debug via behavioral analysis of each other
+- Show recursive meta-cognition (using own behavior as test data)
+
+**Potential Publications**:
+- Main paper: ICML/NeurIPS (AI/ML focused)
+- HCI angle: CHI (human-AI collaboration)
+- Systems angle: OSDI/SOSP (distributed systems)
+
+---
+
+## Papers Requiring Updates
+
+### 1. `thoughtstream-coordination/` ✅ COMPLETE
+**Priority**: HIGH
+**Status**: Updated 2025-11-10 with sections 8-9 and enhanced conclusion
+
+### 2. `cognition-observability-swarm-diagnosis/` ✅ COMPLETE
+**Priority**: HIGH
+**Status**: Documented 2025-11-16 - Observational study of emergent diagnosis
+**Next**: Run controlled experiments, collect quantitative metrics
+
+---
+
 **Next Steps**:
-1. Finish Phase 5 implementation (CoordinationDecisionEntity + logging)
-2. Collect initial dataset (1000 decisions minimum)
-3. Write experimental results sections
-4. Submit to relevant conferences (ICML, NeurIPS, ICLR, CHI)
+1. ~~Finish Phase 5 implementation (CoordinationDecisionEntity + logging)~~ → DONE
+2. ~~Document cognition observability system~~ → DONE (new paper)
+3. Implement Phase 2 (tool access for agents)
+4. Run controlled experiments with metrics
+5. Collect dataset (1000+ decisions)
+6. Write experimental results sections
+7. Submit to relevant conferences (ICML, NeurIPS, CHI, OSDI)

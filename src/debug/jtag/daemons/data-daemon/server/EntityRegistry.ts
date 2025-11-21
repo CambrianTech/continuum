@@ -27,6 +27,18 @@ import { CodeIndexEntity } from '../../../system/data/entities/CodeIndexEntity';
 import { FineTuningDatasetEntity } from '../shared/entities/FineTuningDatasetEntity';
 import { FineTuningJobEntity } from '../shared/entities/FineTuningJobEntity';
 import { FineTunedModelEntity } from '../shared/entities/FineTunedModelEntity';
+import { CognitionStateEntity } from '../../../system/data/entities/CognitionStateEntity';
+import { CognitionPlanEntity } from '../../../system/data/entities/CognitionPlanEntity';
+import { ToolExecutionLogEntity } from '../../../system/data/entities/ToolExecutionLogEntity';
+import { AdapterDecisionLogEntity } from '../../../system/data/entities/AdapterDecisionLogEntity';
+import { ResponseGenerationLogEntity } from '../../../system/data/entities/ResponseGenerationLogEntity';
+import { CognitionPlanStepExecutionEntity } from '../../../system/data/entities/CognitionPlanStepExecutionEntity';
+import { CognitionSelfStateUpdateEntity } from '../../../system/data/entities/CognitionSelfStateUpdateEntity';
+import { CognitionMemoryOperationEntity } from '../../../system/data/entities/CognitionMemoryOperationEntity';
+import { AdapterReasoningLogEntity } from '../../../system/data/entities/AdapterReasoningLogEntity';
+import { CognitionPlanReplanEntity } from '../../../system/data/entities/CognitionPlanReplanEntity';
+import { FileVoteProposalEntity } from '../../../system/data/entities/FileVoteProposalEntity';
+import { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -58,6 +70,18 @@ export function initializeEntityRegistry(): void {
   new FineTuningDatasetEntity();
   new FineTuningJobEntity();
   new FineTunedModelEntity();
+  new CognitionStateEntity();
+  new CognitionPlanEntity();
+  new ToolExecutionLogEntity();
+  new AdapterDecisionLogEntity();
+  new ResponseGenerationLogEntity();
+  new CognitionPlanStepExecutionEntity();
+  new CognitionSelfStateUpdateEntity();
+  new CognitionMemoryOperationEntity();
+  new AdapterReasoningLogEntity();
+  new CognitionPlanReplanEntity();
+  new FileVoteProposalEntity();
+  new DecisionProposalEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -81,6 +105,18 @@ export function initializeEntityRegistry(): void {
   registerEntity(FineTuningDatasetEntity.collection, FineTuningDatasetEntity);
   registerEntity(FineTuningJobEntity.collection, FineTuningJobEntity);
   registerEntity(FineTunedModelEntity.collection, FineTunedModelEntity);
+  registerEntity(CognitionStateEntity.collection, CognitionStateEntity);
+  registerEntity(CognitionPlanEntity.collection, CognitionPlanEntity);
+  registerEntity(ToolExecutionLogEntity.collection, ToolExecutionLogEntity);
+  registerEntity(AdapterDecisionLogEntity.collection, AdapterDecisionLogEntity);
+  registerEntity(ResponseGenerationLogEntity.collection, ResponseGenerationLogEntity);
+  registerEntity(CognitionPlanStepExecutionEntity.collection, CognitionPlanStepExecutionEntity);
+  registerEntity(CognitionSelfStateUpdateEntity.collection, CognitionSelfStateUpdateEntity);
+  registerEntity(CognitionMemoryOperationEntity.collection, CognitionMemoryOperationEntity);
+  registerEntity(AdapterReasoningLogEntity.collection, AdapterReasoningLogEntity);
+  registerEntity(CognitionPlanReplanEntity.collection, CognitionPlanReplanEntity);
+  registerEntity(FileVoteProposalEntity.collection, FileVoteProposalEntity);
+  registerEntity(DecisionProposalEntity.collection, DecisionProposalEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }

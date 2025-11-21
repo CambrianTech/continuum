@@ -593,7 +593,6 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
 
     try {
       const listParams = createListParams(this.context, this.sessionId, {
-        category: 'all',
         includeDescription: true,
         includeSignature: true
       });

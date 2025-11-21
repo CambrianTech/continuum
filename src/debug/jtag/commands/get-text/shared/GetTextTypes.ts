@@ -13,15 +13,14 @@ export const createGetTextParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: {
-    selector?: string;
+    selector: string;  // Required, not optional!
     trim?: boolean;
     innerText?: boolean;
   }
 ): GetTextParams => createPayload(context, sessionId, {
-  selector: data.selector ?? 'body',
   trim: data.trim ?? true,
   innerText: data.innerText ?? true,
-  ...data
+  ...data  // selector is required, so it's in data
 });
 
 export interface GetTextResult extends CommandResult {
