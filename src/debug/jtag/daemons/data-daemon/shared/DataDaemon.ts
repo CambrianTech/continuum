@@ -268,6 +268,8 @@ export class DataDaemon {
     await this.ensureInitialized();
 
     // Read existing entity to merge with partial update
+    // TODO: Performance optimization - Consider adding skipValidation flag for trusted internal updates,
+    // or only validating fields that are actually being updated rather than the entire merged entity
     const readResult = await this.adapter.read(collection, id);
     if (!readResult.success || !readResult.data?.data) {
       throw new Error(`Entity not found for update: ${collection}/${id}`);

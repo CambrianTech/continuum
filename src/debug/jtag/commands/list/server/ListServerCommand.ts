@@ -44,7 +44,7 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
 
       if (!existsSync(schemaPath)) {
         console.warn('⚠️ LIST: generated-command-schemas.json not found. Run: npx tsx generator/generate-command-schemas.ts');
-        ListServerCommand.schemasLoadError = 'Schemas file not found';
+        ListServerCommand.schemasLoadError = 'Command parameters unavailable: generated-command-schemas.json not found. Commands will show without parameter documentation. Run: npx tsx generator/generate-command-schemas.ts';
         return;
       }
 
