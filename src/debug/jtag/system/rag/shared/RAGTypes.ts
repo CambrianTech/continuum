@@ -145,6 +145,10 @@ export interface RAGContext {
     builtAt: Date;
     recipeId?: string;
     recipeName?: string;
+
+    // Bug #5 fix: Two-dimensional budget calculation
+    adjustedMaxTokens?: number;  // Dynamically adjusted completion token limit based on input size
+    inputTokenCount?: number;    // Estimated tokens in conversationHistory
   };
 }
 
@@ -152,7 +156,7 @@ export interface RAGContext {
  * Options for building RAG context
  */
 export interface RAGBuildOptions {
-  maxMessages?: number;  // Limit conversation history (default: 20)
+  maxMessages?: number;  // Limit conversation history (default: model-aware calculation)
   maxMemories?: number;  // Limit private memories (default: 10)
   includeArtifacts?: boolean;  // Include images/files (default: true)
   includeMemories?: boolean;  // Include private memories (default: true)
@@ -163,6 +167,11 @@ export interface RAGBuildOptions {
 
   // Current message being responded to (if not yet persisted to database)
   currentMessage?: LLMMessage;  // Include this message even if not in database yet
+
+  // NEW: Model-aware context budgeting (Bug #5 fix)
+  modelId?: string;  // Target model ID for calculating safe message count based on context window
+  maxTokens?: number;  // Max completion tokens (default: 3000)
+  systemPromptTokens?: number;  // Estimated system prompt tokens (default: 500)
 
   // NEW: Model capability-aware processing
   modelCapabilities?: ModelCapabilities;  // Target model's capabilities

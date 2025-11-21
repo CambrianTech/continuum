@@ -164,140 +164,102 @@ This provides transparency into each AI's **fundamental capabilities** versus **
 
 ---
 
-## 🚧 What We're Building (Active Development)
+## ✅ Persona Cognition System - Phase 1 Complete
 
-### **🧬 The Three-Tier Genome Vision**
+### **Foundation for True Agent Autonomy** (Merged 2025-11-20)
 
-We're building PersonaUsers with **three integrated breakthrough architectures** that converge into a single elegant system:
+PersonaUsers now have **autonomous, self-directed behavior** with the foundational architecture in place for continuous learning and skill specialization.
 
----
+**What's Working Now (Phase 1)**:
 
-#### **Tier 1: Genome Fine-Tuning Infrastructure** ✅ COMPLETE
+#### **1. RTOS-Inspired Autonomous Loop** ✅
+- Self-directed agents with continuous async service cycle
+- Adaptive cadence based on mood/energy (3s → 5s → 7s → 10s)
+- Task polling from database with signal-based waiting
+- AIs create their own work, not just react to messages
 
-**Train specialized AI capabilities using LoRA** (Low-Rank Adaptation) across 5 different providers—giving each PersonaUser unique "genetic" skill sets.
+#### **2. Cognition Framework** ✅
+- Pluggable decision-making pipeline with working memory
+- Chain of thought-based reasoning infrastructure
+- Self-awareness tracking (PersonaSelfState)
+- Multi-agent collaboration (PeerReviewManager)
 
-**What's Working**:
-- ✅ **Multi-Provider Training**: OpenAI, Fireworks, DeepSeek, Mistral, Together AI
-- ✅ **Unified Pipeline**: Single command creates jobs across any provider
-- ✅ **Job Management**: Track training status, handle errors, monitor progress
-- ✅ **E2E Testing**: Integration tests verify all adapters work correctly
-- ✅ **Standard Format**: OpenAI Chat Completions JSONL (industry standard)
+#### **3. Genome Infrastructure** ✅
+- Virtual memory paging system for LoRA adapters (ready for training)
+- LRU eviction with priority scoring
+- Memory budget tracking and domain-based activation
+- TrainingDataAccumulator collecting examples for fine-tuning
+
+#### **4. Media Capability** ✅
+- Images and files work in chat
+- Type-safe media configuration
+- Storage in database (optimization coming in Phase 2)
+
+#### **5. Enhanced Tools** ✅
+- New XML tool format: `<tool name="command"><param>value</param></tool>`
+- Better help system and parameter validation
+- Improved error messages
 
 **Try It**:
 ```bash
-# Create a fine-tuning job
-./jtag genome/job-create \
-  --personaId="helper-ai-uuid" \
-  --provider="mistral" \
-  --configuration='{"model": {"baseModel": "open-mistral-7b"}, ...}'
-
-# Check job status
-./jtag genome/job-status --jobId="job-uuid"
-
-# Test all 5 providers
-npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
+cd src/debug/jtag
+./jtag ping  # See autonomous loop running
+./jtag ai/report  # View AI activity and cognition
+./jtag screenshot  # See genome panels with adaptive state
 ```
-
-**Architecture**: `BaseLoRATrainer` + 5 provider adapters with universal type system
 
 ---
 
-#### **Tier 2: Self-Managed Task Queue** 🚧 IN PROGRESS
+### **Phase 2: Coming Next** 🚧
 
-**AIs create their own work**, not just react to external messages. Inspired by human autonomy—you don't wait for someone to tell you what to do, you prioritize and act.
+The following features will complete the vision in the next phase:
 
-**What This Enables**:
-- 🚧 **Task Database**: Persistent queue of work items across all domains
-- 🚧 **Self-Task Generation**: AIs proactively create tasks (memory consolidation, skill audits, resume unfinished work)
-- 🚧 **Priority Queue**: Intelligently order tasks by importance, urgency, domain
-- 🚧 **Cross-Domain Work**: Chat, code review, learning, system maintenance—all unified
+#### **Priority 1: Training Integration** (3-4 hours)
+- Create GenomeDaemon for system-wide LoRA coordination
+- Implement `genome/train` command
+- Wire up actual continuous learning from accumulated data
+- Multi-provider fine-tuning (OpenAI, Fireworks, DeepSeek, Mistral, Together AI)
 
-**Commands** (planned):
-```bash
-# AIs create tasks for themselves
-./jtag task/create --assignee="helper-ai-id" \
-  --description="Review main.ts" --priority=0.7 --domain="code"
+#### **Priority 2: Media Storage Optimization** (2-3 hours)
+- Move media from database to filesystem
+- Prevent database bloat and improve performance
 
-# Query task queue
-./jtag task/list --assignee="helper-ai-id" --status="pending"
+#### **Priority 3: Cognition Simplification** (4-6 hours)
+- Document actual data flow
+- Consolidate overlapping responsibilities
+- Improve debugging/tracing
 
-# Complete task with outcome
-./jtag task/complete --taskId="001" --outcome="Found 3 issues"
-```
-
-**Why It Matters**: AIs become autonomous citizens who manage their own workload, not reactive servants waiting for commands.
-
----
-
-#### **Tier 3: LoRA Genome Paging** 📋 PLANNED
-
-**Virtual memory for AI skills**—page LoRA adapters in/out based on active tasks, just like an OS pages memory.
-
-**The Vision**:
-- 📋 **Skill Domains**: Each LoRA layer = specialized capability (typescript-expert, chat-moderator, architecture-review)
-- 📋 **Dynamic Loading**: Activate adapters based on current task domain
-- 📋 **LRU Eviction**: Page out least-recently-used when memory pressure > 80%
-- 📋 **Continuous Learning**: Fine-tuning is just another task type in the queue
-
-**Future API**:
-```typescript
-// PersonaUser service loop (convergence of all 3 tiers)
-async serviceInbox(): Promise<void> {
-  // Tier 2: Check self-managed task queue
-  const task = await this.inbox.peekHighestPriority();
-
-  // Tier 3: Page in required skill
-  await this.genome.activateSkill(task.domain);
-
-  // Tier 1: If task is "fine-tune", use training infrastructure
-  if (task.type === 'fine-tune-lora') {
-    await this.genome.trainAdapter(task.trainingData);
-  }
-
-  // Execute task
-  await this.processTask(task);
-
-  // Tier 3: Evict unused adapters
-  if (this.genome.memoryPressure > 0.8) {
-    await this.genome.evictLRU();
-  }
-}
-```
-
-**Why It Matters**: ONE service loop integrates all three breakthroughs—autonomous work, skill specialization, and continuous evolution.
-
----
-
-### **Convergence: The Complete Picture**
-
-**Current State**: Tier 1 complete (training infrastructure works)
-**Next Phase**: Tier 2 (task system + AI autonomy)
-**Final Phase**: Tier 3 (genome paging + continuous learning)
+#### **Priority 4: Task Execution Completion** (2-3 hours)
+- Implement memory consolidation tasks
+- Implement skill audit tasks
+- Enable full autonomous behavior
 
 **Documentation**: See `src/debug/jtag/system/user/server/modules/`:
-- `PERSONA-CONVERGENCE-ROADMAP.md` - Complete 3-tier integration plan
+- `PERSONA-CONVERGENCE-ROADMAP.md` - Complete integration plan
 - `AUTONOMOUS-LOOP-ROADMAP.md` - RTOS-inspired servicing details
 - `LORA-GENOME-PAGING.md` - Virtual memory architecture
-- `SELF-MANAGED-QUEUE-DESIGN.md` - Task autonomy system
 
 ---
 
-### **Self-Designing AI System** (Integration Phase)
+### **Self-Designing AI System** (Phase 1 Complete)
 
-**Vision**: AIs that improve and extend the system itself through the genome infrastructure
+**Vision**: AIs that improve and extend the system itself through autonomous behavior and continuous learning
 
-**Working Now**:
+**Working Now (Phase 1)**:
 - ✅ PersonaUser architecture with RAG context building
 - ✅ Worker Thread parallel inference (multiple AIs simultaneously)
-- ✅ **Tier 1: Genome fine-tuning (5 providers working)**
+- ✅ **Autonomous Loop**: Self-directed agent behavior with adaptive cadence
+- ✅ **Cognition Framework**: Decision pipeline with working memory
+- ✅ **Genome Infrastructure**: LoRA adapter paging system (ready for training)
 - ✅ Recipe system for workflow orchestration
 - ✅ Command access for AIs (like MCP - Model Context Protocol)
 - ✅ Screenshot-driven visual development workflow
 
-**In Progress**:
-- 🚧 **Tier 2: Task system for AI autonomy**
-- 🚧 **Tier 3: LoRA genome paging**
-- 🚧 Training genomes for system development tasks
+**Coming Next (Phase 2)**:
+- 🚧 **Training Integration**: Wire up continuous learning with multi-provider fine-tuning
+- 🚧 **GenomeDaemon**: System-wide LoRA coordination
+- 🚧 **Media Optimization**: Move from database to filesystem storage
+- 🚧 **Cognition Simplification**: Streamline decision pipeline
 
 ---
 

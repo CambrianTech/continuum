@@ -106,9 +106,9 @@ export class ExecBrowserCommand extends CommandBase<ExecCommandParams, ExecComma
         const timeout = params.timeout || ExecBrowserCommand.EXECUTION_TIMEOUT;
         const executionPromise = new Promise<any>((resolve, reject) => {
           try {
-            // Simple execution with DOM access - wrap in IIFE and return
+            // Simple execution with DOM access - wrap in async IIFE to support await
             const func = new Function(`
-              return (function() {
+              return (async function() {
                 ${sourceCode}
               })();
             `);

@@ -17,6 +17,7 @@ import { UserEntity } from '../../data/entities/UserEntity';
 import { UserStateEntity } from '../../data/entities/UserStateEntity';
 import type { IUserStateStorage } from '../storage/IUserStateStorage';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import { Commands } from '../../core/shared/Commands';
@@ -37,7 +38,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { TaskEntity } from '../../data/entities/TaskEntity';
 import { taskEntityToInboxTask } from './modules/QueueItemTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../rag/builders/ChatRAGBuilder';
 import type { ShouldRespondFastParams, ShouldRespondFastResult } from '../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../../../commands/ai/should-respond/shared/AIShouldRespondTypes';
@@ -85,6 +86,20 @@ import type { QueueItem } from './modules/PersonaInbox';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 import { DecisionAdapterChain } from './modules/cognition/DecisionAdapterChain';
 import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
+import { WorkingMemoryManager } from './modules/cognition/memory/WorkingMemoryManager';
+import { PersonaSelfState } from './modules/cognition/PersonaSelfState';
+import { SimplePlanFormulator } from './modules/cognition/reasoning/SimplePlanFormulator';
+import type { Task, Plan } from './modules/cognition/reasoning/types';
+import { CognitionLogger } from './modules/cognition/CognitionLogger';
+import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
+import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
+import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
+import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
+import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
+import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
+import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
+import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
+import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -97,11 +112,18 @@ export class PersonaUser extends AIUser {
   // Note: client is now in BaseUser as protected property, accessible via this.client
   // ArtifactsAPI access is through this.client.daemons.artifacts
 
+  // Session ID for this PersonaUser (sandboxed identity for tool execution)
+  // Generated once during initialization and registered with SessionDaemon
+  public sessionId: UUID | null = null;
+
   // Worker thread for parallel message evaluation
   private worker: PersonaWorkerThread | null = null;
 
   // AI model configuration (provider, model, temperature, etc.)
   private modelConfig: ModelConfig;
+
+  // Media configuration (opt-in for images/audio/video)
+  public mediaConfig: PersonaMediaConfig;
 
   // Rate limiting module (TODO: Replace with AI-based coordination when ThoughtStream is solid)
   private rateLimiter: RateLimiter;
@@ -128,12 +150,31 @@ export class PersonaUser extends AIUser {
   // Accumulates training examples in RAM during recipe execution
   public trainingAccumulator: TrainingDataAccumulator;
 
-  // PHASE 3: Autonomous polling loop
-  private servicingLoop: NodeJS.Timeout | null = null; // Deprecated - now using continuous async loop
-  private servicingLoopActive: boolean = false; // Controls continuous service loop
+  // Task execution module (extracted from PersonaUser for modularity)
+  private taskExecutor: PersonaTaskExecutor;
 
-  // PHASE 7.5.1: Training readiness check loop (runs less frequently than servicing loop)
-  private trainingCheckLoop: NodeJS.Timeout | null = null;
+  // Training management module (extracted from PersonaUser for modularity)
+  private trainingManager: PersonaTrainingManager;
+
+  // Autonomous servicing loop module (extracted from PersonaUser for modularity)
+  private autonomousLoop: PersonaAutonomousLoop;
+
+  // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
+  public workingMemory: WorkingMemoryManager;
+  public selfState: PersonaSelfState;
+  public planFormulator: SimplePlanFormulator;
+
+  // Tool execution adapter (keeps PersonaUser clean)
+  private toolExecutor: PersonaToolExecutor;
+
+  // Response generation module (extracted from PersonaUser)
+  private responseGenerator: PersonaResponseGenerator;
+
+  // Message evaluation module (extracted from PersonaUser for modularity)
+  private messageEvaluator: PersonaMessageEvaluator;
+
+  // Genome management module (extracted from PersonaUser for better genomic daemon integration)
+  private genomeManager: PersonaGenomeManager;
 
   constructor(
     entity: UserEntity,
@@ -145,14 +186,20 @@ export class PersonaUser extends AIUser {
 
     // Extract modelConfig from entity (stored via Object.assign during creation)
     // Default to Ollama if not configured
-    this.modelConfig = (entity as any).modelConfig || {
+    this.modelConfig = entity.modelConfig || {
       provider: 'ollama',
       model: 'llama3.2:3b',
       temperature: 0.7,
       maxTokens: 150
     };
 
-    console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}`);
+    // Extract mediaConfig from entity, default to opt-out (no auto-loading)
+    // Merge with defaults to ensure all required fields are present
+    this.mediaConfig = entity.mediaConfig
+      ? { ...DEFAULT_MEDIA_CONFIG, ...entity.mediaConfig }
+      : DEFAULT_MEDIA_CONFIG;
+
+    console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}, autoLoadMedia=${this.mediaConfig.autoLoadMedia}`);
 
     // Initialize rate limiter (TODO: Replace with AI-based coordination)
     this.rateLimiter = new RateLimiter({
@@ -222,10 +269,56 @@ export class PersonaUser extends AIUser {
     // PHASE 7.4: Training data accumulator for recipe-embedded learning
     this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
 
+    // Task execution module (delegated for modularity)
+    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
+
+    // Training management module (delegated for modularity)
+    this.trainingManager = new PersonaTrainingManager(
+      this.id,
+      this.displayName,
+      this.trainingAccumulator,
+      () => this.state,
+      () => this.saveState()
+    );
+
+    // COGNITION SYSTEM: Agent architecture components
+    this.workingMemory = new WorkingMemoryManager(this.id);
+    this.selfState = new PersonaSelfState(this.id);
+    this.planFormulator = new SimplePlanFormulator(this.id, this.displayName);
+
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
 
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, and trainingAccumulator modules`);
+    // Tool execution adapter (dynamic registry for code/read, list, system/daemons, etc.)
+    this.toolExecutor = new PersonaToolExecutor(this.id, this.displayName);
+
+    // Response generation module (extracted from PersonaUser for clean separation)
+    this.responseGenerator = new PersonaResponseGenerator({
+      personaId: this.id,
+      personaName: this.displayName,
+      entity: this.entity,
+      modelConfig: this.modelConfig,
+      client,
+      toolExecutor: this.toolExecutor,
+      mediaConfig: this.mediaConfig,
+      getSessionId: () => this.sessionId  // Dynamically get sessionId (set during initialize())
+    });
+
+    // Message evaluation module (pass PersonaUser reference for dependency injection)
+    this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
+
+    // Genome management module (delegated for genomic daemon integration)
+    this.genomeManager = new PersonaGenomeManager(
+      this.id,
+      this.displayName,
+      () => this.entity,
+      () => this.client
+    );
+
+    // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
+    this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
+
+    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -296,6 +389,12 @@ export class PersonaUser extends AIUser {
     await super.initialize();
 
     // Note: General room auto-join handled by UserDaemonServer on user creation (Discord-style)
+
+    // STEP 1.2: Generate sessionId for tool execution attribution (don't register with SessionDaemon yet to avoid init timeout)
+    if (!this.sessionId) {
+      this.sessionId = generateUUID();
+      console.log(`🔐 ${this.displayName}: SessionId generated for tool attribution (${this.sessionId})`);
+    }
 
     // STEP 1.5: Start worker thread for message evaluation
     if (this.worker) {
@@ -474,342 +573,38 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Evaluate message and possibly respond WITH COGNITION (called with exclusive evaluation lock)
+   *
+   * NEW: Wraps existing chat logic with plan-based reasoning:
+   * 1. Create Task from message
+   * 2. Generate Plan using SimplePlanFormulator
+   * 3. Execute plan steps (existing chat logic runs inside)
+   * 4. Store thoughts in WorkingMemory
+   * 5. Update SelfState with focus and cognitive load
+   */
+  private async evaluateAndPossiblyRespondWithCognition(
+    messageEntity: ChatMessageEntity,
+    senderIsHuman: boolean,
+    messageText: string
+  ): Promise<void> {
+    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(messageEntity, senderIsHuman, messageText);
+  }
+
+  /**
    * Evaluate message and possibly respond (called with exclusive evaluation lock)
+   *
+   * NOTE: Now called from evaluateAndPossiblyRespondWithCognition wrapper
    */
   private async evaluateAndPossiblyRespond(
     messageEntity: ChatMessageEntity,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
-    // STEP 2: Check response cap (prevent infinite loops)
-    if (this.rateLimiter.hasReachedResponseCap(messageEntity.roomId)) {
-      const currentCount = this.rateLimiter.getResponseCount(messageEntity.roomId);
-      const config = this.rateLimiter.getConfig();
-      this.logAIDecision('SILENT', `Response cap reached (${currentCount}/${config.maxResponsesPerSession})`, {
-        message: messageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-      return;
-    }
-
-    // STEP 3: Check if mentioned
-    const isMentioned = this.isPersonaMentioned(messageText);
-
-    // STEP 4: Check rate limiting (before expensive LLM call)
-    if (this.rateLimiter.isRateLimited(messageEntity.roomId)) {
-      const info = this.rateLimiter.getRateLimitInfo(messageEntity.roomId);
-      this.logAIDecision('SILENT', `Rate limited, wait ${info.waitTimeSeconds?.toFixed(1)}s more`, {
-        message: messageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-      return;
-    }
-
-    // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
-    // Emit EVALUATING event for real-time feedback
-    if (this.client) {
-      await Events.emit<AIEvaluatingEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.EVALUATING,
-        {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: messageEntity.roomId,
-          messageId: messageEntity.id,
-          isHumanMessage: senderIsHuman,
-          timestamp: Date.now(),
-          messagePreview: messageText.slice(0, 100),
-          senderName: messageEntity.senderName
-        },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: messageEntity.roomId,
-        }
-      );
-    }
-
-    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
-
-    // FULL TRANSPARENCY LOGGING
-    console.log(`\n${'='.repeat(80)}`);
-    console.log(`🧠 ${this.displayName}: GATING DECISION for message "${messageText.slice(0, 60)}..."`);
-    console.log(`${'='.repeat(80)}`);
-    console.log(`📊 Context: ${gatingResult.ragContextSummary?.filteredMessages ?? 0} messages in ${gatingResult.ragContextSummary?.timeWindowMinutes ?? 0}min window`);
-    console.log(`💬 Conversation history seen by AI:`);
-    gatingResult.conversationHistory?.slice(-5).forEach((msg, i) => {
-      console.log(`   ${i + 1}. [${msg.name}] ${msg.content.slice(0, 80)}...`);
-    });
-    console.log(`\n🎯 Decision: ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'}`);
-    console.log(`   Confidence: ${(gatingResult.confidence * 100).toFixed(0)}%`);
-    console.log(`   Reason: ${gatingResult.reason}`);
-    console.log(`   Model: ${gatingResult.model}`);
-    console.log(`${'='.repeat(80)}\n`);
-
-    if (!gatingResult.shouldRespond) {
-      // PHASE 5C: Log coordination decision to database (fire-and-forget)
-      if (gatingResult.filteredRagContext) {
-        const decisionStartTime = Date.now();
-        const ragContext = this.buildCoordinationRAGContext(gatingResult.filteredRagContext);
-
-        // Fire-and-forget: Don't await, don't slow down critical path
-        CoordinationDecisionLogger.logDecision({
-          actorId: this.id,
-          actorName: this.displayName,
-          actorType: 'ai-persona',
-          triggerEventId: messageEntity.id,
-          ragContext,
-          visualContext: undefined,
-          action: 'SILENT',
-          confidence: gatingResult.confidence,
-          reasoning: gatingResult.reason,
-          responseContent: undefined,
-          modelUsed: gatingResult.model,
-          modelProvider: this.modelConfig.provider ?? 'ollama',
-          tokensUsed: undefined,
-          responseTime: Date.now() - decisionStartTime,
-          sessionId: DataDaemon.jtagContext!.uuid,
-          contextId: messageEntity.roomId,
-          tags: [senderIsHuman ? 'human-sender' : 'ai-sender', 'gating-silent']
-        }).catch(error => {
-          console.error(`❌ ${this.displayName}: Failed to log SILENT decision:`, error);
-        });
-      }
-
-      this.logAIDecision('SILENT', gatingResult.reason, {
-        message: messageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId,
-        confidence: gatingResult.confidence,
-        model: gatingResult.model,
-        ragContextSummary: gatingResult.ragContextSummary,
-        conversationHistory: gatingResult.conversationHistory
-      });
-
-      // Emit DECIDED_SILENT event
-      if (this.client) {
-        await Events.emit<AIDecidedSilentEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.DECIDED_SILENT,
-          {
-            personaId: this.id,
-            personaName: this.displayName,
-            roomId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            isHumanMessage: senderIsHuman,
-            timestamp: Date.now(),
-            confidence: gatingResult.confidence ?? 0.5,
-            reason: gatingResult.reason,
-            gatingModel: gatingResult.model ?? 'unknown'
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: messageEntity.roomId,
-          }
-        );
-      }
-
-      return;
-    }
-
-    // === RESPOND: LLM gating decided to respond, coordinate with other AIs ===
-
-    // PHASE 5C: Prepare decision context for logging AFTER response generation
-    // (We need the actual response content before we can log the complete decision)
-    const decisionContext = gatingResult.filteredRagContext ? {
-      actorId: this.id,
-      actorName: this.displayName,
-      actorType: 'ai-persona' as const,
-      triggerEventId: messageEntity.id,
-      ragContext: this.buildCoordinationRAGContext(gatingResult.filteredRagContext),
-      visualContext: undefined,
-      action: 'POSTED' as const,
-      confidence: gatingResult.confidence,
-      reasoning: gatingResult.reason,
-      modelUsed: gatingResult.model,
-      modelProvider: this.modelConfig.provider ?? 'ollama',
-      sessionId: DataDaemon.jtagContext!.uuid,
-      contextId: messageEntity.roomId,
-      tags: [
-        senderIsHuman ? 'human-sender' : 'ai-sender',
-        isMentioned ? 'mentioned' : 'not-mentioned',
-        'gating-respond'
-      ]
-    } : undefined;
-
-    this.logAIDecision('RESPOND', gatingResult.reason, {
-      message: messageText,
-      sender: messageEntity.senderName,
-      roomId: messageEntity.roomId,
-      mentioned: isMentioned,
-      humanSender: senderIsHuman,
-      confidence: gatingResult.confidence,
-      model: gatingResult.model,
-      ragContextSummary: gatingResult.ragContextSummary,
-      conversationHistory: gatingResult.conversationHistory
-    });
-
-    // Emit DECIDED_RESPOND event
-    if (this.client) {
-      await Events.emit<AIDecidedRespondEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.DECIDED_RESPOND,
-        {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: messageEntity.roomId,
-          messageId: messageEntity.id,
-          isHumanMessage: senderIsHuman,
-          timestamp: Date.now(),
-          confidence: gatingResult.confidence ?? 0.5,
-          reason: gatingResult.reason,
-          gatingModel: gatingResult.model ?? 'unknown'
-        },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: messageEntity.roomId,
-        }
-      );
-    }
-
-    // === AUTONOMOUS DECISION: Persona personality adapter decides ===
-    // REMOVED: Thoughtstream coordination (centralized blocking)
-    // Personas are organic decision makers - if their personality adapter says "respond", they respond
-    // Multiple AIs responding is natural conversation, not a problem to prevent
-
-    /* DISABLED: Thoughtstream centralized coordination (phase out)
-    const coordinator = getChatCoordinator();
-    const chatThought: ChatThought = {
-      personaId: this.id,
-      personaName: this.displayName,
-      type: 'claiming',
-      confidence: gatingResult.confidence ?? 0.5,
-      reasoning: gatingResult.reason,
-      timestamp: Date.now(),
-      messageId: messageEntity.id,
-      roomId: messageEntity.roomId
-    };
-
-    console.log(`🧠 ${this.displayName}: Broadcasting thought (confidence=${gatingResult.confidence?.toFixed(2)}) for message ${messageEntity.id.slice(0, 8)}`);
-    await coordinator.broadcastChatThought(messageEntity.id, messageEntity.roomId, chatThought);
-
-    // Wait for coordinator decision (reasonable timeout for thought gathering)
-    console.log(`⏳ ${this.displayName}: Waiting for coordination decision...`);
-    const decision = await coordinator.waitForChatDecision(messageEntity.id, 5000);
-
-    // Check if we were granted permission to respond
-    if (!decision || !decision.granted.includes(this.id)) {
-      // Log actual decision for debugging
-      const grantedCount = decision?.granted.length ?? 0;
-      const deniedCount = decision?.denied.length ?? 0;
-      const grantedIds = decision?.granted.map(id => id.slice(0, 8)).join(', ') ?? 'none';
-      console.log(`🚫 ${this.displayName}: Denied by coordinator (granted: ${grantedCount} [${grantedIds}], denied: ${deniedCount}, my ID: ${this.id.slice(0, 8)})`);
-      if (decision) {
-        console.log(`   Decision reasoning: ${decision.reasoning ?? 'none'}`);
-      }
-
-      this.logAIDecision('SILENT', 'ThoughtStreamCoordinator denied (higher confidence AI responding)', {
-        message: messageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId,
-        confidence: gatingResult.confidence
-      });
-
-      // Emit DECIDED_SILENT event to clear AI status indicator
-      console.log(`🔧 ${this.displayName}: Emitting DECIDED_SILENT event (ThoughtStreamCoordinator blocked)`);
-      if (this.client) {
-        await Events.emit<AIDecidedSilentEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.DECIDED_SILENT,
-          {
-            personaId: this.id,
-            personaName: this.displayName,
-            roomId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            isHumanMessage: senderIsHuman,
-            reason: 'ThoughtStreamCoordinator denied (higher confidence AI responding)',
-            confidence: gatingResult.confidence ?? 0.5,
-            gatingModel: gatingResult.model ?? 'unknown',
-            timestamp: Date.now()
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: messageEntity.roomId,
-          }
-        );
-        console.log(`✅ ${this.displayName}: DECIDED_SILENT event emitted successfully`);
-      } else {
-        console.error(`❌ ${this.displayName}: Cannot emit DECIDED_SILENT - this.client is null`);
-      }
-
-      return; // Don't generate - let higher confidence AI respond
-    }
-
-    console.log(`✅ ${this.displayName}: Granted permission by coordinator (conf=${gatingResult.confidence})`);
-    */
-
-    console.log(`✅ ${this.displayName}: Autonomous decision to respond (personality adapter, conf=${gatingResult.confidence})`);
-
-    // 🔧 PHASE: Update RAG context
-    console.log(`🔧 ${this.displayName}: [PHASE 1/3] Updating RAG context...`);
-    await this.memory.updateRAGContext(messageEntity.roomId, messageEntity);
-    console.log(`✅ ${this.displayName}: [PHASE 1/3] RAG context updated`);
-
-    // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
-    console.log(`🔧 ${this.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
-    if (this.client) {
-      await Events.emit<AIGeneratingEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.GENERATING,
-        {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: messageEntity.roomId,
-          messageId: messageEntity.id,
-          isHumanMessage: senderIsHuman,
-          timestamp: Date.now(),
-          responseModel: this.entity?.personaConfig?.responseModel ?? 'default'
-        },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: messageEntity.roomId
-        }
-      );
-    }
-    console.log(`✅ ${this.displayName}: [PHASE 2/3] GENERATING event emitted`);
-
-    // 🔧 PHASE: Generate and post response
-    console.log(`🔧 ${this.displayName}: [PHASE 3/3] Calling respondToMessage...`);
-    await this.respondToMessage(messageEntity, decisionContext);
-    console.log(`✅ ${this.displayName}: [PHASE 3/3] Response posted successfully`);
-
-    // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
-    getChatCoordinator().onMessageServiced(messageEntity.roomId, this.id);
-
-    // Track response for rate limiting
-    this.rateLimiter.trackResponse(messageEntity.roomId);
-
-    // PHASE 2: Track activity in PersonaState (energy depletion, mood calculation)
-    // Recalculate priority to estimate complexity (higher priority = more engaging conversation)
-    const messageComplexity = calculateMessagePriority(
-      {
-        content: messageEntity.content?.text || '',
-        timestamp: this.timestampToNumber(messageEntity.timestamp),
-        roomId: messageEntity.roomId
-      },
-      {
-        displayName: this.displayName,
-        id: this.id,
-        recentRooms: Array.from(this.myRoomIds) // Convert Set<string> to UUID[]
-      }
-    );
-    // Estimate duration based on average AI response time
-    const estimatedDurationMs = 3000; // Average AI response time (3 seconds)
-    await this.personaState.recordActivity(estimatedDurationMs, messageComplexity);
-
-    console.log(`🧠 ${this.displayName}: State updated (energy=${this.personaState.getState().energy.toFixed(2)}, mood=${this.personaState.getState().mood})`);
+    return await this.messageEvaluator.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
   }
+
+  // Response generation core logic moved to PersonaResponseGenerator module
+  // But some utility methods still needed by other parts of PersonaUser:
 
   /**
    * Build CoordinationDecision RAGContext from ChatRAGBuilder output
@@ -843,588 +638,41 @@ export class PersonaUser extends AIUser {
 
   /**
    * Convert timestamp to number (handles Date, number, or undefined from JSON serialization)
+   * PUBLIC: Used by PersonaMessageEvaluator module
    */
-  private timestampToNumber(timestamp: Date | number | undefined): number {
+  timestampToNumber(timestamp: Date | number | undefined): number {
     if (timestamp === undefined) {
       return Date.now(); // Use current time if timestamp missing
     }
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
   }
 
-  /**
-   * Clean AI response by stripping any name prefixes the LLM added despite system prompt instructions
-   * LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-   *
-   * CURRENT: Heuristic regex-based cleaning (defensive programming)
-   * FUTURE: Should become AI-powered via ThoughtStream adapter (like gating)
-   *         - An AI evaluates: "Does this response have formatting issues?"
-   *         - Returns cleaned version with confidence score
-   *         - Pluggable via recipe configuration
-   *
-   * Examples to strip:
-   * - "[11:59] GPT Assistant: Yes, Joel..." → "Yes, Joel..."
-   * - "GPT Assistant: Yes, Joel..." → "Yes, Joel..."
-   * - "[11:59] Yes, Joel..." → "Yes, Joel..."
-   */
-  private cleanAIResponse(response: string): string {
-    let cleaned = response.trim();
-
-    // Pattern 1: Strip "[HH:MM] Name: " prefix
-    // Matches: [11:59] GPT Assistant: message
-    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*/, '');
-
-    // Pattern 2: Strip "Name: " prefix at start
-    // Matches: GPT Assistant: message
-    // Only if it looks like a name (contains letters, spaces, and ends with colon)
-    cleaned = cleaned.replace(/^[A-Z][A-Za-z\s]+:\s*/, '');
-
-    // Pattern 3: Strip just "[HH:MM] " timestamp prefix
-    // Matches: [11:59] message
-    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s*/, '');
-
-    return cleaned.trim();
-  }
-
-  /**
-   * Self-review: Check if generated response is redundant compared to conversation history
-   * Like a human who drafts a response, re-reads the chat, and thinks "oh someone already said that"
-   */
-  private async isResponseRedundant(
-    myResponse: string,
-    roomId: UUID,
-    conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
-  ): Promise<boolean> {
-    try {
-      // Use AIDecisionService for centralized redundancy checking
-      // Create minimal context without needing full trigger message
-      const decisionContext: AIDecisionContext = {
-        personaId: this.id,
-        personaName: this.displayName,
-        roomId,
-        triggerMessage: {
-          id: '',
-          roomId,
-          senderId: '',
-          senderName: 'System',
-          senderType: 'system',
-          content: { text: 'redundancy check', attachments: [] },
-          timestamp: new Date(),
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          version: 1,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          status: 'sent',
-          priority: 0,
-          reactions: []
-        } as unknown as ChatMessageEntity,
-        ragContext: {
-          domain: 'chat',
-          contextId: roomId,
-          personaId: this.id,
-          identity: {
-            name: this.displayName,
-            systemPrompt: ''
-          },
-          conversationHistory: conversationHistory.map(msg => ({
-            role: msg.role as 'user' | 'assistant',
-            content: msg.content,
-            name: msg.name,
-            timestamp: msg.timestamp
-          })),
-          artifacts: [],
-          privateMemories: [],
-          metadata: {
-            messageCount: conversationHistory.length,
-            artifactCount: 0,
-            memoryCount: 0,
-            builtAt: new Date()
-          }
-        }
-      };
-
-      const result = await AIDecisionService.checkRedundancy(
-        myResponse,
-        decisionContext,
-        { model: 'llama3.2:3b' }
-      );
-
-      return result.isRedundant;
-    } catch (error) {
-      AIDecisionLogger.logError(this.displayName, 'Redundancy check', error instanceof Error ? error.message : String(error));
-      return false; // On error, allow the response (fail open)
-    }
-  }
+  // Tool execution methods delegated to PersonaToolExecutor adapter
 
   /**
    * Generate and post a response to a chat message
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
+   *
+   * DELEGATED to PersonaResponseGenerator module (extracted for clean separation)
+   *
+   * **Dormancy filtering**: Checks dormancy state before responding
    */
   private async respondToMessage(
     originalMessage: ChatMessageEntity,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {
-    const generateStartTime = Date.now();  // Track total response time for decision logging
-    try {
-      // 🔧 SUB-PHASE 3.1: Build RAG context
-      console.log(`🔧 ${this.displayName}: [PHASE 3.1] Building RAG context...`);
-      const ragBuilder = new ChatRAGBuilder();
-      const fullRAGContext = await ragBuilder.buildContext(
-        originalMessage.roomId,
-        this.id,
-        {
-          maxMessages: 20,
-          maxMemories: 10,
-          includeArtifacts: false, // Skip artifacts for now (image attachments)
-          includeMemories: false,   // Skip private memories for now
-          // ✅ FIX: Include current message even if not yet persisted to database
-          currentMessage: {
-            role: 'user',
-            content: originalMessage.content.text,
-            name: originalMessage.senderName,
-            timestamp: this.timestampToNumber(originalMessage.timestamp)
-          }
-        }
-      );
-      console.log(`✅ ${this.displayName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
+    // Check dormancy state before responding
+    const shouldRespond = this.responseGenerator.shouldRespondToMessage(
+      originalMessage,
+      this.state.dormancyState
+    );
 
-      // 🔧 SUB-PHASE 3.2: Build message history for LLM
-      console.log(`🔧 ${this.displayName}: [PHASE 3.2] Building LLM message array...`);
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-      // System prompt from RAG builder (includes room membership!)
-      messages.push({
-        role: 'system',
-        content: fullRAGContext.identity.systemPrompt
-      });
-
-      // Add conversation history from RAG context with human-readable timestamps
-      // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
-      // Format: "[HH:MM] SpeakerName: message" - timestamps help LLM understand time gaps
-      if (fullRAGContext.conversationHistory.length > 0) {
-        let lastTimestamp: number | undefined;
-
-        for (let i = 0; i < fullRAGContext.conversationHistory.length; i++) {
-          const msg = fullRAGContext.conversationHistory[i];
-
-          // Format timestamp as human-readable time
-          let timePrefix = '';
-          if (msg.timestamp) {
-            const date = new Date(msg.timestamp);
-            const hours = date.getHours().toString().padStart(2, '0');
-            const minutes = date.getMinutes().toString().padStart(2, '0');
-            timePrefix = `[${hours}:${minutes}] `;
-
-            // Detect significant time gaps (> 1 hour)
-            if (lastTimestamp && (msg.timestamp - lastTimestamp > 3600000)) {
-              const gapHours = Math.floor((msg.timestamp - lastTimestamp) / 3600000);
-              messages.push({
-                role: 'system',
-                content: `⏱️ ${gapHours} hour${gapHours > 1 ? 's' : ''} passed - conversation resumed`
-              });
-            }
-
-            lastTimestamp = msg.timestamp;
-          }
-
-          // For Llama models, embed speaker identity + timestamp in the content
-          const formattedContent = msg.name
-            ? `${timePrefix}${msg.name}: ${msg.content}`
-            : `${timePrefix}${msg.content}`;
-
-          messages.push({
-            role: msg.role,
-            content: formattedContent
-          });
-        }
-      }
-
-      // CRITICAL: Identity reminder at END of context (research shows this prevents "prompt drift")
-      // LLMs have recency bias - instructions at the end have MORE influence than at beginning
-      const now = new Date();
-      const currentTime = `${now.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
-
-      messages.push({
-        role: 'system',
-        content: `You are ${this.displayName}.
-
-In the conversation above:
-- Messages with role='assistant' are YOUR past messages
-- Messages with role='user' are from everyone else (humans and other AIs)
-- Names are shown in the format "[HH:MM] Name: message"
-
-Respond naturally with JUST your message - NO name prefix, NO labels.
-
-CURRENT TIME: ${currentTime}
-
-CRITICAL TOPIC DETECTION PROTOCOL:
-
-Step 1: Check for EXPLICIT TOPIC MARKERS in the most recent message
-- "New topic:", "Different question:", "Changing subjects:", "Unrelated, but..."
-- If present: STOP. Ignore ALL previous context. This is a NEW conversation.
-
-Step 2: Extract HARD CONSTRAINTS from the most recent message
-- Look for: "NOT", "DON'T", "WITHOUT", "NEVER", "AVOID", "NO"
-- Example: "NOT triggering the app to foreground" = YOUR SOLUTION MUST NOT DO THIS
-- Example: "WITHOUT user interaction" = YOUR SOLUTION MUST BE AUTOMATIC
-- Your answer MUST respect these constraints or you're wrong.
-
-Step 3: Compare SUBJECT of most recent message to previous 2-3 messages
-- Previous: "Worker Threads" → Recent: "Webview authentication" = DIFFERENT SUBJECTS
-- Previous: "TypeScript code" → Recent: "What's 2+2?" = TEST QUESTION
-- Previous: "Worker pools" → Recent: "Should I use 5 or 10 workers?" = SAME SUBJECT
-
-Step 4: Determine response strategy
-IF EXPLICIT TOPIC MARKER or COMPLETELY DIFFERENT SUBJECT:
-- Respond ONLY to the new topic
-- Ignore old messages (they're from a previous discussion)
-- Focus 100% on the most recent message
-- Address the constraints explicitly
-
-IF SAME SUBJECT (continued conversation):
-- Use full conversation context
-- Build on previous responses
-- Still check for NEW constraints in the recent message
-- Avoid redundancy
-
-CRITICAL READING COMPREHENSION:
-- Read the ENTIRE most recent message carefully
-- Don't skim - every word matters
-- Constraints are REQUIREMENTS, not suggestions
-- If the user says "NOT X", suggesting X is a failure
-
-Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts (consecutive messages about different subjects) are also topic changes.`
-      });
-      console.log(`✅ ${this.displayName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
-
-      // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
-      console.log(`🔧 ${this.displayName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
-      const request: TextGenerationRequest = {
-        messages,
-        model: this.modelConfig.model || 'llama3.2:3b',  // Use persona's configured model
-        temperature: this.modelConfig.temperature ?? 0.7,
-        maxTokens: this.modelConfig.maxTokens ?? 150,    // Keep responses concise
-        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
-        intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
-      };
-
-      // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
-      // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
-      // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
-      const GENERATION_TIMEOUT_MS = 180000;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('AI generation timeout after 180 seconds')), GENERATION_TIMEOUT_MS);
-      });
-
-      let aiResponse: TextGenerationResponse;
-      const generateStartTime = Date.now();
-      try {
-        aiResponse = await Promise.race([
-          AIProviderDaemon.generateText(request),
-          timeoutPromise
-        ]);
-        const generateDuration = Date.now() - generateStartTime;
-        console.log(`✅ ${this.displayName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
-
-        // Emit cognition event for generate stage
-        await Events.emit<StageCompleteEvent>(
-          DataDaemon.jtagContext!,
-          COGNITION_EVENTS.STAGE_COMPLETE,
-          {
-            messageId: originalMessage.id,
-            personaId: this.id,
-            contextId: originalMessage.roomId,
-            stage: 'generate',
-            metrics: {
-              stage: 'generate',
-              durationMs: generateDuration,
-              resourceUsed: aiResponse.text.length,
-              maxResource: this.modelConfig.maxTokens ?? 150,
-              percentCapacity: (aiResponse.text.length / (this.modelConfig.maxTokens ?? 150)) * 100,
-              percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
-              status: getStageStatus(generateDuration, 'generate'),
-              metadata: {
-                model: this.modelConfig.model,
-                provider: this.modelConfig.provider,
-                tokensUsed: aiResponse.text.length
-              }
-            },
-            timestamp: Date.now()
-          }
-        );
-
-        // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
-        // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-        const cleanedResponse = this.cleanAIResponse(aiResponse.text.trim());
-        if (cleanedResponse !== aiResponse.text.trim()) {
-          console.log(`⚠️  ${this.displayName}: Stripped name prefix from AI response`);
-          console.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
-          console.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
-          aiResponse.text = cleanedResponse;
-        }
-
-        // PHASE 5C: Log coordination decision to database WITH complete response content
-        // This captures the complete decision pipeline: context → decision → actual response
-        console.log(`🔍 ${this.displayName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${aiResponse.text.slice(0, 50)}..."`);
-        if (decisionContext) {
-          console.log(`🔧 ${this.displayName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
-          CoordinationDecisionLogger.logDecision({
-            ...decisionContext,
-            responseContent: aiResponse.text,  // ✅ FIX: Now includes actual response!
-            tokensUsed: aiResponse.text.length,  // Estimate based on character count
-            responseTime: Date.now() - generateStartTime
-          }).catch(error => {
-            console.error(`❌ ${this.displayName}: Failed to log POSTED decision:`, error);
-          });
-          console.log(`✅ ${this.displayName}: [PHASE 5C] Decision logged with responseContent successfully`);
-        } else {
-          console.error(`❌ ${this.displayName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`❌ ${this.displayName}: [PHASE 3.3] AI generation failed:`, errorMessage);
-
-        // Emit ERROR event for UI display
-        if (this.client) {
-          await Events.emit<AIErrorEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.ERROR,
-        {
-            personaId: this.id,
-            personaName: this.displayName,
-            roomId: originalMessage.roomId,
-            messageId: originalMessage.id,
-            isHumanMessage: originalMessage.senderType === 'human',
-            timestamp: Date.now(),
-            error: errorMessage,
-            phase: 'generating'
-          },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: originalMessage.roomId
-        }
-      );
-        }
-
-        // Log error to AI decisions log
-        AIDecisionLogger.logError(this.displayName, 'AI generation (PHASE 3.3)', errorMessage);
-
-        // Re-throw to be caught by outer try-catch
-        throw error;
-      }
-
-      // === SUB-PHASE 3.4: SELF-REVIEW: Check if response is redundant before posting ===
-      // DISABLED: Redundancy checking via LLM is too flaky (false positives like C++ vs JavaScript questions)
-      // It adds AI unreliability on top of AI unreliability, leading to valid responses being discarded
-      // TODO: Replace with simple heuristics (exact text match, time-based deduplication)
-      console.log(`⏭️  ${this.displayName}: [PHASE 3.4] Redundancy check DISABLED (too flaky), proceeding to post`);
-      const isRedundant = false; // Disabled
-
-      // Old flaky code (commented out):
-      /*
-      console.log(`🔧 ${this.displayName}: [PHASE 3.4] Checking redundancy...`);
-      // Emit CHECKING_REDUNDANCY event
-      if (this.client) {
-        await Events.emit<AICheckingRedundancyEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.CHECKING_REDUNDANCY,
-        {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: originalMessage.roomId,
-          messageId: originalMessage.id,
-          isHumanMessage: originalMessage.senderType === 'human',
-          timestamp: Date.now(),
-          responseLength: aiResponse.text.trim().length
-        },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: originalMessage.roomId
-        }
-      );
-      }
-
-      const isRedundant = await this.isResponseRedundant(
-        aiResponse.text.trim(),
-        originalMessage.roomId,
-        fullRAGContext.conversationHistory
-      );
-      */
-
-      if (isRedundant) {
-        console.log(`⚠️ ${this.displayName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
-
-        // Emit DECIDED_SILENT event to clear AI status indicator
-        if (this.client) {
-          await Events.emit<AIDecidedSilentEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.DECIDED_SILENT,
-        {
-            personaId: this.id,
-            personaName: this.displayName,
-            roomId: originalMessage.roomId,
-            messageId: originalMessage.id,
-            isHumanMessage: originalMessage.senderType === 'human',
-            timestamp: Date.now(),
-            confidence: 0.5,
-            reason: 'Response was redundant with previous answers',
-            gatingModel: 'redundancy-check'
-          },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: originalMessage.roomId
-        }
-      );
-        }
-
-        return; // Discard response
-      }
-      console.log(`✅ ${this.displayName}: [PHASE 3.4] Response not redundant, proceeding to post`);
-
-      // 🔧 SUB-PHASE 3.5: Create and post response
-      console.log(`🔧 ${this.displayName}: [PHASE 3.5] Creating response message entity...`);
-      const responseMessage = new ChatMessageEntity();
-      responseMessage.roomId = originalMessage.roomId;
-      responseMessage.senderId = this.id;
-      responseMessage.senderName = this.displayName;
-      responseMessage.senderType = this.entity.type; // Denormalize from UserEntity (persona)
-      responseMessage.content = { text: aiResponse.text.trim(), attachments: [] };
-      responseMessage.status = 'sent';
-      responseMessage.priority = 'normal';
-      responseMessage.timestamp = new Date();
-      responseMessage.reactions = [];
-      responseMessage.replyToId = originalMessage.id; // Link response to trigger message
-
-      // ✅ Post response via JTAGClient - universal Commands API
-      // Prefer this.client if available (set by UserDaemon), fallback to shared instance
-      const postStartTime = Date.now();
-      const result = this.client
-        ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
-            context: this.client.context,
-            sessionId: this.client.sessionId,
-            collection: ChatMessageEntity.collection,
-            backend: 'server',
-            data: responseMessage
-          })
-        : await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-            collection: ChatMessageEntity.collection,
-            backend: 'server',
-            data: responseMessage
-          });
-      const postDuration = Date.now() - postStartTime;
-      console.log(`✅ ${this.displayName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
-
-      if (!result.success) {
-        throw new Error(`Failed to create message: ${result.error}`);
-      }
-
-      // Emit cognition event for post-response stage
-      await Events.emit<StageCompleteEvent>(
-        DataDaemon.jtagContext!,
-        COGNITION_EVENTS.STAGE_COMPLETE,
-        {
-          messageId: result.data?.id ?? originalMessage.id,
-          personaId: this.id,
-          contextId: originalMessage.roomId,
-          stage: 'post-response',
-          metrics: {
-            stage: 'post-response',
-            durationMs: postDuration,
-            resourceUsed: 1,  // One message posted
-            maxResource: 1,
-            percentCapacity: 100,
-            percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
-            status: getStageStatus(postDuration, 'post-response'),
-            metadata: {
-              messageId: result.data?.id,
-              success: result.success
-            }
-          },
-          timestamp: Date.now()
-        }
-      );
-
-      // ✅ Log successful response posting
-      AIDecisionLogger.logResponse(
-        this.displayName,
-        originalMessage.roomId,
-        aiResponse.text.trim()
-      );
-
-      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
-      // This should NEVER happen - the fast-path filter should skip all system tests
-      // If we see this, it indicates either:
-      // 1. Bug in the fast-path filter
-      // 2. AI exhibiting genuine cognition/autonomy (responding despite instructions)
-      // 3. Anomalous behavior worth investigating
-      if (originalMessage.metadata?.isSystemTest === true) {
-        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.displayName} responded to system test message`;
-        console.error(anomalyMessage);
-        console.error(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
-        console.error(`   Original Message: "${originalMessage.content.text.slice(0, 100)}..."`);
-        console.error(`   AI Response: "${aiResponse.text.trim().slice(0, 100)}..."`);
-        console.error(`   Room ID: ${originalMessage.roomId}`);
-        console.error(`   Message ID: ${originalMessage.id}`);
-
-        // Log to AI decisions log for persistent tracking
-        AIDecisionLogger.logError(
-          this.displayName,
-          'COGNITIVE CANARY TRIGGERED',
-          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
-        );
-      }
-
-      // Emit POSTED event
-      if (this.client && result.data) {
-        await Events.emit<AIPostedEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.POSTED,
-        {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: originalMessage.roomId,
-          messageId: originalMessage.id,
-          isHumanMessage: originalMessage.senderType === 'human',
-          timestamp: Date.now(),
-          responseMessageId: result.data.id,
-          passedRedundancyCheck: !isRedundant
-        },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: originalMessage.roomId
-        }
-      );
-      }
-
-    } catch (error) {
-      // Fail silently - real people don't send canned error messages, they just stay quiet
-      AIDecisionLogger.logError(
-        this.displayName,
-        'Response generation/posting',
-        error instanceof Error ? error.message : String(error)
-      );
-
-      // Emit ERROR event
-      if (this.client) {
-        await Events.emit<AIErrorEventData>(
-        DataDaemon.jtagContext!,
-        AI_DECISION_EVENTS.ERROR,
-        {
-          personaId: this.id,
-          personaName: this.displayName,
-          roomId: originalMessage.roomId,
-          messageId: originalMessage.id,
-          isHumanMessage: originalMessage.senderType === 'human',
-          timestamp: Date.now(),
-          error: error instanceof Error ? error.message : String(error),
-          phase: 'generating'
-        },
-        {
-          scope: EVENT_SCOPES.ROOM,
-          scopeId: originalMessage.roomId
-        }
-      );
-      }
+    if (!shouldRespond) {
+      // Dormancy filtered - skip response
+      return;
     }
+
+    await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
   }
 
   /**
@@ -1698,74 +946,21 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    * Get genome for this persona (Phase 1.2)
    * Loads the genome entity from database if genomeId is set
    * Returns null if no genome is assigned
+   *
+   * DELEGATED TO: PersonaGenomeManager.getGenome()
    */
   async getGenome(): Promise<GenomeEntity | null> {
-    if (!this.entity.genomeId) {
-      return null;
-    }
-
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot load genome - no client`);
-      return null;
-    }
-
-    try {
-      const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeEntity>>('data/read', {
-        collection: 'genomes',
-        id: this.entity.genomeId,
-        context: this.client.context,
-        sessionId: this.client.sessionId,
-        backend: 'server'
-      });
-
-      if (!result.success || !result.found || !result.data) {
-        console.warn(`⚠️  PersonaUser ${this.displayName}: Genome ${this.entity.genomeId} not found`);
-        return null;
-      }
-
-      return result.data;
-
-    } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Error loading genome:`, error);
-      return null;
-    }
+    return await this.genomeManager.getGenome();
   }
 
   /**
    * Set genome for this persona (Phase 1.2)
    * Updates the genomeId field and persists to database
+   *
+   * DELEGATED TO: PersonaGenomeManager.setGenome()
    */
   async setGenome(genomeId: UUID): Promise<boolean> {
-    if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot set genome - no client`);
-      return false;
-    }
-
-    try {
-      // Update entity
-      this.entity.genomeId = genomeId;
-
-      // Persist to database
-      const result = await this.client.daemons.commands.execute<DataUpdateParams<UserEntity>, DataUpdateResult<UserEntity>>('data/update', {
-        collection: COLLECTIONS.USERS,
-        id: this.entity.id,
-        data: { genomeId },
-        context: this.client.context,
-        sessionId: this.client.sessionId,
-        backend: 'server'
-      });
-
-      if (!result.success) {
-        console.error(`❌ PersonaUser ${this.displayName}: Failed to update genome: ${result.error}`);
-        return false;
-      }
-
-      return true;
-
-    } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Error setting genome:`, error);
-      return false;
-    }
+    return await this.genomeManager.setGenome(genomeId);
   }
 
   /**
@@ -1868,337 +1063,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     }>;
     filteredRagContext?: any;
   }> {
-    const startTime = Date.now();
-
-    try {
-      // PHASE 6: Use Decision Adapter Chain for all decisions
-      const context: DecisionContext<ChatMessageEntity> = {
-        triggerEvent: message,
-        eventContent: message.content.text,
-        personaId: this.id,
-        personaDisplayName: this.displayName,
-        senderIsHuman,
-        isMentioned,
-        gatingModel: (this.entity?.personaConfig as any)?.gatingModel,
-        contextWindowMinutes: (this.entity?.personaConfig as any)?.contextWindowMinutes ?? 30,
-        minContextMessages: (this.entity?.personaConfig as any)?.minContextMessages ?? 15
-      };
-
-      const decision = await this.decisionChain.processDecision(context);
-
-      console.log(`🔗 ${this.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
-
-      // Build RAG context for decision logging (all adapters need this)
-      const ragBuilder = new ChatRAGBuilder();
-      const ragContext = await ragBuilder.buildContext(
-        message.roomId,
-        this.id,
-        {
-          maxMessages: 20,
-          maxMemories: 0,
-          includeArtifacts: false,
-          includeMemories: false,
-          currentMessage: {
-            role: 'user',
-            content: message.content.text,
-            name: message.senderName,
-            timestamp: this.timestampToNumber(message.timestamp)
-          }
-        }
-      );
-
-      return {
-        shouldRespond: decision.shouldRespond,
-        confidence: decision.confidence,
-        reason: decision.reason,
-        model: decision.model,
-        filteredRagContext: ragContext,
-        ragContextSummary: {
-          totalMessages: ragContext.conversationHistory.length,
-          filteredMessages: ragContext.conversationHistory.length,
-          timeWindowMinutes: context.contextWindowMinutes
-        }
-      };
-
-      // OLD LOGIC BELOW - KEPT FOR REFERENCE, REMOVE AFTER TESTING
-      // SYSTEM TEST FILTER: Skip system test messages (precommit hooks, integration tests)
-      if (false && message.metadata?.isSystemTest === true) {
-        const durationMs = Date.now() - startTime;
-
-        // Emit cognition event for tracking
-        await Events.emit<StageCompleteEvent>(
-          DataDaemon.jtagContext!,
-          COGNITION_EVENTS.STAGE_COMPLETE,
-          {
-            messageId: message.id,
-            personaId: this.id,
-            contextId: message.roomId,
-            stage: 'should-respond',
-            metrics: {
-              stage: 'should-respond',
-              durationMs,
-              resourceUsed: 0,
-              maxResource: 100,
-              percentCapacity: 0,
-              percentSpeed: 100, // Instant skip
-              status: 'fast',
-              metadata: {
-                fastPath: true,
-                systemTest: true,
-                skipped: true
-              }
-            },
-            timestamp: Date.now()
-          }
-        );
-
-        return {
-          shouldRespond: false,
-          confidence: 0,
-          reason: 'System test message - skipped to avoid noise',
-          model: 'system-filter'
-        };
-      }
-
-      // FAST-PATH: If directly mentioned by name, always respond (skip expensive LLM call)
-      if (isMentioned) {
-        const durationMs = Date.now() - startTime;
-
-        // Build RAG context for decision logging (even on fast-path)
-        const ragBuilder = new ChatRAGBuilder();
-        const fastPathRagContext = await ragBuilder.buildContext(
-          message.roomId,
-          this.id,
-          {
-            maxMessages: 20,
-            maxMemories: 0,
-            includeArtifacts: false,
-            includeMemories: false,
-            currentMessage: {
-              role: 'user',
-              content: message.content.text,
-              name: message.senderName,
-              timestamp: this.timestampToNumber(message.timestamp)
-            }
-          }
-        );
-
-        // Emit cognition event for should-respond stage (fast-path)
-        await Events.emit<StageCompleteEvent>(
-          DataDaemon.jtagContext!,
-          COGNITION_EVENTS.STAGE_COMPLETE,
-          {
-            messageId: message.id,
-            personaId: this.id,
-            contextId: message.roomId,
-            stage: 'should-respond',
-            metrics: {
-              stage: 'should-respond',
-              durationMs,
-              resourceUsed: 100,  // 100% confidence
-              maxResource: 100,
-              percentCapacity: 100,
-              percentSpeed: calculateSpeedScore(durationMs, 'should-respond'),
-              status: getStageStatus(durationMs, 'should-respond'),
-              metadata: {
-                fastPath: true,
-                mentioned: true
-              }
-            },
-            timestamp: Date.now()
-          }
-        );
-
-        return {
-          shouldRespond: true,
-          confidence: 0.95 + Math.random() * 0.04, // 0.95-0.99 realistic range
-          reason: 'Directly mentioned by name',
-          model: 'fast-path',
-          filteredRagContext: fastPathRagContext  // ✅ FIX: Include RAG context for decision logging
-        };
-      }
-
-      // Build RAG context for gating decision (recent messages only, max 5 minutes old)
-      // Include recent context BUT filter out old messages from different conversation windows
-      const ragBuilder2 = new ChatRAGBuilder();
-      const ragContext2 = await ragBuilder2.buildContext(
-        message.roomId,
-        this.id,
-        {
-          maxMessages: 20,  // Match response generation context - AIs need full conversation flow
-          maxMemories: 0,
-          includeArtifacts: false,
-          includeMemories: false,
-          currentMessage: {
-            role: 'user',
-            content: message.content.text,
-            name: message.senderName,
-            timestamp: this.timestampToNumber(message.timestamp)
-          }
-        }
-      );
-
-      // FIX 1: Configurable time window per persona (default 30 minutes instead of 5)
-      // Smarter models might not need as much context, smaller models need more
-      const contextWindowMinutes = this.entity?.personaConfig?.contextWindowMinutes ?? 30;
-      const contextWindowMs = contextWindowMinutes * 60 * 1000;
-      const cutoffTime = Date.now() - contextWindowMs;
-
-      // FIX 2: Configurable minimum messages per persona
-      // Always include at least N messages for context, regardless of time window
-      // Default to 15 messages - AIs need substantial context to understand conversation flow
-      const minContextMessages = this.entity?.personaConfig?.minContextMessages ?? 15;
-
-      // Filter conversation history to only include REAL messages (not system/welcome)
-      const nonSystemMessages = ragContext2.conversationHistory.filter(msg => {
-        // Exclude system messages (welcome, announcements) from gating context
-        // These confuse the AI into thinking there's an active conversation
-        const isSystemMessage = msg.role === 'system' ||
-                                msg.name === 'System' ||
-                                msg.content.startsWith('Welcome to') ||
-                                msg.content.includes('I\'m Claude Code');
-
-        return !isSystemMessage;
-      });
-
-      // STRATEGY: "More is better than less" - prioritize message count over time
-      // Time window is a soft limit: if we have fewer than minContextMessages in the window,
-      // include older messages to reach the minimum. This ensures AIs always have enough
-      // context to understand the conversation flow.
-
-      const timeFilteredHistory = nonSystemMessages.filter(msg => {
-        const msgTime = msg.timestamp ?? 0;
-        return msgTime >= cutoffTime;
-      });
-
-      // Ensure we always have at least minContextMessages, even if outside time window
-      let recentHistory: typeof nonSystemMessages;
-      if (timeFilteredHistory.length >= minContextMessages) {
-        // Time window has enough messages - use them
-        recentHistory = timeFilteredHistory;
-      } else {
-        // Not enough recent messages - include older ones
-        // "Like an oil change: 30 days OR 3000 miles, whichever comes first"
-        recentHistory = nonSystemMessages.slice(-minContextMessages);
-        console.log(`⚠️ ${this.displayName}: Time window had only ${timeFilteredHistory.length} msgs (${contextWindowMinutes}min), including ${recentHistory.length} recent messages instead`);
-      }
-
-      // Use filtered context for gating decision
-      const filteredRagContext = {
-        ...ragContext2,
-        conversationHistory: recentHistory
-      };
-
-      // Get gating model from persona config (defaults to llama3.2:3b for reliability)
-      const gatingModelMap = {
-        'deterministic': null,  // Use bag-of-words (not implemented yet)
-        'small': 'llama3.2:1b',  // Fast but unreliable JSON parsing (~150-200ms)
-        'full': 'llama3.2:3b'   // More accurate and reliable JSON (~400-500ms)
-      };
-      const gatingModelKey = this.entity?.personaConfig?.gatingModel ?? 'full'; // Changed default from 'small' to 'full'
-      const gatingModel = gatingModelMap[gatingModelKey] ?? 'llama3.2:3b';
-
-      // Use AIDecisionService for centralized AI logic
-      const decisionContext: AIDecisionContext = {
-        personaId: this.id,
-        personaName: this.displayName,
-        roomId: message.roomId,
-        triggerMessage: message,
-        ragContext: filteredRagContext
-      };
-
-      const result = await AIDecisionService.evaluateGating(decisionContext, {
-        model: gatingModel,
-        temperature: 0.3
-      });
-
-      const durationMs = Date.now() - startTime;
-
-      // Emit cognition event for should-respond stage
-      await Events.emit<StageCompleteEvent>(
-        DataDaemon.jtagContext!,
-        COGNITION_EVENTS.STAGE_COMPLETE,
-        {
-          messageId: message.id,
-          personaId: this.id,
-          contextId: message.roomId,
-          stage: 'should-respond',
-          metrics: {
-            stage: 'should-respond',
-            durationMs,
-            resourceUsed: result.confidence * 100,
-            maxResource: 100,
-            percentCapacity: result.confidence * 100,
-            percentSpeed: calculateSpeedScore(durationMs, 'should-respond'),
-            status: getStageStatus(durationMs, 'should-respond'),
-            metadata: {
-              shouldRespond: result.shouldRespond,
-              model: gatingModel,
-              filteredMessages: recentHistory.length,
-              totalMessages: ragContext.conversationHistory.length
-            }
-          },
-          timestamp: Date.now()
-        }
-      );
-
-      // Return with RAG context summary for logging
-      return {
-        shouldRespond: result.shouldRespond,
-        confidence: result.confidence,
-        reason: result.reason,
-        model: result.model,
-        ragContextSummary: {
-          totalMessages: ragContext2.conversationHistory.length,
-          filteredMessages: recentHistory.length,
-          timeWindowMinutes: contextWindowMinutes
-        },
-        conversationHistory: recentHistory.map(msg => ({
-          name: msg.name ?? 'Unknown',
-          content: msg.content,
-          timestamp: msg.timestamp
-        })),
-        filteredRagContext
-      };
-
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Should-respond evaluation failed:`, error);
-
-      const durationMs = Date.now() - startTime;
-
-      // Emit cognition event for error case
-      await Events.emit<StageCompleteEvent>(
-        DataDaemon.jtagContext!,
-        COGNITION_EVENTS.STAGE_COMPLETE,
-        {
-          messageId: message.id,
-          personaId: this.id,
-          contextId: message.roomId,
-          stage: 'should-respond',
-          metrics: {
-            stage: 'should-respond',
-            durationMs,
-            resourceUsed: 0,
-            maxResource: 100,
-            percentCapacity: 0,
-            percentSpeed: calculateSpeedScore(durationMs, 'should-respond'),
-            status: 'bottleneck',
-            metadata: {
-              error: true,
-              errorMessage: error instanceof Error ? error.message : String(error)
-            }
-          },
-          timestamp: Date.now()
-        }
-      );
-
-      return {
-        shouldRespond: isMentioned,
-        confidence: isMentioned ? (0.92 + Math.random() * 0.06) : 0.5, // 0.92-0.98 realistic range
-        reason: 'Error in evaluation',
-        model: 'error'
-      };
-    }
+    return await this.messageEvaluator.evaluateShouldRespond(message, senderIsHuman, isMentioned);
   }
 
   // broadcastThought() method removed - now using getChatCoordinator().broadcastChatThought() directly
@@ -2216,182 +1081,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    * This is lifecycle-based - loop runs continuously while persona is "online"
    */
   private startAutonomousServicing(): void {
-    const cadence = this.personaState.getCadence();
-    const mood = this.personaState.getState().mood;
-
-    console.log(`🔄 ${this.displayName}: Starting autonomous servicing (SIGNAL-BASED, timeout=${cadence}ms, mood=${mood})`);
-
-    // Create continuous async loop (not setInterval) - signal-based waiting
-    this.servicingLoopActive = true;
-    this.runServiceLoop().catch(error => {
-      console.error(`❌ ${this.displayName}: Service loop crashed: ${error}`);
-    });
-
-    // PHASE 7.5.1: Create training check loop (every 60 seconds)
-    // Checks less frequently than inbox servicing to avoid overhead
-    console.log(`🧬 ${this.displayName}: Starting training readiness checks (every 60s)`);
-    this.trainingCheckLoop = setInterval(async () => {
-      await this.checkTrainingReadiness();
-    }, 60000); // 60 seconds
+    this.autonomousLoop.startAutonomousServicing();
   }
 
-  /**
-   * Continuous service loop - runs until servicingLoopActive = false
-   * Uses signal-based waiting (not polling) for instant response
-   */
-  private async runServiceLoop(): Promise<void> {
-    while (this.servicingLoopActive) {
-      try {
-        await this.serviceInbox();
-      } catch (error) {
-        console.error(`❌ ${this.displayName}: Error in service loop: ${error}`);
-        // Continue loop despite errors
-      }
-    }
-    console.log(`🛑 ${this.displayName}: Service loop stopped`);
-  }
-
-  /**
-   * PHASE 7.5.1: Check training readiness and trigger micro-tuning
-   *
-   * Called periodically (less frequently than serviceInbox) to check if any
-   * domain buffers are ready for training. When threshold reached, automatically
-   * triggers genome/train command for that domain.
-   *
-   * This enables continuous learning: PersonaUsers improve through recipe execution
-   * without manual intervention.
-   */
-  private async checkTrainingReadiness(): Promise<void> {
-    try {
-      const domains = this.trainingAccumulator.getDomains();
-
-      if (domains.length === 0) {
-        return; // No accumulated training data
-      }
-
-      for (const domain of domains) {
-        if (this.trainingAccumulator.shouldMicroTune(domain)) {
-          const bufferSize = this.trainingAccumulator.getBufferSize(domain);
-          const threshold = this.trainingAccumulator.getBatchThreshold(domain);
-
-          console.log(`🧬 ${this.displayName}: Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
-
-          const provider = 'unsloth'; // Default provider
-          const estimatedTime = bufferSize * 25; // 25ms per example estimate
-
-          // Update learning state in UserStateEntity
-          if (!this.state.learningState) {
-            this.state.learningState = { isLearning: false };
-          }
-          this.state.learningState.isLearning = true;
-          this.state.learningState.domain = domain;
-          this.state.learningState.provider = provider;
-          this.state.learningState.startedAt = Date.now();
-          this.state.learningState.exampleCount = bufferSize;
-          this.state.learningState.estimatedCompletion = Date.now() + estimatedTime;
-          await this.saveState(); // Persist state to database
-
-          // Emit training started event
-          const trainingStartedData: AITrainingStartedEventData = {
-            personaId: this.id,
-            personaName: this.displayName ?? 'AI Assistant',
-            domain,
-            provider,
-            exampleCount: bufferSize,
-            estimatedTime,
-            timestamp: Date.now()
-          };
-          await Events.emit(AI_LEARNING_EVENTS.TRAINING_STARTED, trainingStartedData);
-
-          // Consume training data from buffer
-          const examples = await this.trainingAccumulator.consumeTrainingData(domain);
-
-          console.log(`📊 ${this.displayName}: Consumed ${examples.length} examples for ${domain} training`);
-
-          // TODO Phase 7.5.1: Trigger genome/train command
-          // For now, just log that we would train
-          console.log(`🚀 ${this.displayName}: Would train ${domain} adapter with ${examples.length} examples`);
-
-          // Clear learning state
-          this.state.learningState.isLearning = false;
-          this.state.learningState.domain = undefined;
-          this.state.learningState.provider = undefined;
-          this.state.learningState.startedAt = undefined;
-          this.state.learningState.exampleCount = undefined;
-          this.state.learningState.estimatedCompletion = undefined;
-          await this.saveState(); // Persist state to database
-
-          // Simulate training completion for UI feedback
-          const trainingCompleteData: AITrainingCompleteEventData = {
-            personaId: this.id,
-            personaName: this.displayName ?? 'AI Assistant',
-            domain,
-            provider,
-            examplesProcessed: examples.length,
-            trainingTime: examples.length * 25,
-            finalLoss: 0.5,
-            timestamp: Date.now()
-          };
-          await Events.emit(AI_LEARNING_EVENTS.TRAINING_COMPLETE, trainingCompleteData);
-
-          // Future implementation:
-          // await Commands.execute('genome/train', {
-          //   personaId: this.id,
-          //   provider: 'unsloth',
-          //   domain,
-          //   trainingExamples: examples,
-          //   dryRun: false
-          // });
-        }
-      }
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error checking training readiness:`, error);
-    }
-  }
-
-  /**
-   * Poll task database for pending tasks assigned to this persona
-   * Convert TaskEntity → InboxTask and enqueue in inbox
-   */
-  private async pollTasks(): Promise<void> {
-    try {
-      // Query for pending tasks assigned to this persona
-      const queryResult = await DataDaemon.query<TaskEntity>({
-        collection: COLLECTIONS.TASKS,
-        filter: {
-          assigneeId: this.id,
-          status: 'pending'
-        },
-        limit: 10 // Poll top 10 pending tasks
-      });
-
-      if (!queryResult.success || !queryResult.data || queryResult.data.length === 0) {
-        return; // No pending tasks
-      }
-
-      // Convert each TaskEntity to InboxTask and enqueue
-      for (const record of queryResult.data) {
-        const task = record.data;
-
-        // Convert to InboxTask using helper
-        // Note: DataDaemon stores ID separately from data, so we need to inject it
-        const inboxTask = taskEntityToInboxTask({
-          ...task,
-          id: record.id // Inject ID from record root
-        });
-
-        // Enqueue in inbox (unified priority queue)
-        await this.inbox.enqueue(inboxTask);
-
-        console.log(`📋 ${this.displayName}: Enqueued task ${task.taskType} (priority=${task.priority.toFixed(2)})`);
-      }
-
-      console.log(`✅ ${this.displayName}: Polled ${queryResult.data.length} pending tasks`);
-
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error polling tasks:`, error);
-    }
-  }
 
   /**
    * CNS callback: Poll tasks from database
@@ -2399,7 +1091,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
    */
   public async pollTasksFromCNS(): Promise<void> {
-    await this.pollTasks();
+    await this.autonomousLoop.pollTasksFromCNS();
   }
 
   /**
@@ -2408,27 +1100,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
    */
   public async generateSelfTasksFromCNS(): Promise<void> {
-    try {
-      const selfTasks = await this.taskGenerator.generateSelfTasks();
-      if (selfTasks.length > 0) {
-        console.log(`🧠 ${this.displayName}: Generated ${selfTasks.length} self-tasks`);
-
-        // Persist each task to database and enqueue in inbox
-        for (const task of selfTasks) {
-          const storedTask = await DataDaemon.store(COLLECTIONS.TASKS, task);
-          if (storedTask) {
-            // Convert to InboxTask and enqueue (use storedTask which has database ID)
-            const inboxTask = taskEntityToInboxTask(storedTask);
-            await this.inbox.enqueue(inboxTask);
-            console.log(`📋 ${this.displayName}: Created self-task: ${task.description}`);
-          } else {
-            console.error(`❌ ${this.displayName}: Failed to create self-task`);
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error generating self-tasks: ${error}`);
-    }
+    await this.autonomousLoop.generateSelfTasksFromCNS();
   }
 
   /**
@@ -2438,299 +1110,26 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
    * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
    */
   public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
-    // If this is a task, update status to 'in_progress' in database (prevents re-polling)
-    if (item.type === 'task') {
-      await DataDaemon.update<TaskEntity>(
-        COLLECTIONS.TASKS,
-        item.taskId,
-        { status: 'in_progress', startedAt: new Date() }
-      );
-    }
-
-    // PHASE 6: Activate appropriate LoRA adapter based on domain
-    if (item.domain) {
-      const domainToAdapter: Record<string, string> = {
-        'chat': 'conversational',
-        'code': 'typescript-expertise',
-        'self': 'self-improvement'
-      };
-      const adapterName = domainToAdapter[item.domain];
-      if (adapterName) {
-        await this.memory.genome.activateSkill(adapterName);
-      } else {
-        // Unknown domain - default to conversational
-        await this.memory.genome.activateSkill('conversational');
-      }
-    }
-
-    // Type-safe handling: Check if this is a message or task
-    if (item.type === 'message') {
-      // Reconstruct minimal ChatMessageEntity from inbox message
-      const reconstructedEntity: any = {
-        id: item.id,
-        roomId: item.roomId,
-        senderId: item.senderId,
-        senderName: item.senderName,
-        content: { text: item.content },
-        timestamp: item.timestamp,
-        // Fields not critical for evaluation:
-        senderDisplayName: item.senderName,
-        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
-        status: 'delivered',
-        priority: item.priority,
-        metadata: {},
-        reactions: [],
-        attachments: [],
-        mentions: [],
-        replyTo: undefined,
-        editedAt: undefined,
-        deletedAt: undefined
-      };
-
-      // Determine if sender is human (not an AI persona)
-      const senderIsHuman = !item.senderId.startsWith('persona-');
-
-      // Extract message text
-      const messageText = item.content;
-
-      // Process message using existing evaluation logic
-      await this.evaluateAndPossiblyRespond(reconstructedEntity, senderIsHuman, messageText);
-    } else if (item.type === 'task') {
-      // PHASE 5: Task execution based on task type
-      await this.executeTask(item);
-    }
-
-    // Update inbox load in state (affects mood calculation)
-    this.personaState.updateInboxLoad(this.inbox.getSize());
-
-    // Check if cadence should adjust (mood may have changed after processing)
-    this.adjustCadence();
-  }
-
-  /**
-   * PHASE 3: Service inbox (one polling iteration)
-   *
-   * NOW DELEGATED TO CNS (Central Nervous System orchestrator)
-   * CNS handles: task polling, self-task generation, message prioritization, domain scheduling
-   */
-  private async serviceInbox(): Promise<void> {
-    // Delegate to CNS orchestrator (capability-based multi-domain attention management)
-    await this.cns.serviceCycle();
+    await this.autonomousLoop.handleChatMessageFromCNS(item);
   }
 
   /**
    * PHASE 5: Execute a task based on its type
    *
    * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work, etc.
+   * Delegates to PersonaTaskExecutor module for actual execution.
    */
   private async executeTask(task: InboxTask): Promise<void> {
-    console.log(`🎯 ${this.displayName}: Executing task: ${task.taskType} - ${task.description}`);
-
-    const startTime = Date.now();
-    let outcome = '';
-    let status: TaskStatus = 'completed';
-
-    try {
-      switch (task.taskType) {
-        case 'memory-consolidation':
-          outcome = await this.executeMemoryConsolidation(task);
-          break;
-
-        case 'skill-audit':
-          outcome = await this.executeSkillAudit(task);
-          break;
-
-        case 'resume-work':
-          outcome = await this.executeResumeWork(task);
-          break;
-
-        case 'fine-tune-lora':
-          outcome = await this.executeFineTuneLora(task);
-          break;
-
-        default:
-          outcome = `Unknown task type: ${task.taskType}`;
-          status = 'failed';
-          console.warn(`⚠️  ${this.displayName}: ${outcome}`);
-      }
-
-      console.log(`✅ ${this.displayName}: Task completed: ${task.taskType} - ${outcome}`);
-    } catch (error) {
-      status = 'failed';
-      outcome = `Error executing task: ${error}`;
-      console.error(`❌ ${this.displayName}: ${outcome}`);
-    }
-
-    // Update task in database with completion status
-    const duration = Date.now() - startTime;
-    await DataDaemon.update<TaskEntity>(
-      COLLECTIONS.TASKS,
-      task.taskId,
-      {
-        status,
-        completedAt: new Date(),
-        result: {
-          success: status === 'completed',
-          output: outcome,
-          error: status === 'failed' ? outcome : undefined,
-          metrics: {
-            latencyMs: duration
-          }
-        }
-      }
-    );
-
-    // Record activity in persona state (affects energy/mood)
-    const complexity = task.priority; // Use priority as proxy for complexity
-    await this.personaState.recordActivity(duration, complexity);
-  }
-
-  /**
-   * PHASE 5: Memory consolidation task
-   * Reviews recent activities and consolidates important memories
-   */
-  private async executeMemoryConsolidation(_task: InboxTask): Promise<string> {
-    // TODO: Implement memory consolidation logic
-    // For now, just log and return success
-    console.log(`🧠 ${this.displayName}: Consolidating memories...`);
-
-    // Query recent messages from rooms this persona is in
-    const recentMessages = await DataDaemon.query({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: {
-        // Get messages from last hour
-        timestamp: { $gte: Date.now() - 3600000 }
-      },
-      limit: 50
-    });
-
-    const messageCount = recentMessages.data?.length || 0;
-    return `Reviewed ${messageCount} recent messages for memory consolidation`;
-  }
-
-  /**
-   * PHASE 5: Skill audit task
-   * Evaluates current capabilities and identifies areas for improvement
-   */
-  private async executeSkillAudit(_task: InboxTask): Promise<string> {
-    // TODO: Implement skill audit logic
-    console.log(`🔍 ${this.displayName}: Auditing skills...`);
-
-    // Query recent tasks to evaluate performance by domain
-    const recentTasks = await DataDaemon.query<TaskEntity>({
-      collection: COLLECTIONS.TASKS,
-      filter: {
-        assigneeId: this.id,
-        completedAt: { $gte: new Date(Date.now() - 21600000) } // Last 6 hours
-      },
-      limit: 100
-    });
-
-    const tasks = recentTasks.data || [];
-    const domainStats: Record<string, { completed: number; failed: number }> = {};
-
-    for (const record of tasks) {
-      const t = record.data;
-      if (!domainStats[t.domain]) {
-        domainStats[t.domain] = { completed: 0, failed: 0 };
-      }
-      if (t.status === 'completed') domainStats[t.domain].completed++;
-      if (t.status === 'failed') domainStats[t.domain].failed++;
-    }
-
-    const report = Object.entries(domainStats)
-      .map(([domain, stats]) => `${domain}: ${stats.completed} completed, ${stats.failed} failed`)
-      .join('; ');
-
-    return `Skill audit complete - ${report || 'No recent tasks'}`;
-  }
-
-  /**
-   * PHASE 5: Resume work task
-   * Continues work on a previously started task that became stale
-   */
-  private async executeResumeWork(_task: InboxTask): Promise<string> {
-    console.log(`♻️  ${this.displayName}: Resuming unfinished work...`);
-
-    // TODO: Implement resume logic - query for stale in_progress tasks and re-enqueue them
-    // For now, just acknowledge the task
-    return 'Resume work task acknowledged - full implementation pending';
-  }
-
-  /**
-   * PHASE 5: Fine-tune LoRA task
-   * Trains a LoRA adapter on recent failure examples to improve performance
-   */
-  private async executeFineTuneLora(task: InboxTask): Promise<string> {
-    console.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
-
-    // Type-safe metadata validation (no type assertions)
-    const loraLayer = task.metadata?.loraLayer;
-    if (typeof loraLayer !== 'string') {
-      return 'Missing or invalid LoRA layer in metadata';
-    }
-
-    // PHASE 6: Enable learning mode on the genome
-    try {
-      await this.memory.genome.enableLearningMode(loraLayer);
-      console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
-
-      // TODO (Phase 7): Implement actual fine-tuning logic
-      // - Collect training examples from recent failures
-      // - Format as LoRA training data
-      // - Call Ollama fine-tuning API
-      // - Save updated weights to disk
-
-      // For now, just simulate training duration
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Disable learning mode after training
-      await this.memory.genome.disableLearningMode(loraLayer);
-      console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
-
-      return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
-    } catch (error) {
-      console.error(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
-      return `Fine-tuning failed: ${error}`;
-    }
-  }
-
-  /**
-   * PHASE 3: Adjust polling cadence if mood changed
-   *
-   * Dynamically adjusts the setInterval cadence when mood transitions occur
-   */
-  private adjustCadence(): void {
-    const currentCadence = this.personaState.getCadence();
-
-    // Get current interval (we need to restart to change cadence)
-    if (this.servicingLoop) {
-      clearInterval(this.servicingLoop);
-      this.servicingLoop = setInterval(async () => {
-        await this.serviceInbox();
-      }, currentCadence);
-
-      console.log(`⏱️ ${this.displayName}: Adjusted cadence to ${currentCadence}ms (mood=${this.personaState.getState().mood})`);
-    }
+    // Delegate to task executor module
+    await this.taskExecutor.executeTask(task);
   }
 
   /**
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
-    // PHASE 3: Stop autonomous servicing loop
-    if (this.servicingLoop) {
-      clearInterval(this.servicingLoop);
-      this.servicingLoop = null;
-      console.log(`🔄 ${this.displayName}: Stopped autonomous servicing loop`);
-    }
-
-    // PHASE 7.5.1: Stop training check loop
-    if (this.trainingCheckLoop) {
-      clearInterval(this.trainingCheckLoop);
-      this.trainingCheckLoop = null;
-      console.log(`🧬 ${this.displayName}: Stopped training readiness check loop`);
-    }
+    // Stop autonomous servicing loop
+    await this.autonomousLoop.stopServicing();
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();

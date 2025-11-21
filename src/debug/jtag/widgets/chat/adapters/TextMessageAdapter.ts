@@ -56,6 +56,9 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       // Apply syntax highlighting to code blocks after markdown parsing
       htmlContent = this.applySyntaxHighlighting(htmlContent);
 
+      // Make long error code blocks collapsible
+      htmlContent = this.makeErrorsCollapsible(htmlContent);
+
       return `
         <div class="text-message-content markdown-body">
           ${htmlContent}
@@ -257,7 +260,70 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       .hljs-strong {
         font-weight: bold;
       }
+
+      /* Collapsible Error Sections */
+      .collapsible-error {
+        border: 1px solid rgba(175, 184, 193, 0.3);
+        border-radius: 6px;
+        margin: 12px 0;
+        background-color: rgba(255, 99, 71, 0.05);
+      }
+
+      .collapsible-error summary {
+        padding: 8px 12px;
+        cursor: pointer;
+        font-weight: 600;
+        user-select: none;
+        background-color: rgba(255, 99, 71, 0.1);
+        border-radius: 6px 6px 0 0;
+        color: #d73a49;
+      }
+
+      .collapsible-error summary:hover {
+        background-color: rgba(255, 99, 71, 0.15);
+      }
+
+      .collapsible-error[open] summary {
+        border-bottom: 1px solid rgba(175, 184, 193, 0.3);
+        border-radius: 6px 6px 0 0;
+        margin-bottom: 0;
+      }
+
+      .collapsible-error pre {
+        margin: 0;
+        border-radius: 0 0 6px 6px;
+      }
     `;
+  }
+
+  /**
+   * Make long error code blocks collapsible using <details> element
+   * Detects error patterns and wraps code blocks >10 lines in collapsible sections
+   */
+  private makeErrorsCollapsible(html: string): string {
+    // Match <pre><code> blocks and make them collapsible if they're long or contain error patterns
+    return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g, (match, attrs: string, content: string) => {
+      // Count lines in the code block
+      const lines = content.trim().split('\n');
+      const lineCount = lines.length;
+
+      // Check for error patterns
+      const hasErrorPattern = /Error|Exception|Failed|at \w+\.|TypeError|ReferenceError|SyntaxError/i.test(content);
+
+      // Make collapsible if >10 lines OR contains error patterns
+      if (lineCount > 10 || hasErrorPattern) {
+        const previewLines = lines.slice(0, 2).join('\n');
+        const errorType = content.match(/(Error|Exception|Failed)/i)?.[0] || 'Details';
+
+        return `<details class="collapsible-error">
+<summary>${errorType} (${lineCount} lines) - click to expand</summary>
+<pre><code${attrs}>${content}</code></pre>
+</details>`;
+      }
+
+      // Return unchanged if short and no error patterns
+      return match;
+    });
   }
 
   /**

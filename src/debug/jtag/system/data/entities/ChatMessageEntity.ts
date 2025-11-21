@@ -11,22 +11,47 @@ import type { UserType } from './UserEntity';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed' | 'deleted';
 export type MessagePriority = 'low' | 'normal' | 'high' | 'urgent';
 
-export interface MessageAttachment {
-  type: string;
-  url?: string;
-  name?: string;
-  // RAG builder fields
-  base64?: string;
-  data?: string;
-  content?: string;
+/**
+ * Media Types - Extensible media structure for multimodal messages
+ */
+export type MediaType = 'image' | 'audio' | 'video' | 'file' | 'document';
+
+export interface MediaItem {
+  // Core identification
+  id?: string;  // Unique ID for this media item
+  type: MediaType;
+
+  // Content sources (at least one required)
+  url?: string;        // URL to media (local file:// or remote https://)
+  base64?: string;     // Base64-encoded data
+
+  // Metadata
+  mimeType?: string;   // e.g., 'image/png', 'audio/mp3'
   filename?: string;
-  mimeType?: string;
-  size?: number;
+  size?: number;       // Bytes
+
+  // Accessibility & Description
+  alt?: string;        // Alt text for images (accessibility)
+  description?: string; // Human-readable description of media
+  title?: string;      // Optional title
+
+  // Dimensions (for images/videos)
+  width?: number;
+  height?: number;
+  duration?: number;   // Duration in seconds (for audio/video)
+
+  // Analysis & Processing
+  analysisCacheKey?: string;  // Reference to cached AI analysis
+  thumbnailUrl?: string;      // Thumbnail for videos/documents
+
+  // Upload tracking
+  uploadedAt?: number;  // Timestamp
+  uploadedBy?: UUID;    // Who uploaded it
 }
 
 export interface MessageContent {
   text: string;
-  attachments: readonly MessageAttachment[];
+  media?: readonly MediaItem[];  // Renamed from 'attachments' for clarity
 }
 
 export interface EditHistoryEntry {
@@ -90,7 +115,7 @@ export interface CreateMessageData {
 export function processMessageFormatting(content: MessageContent): MessageContent {
   return {
     text: content.text,
-    attachments: content.attachments
+    media: content.media
   };
 }
 
@@ -159,7 +184,7 @@ export class ChatMessageEntity extends BaseEntity {
     this.senderId = '' as UUID;
     this.senderName = '';
     this.senderType = 'human'; // Default to human
-    this.content = { text: '', attachments: [] };
+    this.content = { text: '', media: [] };
     this.status = 'sending';
     this.priority = 'normal';
     this.timestamp = new Date();
@@ -214,8 +239,20 @@ export class ChatMessageEntity extends BaseEntity {
       return { success: false, error: 'Message content is required' };
     }
 
-    if (!this.content.text?.trim() && (!this.content.attachments || this.content.attachments.length === 0)) {
-      return { success: false, error: 'Message must have either text content or attachments' };
+    if (!this.content.text?.trim() && (!this.content.media || this.content.media.length === 0)) {
+      return { success: false, error: 'Message must have either text content or media' };
+    }
+
+    // Validate media items if present
+    if (this.content.media && this.content.media.length > 0) {
+      for (const mediaItem of this.content.media) {
+        if (!mediaItem.url && !mediaItem.base64) {
+          return { success: false, error: 'Media item must have either url or base64 data' };
+        }
+        if (!mediaItem.type) {
+          return { success: false, error: 'Media item must have a type' };
+        }
+      }
     }
 
     // Enum validation

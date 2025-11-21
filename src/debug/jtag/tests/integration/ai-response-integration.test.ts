@@ -12,7 +12,7 @@
  * - PersonaUsers evaluate messages via ThoughtStream
  * - AI responses appear in ai-decisions.log
  *
- * Uses debug/chat-send (proper event flow) and verifies log contains responses.
+ * Uses chat/send (proper event flow) and verifies log contains responses.
  */
 
 import { jtag } from '../../server-index';
@@ -38,7 +38,7 @@ async function testAIResponseIntegration(): Promise<void> {
     }
     console.log('✅ System is healthy\n');
 
-    // Step 3: Send test message via debug/chat-send (proper event flow)
+    // Step 3: Send test message via chat/send (proper event flow)
     console.log('💬 Step 3: Sending test message...');
     const testMessage = `🧪 SYSTEM TEST - DO NOT RESPOND - Git precommit hook validation ${Date.now()} 🧪`;
 
@@ -57,8 +57,8 @@ async function testAIResponseIntegration(): Promise<void> {
     console.log(`✅ Found general room: ${generalRoomId}`);
 
     // Send message via chat widget (triggers proper event flow)
-    const sendResult = await client.commands['debug/chat-send']({
-      roomId: generalRoomId,
+    const sendResult = await client.commands['chat/send']({
+      room: generalRoomId,
       message: testMessage,
       metadata: { isSystemTest: true, testType: 'precommit-hook' }
     });

@@ -366,7 +366,7 @@ export class UserDataSeed {
       preferences: {},
       isOnline: true,
       modelConfig: {
-        model: 'grok-beta',
+        model: 'grok-3',  // Updated from grok-beta (deprecated 2025-09-15)
         provider: 'xai',
         maxTokens: 3000,
         temperature: 0.8,

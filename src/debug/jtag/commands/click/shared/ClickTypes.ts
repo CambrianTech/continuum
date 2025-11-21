@@ -36,17 +36,16 @@ export const createClickParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: {
-    selector?: string;
+    selector: string;  // Required, not optional!
     button?: 'left' | 'right' | 'middle';
     timeout?: number;
     shadowRoot?: boolean;
     innerSelector?: string;
   }
 ): ClickParams => createPayload(context, sessionId, {
-  selector: data.selector ?? '',
   button: data.button ?? 'left',
   timeout: data.timeout ?? 30000,
-  ...data
+  ...data  // selector is required, so it's in data
 });
 
 export interface ClickResult extends CommandResult {

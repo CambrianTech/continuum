@@ -14,9 +14,8 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 export interface ListParams extends JTAGPayload {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
-  
+
   // Optional filters for command discovery
-  readonly category?: 'browser' | 'server' | 'system' | 'all';
   readonly includeDescription?: boolean;
   readonly includeSignature?: boolean;
 }
@@ -27,13 +26,12 @@ export interface ListParams extends JTAGPayload {
 export interface CommandSignature {
   readonly name: string;
   readonly description: string;
-  readonly category: 'browser' | 'server' | 'system';
-  readonly params: Record<string, {
+  readonly params?: Record<string, {
     readonly type: string;
     readonly required: boolean;
     readonly description?: string;
   }>;
-  readonly returns: Record<string, {
+  readonly returns?: Record<string, {
     readonly type: string;
     readonly description?: string;
   }>;
@@ -62,7 +60,6 @@ export function createListParams(
   return {
     context,
     sessionId,
-    category: 'all',
     includeDescription: true,
     includeSignature: true,
     ...overrides

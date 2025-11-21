@@ -14,13 +14,12 @@ export const createTypeParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: {
-    selector?: string;
+    selector: string;  // Required, not optional!
     text?: string;
     clearFirst?: boolean;
     delay?: number;
   }
 ): TypeParams => createPayload(context, sessionId, {
-  selector: data.selector ?? '',
   text: data.text ?? '',
   clearFirst: data.clearFirst ?? true,
   delay: data.delay ?? 0,
@@ -41,13 +40,12 @@ export const createTypeResult = (
   sessionId: UUID,
   data: {
     success: boolean;
-    selector?: string;
+    selector: string;  // Required, not optional!
     typed?: boolean;
     text?: string;
     error?: JTAGError;
   }
 ): TypeResult => createPayload(context, sessionId, {
-  selector: data.selector ?? '',
   typed: data.typed ?? false,
   text: data.text ?? '',
   timestamp: new Date().toISOString(),

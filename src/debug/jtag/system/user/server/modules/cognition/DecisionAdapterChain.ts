@@ -15,6 +15,8 @@ import type { BaseEntity } from '../../../../data/entities/BaseEntity';
 import { FastPathAdapter } from './adapters/FastPathAdapter';
 import { ThermalAdapter } from './adapters/ThermalAdapter';
 import { LLMAdapter } from './adapters/LLMAdapter';
+import { CognitionLogger } from './CognitionLogger';
+import type { AdapterDecision, DecisionContextMetadata } from '../../../../data/entities/AdapterDecisionLogEntity';
 
 export class DecisionAdapterChain {
   private adapters: IDecisionAdapter[] = [];
@@ -52,15 +54,58 @@ export class DecisionAdapterChain {
       console.log(`   🔍 Trying adapter: ${adapter.name} (priority ${adapter.priority})`);
 
       // Let adapter evaluate the decision
+      const startTime = Date.now();
       const decision = await adapter.evaluate(context);
+      const evaluationDurationMs = Date.now() - startTime;
+
+      // Build decision context metadata for logging
+      const decisionContextMetadata: DecisionContextMetadata = {
+        messageText: context.eventContent.slice(0, 200),
+        priority: 0.8,  // Priority for decision-making
+        isMentioned: context.isMentioned,
+        senderIsHuman: context.senderIsHuman
+      };
+
+      // Extract contextId from trigger event (domain-specific)
+      // For chat: roomId, for other domains: appropriate context identifier
+      const contextId = (context.triggerEvent as any).roomId || (context.triggerEvent as any).contextId || context.personaId;
 
       if (decision !== null) {
         console.log(`   ✅ ${adapter.name} handled decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (confidence: ${decision.confidence.toFixed(2)})`);
         console.log(`   💭 Reason: ${decision.reason}`);
 
+        // Log adapter decision to cognition database
+        const adapterDecision: AdapterDecision = decision.shouldRespond ? 'RESPOND' : 'SILENT';
+        await CognitionLogger.logAdapterDecision(
+          context.personaId,
+          context.personaDisplayName,
+          adapter.name,
+          adapterDecision,
+          decision.confidence,
+          decision.reason,
+          decisionContextMetadata,
+          evaluationDurationMs,
+          'chat',  // Domain
+          contextId
+        );
+
         return decision;
       } else {
         console.log(`   ⏭️  ${adapter.name} returned null - trying next adapter`);
+
+        // Log PASS decision (adapter chose not to handle)
+        await CognitionLogger.logAdapterDecision(
+          context.personaId,
+          context.personaDisplayName,
+          adapter.name,
+          'PASS',
+          0.0,
+          'Adapter passed - did not handle this case',
+          decisionContextMetadata,
+          evaluationDurationMs,
+          'chat',
+          contextId
+        );
       }
     }
 

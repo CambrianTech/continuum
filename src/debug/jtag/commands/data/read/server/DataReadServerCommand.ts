@@ -10,6 +10,7 @@ import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import type { MediaItem, ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { DataReadCommand } from '../shared/DataReadCommand';
 
 export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
@@ -28,10 +29,36 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
       if (result.success && result.data) {
         console.log(`✅ DATA SERVER: Read ${params.collection}/${params.id}`);
 
+        // Extract media if this is a chat message with attachments
+        let media: MediaItem[] = [];
+        let cleanedData = result.data.data;
+
+        if (params.collection === 'chat_messages' && result.data.data) {
+          const messageData = result.data.data as ChatMessageEntity;
+          if (messageData.content?.media && Array.isArray(messageData.content.media)) {
+            // Extract media to top level
+            media = messageData.content.media;
+            console.log(`📸 DATA SERVER: Extracted ${media.length} media item(s) from message ${params.id}`);
+
+            // Create cleaned entity without media duplication (preserve prototype)
+            cleanedData = Object.assign(
+              Object.create(Object.getPrototypeOf(messageData)),
+              messageData,
+              {
+                content: {
+                  ...messageData.content,
+                  media: []
+                }
+              }
+            );
+          }
+        }
+
         return createDataReadResultFromParams(params, {
           success: true,
-          data: result.data.data, // Extract entity data from DataRecord
-          found: true
+          data: cleanedData,
+          found: true,
+          media
         });
       } else {
         console.log(`ℹ️ DATA SERVER: Record not found ${params.collection}/${params.id}`);

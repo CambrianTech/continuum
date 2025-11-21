@@ -29,6 +29,7 @@ import type { IndexCreateParams, IndexCreateResult } from '../../../../commands/
 import type { RagQueryOpenParams, RagQueryOpenResult } from '../../../../commands/ai/rag/query-open/shared/RagQueryOpenTypes';
 import type { RagQueryFetchParams, RagQueryFetchResult } from '../../../../commands/ai/rag/query-fetch/shared/RagQueryFetchTypes';
 import type { RagQueryCloseParams, RagQueryCloseResult } from '../../../../commands/ai/rag/query-close/shared/RagQueryCloseTypes';
+import type { TreeParams, TreeResult } from '../../../../commands/tree/shared/TreeTypes';
 
 /**
  * Command Registry - Maps command names to their param/result types
@@ -114,6 +115,10 @@ export interface CommandRegistry {
   'ai/rag/query-close': {
     params: RagQueryCloseParams;
     result: RagQueryCloseResult;
+  };
+  'tree': {
+    params: TreeParams;
+    result: TreeResult;
   };
   // Add more commands here...
 }
