@@ -10,8 +10,8 @@ import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import type { MediaItem, ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { DataReadCommand } from '../shared/DataReadCommand';
+import { extractMediaFromMessage, isChatMessageEntity } from '../../shared/ChatMessageTransforms';
 
 export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
@@ -29,36 +29,20 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
       if (result.success && result.data) {
         console.log(`✅ DATA SERVER: Read ${params.collection}/${params.id}`);
 
-        // Extract media if this is a chat message with attachments
-        let media: MediaItem[] = [];
-        let cleanedData = result.data.data;
+        // Extract media from chat messages to avoid duplication in response
+        const transformation = isChatMessageEntity(params.collection, result.data.data)
+          ? extractMediaFromMessage(result.data.data)
+          : { entity: result.data.data, media: [] };
 
-        if (params.collection === 'chat_messages' && result.data.data) {
-          const messageData = result.data.data as ChatMessageEntity;
-          if (messageData.content?.media && Array.isArray(messageData.content.media)) {
-            // Extract media to top level
-            media = messageData.content.media;
-            console.log(`📸 DATA SERVER: Extracted ${media.length} media item(s) from message ${params.id}`);
-
-            // Create cleaned entity without media duplication (preserve prototype)
-            cleanedData = Object.assign(
-              Object.create(Object.getPrototypeOf(messageData)),
-              messageData,
-              {
-                content: {
-                  ...messageData.content,
-                  media: []
-                }
-              }
-            );
-          }
+        if (transformation.media.length > 0) {
+          console.log(`📸 DATA SERVER: Extracted ${transformation.media.length} media item(s) from message ${params.id}`);
         }
 
         return createDataReadResultFromParams(params, {
           success: true,
-          data: cleanedData,
+          data: transformation.entity,
           found: true,
-          media
+          media: transformation.media
         });
       } else {
         console.log(`ℹ️ DATA SERVER: Record not found ${params.collection}/${params.id}`);
