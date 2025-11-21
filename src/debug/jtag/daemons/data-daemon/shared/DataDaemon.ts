@@ -693,12 +693,11 @@ export class DataDaemon {
 
     // 1. Emit to WebSocket clients (browser, remote CLI clients)
     if (DataDaemon.jtagContext) {
+      // Events.emit() now triggers both remote AND local subscribers automatically
+      // (includes checkWildcardSubscriptions() internally - see Events.ts:145)
       await Events.emit(DataDaemon.jtagContext, eventName, entity);
     }
 
-    // 2. Directly trigger local server-side subscriptions (PersonaUsers, etc.)
-    // Events.emit() routes through WebSocket but doesn't trigger local server subscribers
-    Events.checkWildcardSubscriptions(eventName, entity);
     console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
 
     return entity;
