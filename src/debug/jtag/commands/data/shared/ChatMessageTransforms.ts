@@ -104,13 +104,27 @@ export function extractMediaFromMessage<T extends BaseEntity>(
 /**
  * Check if an entity is a chat message that might contain media.
  *
+ * Performs both collection name check and structural validation to ensure
+ * the entity has the expected ChatMessageEntity properties.
+ *
  * @param collection - The collection name
  * @param entity - The entity to check
- * @returns True if this is a chat message entity
+ * @returns True if this is a chat message entity with valid structure
  */
 export function isChatMessageEntity(
   collection: string,
   entity: BaseEntity
 ): entity is ChatMessageEntity {
-  return collection === 'chat_messages';
+  // First check collection name
+  if (collection !== 'chat_messages') {
+    return false;
+  }
+
+  // Then validate entity has the expected structure
+  // At minimum, a ChatMessageEntity should have content property
+  return (
+    'content' in entity &&
+    entity.content !== null &&
+    typeof entity.content === 'object'
+  );
 }

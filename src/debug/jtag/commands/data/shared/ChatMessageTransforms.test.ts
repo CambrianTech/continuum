@@ -12,7 +12,7 @@ import type { MediaItem } from '../../../system/data/entities/ChatMessageEntity'
 
 describe('ChatMessageTransforms', () => {
   describe('isChatMessageEntity', () => {
-    it('should return true for chat_messages collection', () => {
+    it('should return true for chat_messages collection with valid structure', () => {
       const entity = new ChatMessageEntity();
       const result = isChatMessageEntity('chat_messages', entity);
       assert.strictEqual(result, true);
@@ -22,6 +22,12 @@ describe('ChatMessageTransforms', () => {
       const entity = new ChatMessageEntity();
       assert.strictEqual(isChatMessageEntity('users', entity), false);
       assert.strictEqual(isChatMessageEntity('rooms', entity), false);
+    });
+
+    it('should return false for chat_messages collection with invalid structure', () => {
+      // Create entity without content property
+      const invalidEntity = { id: '123' } as any;
+      assert.strictEqual(isChatMessageEntity('chat_messages', invalidEntity), false);
     });
   });
 
