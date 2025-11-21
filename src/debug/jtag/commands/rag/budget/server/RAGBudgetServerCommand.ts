@@ -1,6 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { RAGBudgetParams, RAGBudgetResult } from '../shared/RAGBudgetTypes';
+import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
 
 /**
  * RAG Budget Server Command - Calculate token budget for RAG context
@@ -23,34 +24,8 @@ export class RAGBudgetServerCommand extends CommandBase<RAGBudgetParams, RAGBudg
       const targetUtilization = ragParams.targetUtilization ?? 0.8;
       const avgTokensPerMessage = ragParams.avgTokensPerMessage ?? 250;
 
-      // Model context windows (in tokens)
-      const contextWindows: Record<string, number> = {
-        // OpenAI
-        'gpt-4': 8192,
-        'gpt-4-turbo': 128000,
-        'gpt-4o': 128000,
-        'gpt-3.5-turbo': 16385,
-
-        // Anthropic
-        'claude-3-opus': 200000,
-        'claude-3-sonnet': 200000,
-        'claude-3-haiku': 200000,
-        'claude-3-5-sonnet': 200000,
-
-        // Local/Ollama (common models)
-        'llama3.2:3b': 128000,
-        'llama3.1:70b': 128000,
-        'deepseek-coder:6.7b': 16000,
-        'qwen2.5:7b': 128000,
-        'mistral:7b': 32768,
-
-        // External APIs
-        'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
-        'deepseek-chat': 64000
-      };
-
-      // Get context window (default 8K if unknown)
-      const contextWindow = contextWindows[model] || 8192;
+      // Get context window from centralized configuration
+      const contextWindow = getContextWindow(model);
 
       // Calculate available tokens for messages
       const availableForMessages = contextWindow - maxTokens - systemPromptTokens;

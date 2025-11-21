@@ -3,6 +3,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import type { RAGLoadParams, RAGLoadResult, LoadedMessage } from '../shared/RAGLoadTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
 
 /**
  * RAG Load Server Command - Test incremental message loading
@@ -70,26 +71,8 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
       const targetUtilization = ragParams.targetUtilization ?? 0.8;
       const showMessageContent = ragParams.showMessageContent ?? false;
 
-      // Model context windows (same as RAGBudget)
-      const contextWindows: Record<string, number> = {
-        'gpt-4': 8192,
-        'gpt-4-turbo': 128000,
-        'gpt-4o': 128000,
-        'gpt-3.5-turbo': 16385,
-        'claude-3-opus': 200000,
-        'claude-3-sonnet': 200000,
-        'claude-3-haiku': 200000,
-        'claude-3-5-sonnet': 200000,
-        'llama3.2:3b': 128000,
-        'llama3.1:70b': 128000,
-        'deepseek-coder:6.7b': 16000,
-        'qwen2.5:7b': 128000,
-        'mistral:7b': 32768,
-        'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
-        'deepseek-chat': 64000
-      };
-
-      const contextWindow = contextWindows[model] || 8192;
+      // Get context window from centralized configuration
+      const contextWindow = getContextWindow(model);
       const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
       const tokenBudget = Math.floor(availableForMessages * targetUtilization);
 
