@@ -126,7 +126,9 @@ export class ListCommand extends CommandBase<ListParams, ListResult> {
     // Try to find command in generated schemas
     if (ListCommand.generatedSchemas) {
       const schema = ListCommand.generatedSchemas.commands.find(cmd => cmd.name === commandName);
+
       if (schema) {
+
         // Filter out framework injection params
         const userParams: Record<string, { type: string; required: boolean; description?: string }> = {};
         const frameworkParams = ['context', 'sessionId', 'backend', 'contextId'];

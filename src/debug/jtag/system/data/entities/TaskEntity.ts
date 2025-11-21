@@ -199,6 +199,12 @@ export class TaskEntity extends BaseEntity {
       return { success: false, error: 'Task priority must be between 0.0 and 1.0' };
     }
 
+    // Validate status enum
+    const validStatuses: TaskStatus[] = ['pending', 'in_progress', 'completed', 'failed', 'cancelled'];
+    if (!validStatuses.includes(this.status)) {
+      return { success: false, error: `Task status must be one of: ${validStatuses.join(', ')}` };
+    }
+
     return { success: true };
   }
 
