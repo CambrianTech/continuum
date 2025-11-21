@@ -224,7 +224,7 @@ export const createScreenshotResultFromParams = (
  */
 export interface ScreenshotResponse extends ScreenshotResult {
   filename: string;
-  path: string;
+  filepath: string;
   size: number;
 }
 
@@ -233,7 +233,7 @@ export interface ScreenshotResponse extends ScreenshotResult {
  */
 export const createScreenshotResponse = (
   filename: string,
-  path: string,
+  filepath: string,
   size: number,
   context: JTAGContext,
   executionTime: number | undefined,
@@ -241,15 +241,14 @@ export const createScreenshotResponse = (
 ): ScreenshotResponse => createPayload(context, sessionId, {
   success: true,
   timestamp: new Date().toISOString(),
-  filepath: path,
+  filepath,
   filename,
   options: undefined,
   metadata: {
     size,
-    globalPath: path
+    globalPath: filepath
   },
-  // ScreenshotResponse specific fields
-  path,
+  // ScreenshotResponse specific fields - size already included above
   size
 });
 
