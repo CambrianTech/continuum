@@ -81,6 +81,9 @@ export interface CodeFindResult {
 
   /** Error message (if !success) */
   error?: string;
+
+  /** Optional message with guidance or additional context */
+  message?: string;
 }
 
 /**

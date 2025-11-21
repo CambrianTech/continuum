@@ -85,6 +85,31 @@ export class CodeFindServerCommand extends CodeFindCommand {
 
       console.log(`✅ CODE FIND SERVER: Found ${totalMatches} matches for "${params.pattern}" (returning ${matches.length})`);
 
+      // If no matches found, provide helpful guidance
+      if (totalMatches === 0) {
+        const suggestions = [
+          `No files found matching pattern "${params.pattern}".`,
+          '',
+          'Tips for better results:',
+          '• Use simpler patterns: "*.ts" instead of "typescript files"',
+          '• Try wildcards: "**/*.test.ts" for test files',
+          '• Use exact filenames: "package.json"',
+          '• Check your baseDir parameter (currently searching: ' + (baseDir ?? '.') + ')',
+          '',
+          'Note: This tool matches filename patterns, not file contents.',
+          'To search code contents, use the code/read command after finding the file.'
+        ];
+
+        return createCodeFindResultFromParams(params, {
+          success: true,
+          pattern: params.pattern,
+          matches: [],
+          totalMatches: 0,
+          baseDir,
+          message: suggestions.join('\n')
+        });
+      }
+
       return createCodeFindResultFromParams(params, {
         success: true,
         pattern: params.pattern,
