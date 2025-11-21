@@ -115,13 +115,16 @@ export class CodeReadServerCommand extends CodeReadCommand {
       const pattern = `*${basename}*`;
 
       const matches: string[] = [];
+      const startTime = Date.now();
+      const TIMEOUT_MS = 5000; // 5 second timeout
+      const MAX_DEPTH = 10; // Maximum directory depth
 
       // If a directory was specified, search only in that directory
       if (dirname && dirname !== '.' && dirname !== '/') {
         const searchPath = path.join(repositoryRoot, dirname);
         try {
           await stat(searchPath);
-          await this.searchDirectoryForPattern(searchPath, repositoryRoot, pattern, matches, 50);
+          await this.searchDirectoryForPattern(searchPath, repositoryRoot, pattern, matches, 50, 0, MAX_DEPTH, startTime, TIMEOUT_MS);
         } catch {
           // Directory doesn't exist, fall through to repo-wide search
         }
@@ -129,7 +132,7 @@ export class CodeReadServerCommand extends CodeReadCommand {
 
       // If no matches in specified directory (or no directory specified), search entire repo
       if (matches.length === 0) {
-        await this.searchDirectoryForPattern(repositoryRoot, repositoryRoot, pattern, matches, 50);
+        await this.searchDirectoryForPattern(repositoryRoot, repositoryRoot, pattern, matches, 50, 0, MAX_DEPTH, startTime, TIMEOUT_MS);
       }
 
       return matches;
@@ -141,21 +144,36 @@ export class CodeReadServerCommand extends CodeReadCommand {
 
   /**
    * Recursively search directory for files matching pattern
+   * @param depth Current depth in directory tree
+   * @param maxDepth Maximum depth to search (prevents deep recursion)
+   * @param startTime Start time of search (for timeout check)
+   * @param timeoutMs Maximum time to search in milliseconds
    */
   private async searchDirectoryForPattern(
     dirPath: string,
     repoRoot: string,
     pattern: string,
     matches: string[],
-    maxResults: number
+    maxResults: number,
+    depth: number = 0,
+    maxDepth: number = 10,
+    startTime: number = Date.now(),
+    timeoutMs: number = 5000
   ): Promise<void> {
+    // Performance limits
     if (matches.length >= maxResults) return;
+    if (depth > maxDepth) return;
+    if (Date.now() - startTime > timeoutMs) {
+      console.warn(`⚠️ CODE SERVER: Fuzzy search timeout after ${timeoutMs}ms at depth ${depth}`);
+      return;
+    }
 
     try {
       const entries = await readdir(dirPath, { withFileTypes: true });
 
       for (const entry of entries) {
         if (matches.length >= maxResults) break;
+        if (Date.now() - startTime > timeoutMs) break;
 
         // Skip hidden files/directories and node_modules
         if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
@@ -168,9 +186,9 @@ export class CodeReadServerCommand extends CodeReadCommand {
           matches.push(relativePath);
         }
 
-        // Recursively search subdirectories
+        // Recursively search subdirectories (with updated depth)
         if (entry.isDirectory() && matches.length < maxResults) {
-          await this.searchDirectoryForPattern(fullPath, repoRoot, pattern, matches, maxResults);
+          await this.searchDirectoryForPattern(fullPath, repoRoot, pattern, matches, maxResults, depth + 1, maxDepth, startTime, timeoutMs);
         }
       }
     } catch {
