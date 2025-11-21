@@ -1,5 +1,5 @@
 /**
- * code/find server command - Find files by name pattern
+ * code/pattern-search server command - Find files by name pattern
  */
 
 import * as fs from 'fs';
@@ -19,11 +19,11 @@ const readdir = promisify(fs.readdir);
 
 export class CodeFindServerCommand extends CodeFindCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('code-find', context, subpath, commander);
+    super('code/pattern-search', context, subpath, commander);
   }
 
   /**
-   * Execute code/find command
+   * Execute code/pattern-search command
    *
    * Searches for files by name pattern using minimatch (supports wildcards)
    */
