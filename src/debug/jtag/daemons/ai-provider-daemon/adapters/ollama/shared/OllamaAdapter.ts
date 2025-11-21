@@ -224,12 +224,12 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       defaultModel: 'phi3:mini',
       defaultTemperature: 0.7,
       logRequests: true,
-      maxConcurrent: 4, // Increased from 2 to handle multiple AI personas responding simultaneously
+      maxConcurrent: 12, // Increased from 4 to handle 13 AI personas responding simultaneously
       ...config,
     };
 
     // Initialize queue with configured maxConcurrent
-    this.requestQueue = new OllamaRequestQueue(this.config.maxConcurrent || 4);
+    this.requestQueue = new OllamaRequestQueue(this.config.maxConcurrent || 12);
   }
 
   /**

@@ -5,16 +5,12 @@
  * No shadow DOM per row - just embedded CSS and HTML
  */
 
-import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
+import type { ChatMessageEntity, MediaItem } from '../../../system/data/entities/ChatMessageEntity';
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
 interface ImageContentData {
-  readonly url: string;
-  readonly altText?: string;
-  readonly width?: number;
-  readonly height?: number;
-  readonly caption?: string;
-  readonly thumbnail?: string;
+  readonly images: readonly MediaItem[];  // Support multiple images
+  readonly caption?: string;               // Text that wasn't a placeholder
 }
 
 export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData> {
@@ -29,61 +25,76 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
   }
 
   /**
-   * Parse image URL from message text
-   * Future: Support structured image data from ChatMessagePayload
+   * Parse image data from MediaItem array
+   * Supports multiple images with [Image #N] placeholders
    */
   parseContent(message: ChatMessageEntity): ImageContentData | null {
-    const text = message.content?.text;
-    if (!text) return null;
+    const media = message.content?.media;
+    const text = message.content?.text || '';
 
-    // Simple URL extraction for demo - future versions will use structured data
-    const imageUrlMatch = text.match(/(https?:\/\/[^\s]+\.(?:jpg|jpeg|png|gif|webp|svg))/i);
-    if (!imageUrlMatch) return null;
+    // Filter for image media items
+    const images = media?.filter(m => m.type === 'image') ?? [];
+    if (images.length === 0) return null;
 
-    const url = imageUrlMatch[1];
-    const remainingText = text.replace(url, '').trim();
+    // Remove [Image #N] placeholders from text to get caption
+    const caption = text.replace(/\[Image #\d+\]/g, '').trim() || undefined;
 
     return {
-      url,
-      caption: remainingText || undefined,
-      altText: `Image: ${remainingText || 'Shared image'}` // AI will improve this
+      images,
+      caption
     };
   }
 
   /**
-   * Render responsive image with loading states
+   * Render responsive images with loading states
+   * Supports multiple images from MediaItem array
    */
-  renderContent(data: ImageContentData, currentUserId: string): string {
-    const { url, altText, caption } = data;
-    const imageId = `img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  renderContent(data: ImageContentData, _currentUserId: string): string {
+    const { images, caption } = data;
 
-    return `
-      <div class="image-message-content">
-        <div class="image-container" data-image-id="${imageId}">
+    // Render each image
+    const imagesHtml = images.map((mediaItem, index) => {
+      const imageId = `img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const url = mediaItem.url ?? (mediaItem.base64 ? `data:${mediaItem.mimeType ?? 'image/png'};base64,${mediaItem.base64}` : '');
+      const altText = mediaItem.alt ?? mediaItem.description ?? `Image ${index + 1}`;
+      const filename = mediaItem.filename ?? `image-${index + 1}`;
+
+      return `
+        <div class="image-container" data-image-id="${imageId}" data-media-id="${mediaItem.id ?? ''}">
           <div class="image-loading-placeholder">
             <div class="loading-spinner"></div>
             <span class="loading-text">Loading image...</span>
           </div>
           <img
             src="${url}"
-            alt="${altText || 'Image'}"
+            alt="${altText}"
             class="message-image"
             loading="lazy"
             data-loaded="false"
-            style="display: none;"
+            data-width="${mediaItem.width ?? ''}"
+            data-height="${mediaItem.height ?? ''}"
+            style="display: block; max-width: 100%; height: auto;"
           />
           <div class="image-error" style="display: none;">
             <span class="error-icon">🖼️</span>
             <span class="error-text">Image failed to load</span>
             <button class="retry-button" data-url="${url}">Retry</button>
           </div>
+          <div class="image-actions">
+            <button class="action-button fullscreen" title="View fullscreen">🔍</button>
+            <button class="action-button download" title="Download" data-url="${url}" data-filename="${filename}">⬇️</button>
+            <button class="action-button ai-describe" title="AI describe image">🤖</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="image-message-content">
+        <div class="images-grid ${images.length > 1 ? 'multiple-images' : 'single-image'}">
+          ${imagesHtml}
         </div>
         ${caption ? `<div class="image-caption">${caption}</div>` : ''}
-        <div class="image-actions">
-          <button class="action-button fullscreen" title="View fullscreen">🔍</button>
-          <button class="action-button download" title="Download" data-url="${url}">⬇️</button>
-          <button class="action-button ai-describe" title="AI describe image">🤖</button>
-        </div>
       </div>
     `;
   }
@@ -148,10 +159,32 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
         background: var(--message-bg, #f5f5f5);
       }
 
+      /* Grid layout for multiple images */
+      .images-grid {
+        display: grid;
+        gap: 8px;
+        padding: 8px;
+      }
+
+      .images-grid.single-image {
+        grid-template-columns: 1fr;
+      }
+
+      .images-grid.multiple-images {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      }
+
       .image-container {
         position: relative;
         max-width: 400px;
         max-height: 300px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--loading-bg, #e0e0e0);
+      }
+
+      .images-grid.multiple-images .image-container {
+        max-width: 100%;
       }
 
       .image-loading-placeholder {
@@ -243,33 +276,47 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
     super.setupInteractionHandlers(element);
 
     // Fullscreen viewing
-    const fullscreenBtn = element.querySelector('.fullscreen');
-    fullscreenBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.openFullscreen(element);
+    const fullscreenBtns = element.querySelectorAll('.fullscreen');
+    fullscreenBtns.forEach((btn): void => {
+      btn.addEventListener('click', (e): void => {
+        e.stopPropagation();
+        const container = (e.target as HTMLElement).closest('.image-container');
+        if (container) this.openFullscreen(container as HTMLElement);
+      });
     });
 
     // Download functionality
-    const downloadBtn = element.querySelector('.download');
-    downloadBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const url = (e.target as HTMLElement).dataset.url;
-      if (url) this.downloadImage(url);
+    const downloadBtns = element.querySelectorAll('.download');
+    downloadBtns.forEach((btn): void => {
+      btn.addEventListener('click', (e): void => {
+        e.stopPropagation();
+        const target = e.target as HTMLElement;
+        const url = target.dataset.url;
+        const filename = target.dataset.filename;
+        if (url) this.downloadImage(url, filename);
+      });
     });
 
     // AI describe functionality
-    const aiBtn = element.querySelector('.ai-describe');
-    aiBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.requestAIDescription(element);
+    const aiBtns = element.querySelectorAll('.ai-describe');
+    aiBtns.forEach((btn): void => {
+      btn.addEventListener('click', (e): void => {
+        e.stopPropagation();
+        const container = (e.target as HTMLElement).closest('.image-container');
+        if (container) this.requestAIDescription(container as HTMLElement);
+      });
     });
 
     // Retry on error
-    const retryBtn = element.querySelector('.retry-button');
-    retryBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const url = (e.target as HTMLElement).dataset.url;
-      if (url) this.retryImageLoad(element, url);
+    const retryBtns = element.querySelectorAll('.retry-button');
+    retryBtns.forEach((btn): void => {
+      btn.addEventListener('click', (e): void => {
+        e.stopPropagation();
+        const target = e.target as HTMLElement;
+        const url = target.dataset.url;
+        const container = target.closest('.image-container');
+        if (url && container) this.retryImageLoad(container as HTMLElement, url);
+      });
     });
   }
 
@@ -288,15 +335,17 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
   /**
    * Download image
    */
-  private downloadImage(url: string): void {
+  private downloadImage(url: string, filename?: string): void {
+    if (typeof document === 'undefined') return; // Server-side guard
+
     const a = document.createElement('a');
     a.href = url;
-    a.download = url.split('/').pop() || 'image';
+    a.download = filename ?? url.split('/').pop() ?? 'image';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
 
-    this.hooks.onUserInteraction?.('download', { url });
+    this.hooks.onUserInteraction?.('download', { url, filename });
   }
 
   /**
@@ -339,7 +388,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
   /**
    * AI-editable fields for this content type
    */
-  protected getAIEditableFields(): Record<string, any> {
+  protected getAIEditableFields(): Record<string, string> {
     return {
       altText: 'string',
       caption: 'string',
@@ -350,7 +399,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
   /**
    * Handle AI editing of image content
    */
-  async handleAIEdit(editInstructions: any): Promise<void> {
+  async handleAIEdit(editInstructions: Record<string, unknown>): Promise<void> {
     console.log('🤖 AI editing image content:', editInstructions);
 
     // Future: AI can:
@@ -369,6 +418,6 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
       // Update the caption
     }
 
-    super.handleAIEdit(editInstructions);
+    await super.handleAIEdit(editInstructions);
   }
 }

@@ -1,0 +1,74 @@
+{
+  "name": "@continuum/jtag-command-tree",
+  "version": "1.0.0",
+  "description": "JTAG Tree Command - Display hierarchical command structure auto-generated from command registry",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "core"
+  },
+  "environmentTestConfig": {
+    "environments": ["browser", "server"],
+    "commandName": "tree",
+    "testParams": {},
+    "expectedFields": [
+      "success",
+      "tree",
+      "commandCount",
+      "visualization",
+      "context",
+      "sessionId"
+    ],
+    "performanceThresholdMs": 500,
+    "validateEnvironmentData": true,
+    "testScenarios": [
+      {
+        "name": "tree-all-commands",
+        "description": "Display full command tree",
+        "params": {}
+      },
+      {
+        "name": "tree-with-descriptions",
+        "description": "Display tree with command descriptions",
+        "params": {
+          "showDescriptions": true
+        }
+      },
+      {
+        "name": "tree-filtered",
+        "description": "Display filtered command tree (ai commands only)",
+        "params": {
+          "filter": "ai"
+        }
+      },
+      {
+        "name": "tree-with-categories",
+        "description": "Display tree with category labels",
+        "params": {
+          "showCategories": true
+        }
+      },
+      {
+        "name": "tree-limited-depth",
+        "description": "Display tree with limited depth",
+        "params": {
+          "maxDepth": 2
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'",
+    "test:unit": "echo 'Unit tests for tree command'",
+    "test:integration": "echo 'Integration tests for tree command'"
+  },
+  "keywords": [
+    "jtag",
+    "tree",
+    "discovery",
+    "hierarchy",
+    "commands",
+    "core"
+  ]
+}

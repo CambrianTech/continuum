@@ -67,8 +67,8 @@ async function testAIFactualHistory(): Promise<void> {
     const testMessage = 'What were the key events and timeline of the 2019 Hong Kong protests?';
     console.log(`📤 Sending test message: "${testMessage}"`);
 
-    await client.execute('debug/chat-send', {
-      roomId: room.uniqueId,
+    await client.execute('chat/send', {
+      room: room.uniqueId,
       message: testMessage
     });
 

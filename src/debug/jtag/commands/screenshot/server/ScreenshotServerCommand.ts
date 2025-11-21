@@ -9,6 +9,7 @@ import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTy
 import { type ScreenshotParams, type ScreenshotResult, createScreenshotResult } from '../shared/ScreenshotTypes';
 import { PersistenceError } from '../../../system/core/types/ErrorTypes';
 import type { FileSaveParams, FileSaveResult } from '../../file/save/shared/FileSaveTypes';
+import type { MediaItem } from '../../../system/data/entities/ChatMessageEntity';
 
 export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, ScreenshotResult> {
   
@@ -64,12 +65,32 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
     if (!saveResult.success) {
       throw new PersistenceError(filename, 'write', `File save command failed: ${JSON.stringify(saveResult)}`);
     }
-    
+
+    // Create MediaItem for AI cognition
+    const base64Data = screenshotParams.dataUrl ? screenshotParams.dataUrl.replace(/^data:image\/\w+;base64,/, '') : undefined;
+    const mimeType = screenshotParams.dataUrl ? screenshotParams.dataUrl.match(/^data:(image\/\w+);base64,/)?.[1] : undefined;
+
+    const media: MediaItem | undefined = base64Data ? {
+      type: 'image',
+      base64: base64Data,
+      mimeType: mimeType ?? 'image/png',
+      filename: filename,
+      url: `file://${saveResult.filepath}`,
+      width: screenshotParams.metadata?.width,
+      height: screenshotParams.metadata?.height,
+      size: content instanceof Buffer ? content.length : undefined,
+      alt: `Screenshot captured at ${new Date().toISOString()}`,
+      description: screenshotParams.querySelector ? `Screenshot of ${screenshotParams.querySelector}` : 'Screenshot',
+      uploadedAt: Date.now(),
+      uploadedBy: screenshotParams.sessionId
+    } : undefined;
+
     return createScreenshotResult(screenshotParams.context, screenshotParams.sessionId, {
       success: true,
       filepath: saveResult.filepath,
       filename: filename,
-      options: screenshotParams.options
+      options: screenshotParams.options,
+      media
     });
   }
 }

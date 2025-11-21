@@ -77,6 +77,11 @@ export class DataDaemonServer extends DataDaemonBase {
 
     console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
 
+    // Initialize CodeDaemon for code/read operations
+    const { initializeCodeDaemon } = await import('../../code-daemon/server/CodeDaemonServer');
+    await initializeCodeDaemon(this.context);
+    console.log(`📂 ${this.toString()}: Code daemon initialized`);
+
     // Emit system ready event so other daemons can proceed with initialization
     const { Events } = await import('../../../system/core/shared/Events');
     const { SYSTEM_EVENTS } = await import('../../../system/core/shared/EventConstants');

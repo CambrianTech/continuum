@@ -14,13 +14,12 @@ export const createWaitForElementParams = (
   context: JTAGContext,
   sessionId: UUID,
   data: {
-    selector?: string;
+    selector: string;  // Required, not optional!
     timeout?: number;
     visible?: boolean;
     interval?: number;
   }
 ): WaitForElementParams => createPayload(context, sessionId, {
-  selector: data.selector ?? 'body',
   timeout: data.timeout ?? 30000,
   visible: data.visible ?? true,
   interval: data.interval ?? 100,
@@ -43,7 +42,7 @@ export const createWaitForElementResult = (
   sessionId: UUID,
   data: {
     success: boolean;
-    selector?: string;
+    selector: string;  // Required, not optional!
     found?: boolean;
     visible?: boolean;
     timeout?: number;
@@ -51,7 +50,6 @@ export const createWaitForElementResult = (
     error?: JTAGError;
   }
 ): WaitForElementResult => createPayload(context, sessionId, {
-  selector: data.selector ?? '',
   found: data.found ?? false,
   visible: data.visible ?? false,
   timeout: data.timeout ?? 30000,

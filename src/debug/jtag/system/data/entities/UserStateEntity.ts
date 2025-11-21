@@ -86,6 +86,28 @@ export class UserStateEntity extends BaseEntity {
     estimatedCompletion?: number; // Estimated completion timestamp
   };
 
+  // AI dormancy state - controls PersonaUser engagement levels
+  // Used to implement self-regulated dormancy and auto-dormancy rules
+  // NOTE: No 'sleep' mode - @mentions ALWAYS work as failsafe
+  @JsonField()
+  dormancyState?: {
+    level: 'active' | 'mention-only' | 'human-only';
+    reason?: string;              // Optional: Why dormancy was activated
+    setAt?: string;               // ISO timestamp when dormancy was activated
+    until?: string;               // Optional: Auto-wake timestamp (ISO 8601)
+    setBy?: 'self' | 'autopilot' | 'human'; // Who initiated dormancy
+  };
+
+  // Shell state - tracks current working directory for shell commands
+  // Used by code/find, tree, and other filesystem operations
+  // Enables cd, pwd, and path-relative operations per-user
+  @JsonField()
+  shellState?: {
+    currentWorkingDir: string;    // Current directory (default: src/debug/jtag)
+    history?: string[];           // Command history (optional, for future use)
+    environment?: Record<string, string>; // Environment variables (optional)
+  };
+
   // Index signature for compatibility
   [key: string]: unknown;
 
@@ -108,6 +130,12 @@ export class UserStateEntity extends BaseEntity {
     this.roomReadState = {};
     this.learningState = {
       isLearning: false
+    };
+    this.dormancyState = {
+      level: 'active' // Default: fully active
+    };
+    this.shellState = {
+      currentWorkingDir: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
     };
   }
 

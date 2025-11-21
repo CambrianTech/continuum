@@ -8,6 +8,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { BaseDataParams, BaseDataResult } from '../../shared/BaseDataTypes';
 import { createBaseDataParams } from '../../shared/BaseDataTypes';
+import type { MediaItem } from '../../../../system/data/entities/ChatMessageEntity';
 
 export interface DataReadParams extends BaseDataParams {
   readonly id: UUID;
@@ -17,6 +18,7 @@ export interface DataReadResult<T extends BaseEntity = BaseEntity> extends BaseD
   readonly data?: T;
   readonly found: boolean;
   readonly id: UUID;
+  readonly media?: MediaItem[];
 }
 
 export const createDataReadParams = (
@@ -42,6 +44,7 @@ export const createDataReadResultFromParams = (
   success: false,
   found: false,
   id: params.id,
+  media: [],
   timestamp: new Date().toISOString(),
   ...differences
 });

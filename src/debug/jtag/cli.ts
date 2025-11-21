@@ -153,26 +153,20 @@ async function main() {
     }
     
     const [command, ...rawParams] = commandArgs;
-    
-    // Handle help command specially (for fresh AIs)
-    if (command === 'help') {
-      displayHelp();
-      process.exit(0);
-    }
-    
+
     // Parse parameters into object format
     const params: Record<string, string | boolean | number> = {};
     let i = 0;
     while (i < rawParams.length) {
       const arg = rawParams[i];
-      if (arg?.startsWith('--')) {
+      if (arg && arg.startsWith('--')) {
         const argWithoutDashes = arg.replace(/^--/, '');
-        
+
         // Handle --key=value format
         if (argWithoutDashes.includes('=')) {
           const [key, ...valueParts] = argWithoutDashes.split('=');
           const value = valueParts.join('='); // Handle values that contain =
-          
+
           // Try to parse JSON values, fall back to string
           let parsedValue = value;
           if (value.startsWith('{') || value.startsWith('[')) {
@@ -185,7 +179,7 @@ async function main() {
           }
           params[key] = parsedValue;
           i++;
-        } 
+        }
         // Handle --key value format
         else {
           const key = argWithoutDashes;
@@ -209,6 +203,23 @@ async function main() {
             i++;
           }
         }
+      } else if (arg && arg.includes('=') && !arg.startsWith('-')) {
+        // Handle key=value format WITHOUT -- prefix (e.g., commandName=screenshot)
+        const [key, ...valueParts] = arg.split('=');
+        const value = valueParts.join('='); // Handle values that contain =
+
+        // Try to parse JSON values, fall back to string
+        let parsedValue = value;
+        if (value.startsWith('{') || value.startsWith('[')) {
+          try {
+            parsedValue = JSON.parse(value);
+          } catch (e) {
+            // Keep as string if JSON parsing fails
+            parsedValue = value;
+          }
+        }
+        params[key] = parsedValue;
+        i++;
       } else {
         // Handle positional arguments - add them to a general array
         if (!params._positional) {
@@ -218,7 +229,35 @@ async function main() {
         i++;
       }
     }
-    
+
+    // Handle positional arguments for single-parameter commands
+    // This allows `./jtag help screenshot` instead of `./jtag help commandName=screenshot`
+    if (params._positional && params._positional.length > 0) {
+      // Map of commands to their primary parameter name
+      const singleParamCommands: Record<string, string> = {
+        'help': 'commandName',
+        'code/read': 'path',
+        'code/find': 'pattern',
+        'file/load': 'path',
+        'file/save': 'path',
+        'data/read': 'id',
+        'data/delete': 'id',
+        'user/create': 'uniqueId',
+        // Add more single-param commands as needed
+      };
+
+      const primaryParam = singleParamCommands[command];
+      if (primaryParam && !params[primaryParam]) {
+        // Use first positional arg as the primary parameter
+        params[primaryParam] = params._positional[0];
+        // Remove from positional array
+        params._positional = params._positional.slice(1);
+        if (params._positional.length === 0) {
+          delete params._positional;
+        }
+      }
+    }
+
     // INTELLIGENT ENTRY POINT: Adapts behavior based on detected agent type
     const entryPoint = new EntryPointAdapter({
       verbose: params.verbose,

@@ -20,8 +20,8 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
    */
   async execute(params: JTAGPayload): Promise<ListResult> {
     const listParams = params as ListParams;
-    
-    console.log(`📋 SERVER: Listing available commands (category: ${listParams.category ?? 'all'})`);
+
+    console.log(`📋 SERVER: Listing available commands`);
 
     try {
       // Get commands from CommandDaemon
@@ -30,34 +30,9 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
 
       // Convert CommandDaemon commands to CommandSignature format
       for (const [commandName, command] of availableCommands.entries()) {
-        // Determine category based on command name or implementation
-        let category: 'browser' | 'server' | 'system' = 'server';
-        if (commandName.includes('screenshot') || commandName.includes('click') || commandName.includes('navigate')) {
-          category = 'browser';
-        } else if (commandName.includes('list') || commandName.includes('health')) {
-          category = 'system';
-        }
-
-        // Filter by category if specified
-        if (listParams.category && listParams.category !== 'all' && category !== listParams.category) {
-          continue;
-        }
-
         const signature: CommandSignature = {
           name: commandName,
-          description: `${commandName} command - ${category} operation`,
-          category,
-          params: {
-            // TODO: Extract actual parameter types from command
-            context: { type: 'JTAGContext', required: true },
-            sessionId: { type: 'UUID', required: true }
-          },
-          returns: {
-            // TODO: Extract actual return types from command
-            success: { type: 'boolean', description: 'Operation success status' },
-            context: { type: 'JTAGContext', description: 'Request context' },
-            sessionId: { type: 'UUID', description: 'Session identifier' }
-          }
+          description: `${commandName} command`
         };
 
         commandSignatures.push(signature);
@@ -73,7 +48,7 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
 
     } catch (error) {
       console.error(`❌ SERVER: Failed to list commands:`, error);
-      
+
       return createListResultFromParams(listParams, {
         success: false,
         commands: [],
