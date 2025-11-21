@@ -1,7 +1,7 @@
 /**
  * Help Command - Server Implementation
  *
- * Auto-generates help documentation by querying the list command.
+ * Dynamically queries the 'list' command to provide help documentation.
  * Returns human-readable help text formatted for AI consumption.
  */
 
@@ -9,48 +9,19 @@ import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemo
 import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import type { HelpParams, HelpResult } from '../shared/HelpTypes';
 import { createHelpResultFromParams } from '../shared/HelpTypes';
-import type { CommandSignature } from '../../list/shared/ListTypes';
-import * as fs from 'fs';
-import * as path from 'path';
+import type { ListResult, CommandSignature } from '../../list/shared/ListTypes';
+import { createListParams } from '../../list/shared/ListTypes';
+import { Commands } from '../../../system/core/shared/Commands';
 
 export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
-  private schemas: Record<string, CommandSignature> = {};
-  private schemasLoaded: boolean = false;
-  private schemasLoadError: string | null = null;
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('help', context, subpath, commander);
-    this.loadSchemas();
-  }
-
-  private loadSchemas(): void {
-    try {
-      // Load pre-generated schemas from build-time script
-      const schemasPath = path.join(__dirname, '../../../generated/command-schemas.json');
-
-      if (!fs.existsSync(schemasPath)) {
-        this.schemasLoadError = 'Command schemas file not found';
-        console.warn(`⚠️  Command schemas file not found: ${schemasPath}`);
-        console.warn(`   This means help documentation will be limited for commands.`);
-        console.warn(`   To generate schemas, run: npx tsx scripts/generate-command-schemas.ts`);
-        return;
-      }
-
-      const schemasJson = fs.readFileSync(schemasPath, 'utf-8');
-      this.schemas = JSON.parse(schemasJson);
-      this.schemasLoaded = true;
-      console.log(`📚 Loaded ${Object.keys(this.schemas).length} command schemas from generated file`);
-    } catch (error) {
-      this.schemasLoadError = error instanceof Error ? error.message : 'Unknown error loading schemas';
-      console.error(`❌ Failed to load command schemas:`, error);
-      console.error(`   Help documentation will be limited. Try regenerating schemas with:`);
-      console.error(`   npx tsx scripts/generate-command-schemas.ts`);
-    }
   }
 
 
   /**
-   * Generate help documentation
+   * Generate help documentation by querying 'list' command dynamically
    */
   async execute(params: JTAGPayload): Promise<HelpResult> {
     const helpParams = params as HelpParams;
@@ -94,30 +65,30 @@ To see all available commands: list`,
         });
       }
 
-      // Look up schema from generated schemas
-      const schema = this.schemas[commandName];
+      // Query 'list' command dynamically to get all available commands
+      const listParams = createListParams(helpParams.context, helpParams.sessionId, {
+        includeDescription: true,
+        includeSignature: true
+      });
+
+      const listResult = await Commands.execute<ListResult>('list', listParams) as ListResult;
+
+      if (!listResult.success) {
+        return createHelpResultFromParams(helpParams, {
+          success: false,
+          error: `Failed to query available commands: ${listResult.error ?? 'Unknown error'}`
+        });
+      }
+
+      // Find the requested command in the list
+      const schema: CommandSignature | undefined = listResult.commands.find(
+        (cmd: CommandSignature) => cmd.name === commandName
+      );
 
       if (!schema) {
-        // Check if command exists in CommandDaemon
-        if (!this.commander.commands.has(commandName)) {
-          return createHelpResultFromParams(helpParams, {
-            success: false,
-            error: `Command '${commandName}' not found. Use 'list' to see available commands.`
-          });
-        }
-
-        // Command exists but no schema available
-        const missingSchemaMessage = this.schemasLoadError
-          ? `\n\nNote: Command schemas failed to load (${this.schemasLoadError}). Run: npx tsx scripts/generate-command-schemas.ts`
-          : `\n\nNote: Schema not available for this command. Run: npx tsx scripts/generate-command-schemas.ts`;
-
         return createHelpResultFromParams(helpParams, {
-          success: true,
-          signature: {
-            name: commandName,
-            description: `${commandName} command - Basic information only.${missingSchemaMessage}`,
-            params: {}
-          }
+          success: false,
+          error: `Command '${commandName}' not found. Use 'list' to see available commands.`
         });
       }
 
@@ -129,6 +100,7 @@ To see all available commands: list`,
         : '';
 
       const usageExample = `
+
 USAGE:
 <tool name="${commandName}">${paramsExample}
 </tool>`;

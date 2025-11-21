@@ -293,35 +293,81 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
         margin: 0;
         border-radius: 0 0 6px 6px;
       }
+
+      /* Collapsible Long Content (neutral styling for non-errors) */
+      .collapsible-long {
+        border: 1px solid rgba(175, 184, 193, 0.3);
+        border-radius: 6px;
+        margin: 12px 0;
+        background-color: rgba(175, 184, 193, 0.05);
+      }
+
+      .collapsible-long summary {
+        padding: 8px 12px;
+        cursor: pointer;
+        font-weight: 600;
+        user-select: none;
+        background-color: rgba(175, 184, 193, 0.1);
+        border-radius: 6px 6px 0 0;
+        color: rgba(0, 0, 0, 0.7);
+      }
+
+      .collapsible-long summary:hover {
+        background-color: rgba(175, 184, 193, 0.15);
+      }
+
+      .collapsible-long[open] summary {
+        border-bottom: 1px solid rgba(175, 184, 193, 0.3);
+        border-radius: 6px 6px 0 0;
+        margin-bottom: 0;
+      }
+
+      .collapsible-long pre {
+        margin: 0;
+        border-radius: 0 0 6px 6px;
+      }
     `;
   }
 
   /**
    * Make long error code blocks collapsible using <details> element
-   * Detects error patterns and wraps code blocks >10 lines in collapsible sections
+   * Detects actual error messages/stack traces (not code examples that mention errors)
    */
   private makeErrorsCollapsible(html: string): string {
-    // Match <pre><code> blocks and make them collapsible if they're long or contain error patterns
+    // Match <pre><code> blocks and make them collapsible if they're long or actual errors
     return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g, (match, attrs: string, content: string) => {
       // Count lines in the code block
       const lines = content.trim().split('\n');
       const lineCount = lines.length;
 
-      // Check for error patterns
-      const hasErrorPattern = /Error|Exception|Failed|at \w+\.|TypeError|ReferenceError|SyntaxError/i.test(content);
+      // Check if this looks like an actual stack trace (multiple lines with "at " pattern)
+      const stackTraceLines = lines.filter(line => /^\s*at\s+\w+/.test(line));
+      const isStackTrace = stackTraceLines.length >= 3;
 
-      // Make collapsible if >10 lines OR contains error patterns
-      if (lineCount > 10 || hasErrorPattern) {
-        const previewLines = lines.slice(0, 2).join('\n');
-        const errorType = content.match(/(Error|Exception|Failed)/i)?.[0] || 'Details';
+      // Check if this looks like an actual error message (line starts with Error:, TypeError:, etc.)
+      const hasActualErrorMessage = lines.some(line => /^\s*(Error|TypeError|ReferenceError|SyntaxError|Exception):/i.test(line));
 
-        return `<details class="collapsible-error">
+      // Check if this is code with language-specific syntax highlighting (code example, not error log)
+      const isCodeExample = /class="language-\w+"/.test(attrs);
+
+      // Only make collapsible with error styling if it's an actual error/stack trace
+      const isActualError = (isStackTrace || hasActualErrorMessage) && !isCodeExample;
+
+      // Make collapsible if >20 lines (very long) OR if it's an actual error
+      if (lineCount > 20 || isActualError) {
+        const errorType = isActualError ?
+          (content.match(/(Error|TypeError|ReferenceError|SyntaxError|Exception)/i)?.[0] || 'Error') :
+          'Details';
+
+        const cssClass = isActualError ? 'collapsible-error' : 'collapsible-long';
+
+        return `<details class="${cssClass}">
 <summary>${errorType} (${lineCount} lines) - click to expand</summary>
 <pre><code${attrs}>${content}</code></pre>
 </details>`;
       }
 
-      // Return unchanged if short and no error patterns
+      // Return unchanged if short and not an error
       return match;
     });
   }

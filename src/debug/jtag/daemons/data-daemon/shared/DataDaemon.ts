@@ -262,10 +262,32 @@ export class DataDaemon {
     collection: string,
     id: UUID,
     data: Partial<T>,
-    context: DataOperationContext,
+    _context: DataOperationContext,
     incrementVersion: boolean = true
   ): Promise<T> {
     await this.ensureInitialized();
+
+    // Read existing entity to merge with partial update
+    // TODO: Performance optimization - Consider adding skipValidation flag for trusted internal updates,
+    // or only validating fields that are actually being updated rather than the entire merged entity
+    const readResult = await this.adapter.read(collection, id);
+    if (!readResult.success || !readResult.data?.data) {
+      throw new Error(`Entity not found for update: ${collection}/${id}`);
+    }
+
+    // Merge partial update with existing entity data
+    const existingEntity = readResult.data.data;
+    const mergedData = { ...existingEntity, ...data };
+
+    // Validate the merged data before persisting
+    const validationResult = this.validateSchema(collection, mergedData as Record<string, unknown>);
+    if (!validationResult.success) {
+      const errors = validationResult.errors?.join(', ') ?? 'Unknown validation error';
+      console.error(`❌ DataDaemon: Update validation failed for ${collection}/${id}:`, errors);
+      throw new Error(`Data validation failed for update: ${errors}`);
+    }
+
+    // Validation passed - proceed with update
     const result = await this.adapter.update<T>(collection, id, data, incrementVersion);
     if (result.success && result.data) {
       const entity = result.data.data;
@@ -513,6 +535,13 @@ export class DataDaemon {
     if (!entityResult.success || !entityResult.entity) {
       console.error(`❌ DataDaemon: Entity creation failed for "${collection}":`, entityResult.error);
       return { success: false, errors: [entityResult.error || 'Entity creation failed'] };
+    }
+
+    // Call the entity's validation method to enforce validation rules
+    const validationResult = entityResult.entity.validate();
+    if (!validationResult.success) {
+      console.error(`❌ DataDaemon: Entity validation failed for "${collection}":`, validationResult.error);
+      return { success: false, errors: [validationResult.error || 'Validation failed'] };
     }
 
     return { success: true };
