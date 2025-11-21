@@ -38,6 +38,38 @@ export class CodeFindServerCommand extends CodeFindCommand {
 
     console.log(`🔍 CODE FIND SERVER: Searching for pattern "${params.pattern}"`);
 
+    // STEP 2: Query analysis - detect conceptual/semantic searches
+    const queryAnalysis = this.analyzeQuery(params.pattern);
+    if (queryAnalysis.isConceptual) {
+      const suggestions = [
+        `Your query "${params.pattern}" appears to be a semantic/conceptual search.`,
+        '',
+        'This tool (code/find) matches filename patterns, not code concepts or logic.',
+        '',
+        'For semantic code understanding, try:',
+        '• Use ai/rag/query-open: Ask questions about code functionality',
+        '  Example: "How does authentication flow work?"',
+        '• Use code/read after finding relevant files',
+        '',
+        'Detection reasons:',
+        ...queryAnalysis.reasons.map(r => `  • ${r}`),
+        '',
+        'If you meant to search for a filename pattern, try:',
+        '• Use wildcards: "**/*.ts" for TypeScript files',
+        '• Use exact names: "auth.ts" or "AuthService.ts"',
+        '• Use simpler patterns: "*.test.ts" for test files'
+      ];
+
+      return createCodeFindResultFromParams(params, {
+        success: true,
+        pattern: params.pattern,
+        matches: [],
+        totalMatches: 0,
+        baseDir: params.baseDir ?? '.',
+        message: suggestions.join('\n')
+      });
+    }
+
     try {
       const repositoryRoot = CodeDaemon.getRepositoryRoot();
       const baseDir = params.baseDir ?? '.';
@@ -208,5 +240,69 @@ export class CodeFindServerCommand extends CodeFindCommand {
       // Silently skip directories we can't read (permissions, etc.)
       console.warn(`⚠️ CODE FIND SERVER: Cannot read directory ${dirPath}:`, error);
     }
+  }
+
+  /**
+   * Analyze query to detect if it's conceptual/semantic vs literal pattern matching
+   * Based on AI team testing feedback and detection patterns
+   */
+  private analyzeQuery(pattern: string): { isConceptual: boolean; reasons: string[] } {
+    const reasons: string[] = [];
+
+    // Detect multi-word conceptual phrases
+    const words = pattern.trim().split(/\s+/);
+    if (words.length >= 2 && !pattern.includes('*') && !pattern.includes('?')) {
+      // Check if it looks like a semantic query vs a filename pattern
+      const hasCodeIndicators = /[A-Z][a-z]+|[a-z]+[A-Z]|[._-]|\.ts$|\.js$|\.py$/.test(pattern);
+      if (!hasCodeIndicators) {
+        reasons.push(`Multi-word phrase without file indicators: "${pattern}"`);
+      }
+    }
+
+    // Detect question structures
+    if (/^(how|what|where|why|when|who|which)\b/i.test(pattern)) {
+      reasons.push(`Question word detected: ${pattern.split(/\s+/)[0].toLowerCase()}`);
+    }
+
+    // Detect abstract/conceptual terms (common semantic search patterns)
+    const conceptualTerms = [
+      'flow', 'logic', 'process', 'pattern', 'approach', 'mechanism',
+      'system', 'strategy', 'implementation', 'algorithm', 'architecture',
+      'structure', 'design', 'method', 'technique', 'concept', 'principle',
+      'handling', 'management', 'processing', 'validation', 'authentication'
+    ];
+
+    const lowerPattern = pattern.toLowerCase();
+    const matchedTerms = conceptualTerms.filter(term =>
+      lowerPattern.includes(term) && !pattern.includes('*')
+    );
+
+    if (matchedTerms.length > 0) {
+      reasons.push(`Conceptual terms found: ${matchedTerms.join(', ')}`);
+    }
+
+    // Detect descriptive phrases (adjective + noun patterns)
+    if (words.length >= 2 && !/[*?[\]]/.test(pattern)) {
+      const descriptivePatterns = /\b(user|error|data|file|auth|api|request|response|message|event|state|config|service|component|module|handler|manager|controller|model|view)\s+(handling|management|processing|validation|creation|deletion|update|retrieval|storage|flow|pattern|logic)\b/i;
+      if (descriptivePatterns.test(pattern)) {
+        reasons.push('Descriptive phrase detected (noun + verb pattern)');
+      }
+    }
+
+    // If pattern has wildcards or file extensions, it's likely literal
+    if (/[*?[\]]|\.(?:ts|js|py|java|go|rs|cpp|h)$/.test(pattern)) {
+      return { isConceptual: false, reasons: [] };
+    }
+
+    // If pattern is PascalCase or camelCase, it's likely a filename
+    if (/^[A-Z][a-z]+[A-Z]|^[a-z]+[A-Z]/.test(pattern)) {
+      return { isConceptual: false, reasons: [] };
+    }
+
+    // Decision: conceptual if we have 2+ reasons
+    return {
+      isConceptual: reasons.length >= 2,
+      reasons
+    };
   }
 }
