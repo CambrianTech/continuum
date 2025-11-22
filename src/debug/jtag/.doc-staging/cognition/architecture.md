@@ -1,7 +1,37 @@
 # PersonaUser Cognition Architecture
 
 **Date**: 2025-11-16
-**Status**: Foundation design - Not yet implemented
+**Status**: PARTIALLY IMPLEMENTED - Core infrastructure exists, advanced reasoning pending
+
+> **IMPLEMENTATION STATUS (2025-11-22)**:
+>
+> **✅ IMPLEMENTED (Working Code)**:
+> - **Layer 1: Universal Self-State** → PersonaSelfState.ts (161 lines) ✅
+>   - Tracks currentFocus, cognitiveLoad, availableCapacity, activePreoccupations
+>   - Used in PersonaMessageEvaluator.ts (lines 139-147)
+> - **Layer 2: Domain Working Memory** → WorkingMemoryManager.ts (6.6KB) ✅
+>   - Domain-specific thought storage (observations, reflections, plans)
+>   - Used in MemoryConsolidation subprocess
+> - **Decision System** → DecisionAdapterChain.ts (138 lines) ✅
+>   - FastPathAdapter, ThermalAdapter, LLMAdapter
+>   - Logs all decisions via CognitionLogger
+> - **Basic Planning** → SimplePlanFormulator.ts (3.0KB) ✅
+>   - Generates plans from tasks
+>   - Used in PersonaMessageEvaluator.ts (line 123)
+> - **Memory Consolidation** → MemoryConsolidationSubprocess.ts (11KB) ✅
+>   - RTOS-style background process
+>   - Consolidates working memory → long-term storage
+>
+> **❌ NOT YET IMPLEMENTED (Future Work)**:
+> - **Advanced Reasoning** - Dynamic replanning, error recovery, adaptation
+> - **Chain-of-Thought** - Explicit reasoning steps in responses
+> - **Learning from Mistakes** - Outcome evaluation and procedure refinement
+> - **Cross-Domain Strategy** - Intelligent task switching and prioritization
+>
+> **Key Insight**: We have **Perception ✅ + Memory ✅ + Action ✅**, making us a sophisticated workflow.
+> We need **Reasoning** (dynamic planning/adaptation) to become a true autonomous agent.
+>
+> **See**: `intelligence-integration.md` and `reasoning-system-roadmap.md` for next-level enhancements.
 
 ---
 
