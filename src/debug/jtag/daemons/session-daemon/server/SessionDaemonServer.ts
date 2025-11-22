@@ -518,8 +518,28 @@ export class SessionDaemonServer extends SessionDaemon {
         user = await this.createUser(params);
       }
 
+      // Enrich context with caller type based on User type (enables caller-adaptive output)
+      const enrichedContext = params.context;
+      switch (user.entity.type) {
+        case 'persona':
+          enrichedContext.callerType = 'persona';
+          break;
+        case 'human':
+          enrichedContext.callerType = 'human';
+          break;
+        case 'agent':
+        case 'system':
+          // External agents and system users treated as scripts
+          enrichedContext.callerType = 'script';
+          break;
+        default:
+          // Unknown types default to script (safest fallback)
+          console.warn(`SessionDaemon: Unknown user type '${user.entity.type}', defaulting callerType to 'script'`);
+          enrichedContext.callerType = 'script';
+      }
+
       const newSession: SessionMetadata = {
-        sourceContext: params.context,
+        sourceContext: enrichedContext, // Use enriched context with callerType
         sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,
         displayName: params.displayName,

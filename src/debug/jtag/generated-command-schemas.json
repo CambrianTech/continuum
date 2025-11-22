@@ -1,5 +1,5 @@
 {
-  "generated": "2025-11-22T00:34:04.064Z",
+  "generated": "2025-11-22T05:33:38.103Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -715,6 +715,67 @@
           "type": "string",
           "required": false,
           "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "media/resize",
+      "description": "Media Resize Command Types\n *\n * Image resizing via sharp library with model-aware dimension calculation.\n * Enables PersonaUsers to receive appropriately-sized images based on their\n * model's context window capacity.",
+      "params": {
+        "inputPath": {
+          "type": "string",
+          "required": true,
+          "description": "inputPath parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "width": {
+          "type": "number",
+          "required": false,
+          "description": "width parameter"
+        },
+        "height": {
+          "type": "number",
+          "required": false,
+          "description": "height parameter"
+        },
+        "maxWidth": {
+          "type": "number",
+          "required": false,
+          "description": "maxWidth parameter"
+        },
+        "maxHeight": {
+          "type": "number",
+          "required": false,
+          "description": "maxHeight parameter"
+        },
+        "modelName": {
+          "type": "string",
+          "required": false,
+          "description": "modelName parameter"
+        },
+        "targetPercentage": {
+          "type": "number",
+          "required": false,
+          "description": "targetPercentage parameter"
+        },
+        "quality": {
+          "type": "number",
+          "required": false,
+          "description": "quality parameter"
+        },
+        "fit": {
+          "type": "string",
+          "required": false,
+          "description": "fit parameter"
+        },
+        "returnBase64": {
+          "type": "boolean",
+          "required": false,
+          "description": "returnBase64 parameter"
         }
       }
     },

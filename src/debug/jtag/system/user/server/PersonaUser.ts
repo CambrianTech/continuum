@@ -396,6 +396,15 @@ export class PersonaUser extends AIUser {
       console.log(`🔐 ${this.displayName}: SessionId generated for tool attribution (${this.sessionId})`);
     }
 
+    // STEP 1.3: Enrich context with callerType='persona' and modelConfig for caller-adaptive command output
+    // This enables PersonaUsers to receive media field (base64 image data) from screenshot commands
+    // The modelConfig enables commands to resize images based on model's context window capacity
+    if (this.client && this.client.context) {
+      this.client.context.callerType = 'persona';
+      this.client.context.modelConfig = this.modelConfig;
+      console.log(`🎯 ${this.displayName}: Context enriched with callerType='persona' and modelConfig for vision-capable tool output`);
+    }
+
     // STEP 1.5: Start worker thread for message evaluation
     if (this.worker) {
       await this.worker.start();
