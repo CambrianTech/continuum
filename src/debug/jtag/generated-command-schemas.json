@@ -1,5 +1,5 @@
 {
-  "generated": "2025-11-21T20:41:45.112Z",
+  "generated": "2025-11-22T00:34:04.064Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1712,6 +1712,83 @@
           "type": "string",
           "required": false,
           "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "code/read",
+      "description": "code/read command types",
+      "params": {
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "path": {
+          "type": "string",
+          "required": true,
+          "description": "path parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "includeMetadata": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMetadata parameter"
+        },
+        "forceRefresh": {
+          "type": "boolean",
+          "required": false,
+          "description": "forceRefresh parameter"
+        }
+      }
+    },
+    {
+      "name": "code/pattern-search",
+      "description": "code/find command types - Find files by name pattern",
+      "params": {
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "baseDir": {
+          "type": "string",
+          "required": false,
+          "description": "baseDir parameter"
+        },
+        "caseInsensitive": {
+          "type": "boolean",
+          "required": false,
+          "description": "caseInsensitive parameter"
+        },
+        "maxResults": {
+          "type": "number",
+          "required": false,
+          "description": "maxResults parameter"
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeHidden parameter"
+        },
+        "excludeDirs": {
+          "type": "string",
+          "required": false,
+          "description": "excludeDirs parameter"
         }
       }
     },

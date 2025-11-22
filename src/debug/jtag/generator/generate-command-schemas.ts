@@ -113,8 +113,10 @@ class CommandSchemaGenerator {
 
     const commandName = commandNameMatch[1];
 
-    // Find the Params interface (e.g., "export interface ShellExecuteParams extends CommandParams")
-    const paramsInterfaceRegex = /export\s+interface\s+(\w+Params)\s+extends\s+CommandParams\s*\{([^}]+)\}/s;
+    // Find the Params interface - supports both direct and double inheritance
+    // Pattern 1: export interface XParams extends CommandParams
+    // Pattern 2: export interface XParams extends BaseXParams
+    const paramsInterfaceRegex = /export\s+interface\s+(\w+Params)\s+extends\s+(\w+)\s*\{([^}]+)\}/s;
     const paramsMatch = content.match(paramsInterfaceRegex);
 
     if (!paramsMatch) {
@@ -122,19 +124,108 @@ class CommandSchemaGenerator {
       return null;
     }
 
-    const interfaceBody = paramsMatch[2];
+    const interfaceName = paramsMatch[1];
+    const parentInterface = paramsMatch[2];
+    const interfaceBody = paramsMatch[3];
+
+    // Check if this extends CommandParams directly or through an intermediate interface
+    let allParams: Record<string, CommandParamDef> = {};
+
+    if (parentInterface !== 'CommandParams') {
+      // Double inheritance - need to find parent interface in same file
+      const parentParams = this.extractParentParams(content, parentInterface);
+      if (parentParams === null) {
+        console.warn(`  ⚠️ Parent interface ${parentInterface} not found or doesn't extend CommandParams: ${relativePath}`);
+        return null;
+      }
+      // Merge parent params
+      allParams = { ...parentParams };
+    }
 
     // Extract description from JSDoc comment before the interface
     const description = this.extractDescription(content, paramsMatch.index!);
 
-    // Extract parameters from interface body
+    // Extract parameters from this interface body and merge with parent
     const params = this.extractParams(interfaceBody, content, paramsMatch.index!);
+    allParams = { ...allParams, ...params };
 
     return {
       name: commandName,
       description: description || `${commandName} command`,
-      params
+      params: allParams
     };
+  }
+
+  /**
+   * Extract params from a parent interface (recursive, supports N levels of inheritance)
+   * Returns null if parent interface doesn't extend CommandParams at any level OR contain required fields
+   */
+  private extractParentParams(content: string, parentInterfaceName: string, visited: Set<string> = new Set()): Record<string, CommandParamDef> | null {
+    // Prevent infinite loops from circular inheritance
+    if (visited.has(parentInterfaceName)) {
+      return null;
+    }
+    visited.add(parentInterfaceName);
+
+    // Base case: if parent is CommandParams, we've reached the root
+    if (parentInterfaceName === 'CommandParams') {
+      return {}; // No params from CommandParams itself (context, sessionId handled separately)
+    }
+
+    // Look for the parent interface definition - with or without extends clause
+    // Pattern 1: export interface Foo extends Bar { ... }
+    // Pattern 2: export interface Foo { ... }
+    const parentWithExtendsRegex = new RegExp(
+      `export\\s+interface\\s+${parentInterfaceName}\\s+extends\\s+(\\w+)\\s*\\{([^}]+)\\}`,
+      's'
+    );
+    const parentStandaloneRegex = new RegExp(
+      `export\\s+interface\\s+${parentInterfaceName}\\s*\\{([^}]+)\\}`,
+      's'
+    );
+
+    let parentMatch = content.match(parentWithExtendsRegex);
+    let grandparentInterface: string | null = null;
+    let parentBody: string;
+
+    if (parentMatch) {
+      // Has extends clause
+      grandparentInterface = parentMatch[1];
+      parentBody = parentMatch[2];
+    } else {
+      // Try standalone interface
+      const standaloneMatch = content.match(parentStandaloneRegex);
+      if (!standaloneMatch) {
+        return null;
+      }
+      parentBody = standaloneMatch[1];
+      grandparentInterface = null; // No grandparent
+    }
+
+    // Extract params from this parent's body
+    const parentParams = this.extractParams(parentBody, content, 0);
+
+    // Check if this interface has required fields (context and sessionId)
+    const hasContext = parentBody.includes('context:');
+    const hasSessionId = parentBody.includes('sessionId:');
+
+    if (hasContext && hasSessionId) {
+      // This interface is compatible with CommandParams even if it doesn't formally extend it
+      return parentParams;
+    }
+
+    // If no required fields, check if it extends something else
+    if (grandparentInterface) {
+      const grandparentParams = this.extractParentParams(content, grandparentInterface, visited);
+      if (grandparentParams === null) {
+        return null;
+      }
+      // Merge grandparent params with parent params
+      return { ...grandparentParams, ...parentParams };
+    }
+
+    // No extends, no required fields = invalid
+    return null;
   }
 
   /**
