@@ -1,22 +1,34 @@
 # Multi-Model Persona Architecture
 
-## Vision: All AI Models as First-Class Personas
+**Last Updated**: 2025-11-22
+
+## Vision: All AI Models as First-Class Personas with RTOS Autonomy
 
 **Goal**: Every AI model (Ollama, OpenAI, Anthropic, etc.) becomes a first-class PersonaUser in the system, with:
-- Model-appropriate embeddings for RAG
-- LoRA fine-tuning capabilities (where applicable)
-- Genome paging for skill management
-- Unified interface regardless of backend
+- **RTOS autonomous loop** (signal-based, adaptive cadence)
+- **Model-appropriate embeddings** for RAG
+- **LoRA fine-tuning capabilities** (where applicable)
+- **Genome paging** for skill management (multi-layer PEFT)
+- **Unified interface** regardless of backend
+- **Hippocampus memory consolidation** (non-blocking subprocess)
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ PersonaUser (Abstract)                                  │
-│ ├── Common: Identity, state, inbox, coordination       │
-│ ├── RAG: Codebase learning via embeddings              │
-│ └── Genome: Skill layers (LoRA or RAG context)         │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│ PersonaUser (Abstract) - RTOS Autonomous Architecture               │
+│                                                                     │
+│ Common (ALL personas):                                              │
+│ ├── PersonaInbox: Priority queue with traffic management          │
+│ ├── PersonaState: Energy/mood tracking, adaptive cadence          │
+│ ├── serviceInbox(): Convergence of 3 pillars                      │
+│ ├── Memory: Hippocampus consolidation (non-blocking subprocess)   │
+│ └── Coordination: ChatCoordinationStream (RTOS primitives)        │
+│                                                                     │
+│ Backend-Specific:                                                   │
+│ ├── RAG: Codebase learning via model-appropriate embeddings       │
+│ └── Genome: Multi-layer PEFT (LoRA) or RAG context packages       │
+└─────────────────────────────────────────────────────────────────────┘
                           ↓
         ┌─────────────────┴─────────────────┐
         ↓                                    ↓
@@ -25,11 +37,71 @@
 │ (Ollama)         │              │ (OpenAI/Claude)  │
 ├──────────────────┤              ├──────────────────┤
 │ ✓ Real LoRA      │              │ ✗ No LoRA access │
-│ ✓ Full control   │              │ ✓ RAG context    │
-│ ✓ Free           │              │ ✓ System prompts │
-│ ✗ Slower         │              │ ✓ Fast           │
+│ ✓ N-layer PEFT   │              │ ✓ RAG context    │
+│ ✓ Full control   │              │ ✓ System prompts │
+│ ✓ Free           │              │ ✓ Fast           │
+│ ✗ Slower         │              │ ✗ API costs      │
+│ ✓ RTOS autonomy  │              │ ✓ RTOS autonomy  │
 └──────────────────┘              └──────────────────┘
 ```
+
+## RTOS Architecture (Universal Across All Backends)
+
+**Key Insight**: RTOS autonomous loop, memory consolidation, and coordination are **backend-agnostic**.
+Whether Ollama, OpenAI, or Claude - all personas use the same RTOS architecture.
+
+### PersonaSubprocess Pattern (Universal)
+
+```typescript
+// ALL personas (Ollama, OpenAI, Claude) use same pattern:
+export class PersonaUser extends AIUser {
+  // RTOS subprocesses (parallel, non-blocking)
+  private memoryWorker: MemoryConsolidationSubprocess;
+  private taskGenerator: SelfTaskGenerationSubprocess;
+
+  // Autonomous loop (ALL backends)
+  async serviceInbox(): Promise<void> {
+    // 1. Check inbox
+    const tasks = await this.inbox.peek(10);
+
+    // 2. Generate self-tasks (autonomy)
+    await this.generateSelfTasks();
+
+    // 3. State-aware priority
+    if (!this.state.shouldEngage(task.priority)) return;
+
+    // 4. Activate skill (LoRA OR RAG context depending on backend)
+    await this.genome.activateSkill(task.domain);
+
+    // 5-8. Process, update state, evict if needed
+  }
+}
+```
+
+### Backend-Specific Genome Implementation
+
+**Ollama (Real LoRA):**
+```typescript
+class OllamaPersonaGenome extends PersonaGenomeBase {
+  async activateSkill(domain: string): Promise<void> {
+    // Page in LoRA adapter (multi-layer PEFT)
+    await GenomeDaemon.shared().activateAdapter(adapterId, this.personaId);
+  }
+}
+```
+
+**OpenAI/Claude (RAG Context):**
+```typescript
+class APIPersonaGenome extends PersonaGenomeBase {
+  async activateSkill(domain: string): Promise<void> {
+    // Inject RAG context into system prompt
+    const contextPackage = await this.loadContextPackage(domain);
+    this.systemPrompt = this.constructPromptWithContext(contextPackage);
+  }
+}
+```
+
+**Key Property**: Same `activateSkill()` interface, different implementation.
 
 ## Three Storage Layers (Unified)
 
