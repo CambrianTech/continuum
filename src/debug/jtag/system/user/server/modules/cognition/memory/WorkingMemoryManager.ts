@@ -7,12 +7,16 @@
 
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import { cognitionStorage, type WorkingMemoryEntry } from './InMemoryCognitionStorage';
+import { randomUUID } from 'crypto';
 
 export interface RecallQuery {
-  domain: string;
-  contextId?: UUID;
+  domain?: string | null;  // null = global
+  contextId?: UUID | null | '*';  // '*' = all contexts, null = domain-wide
   limit?: number;
   thoughtTypes?: string[];
+  minImportance?: number;
+  sortBy?: 'recent' | 'important' | 'relevance';
+  includePrivate?: boolean;
 }
 
 export class WorkingMemoryManager {
@@ -23,10 +27,20 @@ export class WorkingMemoryManager {
   /**
    * Store a thought in working memory
    */
-  async store(memory: Omit<WorkingMemoryEntry, 'id' | 'personaId' | 'createdAt' | 'lastAccessedAt'>): Promise<void> {
+  async store(memory: Omit<WorkingMemoryEntry, 'id' | 'personaId' | 'createdAt' | 'lastAccessedAt'>): Promise<UUID> {
+    // Validate thoughtType length
+    if (memory.thoughtType.length > 50) {
+      throw new Error('thoughtType must be 50 characters or less');
+    }
+
+    // Validate importance range
+    if (memory.importance < 0 || memory.importance > 1) {
+      throw new Error('importance must be between 0.0 and 1.0');
+    }
+
     const entry: WorkingMemoryEntry = {
       ...memory,
-      id: this.generateId(),
+      id: randomUUID() as UUID,
       personaId: this.personaId,
       createdAt: Date.now(),
       lastAccessedAt: Date.now()
@@ -35,7 +49,11 @@ export class WorkingMemoryManager {
     cognitionStorage.addWorkingMemory(entry);
 
     // Check capacity and evict if needed
-    await this.evictIfNeeded(memory.domain);
+    if (memory.domain !== null) {
+      await this.evictIfNeeded(memory.domain);
+    }
+
+    return entry.id;
   }
 
   /**
@@ -45,32 +63,62 @@ export class WorkingMemoryManager {
     const allMemories = cognitionStorage.getWorkingMemory(this.personaId);
 
     // Filter by domain
-    let filtered = allMemories.filter(m => m.domain === query.domain);
+    let filtered = allMemories;
+    if (query.domain !== undefined) {
+      filtered = filtered.filter(m => m.domain === query.domain);
+    }
 
-    // Filter by context if specified
-    if (query.contextId) {
+    // Filter by context
+    if (query.contextId !== undefined && query.contextId !== '*') {
       filtered = filtered.filter(m => m.contextId === query.contextId);
     }
 
-    // Filter by thought types if specified
+    // Filter by thought types
     if (query.thoughtTypes && query.thoughtTypes.length > 0) {
       filtered = filtered.filter(m => query.thoughtTypes!.includes(m.thoughtType));
     }
 
-    // Sort by importance and recency
+    // Filter by minimum importance
+    if (query.minImportance !== undefined) {
+      filtered = filtered.filter(m => m.importance >= query.minImportance!);
+    }
+
+    // Filter out non-shareable if not including private
+    if (!query.includePrivate) {
+      filtered = filtered.filter(m => m.shareable);
+    }
+
+    // Sort by specified criteria
+    const sortBy = query.sortBy || 'important';
     filtered.sort((a, b) => {
-      const importanceScore = b.importance - a.importance;
-      if (Math.abs(importanceScore) > 0.1) return importanceScore;
-      return b.createdAt - a.createdAt;
+      if (sortBy === 'recent') {
+        return b.createdAt - a.createdAt;
+      } else if (sortBy === 'important') {
+        const importanceScore = b.importance - a.importance;
+        if (Math.abs(importanceScore) > 0.1) return importanceScore;
+        return b.createdAt - a.createdAt;  // Tiebreaker: recency
+      }
+      // 'relevance' - for now same as important
+      return b.importance - a.importance;
     });
 
-    // Update last accessed time
+    // Update last accessed time (immutably)
     const now = Date.now();
-    filtered.forEach(m => m.lastAccessedAt = now);
+    const updated = filtered.map(m => ({ ...m, lastAccessedAt: now }));
+
+    // Write back updated access times
+    updated.forEach(m => {
+      const memories = cognitionStorage.getWorkingMemory(this.personaId);
+      const updatedMemories = memories.map(mem =>
+        mem.id === m.id ? m : mem
+      );
+      cognitionStorage.clearWorkingMemory(this.personaId);
+      updatedMemories.forEach(mem => cognitionStorage.addWorkingMemory(mem));
+    });
 
     // Limit results
     const limit = query.limit || 20;
-    return filtered.slice(0, limit);
+    return updated.slice(0, limit);
   }
 
   /**
@@ -145,7 +193,20 @@ export class WorkingMemoryManager {
     cognitionStorage.clearWorkingMemory(this.personaId, domain);
   }
 
-  private generateId(): UUID {
-    return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}` as UUID;
+  /**
+   * Clear specific thoughts by ID (batch)
+   * Used by memory consolidation to remove thoughts after consolidating
+   */
+  async clearBatch(thoughtIds: UUID[]): Promise<void> {
+    if (thoughtIds.length === 0) return;
+
+    const memories = cognitionStorage.getWorkingMemory(this.personaId);
+    const idsToRemove = new Set(thoughtIds);
+    const filtered = memories.filter(m => !idsToRemove.has(m.id));
+
+    cognitionStorage.clearWorkingMemory(this.personaId);
+    filtered.forEach(m => cognitionStorage.addWorkingMemory(m));
+
+    console.log(`🗑️ [WorkingMemory] Cleared ${thoughtIds.length} thoughts`);
   }
 }
