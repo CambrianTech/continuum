@@ -1276,3 +1276,4 @@ Commands.execute() and Events.subscribe()/emit() - the two primitives everything
 - if you only edit a test, and not the api itself, you don't need to redeploy with npm start, just edit and test again e.g npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
 - need to remember to npm run build:ts before deploying with npm start, just to make sure there's no compilation issues
 - ./jtag chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
+- Tool logging is in PersonaToolExecutor

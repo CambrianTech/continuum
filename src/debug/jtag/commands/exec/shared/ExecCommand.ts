@@ -405,7 +405,7 @@ export abstract class ExecCommand extends CommandBase<ExecCommandParams, ExecCom
         break;
         
       case 'file':
-        if (!params.code.path?.trim()) {
+        if (!params.code.filepath?.trim()) {
           errors.push('File path cannot be empty');
         }
         break;

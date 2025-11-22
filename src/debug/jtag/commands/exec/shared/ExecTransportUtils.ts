@@ -112,19 +112,19 @@ export class ExecTransportEncoder {
         
       case 'file':
         // Note: File reading needs to be implemented in the execution context
-        // Here we just pass the path, actual reading happens in the executor
-        return `// FILE_PATH: ${code.path}`;
-        
+        // Here we just pass the filepath, actual reading happens in the executor
+        return `// FILE_PATH: ${code.filepath}`;
+
       case 'template':
         // Note: Template resolution needs to be implemented in the execution context
         return `// TEMPLATE: ${code.name}`;
-        
+
       default:
         const exhaustive: never = code;
         throw new Error(`Unknown code input type: ${(exhaustive as any).type}`);
     }
   }
-  
+
   /**
    * Extract language from CodeInput (with intelligent defaults)
    */
@@ -133,12 +133,12 @@ export class ExecTransportEncoder {
       case 'inline':
       case 'base64':
         return code.language;
-        
+
       case 'file':
         // Infer from file extension
-        if (code.path.endsWith('.ts')) return 'typescript';
-        if (code.path.endsWith('.js')) return 'javascript';
-        if (code.path.endsWith('.py')) return 'python';
+        if (code.filepath.endsWith('.ts')) return 'typescript';
+        if (code.filepath.endsWith('.js')) return 'javascript';
+        if (code.filepath.endsWith('.py')) return 'python';
         return 'javascript'; // Default fallback
         
       case 'template':

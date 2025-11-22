@@ -48,8 +48,12 @@ export class FileSaveServerCommand extends CommandBase<FileSaveParams, FileSaveR
         await fs.writeFile(fullPath, saveParams.content);
         bytesWritten = saveParams.content.length;
       } else {
-        await fs.writeFile(fullPath, saveParams.content, 'utf8');
-        bytesWritten = Buffer.byteLength(saveParams.content, 'utf8');
+        // Convert content to string if it's an object (from XML tool calls with JSON content)
+        const contentStr = typeof saveParams.content === 'string'
+          ? saveParams.content
+          : JSON.stringify(saveParams.content, null, 2);
+        await fs.writeFile(fullPath, contentStr, 'utf8');
+        bytesWritten = Buffer.byteLength(contentStr, 'utf8');
       }
       
       console.log(`✅ SERVER: Saved ${bytesWritten} bytes to ${fullPath}`);

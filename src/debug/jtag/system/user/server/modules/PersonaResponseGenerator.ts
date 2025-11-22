@@ -489,6 +489,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             personaName: this.personaName,
             sessionId,  // AI's own sessionId for sandboxed tool execution
             contextId: originalMessage.roomId,
+            context: this.client!.context,  // PersonaUser's enriched context (with callerType='persona')
             personaConfig: this.mediaConfig
           };
 

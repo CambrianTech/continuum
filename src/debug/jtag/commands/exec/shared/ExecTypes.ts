@@ -42,8 +42,8 @@ export interface InlineCodeInput {
 }
 
 export interface FileCodeInput {
-  type: 'file'; 
-  path: string;                                 // Path to script file (relative to execution context)
+  type: 'file';
+  filepath: string;                             // Path to script file (relative to execution context)
 }
 
 export interface Base64CodeInput {

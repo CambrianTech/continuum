@@ -166,7 +166,8 @@ export class ToolRegistry {
     toolName: string,
     parameters: Record<string, string>,
     sessionId: UUID,  // SessionId of the tool executor (AI's own session for sandboxing)
-    contextId: UUID
+    contextId: UUID,
+    context?: import('../../core/types/JTAGTypes').JTAGContext  // Optional enriched context (with callerType for caller-adaptive output)
   ): Promise<ToolExecutionResult> {
     if (!this.hasTool(toolName)) {
       return {
@@ -205,14 +206,18 @@ export class ToolRegistry {
 
     // Execute command via Commands.execute
     // Pass sessionId explicitly to override auto-injected value (AI's own sessionId for sandboxing)
-    // Note: context (JTAGContext) is auto-injected by Commands.execute from global.__JTAG_CONTEXT__
-    // We only override sessionId to use the AI's own session for proper attribution
-    // Add contextId to parsedParams if command expects it (e.g., roomId for chat commands)
-    const commandParams = {
+    // Pass context explicitly if provided (PersonaUser's enriched context with callerType)
+    // This enables caller-adaptive command output (e.g., PersonaUsers receive media field in screenshot results)
+    const commandParams: Record<string, any> = {
       sessionId,  // Pass AI's sessionId for proper attribution
       contextId,  // Some commands may use this (will be ignored if not needed)
       ...parsedParams
     };
+
+    // Include enriched context if provided (enables caller-adaptive output)
+    if (context) {
+      commandParams.context = context;
+    }
 
     const result = await Commands.execute(toolName, commandParams);
 
