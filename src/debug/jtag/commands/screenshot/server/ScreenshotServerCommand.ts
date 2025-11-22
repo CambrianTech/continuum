@@ -78,9 +78,9 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
             ...screenshotParams,
             inputPath: tempSaveResult.filepath!,
             modelName: screenshotParams.context.modelConfig.model,
-            targetPercentage: 0.12, // Use 12% of context window for images (with safety margin)
+            targetPercentage: 0.25, // Use 25% of context window for screenshots (important visual data)
             returnBase64: true,
-            quality: 80
+            quality: 85
           };
 
           const resizeResult: MediaResizeResult = await this.remoteExecute(resizeParams, 'media/resize', this.context.environment);
