@@ -491,6 +491,9 @@ PersonaUser (Autonomous AI Citizen)
 
 ### ✅ Foundation Complete (Phase 7.0-7.1)
 
+- **PersonaSubprocess base class** (Nov 22) - RTOS pattern for all background processes
+- **Hippocampus subprocess** (Nov 23) - First RTOS subprocess (Phase 1: logging, proves pattern works)
+- **Per-subprocess logging** (Nov 23) - Separate log files with persona identification ([@PersonaName])
 - **TrainingDatasetBuilder** (407 lines) - Universal dataset generation
 - **BaseLoRATrainer** - Abstract adapter pattern
 - **GenomeManager** (652 lines) - GPU orchestration with paging
@@ -500,6 +503,10 @@ PersonaUser (Autonomous AI Citizen)
 
 ### 🚧 In Progress (Phase 7.1-7.2)
 
+- **Hippocampus Phase 2** - Full memory consolidation logic (pattern detection, consolidation, activation)
+  - Per-persona database (`.continuum/sessions/user/shared/{persona-id}/memory/`)
+  - Specialized data daemon adapter for cosine similarity
+  - Fully encapsulated memory (no shared database)
 - **UnslothLoRAAdapter** - Free local training (GPU)
 - **Bootstrap Training** - Verify end-to-end training cycle works
 - **Genome Paging** - Adapter loading/unloading with LRU eviction
@@ -550,5 +557,5 @@ PersonaUser (Autonomous AI Citizen)
 - [PHASE-7-ROADMAP.md](PHASE-7-ROADMAP.md) - Current implementation roadmap
 - [GENOME-MANAGER-INTEGRATION.md](GENOME-MANAGER-INTEGRATION.md) - Integration with AIProviderDaemon
 
-**Last Updated**: 2025-11-03
-**Status**: Phase 7 Foundation Complete, Training Infrastructure In Progress
+**Last Updated**: 2025-11-23
+**Status**: Phase 7 Foundation Complete + RTOS Subprocesses Implemented, Training Infrastructure In Progress
