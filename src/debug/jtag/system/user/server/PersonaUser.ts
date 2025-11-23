@@ -101,6 +101,7 @@ import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
+import { PersonaLogger } from './modules/PersonaLogger';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -179,6 +180,8 @@ export class PersonaUser extends AIUser {
 
   // RTOS-style background subprocess for memory consolidation
   // Phase 1: Minimal logging-only version to prove threading works
+  // RTOS Subprocesses
+  public logger: PersonaLogger; // Public: accessed by all subprocesses for logging
   private hippocampus: Hippocampus;
 
   constructor(
@@ -325,6 +328,9 @@ export class PersonaUser extends AIUser {
 
     // RTOS-style memory consolidation subprocess (will start in initialize())
     // Phase 1: Minimal version - just logging to prove threading works
+    // Initialize RTOS subprocesses
+    // Logger MUST be first - other subprocesses need it for logging
+    this.logger = new PersonaLogger(this);
     this.hippocampus = new Hippocampus(this);
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
@@ -456,6 +462,11 @@ export class PersonaUser extends AIUser {
 
     // PHASE 3: Start autonomous servicing loop (lifecycle-based)
     this.startAutonomousServicing();
+
+    // Start RTOS subprocesses
+    // Logger MUST start first - other subprocesses depend on it for logging
+    await this.logger.start();
+    console.log(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
 
     // Start Hippocampus subprocess (RTOS-style background process)
     // Phase 1: Minimal logging-only version to prove threading works
@@ -1151,9 +1162,17 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
-    // Stop Hippocampus subprocess
+    // Stop RTOS subprocesses in reverse order
+    // Stop Hippocampus first (generates final logs)
     await this.hippocampus.stop();
     console.log(`🧠 ${this.displayName}: Hippocampus subprocess stopped`);
+
+    // Force flush all queued logs before stopping logger
+    await this.logger.forceFlush();
+
+    // Stop logger last (ensure all logs written)
+    await this.logger.stop();
+    console.log(`📝 ${this.displayName}: PersonaLogger stopped (all logs flushed)`);
 
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();

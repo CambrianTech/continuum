@@ -22,8 +22,6 @@
  */
 
 import type { PersonaUser } from '../PersonaUser';
-import { appendFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
 
 export type SubprocessPriority = 'highest' | 'high' | 'moderate' | 'default' | 'low' | 'lowest';
 
@@ -37,7 +35,6 @@ export abstract class PersonaSubprocess<T = void> {
   private wakeupSignal: boolean = false;
   private hasRun: boolean = false;
   private readonly maxQueueSize: number;
-  private readonly logFilePath: string;
 
   /**
    * @param persona - Full persona object (like cbar's parent pointer)
@@ -56,14 +53,6 @@ export abstract class PersonaSubprocess<T = void> {
     this.priority = options.priority ?? 'default';
     this.maxQueueSize = options.maxQueueSize ?? 100;
     this.name = options.name ?? this.constructor.name;
-
-    // Set up subprocess-specific log file
-    // e.g., .continuum/sessions/user/shared/*/logs/hippocampus.log
-    const logsDir = join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', persona.id, 'logs');
-    this.logFilePath = join(logsDir, `${this.name.toLowerCase()}.log`);
-
-    // Initialize log file
-    this.initLogFile();
   }
 
   /**
@@ -222,7 +211,7 @@ export abstract class PersonaSubprocess<T = void> {
   }
 
   /**
-   * Log to subprocess-specific file
+   * Log to subprocess-specific file (non-blocking, queued)
    *
    * Each subprocess gets its own log file (e.g., logs/hippocampus.log)
    * to avoid flooding the main log.
@@ -234,15 +223,19 @@ export abstract class PersonaSubprocess<T = void> {
    *
    * Usage: this.log('Tick started')
    * Output: [2025-11-22T10:30:45.123Z] [@Grok] [Hippocampus] Tick started
+   *
+   * NOTE: Uses PersonaLogger queue - non-blocking, batched writes
    */
   protected log(message: string): void {
     const logLine = this.formatLogLine(message);
 
-    try {
-      appendFileSync(this.logFilePath, logLine, 'utf8');
-    } catch (error) {
-      // Fallback to console if file write fails (don't break subprocess)
-      console.error(`❌ [${this.name}] Failed to write to log file:`, error);
+    // Enqueue to PersonaLogger (non-blocking, instant return)
+    // PersonaLogger will batch and flush asynchronously
+    if (this.persona.logger) {
+      const fileName = `${this.name.toLowerCase()}.log`;
+      this.persona.logger.enqueueLog(fileName, logLine);
+    } else {
+      // Fallback to console if logger not available (shouldn't happen)
       console.log(`[${this.name}] ${logLine.trim()}`);
     }
   }
@@ -256,27 +249,6 @@ export abstract class PersonaSubprocess<T = void> {
     const timestamp = new Date().toISOString();
     const personaName = this.persona.entity.displayName;
     return `[${timestamp}] [@${personaName}] [${this.name}] ${message}\n`;
-  }
-
-  /**
-   * Initialize subprocess log file
-   * Creates directory and log file with header
-   */
-  private initLogFile(): void {
-    try {
-      // Ensure logs directory exists
-      const logsDir = dirname(this.logFilePath);
-      if (!existsSync(logsDir)) {
-        mkdirSync(logsDir, { recursive: true });
-      }
-
-      // Write header using consistent formatting
-      const personaName = this.persona.entity.displayName;
-      const header = `\n=== [@${personaName}] ${this.name} Log (started: ${new Date().toISOString()}) ===\n`;
-      appendFileSync(this.logFilePath, header, 'utf8');
-    } catch (error) {
-      console.error(`❌ [${this.name}] Failed to initialize log file ${this.logFilePath}:`, error);
-    }
   }
 
   // ==================== Abstract Methods ====================
