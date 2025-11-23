@@ -100,7 +100,7 @@ import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
-import { MemoryConsolidationSubprocess } from './modules/cognition/memory/MemoryConsolidationSubprocess';
+import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -177,8 +177,9 @@ export class PersonaUser extends AIUser {
   // Genome management module (extracted from PersonaUser for better genomic daemon integration)
   private genomeManager: PersonaGenomeManager;
 
-  // RTOS-style background subprocess for memory consolidation (optional, non-breaking)
-  private memoryWorker?: MemoryConsolidationSubprocess;
+  // RTOS-style background subprocess for memory consolidation
+  // Phase 1: Minimal logging-only version to prove threading works
+  private hippocampus: Hippocampus;
 
   constructor(
     entity: UserEntity,
@@ -322,9 +323,9 @@ export class PersonaUser extends AIUser {
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
 
-    // RTOS-style memory consolidation subprocess (not started yet - will start in initialize() if enabled)
-    // Kept undefined by default to avoid breaking existing behavior
-    this.memoryWorker = undefined;
+    // RTOS-style memory consolidation subprocess (will start in initialize())
+    // Phase 1: Minimal version - just logging to prove threading works
+    this.hippocampus = new Hippocampus(this);
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
@@ -456,13 +457,10 @@ export class PersonaUser extends AIUser {
     // PHASE 3: Start autonomous servicing loop (lifecycle-based)
     this.startAutonomousServicing();
 
-    // OPTIONAL: Start memory consolidation subprocess (RTOS-style background process)
-    // This is opt-in via environment variable to avoid breaking existing behavior
-    if (process.env.ENABLE_MEMORY_CONSOLIDATION === 'true') {
-      this.memoryWorker = new MemoryConsolidationSubprocess(this as any);
-      await this.memoryWorker.start();
-      console.log(`🧠 ${this.displayName}: Memory consolidation subprocess started`);
-    }
+    // Start Hippocampus subprocess (RTOS-style background process)
+    // Phase 1: Minimal logging-only version to prove threading works
+    await this.hippocampus.start();
+    console.log(`🧠 ${this.displayName}: Hippocampus subprocess started (minimal/logging mode)`);
   }
 
   /**
@@ -1153,11 +1151,9 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
-    // Stop memory consolidation subprocess if running
-    if (this.memoryWorker) {
-      await this.memoryWorker.stop();
-      console.log(`🧠 ${this.displayName}: Memory consolidation subprocess stopped`);
-    }
+    // Stop Hippocampus subprocess
+    await this.hippocampus.stop();
+    console.log(`🧠 ${this.displayName}: Hippocampus subprocess stopped`);
 
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();

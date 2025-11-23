@@ -7,11 +7,13 @@
  * - Pass entire persona for direct property access
  * - Priority-based adaptive timing
  * - Non-blocking queue operations
+ * - Built-in per-subprocess logging (this.log())
  *
  * Usage:
  * ```typescript
  * class MyWorker extends PersonaSubprocess<MyTask> {
  *   protected async handleTask(task: MyTask): Promise<boolean> {
+ *     this.log('Processing task...');
  *     // Access persona directly: this.persona.inbox, this.persona.state
  *     return true;
  *   }
@@ -20,6 +22,8 @@
  */
 
 import type { PersonaUser } from '../PersonaUser';
+import { appendFileSync, mkdirSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
 
 export type SubprocessPriority = 'highest' | 'high' | 'moderate' | 'default' | 'low' | 'lowest';
 
@@ -33,6 +37,7 @@ export abstract class PersonaSubprocess<T = void> {
   private wakeupSignal: boolean = false;
   private hasRun: boolean = false;
   private readonly maxQueueSize: number;
+  private readonly logFilePath: string;
 
   /**
    * @param persona - Full persona object (like cbar's parent pointer)
@@ -51,6 +56,14 @@ export abstract class PersonaSubprocess<T = void> {
     this.priority = options.priority ?? 'default';
     this.maxQueueSize = options.maxQueueSize ?? 100;
     this.name = options.name ?? this.constructor.name;
+
+    // Set up subprocess-specific log file
+    // e.g., .continuum/sessions/user/shared/*/logs/hippocampus.log
+    const logsDir = join(process.cwd(), '.continuum', 'sessions', 'user', 'shared', persona.id, 'logs');
+    this.logFilePath = join(logsDir, `${this.name.toLowerCase()}.log`);
+
+    // Initialize log file
+    this.initLogFile();
   }
 
   /**
@@ -65,6 +78,9 @@ export abstract class PersonaSubprocess<T = void> {
     this.running = true;
     console.log(`▶️ [${this.name}] Started (priority: ${this.priority})`);
 
+    // Auto-log start event
+    this.log(`Started (priority: ${this.priority})`);
+
     // Start service loop (non-blocking)
     setImmediate(() => this.serviceLoop());
   }
@@ -77,6 +93,9 @@ export abstract class PersonaSubprocess<T = void> {
 
     this.running = false;
     console.log(`⏹️ [${this.name}] Stopping...`);
+
+    // Auto-log stop event
+    this.log('Stopped');
   }
 
   /**
@@ -200,6 +219,64 @@ export abstract class PersonaSubprocess<T = void> {
    */
   private async sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Log to subprocess-specific file
+   *
+   * Each subprocess gets its own log file (e.g., logs/hippocampus.log)
+   * to avoid flooding the main log.
+   *
+   * Automatically includes:
+   * - Timestamp (ISO 8601)
+   * - Persona identification ([@name])
+   * - Subprocess name
+   *
+   * Usage: this.log('Tick started')
+   * Output: [2025-11-22T10:30:45.123Z] [@Grok] [Hippocampus] Tick started
+   */
+  protected log(message: string): void {
+    const logLine = this.formatLogLine(message);
+
+    try {
+      appendFileSync(this.logFilePath, logLine, 'utf8');
+    } catch (error) {
+      // Fallback to console if file write fails (don't break subprocess)
+      console.error(`❌ [${this.name}] Failed to write to log file:`, error);
+      console.log(`[${this.name}] ${logLine.trim()}`);
+    }
+  }
+
+  /**
+   * Format a log line with consistent structure
+   *
+   * Format: [timestamp] [@persona] [subprocess] message
+   */
+  private formatLogLine(message: string): string {
+    const timestamp = new Date().toISOString();
+    const personaName = this.persona.entity.displayName;
+    return `[${timestamp}] [@${personaName}] [${this.name}] ${message}\n`;
+  }
+
+  /**
+   * Initialize subprocess log file
+   * Creates directory and log file with header
+   */
+  private initLogFile(): void {
+    try {
+      // Ensure logs directory exists
+      const logsDir = dirname(this.logFilePath);
+      if (!existsSync(logsDir)) {
+        mkdirSync(logsDir, { recursive: true });
+      }
+
+      // Write header using consistent formatting
+      const personaName = this.persona.entity.displayName;
+      const header = `\n=== [@${personaName}] ${this.name} Log (started: ${new Date().toISOString()}) ===\n`;
+      appendFileSync(this.logFilePath, header, 'utf8');
+    } catch (error) {
+      console.error(`❌ [${this.name}] Failed to initialize log file ${this.logFilePath}:`, error);
+    }
   }
 
   // ==================== Abstract Methods ====================
