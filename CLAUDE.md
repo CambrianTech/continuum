@@ -294,6 +294,96 @@ const dbPath = resolvePath(params.outputPath, 'DATASETS_DIR', PATHS.DATASETS);
 
 ---
 
+## 🧠 THEORETICAL FOUNDATION: NOT "OVER-ENGINEERING"
+
+**CRITICAL LESSON (2025-11-23)**: When code becomes complex and duplicative, the problem is NOT "over-engineering." The problem is **lack of theory** - failing to think through the fundamental relationships between components before coding.
+
+### The Memory Synthesis Mistake
+
+**What I did wrong**: Created separate code paths for chat inference vs. memory synthesis
+- Chat: `PersonaUser → generateResponse() → AIProviderDaemon`
+- Synthesis: `Adapter → AIProviderDaemon` (rebuilding same request manually)
+
+**Why this was insane**:
+- Copied `modelConfig` around instead of using persona's interface
+- Duplicated inference logic
+- Created two paths to same destination that could diverge
+
+**Root cause**: I was being **reactionary** (fixing immediate problem) instead of **theoretical** (thinking through component relationships).
+
+### The Correct Approach: Think First, Code Second
+
+**Before coding, ask:**
+1. **What is the theoretical relationship between these components?**
+   - Adapter needs LLM inference
+   - Persona already provides LLM inference
+   - Therefore: Adapter should call Persona's method, not duplicate it
+
+2. **What interface should this component expose?**
+   - Persona is the LLM interface
+   - Anything needing LLM (chat, synthesis, tasks) should call Persona
+   - Persona handles all provider/model/config complexity internally
+
+3. **Am I duplicating code or logic?**
+   - If yes, I'm missing an abstraction
+   - Find the common interface and use it
+
+### The Rule: Components as Interfaces
+
+**Correct pattern**:
+```typescript
+// Persona exposes inference capability
+class PersonaUser {
+  public async generateText(prompt: string): Promise<string> {
+    // All inference logic here
+  }
+}
+
+// Adapter uses persona's interface
+class Adapter {
+  constructor(private persona: PersonaUser) {}
+
+  async synthesize() {
+    return this.persona.generateText(prompt);  // Use interface, don't duplicate
+  }
+}
+```
+
+**Wrong pattern (what I did)**:
+```typescript
+// Adapter duplicates inference logic
+class Adapter {
+  constructor(modelConfig: ModelConfig) {  // ← Copying config
+    this.modelConfig = modelConfig;
+  }
+
+  async synthesize() {
+    return AIProviderDaemon.generateText({  // ← Duplicating inference
+      model: this.modelConfig.model,
+      // ... rebuilding what Persona already does
+    });
+  }
+}
+```
+
+### When to Refactor
+
+**Triggers that mean "lack of theory"**:
+- Copying configuration between components
+- Duplicating logic (even slightly different)
+- Two code paths to same destination
+- Can't explain WHY components are structured this way
+
+**Action**: STOP. Don't add more code. Think through the component relationships. Document the correct architecture. THEN code.
+
+### Lesson: "Over-engineering" is a Poor Term
+
+The problem is never "too much engineering." The problem is **missing the theoretical foundation** that would make the code simple and obvious.
+
+**Quote to remember**: "Over-engineering is a poor term for lack of theory."
+
+---
+
 ## 🔥 AGGRESSIVE REFACTORING PRINCIPLE
 
 **CRITICAL**: I've been trained to be timid about refactoring existing code - only touch what's directly related to the task, don't "rock the boat", avoid scope creep. **That's how codebases rot.**

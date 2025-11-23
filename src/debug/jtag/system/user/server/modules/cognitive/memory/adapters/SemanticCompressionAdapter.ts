@@ -16,11 +16,9 @@ import { MemoryConsolidationAdapter, type ConsolidationContext, type Consolidati
 import type { WorkingMemoryEntry } from '../../../cognition/memory/InMemoryCognitionStorage';
 import type { MemoryEntity } from '../../../MemoryTypes';
 import { MemoryType } from '../../../MemoryTypes';
-import { AIProviderDaemon } from '../../../../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest } from '../../../../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { generateUUID } from '../../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../../data/domains/CoreTypes';
-import type { ModelConfig } from '../../../../../../../commands/user/create/shared/UserCreateTypes';
+import type { PersonaUser } from '../../../../PersonaUser';
 
 /**
  * Group of related thoughts for synthesis
@@ -33,17 +31,12 @@ interface ThoughtGroup {
 }
 
 export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
-  private modelConfig: ModelConfig;
+  private persona: PersonaUser;
   private maxThoughtsPerGroup: number;
 
-  constructor(config?: { modelConfig?: ModelConfig; maxThoughtsPerGroup?: number }) {
+  constructor(persona: PersonaUser, config?: { maxThoughtsPerGroup?: number }) {
     super();
-    this.modelConfig = config?.modelConfig || {
-      provider: 'ollama',
-      model: 'llama3.2:3b',
-      temperature: 0.3,
-      maxTokens: 200
-    };
+    this.persona = persona;
     this.maxThoughtsPerGroup = config?.maxThoughtsPerGroup || 10;
   }
 
@@ -156,18 +149,13 @@ Extract the KEY PATTERN, LEARNING, or DECISION from these thoughts. Focus on:
 
 Respond with ONLY the compressed insight (1-3 sentences). Be specific and actionable.`;
 
-    const request: TextGenerationRequest = {
-      messages: [{
-        role: 'user',
-        content: synthesisPrompt
-      }],
-      model: this.modelConfig.model,
-      temperature: this.modelConfig.temperature ?? 0.3,  // Low temp for consistent synthesis
-      maxTokens: this.modelConfig.maxTokens ?? 200,
-      preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider']
-    };
-
-    const response = await AIProviderDaemon.generateText(request);
+    // Use persona's unified inference interface (same code path as chat)
+    const synthesizedText = await this.persona.generateText({
+      prompt: synthesisPrompt,
+      temperature: 0.3,   // Low temp for consistent synthesis
+      maxTokens: 200,     // Concise insights
+      context: 'memory-synthesis'
+    });
 
     // Create synthesized memory entity
     const memory: MemoryEntity = {
@@ -178,7 +166,7 @@ Respond with ONLY the compressed insight (1-3 sentences). Be specific and action
       personaId: context.personaId,
       sessionId: context.sessionId,
       type: this.inferMemoryType(group),
-      content: response.text.trim(),  // ← Synthesized insight
+      content: synthesizedText.trim(),  // ← Synthesized insight
       context: {
         domain: group.domain,
         contextId: group.contextId,

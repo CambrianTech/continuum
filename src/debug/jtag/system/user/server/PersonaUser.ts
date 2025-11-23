@@ -711,6 +711,66 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Generate text using this persona's LLM
+   *
+   * This is THE interface for all LLM inference:
+   * - Chat responses (via PersonaResponseGenerator)
+   * - Memory synthesis (via Hippocampus adapters)
+   * - Task generation (future)
+   * - Self-reflection (future)
+   *
+   * All inference goes through here. Uses same provider/model/timeout as chat.
+   */
+  public async generateText(request: {
+    prompt: string;
+    temperature?: number;
+    maxTokens?: number;
+    systemPrompt?: string;
+    context?: string;  // For logging/metrics (e.g., 'memory-synthesis', 'task-generation')
+  }): Promise<string> {
+    try {
+      const messages: { role: 'system' | 'user'; content: string }[] = [];
+
+      if (request.systemPrompt) {
+        messages.push({
+          role: 'system',
+          content: request.systemPrompt
+        });
+      }
+
+      messages.push({
+        role: 'user',
+        content: request.prompt
+      });
+
+      const genRequest: TextGenerationRequest = {
+        messages,
+        model: this.modelConfig.model || 'llama3.2:3b',
+        temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
+        maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
+        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        intelligenceLevel: this.entity.intelligenceLevel
+      };
+
+      // Use same 180s timeout as chat responses
+      const GENERATION_TIMEOUT_MS = 180000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`AI generation timeout after 180 seconds (context: ${request.context || 'unknown'})`)), GENERATION_TIMEOUT_MS);
+      });
+
+      const response = await Promise.race([
+        AIProviderDaemon.generateText(genRequest),
+        timeoutPromise
+      ]);
+
+      return response.text;
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Text generation failed (context=${request.context || 'unknown'}): ${error}`);
+      throw error;
+    }
+  }
+
+  /**
    * Handle room update event
    * Updates membership tracking when this persona is added/removed from a room
    */

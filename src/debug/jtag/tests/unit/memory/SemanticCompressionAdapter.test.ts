@@ -12,7 +12,7 @@ import { MemoryType } from '../../../system/user/server/modules/MemoryTypes';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import { ISOString } from '../../../data/domains/CoreTypes';
 
-// Mock AIProviderDaemon
+// Mock AIProviderDaemon (still needed by old tests that import it)
 vi.mock('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon', () => ({
   AIProviderDaemon: {
     generateText: vi.fn()
@@ -22,15 +22,21 @@ vi.mock('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon', () => ({
 describe('SemanticCompressionAdapter', () => {
   let adapter: SemanticCompressionAdapter;
   let mockContext: ConsolidationContext;
+  let mockPersona: any;
 
   beforeEach(() => {
-    adapter = new SemanticCompressionAdapter({
+    // Create mock persona with generateText method
+    mockPersona = {
+      generateText: vi.fn().mockResolvedValue('Mocked synthesis result'),
       modelConfig: {
         provider: 'ollama',
         model: 'llama3.2:3b',
         temperature: 0.3,
         maxTokens: 200
-      },
+      }
+    };
+
+    adapter = new SemanticCompressionAdapter(mockPersona, {
       maxThoughtsPerGroup: 10
     });
 
@@ -67,12 +73,8 @@ describe('SemanticCompressionAdapter', () => {
     });
 
     it('should group thoughts by contextId and domain', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      // Mock LLM response
-      (AIProviderDaemon.generateText as any).mockResolvedValue({
-        text: 'User prefers concrete examples over abstract explanations'
-      });
+      // Mock persona.generateText response
+      mockPersona.generateText.mockResolvedValue('User prefers concrete examples over abstract explanations');
 
       const thoughts: WorkingMemoryEntry[] = [
         {
@@ -121,12 +123,10 @@ describe('SemanticCompressionAdapter', () => {
     });
 
     it('should create multiple groups for different contexts/domains', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      // Mock LLM to return different synthesis for each group
-      (AIProviderDaemon.generateText as any)
-        .mockResolvedValueOnce({ text: 'Teaching insight' })
-        .mockResolvedValueOnce({ text: 'Coding insight' });
+      // Mock persona.generateText to return different synthesis for each group
+      mockPersona.generateText
+        .mockResolvedValueOnce('Teaching insight')
+        .mockResolvedValueOnce('Coding insight');
 
       const thoughts: WorkingMemoryEntry[] = [
         // Group 1: room-123 + teaching
@@ -179,11 +179,7 @@ describe('SemanticCompressionAdapter', () => {
     });
 
     it('should calculate average importance for groups', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      (AIProviderDaemon.generateText as any).mockResolvedValue({
-        text: 'Synthesized insight'
-      });
+      mockPersona.generateText.mockResolvedValue('Synthesized insight');
 
       const thoughts: WorkingMemoryEntry[] = [
         {
@@ -215,11 +211,7 @@ describe('SemanticCompressionAdapter', () => {
     });
 
     it('should infer memory type from dominant thought type', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      (AIProviderDaemon.generateText as any).mockResolvedValue({
-        text: 'Decision insight'
-      });
+      mockPersona.generateText.mockResolvedValue('Decision insight');
 
       const thoughts: WorkingMemoryEntry[] = [
         {
@@ -261,10 +253,8 @@ describe('SemanticCompressionAdapter', () => {
     });
 
     it('should create fallback memory when synthesis fails', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      // Mock LLM to throw error
-      (AIProviderDaemon.generateText as any).mockRejectedValue(
+      // Mock persona.generateText to throw error
+      mockPersona.generateText.mockRejectedValue(
         new Error('LLM service unavailable')
       );
 
@@ -303,12 +293,8 @@ describe('SemanticCompressionAdapter', () => {
       expect(result.memories[0].tags).toContain('fallback');
     });
 
-    it('should pass correct synthesis prompt to LLM', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      (AIProviderDaemon.generateText as any).mockResolvedValue({
-        text: 'Synthesized insight'
-      });
+    it('should pass correct synthesis prompt to persona.generateText', async () => {
+      mockPersona.generateText.mockResolvedValue('Synthesized insight');
 
       const thoughts: WorkingMemoryEntry[] = [
         {
@@ -325,32 +311,22 @@ describe('SemanticCompressionAdapter', () => {
 
       await adapter.consolidate(thoughts, mockContext);
 
-      // Verify LLM was called with correct parameters
-      expect(AIProviderDaemon.generateText).toHaveBeenCalledWith({
-        messages: expect.arrayContaining([
-          expect.objectContaining({
-            role: 'user',
-            content: expect.stringContaining('You are TestPersona')
-          })
-        ]),
-        model: 'llama3.2:3b',
+      // Verify persona.generateText was called with correct parameters
+      expect(mockPersona.generateText).toHaveBeenCalledWith({
+        prompt: expect.stringContaining('You are TestPersona'),
         temperature: 0.3,
         maxTokens: 200,
-        preferredProvider: 'ollama'
+        context: 'memory-synthesis'
       });
 
       // Verify prompt includes thought content
-      const callArgs = (AIProviderDaemon.generateText as any).mock.calls[0][0];
-      expect(callArgs.messages[0].content).toContain('Test thought');
-      expect(callArgs.messages[0].content).toContain('Extract the KEY PATTERN');
+      const callArgs = mockPersona.generateText.mock.calls[0][0];
+      expect(callArgs.prompt).toContain('Test thought');
+      expect(callArgs.prompt).toContain('Extract the KEY PATTERN');
     });
 
     it('should track original thought IDs in synthesizedFrom', async () => {
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      (AIProviderDaemon.generateText as any).mockResolvedValue({
-        text: 'Synthesized insight'
-      });
+      mockPersona.generateText.mockResolvedValue('Synthesized insight');
 
       const thoughtId1 = generateUUID();
       const thoughtId2 = generateUUID();

@@ -100,13 +100,13 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     this.adaptiveThreshold = new AdaptiveConsolidationThreshold();
 
     // Initialize consolidation adapter (default: semantic compression)
-    // Use persona's own modelConfig for synthesizing their own memories (single source of truth)
-    this.consolidationAdapter = adapter || new SemanticCompressionAdapter({
-      modelConfig: persona.modelConfig,  // Pass entire config - same model/provider as inference
-      maxThoughtsPerGroup: 10
-    });
+    // Pass persona directly - adapter uses persona.generateText() for synthesis (same code path as chat)
+    this.consolidationAdapter = adapter || new SemanticCompressionAdapter(
+      persona,
+      { maxThoughtsPerGroup: 10 }
+    );
 
-    this.log(`Initialized with ${this.consolidationAdapter.getName()} adapter (model: ${persona.modelConfig.model}, provider: ${persona.modelConfig.provider})`);
+    this.log(`Initialized with ${this.consolidationAdapter.getName()} adapter`);
 
     // Initialize database asynchronously (non-blocking)
     this.initializePromise = this.initializeDatabase();
