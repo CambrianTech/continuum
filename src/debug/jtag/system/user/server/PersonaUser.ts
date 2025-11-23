@@ -122,7 +122,7 @@ export class PersonaUser extends AIUser {
   private worker: PersonaWorkerThread | null = null;
 
   // AI model configuration (provider, model, temperature, etc.)
-  private modelConfig: ModelConfig;
+  public modelConfig: ModelConfig;
 
   // Media configuration (opt-in for images/audio/video)
   public mediaConfig: PersonaMediaConfig;

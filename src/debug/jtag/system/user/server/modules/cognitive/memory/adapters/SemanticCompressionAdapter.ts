@@ -20,6 +20,7 @@ import { AIProviderDaemon } from '../../../../../../../daemons/ai-provider-daemo
 import type { TextGenerationRequest } from '../../../../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { generateUUID } from '../../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../../data/domains/CoreTypes';
+import type { ModelConfig } from '../../../../../../../commands/user/create/shared/UserCreateTypes';
 
 /**
  * Group of related thoughts for synthesis
@@ -32,12 +33,17 @@ interface ThoughtGroup {
 }
 
 export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
-  private synthesisModel: string;
+  private modelConfig: ModelConfig;
   private maxThoughtsPerGroup: number;
 
-  constructor(config?: { synthesisModel?: string; maxThoughtsPerGroup?: number }) {
+  constructor(config?: { modelConfig?: ModelConfig; maxThoughtsPerGroup?: number }) {
     super();
-    this.synthesisModel = config?.synthesisModel || 'llama3.2:3b';
+    this.modelConfig = config?.modelConfig || {
+      provider: 'ollama',
+      model: 'llama3.2:3b',
+      temperature: 0.3,
+      maxTokens: 200
+    };
     this.maxThoughtsPerGroup = config?.maxThoughtsPerGroup || 10;
   }
 
@@ -155,10 +161,10 @@ Respond with ONLY the compressed insight (1-3 sentences). Be specific and action
         role: 'user',
         content: synthesisPrompt
       }],
-      model: this.synthesisModel,
-      temperature: 0.3,  // Low temp for consistent synthesis
-      maxTokens: 200,
-      preferredProvider: 'ollama'
+      model: this.modelConfig.model,
+      temperature: this.modelConfig.temperature ?? 0.3,  // Low temp for consistent synthesis
+      maxTokens: this.modelConfig.maxTokens ?? 200,
+      preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider']
     };
 
     const response = await AIProviderDaemon.generateText(request);

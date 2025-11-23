@@ -25,7 +25,12 @@ describe('SemanticCompressionAdapter', () => {
 
   beforeEach(() => {
     adapter = new SemanticCompressionAdapter({
-      synthesisModel: 'llama3.2:3b',
+      modelConfig: {
+        provider: 'ollama',
+        model: 'llama3.2:3b',
+        temperature: 0.3,
+        maxTokens: 200
+      },
       maxThoughtsPerGroup: 10
     });
 
