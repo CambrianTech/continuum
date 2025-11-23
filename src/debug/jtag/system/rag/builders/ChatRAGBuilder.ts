@@ -407,16 +407,83 @@ ${toolRegistry.generateToolDocumentation()}`;
 
   /**
    * Load persona's private memories for this room
-   * TODO: Implement persona memory storage (persona_memory collection)
+   * Retrieves consolidated long-term memories from Hippocampus
    */
   private async loadPrivateMemories(
-    _personaId: UUID,
-    _roomId: UUID,
-    _maxMemories: number
+    personaId: UUID,
+    roomId: UUID,
+    maxMemories: number
   ): Promise<PersonaMemory[]> {
-    // TODO: Query persona_memory collection when implemented
-    // For now, return empty array
-    return [];
+    try {
+      // Get UserDaemon singleton to access PersonaUser
+      const { UserDaemonServer } = await import('../../../daemons/user-daemon/server/UserDaemonServer');
+      const userDaemon = UserDaemonServer.getInstance();
+
+      if (!userDaemon) {
+        console.warn('⚠️ ChatRAGBuilder: UserDaemon not available, skipping memories');
+        return [];
+      }
+
+      // Get PersonaUser instance
+      const personaUser = userDaemon.getPersonaUser(personaId);
+      if (!personaUser) {
+        // This is fine - not all users are PersonaUsers (humans, agents)
+        return [];
+      }
+
+      // Access Hippocampus through PersonaUser
+      // Type assertion needed because BaseUser doesn't expose hippocampus
+      const persona = personaUser as any;
+      if (!persona.hippocampus) {
+        console.warn(`⚠️ ChatRAGBuilder: PersonaUser ${personaId.slice(0, 8)} has no Hippocampus`);
+        return [];
+      }
+
+      // Recall recent important memories
+      // Filter by room context and importance threshold
+      const memories = await persona.hippocampus.recall({
+        minImportance: 0.6,  // Only recall important memories
+        limit: maxMemories,
+        since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()  // Last 7 days
+      });
+
+      if (memories.length === 0) {
+        return [];
+      }
+
+      console.log(`📚 ChatRAGBuilder: Loaded ${memories.length} consolidated memories for persona ${personaId.slice(0, 8)}`);
+
+      // Convert MemoryEntity → PersonaMemory
+      return memories.map((mem: any) => ({
+        id: mem.id,
+        type: this.mapMemoryTypeToPersonaMemoryType(mem.type),
+        content: mem.content,
+        timestamp: new Date(mem.timestamp),
+        relevanceScore: mem.importance  // Use importance as relevance score
+      }));
+    } catch (error) {
+      console.error(`❌ ChatRAGBuilder: Error loading private memories:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Map MemoryEntity.type → PersonaMemory.type
+   */
+  private mapMemoryTypeToPersonaMemoryType(
+    memoryType: string
+  ): 'observation' | 'pattern' | 'reflection' | 'preference' | 'goal' {
+    switch (memoryType) {
+      case 'observation':
+      case 'pattern':
+      case 'reflection':
+      case 'preference':
+      case 'goal':
+        return memoryType;
+      default:
+        // Default to observation for unknown types
+        return 'observation';
+    }
   }
 
   /**

@@ -31,6 +31,9 @@ import type {
 } from '../../MemoryTypes';
 import { MemoryType as MemoryTypeEnum } from '../../MemoryTypes';
 import { AdaptiveConsolidationThreshold } from './AdaptiveConsolidationThreshold';
+import { MemoryConsolidationAdapter } from './adapters/MemoryConsolidationAdapter';
+import { SemanticCompressionAdapter } from './adapters/SemanticCompressionAdapter';
+import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
 
 /**
  * Snapshot of persona state at tick time
@@ -73,11 +76,14 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   // Adaptive consolidation threshold (sigmoid-based, activity-responsive)
   private adaptiveThreshold: AdaptiveConsolidationThreshold;
 
+  // Memory consolidation adapter (pluggable strategy for consolidation)
+  private consolidationAdapter: MemoryConsolidationAdapter;
+
   // Metrics
   private metrics: ConsolidationMetrics;
   private initializePromise: Promise<void> | null = null;
 
-  constructor(persona: PersonaUser) {
+  constructor(persona: PersonaUser, adapter?: MemoryConsolidationAdapter) {
     super(persona, {
       priority: 'low', // Low priority - don't interfere with response times
       name: 'Hippocampus'
@@ -92,6 +98,15 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
     // Initialize adaptive threshold (sigmoid-based, activity-responsive)
     this.adaptiveThreshold = new AdaptiveConsolidationThreshold();
+
+    // Initialize consolidation adapter (default: semantic compression)
+    // Use persona's own model for synthesizing their own memories
+    this.consolidationAdapter = adapter || new SemanticCompressionAdapter({
+      synthesisModel: persona.modelConfig.model,  // Each persona uses their own LLM
+      maxThoughtsPerGroup: 10
+    });
+
+    this.log(`Initialized with ${this.consolidationAdapter.getName()} adapter (model: ${persona.modelConfig.model})`);
 
     // Initialize database asynchronously (non-blocking)
     this.initializePromise = this.initializeDatabase();
@@ -351,38 +366,41 @@ export class Hippocampus extends PersonaContinuousSubprocess {
                `timeSince=${stats.minutesSinceConsolidation.toFixed(1)}min, ` +
                `candidates=${thoughts.length}`);
 
-      // Convert WorkingMemoryEntry → MemoryEntity and write to LTM
+      // Use consolidation adapter to transform thoughts → memories
+      const consolidationResult = await this.consolidationAdapter.consolidate(thoughts, {
+        personaId: this.persona.id,
+        personaName: this.persona.entity.displayName,
+        sessionId: this.persona.sessionId,
+        timestamp: new Date()
+      });
+
+      const memories = consolidationResult.memories;
+      const fallbackCount = memories.filter(m => m.source === 'working-memory-fallback').length;
+      const synthesisCount = consolidationResult.metadata?.synthesisCount ?? 0;
+
+      this.log(`📝 Adapter produced ${memories.length} memories (synthesis=${this.consolidationAdapter.doesSynthesis()}, ` +
+               `successful=${synthesisCount}, fallback=${fallbackCount})`);
+
+      // Log synthesis failures explicitly for visibility
+      if (fallbackCount > 0) {
+        this.log(`⚠️ Synthesis fallback: ${fallbackCount}/${memories.length} memories used fallback (LLM synthesis failed)`);
+
+        // Log specific error details if available
+        if (consolidationResult.metadata?.errors) {
+          const errors = consolidationResult.metadata.errors as Array<{ domain: string; error: string }>;
+          errors.forEach(err => {
+            this.log(`   ❌ Domain [${err.domain}]: ${err.error}`);
+          });
+        }
+      }
+
+      // Write memories to LTM database
       // Try each insert individually so one failure doesn't kill the whole batch
       const consolidatedIds: string[] = [];
       let failedCount = 0;
 
-      for (const thought of thoughts) {
+      for (const memory of memories) {
         try {
-          const memory: MemoryEntity = {
-            id: generateUUID(),
-            createdAt: ISOString(new Date().toISOString()),
-            updatedAt: ISOString(new Date().toISOString()),
-            version: 0,
-            personaId: this.persona.id,
-            sessionId: this.persona.sessionId,
-            type: this.mapThoughtTypeToMemoryType(thought.thoughtType),
-            content: thought.thoughtContent,
-            context: {
-              domain: thought.domain,
-              contextId: thought.contextId,
-              thoughtType: thought.thoughtType,
-              shareable: thought.shareable
-            },
-            timestamp: ISOString(new Date(thought.createdAt).toISOString()),
-            consolidatedAt: ISOString(new Date().toISOString()),
-            importance: thought.importance,
-            accessCount: 0,
-            relatedTo: [],
-            tags: thought.domain ? [thought.domain] : [],
-            source: 'working-memory'
-          };
-
-          // Write to LTM
           const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>('data/create', {
             dbHandle: this.memoryDbHandle,
             collection: 'memories',
@@ -390,15 +408,29 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           } as any);
 
           if (result.success) {
-            consolidatedIds.push(thought.id);
+            // Track original thought IDs for removal from working memory
+            // For raw adapter: 1 memory = 1 thought
+            // For synthesis adapter: 1 memory = N thoughts (track via context)
+            if (memory.context?.synthesizedFrom) {
+              consolidatedIds.push(...(memory.context.synthesizedFrom as string[]));
+            } else {
+              // Raw adapter: find matching thought by timestamp/content
+              const matchingThought = thoughts.find(t =>
+                t.thoughtContent === memory.content ||
+                Math.abs(new Date(t.createdAt).getTime() - new Date(memory.timestamp).getTime()) < 1000
+              );
+              if (matchingThought) {
+                consolidatedIds.push(matchingThought.id);
+              }
+            }
           } else {
             failedCount++;
-            this.log(`ERROR: Failed to consolidate thought ${thought.id}: ${result.error}`);
+            this.log(`ERROR: Failed to store memory ${memory.id}: ${result.error}`);
           }
         } catch (error) {
           failedCount++;
-          this.log(`ERROR: Failed to consolidate thought ${thought.id}: ${error}`);
-          console.error(`❌ [Hippocampus] Insert failed for thought ${thought.id}:`, error);
+          this.log(`ERROR: Failed to store memory ${memory.id}: ${error}`);
+          console.error(`❌ [Hippocampus] Insert failed for memory ${memory.id}:`, error);
         }
       }
 
