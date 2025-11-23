@@ -105,7 +105,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
-  private createdTables = new Set<string>(); // Track created tables
   private inTransaction: boolean = false; // Track transaction state to prevent nesting
 
   /**
@@ -245,11 +244,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
     const { initializeEntityRegistry } = await import('./EntityRegistry');
     initializeEntityRegistry();
 
-    console.log('🏗️ SQLite: Creating entity tables...');
-    // Create entity tables for all registered entities
-    for (const [collectionName] of ENTITY_REGISTRY.entries()) {
-      await this.ensureEntityTable(collectionName);
-    }
+    console.log('✅ SQLite: Entity registry initialized (tables will be created lazily on first use)');
 
     // Verify integrity after initialization
     console.log('🔍 SQLite: Verifying database integrity...');
@@ -358,54 +353,70 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   }
 
   /**
-   * Create table for entity if it doesn't exist
+   * Ensure schema exists for collection (orchestrated by DataDaemon)
+   *
+   * This is the ONLY place where tables are created.
+   * Handles both registered entities (with metadata) and unregistered entities (simple table).
+   * Adapter translates collection → table name and creates snake_case columns.
    */
-  private async ensureEntityTable(collectionName: string): Promise<void> {
-    const tableName = SqlNamingConverter.toTableName(collectionName);
+  async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+    try {
+      const tableName = SqlNamingConverter.toTableName(collectionName);
+      const tableExists = await this.tableExists(tableName);
 
-    if (this.createdTables.has(tableName)) {
-      return; // Already processed this session
-    }
+      const entityClass = ENTITY_REGISTRY.get(collectionName);
 
-    const entityClass = ENTITY_REGISTRY.get(collectionName);
-    if (!entityClass || !hasFieldMetadata(entityClass)) {
-      console.warn(`⚠️ No entity metadata found for collection: ${collectionName}`);
-      return;
-    }
+      if (!entityClass || !hasFieldMetadata(entityClass)) {
+        // Unregistered collection - handle simple entity table
+        if (tableExists) {
+          // Migrate simple entity table: add missing snake_case columns if old table has camelCase
+          console.log(`🔄 Migrating simple entity table: ${collectionName} -> ${tableName}`);
+          await this.migrateSimpleEntityTable(tableName);
+        }
+        // Note: If table doesn't exist, create() will handle it via createSimpleEntityTable()
+        return { success: true, data: true };
+      }
 
-    console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
+      // Registered entity - handle full entity table with metadata
+      console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
 
-    // Check if table exists
-    const tableExists = await this.tableExists(tableName);
+      if (tableExists) {
+        // Migrate schema: add missing columns
+        await this.migrateTableSchema(collectionName, tableName, entityClass);
+      } else {
+        // Create new table
+        const createTableSql = this.generateCreateTableSql(
+          collectionName,
+          entityClass,
+          SqlNamingConverter.toTableName,
+          SqlNamingConverter.toSnakeCase
+        );
+        await this.runSql(createTableSql);
+        console.log(`✅ Table created: ${tableName}`);
+      }
 
-    if (tableExists) {
-      // Migrate schema: add missing columns
-      await this.migrateTableSchema(collectionName, tableName, entityClass);
-    } else {
-      // Create new table
-      const createTableSql = this.generateCreateTableSql(
+      // Create indexes (will skip if they already exist due to IF NOT EXISTS)
+      const indexSqls = this.generateCreateIndexSql(
         collectionName,
         entityClass,
         SqlNamingConverter.toTableName,
         SqlNamingConverter.toSnakeCase
       );
-      await this.runSql(createTableSql);
-      console.log(`✅ Table created: ${tableName}`);
-    }
+      for (const indexSql of indexSqls) {
+        await this.runSql(indexSql);
+      }
 
-    // Create indexes (will skip if they already exist due to IF NOT EXISTS)
-    const indexSqls = this.generateCreateIndexSql(
-      collectionName,
-      entityClass,
-      SqlNamingConverter.toTableName,
-      SqlNamingConverter.toSnakeCase
-    );
-    for (const indexSql of indexSqls) {
-      await this.runSql(indexSql);
-    }
+      console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
 
-    this.createdTables.add(tableName);
-    console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
+      return { success: true, data: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ SQLite: Failed to ensure schema for ${collectionName}:`, errorMessage);
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
   }
 
   /**
@@ -477,6 +488,53 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
       console.log(`✅ Migrated ${tableName}: added ${missingColumns.length} new columns`);
     } else {
       console.log(`✅ Schema up-to-date: ${tableName}`);
+    }
+  }
+
+  /**
+   * Migrate simple entity table by ensuring required snake_case columns exist
+   * Handles old tables created with camelCase columns (createdAt, updatedAt)
+   * by adding the proper snake_case columns (created_at, updated_at)
+   */
+  private async migrateSimpleEntityTable(tableName: string): Promise<void> {
+    // Get existing columns
+    const existingColumns = await this.getTableColumns(tableName);
+
+    // Required columns for simple entity table (snake_case)
+    const requiredColumns = [
+      { name: 'id', type: 'TEXT', nullable: false },
+      { name: 'data', type: 'TEXT', nullable: false },
+      { name: 'created_at', type: 'TEXT', nullable: true },
+      { name: 'updated_at', type: 'TEXT', nullable: true },
+      { name: 'version', type: 'INTEGER', nullable: true }
+    ];
+
+    const missingColumns: string[] = [];
+
+    for (const column of requiredColumns) {
+      if (!existingColumns.has(column.name)) {
+        missingColumns.push(column.name);
+
+        // Generate ALTER TABLE statement
+        let alterSql = `ALTER TABLE ${tableName} ADD COLUMN ${column.name} ${column.type}`;
+
+        if (!column.nullable) {
+          // For NOT NULL columns, provide default
+          alterSql += ` DEFAULT ${this.getDefaultForType(column.type)} NOT NULL`;
+        } else {
+          // For nullable columns, allow NULL
+          alterSql += ' DEFAULT NULL';
+        }
+
+        console.log(`   🔄 Adding missing column: ${column.name} (${column.type})`);
+        await this.runSql(alterSql);
+      }
+    }
+
+    if (missingColumns.length > 0) {
+      console.log(`✅ Migrated simple entity table ${tableName}: added ${missingColumns.length} columns (${missingColumns.join(', ')})`);
+    } else {
+      console.log(`✅ Simple entity table ${tableName} schema is up-to-date`);
     }
   }
 
@@ -705,10 +763,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
-
-      // Ensure entity table exists
-      await this.ensureEntityTable(record.collection);
-
       // Execute create operation in transaction for atomic consistency
       const result = await this.withTransaction(async () => {
         const tableName = SqlNamingConverter.toTableName(record.collection);
@@ -800,10 +854,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   private async createSimpleEntityTable(collectionName: string): Promise<void> {
     const tableName = SqlNamingConverter.toTableName(collectionName);
 
-    if (this.createdTables.has(tableName)) {
-      return; // Already created
-    }
-
     console.log(`🏗️ Creating simple entity table: ${collectionName} -> ${tableName}`);
 
     // Create simple entity table with basic structure + JSON data column
@@ -823,7 +873,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
     await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_created_at ON ${tableName}(created_at)`);
     await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_updated_at ON ${tableName}(updated_at)`);
 
-    this.createdTables.add(tableName);
     console.log(`✅ Simple entity table created: ${tableName}`);
   }
 
@@ -892,7 +941,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
-
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
@@ -1582,7 +1630,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
     try {
-
       // Execute delete operation in transaction for atomic consistency
       const deletedCount = await this.withTransaction(async () => {
         // Delete from entity-specific table (not _data table)

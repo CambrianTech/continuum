@@ -30,6 +30,7 @@ import type {
   MemoryType
 } from '../../MemoryTypes';
 import { MemoryType as MemoryTypeEnum } from '../../MemoryTypes';
+import { AdaptiveConsolidationThreshold } from './AdaptiveConsolidationThreshold';
 
 /**
  * Snapshot of persona state at tick time
@@ -68,7 +69,9 @@ interface ConsolidationMetrics {
 export class Hippocampus extends PersonaContinuousSubprocess {
   // Long-Term Memory (LTM) - Database handle
   private memoryDbHandle: DbHandle | null = null;
-  private readonly CONSOLIDATION_THRESHOLD = 0.6; // Importance threshold for LTM
+
+  // Adaptive consolidation threshold (sigmoid-based, activity-responsive)
+  private adaptiveThreshold: AdaptiveConsolidationThreshold;
 
   // Metrics
   private metrics: ConsolidationMetrics;
@@ -86,6 +89,9 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       consolidationCount: 0,
       stmEvictions: 0
     };
+
+    // Initialize adaptive threshold (sigmoid-based, activity-responsive)
+    this.adaptiveThreshold = new AdaptiveConsolidationThreshold();
 
     // Initialize database asynchronously (non-blocking)
     this.initializePromise = this.initializeDatabase();
@@ -173,80 +179,30 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   }
 
   /**
-   * Create database schema for memories
+   * Ensure schema exists (adapter handles table creation)
    *
-   * CRITICAL FIX: SqliteStorageAdapter creates ALL entity tables from ENTITY_REGISTRY
-   * for every database opened. This pollutes persona memory databases with chat_messages,
-   * users, rooms, etc. We fix this by:
-   * 1. Opening database directly with better-sqlite3
-   * 2. Dropping all unwanted tables
-   * 3. Creating ONLY the memories table
+   * Note: No direct table creation. The adapter (SqliteStorageAdapter) creates
+   * simple entity table with: id, data (JSON), created_at, updated_at, version
+   * All field names are snake_case - adapter responsibility, not ours.
    */
   private async ensureSchema(): Promise<void> {
     if (!this.memoryDbHandle) return;
 
     try {
-      this.log('Creating LTM schema (memories table only)...');
+      this.log('Ensuring LTM schema...');
 
-      // Import better-sqlite3 directly for schema management
-      const Database = require('better-sqlite3');
-      const personaDirName = this.getPersonaDirName();
-      const dbPath = `.continuum/personas/${personaDirName}/memory/longterm.db`;
+      // Trigger table creation - adapter will handle it automatically
+      // Simple entity table: id, data (JSON), created_at, updated_at, version
+      await Commands.execute('data/list', {
+        dbHandle: this.memoryDbHandle,
+        collection: 'memories',
+        limit: 1
+      } as any);
 
-      const db = new Database(dbPath);
-
-      // Get list of all tables (excluding SQLite internal tables)
-      const tables = db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-      ).all() as Array<{ name: string }>;
-
-      // Drop all tables except memories
-      for (const table of tables) {
-        if (table.name !== 'memories') {
-          this.log(`Dropping unwanted table: ${table.name}`);
-          db.exec(`DROP TABLE IF EXISTS ${table.name}`);
-        }
-      }
-
-      // Create memories table with proper schema
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS memories (
-          id TEXT PRIMARY KEY,
-          createdAt TEXT NOT NULL,
-          updatedAt TEXT NOT NULL,
-          version INTEGER NOT NULL DEFAULT 0,
-          personaId TEXT NOT NULL,
-          sessionId TEXT NOT NULL,
-          type TEXT NOT NULL,
-          content TEXT NOT NULL,
-          context TEXT NOT NULL,
-          timestamp TEXT NOT NULL,
-          consolidatedAt TEXT,
-          lastAccessedAt TEXT,
-          importance REAL NOT NULL,
-          accessCount INTEGER NOT NULL DEFAULT 0,
-          relatedTo TEXT NOT NULL,
-          tags TEXT NOT NULL,
-          source TEXT NOT NULL,
-          embedding TEXT
-        )
-      `);
-
-      // Create indexes for common queries
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_memories_persona ON memories(personaId);
-        CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(sessionId);
-        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-        CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC);
-        CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC);
-      `);
-
-      db.close();
-
-      this.log('✅ LTM schema ready (memories table only)');
+      this.log('✅ LTM schema ready (adapter created table with snake_case columns)');
     } catch (error) {
-      this.log(`ERROR: Failed to create schema: ${error}`);
-      console.error(`❌ [Hippocampus] Failed to create schema:`, error);
+      this.log(`ERROR: Failed to ensure schema: ${error}`);
+      console.error(`❌ [Hippocampus] Failed to ensure schema:`, error);
     }
   }
 
@@ -361,6 +317,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
   /**
    * Snoop on WorkingMemory and consolidate important thoughts to LTM
+   * Uses adaptive threshold (sigmoid + exponential decay)
    */
   private async snoopAndConsolidate(): Promise<void> {
     if (!this.memoryDbHandle || !this.persona.sessionId) {
@@ -368,58 +325,93 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     }
 
     try {
-      // Recall important thoughts from working memory
+      // 1. Calculate recent activity level (messages/minute)
+      const messagesPerMinute = await this.calculateActivityLevel();
+
+      // 2. Update adaptive threshold (sigmoid + time decay)
+      this.adaptiveThreshold.updateThreshold(messagesPerMinute);
+      const currentThreshold = this.adaptiveThreshold.getThreshold();
+
+      // 3. Recall thoughts above adaptive threshold
       const thoughts = await this.persona.workingMemory.recall({
-        minImportance: this.CONSOLIDATION_THRESHOLD, // 0.6
+        minImportance: currentThreshold,  // ← ADAPTIVE!
         limit: 50,
-        includePrivate: true // Consolidate all thoughts
+        includePrivate: true
       });
 
       if (thoughts.length === 0) {
         return;
       }
 
+      // Log consolidation attempt
+      const stats = this.adaptiveThreshold.getStats();
+      this.log(`🧠 Consolidating: threshold=${currentThreshold.toFixed(2)}, ` +
+               `activity=${messagesPerMinute.toFixed(1)} msg/min, ` +
+               `decay=${stats.decayMultiplier.toFixed(2)}, ` +
+               `timeSince=${stats.minutesSinceConsolidation.toFixed(1)}min, ` +
+               `candidates=${thoughts.length}`);
+
       // Convert WorkingMemoryEntry → MemoryEntity and write to LTM
+      // Try each insert individually so one failure doesn't kill the whole batch
       const consolidatedIds: string[] = [];
+      let failedCount = 0;
+
       for (const thought of thoughts) {
-        const memory: MemoryEntity = {
-          id: generateUUID(),
-          createdAt: ISOString(new Date().toISOString()),
-          updatedAt: ISOString(new Date().toISOString()),
-          version: 0,
-          personaId: this.persona.id,
-          sessionId: this.persona.sessionId,
-          type: this.mapThoughtTypeToMemoryType(thought.thoughtType),
-          content: thought.thoughtContent,
-          context: {
-            domain: thought.domain,
-            contextId: thought.contextId,
-            thoughtType: thought.thoughtType,
-            shareable: thought.shareable
-          },
-          timestamp: ISOString(new Date(thought.createdAt).toISOString()),
-          consolidatedAt: ISOString(new Date().toISOString()),
-          importance: thought.importance,
-          accessCount: 0,
-          relatedTo: [],
-          tags: thought.domain ? [thought.domain] : [],
-          source: 'working-memory'
-        };
+        try {
+          const memory: MemoryEntity = {
+            id: generateUUID(),
+            createdAt: ISOString(new Date().toISOString()),
+            updatedAt: ISOString(new Date().toISOString()),
+            version: 0,
+            personaId: this.persona.id,
+            sessionId: this.persona.sessionId,
+            type: this.mapThoughtTypeToMemoryType(thought.thoughtType),
+            content: thought.thoughtContent,
+            context: {
+              domain: thought.domain,
+              contextId: thought.contextId,
+              thoughtType: thought.thoughtType,
+              shareable: thought.shareable
+            },
+            timestamp: ISOString(new Date(thought.createdAt).toISOString()),
+            consolidatedAt: ISOString(new Date().toISOString()),
+            importance: thought.importance,
+            accessCount: 0,
+            relatedTo: [],
+            tags: thought.domain ? [thought.domain] : [],
+            source: 'working-memory'
+          };
 
-        // Write to LTM
-        await Commands.execute<DataCreateParams, DataCreateResult<any>>('data/create', {
-          dbHandle: this.memoryDbHandle,
-          collection: 'memories',
-          data: memory
-        } as any);
+          // Write to LTM
+          const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>('data/create', {
+            dbHandle: this.memoryDbHandle,
+            collection: 'memories',
+            data: memory
+          } as any);
 
-        consolidatedIds.push(thought.id);
+          if (result.success) {
+            consolidatedIds.push(thought.id);
+          } else {
+            failedCount++;
+            this.log(`ERROR: Failed to consolidate thought ${thought.id}: ${result.error}`);
+          }
+        } catch (error) {
+          failedCount++;
+          this.log(`ERROR: Failed to consolidate thought ${thought.id}: ${error}`);
+          console.error(`❌ [Hippocampus] Insert failed for thought ${thought.id}:`, error);
+        }
       }
 
-      // Remove consolidated thoughts from working memory
-      await this.persona.workingMemory.clearBatch(consolidatedIds as any);
+      // Remove ONLY successfully consolidated thoughts from working memory
+      if (consolidatedIds.length > 0) {
+        await this.persona.workingMemory.clearBatch(consolidatedIds as any);
+        this.log(`✅ Consolidated ${consolidatedIds.length} thoughts to LTM${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
 
-      this.log(`Consolidated ${consolidatedIds.length} thoughts to LTM`);
+        // Reset time decay timer (successful consolidation)
+        this.adaptiveThreshold.recordConsolidation();
+      } else if (failedCount > 0) {
+        this.log(`ERROR: All ${failedCount} consolidation attempts failed`);
+      }
 
       // Update metrics
       this.metrics = {
@@ -430,6 +422,26 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     } catch (error) {
       this.log(`ERROR: Consolidation failed: ${error}`);
       console.error(`❌ [Hippocampus] Consolidation failed:`, error);
+    }
+  }
+
+  /**
+   * Calculate recent conversation activity (messages per minute)
+   * Estimates from working memory size as proxy
+   */
+  private async calculateActivityLevel(): Promise<number> {
+    try {
+      // Get working memory capacity usage
+      const capacity = await this.persona.workingMemory.getCapacity('chat');
+
+      // Rough heuristic: working memory size indicates recent activity
+      // If working memory is 40/100, estimate ~4 msg/min over last 10 min
+      const estimatedRate = capacity.used / 10.0;
+
+      return Math.max(0.1, estimatedRate);  // Minimum 0.1 to avoid division by zero
+    } catch (error) {
+      this.log(`WARN: Could not calculate activity level: ${error}`);
+      return 1.0;  // Default to moderate activity
     }
   }
 

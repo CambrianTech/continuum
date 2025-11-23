@@ -128,19 +128,17 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   /**
    * Get full log file path for a given file name
    *
-   * Format: .continuum/personas/{name}-{id}/sessions/{sessionId}/logs/{subprocess}.log
-   * Example: .continuum/personas/grok-aff84949/sessions/abc123/logs/hippocampus.log
+   * Format: .continuum/personas/{name}-{id}/sessions/{timestamp}/logs/{subprocess}.log
+   * Example: .continuum/personas/grok-aff84949/sessions/2025-11-23T03-38-51/logs/hippocampus.log
+   *
+   * Uses timestamp instead of sessionId for human-readable, stable log paths
    */
   private getLogFilePath(fileName: string): string {
     // Use persona name-id format: grok-aff84949
     const personaDirName = this.getPersonaDirName();
 
-    // Get session ID (short version for directory name)
-    const sessionId = this.persona.sessionId
-      ? this.persona.sessionId.substring(0, 8)
-      : this.sessionTimestamp; // Fallback to timestamp if no sessionId yet
-
-    return `${process.cwd()}/.continuum/personas/${personaDirName}/sessions/${sessionId}/logs/${fileName}`;
+    // Always use timestamp for session directory (human-readable, no race conditions)
+    return `${process.cwd()}/.continuum/personas/${personaDirName}/sessions/${this.sessionTimestamp}/logs/${fileName}`;
   }
 
   /**

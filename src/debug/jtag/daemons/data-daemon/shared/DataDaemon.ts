@@ -101,6 +101,9 @@ export class DataDaemon {
   private isInitialized: boolean = false;
   private paginatedQueryManager: PaginatedQueryManager;
 
+  // Track which collections have had their schema ensured (generic caching at daemon level)
+  private ensuredSchemas: Set<string> = new Set();
+
   constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter) {
     this.config = config;
     this.adapter = adapter;
@@ -136,7 +139,10 @@ export class DataDaemon {
     context: DataOperationContext
   ): Promise<T> {
     await this.ensureInitialized();
-    
+
+    // Ensure schema exists (orchestrate table creation via adapter)
+    await this.ensureSchema(collection);
+
     // Validate context and data
     const validationResult = this.validateOperation(collection, data, context);
     if (!validationResult.success && !validationResult.data) {
@@ -518,16 +524,45 @@ export class DataDaemon {
   }
 
   /**
+   * Ensure collection schema exists (orchestrated by daemon, implemented by adapter)
+   *
+   * This is the SINGLE point where schema creation is orchestrated.
+   * - Caches which collections are ensured (generic across all adapters)
+   * - Delegates to adapter.ensureSchema() for actual implementation
+   * - Adapter decides how to create schema (SQL table, Mongo collection, etc.)
+   */
+  private async ensureSchema(collection: string): Promise<void> {
+    // Check cache first (generic caching at daemon level)
+    if (this.ensuredSchemas.has(collection)) {
+      return; // Already ensured this session
+    }
+
+    // Delegate to adapter (adapter knows table names, column names, SQL)
+    const result = await this.adapter.ensureSchema(collection);
+    if (!result.success) {
+      throw new Error(`Failed to ensure schema for ${collection}: ${result.error}`);
+    }
+
+    // Cache success (generic - works for any adapter type)
+    this.ensuredSchemas.add(collection);
+  }
+
+  /**
    * Validate entity data - generic validation using BaseEntity.validate()
    * ARCHITECTURE: Data daemon only knows BaseEntity, never specific entity types
    * Uses entity registry to create proper instances for validation
+   *
+   * NOTE: If no entity is registered, validation is SKIPPED (allows custom collections)
+   * This matches SqliteStorageAdapter behavior which handles unregistered collections
    */
   private validateSchema<T extends BaseEntity>(collection: string, data: Record<string, unknown>): SchemaValidationResult {
     // Get entity class from registry - works generically with ANY registered entity type
     const EntityClass = getRegisteredEntity(collection) as EntityConstructor;
     if (!EntityClass) {
-      console.error(`❌ DataDaemon: No entity class registered for collection "${collection}"`);
-      return { success: false, errors: [`No entity class registered for collection "${collection}"`] };
+      // No entity registered - skip validation (custom collection manages its own schema)
+      // This allows collections like "memories" that use direct SQL schema creation
+      console.log(`⚠️ DataDaemon: No entity registered for "${collection}" - skipping validation (custom collection)`);
+      return { success: true };
     }
 
     // Create proper entity instance using BaseEntity factory method

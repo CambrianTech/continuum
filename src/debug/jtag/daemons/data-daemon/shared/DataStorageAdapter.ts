@@ -190,6 +190,20 @@ export abstract class DataStorageAdapter {
   abstract clear(): Promise<StorageResult<boolean>>;
 
   /**
+   * Ensure collection schema exists (adapter-specific implementation)
+   *
+   * DataDaemon calls this to ensure a collection is ready for operations.
+   * The adapter decides how to implement this based on backend:
+   * - SQL: Create table with columns
+   * - NoSQL: Create collection/index
+   * - Memory: Initialize structure
+   *
+   * @param collection - Collection name (adapter translates to table/collection/etc)
+   * @param schema - Optional schema metadata (adapter-specific interpretation)
+   */
+  abstract ensureSchema(collection: string, schema?: unknown): Promise<StorageResult<boolean>>;
+
+  /**
    * Clear all data from all collections with detailed reporting
    *
    * Provides comprehensive information about what was cleared,
