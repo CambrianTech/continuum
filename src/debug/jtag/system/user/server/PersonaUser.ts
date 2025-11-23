@@ -604,6 +604,7 @@ export class PersonaUser extends AIUser {
 
     // PHASE 3: Autonomous polling loop will service inbox at adaptive cadence
     // (No immediate processing - messages wait in inbox until loop polls)
+    // NOTE: Memory creation handled autonomously by Hippocampus subprocess
   }
 
   /**
