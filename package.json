@@ -166,7 +166,7 @@
     }
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.52.0",
+    "@anthropic-ai/sdk": "^0.71.0",
     "ajv": "^8.17.1",
     "dotenv": "^16.5.0",
     "glob": "^11.0.1",
