@@ -273,11 +273,170 @@ export class PostgresStorageAdapter extends SqlStorageAdapterBase {
 4. **Backend flexibility**: Easy to swap SQLite → PostgreSQL → Elasticsearch
 5. **Type safety**: Full TypeScript inference, no `any` types
 
+## CLI Commands
+
+### data/vector-search
+
+Perform semantic search over a collection using vector similarity.
+
+**Parameters:**
+```typescript
+{
+  collection: string;              // Collection to search (required)
+  queryText?: string;              // Text to search for (required if no queryVector)
+  queryVector?: number[];          // Pre-computed embedding (required if no queryText)
+  k?: number;                      // Number of results (default: 10)
+  similarityThreshold?: number;    // Min similarity 0-1 (default: 0.0)
+  embeddingModel?: string;         // Model name: 'all-minilm' | 'nomic-embed-text' (default: 'all-minilm')
+  embeddingProvider?: string;      // Provider: 'ollama' | 'openai' | 'huggingface' (default: 'ollama')
+  hybridMode?: string;             // Search mode: 'semantic' | 'keyword' | 'hybrid' (default: 'semantic')
+  filter?: object;                 // Optional UniversalFilter for hybrid search
+}
+```
+
+**Usage:**
+```bash
+# Basic semantic search
+./jtag data/vector-search \
+  --collection="memories" \
+  --queryText="user prefers detailed technical explanations" \
+  --k=5
+
+# Cross-provider comparison
+./jtag data/vector-search \
+  --collection="decisions" \
+  --queryText="We should use TypeScript" \
+  --embeddingProvider="openai" \
+  --k=3
+
+# With similarity threshold
+./jtag data/vector-search \
+  --collection="memories" \
+  --queryText="async vs sync patterns" \
+  --similarityThreshold=0.7
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "id": "uuid",
+      "data": { /* record data */ },
+      "score": 0.89,
+      "distance": 0.11,
+      "metadata": {
+        "collection": "memories",
+        "embeddingModel": "all-minilm-l6-v2",
+        "queryTime": 45
+      }
+    }
+  ],
+  "totalResults": 5,
+  "queryVector": [0.12, -0.45, ...],
+  "metadata": {
+    "collection": "memories",
+    "searchMode": "semantic",
+    "embeddingModel": "all-minilm-l6-v2",
+    "queryTime": 45
+  }
+}
+```
+
+### data/generate-embedding
+
+Generate vector embedding for text using specified model.
+
+**Parameters:**
+```typescript
+{
+  text: string;                    // Text to embed (required)
+  model?: string;                  // Model name (default: 'all-minilm')
+  provider?: string;               // Provider (default: 'ollama')
+}
+```
+
+**Usage:**
+```bash
+# Generate embedding with default model
+./jtag data/generate-embedding \
+  --text="We should use TypeScript for type safety"
+
+# Compare embeddings across models
+./jtag data/generate-embedding \
+  --text="Prefer async/await over promises" \
+  --model="nomic-embed-text"
+
+# Cross-provider comparison
+./jtag data/generate-embedding \
+  --text="Implement feature X immediately" \
+  --provider="openai"
+```
+
+**Output:**
+```json
+{
+  "success": true,
+  "embedding": [0.123, -0.456, 0.789, ...],
+  "model": {
+    "name": "all-minilm-l6-v2",
+    "dimensions": 384,
+    "provider": "ollama",
+    "maxTokens": 512
+  },
+  "tokenCount": 12,
+  "generationTime": 234
+}
+```
+
+### Test Cases (from Claude's priority list)
+
+**Edge cases for similarity scoring:**
+```bash
+# Test 1: Near-identical structure, opposite meaning
+./jtag data/vector-search \
+  --collection="test_decisions" \
+  --queryText="We should use TypeScript" \
+  --k=5
+
+# Expected: Should find "We should avoid TypeScript" with high similarity
+# but detectOpposition() should flag as conflict
+
+# Test 2: Subtle temporal opposition
+./jtag data/vector-search \
+  --collection="test_decisions" \
+  --queryText="Implement feature X now" \
+  --k=5
+
+# Expected: Should find "Implement feature X later" with high similarity
+
+# Test 3: Competing approaches to same problem
+./jtag data/vector-search \
+  --collection="test_decisions" \
+  --queryText="Use async/await for this" \
+  --k=5
+
+# Expected: Should find "Use promises for this" with high similarity
+```
+
+**Cross-provider comparison:**
+```bash
+# Generate embeddings for same text across all providers
+for provider in ollama openai huggingface; do
+  ./jtag data/generate-embedding \
+    --text="We should use TypeScript" \
+    --provider=$provider
+done
+
+# Compare which provider best captures semantic opposition
+```
+
 ## Implementation Status
 
 - [x] VectorSearchTypes (shared interface definitions)
 - [x] VectorSearchAdapterBase (generic logic with composition)
-- [ ] SqliteStorageAdapter (4 backend-specific methods)
+- [x] SqliteStorageAdapter (4 backend-specific methods)
 - [ ] Data commands (data/vector-search, data/generate-embedding)
 - [ ] PersonaMemory integration (semantic recall)
 - [ ] End-to-end test

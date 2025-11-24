@@ -165,7 +165,7 @@ export interface VectorSearchCapabilities {
  */
 export const DEFAULT_EMBEDDING_MODELS: Record<string, EmbeddingModel> = {
   'all-minilm': {
-    name: 'all-minilm-l6-v2',
+    name: 'all-minilm',
     dimensions: 384,
     provider: 'ollama',
     maxTokens: 512
