@@ -1,7 +1,0 @@
-# Keep user-specific data private
-users/
-*.log
-continuum.pid
-
-# Allow shared team configs
-!shared/

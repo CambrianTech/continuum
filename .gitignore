@@ -159,3 +159,4 @@ src/commands/**/*.d.ts
 .continuum/genome/
 !CLAUDE.md
 !test*output.txt
+_archive/
