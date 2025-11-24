@@ -31,6 +31,14 @@ Events.emit('data:users:created', newUser);
 
 ---
 
+## 🎯 CORE PHILOSOPHY: Continuous Improvement
+
+**"A good developer improves the entire system continuously, not just their own new stuff."**
+
+When you touch any code, improve it. Don't just add your feature and leave the mess - refactor as you go. Use **single sources of truth** (one canonical place for model configs, context windows, etc.), eliminate duplication, and simplify complexity. The boy scout rule: leave code better than you found it. This compounds over time into a maintainable, elegant system.
+
+---
+
 ## 🚨 CRITICAL WORKFLOW (READ FIRST!)
 
 ### EVERY TIME YOU EDIT CODE:

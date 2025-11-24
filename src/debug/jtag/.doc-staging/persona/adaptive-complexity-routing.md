@@ -810,7 +810,7 @@ interface DemocratizationMetrics {
 See: `system/shared/ModelContextWindows.ts` for definitive context window sizes.
 
 **Key Models**:
-- `qwen2.5:7b`: 8192 tokens (local fast)
+- `qwen2.5:7b`: 128000 tokens (local fast)
 - `llama3.1:70b`: 128000 tokens (local capable)
 - `deepseek-chat`: 64000 tokens (API cheap)
 - `claude-3-5-sonnet`: 200000 tokens (API premium)

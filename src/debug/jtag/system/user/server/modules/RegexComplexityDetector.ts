@@ -143,10 +143,13 @@ export class RegexComplexityDetector implements ComplexityDetector {
           // Calculate confidence based on pattern strength
           const confidence = this.calculateConfidence(type as UpgradeIndicator['type'], match[0]);
 
+          // Convert character-based match.index to token offset (4 chars per token heuristic)
+          const tokenOffset = Math.floor((match.index ?? 0) / 4);
+
           detected.push({
             type: type as UpgradeIndicator['type'],
             pattern: match[0],
-            offset: offset + (match.index ?? 0),
+            offset: offset + tokenOffset,
             confidence
           });
         }
