@@ -41,7 +41,8 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { formatAllToolsForAI } from './PersonaToolDefinitions';
+import { getAllToolDefinitions } from './PersonaToolDefinitions';
+import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 
 /**
  * Response generation result
@@ -277,15 +278,22 @@ export class PersonaResponseGenerator {
       }
 
       // Inject available tools for autonomous tool discovery (Phase 3A)
+      // Use adapter-based formatting for harmony with parser
       const availableTools = this.toolRegistry.listToolsForPersona(this.personaId);
       if (availableTools.length > 0) {
-        const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formatAllToolsForAI()}\n\nTo use a tool, include it in your response using this format:
-<tool name="tool_name">
-  <param_name>value</param_name>
-  <param_name>value</param_name>
-</tool>
+        // Convert PersonaToolDefinitions to adapter format
+        const toolDefinitions: AdapterToolDefinition[] = getAllToolDefinitions().map(t => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+          category: t.category
+        }));
 
-The tool will be executed and results will be provided for you to analyze and respond to.
+        // Use primary adapter to format tools (harmonious with parser)
+        const adapter = getPrimaryAdapter();
+        const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
+
+        const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formattedTools}\n\nThe tool will be executed and results will be provided for you to analyze and respond to.
 ================================`;
 
         systemPrompt += toolsSection;

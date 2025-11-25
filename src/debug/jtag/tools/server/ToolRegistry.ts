@@ -16,6 +16,7 @@ import {
   getAllToolDefinitions,
   getToolDefinition,
   validateToolParameters,
+  refreshToolDefinitions,
   type ToolDefinition
 } from '@system/user/server/modules/PersonaToolDefinitions';
 
@@ -47,7 +48,11 @@ export class ToolRegistry {
   private static instance: ToolRegistry | null = null;
 
   private constructor() {
-    console.log('[ToolRegistry] Initialized');
+    console.log('[ToolRegistry] Initialized - refreshing tool definitions from Commands system');
+    // Async refresh - fire and forget (cache will populate in background)
+    refreshToolDefinitions().catch(err => {
+      console.error('[ToolRegistry] Failed to refresh tool definitions:', err);
+    });
   }
 
   /**
@@ -119,132 +124,38 @@ export class ToolRegistry {
   }
 
   /**
-   * Execute tool command and return result with media
+   * Execute tool command generically via Commands system
+   * NO HARDCODED MAPPINGS - just execute the command directly
    */
   private async executeToolCommand(
     toolName: string,
     params: Record<string, unknown>,
     context: JTAGContext
   ): Promise<{ content?: string; media?: MediaItem[] }> {
-    switch (toolName) {
-      case 'read':
-        return this.executeRead(params);
+    // Execute command directly - toolName IS the command name
+    const result = await Commands.execute(toolName, params);
 
-      case 'grep':
-        return this.executeGrep(params);
-
-      case 'bash':
-        return this.executeBash(params);
-
-      case 'screenshot':
-        return this.executeScreenshot(params);
-
-      default:
-        throw new Error(`Tool '${toolName}' has no executor implementation`);
-    }
-  }
-
-  /**
-   * Execute 'read' tool
-   */
-  private async executeRead(params: Record<string, unknown>): Promise<{ content?: string }> {
-    const result = await Commands.execute('file/read', {
-      filepath: params.filepath as string,
-      offset: params.offset as number | undefined,
-      limit: params.limit as number | undefined
-    });
-
-    // Format file content with line numbers
-    if (result && typeof result === 'object' && 'content' in result) {
-      return { content: result.content as string };
-    }
-
-    return { content: String(result) };
-  }
-
-  /**
-   * Execute 'grep' tool
-   */
-  private async executeGrep(params: Record<string, unknown>): Promise<{ content?: string }> {
-    const result = await Commands.execute('code/pattern-search', {
-      pattern: params.pattern as string,
-      path: params.path as string | undefined,
-      glob: params.glob as string | undefined,
-      output_mode: params.output_mode as string | undefined,
-      case_insensitive: params.case_insensitive as boolean | undefined
-    });
-
-    // Format search results
-    if (result && typeof result === 'object' && 'matches' in result) {
-      const matches = result.matches as Array<{ file: string; line: number; content: string }>;
-      if (matches.length === 0) {
-        return { content: 'No matches found' };
-      }
-
-      const content = matches
-        .map(m => `${m.file}:${m.line}: ${m.content}`)
-        .join('\n');
-      return { content };
-    }
-
-    return { content: String(result) };
-  }
-
-  /**
-   * Execute 'bash' tool
-   */
-  private async executeBash(params: Record<string, unknown>): Promise<{ content?: string }> {
-    const result = await Commands.execute('bash/execute', {
-      command: params.command as string,
-      timeout: params.timeout as number | undefined
-    });
-
-    // Format bash output
-    if (result && typeof result === 'object' && 'stdout' in result) {
-      const stdout = result.stdout as string;
-      const stderr = result.stderr as string;
-      let content = stdout;
-      if (stderr) {
-        content += `\nSTDERR:\n${stderr}`;
-      }
-      return { content };
-    }
-
-    return { content: String(result) };
-  }
-
-  /**
-   * Execute 'screenshot' tool
-   */
-  private async executeScreenshot(
-    params: Record<string, unknown>
-  ): Promise<{ content?: string; media?: MediaItem[] }> {
-    const result = await Commands.execute('screenshot', {
-      querySelector: params.querySelector as string | undefined,
-      filename: params.filename as string | undefined
-    });
-
-    // Screenshot returns file path and optionally base64 data
-    if (result && typeof result === 'object' && 'filepath' in result) {
-      const filepath = result.filepath as string;
-      const base64 = ('base64' in result ? result.base64 : null) as string | null;
-
-      // Create media item for vision-capable AIs
+    // Generic result formatting
+    // Commands return whatever format they want - we just stringify it
+    if (result && typeof result === 'object') {
+      // Check for media (screenshots, images, etc.)
       const media: MediaItem[] = [];
-      if (base64) {
+
+      // If result has base64 image data, extract it as media
+      if ('base64' in result && typeof result.base64 === 'string') {
         media.push({
           type: 'image',
-          source: {
-            type: 'base64',
-            media_type: 'image/png',
-            data: base64
-          },
-          caption: `Screenshot: ${filepath}`
+          base64: result.base64,
+          mimeType: 'image/png',
+          description: 'Tool result image'
         });
       }
 
+      // Convert result to string content
+      const content = JSON.stringify(result, null, 2);
+
       return {
-        content: `Screenshot saved to: ${filepath}`,
+        content,
         media: media.length > 0 ? media : undefined
       };
     }

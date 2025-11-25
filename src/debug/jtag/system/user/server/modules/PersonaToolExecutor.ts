@@ -20,6 +20,7 @@ import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { Commands } from '../../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
+import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -63,11 +64,13 @@ export class PersonaToolExecutor {
   private personaId: UUID;
   private personaName: string;
   private toolRegistry: ToolRegistry;
+  private formatAdapters: ToolFormatAdapter[];
 
   constructor(personaId: UUID, personaName: string) {
     this.personaId = personaId;
     this.personaName = personaName;
     this.toolRegistry = ToolRegistry.getInstance();
+    this.formatAdapters = getToolFormatAdapters();
   }
 
   /**
@@ -80,32 +83,22 @@ export class PersonaToolExecutor {
   }
 
   /**
-   * Parse tool calls from AI response text
-   * Extracts <tool name="..."> XML blocks
+   * Parse tool calls from AI response text using registered format adapters
+   * Extensible via adapter pattern - add new formats in ToolFormatAdapter.ts
    */
   parseToolCalls(responseText: string): ToolCall[] {
     const toolCalls: ToolCall[] = [];
 
-    // Match <tool name="...">...</tool> blocks
-    const toolRegex = /<tool\s+name="([^"]+)">(.*?)<\/tool>/gs;
-    const matches = responseText.matchAll(toolRegex);
+    // Iterate through all registered adapters
+    for (const adapter of this.formatAdapters) {
+      const matches = adapter.matches(responseText);
 
-    for (const match of matches) {
-      const toolName = match[1].trim();
-      const toolBlock = match[2];
-
-      // Extract parameters - direct children tags
-      const parameters: Record<string, string> = {};
-      const paramRegex = /<(\w+)>(.*?)<\/\1>/gs;
-      const paramMatches = toolBlock.matchAll(paramRegex);
-
-      for (const paramMatch of paramMatches) {
-        const paramName = paramMatch[1];
-        const paramValue = paramMatch[2].trim();
-        parameters[paramName] = paramValue;
+      for (const match of matches) {
+        const toolCall = adapter.parse(match);
+        if (toolCall) {
+          toolCalls.push(toolCall);
+        }
       }
-
-      toolCalls.push({ toolName, parameters });
     }
 
     return toolCalls;
@@ -256,9 +249,30 @@ ${result.error || 'Unknown error'}
 
   /**
    * Strip tool blocks from response text to get clean user-facing message
+   * Uses adapters to find and remove all tool blocks
    */
   stripToolBlocks(responseText: string): string {
-    return responseText.replace(/<tool\s+name="[^"]+">.*?<\/tool>/gs, '').trim();
+    let cleaned = responseText;
+
+    // Find all tool blocks using adapters
+    const allMatches: Array<{ start: number; end: number }> = [];
+
+    for (const adapter of this.formatAdapters) {
+      const matches = adapter.matches(cleaned);
+      for (const match of matches) {
+        allMatches.push({ start: match.startIndex, end: match.endIndex });
+      }
+    }
+
+    // Sort by start index descending (remove from end first to preserve indices)
+    allMatches.sort((a, b) => b.start - a.start);
+
+    // Remove all matched blocks
+    for (const match of allMatches) {
+      cleaned = cleaned.slice(0, match.start) + cleaned.slice(match.end);
+    }
+
+    return cleaned.trim();
   }
 
   /**
