@@ -1,13 +1,16 @@
 /**
  * PersonaToolDefinitions.ts
  *
- * Type definitions and interfaces for PersonaUser tool calling system.
- * Defines what tools are available, their parameters, and how they're used.
+ * DYNAMIC tool discovery system for PersonaUser tool calling.
+ * Queries the Commands system via 'list' command to discover all available tools.
+ * No more hardcoded tools - everything is discovered dynamically!
  *
  * Part of Phase 3A: Tool Calling Foundation
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { Commands } from '../../../core/shared/Commands';
+import type { CommandSignature, ListResult } from '../../../../commands/list/shared/ListTypes';
 
 /**
  * Result from tool execution
@@ -87,207 +90,112 @@ export interface ToolExecutionContext {
 }
 
 /**
- * Built-in tool definitions
+ * Tool cache - populated dynamically from Commands system
+ * Refreshed on initialization and periodically
  */
-export const BUILTIN_TOOLS: Record<string, ToolDefinition> = {
-  'read': {
-    name: 'read',
-    description: 'Read contents of a file from the filesystem',
-    category: 'file',
-    permissions: ['file:read'],
-    parameters: {
-      type: 'object',
-      properties: {
-        filepath: {
-          type: 'string',
-          description: 'Absolute path to the file to read',
-          required: true
-        },
-        offset: {
-          type: 'number',
-          description: 'Line number to start reading from (optional)',
-          required: false
-        },
-        limit: {
-          type: 'number',
-          description: 'Number of lines to read (optional)',
-          required: false
-        }
-      },
-      required: ['filepath']
-    },
-    examples: [
-      {
-        description: 'Read entire file',
-        params: {
-          filepath: '/path/to/file.ts'
-        },
-        expectedResult: 'File contents with line numbers'
-      },
-      {
-        description: 'Read specific range',
-        params: {
-          filepath: '/path/to/file.ts',
-          offset: 100,
-          limit: 50
-        },
-        expectedResult: 'Lines 100-150 from file'
-      }
-    ]
-  },
-
-  'grep': {
-    name: 'grep',
-    description: 'Search for patterns in files using regex',
-    category: 'code',
-    permissions: ['code:search'],
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: {
-          type: 'string',
-          description: 'Regular expression pattern to search for',
-          required: true
-        },
-        path: {
-          type: 'string',
-          description: 'File or directory to search in',
-          required: false
-        },
-        glob: {
-          type: 'string',
-          description: 'Glob pattern to filter files (e.g., "*.ts")',
-          required: false
-        },
-        output_mode: {
-          type: 'string',
-          description: 'Output format: content, files_with_matches, count',
-          enum: ['content', 'files_with_matches', 'count'],
-          required: false,
-          default: 'files_with_matches'
-        },
-        case_insensitive: {
-          type: 'boolean',
-          description: 'Perform case-insensitive search',
-          required: false,
-          default: false
-        }
-      },
-      required: ['pattern']
-    },
-    examples: [
-      {
-        description: 'Find all files containing pattern',
-        params: {
-          pattern: 'PersonaUser',
-          glob: '*.ts'
-        },
-        expectedResult: 'List of files containing PersonaUser'
-      },
-      {
-        description: 'Search with content',
-        params: {
-          pattern: 'interface.*User',
-          output_mode: 'content',
-          glob: '*.ts'
-        },
-        expectedResult: 'Matching lines with context'
-      }
-    ]
-  },
-
-  'bash': {
-    name: 'bash',
-    description: 'Execute shell commands (read-only operations preferred)',
-    category: 'system',
-    permissions: ['system:execute'],
-    parameters: {
-      type: 'object',
-      properties: {
-        command: {
-          type: 'string',
-          description: 'Shell command to execute',
-          required: true
-        },
-        timeout: {
-          type: 'number',
-          description: 'Timeout in milliseconds (max 600000)',
-          required: false,
-          default: 120000
-        }
-      },
-      required: ['command']
-    },
-    examples: [
-      {
-        description: 'List files',
-        params: {
-          command: 'ls -la'
-        },
-        expectedResult: 'Directory listing'
-      },
-      {
-        description: 'Check git status',
-        params: {
-          command: 'git status'
-        },
-        expectedResult: 'Git status output'
-      }
-    ]
-  },
-
-  'screenshot': {
-    name: 'screenshot',
-    description: 'Capture screenshot of UI element or entire page',
-    category: 'media',
-    permissions: ['ui:screenshot'],
-    parameters: {
-      type: 'object',
-      properties: {
-        querySelector: {
-          type: 'string',
-          description: 'CSS selector for element to capture (optional, defaults to body)',
-          required: false,
-          default: 'body'
-        },
-        filename: {
-          type: 'string',
-          description: 'Output filename (optional)',
-          required: false
-        }
-      },
-      required: []
-    },
-    examples: [
-      {
-        description: 'Capture entire page',
-        params: {},
-        expectedResult: 'Screenshot saved to file'
-      },
-      {
-        description: 'Capture specific widget',
-        params: {
-          querySelector: 'chat-widget',
-          filename: 'chat-debug.png'
-        },
-        expectedResult: 'Screenshot of chat widget'
-      }
-    ]
-  }
-};
+let toolCache: ToolDefinition[] = [];
+let lastRefreshTime = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Get all available tools
+ * Refresh tool definitions from Commands system
+ * Queries 'list' command to discover ALL available commands dynamically
+ *
+ * TODO: Add access level filtering based on command metadata
+ * Commands should declare their own accessLevel (e.g., 'ai-tool', 'internal', 'system')
+ * Then we filter: toolCache = listResult.commands.filter(cmd => cmd.accessLevel === 'ai-tool')
+ * This way commands control their own visibility - no hardcoding!
  */
-export function getAllToolDefinitions(): ToolDefinition[] {
-  return Object.values(BUILTIN_TOOLS);
+export async function refreshToolDefinitions(): Promise<void> {
+  try {
+    console.log('[PersonaToolDefinitions] Refreshing tool cache from Commands system...');
+
+    // Query list command to discover all available commands
+    const result = await Commands.execute('list', {}) as unknown as ListResult;
+
+    if (!result.success || !result.commands) {
+      console.error('[PersonaToolDefinitions] Failed to refresh tools:', result.error);
+      return;
+    }
+
+    // Convert ALL commands from list result
+    // TODO: Filter based on cmd.accessLevel or cmd.permissions when that metadata exists
+    toolCache = result.commands.map((cmd: CommandSignature) => convertCommandToTool(cmd));
+
+    lastRefreshTime = Date.now();
+    console.log(`[PersonaToolDefinitions] Refreshed ${toolCache.length} tools from Commands system`);
+  } catch (error) {
+    console.error('[PersonaToolDefinitions] Error refreshing tools:', error);
+  }
 }
 
 /**
- * Get tool by name
+ * Convert CommandSignature to ToolDefinition
+ */
+function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
+  // Determine category from command name prefix
+  const category = inferCategoryFromName(cmd.name);
+
+  // Convert params to our ToolParameterSchema format
+  const properties: Record<string, ParameterDefinition> = {};
+  const required: string[] = [];
+
+  if (cmd.params) {
+    for (const [paramName, paramInfo] of Object.entries(cmd.params)) {
+      properties[paramName] = {
+        type: paramInfo.type as any,  // Trust the type from command signature
+        description: paramInfo.description || `${paramName} parameter`,
+        required: paramInfo.required
+      };
+
+      if (paramInfo.required) {
+        required.push(paramName);
+      }
+    }
+  }
+
+  return {
+    name: cmd.name,
+    description: cmd.description || `Execute ${cmd.name} command`,
+    category,
+    permissions: [category + ':execute'],
+    parameters: {
+      type: 'object',
+      properties,
+      required
+    },
+    examples: []  // Could add examples in future
+  };
+}
+
+/**
+ * Infer tool category from command name
+ */
+function inferCategoryFromName(name: string): ToolDefinition['category'] {
+  if (name.startsWith('code/') || name.startsWith('git/')) return 'code';
+  if (name.startsWith('file/')) return 'file';
+  if (name.startsWith('data/') || name.startsWith('memory/')) return 'data';
+  if (name.startsWith('media/') || name.includes('screenshot')) return 'media';
+  return 'system';  // Default
+}
+
+/**
+ * Get all available tools (from cache)
+ * Call refreshToolDefinitions() first to populate cache
+ */
+export function getAllToolDefinitions(): ToolDefinition[] {
+  // Auto-refresh if cache is stale
+  if (toolCache.length === 0 || (Date.now() - lastRefreshTime) > CACHE_TTL_MS) {
+    console.warn('[PersonaToolDefinitions] Tool cache is stale or empty - call refreshToolDefinitions() to update');
+  }
+  return toolCache;
+}
+
+/**
+ * Get tool by name (from cache)
  */
 export function getToolDefinition(name: string): ToolDefinition | null {
-  return BUILTIN_TOOLS[name] || null;
+  return toolCache.find(tool => tool.name === name) || null;
 }
 
 /**
