@@ -92,6 +92,7 @@ import { SimplePlanFormulator } from './modules/cognition/reasoning/SimplePlanFo
 import type { Task, Plan } from './modules/cognition/reasoning/types';
 import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
+import { PersonaToolRegistry } from './modules/PersonaToolRegistry';
 import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
@@ -168,6 +169,9 @@ export class PersonaUser extends AIUser {
 
   // Tool execution adapter (keeps PersonaUser clean)
   private toolExecutor: PersonaToolExecutor;
+
+  // Tool registry for permission management and discovery
+  private toolRegistry: PersonaToolRegistry;
 
   // Response generation module (extracted from PersonaUser)
   private responseGenerator: PersonaResponseGenerator;
@@ -300,6 +304,10 @@ export class PersonaUser extends AIUser {
     // Tool execution adapter (dynamic registry for code/read, list, system/daemons, etc.)
     this.toolExecutor = new PersonaToolExecutor(this.id, this.displayName);
 
+    // Tool registry for permission management and autonomous tool discovery
+    this.toolRegistry = new PersonaToolRegistry();
+    this.toolRegistry.registerPersona(this.id, 'assistant'); // Default to assistant role
+
     // Response generation module (extracted from PersonaUser for clean separation)
     this.responseGenerator = new PersonaResponseGenerator({
       personaId: this.id,
@@ -308,6 +316,7 @@ export class PersonaUser extends AIUser {
       modelConfig: this.modelConfig,
       client,
       toolExecutor: this.toolExecutor,
+      toolRegistry: this.toolRegistry,
       mediaConfig: this.mediaConfig,
       getSessionId: () => this.sessionId  // Dynamically get sessionId (set during initialize())
     });

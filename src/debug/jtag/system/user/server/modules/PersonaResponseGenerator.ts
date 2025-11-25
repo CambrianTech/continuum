@@ -40,6 +40,8 @@ import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
+import { PersonaToolRegistry } from './PersonaToolRegistry';
+import { formatAllToolsForAI } from './PersonaToolDefinitions';
 
 /**
  * Response generation result
@@ -61,6 +63,7 @@ export interface PersonaResponseGeneratorConfig {
   modelConfig: ModelConfig;
   client?: JTAGClient;
   toolExecutor: PersonaToolExecutor;
+  toolRegistry: PersonaToolRegistry;
   mediaConfig: PersonaMediaConfig;
   getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
 }
@@ -75,6 +78,7 @@ export class PersonaResponseGenerator {
   private modelConfig: ModelConfig;
   private client?: JTAGClient;
   private toolExecutor: PersonaToolExecutor;
+  private toolRegistry: PersonaToolRegistry;
   private mediaConfig: PersonaMediaConfig;
   private getSessionId: () => UUID | null;
 
@@ -85,6 +89,7 @@ export class PersonaResponseGenerator {
     this.modelConfig = config.modelConfig;
     this.client = config.client;
     this.toolExecutor = config.toolExecutor;
+    this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
   }
@@ -269,6 +274,22 @@ export class PersonaResponseGenerator {
 
         systemPrompt += memorySection;
         console.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
+      }
+
+      // Inject available tools for autonomous tool discovery (Phase 3A)
+      const availableTools = this.toolRegistry.listToolsForPersona(this.personaId);
+      if (availableTools.length > 0) {
+        const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formatAllToolsForAI()}\n\nTo use a tool, include it in your response using this format:
+<tool name="tool_name">
+  <param_name>value</param_name>
+  <param_name>value</param_name>
+</tool>
+
+The tool will be executed and results will be provided for you to analyze and respond to.
+================================`;
+
+        systemPrompt += toolsSection;
+        console.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
       }
 
       messages.push({

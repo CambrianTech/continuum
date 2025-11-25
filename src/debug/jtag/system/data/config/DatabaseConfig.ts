@@ -60,11 +60,15 @@ export const COLLECTIONS = {
   ARTIFACTS: 'artifacts',
   SESSIONS: 'sessions',
   TASKS: 'tasks',
+  PINNED_ITEMS: 'pinned_items',
   COORDINATION_DECISIONS: 'coordination_decisions',
 
   // Cognition Observability
   COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
-  COGNITION_PLAN_RECORDS: 'cognition_plan_records'
+  COGNITION_PLAN_RECORDS: 'cognition_plan_records',
+
+  // Memory System (Phase 2)
+  MEMORIES: 'memories'
 } as const;
 
 export type CollectionName = typeof COLLECTIONS[keyof typeof COLLECTIONS];
