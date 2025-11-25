@@ -1,9 +1,0 @@
-{
-  "whitelistPrefixes": [
-    "middle-out/",
-    ".husky/",
-    "CLAUDE.md",
-    "README.md"
-  ],
-  "description": "Git hook validation whitelist - files matching these prefixes can be committed without full validation if they are the only changes"
-}

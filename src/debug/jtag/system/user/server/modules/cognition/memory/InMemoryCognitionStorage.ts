@@ -30,11 +30,13 @@ export interface SelfStateEntry {
 export interface WorkingMemoryEntry {
   id: UUID;
   personaId: UUID;
-  domain: string;
-  contextId: UUID;
-  thoughtType: string;
+  domain: string | null;  // null = global scope
+  contextId: UUID | null;  // null = domain-wide
+  thoughtType: string;  // AI-generated, flexible (max 50 chars)
   thoughtContent: string;
-  importance: number;
+  importance: number;  // 0.0-1.0
+  shareable: boolean;  // Can other AIs read this?
+  metadata?: Record<string, unknown>;
   createdAt: number;
   lastAccessedAt: number;
 }
@@ -163,10 +165,10 @@ class InMemoryCognitionStorage {
 
   updatePlan(personaId: UUID, planId: UUID, updates: Partial<PlanEntry>): void {
     const plans = this.getPlans(personaId);
-    const plan = plans.find(p => p.id === planId);
-    if (plan) {
-      Object.assign(plan, updates);
-    }
+    const updatedPlans = plans.map(p =>
+      p.id === planId ? { ...p, ...updates } : p
+    );
+    this.plans.set(personaId, updatedPlans);
   }
 
   // Learning operations
@@ -182,10 +184,10 @@ class InMemoryCognitionStorage {
 
   updateLearning(personaId: UUID, learningId: UUID, updates: Partial<LearningEntry>): void {
     const learnings = this.getLearnings(personaId);
-    const learning = learnings.find(l => l.id === learningId);
-    if (learning) {
-      Object.assign(learning, updates);
-    }
+    const updatedLearnings = learnings.map(l =>
+      l.id === learningId ? { ...l, ...updates } : l
+    );
+    this.learnings.set(personaId, updatedLearnings);
   }
 
   // Utility: Clear all data for persona (for testing)

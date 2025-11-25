@@ -28,6 +28,19 @@ import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SqliteQueryBuilder } from './SqliteQueryBuilder';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
+import { VectorSearchAdapterBase, type VectorStorageOperations, type StoredVector } from './VectorSearchAdapterBase';
+import {
+  type VectorSearchAdapter,
+  type VectorSearchOptions,
+  type VectorSearchResponse,
+  type GenerateEmbeddingRequest,
+  type GenerateEmbeddingResponse,
+  type IndexVectorRequest,
+  type BackfillVectorsRequest,
+  type BackfillVectorsProgress,
+  type VectorIndexStats,
+  type VectorSearchCapabilities
+} from '../shared/VectorSearchTypes';
 
 /**
  * SQLite Configuration Options
@@ -101,12 +114,12 @@ export class SqlNamingConverter {
 /**
  * SQLite Storage Adapter with Proper Relational Schema
  */
-export class SqliteStorageAdapter extends SqlStorageAdapterBase {
+export class SqliteStorageAdapter extends SqlStorageAdapterBase implements VectorSearchAdapter {
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
-  private createdTables = new Set<string>(); // Track created tables
   private inTransaction: boolean = false; // Track transaction state to prevent nesting
+  private vectorSearchBase: VectorSearchAdapterBase | null = null;
 
   /**
    * SqlStorageAdapterBase abstract method implementations
@@ -245,15 +258,24 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
     const { initializeEntityRegistry } = await import('./EntityRegistry');
     initializeEntityRegistry();
 
-    console.log('🏗️ SQLite: Creating entity tables...');
-    // Create entity tables for all registered entities
-    for (const [collectionName] of ENTITY_REGISTRY.entries()) {
-      await this.ensureEntityTable(collectionName);
-    }
+    console.log('✅ SQLite: Entity registry initialized (tables will be created lazily on first use)');
 
     // Verify integrity after initialization
     console.log('🔍 SQLite: Verifying database integrity...');
     await this.verifyIntegrity();
+
+    // Initialize vector search with composition pattern
+    console.log('🔍 SQLite: Initializing vector search capabilities...');
+    this.vectorSearchBase = new VectorSearchAdapterBase(
+      this,  // DataStorageAdapter for CRUD operations
+      {      // VectorStorageOperations for SQLite-specific vector storage
+        ensureVectorStorage: (collection, dimensions) => this.ensureVectorTable(collection, dimensions),
+        storeVector: (collection, vector) => this.storeVectorInSQLite(collection, vector),
+        getAllVectors: (collection) => this.getVectorsFromSQLite(collection),
+        getVectorCount: (collection) => this.countVectorsInSQLite(collection)
+      }
+    );
+    console.log('✅ SQLite: Vector search initialized');
 
     this.isInitialized = true;
     console.log('🎯 SQLite: Initialization complete and verified');
@@ -358,54 +380,70 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   }
 
   /**
-   * Create table for entity if it doesn't exist
+   * Ensure schema exists for collection (orchestrated by DataDaemon)
+   *
+   * This is the ONLY place where tables are created.
+   * Handles both registered entities (with metadata) and unregistered entities (simple table).
+   * Adapter translates collection → table name and creates snake_case columns.
    */
-  private async ensureEntityTable(collectionName: string): Promise<void> {
-    const tableName = SqlNamingConverter.toTableName(collectionName);
+  async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+    try {
+      const tableName = SqlNamingConverter.toTableName(collectionName);
+      const tableExists = await this.tableExists(tableName);
 
-    if (this.createdTables.has(tableName)) {
-      return; // Already processed this session
-    }
+      const entityClass = ENTITY_REGISTRY.get(collectionName);
 
-    const entityClass = ENTITY_REGISTRY.get(collectionName);
-    if (!entityClass || !hasFieldMetadata(entityClass)) {
-      console.warn(`⚠️ No entity metadata found for collection: ${collectionName}`);
-      return;
-    }
+      if (!entityClass || !hasFieldMetadata(entityClass)) {
+        // Unregistered collection - handle simple entity table
+        if (tableExists) {
+          // Migrate simple entity table: add missing snake_case columns if old table has camelCase
+          console.log(`🔄 Migrating simple entity table: ${collectionName} -> ${tableName}`);
+          await this.migrateSimpleEntityTable(tableName);
+        }
+        // Note: If table doesn't exist, create() will handle it via createSimpleEntityTable()
+        return { success: true, data: true };
+      }
 
-    console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
+      // Registered entity - handle full entity table with metadata
+      console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
 
-    // Check if table exists
-    const tableExists = await this.tableExists(tableName);
+      if (tableExists) {
+        // Migrate schema: add missing columns
+        await this.migrateTableSchema(collectionName, tableName, entityClass);
+      } else {
+        // Create new table
+        const createTableSql = this.generateCreateTableSql(
+          collectionName,
+          entityClass,
+          SqlNamingConverter.toTableName,
+          SqlNamingConverter.toSnakeCase
+        );
+        await this.runSql(createTableSql);
+        console.log(`✅ Table created: ${tableName}`);
+      }
 
-    if (tableExists) {
-      // Migrate schema: add missing columns
-      await this.migrateTableSchema(collectionName, tableName, entityClass);
-    } else {
-      // Create new table
-      const createTableSql = this.generateCreateTableSql(
+      // Create indexes (will skip if they already exist due to IF NOT EXISTS)
+      const indexSqls = this.generateCreateIndexSql(
         collectionName,
         entityClass,
         SqlNamingConverter.toTableName,
         SqlNamingConverter.toSnakeCase
       );
-      await this.runSql(createTableSql);
-      console.log(`✅ Table created: ${tableName}`);
-    }
+      for (const indexSql of indexSqls) {
+        await this.runSql(indexSql);
+      }
 
-    // Create indexes (will skip if they already exist due to IF NOT EXISTS)
-    const indexSqls = this.generateCreateIndexSql(
-      collectionName,
-      entityClass,
-      SqlNamingConverter.toTableName,
-      SqlNamingConverter.toSnakeCase
-    );
-    for (const indexSql of indexSqls) {
-      await this.runSql(indexSql);
-    }
+      console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
 
-    this.createdTables.add(tableName);
-    console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
+      return { success: true, data: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ SQLite: Failed to ensure schema for ${collectionName}:`, errorMessage);
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
   }
 
   /**
@@ -477,6 +515,53 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
       console.log(`✅ Migrated ${tableName}: added ${missingColumns.length} new columns`);
     } else {
       console.log(`✅ Schema up-to-date: ${tableName}`);
+    }
+  }
+
+  /**
+   * Migrate simple entity table by ensuring required snake_case columns exist
+   * Handles old tables created with camelCase columns (createdAt, updatedAt)
+   * by adding the proper snake_case columns (created_at, updated_at)
+   */
+  private async migrateSimpleEntityTable(tableName: string): Promise<void> {
+    // Get existing columns
+    const existingColumns = await this.getTableColumns(tableName);
+
+    // Required columns for simple entity table (snake_case)
+    const requiredColumns = [
+      { name: 'id', type: 'TEXT', nullable: false },
+      { name: 'data', type: 'TEXT', nullable: false },
+      { name: 'created_at', type: 'TEXT', nullable: true },
+      { name: 'updated_at', type: 'TEXT', nullable: true },
+      { name: 'version', type: 'INTEGER', nullable: true }
+    ];
+
+    const missingColumns: string[] = [];
+
+    for (const column of requiredColumns) {
+      if (!existingColumns.has(column.name)) {
+        missingColumns.push(column.name);
+
+        // Generate ALTER TABLE statement
+        let alterSql = `ALTER TABLE ${tableName} ADD COLUMN ${column.name} ${column.type}`;
+
+        if (!column.nullable) {
+          // For NOT NULL columns, provide default
+          alterSql += ` DEFAULT ${this.getDefaultForType(column.type)} NOT NULL`;
+        } else {
+          // For nullable columns, allow NULL
+          alterSql += ' DEFAULT NULL';
+        }
+
+        console.log(`   🔄 Adding missing column: ${column.name} (${column.type})`);
+        await this.runSql(alterSql);
+      }
+    }
+
+    if (missingColumns.length > 0) {
+      console.log(`✅ Migrated simple entity table ${tableName}: added ${missingColumns.length} columns (${missingColumns.join(', ')})`);
+    } else {
+      console.log(`✅ Simple entity table ${tableName} schema is up-to-date`);
     }
   }
 
@@ -705,10 +790,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
-
-      // Ensure entity table exists
-      await this.ensureEntityTable(record.collection);
-
       // Execute create operation in transaction for atomic consistency
       const result = await this.withTransaction(async () => {
         const tableName = SqlNamingConverter.toTableName(record.collection);
@@ -800,10 +881,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
   private async createSimpleEntityTable(collectionName: string): Promise<void> {
     const tableName = SqlNamingConverter.toTableName(collectionName);
 
-    if (this.createdTables.has(tableName)) {
-      return; // Already created
-    }
-
     console.log(`🏗️ Creating simple entity table: ${collectionName} -> ${tableName}`);
 
     // Create simple entity table with basic structure + JSON data column
@@ -823,7 +900,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
     await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_created_at ON ${tableName}(created_at)`);
     await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_updated_at ON ${tableName}(updated_at)`);
 
-    this.createdTables.add(tableName);
     console.log(`✅ Simple entity table created: ${tableName}`);
   }
 
@@ -892,7 +968,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
-
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
@@ -1582,7 +1657,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
     try {
-
       // Execute delete operation in transaction for atomic consistency
       const deletedCount = await this.withTransaction(async () => {
         // Delete from entity-specific table (not _data table)
@@ -2114,5 +2188,198 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase {
     } catch (error) {
       return 0;
     }
+  }
+
+  // ============================================================================
+  // VECTOR SEARCH ADAPTER INTERFACE - Delegate to VectorSearchAdapterBase
+  // ============================================================================
+
+  /**
+   * Perform vector similarity search
+   * Delegates to VectorSearchAdapterBase which uses the 4 SQLite-specific methods below
+   */
+  async vectorSearch<T extends RecordData>(
+    options: VectorSearchOptions
+  ): Promise<StorageResult<VectorSearchResponse<T>>> {
+    if (!this.vectorSearchBase) {
+      return {
+        success: false,
+        error: 'Vector search not initialized - call initialize() first'
+      };
+    }
+    return this.vectorSearchBase.vectorSearch<T>(options);
+  }
+
+  /**
+   * Generate embedding for text
+   */
+  async generateEmbedding(
+    request: GenerateEmbeddingRequest
+  ): Promise<StorageResult<GenerateEmbeddingResponse>> {
+    if (!this.vectorSearchBase) {
+      return {
+        success: false,
+        error: 'Vector search not initialized - call initialize() first'
+      };
+    }
+    return this.vectorSearchBase.generateEmbedding(request);
+  }
+
+  /**
+   * Index vector for a record
+   */
+  async indexVector(request: IndexVectorRequest): Promise<StorageResult<boolean>> {
+    if (!this.vectorSearchBase) {
+      return {
+        success: false,
+        error: 'Vector search not initialized - call initialize() first'
+      };
+    }
+    return this.vectorSearchBase.indexVector(request);
+  }
+
+  /**
+   * Backfill embeddings for existing records
+   */
+  async backfillVectors(
+    request: BackfillVectorsRequest,
+    onProgress?: (progress: BackfillVectorsProgress) => void
+  ): Promise<StorageResult<BackfillVectorsProgress>> {
+    if (!this.vectorSearchBase) {
+      return {
+        success: false,
+        error: 'Vector search not initialized - call initialize() first'
+      };
+    }
+    return this.vectorSearchBase.backfillVectors(request, onProgress);
+  }
+
+  /**
+   * Get vector index statistics
+   */
+  async getVectorIndexStats(collection: string): Promise<StorageResult<VectorIndexStats>> {
+    if (!this.vectorSearchBase) {
+      return {
+        success: false,
+        error: 'Vector search not initialized - call initialize() first'
+      };
+    }
+    return this.vectorSearchBase.getVectorIndexStats(collection);
+  }
+
+  /**
+   * Get vector search capabilities
+   */
+  async getVectorSearchCapabilities(): Promise<VectorSearchCapabilities> {
+    if (!this.vectorSearchBase) {
+      return {
+        supportsVectorSearch: false,
+        supportsHybridSearch: false,
+        supportsEmbeddingGeneration: false,
+        maxVectorDimensions: 0,
+        supportedSimilarityMetrics: [],
+        embeddingProviders: []
+      };
+    }
+    return this.vectorSearchBase.getVectorSearchCapabilities();
+  }
+
+  // ============================================================================
+  // SQLITE-SPECIFIC VECTOR STORAGE METHODS (4 methods)
+  // ============================================================================
+
+  /**
+   * Ensure vector table exists for a collection
+   * Creates {collection}_vectors table with proper schema
+   */
+  private async ensureVectorTable(collection: string, dimensions: number): Promise<void> {
+    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
+    const baseTableName = SqlNamingConverter.toTableName(collection);
+
+    const sql = `
+      CREATE TABLE IF NOT EXISTS \`${tableName}\` (
+        record_id TEXT PRIMARY KEY,
+        embedding TEXT NOT NULL,
+        model TEXT,
+        generated_at TEXT NOT NULL,
+        FOREIGN KEY (record_id) REFERENCES \`${baseTableName}\`(id) ON DELETE CASCADE
+      )
+    `;
+
+    await this.runStatement(sql);
+
+    // Create index on record_id for faster lookups
+    await this.runStatement(`
+      CREATE INDEX IF NOT EXISTS \`${tableName}_record_id_idx\`
+      ON \`${tableName}\`(record_id)
+    `);
+
+    console.log(`✅ SQLite: Vector table ${tableName} ready (${dimensions} dimensions)`);
+  }
+
+  /**
+   * Store vector for a record
+   * Stores embedding as JSON text (SQLite doesn't have native array type)
+   */
+  private async storeVectorInSQLite(collection: string, vector: StoredVector): Promise<void> {
+    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
+
+    await this.runStatement(
+      `INSERT OR REPLACE INTO \`${tableName}\` (record_id, embedding, model, generated_at)
+       VALUES (?, ?, ?, ?)`,
+      [
+        vector.recordId,
+        JSON.stringify(vector.embedding),
+        vector.model || null,
+        vector.generatedAt
+      ]
+    );
+  }
+
+  /**
+   * Retrieve all vectors from a collection
+   * Parses JSON embeddings back to number arrays
+   */
+  private async getVectorsFromSQLite(collection: string): Promise<StoredVector[]> {
+    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
+
+    // Check if table exists
+    const tableExists = await this.runSql(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [tableName]
+    );
+
+    if (tableExists.length === 0) {
+      return [];  // No vectors yet
+    }
+
+    const rows = await this.runSql(`SELECT record_id, embedding, model, generated_at FROM \`${tableName}\``);
+
+    return rows.map(row => ({
+      recordId: row.record_id as UUID,
+      embedding: JSON.parse(row.embedding as string) as number[],
+      model: row.model as string | undefined,
+      generatedAt: row.generated_at as string
+    }));
+  }
+
+  /**
+   * Get count of vectors in a collection
+   */
+  private async countVectorsInSQLite(collection: string): Promise<number> {
+    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
+
+    // Check if table exists
+    const tableExists = await this.runSql(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [tableName]
+    );
+
+    if (tableExists.length === 0) {
+      return 0;
+    }
+
+    const result = await this.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+    return (result[0]?.count as number) || 0;
   }
 }

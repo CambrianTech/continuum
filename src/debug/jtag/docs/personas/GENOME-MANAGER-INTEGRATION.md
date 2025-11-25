@@ -1,7 +1,7 @@
 # GenomeManager Integration with AIProviderDaemon
 
-**Date**: 2025-10-29
-**Status**: Research & Architecture Design
+**Date**: 2025-10-29 (Original), Updated: 2025-11-22
+**Status**: Research & Architecture Design + RTOS Integration
 **Phase**: 7.0 MVP (Interface structure only)
 
 ---
@@ -21,6 +21,61 @@ The **GenomeManager** (just created in Phase 7) needs to coordinate:
 - Base model memory tracking (llama3.2:3b = ~2GB, qwen2.5:14b = ~8GB)
 
 **KEY INSIGHT**: These systems should **collaborate**, not compete. AIProviderDaemon handles **inference**, GenomeManager handles **resource orchestration**.
+
+## RTOS Architecture (Updated 2025-11-22)
+
+### GenomeDaemon as RTOS Subprocess
+
+GenomeManager operations now run as a **non-blocking RTOS subprocess** for performance:
+
+```typescript
+// GenomeDaemon extends PersonaSubprocess pattern
+export class GenomeDaemon extends PersonaSubprocess<GenomeTask> {
+  protected async handleTask(task: GenomeTask): Promise<boolean> {
+    switch (task.type) {
+      case 'activate-adapter':
+        return await this.activateAdapter(task.adapterId, task.personaId);
+      case 'evict-adapter':
+        return await this.evictLRU();
+      case 'check-memory-pressure':
+        return await this.checkMemoryPressure();
+      case 'start-training':
+        return await this.startTraining(task.trainingJob);
+    }
+  }
+}
+```
+
+**Key Properties:**
+- **< 1ms activation time** (signal-based, not blocking main thread)
+- **Context-adaptive priority** (slows down during active inference)
+- **Signal-triggered** (only processes when memory pressure > 0.8 or training requested)
+- **Non-blocking** (runs in parallel with PersonaUser cognition)
+
+### Integration with Autonomous Loop
+
+GenomeDaemon integrates with PersonaUser's `serviceInbox()` method:
+
+```typescript
+// PersonaUser.serviceInbox() calls GenomeDaemon
+async serviceInbox(): Promise<void> {
+  const tasks = await this.inbox.peek(10);
+
+  // ... select task
+
+  // 4. GENOME PAGING: Activate skill (< 1ms signal to GenomeDaemon)
+  await this.genome.activateSkill(task.domain);
+
+  // ... process task
+
+  // 8. Evict adapters if memory pressure (< 1ms signal)
+  if (this.genome.memoryPressure > 0.8) {
+    await GenomeDaemon.shared().evictLRU();
+  }
+}
+```
+
+**Result**: Genome operations don't block PersonaUser's main loop.
 
 ---
 

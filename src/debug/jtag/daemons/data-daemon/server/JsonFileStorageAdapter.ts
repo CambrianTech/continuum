@@ -417,6 +417,13 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
     }
   }
 
+  /**
+   * Ensure schema exists (no-op - JSON file storage is schemaless)
+   */
+  async ensureSchema(_collection: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+    return { success: true, data: true };
+  }
+
   async clear(): Promise<StorageResult<boolean>> {
     try {
       const files = await fs.readdir(this.dataDirectory);

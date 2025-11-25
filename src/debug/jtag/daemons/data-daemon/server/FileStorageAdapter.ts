@@ -388,8 +388,16 @@ export class FileStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Ensure schema exists (no-op - file storage is schemaless)
+   */
+  async ensureSchema(_collection: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+    return { success: true, data: true };
+  }
+
+  /**
    * Clear all data from all collections
    */
+
   async clear(): Promise<StorageResult<boolean>> {
     try {
       const collections = await this.listCollections();

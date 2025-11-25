@@ -1,1 +1,0 @@
-alert("🦷 Why don't teeth ever get lost?\n\nBecause they always know their ROOT directory!\n\n🪥 - Your Dental AI Assistant");

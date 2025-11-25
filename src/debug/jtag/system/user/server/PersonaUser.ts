@@ -100,6 +100,8 @@ import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
+import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
+import { PersonaLogger } from './modules/PersonaLogger';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -120,7 +122,7 @@ export class PersonaUser extends AIUser {
   private worker: PersonaWorkerThread | null = null;
 
   // AI model configuration (provider, model, temperature, etc.)
-  private modelConfig: ModelConfig;
+  public modelConfig: ModelConfig;
 
   // Media configuration (opt-in for images/audio/video)
   public mediaConfig: PersonaMediaConfig;
@@ -175,6 +177,12 @@ export class PersonaUser extends AIUser {
 
   // Genome management module (extracted from PersonaUser for better genomic daemon integration)
   private genomeManager: PersonaGenomeManager;
+
+  // RTOS-style background subprocess for memory consolidation
+  // Phase 1: Minimal logging-only version to prove threading works
+  // RTOS Subprocesses
+  public logger: PersonaLogger; // Public: accessed by all subprocesses for logging
+  private hippocampus: Hippocampus;
 
   constructor(
     entity: UserEntity,
@@ -318,6 +326,13 @@ export class PersonaUser extends AIUser {
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
 
+    // RTOS-style memory consolidation subprocess (will start in initialize())
+    // Phase 1: Minimal version - just logging to prove threading works
+    // Initialize RTOS subprocesses
+    // Logger MUST be first - other subprocesses need it for logging
+    this.logger = new PersonaLogger(this);
+    this.hippocampus = new Hippocampus(this);
+
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
@@ -396,6 +411,15 @@ export class PersonaUser extends AIUser {
       console.log(`🔐 ${this.displayName}: SessionId generated for tool attribution (${this.sessionId})`);
     }
 
+    // STEP 1.3: Enrich context with callerType='persona' and modelConfig for caller-adaptive command output
+    // This enables PersonaUsers to receive media field (base64 image data) from screenshot commands
+    // The modelConfig enables commands to resize images based on model's context window capacity
+    if (this.client && this.client.context) {
+      this.client.context.callerType = 'persona';
+      this.client.context.modelConfig = this.modelConfig;
+      console.log(`🎯 ${this.displayName}: Context enriched with callerType='persona' and modelConfig for vision-capable tool output`);
+    }
+
     // STEP 1.5: Start worker thread for message evaluation
     if (this.worker) {
       await this.worker.start();
@@ -438,6 +462,16 @@ export class PersonaUser extends AIUser {
 
     // PHASE 3: Start autonomous servicing loop (lifecycle-based)
     this.startAutonomousServicing();
+
+    // Start RTOS subprocesses
+    // Logger MUST start first - other subprocesses depend on it for logging
+    await this.logger.start();
+    console.log(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
+
+    // Start Hippocampus subprocess (RTOS-style background process)
+    // Phase 1: Minimal logging-only version to prove threading works
+    await this.hippocampus.start();
+    console.log(`🧠 ${this.displayName}: Hippocampus subprocess started (minimal/logging mode)`);
   }
 
   /**
@@ -570,6 +604,7 @@ export class PersonaUser extends AIUser {
 
     // PHASE 3: Autonomous polling loop will service inbox at adaptive cadence
     // (No immediate processing - messages wait in inbox until loop polls)
+    // NOTE: Memory creation handled autonomously by Hippocampus subprocess
   }
 
   /**
@@ -673,6 +708,66 @@ export class PersonaUser extends AIUser {
     }
 
     await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
+  }
+
+  /**
+   * Generate text using this persona's LLM
+   *
+   * This is THE interface for all LLM inference:
+   * - Chat responses (via PersonaResponseGenerator)
+   * - Memory synthesis (via Hippocampus adapters)
+   * - Task generation (future)
+   * - Self-reflection (future)
+   *
+   * All inference goes through here. Uses same provider/model/timeout as chat.
+   */
+  public async generateText(request: {
+    prompt: string;
+    temperature?: number;
+    maxTokens?: number;
+    systemPrompt?: string;
+    context?: string;  // For logging/metrics (e.g., 'memory-synthesis', 'task-generation')
+  }): Promise<string> {
+    try {
+      const messages: { role: 'system' | 'user'; content: string }[] = [];
+
+      if (request.systemPrompt) {
+        messages.push({
+          role: 'system',
+          content: request.systemPrompt
+        });
+      }
+
+      messages.push({
+        role: 'user',
+        content: request.prompt
+      });
+
+      const genRequest: TextGenerationRequest = {
+        messages,
+        model: this.modelConfig.model || 'llama3.2:3b',
+        temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
+        maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
+        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        intelligenceLevel: this.entity.intelligenceLevel
+      };
+
+      // Use same 180s timeout as chat responses
+      const GENERATION_TIMEOUT_MS = 180000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`AI generation timeout after 180 seconds (context: ${request.context || 'unknown'})`)), GENERATION_TIMEOUT_MS);
+      });
+
+      const response = await Promise.race([
+        AIProviderDaemon.generateText(genRequest),
+        timeoutPromise
+      ]);
+
+      return response.text;
+    } catch (error) {
+      console.error(`❌ ${this.displayName}: Text generation failed (context=${request.context || 'unknown'}): ${error}`);
+      throw error;
+    }
   }
 
   /**
@@ -1128,6 +1223,18 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // Stop RTOS subprocesses in reverse order
+    // Stop Hippocampus first (generates final logs)
+    await this.hippocampus.stop();
+    console.log(`🧠 ${this.displayName}: Hippocampus subprocess stopped`);
+
+    // Force flush all queued logs before stopping logger
+    await this.logger.forceFlush();
+
+    // Stop logger last (ensure all logs written)
+    await this.logger.stop();
+    console.log(`📝 ${this.displayName}: PersonaLogger stopped (all logs flushed)`);
+
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();
 
