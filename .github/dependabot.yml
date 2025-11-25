@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # Enable version updates for npm
+  # Disable npm updates - manual updates only
   - package-ecosystem: "npm"
     # Look for npm packages in the root directory
     directory: "/"
@@ -11,8 +11,8 @@ updates:
     # Set reviewers for pull requests
     reviewers:
       - "joelteply"
-    # Limit the number of open pull requests for npm dependencies
-    open-pull-requests-limit: 10
+    # DISABLED: No new PRs will be opened (set to 0)
+    open-pull-requests-limit: 0
     # Allow up to 10 pull requests for security updates
     ignore:
       # Ignore updates to packages that start with 'aws'
@@ -24,10 +24,10 @@ updates:
     # Allow only security updates for dependencies
     versioning-strategy: increase-if-necessary
     
-  # Enable version updates for GitHub Actions
+  # Disable GitHub Actions updates - manual updates only
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-    # Allow up to 5 pull requests for GitHub Action updates
-    open-pull-requests-limit: 5
+    # DISABLED: No new PRs will be opened (set to 0)
+    open-pull-requests-limit: 0

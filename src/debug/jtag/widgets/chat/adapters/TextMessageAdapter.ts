@@ -23,8 +23,8 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
 
     // Configure marked for GitHub Flavored Markdown
     marked.setOptions({
-      breaks: true,  // Convert \n to <br>
-      gfm: true,     // GitHub Flavored Markdown
+      breaks: true,   // Convert \n to <br>
+      gfm: true,      // GitHub Flavored Markdown
       pedantic: false
     });
   }
@@ -50,8 +50,11 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
 
   renderContent(data: TextContentData, _currentUserId: string): string {
     try {
+      // Pre-process: Escape HTML tags that aren't in code blocks (backticks or fences)
+      const processedText = this.escapeHtmlInPlainText(data.text);
+
       // Parse markdown to HTML
-      let htmlContent = marked.parse(data.text) as string;
+      let htmlContent = marked.parse(processedText) as string;
 
       // Apply syntax highlighting to code blocks after markdown parsing
       htmlContent = this.applySyntaxHighlighting(htmlContent);
@@ -424,6 +427,76 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
     }
 
     return links;
+  }
+
+  /**
+   * Escape HTML tags that appear outside of code blocks
+   * This prevents <input>, <textarea>, etc from breaking markdown parsing
+   */
+  private escapeHtmlInPlainText(text: string): string {
+    // Split text into segments: code blocks (```) and inline code (`)
+    const segments: Array<{ text: string; isCode: boolean }> = [];
+
+    // First, extract code fences (```)
+    const fenceRegex = /```[\s\S]*?```/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = fenceRegex.exec(text)) !== null) {
+      // Add text before code fence (not code)
+      if (match.index > lastIndex) {
+        segments.push({ text: text.substring(lastIndex, match.index), isCode: false });
+      }
+      // Add code fence (is code)
+      segments.push({ text: match[0], isCode: true });
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Add remaining text after last code fence
+    if (lastIndex < text.length) {
+      segments.push({ text: text.substring(lastIndex), isCode: false });
+    }
+
+    // Now process non-code segments for inline code (`) and escape HTML
+    const processedSegments = segments.map(segment => {
+      if (segment.isCode) {
+        return segment.text; // Don't touch code fences
+      }
+
+      // Split by inline code (`)
+      const inlineSegments: Array<{ text: string; isCode: boolean }> = [];
+      const inlineRegex = /`[^`]+`/g;
+      let inlineLastIndex = 0;
+      let inlineMatch;
+
+      while ((inlineMatch = inlineRegex.exec(segment.text)) !== null) {
+        // Add text before inline code (not code)
+        if (inlineMatch.index > inlineLastIndex) {
+          inlineSegments.push({ text: segment.text.substring(inlineLastIndex, inlineMatch.index), isCode: false });
+        }
+        // Add inline code (is code)
+        inlineSegments.push({ text: inlineMatch[0], isCode: true });
+        inlineLastIndex = inlineMatch.index + inlineMatch[0].length;
+      }
+
+      // Add remaining text after last inline code
+      if (inlineLastIndex < segment.text.length) {
+        inlineSegments.push({ text: segment.text.substring(inlineLastIndex), isCode: false });
+      }
+
+      // Escape HTML in non-code inline segments
+      return inlineSegments.map(inlineSeg => {
+        if (inlineSeg.isCode) {
+          return inlineSeg.text; // Don't touch inline code
+        }
+        // Escape HTML tags in plain text
+        return inlineSeg.text
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }).join('');
+    });
+
+    return processedSegments.join('');
   }
 
   /**
