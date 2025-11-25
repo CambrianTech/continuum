@@ -12,9 +12,14 @@
 
 import { CognitionLogger } from './cognition/CognitionLogger';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import { ToolRegistry } from '../../../tools/server/ToolRegistry';
 import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
+import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
+import { Commands } from '../../../core/shared/Commands';
+import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
+import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -108,10 +113,11 @@ export class PersonaToolExecutor {
 
   /**
    * Execute tool calls and return formatted results + optional media
+   * Phase 3B: Now also stores results as ChatMessageEntity and returns UUIDs
    *
    * @param toolCalls - Array of parsed tool calls
    * @param context - Execution context with media configuration
-   * @returns Object with formatted text results and optional media array
+   * @returns Object with formatted text results, optional media array, and stored result UUIDs
    */
   async executeToolCalls(
     toolCalls: ToolCall[],
@@ -119,9 +125,10 @@ export class PersonaToolExecutor {
   ): Promise<{
     formattedResults: string;
     media?: MediaItem[];
+    storedResultIds: UUID[];  // Phase 3B: UUIDs for lazy loading
   }> {
     if (toolCalls.length === 0) {
-      return { formattedResults: '' };
+      return { formattedResults: '', storedResultIds: [] };
     }
 
     console.log(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
@@ -129,6 +136,7 @@ export class PersonaToolExecutor {
 
     const results: string[] = [];
     const allMedia: MediaItem[] = [];
+    const storedResultIds: UUID[] = [];  // Phase 3B: Collect UUIDs for working memory
 
     for (const toolCall of toolCalls) {
       const startTime = Date.now();
@@ -160,6 +168,20 @@ export class PersonaToolExecutor {
       console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
       PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
+      // Phase 3B: Store tool result in working memory and get UUID
+      const resultId = await this.storeToolResult(
+        toolCall.toolName,
+        toolCall.parameters,
+        {
+          success: result.success,
+          data: result.content,  // Store full content in metadata
+          error: result.error
+        },
+        context.contextId  // Use contextId (room) for storage
+      );
+      storedResultIds.push(resultId);
+      console.log(`💾 ${this.personaName}: [PHASE 3B] Stored tool result #${resultId.slice(0, 8)}`);
+
       // Check if THIS persona wants media
       if (result.media && context.personaConfig.autoLoadMedia) {
         // Filter by supported types
@@ -187,7 +209,8 @@ export class PersonaToolExecutor {
         context.contextId,
         {
           toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
-          errorMessage: result.error
+          errorMessage: result.error,
+          storedResultId: resultId  // Phase 3B: Link to stored result
         }
       );
 
@@ -196,11 +219,12 @@ export class PersonaToolExecutor {
     }
 
     const successCount = results.filter(r => r.includes('<status>success</status>')).length;
-    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media item(s) loaded`);
+    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media item(s) loaded, ${storedResultIds.length} results stored`);
 
     return {
       formattedResults: results.join('\n\n'),
-      media: allMedia.length > 0 ? allMedia : undefined
+      media: allMedia.length > 0 ? allMedia : undefined,
+      storedResultIds  // Phase 3B: Return UUIDs for lazy loading
     };
   }
 
@@ -242,5 +266,117 @@ ${result.error || 'Unknown error'}
    */
   getAvailableTools(): string[] {
     return this.toolRegistry.getAllTools().map(t => t.name);
+  }
+
+  /**
+   * Store tool result as ChatMessageEntity for working memory
+   * Phase 3B: Lazy loading pattern - store full data, return UUID for reference
+   *
+   * @param toolName - Name of tool executed
+   * @param parameters - Parameters passed to tool
+   * @param result - Execution result
+   * @param roomId - Room where tool was executed
+   * @returns UUID of stored message entity
+   */
+  async storeToolResult(
+    toolName: string,
+    parameters: Record<string, unknown>,
+    result: { success: boolean; data: unknown; error?: string },
+    roomId: UUID
+  ): Promise<UUID> {
+    // Generate short summary (< 100 tokens)
+    const summary = this.generateSummary(toolName, result);
+
+    // Create message entity
+    const message = new ChatMessageEntity();
+    message.id = generateUUID();
+    message.roomId = roomId;
+    message.senderId = this.personaId;
+    message.senderName = this.personaName;
+    message.senderType = 'system';  // Tool results are system messages
+    message.content = { text: summary, media: [] };
+    message.metadata = {
+      toolResult: true,
+      toolName,
+      parameters,
+      fullData: result.data,
+      success: result.success,
+      error: result.error,
+      storedAt: Date.now()
+    };
+    message.timestamp = new Date();
+    message.status = 'sent';
+    message.priority = 'normal';
+    message.reactions = [];
+
+    // Store via Commands system (universal pattern)
+    await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
+      DATA_COMMANDS.CREATE,
+      {
+        collection: ChatMessageEntity.collection,
+        backend: 'server',
+        data: message
+      }
+    );
+
+    console.log(`🔧 ${this.personaName}: Stored tool result #${message.id.slice(0, 8)} (${summary})`);
+    return message.id;
+  }
+
+  /**
+   * Generate short summary of tool result for RAG context
+   * Phase 3B: Keep summaries < 100 tokens to save context budget
+   *
+   * @param toolName - Name of tool executed
+   * @param result - Execution result
+   * @returns Short summary string
+   */
+  private generateSummary(
+    toolName: string,
+    result: { success: boolean; data: unknown; error?: string }
+  ): string {
+    if (!result.success) {
+      return `Tool '${toolName}' failed: ${result.error?.slice(0, 100) || 'Unknown error'}`;
+    }
+
+    // Tool-specific summarization logic
+    const data = result.data;
+
+    if (toolName === 'grep' || toolName === 'code/pattern-search') {
+      const text = typeof data === 'string' ? data : JSON.stringify(data);
+      const lines = text.split('\n').filter(l => l.trim()).length;
+      return `grep found ${lines} match${lines !== 1 ? 'es' : ''}`;
+    }
+
+    if (toolName === 'screenshot') {
+      const img = data as any;
+      if (img?.width && img?.height) {
+        return `Screenshot captured (${img.width}x${img.height}px)`;
+      }
+      return 'Screenshot captured';
+    }
+
+    if (toolName === 'data/list') {
+      const items = data as any[];
+      const count = Array.isArray(items) ? items.length : 0;
+      return `data/list returned ${count} item${count !== 1 ? 's' : ''}`;
+    }
+
+    if (toolName === 'code/read' || toolName === 'file/load') {
+      const text = typeof data === 'string' ? data : JSON.stringify(data);
+      const lines = text.split('\n').length;
+      return `Read ${lines} lines from file`;
+    }
+
+    if (toolName === 'bash' || toolName === 'shell/execute') {
+      const output = typeof data === 'string' ? data : JSON.stringify(data);
+      const lines = output.split('\n').length;
+      return `Command executed (${lines} lines of output)`;
+    }
+
+    // Generic summary for unknown tools
+    const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+    const preview = dataStr.slice(0, 80);
+    return `Tool '${toolName}' completed: ${preview}${dataStr.length > 80 ? '...' : ''}`;
   }
 }
