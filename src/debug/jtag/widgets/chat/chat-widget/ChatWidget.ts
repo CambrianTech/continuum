@@ -26,7 +26,7 @@ import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEven
 // MessageComposerWidget removed - using inline HTML instead
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
-  private messageInput?: HTMLInputElement;
+  private messageInput?: HTMLTextAreaElement;
   private currentRoomId: UUID | null = DEFAULT_ROOMS.GENERAL as UUID; // Default to General room
   private currentRoomName: string = 'General';
   private currentRoom: RoomEntity | null = null;
@@ -415,7 +415,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   protected renderFooter(): string {
     return `
       <div class="input-container">
-        <input type="text" class="message-input" id="messageInput" placeholder="Type a message... (or drag & drop files)">
+        <textarea class="message-input" id="messageInput" placeholder="Type a message... (or drag & drop files)" rows="1"></textarea>
         <button class="send-button" id="sendButton">Send</button>
       </div>
     `;
@@ -438,7 +438,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     // Cache input element after DOM is rendered
-    this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLInputElement;
+    this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLTextAreaElement;
     this.setupMessageInputHandlers();
 
     // Add drag-and-drop to entire chat widget
@@ -592,7 +592,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
-   * Setup handlers for message input (send button, Enter key)
+   * Setup handlers for message input (send button, Enter key, auto-grow)
    */
   private setupMessageInputHandlers(): void {
     if (!this.messageInput) return;
@@ -602,7 +602,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Send on button click
     sendButton?.addEventListener('click', () => this.sendMessage());
 
-    // Send on Enter key (Shift+Enter for newline if we upgrade to textarea)
+    // Send on Enter key (Shift+Enter for newline)
     this.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -610,6 +610,30 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.sendMessage();
       }
     });
+
+    // Auto-grow textarea as user types
+    this.messageInput.addEventListener('input', () => {
+      this.autoGrowTextarea();
+    });
+
+    // Initial resize
+    this.autoGrowTextarea();
+  }
+
+  /**
+   * Auto-grow textarea to fit content (max 10 rows)
+   */
+  private autoGrowTextarea(): void {
+    if (!this.messageInput) return;
+
+    // Reset height to calculate new height
+    this.messageInput.style.height = 'auto';
+
+    // Calculate new height based on scrollHeight (capped at 10 rows ~= 200px)
+    const maxHeight = 200; // ~10 rows
+    const newHeight = Math.min(this.messageInput.scrollHeight, maxHeight);
+
+    this.messageInput.style.height = `${newHeight}px`;
   }
 
   /**
@@ -675,6 +699,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.messageInput.value = '';
       this.pendingAttachments = [];
       this.messageInput.placeholder = 'Type a message... (or drag & drop files)';
+
+      // Reset textarea height to single row
+      this.autoGrowTextarea();
 
       // Scroll to bottom after sending OWN message
       if (this.scroller) {
@@ -782,9 +809,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         }
       }
 
-      // Update input placeholder to show attachment count
+      // Update input placeholder to show attachment count and focus input
       if (this.messageInput && this.pendingAttachments.length > 0) {
         this.messageInput.placeholder = `Type a message... (${this.pendingAttachments.length} file${this.pendingAttachments.length > 1 ? 's' : ''} attached)`;
+        // Focus input so user can press Enter to send attachments
+        this.messageInput.focus();
       }
     }
   }

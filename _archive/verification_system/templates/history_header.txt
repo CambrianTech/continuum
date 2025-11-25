@@ -1,2 +1,0 @@
-# Continuum Verification History
-# Format: DateTime | Status | Duration | SHA | CommitMessage | VerificationDir

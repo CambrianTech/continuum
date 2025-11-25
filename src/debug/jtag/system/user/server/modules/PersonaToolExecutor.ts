@@ -34,6 +34,7 @@ export interface ToolExecutionContext {
   personaName: string;
   sessionId: UUID;  // AI's own sessionId for sandboxed tool execution
   contextId: UUID;
+  context: import('../../../core/types/JTAGTypes').JTAGContext;  // PersonaUser's enriched context (with callerType='persona')
   personaConfig: PersonaMediaConfig;
 }
 
@@ -142,7 +143,8 @@ export class PersonaToolExecutor {
         toolCall.toolName,
         toolCall.parameters,
         context.sessionId,  // Pass AI's sessionId for proper attribution
-        context.contextId
+        context.contextId,
+        context.context  // Pass PersonaUser's enriched context (with callerType='persona')
       );
 
       const result: ToolResult = {

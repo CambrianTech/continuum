@@ -237,4 +237,53 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
   protected getRouter(): JTAGRouter {
     return this.commander.router;
   }
+
+  /**
+   * Adapt command result based on caller type (Phase 1 Step 3)
+   *
+   * This helper enables caller-adaptive command output - commands can return
+   * different result formats based on who is calling (persona/human/script).
+   *
+   * Example usage in screenshot command:
+   * ```typescript
+   * const baseResult = { filepath, filename, success: true, ... };
+   * return await this.adaptResultForCaller(baseResult, params.context, imageBytes);
+   * ```
+   *
+   * Caller-specific adaptations:
+   * - PersonaUser: Populate media field with image bytes for vision system
+   * - HumanUser: Just filepath (opens in native OS viewer)
+   * - Script: Structured data only
+   *
+   * @param baseResult - Base result that all callers receive
+   * @param context - JTAG execution context containing userId for caller detection
+   * @param richData - Optional rich data to populate for capable callers (e.g., image bytes)
+   * @returns Adapted result with caller-specific fields populated
+   *
+   * @see docs/CALLER-ADAPTIVE-OUTPUTS.md for architecture details
+   */
+  protected async adaptResultForCaller<TResult extends CommandResult>(
+    baseResult: TResult,
+    context: JTAGContext,
+    richData?: Buffer | Uint8Array | unknown
+  ): Promise<TResult> {
+    // Read caller type from context (populated by SessionDaemon during session creation)
+    // If not set, default to 'script' (safest fallback - no assumptions)
+    const callerType = context.callerType ?? 'script';
+
+    // For now, just return base result - subclasses will override
+    // to add caller-specific field population logic
+    //
+    // Example implementation in screenshot command:
+    // switch (callerType) {
+    //   case 'persona':
+    //     return { ...baseResult, media: { type: 'image/png', data: richData, ... } };
+    //   case 'human':
+    //   case 'script':
+    //   default:
+    //     return baseResult;
+    // }
+
+    return baseResult;
+  }
 }

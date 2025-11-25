@@ -236,9 +236,9 @@ export class PersonaResponseGenerator {
         this.personaId,
         {
           modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
-          maxMemories: 10,
+          maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
           includeArtifacts: false, // TODO: Implement proper on-demand image loading via tools
-          includeMemories: false,   // Skip private memories for now
+          includeMemories: true,   // Enable Hippocampus LTM retrieval
           // ✅ FIX: Include current message even if not yet persisted to database
           currentMessage: {
             role: 'user',
@@ -257,9 +257,23 @@ export class PersonaResponseGenerator {
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
 
       // System prompt from RAG builder (includes room membership!)
+      let systemPrompt = fullRAGContext.identity.systemPrompt;
+
+      // Inject consolidated memories from Hippocampus LTM (if available)
+      if (fullRAGContext.privateMemories && fullRAGContext.privateMemories.length > 0) {
+        const memorySection = `\n\n=== YOUR CONSOLIDATED MEMORIES ===\nThese are important things you've learned and consolidated into long-term memory:\n\n${
+          fullRAGContext.privateMemories.map((mem, idx) =>
+            `${idx + 1}. [${mem.type}] ${mem.content} (${new Date(mem.timestamp).toLocaleDateString()})`
+          ).join('\n')
+        }\n\nUse these memories to inform your responses when relevant.\n================================`;
+
+        systemPrompt += memorySection;
+        console.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
+      }
+
       messages.push({
         role: 'system',
-        content: fullRAGContext.identity.systemPrompt
+        content: systemPrompt
       });
 
       // Add conversation history from RAG context with human-readable timestamps
@@ -489,6 +503,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             personaName: this.personaName,
             sessionId,  // AI's own sessionId for sandboxed tool execution
             contextId: originalMessage.roomId,
+            context: this.client!.context,  // PersonaUser's enriched context (with callerType='persona')
             personaConfig: this.mediaConfig
           };
 

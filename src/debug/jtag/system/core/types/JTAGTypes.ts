@@ -45,27 +45,98 @@ export const JTAG_ENVIRONMENTS = {
 
 export type JTAGEnvironment = typeof JTAG_ENVIRONMENTS[keyof typeof JTAG_ENVIRONMENTS];
 
+/**
+ * Caller Type - Who is requesting a command
+ *
+ * Used for caller-adaptive command output - different callers get
+ * output optimized for their capabilities and context.
+ *
+ * @see docs/CALLER-ADAPTIVE-OUTPUTS.md for architecture details
+ */
+export type CallerType = 'persona' | 'human' | 'script';
+
+/**
+ * Caller Capabilities - What the caller can process
+ *
+ * Enables commands to adapt their output based on caller capabilities.
+ * For example, PersonaUsers with vision can receive image bytes directly,
+ * while HumanUsers just need file paths.
+ */
+export interface CallerCapabilities {
+  /** Can process visual data (images, screenshots) */
+  vision?: boolean;
+
+  /** Can process audio data */
+  audio?: boolean;
+
+  /** Can parse structured code (AST, syntax trees) */
+  parsing?: boolean;
+
+  /** Display environment type */
+  display?: 'terminal' | 'browser' | 'none';
+}
+
+/**
+ * Model Configuration - AI model settings for PersonaUsers
+ *
+ * Used to determine appropriate resource sizing (e.g., image dimensions
+ * based on model's context window capacity).
+ */
+export interface ModelConfig {
+  /** AI provider (ollama, openai, anthropic, etc.) */
+  provider?: string;
+
+  /** Model name (llama3.2:3b, claude-3-5-sonnet, etc.) */
+  model?: string;
+
+  /** Temperature setting (0.0-1.0) */
+  temperature?: number;
+
+  /** Maximum tokens for generation */
+  maxTokens?: number;
+}
 
 /**
  * JTAG Context - Universal Module Identity with Secure Configuration
- * 
+ *
  * Shared context object that uniquely identifies execution environment.
  * All modules within the same context share this identity for correlation.
- * 
+ *
  * SECURITY: Configuration access is environment-aware:
  * - Server contexts get server configuration (with secrets)
  * - Client contexts get client-safe configuration (no secrets)
  * - Cross-contamination is prevented at the type level
- * 
+ *
+ * CALLER-ADAPTIVE OUTPUT (NEW):
+ * - callerType: Explicit hint about who is calling (persona/human/script)
+ * - capabilities: What the caller can process (vision, audio, parsing)
+ * - Enables commands to return output optimized for the caller
+ *
  * @param uuid - Unique identifier for this context instance
  * @param environment - Execution environment (server/browser/remote)
  * @param getConfig - Environment-appropriate configuration accessor
+ * @param callerType - Optional explicit caller type hint
+ * @param capabilities - Optional caller capability information
+ *
+ * @see docs/CALLER-ADAPTIVE-OUTPUTS.md for architecture details
  */
 export interface JTAGContext {
   uuid: UUID;
   environment: JTAGEnvironment;
   readonly config: import('../../shared/SecureConfigTypes').JTAGConfig;
   getConfig(): JTAGContextConfig;
+
+  /** Optional user ID of the calling user (enables caller-adaptive output when known) */
+  userId?: UUID;
+
+  /** Optional explicit caller type hint (enables caller-adaptive output) */
+  callerType?: CallerType;
+
+  /** Optional caller capabilities (enables capability-aware output) */
+  capabilities?: CallerCapabilities;
+
+  /** Optional model configuration (for PersonaUsers, used to determine appropriate resource sizing) */
+  modelConfig?: ModelConfig;
 }
 
 /**

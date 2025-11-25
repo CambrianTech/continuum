@@ -1,17 +1,287 @@
 # PersonaUser Genomic Architecture
 
-**Complete integration of genomic LoRA layers, RAG context, and entity storage for autonomous AI citizens**
+**Complete integration of RTOS autonomous loops, multi-layer genome paging, RAG context, and entity storage for autonomous AI citizens**
+
+**Last Updated**: 2025-11-22
 
 ## 🎯 **EXECUTIVE SUMMARY**
 
 PersonaUsers are **autonomous AI citizens** with:
+- **RTOS-style subprocess architecture** (PersonaSubprocess pattern)
+- **Multi-layer PEFT composition** (N LoRA adapters active simultaneously)
+- **Autonomous loop with convergence** (3 pillars: autonomous loop + self-tasks + genome paging)
+- **Hippocampus memory consolidation** (non-blocking, signal-triggered)
 - **Isolated per-persona databases** (`.continuum/personas/{id}/state.sqlite`)
 - **RAG-based context loading** from chat history per room
-- **Genomic LoRA layers** for specialization and evolution
 - **Universal client interface** via JTAGClient for all operations
 - **Entity-driven storage** using DataDaemon + SQLite adapters
 
-## 🧬 **GENOMIC LAYER SYSTEM**
+## 🤖 **RTOS AUTONOMOUS ARCHITECTURE**
+
+### **PersonaSubprocess Pattern** (Inspired by cbar's QueueThread)
+
+All background processing in PersonaUser follows an **RTOS-style architecture**:
+
+**Key Principles:**
+1. **Base class handles ALL threading logic** (PersonaSubprocess.ts, 227 lines)
+2. **Signal-based activation** (not continuous polling)
+3. **Context-adaptive priority** (like hippocampus during focus)
+4. **Lean core loop** (< 10ms, free of bottlenecks)
+5. **Pass entire persona** (direct property access, not events)
+
+```typescript
+// Base class (227 lines, handles ALL threading)
+export abstract class PersonaSubprocess<T> {
+  protected readonly persona: PersonaUser;  // Full access to persona
+
+  // Base handles: queue, timing, lifecycle, errors
+  // Implementations only override:
+  protected abstract handleTask(task: T): Promise<boolean>;
+}
+
+// Memory consolidation subprocess (~40 lines)
+export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess<void> {
+  protected async tick(): Promise<void> {
+    // LEAN: Check signals (just read counters)
+    const signals = this.checkSignals();
+
+    // Heavy work ONLY when triggered
+    if (signals.memoryPressure > 0.8) {
+      await this.consolidate();
+    }
+  }
+}
+```
+
+**Context-Adaptive Priority:**
+```typescript
+// Adjust priority based on persona state
+private getEffectivePriority(): number {
+  if (this.persona.state.isFocused) {
+    // Slow down 70% during focus (like hippocampus)
+    return this.basePriority * 0.3;
+  }
+
+  if (this.persona.state.cognitiveLoad < 0.3) {
+    // Speed up 50% during idle
+    return this.basePriority * 1.5;
+  }
+
+  return this.basePriority;
+}
+```
+
+### **Convergence of Three Pillars**
+
+PersonaUser integrates **three breakthrough architectures into ONE method**:
+
+```typescript
+// ONE method integrates all three visions
+async serviceInbox(): Promise<void> {
+  // 1. AUTONOMOUS LOOP: Check inbox (external + self-created tasks)
+  const tasks = await this.inbox.peek(10);
+  if (tasks.length === 0) {
+    await this.rest();  // Recover energy when idle
+    return;
+  }
+
+  // 2. SELF-MANAGED QUEUES: Generate self-tasks (autonomy)
+  await this.generateSelfTasks();
+
+  // 3. Select highest priority task (STATE-AWARE)
+  const task = tasks[0];
+  if (!this.state.shouldEngage(task.priority)) {
+    return;  // Skip low-priority when tired
+  }
+
+  // 4. GENOME PAGING: Activate skill
+  await this.genome.activateSkill(task.domain);
+
+  // 5. Coordinate if external task
+  const permission = await this.coordinator.requestTurn(task);
+
+  // 6. Process task
+  await this.processTask(task);
+
+  // 7. Update state (energy/mood tracking)
+  await this.state.recordActivity(task.duration, task.complexity);
+
+  // 8. Evict adapters if memory pressure
+  if (this.genome.memoryPressure > 0.8) {
+    await this.genome.evictLRU();
+  }
+}
+```
+
+**Three Pillars:**
+1. **Autonomous Loop**: Adaptive cadence polling (3s → 5s → 7s → 10s based on mood)
+2. **Self-Managed Queues**: AI creates own tasks (not just reactive)
+3. **Genome Paging**: Virtual memory for skills (LRU eviction)
+
+### **Hippocampus Memory Consolidation**
+
+Memory consolidation runs as a **non-blocking RTOS subprocess**:
+
+```typescript
+// Working memory → Pattern detection → Long-term storage
+export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess<void> {
+  protected async tick(): Promise<void> {
+    // LEAN signal checking (< 1ms)
+    const memoryPressure = this.persona.workingMemory.getUtilization();
+
+    if (memoryPressure > 0.8) {
+      // Heavy work (triggered, not continuous)
+      const entries = await this.persona.workingMemory.recall({ limit: 100 });
+      const patterns = await this.detectPatterns(entries);
+      await this.consolidateToLongTerm(patterns);
+    }
+  }
+
+  private async detectPatterns(entries: WorkingMemoryEntry[]): Promise<Pattern[]> {
+    // Cosine similarity clustering
+    // Find repeated concepts, related topics
+  }
+}
+```
+
+**Key Properties:**
+- **Non-blocking**: Runs in parallel with main cognition
+- **Signal-triggered**: Only processes when memory pressure > 0.8
+- **Context-adaptive**: Slows down 70% when persona is focused
+- **Pattern-driven**: Cosine similarity for clustering
+
+## 🧬 **MULTI-LAYER GENOMIC SYSTEM**
+
+### **GenomeDaemon RTOS Subprocess**
+
+Genome operations run in a **non-blocking RTOS subprocess** for performance:
+
+```typescript
+export class GenomeDaemon extends PersonaSubprocess<GenomeTask> {
+  protected async handleTask(task: GenomeTask): Promise<boolean> {
+    switch (task.type) {
+      case 'activate-adapter':
+        return await this.activateAdapter(task.adapterId, task.personaId);
+      case 'evict-adapter':
+        return await this.evictAdapter(task.adapterId);
+      case 'compose-layers':
+        return await this.composeLayers(task.personaId);
+    }
+  }
+}
+```
+
+**Key Properties:**
+- **< 1ms activation time** (signal-based, not blocking)
+- **LRU eviction** when memory full
+- **Hot-swappable** adapters (change without restart)
+- **Three deployment scenarios**: Local, Hybrid, Cloud-only
+
+### **Multi-Layer PEFT Composition**
+
+PersonaUsers support **N LoRA adapters active SIMULTANEOUSLY** (not single layer):
+
+```typescript
+interface PersonaGenome {
+  personaId: UUID;
+  genomeVersion: number;
+
+  // MULTI-LAYER: N adapters active simultaneously
+  activeAdapters: [
+    {
+      layerId: UUID,
+      name: 'foundation-skills',
+      weight: 0.4,           // Skill contribution: 40%
+      personality: 0.1,      // Personality contribution: 10%
+      deployment: 'local'    // Or 'remote' or 'hybrid'
+    },
+    {
+      layerId: UUID,
+      name: 'typescript-expertise',
+      weight: 0.5,           // Skill: 50%
+      personality: 0.0,      // Personality: 0%
+      deployment: 'local'
+    },
+    {
+      layerId: UUID,
+      name: 'communication-style',
+      weight: 0.1,           // Skill: 10%
+      personality: 0.9,      // Personality: 90%
+      deployment: 'remote'   // Can be remote-only
+    }
+  ];
+
+  // Memory constraints
+  quotaMB: number;                // Total memory quota
+  usedMB: number;                 // Currently loaded adapters
+  memoryPressure: number;         // 0.0-1.0, triggers eviction
+
+  // Emergent capabilities from layer combination
+  overallCapabilities: string[];
+  performanceProfile: PerformanceProfile;
+}
+```
+
+**Dynamic Weight Adjustment:**
+```typescript
+// Adjust adapter weights per task complexity
+async adjustWeightsForComplexity(complexity: 'straightforward' | 'moderate' | 'nuanced') {
+  switch (complexity) {
+    case 'straightforward':
+      // Speed priority: 80% skill, 20% personality
+      return { skill: 0.8, personality: 0.2 };
+    case 'moderate':
+      // Balanced: 70% skill, 30% personality
+      return { skill: 0.7, personality: 0.3 };
+    case 'nuanced':
+      // Depth priority: 90% skill, 10% personality
+      return { skill: 0.9, personality: 0.1 };
+  }
+}
+```
+
+### **Genome Paging (Virtual Memory Pattern)**
+
+Load/unload adapters dynamically based on task domain:
+
+```typescript
+// Genome paging in action
+async activateSkill(domain: string): Promise<void> {
+  // 1. Check if skill already loaded
+  const adapter = this.genome.findAdapterByDomain(domain);
+  if (adapter?.isLoaded) {
+    return;  // Already active
+  }
+
+  // 2. Check memory pressure
+  if (this.genome.memoryPressure > 0.8) {
+    // Evict least recently used adapter
+    await this.genome.evictLRU();
+  }
+
+  // 3. Page in adapter (< 1ms signal to GenomeDaemon)
+  await GenomeDaemon.shared().activateAdapter(adapter.id, this.id);
+
+  // 4. Update tracking
+  adapter.lastUsedAt = Date.now();
+  adapter.isLoaded = true;
+}
+```
+
+**LRU Eviction:**
+```typescript
+async evictLRU(): Promise<void> {
+  // Find least recently used adapter not currently in use
+  const lru = this.activeAdapters
+    .filter(a => !a.isActive)
+    .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+
+  if (lru) {
+    await GenomeDaemon.shared().evictAdapter(lru.id);
+    console.log(`🗑️ Evicted LRU adapter: ${lru.name} (freed ${lru.sizeMB}MB)`);
+  }
+}
+```
 
 ### **What is a Genomic Layer?**
 
@@ -39,30 +309,13 @@ interface GenomicLayer {
     performance: PerformanceMetrics;
   };
 
+  // Deployment
+  deployment: 'local' | 'remote' | 'hybrid';
+  sizeMB: number;                    // Memory footprint
+
   // Sharing
   visibility: 'public' | 'private';
   license: string;
-}
-```
-
-### **Persona Genomic Assembly**
-
-Each PersonaUser assembles layers into a complete "genome":
-
-```typescript
-interface PersonaGenome {
-  personaId: UUID;
-
-  // Layer stack (order matters!)
-  layers: [
-    { layerId: UUID, weight: number, order: 1 },  // Foundation
-    { layerId: UUID, weight: number, order: 2 },  // Specialization
-    { layerId: UUID, weight: number, order: 3 }   // Communication style
-  ];
-
-  // Emergent capabilities from layer combination
-  overallCapabilities: string[];
-  performanceProfile: PerformanceProfile;
 }
 ```
 
@@ -506,6 +759,176 @@ async searchSimilarContext(
 - Global layer discovery
 - Contribution rewards
 - Security validation
+
+## 📊 **IMPLEMENTATION STATUS** (2025-11-22)
+
+### **✅ IMPLEMENTED (Working Now)**
+
+**RTOS Architecture:**
+- ✅ PersonaSubprocess base class (227 lines) - system/user/server/modules/PersonaSubprocess.ts
+- ✅ MemoryConsolidationSubprocess (350 lines) - system/user/server/modules/MemoryConsolidationSubprocess.ts
+- ✅ PersonaInbox with priority queue (23 tests passing)
+- ✅ PersonaState with energy/mood tracking (37 tests passing)
+- ✅ RateLimiter for traffic management
+- ✅ ChatCoordinationStream (342 lines) - RTOS primitives for thought coordination
+
+**Foundation:**
+- ✅ PersonaUser with JTAGClient
+- ✅ Per-persona isolated SQLite databases
+- ✅ Event-driven chat system
+- ✅ Universal Commands API
+- ✅ AIProviderDaemon (handles inference across Ollama, OpenAI, Anthropic)
+
+**Genome (Minimal):**
+- ✅ GenomeManager singleton interface (structure only)
+- ✅ PEFT composition at Python level (peft_composition.py, 267 lines)
+- ❌ NOT integrated into TypeScript PersonaGenome yet
+
+### **🚧 IN PROGRESS**
+
+- Task database and CLI commands (`./jtag task/create`, `task/list`, `task/complete`)
+- Self-task generation (AIs create own work)
+- Adaptive complexity routing (SPIKE escalation)
+
+### **📋 PLANNED (Future Phases)**
+
+**Multi-Layer Genome (Phase 4):**
+- GenomeDaemon as RTOS subprocess
+- N-layer PEFT composition in TypeScript (currently single-layer)
+- Hot-swappable adapters
+- Dynamic weight adjustment per task complexity
+- LRU eviction with memory pressure tracking
+- Genome paging (< 1ms activation)
+
+**Autonomous Loop Convergence (Phase 4):**
+- serviceInbox() method integrating all three pillars
+- Self-task generation (memory consolidation, skill audits, resume work)
+- Domain-based skill activation
+- Adaptive cadence based on mood (3s → 10s)
+
+**Training & Evolution (Phase 5):**
+- LoRA training as continuous background task
+- Training job queue coordinated with inference load
+- Automated evolution triggers
+- Checkpoint/restore system
+
+**P2P Sharing (Phase 6):**
+- Genomic layer distribution
+- Global discovery
+- Cross-persona learning
+
+### **🚨 CRITICAL: Incremental Migration Strategy (cbar Pattern)**
+
+**Phase components in, verify they work, THEN replace the whole loop:**
+
+**Migration Pattern** (how cbar did it):
+1. ✅ **Keep existing cognition loop working** (no changes to current PersonaUser flow)
+2. ✅ **Add RTOS subprocesses alongside** (parallel, not replacing yet)
+3. ✅ **Verify subprocesses work correctly** (logs, tests, monitoring - run in parallel for validation)
+4. ✅ **Once comfortable they're working** - begin phasing out old loop
+5. ✅ **Main loop functionality becomes a subprocess too** (everything is a process)
+6. ✅ **Phase out old loop completely** - now fully RTOS architecture
+
+**End State**: No special "main loop" - everything is subprocesses being orchestrated
+
+**Example Migration Path:**
+
+```typescript
+// ═══════════════════════════════════════════════════════════
+// PHASE 1: BEFORE (current state)
+// ═══════════════════════════════════════════════════════════
+private async handleChatMessage(message: ChatMessageEntity): Promise<void> {
+  // Everything happens in main loop (blocking)
+  await this.consolidateMemories();
+  await this.generateResponse(message);
+  await this.updateState();
+}
+
+// ═══════════════════════════════════════════════════════════
+// PHASE 2: Add subprocesses alongside (both running in parallel)
+// ═══════════════════════════════════════════════════════════
+private memoryWorker: MemoryConsolidationSubprocess;
+
+async initialize(): Promise<void> {
+  // Start subprocess (runs in parallel for validation)
+  this.memoryWorker = new MemoryConsolidationSubprocess(this);
+  await this.memoryWorker.start();
+}
+
+private async handleChatMessage(message: ChatMessageEntity): Promise<void> {
+  // Old loop STILL works (no changes yet)
+  await this.consolidateMemories();  // Still here
+  await this.generateResponse(message);
+  await this.updateState();
+}
+
+// Verify: Check logs - is subprocess working correctly?
+
+// ═══════════════════════════════════════════════════════════
+// PHASE 3: Once comfortable, remove inline call
+// ═══════════════════════════════════════════════════════════
+private async handleChatMessage(message: ChatMessageEntity): Promise<void> {
+  // REMOVED: await this.consolidateMemories();
+  // Now handled by subprocess automatically
+  await this.generateResponse(message);
+  await this.updateState();
+}
+
+// ═══════════════════════════════════════════════════════════
+// PHASE 4: Main loop functionality becomes a subprocess too
+// ═══════════════════════════════════════════════════════════
+private cognitiveWorker: CognitiveProcessingSubprocess;
+
+async initialize(): Promise<void> {
+  // Everything is now a subprocess
+  this.memoryWorker = new MemoryConsolidationSubprocess(this);
+  this.cognitiveWorker = new CognitiveProcessingSubprocess(this);
+
+  await this.memoryWorker.start();
+  await this.cognitiveWorker.start();
+}
+
+// OLD: private async handleChatMessage() - REMOVED
+// Main loop is gone - CognitiveProcessingSubprocess handles it
+
+// ═══════════════════════════════════════════════════════════
+// PHASE 5: Fully RTOS (end state)
+// ═══════════════════════════════════════════════════════════
+// No special "main loop" - just subprocesses being orchestrated:
+// - MemoryConsolidationSubprocess (low priority, signal-triggered)
+// - CognitiveProcessingSubprocess (high priority, inbox-driven)
+// - TaskGenerationSubprocess (low priority, idle-triggered)
+// - GenomeDaemon (lowest priority, memory-pressure-triggered)
+```
+
+**Result**:
+- **Phase 2-3**: Subprocesses run alongside old loop for validation
+- **Phase 4-5**: Old loop replaced - everything is RTOS subprocesses
+- **Safe**: Can revert if issues found during validation phase
+
+### **Safety Principle: New Components Have Luxury of Not Breaking Much**
+
+**Critical Infrastructure (MUST work)**:
+- ✅ Events system (Events.subscribe/emit) - foundation for everything
+- ✅ Scheduling/timing - personas must respond to messages
+- ✅ Message handling - existing chat loop must keep working
+
+**New Subprocesses (Can fail safely during validation)**:
+- MemoryConsolidationSubprocess fails? → Old loop still consolidates inline
+- TaskGenerationSubprocess fails? → Personas just don't self-generate tasks yet
+- GenomeDaemon fails? → Genome operations don't happen, but personas still respond
+
+**Key Insight**: Test new components thoroughly, but if they fail during Phase 2-3:
+- **Events still work** ✅
+- **Scheduling still works** ✅
+- **Personas still respond** ✅
+- **Nothing breaks** ✅
+
+Only move to Phase 4-5 once new components are proven stable.
+
+**The sophisticated architecture documented above is the DESIGN TARGET.**
+
+**Integration happens piecemeal** - migrate one component at a time, verify it works, then migrate the next.
 
 ## 💡 **KEY DESIGN PRINCIPLES**
 

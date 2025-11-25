@@ -101,6 +101,9 @@ export class DataDaemon {
   private isInitialized: boolean = false;
   private paginatedQueryManager: PaginatedQueryManager;
 
+  // Track which collections have had their schema ensured (generic caching at daemon level)
+  private ensuredSchemas: Set<string> = new Set();
+
   constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter) {
     this.config = config;
     this.adapter = adapter;
@@ -136,7 +139,10 @@ export class DataDaemon {
     context: DataOperationContext
   ): Promise<T> {
     await this.ensureInitialized();
-    
+
+    // Ensure schema exists (orchestrate table creation via adapter)
+    await this.ensureSchema(collection);
+
     // Validate context and data
     const validationResult = this.validateOperation(collection, data, context);
     if (!validationResult.success && !validationResult.data) {
@@ -518,16 +524,45 @@ export class DataDaemon {
   }
 
   /**
+   * Ensure collection schema exists (orchestrated by daemon, implemented by adapter)
+   *
+   * This is the SINGLE point where schema creation is orchestrated.
+   * - Caches which collections are ensured (generic across all adapters)
+   * - Delegates to adapter.ensureSchema() for actual implementation
+   * - Adapter decides how to create schema (SQL table, Mongo collection, etc.)
+   */
+  private async ensureSchema(collection: string): Promise<void> {
+    // Check cache first (generic caching at daemon level)
+    if (this.ensuredSchemas.has(collection)) {
+      return; // Already ensured this session
+    }
+
+    // Delegate to adapter (adapter knows table names, column names, SQL)
+    const result = await this.adapter.ensureSchema(collection);
+    if (!result.success) {
+      throw new Error(`Failed to ensure schema for ${collection}: ${result.error}`);
+    }
+
+    // Cache success (generic - works for any adapter type)
+    this.ensuredSchemas.add(collection);
+  }
+
+  /**
    * Validate entity data - generic validation using BaseEntity.validate()
    * ARCHITECTURE: Data daemon only knows BaseEntity, never specific entity types
    * Uses entity registry to create proper instances for validation
+   *
+   * NOTE: If no entity is registered, validation is SKIPPED (allows custom collections)
+   * This matches SqliteStorageAdapter behavior which handles unregistered collections
    */
   private validateSchema<T extends BaseEntity>(collection: string, data: Record<string, unknown>): SchemaValidationResult {
     // Get entity class from registry - works generically with ANY registered entity type
     const EntityClass = getRegisteredEntity(collection) as EntityConstructor;
     if (!EntityClass) {
-      console.error(`❌ DataDaemon: No entity class registered for collection "${collection}"`);
-      return { success: false, errors: [`No entity class registered for collection "${collection}"`] };
+      // No entity registered - skip validation (custom collection manages its own schema)
+      // This allows collections like "memories" that use direct SQL schema creation
+      console.log(`⚠️ DataDaemon: No entity registered for "${collection}" - skipping validation (custom collection)`);
+      return { success: true };
     }
 
     // Create proper entity instance using BaseEntity factory method
@@ -939,6 +974,168 @@ export class DataDaemon {
     }
 
     return DataDaemon.sharedInstance.getActiveQueries();
+  }
+
+  // =============================================
+  // VECTOR SEARCH INTERFACE
+  // =============================================
+
+  /**
+   * Perform vector similarity search - CLEAN INTERFACE
+   *
+   * @example
+   * const results = await DataDaemon.vectorSearch<MemoryData>({
+   *   collection: 'memories',
+   *   queryText: 'user prefers detailed explanations',
+   *   k: 10,
+   *   similarityThreshold: 0.7
+   * });
+   */
+  static async vectorSearch<T extends RecordData>(
+    options: import('./VectorSearchTypes').VectorSearchOptions
+  ): Promise<StorageResult<import('./VectorSearchTypes').VectorSearchResponse<T>>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    // Check if adapter supports vector search
+    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    if (!adapter.vectorSearch) {
+      return {
+        success: false,
+        error: 'Current storage adapter does not support vector search'
+      };
+    }
+
+    return await adapter.vectorSearch(options);
+  }
+
+  /**
+   * Generate embedding for text - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.generateEmbedding({
+   *   text: 'We should use TypeScript for type safety',
+   *   model: { name: 'all-minilm', dimensions: 384, provider: 'ollama' }
+   * });
+   */
+  static async generateEmbedding(
+    request: import('./VectorSearchTypes').GenerateEmbeddingRequest
+  ): Promise<StorageResult<import('./VectorSearchTypes').GenerateEmbeddingResponse>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    // Check if adapter supports embedding generation
+    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    if (!adapter.generateEmbedding) {
+      return {
+        success: false,
+        error: 'Current storage adapter does not support embedding generation'
+      };
+    }
+
+    return await adapter.generateEmbedding(request);
+  }
+
+  /**
+   * Index vector for a record - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.indexVector({
+   *   collection: 'memories',
+   *   id: memoryId,
+   *   embedding: [0.123, -0.456, 0.789, ...],
+   *   metadata: { embeddingModel: 'all-minilm', generatedAt: new Date().toISOString() }
+   * });
+   */
+  static async indexVector(
+    request: import('./VectorSearchTypes').IndexVectorRequest
+  ): Promise<StorageResult<boolean>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    if (!adapter.indexVector) {
+      return {
+        success: false,
+        error: 'Current storage adapter does not support vector indexing'
+      };
+    }
+
+    return await adapter.indexVector(request);
+  }
+
+  /**
+   * Backfill vectors for existing records - CLEAN INTERFACE
+   *
+   * @example
+   * const result = await DataDaemon.backfillVectors({
+   *   collection: 'memories',
+   *   textField: 'content',
+   *   batchSize: 100
+   * }, (progress) => {
+   *   console.log(`Processed ${progress.processed}/${progress.total} records`);
+   * });
+   */
+  static async backfillVectors(
+    request: import('./VectorSearchTypes').BackfillVectorsRequest,
+    onProgress?: (progress: import('./VectorSearchTypes').BackfillVectorsProgress) => void
+  ): Promise<StorageResult<import('./VectorSearchTypes').BackfillVectorsProgress>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    if (!adapter.backfillVectors) {
+      return {
+        success: false,
+        error: 'Current storage adapter does not support vector backfilling'
+      };
+    }
+
+    return await adapter.backfillVectors(request, onProgress);
+  }
+
+  /**
+   * Get vector index statistics - CLEAN INTERFACE
+   *
+   * @example
+   * const stats = await DataDaemon.getVectorIndexStats('memories');
+   */
+  static async getVectorIndexStats(
+    collection: string
+  ): Promise<StorageResult<import('./VectorSearchTypes').VectorIndexStats>> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    if (!adapter.getVectorIndexStats) {
+      return {
+        success: false,
+        error: 'Current storage adapter does not support vector index stats'
+      };
+    }
+
+    return await adapter.getVectorIndexStats(collection);
+  }
+
+  /**
+   * Get vector search capabilities - CLEAN INTERFACE
+   */
+  static async getVectorSearchCapabilities(): Promise<import('./VectorSearchTypes').VectorSearchCapabilities | null> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    const adapter = (DataDaemon.sharedInstance as any).adapter as any;
+    if (!adapter.getVectorSearchCapabilities) {
+      return null;
+    }
+
+    return await adapter.getVectorSearchCapabilities();
   }
 }
 

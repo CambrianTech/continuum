@@ -157,3 +157,6 @@ src/commands/**/*.d.ts
 
 # Genome training artifacts
 .continuum/genome/
+!CLAUDE.md
+!test*output.txt
+_archive/

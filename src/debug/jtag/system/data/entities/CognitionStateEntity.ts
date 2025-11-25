@@ -44,11 +44,11 @@ export interface Preoccupation {
  */
 export interface WorkingMemorySnapshot {
   id: UUID;
-  domain: string;
-  contextId: UUID;
-  thoughtType: string;      // e.g., "observation", "reflection", "plan"
+  domain: string | null;      // null = global scope
+  contextId: UUID | null;      // null = domain-wide
+  thoughtType: string;         // e.g., "observation", "reflection", "plan" (AI-generated)
   thoughtContent: string;
-  importance: number;       // 0.0-1.0
+  importance: number;          // 0.0-1.0
   createdAt: number;
   lastAccessedAt: number;
 }
