@@ -528,7 +528,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             personaConfig: this.mediaConfig
           };
 
-          const { formattedResults: toolResults, media: toolMedia } = await this.toolExecutor.executeToolCalls(
+          const { formattedResults: toolResults, media: toolMedia, storedResultIds } = await this.toolExecutor.executeToolCalls(
             toolCalls,
             toolExecutionContext
           );
@@ -536,7 +536,26 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           // Strip tool blocks from response to get explanation text
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
 
-          // Inject tool results into conversation as a system message
+          // Phase 3B: Build lean summary with UUID references for lazy loading
+          // Extract summaries from formatted results (first line of each <tool_result>)
+          const toolSummaries = toolResults.split('<tool_result>').slice(1).map((result, i) => {
+            const toolName = result.match(/<tool_name>(.*?)<\/tool_name>/)?.[1] || 'unknown';
+            const status = result.match(/<status>(.*?)<\/status>/)?.[1] || 'unknown';
+            const resultId = storedResultIds[i];
+
+            if (status === 'success') {
+              // Extract first line of content as summary
+              const contentMatch = result.match(/<content>\n?(.*?)(?:\n|<\/content>)/s);
+              const firstLine = contentMatch?.[1]?.split('\n')[0]?.trim() || 'completed';
+              return `✅ ${toolName}: ${firstLine} (ID: ${resultId.slice(0, 8)})`;
+            } else {
+              // Extract error message
+              const errorMatch = result.match(/<error>\n?```\n?(.*?)(?:\n|```)/s);
+              const errorMsg = errorMatch?.[1]?.slice(0, 100) || 'unknown error';
+              return `❌ ${toolName}: ${errorMsg} (ID: ${resultId.slice(0, 8)})`;
+            }
+          }).join('\n');
+
           // Count successes and failures
           const failedTools = toolCalls.filter((_, i) => {
             const resultXML = toolResults.split('<tool_result>')[i + 1];
@@ -548,6 +567,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             ? `\n\n⚠️ IMPORTANT: ${failedTools.length} tool(s) FAILED. You MUST mention these failures in your response and explain what went wrong. Do NOT retry the same failed command without changing your approach.\n`
             : '';
 
+          // Phase 3B: Inject lean summary + UUID references instead of full results
+          const leanSummary = `TOOL RESULTS (Phase 3B - Lean RAG):\n\n${toolSummaries}\n\n📋 Full details stored in working memory.\n💡 To read full results: data/read --collection=chat_messages --id=<ID>\n\n${failureWarning}Based on these summaries, provide your analysis. Only use data/read if you need the full details.`;
+
           // Build tool results message with optional media
           const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
             ? {
@@ -555,7 +577,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
                 content: [
                   {
                     type: 'text',
-                    text: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
+                    text: leanSummary
                   },
                   ...toolMedia.map(m => {
                     if (m.type === 'image') {
@@ -572,7 +594,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               }
             : {
                 role: 'user' as const,
-                content: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
+                content: leanSummary
               };
 
           // Regenerate response with tool results
