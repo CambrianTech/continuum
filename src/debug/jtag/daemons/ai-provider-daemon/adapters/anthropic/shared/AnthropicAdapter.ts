@@ -76,13 +76,27 @@ export class AnthropicAdapter implements AIProviderAdapter {
     const model = request.model || MODEL_IDS.ANTHROPIC.SONNET_4_5;
 
     try {
+      // Log incoming request messages
+      console.log('📸 [ANTHROPIC-ADAPTER] generateText() called with:', {
+        totalMessages: request.messages.length,
+        messageTypes: request.messages.map(m => typeof m.content === 'string' ? 'text' : 'multimodal'),
+        multimodalCount: request.messages.filter(m => typeof m.content !== 'string').length
+      });
+
       // Convert messages to Anthropic format
-      const messages = request.messages.map(msg => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: typeof msg.content === 'string'
-          ? msg.content
-          : this.formatMultimodalContent(msg.content),
-      }));
+      const messages = request.messages.map((msg, index) => {
+        const isMultimodal = typeof msg.content !== 'string';
+        console.log(`📸 [ANTHROPIC-ADAPTER] Message ${index}: ${msg.role}, ${isMultimodal ? 'MULTIMODAL' : 'text-only'}`);
+
+        return {
+          role: msg.role === 'assistant' ? 'assistant' : 'user',
+          content: typeof msg.content === 'string'
+            ? msg.content
+            : this.formatMultimodalContent(msg.content),
+        };
+      });
+
+      console.log('📸 [ANTHROPIC-ADAPTER] Sending API request with', messages.length, 'messages to Anthropic');
 
       // Make API request
       const response = await this.makeRequest<any>('/v1/messages', {
@@ -241,20 +255,76 @@ export class AnthropicAdapter implements AIProviderAdapter {
   }
 
   private formatMultimodalContent(content: any[]): any {
-    return content.map(part => {
+    console.log('📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() called with content array:', {
+      totalParts: content.length,
+      partTypes: content.map(p => p.type),
+      hasImages: content.some(p => p.type === 'image')
+    });
+
+    const formatted = content.map((part, index) => {
       if (part.type === 'text') {
+        console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: text (${part.text.length} chars)`);
         return { type: 'text', text: part.text };
       } else if (part.type === 'image') {
-        return {
-          type: 'image',
-          source: {
-            type: 'url',
-            url: part.image.url,
-          },
-        };
+        console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: image detected`, {
+          hasBase64: !!part.base64,
+          base64Length: part.base64?.length,
+          hasUrl: !!part.url,
+          url: part.url?.substring(0, 50),
+          mimeType: part.mimeType,
+          hasLegacyFormat: !!part.image?.url
+        });
+
+        // Handle base64 images (from screenshots, tool results)
+        if (part.base64) {
+          const formatted = {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: part.mimeType || 'image/png',
+              data: part.base64
+            }
+          };
+          console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as base64 image (${formatted.source.data.length} chars, ${formatted.source.media_type})`);
+          return formatted;
+        }
+        // Handle URL images
+        if (part.url) {
+          const formatted = {
+            type: 'image',
+            source: {
+              type: 'url',
+              url: part.url
+            }
+          };
+          console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as URL image (${formatted.source.url})`);
+          return formatted;
+        }
+        // Fallback: try legacy format (part.image.url)
+        if (part.image?.url) {
+          const formatted = {
+            type: 'image',
+            source: {
+              type: 'url',
+              url: part.image.url
+            }
+          };
+          console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as legacy URL image (${formatted.source.url})`);
+          return formatted;
+        }
+
+        console.warn(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Image part has no valid source (no base64, url, or image.url)`, part);
       }
       return part;
     });
+
+    console.log('📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() result:', {
+      totalParts: formatted.length,
+      imageCount: formatted.filter(p => p.type === 'image').length,
+      textCount: formatted.filter(p => p.type === 'text').length
+    });
+
+    return formatted;
   }
 
   private mapFinishReason(reason: string): 'stop' | 'length' | 'error' {

@@ -162,18 +162,30 @@ export class PersonaToolExecutor {
       PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
+      console.log(`🔍 [MEDIA-DEBUG] Tool "${toolCall.toolName}" returned media:`, result.media ? `${result.media.length} items` : 'NONE');
+      if (result.media && result.media.length > 0) {
+        console.log(`🔍 [MEDIA-DEBUG] Media details:`, result.media.map(m => ({
+          type: m.type,
+          hasBase64: !!m.base64,
+          base64Length: m.base64?.length,
+          mimeType: m.mimeType,
+          hasUrl: !!m.url
+        })));
+      }
+
       const resultId = await this.storeToolResult(
         toolCall.toolName,
         toolCall.parameters,
         {
           success: result.success,
           data: result.content,  // Store full content in metadata
-          error: result.error
+          error: result.error,
+          media: result.media  // Pass media for storage and RAG context
         },
         context.contextId  // Use contextId (room) for storage
       );
       storedResultIds.push(resultId);
-      console.log(`💾 ${this.personaName}: [PHASE 3B] Stored tool result #${resultId.slice(0, 8)}`);
+      console.log(`💾 ${this.personaName}: [PHASE 3B] Stored tool result #${resultId.slice(0, 8)} with media:`, result.media?.length || 0);
 
       // Check if THIS persona wants media
       if (result.media && context.personaConfig.autoLoadMedia) {
@@ -288,14 +300,14 @@ ${result.error || 'Unknown error'}
    *
    * @param toolName - Name of tool executed
    * @param parameters - Parameters passed to tool
-   * @param result - Execution result
+   * @param result - Execution result with optional media
    * @param roomId - Room where tool was executed
    * @returns UUID of stored message entity
    */
   async storeToolResult(
     toolName: string,
     parameters: Record<string, unknown>,
-    result: { success: boolean; data: unknown; error?: string },
+    result: { success: boolean; data: unknown; error?: string; media?: MediaItem[] },
     roomId: UUID
   ): Promise<UUID> {
     // Generate short summary (< 100 tokens)
@@ -308,7 +320,7 @@ ${result.error || 'Unknown error'}
     message.senderId = this.personaId;
     message.senderName = this.personaName;
     message.senderType = 'system';  // Tool results are system messages
-    message.content = { text: summary, media: [] };
+    message.content = { text: summary, media: result.media || [] };  // Include media from tool results
     message.metadata = {
       toolResult: true,
       toolName,
@@ -374,6 +386,12 @@ ${result.error || 'Unknown error'}
       const items = data as any[];
       const count = Array.isArray(items) ? items.length : 0;
       return `data/list returned ${count} item${count !== 1 ? 's' : ''}`;
+    }
+
+    if (toolName === 'data/read') {
+      // When fetching tool results from working memory, don't output raw JSON
+      // Just acknowledge the retrieval
+      return 'Retrieved data from working memory';
     }
 
     if (toolName === 'code/read' || toolName === 'file/load') {
