@@ -8,9 +8,10 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { ChatExportCommand } from '../shared/ChatExportCommand';
 import type { ChatExportParams, ChatExportResult } from '../shared/ChatExportTypes';
-import type { RoomEntity } from '../../../../system/data/entities/RoomEntity';
-import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
+import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,7 +22,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
   }
 
   protected async executeChatExport(params: ChatExportParams): Promise<ChatExportResult> {
-    const collection = params.collection || 'chat_messages';
+    const collection = params.collection || ChatMessageEntity.collection;
     const includeThreading = params.includeThreading ?? true;
 
     // 1. Fetch messages with filters
@@ -77,43 +78,44 @@ export class ChatExportServerCommand extends ChatExportCommand {
    */
   private async fetchMessages(params: ChatExportParams, collection: string): Promise<ChatMessageEntity[]> {
     const limit = params.limit || 50;
-    const filter: Record<string, any> = { ...params.filter };
+    const filter: Record<string, unknown> = { ...params.filter };
 
     // Resolve room if provided
     if (params.room) {
-      const room = await this.findRoom(params.room);
+      const room = await this.findRoom(params.room, params);
       filter.roomId = room.id;
     }
 
-    // Query messages
-    const result = await DataDaemon.query<ChatMessageEntity>({
-      collection: collection,
-      filter: filter,
-      sort: [{ field: 'timestamp', direction: 'desc' }],
-      limit: limit
-    });
+    // Query messages using data/list command
+    const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(
+      'data/list',
+      {
+        collection: collection,
+        filter: filter,
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: limit,
+        context: params.context,
+        sessionId: params.sessionId
+      }
+    );
 
     console.log('🔧 fetchMessages QUERY RESULT', {
       success: result.success,
-      hasData: !!result.data,
-      recordCount: result.data?.length || 0
+      hasItems: !!result.items,
+      recordCount: result.items?.length || 0
     });
 
-    if (!result.success || !result.data) {
+    if (!result.success || !result.items) {
       return [];
     }
 
-    // Include DataRecord.id in each message since entity.id may not be populated
-    const messagesWithIds = result.data.map(record => {
-      const entity = record.data;
-      console.log('🔧 fetchMessages RECORD', {
-        recordId: record.id,
+    // data/list returns entities directly (not wrapped in DataRecord)
+    const messagesWithIds = result.items.map(entity => {
+      console.log('🔧 fetchMessages ENTITY', {
         entityId: entity.id,
-        hasRecordId: !!record.id,
+        hasId: !!entity.id,
         senderName: entity.senderName
       });
-      // Assign the DataRecord.id to the entity's id field
-      entity.id = record.id;
       return entity;
     });
 
@@ -163,34 +165,35 @@ export class ChatExportServerCommand extends ChatExportCommand {
 
   /**
    * Find room by ID or name
-   * Returns DataRecord.id since entity.id may not be populated
+   * Returns entity.id since data/list returns entities directly
    */
-  private async findRoom(roomIdOrName: string): Promise<{ id: import('../../../../system/core/types/CrossPlatformUUID').UUID; entity: RoomEntity }> {
-    // Try by ID first
-    const byIdResult = await DataDaemon.query<RoomEntity>({
-      collection: 'rooms',
-      filter: { id: roomIdOrName },
-      limit: 1
-    });
+  private async findRoom(roomIdOrName: string, params: ChatExportParams): Promise<{ id: import('../../../../system/core/types/CrossPlatformUUID').UUID; entity: RoomEntity }> {
+    // Query all rooms using data/list command
+    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+      'data/list',
+      {
+        collection: RoomEntity.collection,
+        filter: {},
+        context: params.context,
+        sessionId: params.sessionId
+      }
+    );
 
-    if (byIdResult.success && byIdResult.data && byIdResult.data.length > 0) {
-      const record = byIdResult.data[0];
-      return { id: record.id, entity: record.data };
+    if (!result.success || !result.items) {
+      throw new Error('Failed to query rooms');
     }
 
-    // Try by name
-    const byNameResult = await DataDaemon.query<RoomEntity>({
-      collection: 'rooms',
-      filter: { name: roomIdOrName },
-      limit: 1
-    });
+    // Find by ID or name
+    const room = result.items.find((r: RoomEntity) =>
+      r.id === roomIdOrName || r.name === roomIdOrName
+    );
 
-    if (byNameResult.success && byNameResult.data && byNameResult.data.length > 0) {
-      const record = byNameResult.data[0];
-      return { id: record.id, entity: record.data };
+    if (!room) {
+      const roomNames = result.items.map((r: RoomEntity) => r.name).join(', ');
+      throw new Error(`Room not found: ${roomIdOrName}. Available: ${roomNames}`);
     }
 
-    throw new Error(`Room not found: ${roomIdOrName}`);
+    return { id: room.id, entity: room };
   }
 
   /**

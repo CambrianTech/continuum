@@ -7,7 +7,7 @@
 
 | Violation Type | Count | Severity |
 |---------------|-------|----------|
-| Direct DataDaemon access (non-data commands) | 10 | 🔴 HIGH |
+| Direct DataDaemon access (non-data commands) | 7 (was 10) | 🔴 HIGH |
 | Direct FS operations | 27 | 🟡 MEDIUM |
 | Missing file delegation | 27 | 🟡 MEDIUM |
 | Environment-specific code in shared/ | 0 | ✅ NONE |
@@ -19,16 +19,17 @@
 
 ### Commands Violating This (10 total):
 
-#### Chat Commands (3)
-1. **chat/export** - Uses `DataDaemon.queryOpen/queryNext/queryClose`
-   - Should use: `Commands.execute('data/list', ...)`
-   - Lines: Multiple throughout file
+#### Chat Commands (0 - ALL FIXED)
+1. ✅ **chat/export** - FIXED - Now uses `Commands.execute('data/list', ...)`
+   - Replaced DataDaemon.query with proper command delegation
+   - Uses entity collection constants (RoomEntity.collection, ChatMessageEntity.collection)
+   - Still has direct FS operations (will fix when file/* commands created)
 
-2. **chat/poll** - Uses `DataDaemon` for message queries
-   - Should use: `Commands.execute('data/list', ...)`
+2. ✅ **chat/poll** - DELETED - Redundant with chat/export --afterMessageId
 
-3. **chat/send** - Uses `DataDaemon.create`
-   - Should use: `Commands.execute('data/create', ...)`
+3. ✅ **chat/send** - FIXED - Now uses `Commands.execute('data/create', ...)` and `Commands.execute('data/list', ...)`
+   - All DataDaemon access replaced with proper command delegation
+   - Uses entity collection constants throughout
 
 #### AI Commands (3)
 4. **ai/generate** - Uses `DataDaemon` for conversation history
