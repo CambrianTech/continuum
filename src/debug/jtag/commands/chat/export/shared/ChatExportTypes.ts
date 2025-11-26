@@ -35,13 +35,22 @@ export interface ChatExportParams extends CommandParams {
   includeTests?: boolean;
 
   /** Custom filter object (passed directly to data/list) */
-  filter?: Record<string, any>;
+  filter?: Record<string, unknown>;
 
   /** Entity type to export (default: 'chat_messages' - future: support all activity types) */
   collection?: string;
 
   /** Include threading information (reply-to, thread IDs) */
   includeThreading?: boolean;
+
+  /**
+   * Auto-bookmark mode: Automatically track last seen message per caller+room
+   * - First call: Returns last N messages (default limit)
+   * - Subsequent calls: Returns only NEW messages since last call
+   * - State key: chat:export:bookmark:{sessionId}:{roomId}
+   * (default: false)
+   */
+  autoBookmark?: boolean;
 }
 
 export interface ChatExportResult extends CommandResult {

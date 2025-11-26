@@ -12,6 +12,7 @@ import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -25,17 +26,42 @@ export class ChatExportServerCommand extends ChatExportCommand {
     const collection = params.collection || ChatMessageEntity.collection;
     const includeThreading = params.includeThreading ?? true;
 
+    // Auto-bookmark: Load last seen message ID if enabled
+    let effectiveParams = params;
+    if (params.autoBookmark && !params.afterMessageId) {
+      // Need room ID to create bookmark key
+      const room = await this.findRoom(params.room || 'general', params);
+      const bookmarkKey = `chat:export:bookmark:${params.sessionId}:${room.id}`;
+      const bookmark = await this.loadBookmark(bookmarkKey);
+
+      if (bookmark) {
+        console.log(`📖 Auto-bookmark: Loading from message #${bookmark.slice(-6)}`);
+        effectiveParams = { ...params, afterMessageId: bookmark };
+      } else {
+        console.log(`📖 Auto-bookmark: First call (no bookmark found)`);
+      }
+    }
+
     // 1. Fetch messages with filters
-    let messages = await this.fetchMessages(params, collection);
+    let messages = await this.fetchMessages(effectiveParams, collection);
 
     // 2. Apply post-filters (system/test messages, timestamps)
-    messages = this.applyPostFilters(messages, params);
+    messages = this.applyPostFilters(messages, effectiveParams);
 
     // 3. Reverse to show oldest first in export
     messages = Array.from(messages).reverse();
 
     // 4. Generate markdown
-    const markdown = this.generateMarkdown(messages, includeThreading, params.room);
+    const markdown = this.generateMarkdown(messages, includeThreading, effectiveParams.room);
+
+    // Auto-bookmark: Save last seen message ID if enabled
+    if (params.autoBookmark && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      const room = await this.findRoom(params.room || 'general', params);
+      const bookmarkKey = `chat:export:bookmark:${params.sessionId}:${room.id}`;
+      await this.saveBookmark(bookmarkKey, lastMessage.id);
+      console.log(`📖 Auto-bookmark: Saved message #${lastMessage.id.slice(-6)}`);
+    }
 
     // Write to file or return as string
     if (params.output) {
@@ -264,5 +290,44 @@ export class ChatExportServerCommand extends ChatExportCommand {
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Load bookmark (last seen message ID) from filesystem
+   * State stored in: .continuum/jtag/system/state/bookmarks/{key}
+   */
+  private async loadBookmark(key: string): Promise<string | null> {
+    const bookmarkDir = path.join(process.cwd(), '.continuum/jtag/system/state/bookmarks');
+    const bookmarkPath = path.join(bookmarkDir, `${key}.txt`);
+
+    try {
+      if (fs.existsSync(bookmarkPath)) {
+        return fs.readFileSync(bookmarkPath, 'utf-8').trim();
+      }
+    } catch (error) {
+      console.error(`Failed to load bookmark ${key}:`, error);
+    }
+
+    return null;
+  }
+
+  /**
+   * Save bookmark (last seen message ID) to filesystem
+   * State stored in: .continuum/jtag/system/state/bookmarks/{key}
+   */
+  private async saveBookmark(key: string, messageId: string): Promise<void> {
+    const bookmarkDir = path.join(process.cwd(), '.continuum/jtag/system/state/bookmarks');
+    const bookmarkPath = path.join(bookmarkDir, `${key}.txt`);
+
+    try {
+      // Ensure directory exists
+      if (!fs.existsSync(bookmarkDir)) {
+        fs.mkdirSync(bookmarkDir, { recursive: true });
+      }
+
+      fs.writeFileSync(bookmarkPath, messageId, 'utf-8');
+    } catch (error) {
+      console.error(`Failed to save bookmark ${key}:`, error);
+    }
   }
 }
