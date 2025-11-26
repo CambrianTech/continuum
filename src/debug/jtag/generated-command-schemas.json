@@ -1,5 +1,5 @@
 {
-  "generated": "2025-11-26T01:36:53.449Z",
+  "generated": "2025-11-26T04:57:20.674Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2107,6 +2107,11 @@
           "type": "boolean",
           "required": false,
           "description": "isSystemTest parameter"
+        },
+        "media": {
+          "type": "string",
+          "required": false,
+          "description": "media parameter"
         }
       }
     },

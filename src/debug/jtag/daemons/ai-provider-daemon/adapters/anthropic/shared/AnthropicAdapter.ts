@@ -276,13 +276,17 @@ export class AnthropicAdapter implements AIProviderAdapter {
         });
 
         // Handle base64 images (from screenshots, tool results)
-        if (part.base64) {
+        // Support both flat format (part.base64) and nested format (part.image.base64)
+        const base64Data = part.base64 || part.image?.base64;
+        const mimeType = part.mimeType || part.image?.mimeType || 'image/png';
+
+        if (base64Data) {
           const formatted = {
             type: 'image',
             source: {
               type: 'base64',
-              media_type: part.mimeType || 'image/png',
-              data: part.base64
+              media_type: mimeType,
+              data: base64Data
             }
           };
           console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as base64 image (${formatted.source.data.length} chars, ${formatted.source.media_type})`);
