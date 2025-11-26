@@ -43,7 +43,21 @@ export class ChatSendServerCommand extends ChatSendCommand {
     messageEntity.senderType = sender.entity.type;
 
     // Process media files if provided
-    const mediaItems = params.media ? await this.processMediaPaths(params.media, params.context, params.sessionId) : [];
+    // Normalize to array: CLI may send string (single) or string[] (multiple)
+    const mediaPaths = params.media
+      ? (Array.isArray(params.media) ? params.media : [params.media])
+      : [];
+    console.log('🔧 ChatSendServerCommand MEDIA PROCESSING', {
+      rawMedia: params.media,
+      isArray: Array.isArray(params.media),
+      normalizedPaths: mediaPaths,
+      pathCount: mediaPaths.length
+    });
+    const mediaItems = mediaPaths.length > 0 ? await this.processMediaPaths(mediaPaths, params.context, params.sessionId) : [];
+    console.log('🔧 ChatSendServerCommand MEDIA PROCESSED', {
+      mediaItemCount: mediaItems.length,
+      mediaItems: mediaItems.map(m => ({ type: m.type, mimeType: m.mimeType, filename: m.filename, hasBase64: !!m.base64, base64Length: m.base64?.length }))
+    });
 
     messageEntity.content = {
       text: params.message,
@@ -170,19 +184,26 @@ export class ChatSendServerCommand extends ChatSendCommand {
    */
   private async processMediaPaths(mediaPaths: string[], context: JTAGContext, sessionId: UUID): Promise<MediaItem[]> {
     const mediaItems: MediaItem[] = [];
+    console.log(`🔧 processMediaPaths START: Processing ${mediaPaths.length} file(s)`);
 
     for (const filePath of mediaPaths) {
       try {
+        console.log(`🔧 processMediaPaths: Processing file: ${filePath}`);
+
         // Step 1: Detect MIME type using file/mime-type command
         const mimeResult = await Commands.execute<{ filepath: string; context: JTAGContext; sessionId: UUID }, any>('file/mime-type', {
           filepath: filePath,
           context,
           sessionId
         });
+        console.log(`🔧 processMediaPaths: MIME result for ${filePath}:`, { success: mimeResult.success, mimeType: mimeResult.mimeType, mediaType: mimeResult.mediaType });
 
         if (!mimeResult.success) {
-          console.error(`Failed to detect MIME type for: ${filePath}`);
-          continue;
+          const error = new Error(`Failed to detect MIME type for: ${filePath}`);
+          if (mimeResult.error) {
+            (error as any).cause = mimeResult.error;
+          }
+          throw error;
         }
 
         // Step 2: Load file content as base64 using file/load command
@@ -192,10 +213,14 @@ export class ChatSendServerCommand extends ChatSendCommand {
           context,
           sessionId
         });
+        console.log(`🔧 processMediaPaths: Load result for ${filePath}:`, { success: fileResult.success, contentLength: fileResult.content?.length, hasError: !!fileResult.error });
 
         if (!fileResult.success) {
-          console.error(`Failed to load media file: ${filePath}`, fileResult.error);
-          continue;
+          const error = new Error(`Failed to load media file: ${filePath}`);
+          if (fileResult.error) {
+            (error as any).cause = fileResult.error;
+          }
+          throw error;
         }
 
         // Step 3: Create MediaItem with data from both commands
@@ -205,13 +230,20 @@ export class ChatSendServerCommand extends ChatSendCommand {
           mimeType: mimeResult.mimeType,
           filename: filePath.split('/').pop() || filePath
         };
+        console.log(`✅ processMediaPaths: Created MediaItem for ${filePath}:`, { type: mediaItem.type, mimeType: mediaItem.mimeType, filename: mediaItem.filename, base64Length: mediaItem.base64?.length || 0 });
 
         mediaItems.push(mediaItem);
       } catch (error) {
-        console.error(`Error processing media file ${filePath}:`, error);
+        // Re-throw with better context, preserving original error
+        const enhancedError = new Error(`Media processing failed for ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+        if (error instanceof Error) {
+          (enhancedError as any).cause = error;
+        }
+        throw enhancedError;
       }
     }
 
+    console.log(`🔧 processMediaPaths END: Processed ${mediaItems.length}/${mediaPaths.length} files successfully`);
     return mediaItems;
   }
 }
