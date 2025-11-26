@@ -1,5 +1,5 @@
 {
-  "generated": "2025-11-26T07:07:30.348Z",
+  "generated": "2025-11-26T18:23:27.081Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2168,6 +2168,32 @@
           "type": "boolean",
           "required": false,
           "description": "includeThreading parameter"
+        }
+      }
+    },
+    {
+      "name": "chat/analyze",
+      "description": "chat/analyze command",
+      "params": {
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
+        },
+        "checkDuplicates": {
+          "type": "boolean",
+          "required": false,
+          "description": "checkDuplicates parameter"
+        },
+        "checkTimestamps": {
+          "type": "boolean",
+          "required": false,
+          "description": "checkTimestamps parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
         }
       }
     },
