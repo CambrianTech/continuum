@@ -177,7 +177,18 @@ async function main() {
               parsedValue = value;
             }
           }
-          params[key] = parsedValue;
+
+          // 🔧 NATURAL-IDIOMS: Accumulate repeated flags into arrays
+          if (params[key] !== undefined) {
+            // Key already exists - convert to array if needed
+            if (!Array.isArray(params[key])) {
+              params[key] = [params[key]];
+            }
+            params[key].push(parsedValue);
+          } else {
+            // First occurrence - store as-is
+            params[key] = parsedValue;
+          }
           i++;
         }
         // Handle --key value format
@@ -195,7 +206,18 @@ async function main() {
                 parsedValue = value;
               }
             }
-            params[key] = parsedValue;
+
+            // 🔧 NATURAL-IDIOMS: Accumulate repeated flags into arrays
+            if (params[key] !== undefined) {
+              // Key already exists - convert to array if needed
+              if (!Array.isArray(params[key])) {
+                params[key] = [params[key]];
+              }
+              params[key].push(parsedValue);
+            } else {
+              // First occurrence - store as-is
+              params[key] = parsedValue;
+            }
             i += 2;
           } else {
             // Boolean flag
