@@ -129,7 +129,6 @@ export class PersonaToolExecutor {
 
     const results: string[] = [];
     const allMedia: MediaItem[] = [];
-    const storedResultIds: UUID[] = [];  // Phase 3B: Collect UUIDs for working memory
 
     for (const toolCall of toolCalls) {
       const startTime = Date.now();
@@ -173,19 +172,10 @@ export class PersonaToolExecutor {
         })));
       }
 
-      const resultId = await this.storeToolResult(
-        toolCall.toolName,
-        toolCall.parameters,
-        {
-          success: result.success,
-          data: result.content,  // Store full content in metadata
-          error: result.error,
-          media: result.media  // Pass media for storage and RAG context
-        },
-        context.contextId  // Use contextId (room) for storage
-      );
-      storedResultIds.push(resultId);
-      console.log(`💾 ${this.personaName}: [PHASE 3B] Stored tool result #${resultId.slice(0, 8)} with media:`, result.media?.length || 0);
+      // Tool results are returned to the AI via the tool response mechanism
+      // The AI decides what to do with the result (post to chat, call another tool, etc.)
+      // We do NOT automatically post tool results to chat
+      console.log(`🔧 ${this.personaName}: Tool '${toolCall.toolName}' completed (success: ${result.success}, media: ${result.media?.length || 0})`);
 
       // Check if THIS persona wants media
       if (result.media && context.personaConfig.autoLoadMedia) {
@@ -214,8 +204,7 @@ export class PersonaToolExecutor {
         context.contextId,
         {
           toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
-          errorMessage: result.error,
-          storedResultId: resultId  // Phase 3B: Link to stored result
+          errorMessage: result.error
         }
       );
 
@@ -224,12 +213,12 @@ export class PersonaToolExecutor {
     }
 
     const successCount = results.filter(r => r.includes('<status>success</status>')).length;
-    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media item(s) loaded, ${storedResultIds.length} results stored`);
+    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media item(s) loaded`);
 
     return {
       formattedResults: results.join('\n\n'),
       media: allMedia.length > 0 ? allMedia : undefined,
-      storedResultIds  // Phase 3B: Return UUIDs for lazy loading
+      storedResultIds: []  // No longer storing to chat; results go directly to AI via tool response
     };
   }
 
