@@ -8,13 +8,19 @@
 
 ```
 docs/
-├── architecture/     - System architecture and design patterns
-├── personas/         - PersonaUser, genomic, and fine-tuning architecture
-├── papers/           - Research papers on core innovations (RTOS, LoRA genomes)
-├── recipes/          - Recipe system for AI learning and collaboration
-├── testing/          - Testing strategies, reports, and findings
-├── design/           - Design patterns and style guides
-└── archive/          - Historical docs and session notes
+├── architecture/         - System architecture and design patterns
+│   ├── VISION-MEDIA-ARCHITECTURE.md
+│   └── MEDIA-FORMAT-CONVERSION-ARCHITECTURE.md
+├── personas/             - PersonaUser, genomic, and fine-tuning architecture
+├── papers/               - Research papers on core innovations (RTOS, LoRA genomes)
+├── recipes/              - Recipe system for AI learning and collaboration
+├── testing/              - Testing strategies, reports, and findings
+├── design/               - Design patterns and style guides
+│   ├── principles/       - Core design principles
+│   │   └── DESIGN-PRINCIPLE-NATURAL-IDIOMS.md
+│   └── interfaces/       - Interface design patterns
+│       └── CLI-ARRAY-PARAMETERS.md
+└── archive/              - Historical docs and session notes
 ```
 
 ---
@@ -59,6 +65,10 @@ docs/
 
 **Training & Learning:**
 - [TRAINING-DATA-PIPELINE.md](architecture/TRAINING-DATA-PIPELINE.md) - **NEW** - Automatic training data from natural collaboration
+
+**Media & Vision:**
+- [VISION-MEDIA-ARCHITECTURE.md](architecture/VISION-MEDIA-ARCHITECTURE.md) - Vision and media handling architecture
+- [MEDIA-FORMAT-CONVERSION-ARCHITECTURE.md](architecture/MEDIA-FORMAT-CONVERSION-ARCHITECTURE.md) - **NEW** - Bidirectional media format conversion
 
 ---
 
@@ -161,7 +171,13 @@ See `system/recipes/` for additional recipe documentation:
 
 ## 🎨 Design Documentation
 
-**Design Patterns & Philosophy:**
+**Core Design Principles:**
+- [DESIGN-PRINCIPLE-NATURAL-IDIOMS.md](design/principles/DESIGN-PRINCIPLE-NATURAL-IDIOMS.md) - **NEW** - Natural idioms for each interface layer
+
+**Interface Design Patterns:**
+- [CLI-ARRAY-PARAMETERS.md](design/interfaces/CLI-ARRAY-PARAMETERS.md) - **NEW** - Repeated flag pattern for CLI arrays
+
+**Type Safety & Defaults:**
 - [RUST-STYLE-DEFAULTS-PLAN.md](design/RUST-STYLE-DEFAULTS-PLAN.md) - Rust-style type safety and defaults
 
 ---
@@ -273,5 +289,10 @@ Many system modules have their own documentation within their directories:
 
 ---
 
-**Last Updated:** 2025-11-12
-**Total Documentation Files:** 69 in docs/ (including 3 research papers, 3 new architecture docs), 49 in system/ subdirectories
+**Last Updated:** 2025-11-26
+**Total Documentation Files:** 71 in docs/ (including 3 research papers, organized into subdirectories), 49 in system/ subdirectories
+
+**Recent Changes:**
+- Organized design docs into `design/principles/` and `design/interfaces/` subdirectories
+- Added MEDIA-FORMAT-CONVERSION-ARCHITECTURE.md for bidirectional media conversion
+- Moved VISION-MEDIA-ARCHITECTURE.md to architecture/ directory
