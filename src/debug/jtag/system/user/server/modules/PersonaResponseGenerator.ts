@@ -243,7 +243,7 @@ export class PersonaResponseGenerator {
         {
           modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
           maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
-          includeArtifacts: false, // TODO: Implement proper on-demand image loading via tools
+          includeArtifacts: true,  // Enable vision support for multimodal-capable models
           includeMemories: true,   // Enable Hippocampus LTM retrieval
           // ✅ FIX: Include current message even if not yet persisted to database
           currentMessage: {
@@ -305,6 +305,38 @@ export class PersonaResponseGenerator {
         content: systemPrompt
       });
 
+      // Build artifact lookup map (messageId → artifacts) for multimodal support
+      // This enables vision models to see images from messages with media
+      type RAGArtifact = typeof fullRAGContext.artifacts[number];
+      const artifactsByMessageId = new Map<string, RAGArtifact[]>();
+      for (const artifact of fullRAGContext.artifacts) {
+        const messageId = artifact.metadata?.messageId as string | undefined;
+        if (messageId) {
+          if (!artifactsByMessageId.has(messageId)) {
+            artifactsByMessageId.set(messageId, []);
+          }
+          artifactsByMessageId.get(messageId)!.push(artifact);
+        }
+      }
+
+      // Also create a timestamp+name lookup for matching LLMMessages to artifacts
+      // LLMMessages don't have IDs, so we match by timestamp+sender combination
+      const artifactsByTimestampName = new Map<string, RAGArtifact[]>();
+      for (const artifact of fullRAGContext.artifacts) {
+        const timestamp = artifact.metadata?.timestamp as Date | number | undefined;
+        const senderName = artifact.metadata?.senderName as string | undefined;
+        if (timestamp && senderName) {
+          const timestampMs = timestamp instanceof Date ? timestamp.getTime() : typeof timestamp === 'number' ? timestamp : 0;
+          const key = `${timestampMs}_${senderName}`;
+          if (!artifactsByTimestampName.has(key)) {
+            artifactsByTimestampName.set(key, []);
+          }
+          artifactsByTimestampName.get(key)!.push(artifact);
+        }
+      }
+
+      console.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
+
       // Add conversation history from RAG context with human-readable timestamps
       // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
       // Format: "[HH:MM] SpeakerName: message" - timestamps help LLM understand time gaps
@@ -339,10 +371,64 @@ export class PersonaResponseGenerator {
             ? `${timePrefix}${msg.name}: ${msg.content}`
             : `${timePrefix}${msg.content}`;
 
-          messages.push({
-            role: msg.role,
-            content: formattedContent
-          });
+          // Check if this message has associated artifacts (images, audio, video)
+          // Match by timestamp+name since LLMMessages don't have IDs
+          const lookupKey = msg.timestamp && msg.name ? `${msg.timestamp}_${msg.name}` : null;
+          const messageArtifacts = lookupKey ? artifactsByTimestampName.get(lookupKey) : undefined;
+
+          if (messageArtifacts && messageArtifacts.length > 0) {
+            // Multimodal message: Convert to ContentPart[] format
+            const contentParts: ContentPart[] = [
+              {
+                type: 'text',
+                text: formattedContent
+              }
+            ];
+
+            // Add artifacts as image/audio/video parts
+            for (const artifact of messageArtifacts) {
+              const mimeType = artifact.metadata?.mimeType as string | undefined;
+
+              if (artifact.type === 'image' && artifact.base64) {
+                contentParts.push({
+                  type: 'image',
+                  image: {
+                    base64: artifact.base64,
+                    mimeType
+                  }
+                });
+              } else if (artifact.type === 'audio' && artifact.base64) {
+                contentParts.push({
+                  type: 'audio',
+                  audio: {
+                    base64: artifact.base64,
+                    mimeType
+                  }
+                });
+              } else if (artifact.type === 'video' && artifact.base64) {
+                contentParts.push({
+                  type: 'video',
+                  video: {
+                    base64: artifact.base64,
+                    mimeType
+                  }
+                });
+              }
+            }
+
+            messages.push({
+              role: msg.role,
+              content: contentParts  // Multimodal content
+            });
+
+            console.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name}`);
+          } else {
+            // Text-only message
+            messages.push({
+              role: msg.role,
+              content: formattedContent
+            });
+          }
         }
       }
 

@@ -10,11 +10,10 @@ import { ChatSendCommand } from '../shared/ChatSendCommand';
 import type { ChatSendParams, ChatSendResult } from '../shared/ChatSendTypes';
 import type { RoomEntity } from '../../../../system/data/entities/RoomEntity';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
-import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { ChatMessageEntity, type MediaItem } from '../../../../system/data/entities/ChatMessageEntity';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { Commands } from '../../../../system/core/shared/Commands';
-import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 
 export class ChatSendServerCommand extends ChatSendCommand {
 
@@ -42,9 +41,13 @@ export class ChatSendServerCommand extends ChatSendCommand {
     console.log('🔧 ChatSendServerCommand.executeChatSend MESSAGE ENTITY', { roomId: messageEntity.roomId, senderId: messageEntity.senderId });
     messageEntity.senderName = sender.entity.displayName;
     messageEntity.senderType = sender.entity.type;
+
+    // Process media files if provided
+    const mediaItems = params.media ? await this.processMediaPaths(params.media, params.context, params.sessionId) : [];
+
     messageEntity.content = {
       text: params.message,
-      media: []
+      media: mediaItems
     };
     messageEntity.status = 'sent';
     messageEntity.priority = 'normal';
@@ -159,5 +162,56 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     throw new Error('No human user found');
+  }
+
+  /**
+   * Process media file paths into MediaItem objects
+   * Uses file/mime-type and file/load commands (clean composition)
+   */
+  private async processMediaPaths(mediaPaths: string[], context: JTAGContext, sessionId: UUID): Promise<MediaItem[]> {
+    const mediaItems: MediaItem[] = [];
+
+    for (const filePath of mediaPaths) {
+      try {
+        // Step 1: Detect MIME type using file/mime-type command
+        const mimeResult = await Commands.execute<{ filepath: string; context: JTAGContext; sessionId: UUID }, any>('file/mime-type', {
+          filepath: filePath,
+          context,
+          sessionId
+        });
+
+        if (!mimeResult.success) {
+          console.error(`Failed to detect MIME type for: ${filePath}`);
+          continue;
+        }
+
+        // Step 2: Load file content as base64 using file/load command
+        const fileResult = await Commands.execute<{ filepath: string; encoding: string; context: JTAGContext; sessionId: UUID }, any>('file/load', {
+          filepath: filePath,
+          encoding: 'base64',
+          context,
+          sessionId
+        });
+
+        if (!fileResult.success) {
+          console.error(`Failed to load media file: ${filePath}`, fileResult.error);
+          continue;
+        }
+
+        // Step 3: Create MediaItem with data from both commands
+        const mediaItem: MediaItem = {
+          type: mimeResult.mediaType,
+          base64: fileResult.content,
+          mimeType: mimeResult.mimeType,
+          filename: filePath.split('/').pop() || filePath
+        };
+
+        mediaItems.push(mediaItem);
+      } catch (error) {
+        console.error(`Error processing media file ${filePath}:`, error);
+      }
+    }
+
+    return mediaItems;
   }
 }

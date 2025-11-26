@@ -22,6 +22,9 @@ export interface ChatSendParams extends CommandParams {
 
   /** Mark as system test (AIs will ignore) */
   isSystemTest?: boolean;
+
+  /** Array of file paths to attach as media (images, videos, audio, documents) */
+  media?: string[];
 }
 
 export interface ChatSendResult extends CommandResult {

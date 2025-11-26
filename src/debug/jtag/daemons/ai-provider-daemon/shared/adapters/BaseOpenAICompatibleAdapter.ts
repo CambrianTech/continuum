@@ -140,12 +140,37 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     const model = request.model || this.config.defaultModel;
 
     try {
+      // Validate max_tokens doesn't exceed context window
+      const modelInfo = this.config.models?.find(m => m.id === model);
+      const contextWindow = modelInfo?.contextWindow || 8192; // Default to conservative 8K
+
+      // Detect if model supports vision/multimodal
+      const supportsVision = modelInfo?.capabilities?.includes('image-analysis') ||
+                           modelInfo?.capabilities?.includes('multimodal') ||
+                           this.supportedCapabilities.includes('image-analysis') ||
+                           this.supportedCapabilities.includes('multimodal');
+
       // Convert messages to OpenAI format
-      const messages = request.messages.map(msg => ({
-        role: msg.role,
-        content: typeof msg.content === 'string' ? msg.content : this.formatMultimodalContent(msg.content),
-        ...(msg.name && { name: msg.name }),
-      }));
+      const messages = request.messages.map(msg => {
+        if (typeof msg.content === 'string') {
+          return { role: msg.role, content: msg.content, ...(msg.name && { name: msg.name }) };
+        }
+
+        // Multimodal content (ContentPart[])
+        if (!supportsVision) {
+          // Non-vision model: Flatten ContentPart[] to plain string (extract text parts only)
+          const textParts = msg.content.filter((part: any) => part.type === 'text');
+          const flattenedContent = textParts.map((part: any) => part.text).join('\n');
+          return { role: msg.role, content: flattenedContent, ...(msg.name && { name: msg.name }) };
+        }
+
+        // Vision model: Format multimodal content properly
+        return {
+          role: msg.role,
+          content: this.formatMultimodalContent(msg.content),
+          ...(msg.name && { name: msg.name }),
+        };
+      });
 
       // Add system prompt if provided
       if (request.systemPrompt) {
@@ -154,10 +179,6 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
           content: request.systemPrompt,
         });
       }
-
-      // Validate max_tokens doesn't exceed context window
-      const modelInfo = this.config.models?.find(m => m.id === model);
-      const contextWindow = modelInfo?.contextWindow || 8192; // Default to conservative 8K
 
       // Estimate input tokens (rough: 1 token ~= 4 chars)
       const messagesText = messages.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ');
