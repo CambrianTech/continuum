@@ -136,7 +136,7 @@ export class ToolRegistry {
     const result = await Commands.execute(toolName, params);
 
     // Generic result formatting
-    // Commands return whatever format they want - we just stringify it
+    // Commands return whatever format they want - we extract useful data
     if (result && typeof result === 'object') {
       // Check for media (screenshots, images, etc.)
       const media: MediaItem[] = [];
@@ -151,8 +151,8 @@ export class ToolRegistry {
         });
       }
 
-      // Convert result to string content
-      const content = JSON.stringify(result, null, 2);
+      // Extract useful content, excluding metadata
+      const content = this.extractUsefulContent(result, toolName);
 
       return {
         content,
@@ -161,6 +161,53 @@ export class ToolRegistry {
     }
 
     return { content: String(result) };
+  }
+
+  /**
+   * Extract useful content from command result, filtering out metadata
+   * Similar to data/read fix - don't show context, uuid, environment, etc.
+   */
+  private extractUsefulContent(result: any, toolName: string): string {
+    // Metadata fields to exclude
+    const metadataFields = ['context', 'uuid', 'environment', 'sessionId', 'timestamp', 'success'];
+
+    // 1. If result has a 'data' field, use that
+    if ('data' in result && result.data !== undefined && result.data !== null) {
+      return typeof result.data === 'string'
+        ? result.data
+        : JSON.stringify(result.data, null, 2);
+    }
+
+    // 2. If result has a 'message' field, use that
+    if ('message' in result && typeof result.message === 'string') {
+      return result.message;
+    }
+
+    // 3. If result has a 'content' field, use that
+    if ('content' in result && result.content !== undefined) {
+      return typeof result.content === 'string'
+        ? result.content
+        : JSON.stringify(result.content, null, 2);
+    }
+
+    // 4. Filter out metadata and stringify remaining useful fields
+    const useful: any = {};
+    let hasUsefulData = false;
+
+    for (const [key, value] of Object.entries(result)) {
+      if (!metadataFields.includes(key)) {
+        useful[key] = value;
+        hasUsefulData = true;
+      }
+    }
+
+    // If we found useful data, return it
+    if (hasUsefulData) {
+      return JSON.stringify(useful, null, 2);
+    }
+
+    // Fallback: stringify the whole thing (shouldn't happen)
+    return JSON.stringify(result, null, 2);
   }
 
   /**
