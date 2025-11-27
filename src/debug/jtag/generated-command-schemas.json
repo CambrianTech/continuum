@@ -1,5 +1,5 @@
 {
-  "generated": "2025-11-26T18:51:15.735Z",
+  "generated": "2025-11-27T17:55:36.075Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1916,6 +1916,42 @@
           "type": "string",
           "required": false,
           "description": "testFile parameter"
+        }
+      }
+    },
+    {
+      "name": "continuum/set",
+      "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
+      "params": {
+        "emoji": {
+          "type": "string",
+          "required": false,
+          "description": "emoji parameter"
+        },
+        "color": {
+          "type": "string",
+          "required": false,
+          "description": "color parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "description": "duration parameter"
+        },
+        "clear": {
+          "type": "boolean",
+          "required": false,
+          "description": "clear parameter"
+        },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "description": "priority parameter"
         }
       }
     },
