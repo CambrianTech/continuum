@@ -7,18 +7,21 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { Commands } from '../../system/core/shared/Commands';
+import { Events } from '../../system/core/shared/Events';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+import type { ContinuumStatus } from '../../commands/continuum/set/shared/ContinuumSetTypes';
 
 export class ContinuumWidget extends BaseWidget {
-  
+  private currentStatus: ContinuumStatus | null = null;
+
   constructor() {
     super({
       widgetName: 'ContinuumWidget',
       template: 'continuum-widget.html',
       styles: 'continuum-widget.css',
       enableAI: false,
-      enableDatabase: false, 
+      enableDatabase: false,
       enableRouterEvents: true,
       enableScreenshots: false
     });
@@ -26,14 +29,22 @@ export class ContinuumWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
-    
+
     // Initialize any dynamic content or state
     await this.updateConnectionStatus();
-    
+
+    // Set initial favicon (default blue dot)
+    this.updateFavicon();
+
     // Load external scripts into shadow DOM for complete encapsulation
     await this.loadExternalScripts();
-    
-    console.log('✅ ContinuumWidget: Desktop interface initialized');
+
+    // Listen for continuum:status events from continuum/set command
+    Events.subscribe('continuum:status', (status: ContinuumStatus) => {
+      this.handleStatusUpdate(status);
+    });
+
+    console.log('✅ ContinuumWidget: Desktop interface initialized with status listener');
   }
 
   protected async renderWidget(): Promise<void> {
@@ -179,6 +190,120 @@ export class ContinuumWidget extends BaseWidget {
    */
   async getAvailableRooms(): Promise<string[]> {
     return ['general', 'academy', 'community'];
+  }
+
+  /**
+   * Handle continuum:status events from continuum/set command
+   */
+  private handleStatusUpdate(status: ContinuumStatus): void {
+    console.log('✨ ContinuumWidget: Received status update:', status);
+
+    // Handle clear request
+    if (status.clear) {
+      this.currentStatus = null;
+      this.updateStatusDisplay();
+      console.log('🔄 ContinuumWidget: Status cleared, returning to system default');
+      return;
+    }
+
+    // Check priority - only override if new status has higher or equal priority
+    if (this.currentStatus && this.getPriorityLevel(status.priority) < this.getPriorityLevel(this.currentStatus.priority)) {
+      console.log(`⚠️ ContinuumWidget: Ignoring lower priority status (${status.priority} < ${this.currentStatus.priority})`);
+      return;
+    }
+
+    // Store new status
+    this.currentStatus = status;
+    this.updateStatusDisplay();
+  }
+
+  /**
+   * Update the visual display of the status in the widget
+   * Note: Visual status is shown by ContinuumEmoterWidget in sidebar
+   * ContinuumWidget only needs to update the favicon
+   */
+  private updateStatusDisplay(): void {
+    // Update favicon to match current status (or ground state if null)
+    this.updateFavicon();
+    console.log('✅ ContinuumWidget: Favicon updated');
+  }
+
+  /**
+   * Convert priority string to numeric level for comparison
+   */
+  private getPriorityLevel(priority: 'low' | 'medium' | 'high' | 'critical'): number {
+    const levels: Record<string, number> = {
+      low: 1,
+      medium: 2,
+      high: 3,
+      critical: 4
+    };
+    return levels[priority] ?? 2;  // Default to medium
+  }
+
+  /**
+   * Update browser favicon to match current status
+   * Creates a dynamic favicon with colored dot + optional emoji
+   */
+  private updateFavicon(): void {
+    try {
+      // Determine favicon content based on current status
+      const color = this.currentStatus?.color || 'var(--color-system, #0066cc)';
+      const emoji = this.currentStatus?.emoji || '';
+
+      // Create canvas for favicon
+      const canvas = document.createElement('canvas');
+      canvas.width = 32;
+      canvas.height = 32;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        console.warn('⚠️ ContinuumWidget: Cannot create canvas context for favicon');
+        return;
+      }
+
+      // Parse CSS color if needed (handle var(--color-system) case)
+      let faviconColor = color;
+      if (color.startsWith('var(')) {
+        // Default to blue for system color
+        faviconColor = '#0066cc';
+      }
+
+      if (emoji) {
+        // Draw emoji as favicon
+        ctx.font = '28px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(emoji, 16, 16);
+      } else {
+        // Draw colored dot as favicon (HAL 9000 style)
+        ctx.fillStyle = faviconColor;
+        ctx.beginPath();
+        ctx.arc(16, 16, 12, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Add glow effect
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = faviconColor;
+        ctx.fill();
+      }
+
+      // Convert canvas to data URL
+      const faviconUrl = canvas.toDataURL('image/png');
+
+      // Update favicon link in document head
+      let faviconLink = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+      if (!faviconLink) {
+        faviconLink = document.createElement('link');
+        faviconLink.rel = 'icon';
+        document.head.appendChild(faviconLink);
+      }
+      faviconLink.href = faviconUrl;
+
+      console.log(`🎨 ContinuumWidget: Favicon updated (${emoji || 'dot'}, ${faviconColor})`);
+    } catch (error) {
+      console.error('❌ ContinuumWidget: Failed to update favicon:', error);
+    }
   }
 }
 

@@ -189,7 +189,8 @@ export class OldStyleToolAdapter extends ToolFormatAdapter {
   parse(match: ToolCallMatch): ToolCall | null {
     const toolName = this.extractAttribute(match.fullMatch, 'name');
     if (!toolName) {
-      console.warn(`[OldStyleToolAdapter] Missing name attribute in: ${match.fullMatch.slice(0, 50)}...`);
+      const preview = match.fullMatch ? match.fullMatch.slice(0, 50) : '[empty match]';
+      console.warn(`[OldStyleToolAdapter] Missing name attribute in: ${preview}...`);
       return null;
     }
 
@@ -273,7 +274,8 @@ Examples:
   parse(match: ToolCallMatch): ToolCall | null {
     const toolName = this.extractTag(match.fullMatch, 'tool_name');
     if (!toolName) {
-      console.warn(`[AnthropicStyleToolAdapter] Missing <tool_name> in: ${match.fullMatch.slice(0, 50)}...`);
+      const preview = match.fullMatch ? match.fullMatch.slice(0, 50) : '[empty match]';
+      console.warn(`[AnthropicStyleToolAdapter] Missing <tool_name> in: ${preview}...`);
       return null;
     }
 

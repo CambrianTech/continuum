@@ -26,8 +26,9 @@ export class ContinuumSetServerCommand extends ContinuumSetCommand {
     if (params.clear) {
       console.log('🔄 Continuum: Clearing status, returning to system default');
 
-      // Emit clear event
-      Events.emit('continuum:status', {
+      // Emit clear event (fire-and-forget)
+      // CRITICAL: Pass this.context so event routes to ALL connected clients
+      Events.emit(this.context, 'continuum:status', {
         clear: true,
         source: this.getSource(params),
         priority: 'high',  // Clear has high priority
@@ -81,14 +82,15 @@ export class ContinuumSetServerCommand extends ContinuumSetCommand {
       duration: duration > 0 ? `${duration}ms` : 'permanent'
     });
 
-    // Emit event to ContinuumWidget
-    Events.emit('continuum:status', status);
+    // Emit event to ContinuumWidget (fire-and-forget, auto-bridges to browser)
+    // CRITICAL: Pass this.context so event routes to ALL connected clients, not just CLI context
+    Events.emit(this.context, 'continuum:status', status);
 
     // Schedule auto-revert if duration specified
     if (autoRevertAt) {
       setTimeout(() => {
         console.log(`🔄 Continuum: Auto-reverting status after ${duration}ms`);
-        Events.emit('continuum:status', {
+        Events.emit(this.context, 'continuum:status', {
           clear: true,
           source: 'system',
           priority: 'low',

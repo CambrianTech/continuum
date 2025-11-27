@@ -1,13 +1,14 @@
 /**
  * Continuum Set Command - Browser Implementation
  *
- * Browser stub - all logic happens on server via event emission
+ * Browser stub - base class delegates to server, then we emit event locally
  */
 
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { ContinuumSetCommand } from '../shared/ContinuumSetCommand';
 import type { ContinuumSetParams, ContinuumSetResult } from '../shared/ContinuumSetTypes';
+import { Events } from '../../../../system/core/shared/Events';
 
 export class ContinuumSetBrowserCommand extends ContinuumSetCommand {
 
@@ -16,7 +17,8 @@ export class ContinuumSetBrowserCommand extends ContinuumSetCommand {
   }
 
   protected async executeContinuumSet(params: ContinuumSetParams): Promise<ContinuumSetResult> {
-    // Browser stub - delegates to server which emits event
-    throw new Error('ContinuumSetBrowserCommand should delegate to server');
+    // Browser stub - delegate to server using remoteExecute()
+    // Server will emit event with await, which ensures it crosses WebSocket to browser
+    return await this.remoteExecute<ContinuumSetParams, ContinuumSetResult>(params);
   }
 }

@@ -43,18 +43,22 @@ export interface ContinuumSetParams extends CommandParams {
   priority?: 'low' | 'medium' | 'high' | 'critical';
 }
 
+/** Status shape emitted by continuum:status events and returned in results */
+export interface ContinuumStatus {
+  emoji?: string;
+  color?: string;
+  message?: string;
+  source: string;  // Who set this status ('cli', 'persona', 'system', etc.)
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  timestamp: number;
+  autoRevertAt?: number;  // Timestamp when this will revert
+  clear?: boolean;  // True when clearing status
+}
+
 export interface ContinuumSetResult extends CommandResult {
   success: boolean;
   message: string;
 
   /** Current Continuum status after update */
-  status: {
-    emoji?: string;
-    color?: string;
-    message?: string;
-    source: string;  // Who set this status ('cli', 'persona', 'system', etc.)
-    priority: 'low' | 'medium' | 'high' | 'critical';
-    timestamp: number;
-    autoRevertAt?: number;  // Timestamp when this will revert
-  };
+  status: ContinuumStatus;
 }
