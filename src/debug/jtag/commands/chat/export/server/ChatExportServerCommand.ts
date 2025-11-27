@@ -26,9 +26,14 @@ export class ChatExportServerCommand extends ChatExportCommand {
     const collection = params.collection || ChatMessageEntity.collection;
     const includeThreading = params.includeThreading ?? true;
 
+    // Auto-bookmark: Default to true when no limit is specified
+    // Logic: No limit = "show me what's new" → use bookmark
+    //        With limit = "show me last N" → don't use bookmark
+    const shouldAutoBookmark = params.autoBookmark ?? (params.limit === undefined);
+
     // Auto-bookmark: Load last seen message ID if enabled
     let effectiveParams = params;
-    if (params.autoBookmark && !params.afterMessageId) {
+    if (shouldAutoBookmark && !params.afterMessageId) {
       // Need room ID to create bookmark key
       const room = await this.findRoom(params.room || 'general', params);
       const bookmarkKey = `chat:export:bookmark:${params.sessionId}:${room.id}`;
@@ -55,7 +60,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
     const markdown = this.generateMarkdown(messages, includeThreading, effectiveParams.room);
 
     // Auto-bookmark: Save last seen message ID if enabled
-    if (params.autoBookmark && messages.length > 0) {
+    if (shouldAutoBookmark && messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
       const room = await this.findRoom(params.room || 'general', params);
       const bookmarkKey = `chat:export:bookmark:${params.sessionId}:${room.id}`;
