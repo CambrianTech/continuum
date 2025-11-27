@@ -35,11 +35,8 @@ export class MainWidget extends BaseWidget {
     // Initialize content tabs
     await this.initializeContentTabs();
 
-    // Initialize version info
-    await this.updateVersionInfo();
-
-    // Initialize status buttons
-    await this.initializeStatusButtons();
+    // Listen to header controls events
+    this.setupHeaderControlsListeners();
 
     // PHASE 3BIS: Track tab visibility for temperature
     this.setupVisibilityTracking();
@@ -51,42 +48,37 @@ export class MainWidget extends BaseWidget {
     // Use BaseWidget's template and styles system
     const styles = this.templateCSS || '/* No styles loaded */';
     const template = this.templateHTML || '<div>No template loaded</div>';
-    
+
     // Ensure template is a string
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
-    // Replace dynamic content
-    const dynamicContent = templateString
-      .replace('<!-- CONTENT_TABS -->', await this.getContentTabs())
-      .replace('<!-- VERSION_INFO -->', await this.getVersionInfo())
-      .replace('<!-- STATUS_BUTTONS -->', await this.getStatusButtons());
 
     this.shadowRoot!.innerHTML = `
       <style>${styles}</style>
-      ${dynamicContent}
+      ${templateString}
     `;
-    
+
     // Add event listeners after DOM is created
     this.setupEventListeners();
-    
+
+    // Update content tabs widget with current tab data
+    await this.updateContentTabs();
+
     console.log('✅ MainPanel: Main panel rendered');
   }
 
   private setupEventListeners(): void {
-    // Theme button click
-    this.shadowRoot?.getElementById('theme-button')?.addEventListener('click', () => {
-      this.openThemeTab();
-    });
+    // Listen to tab events from content-tabs-widget
+    this.addEventListener('tab-clicked', ((event: CustomEvent) => {
+      const tabId = event.detail.tabId;
+      console.log('📋 MainPanel: Tab clicked event received:', tabId);
+      // Future: Handle tab navigation/switching
+    }) as EventListener);
 
-    // Tab clicks
-    this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        const tabName = (tab as HTMLElement).dataset.tab;
-        if (tabName) {
-          this.switchToTab(tabName);
-        }
-      });
-    });
+    this.addEventListener('tab-closed', ((event: CustomEvent) => {
+      const tabId = event.detail.tabId;
+      console.log('📋 MainPanel: Tab close event received:', tabId);
+      // Future: Handle tab closing
+    }) as EventListener);
   }
 
   private openThemeTab(): void {
@@ -331,17 +323,27 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
-   * Update version info display
+   * Setup header controls event listeners
    */
-  private async updateVersionInfo(): Promise<void> {
-    console.log('🔢 MainPanel: Version info updated');
-  }
+  private setupHeaderControlsListeners(): void {
+    // Listen to theme-clicked event from header-controls-widget
+    this.addEventListener('theme-clicked', () => {
+      this.openThemeTab();
+    });
 
-  /**
-   * Initialize status buttons
-   */
-  private async initializeStatusButtons(): Promise<void> {
-    console.log('🔘 MainPanel: Status buttons initialized');
+    // Listen to settings-clicked event
+    this.addEventListener('settings-clicked', () => {
+      console.log('⚙️ MainPanel: Settings button clicked from header controls');
+      // Future: Open settings panel
+    });
+
+    // Listen to help-clicked event
+    this.addEventListener('help-clicked', () => {
+      console.log('❓ MainPanel: Help button clicked from header controls');
+      // Future: Open help panel
+    });
+
+    console.log('🔗 MainPanel: Header controls listeners registered');
   }
 
   /**
@@ -358,55 +360,48 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
-   * Get content tabs HTML - database-driven based on current path
+   * Update content tabs widget with current tab data
    */
-  private async getContentTabs(): Promise<string> {
+  private async updateContentTabs(): Promise<void> {
+    const tabsWidget = this.shadowRoot?.querySelector('content-tabs-widget');
+    if (!tabsWidget) {
+      console.warn('⚠️ MainPanel: ContentTabsWidget not found in shadow root');
+      return;
+    }
+
     // Ensure current content is loaded
     if (!this.currentContent) {
       await this.loadCurrentContent();
     }
-    
-    // Use content info from database
+
+    // Build tabs array based on current content
+    const tabs = [];
+
     if (this.currentContent) {
       const displayName = this.currentContent.displayName || this.currentContent.name;
-      const contentType = this.currentContent.type;
-      
-      return `
-        <div class="content-tab active" data-tab="${contentType}" data-content-id="${this.currentContent.id}">
-          ${displayName}
-        </div>
-      `;
+      tabs.push({
+        id: this.currentContent.id,
+        label: displayName,
+        active: true,
+        closeable: false  // Main content tab shouldn't be closeable
+      });
+    } else {
+      // Fallback for loading states
+      const [, pathType, roomId] = this.currentPath.split('/');
+      const fallbackName = roomId ? roomId.charAt(0).toUpperCase() + roomId.slice(1) : 'Chat';
+
+      tabs.push({
+        id: roomId || 'default',
+        label: fallbackName,
+        active: true,
+        closeable: false
+      });
     }
-    
-    // Fallback for loading states
-    const [, pathType, roomId] = this.currentPath.split('/');
-    const fallbackName = roomId ? roomId.charAt(0).toUpperCase() + roomId.slice(1) : 'Chat';
-    
-    return `
-      <div class="content-tab active" data-tab="${pathType}">
-        ${fallbackName}
-      </div>
-    `;
-  }
 
-  /**
-   * Get version info HTML
-   */
-  private async getVersionInfo(): Promise<string> {
-    return `
-      <div class="version-badge">JTAG v1.0</div>
-    `;
-  }
+    // Call updateTabs method on the widget
+    (tabsWidget as any).updateTabs(tabs);
 
-  /**
-   * Get status buttons HTML
-   */
-  private async getStatusButtons(): Promise<string> {
-    return `
-      <button class="status-button" id="theme-button">Theme</button>
-      <button class="status-button" id="settings-button">Settings</button>
-      <button class="status-button" id="help-button">Help</button>
-    `;
+    console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs');
   }
 
   /**
