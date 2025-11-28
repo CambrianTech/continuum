@@ -219,8 +219,11 @@ export class PersonaUser extends AIUser {
     return this.body.toolExecutor;
   }
 
-  // Tool registry for permission management and discovery
-  private toolRegistry: PersonaToolRegistry;
+  // BEING ARCHITECTURE: Delegate to body for toolRegistry
+  private get toolRegistry(): PersonaToolRegistry {
+    if (!this.body) throw new Error('Body not initialized');
+    return this.body.toolRegistry;
+  }
 
   // Response generation module (extracted from PersonaUser)
   private responseGenerator: PersonaResponseGenerator;
@@ -297,10 +300,6 @@ export class PersonaUser extends AIUser {
 
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
-
-    // Tool registry for permission management and autonomous tool discovery
-    this.toolRegistry = new PersonaToolRegistry();
-    this.toolRegistry.registerPersona(this.id, 'assistant'); // Default to assistant role
 
     // Response generation module (extracted from PersonaUser for clean separation)
     this.responseGenerator = new PersonaResponseGenerator({
