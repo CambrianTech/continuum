@@ -223,5 +223,4 @@ export class HeaderControlsWidget extends BaseWidget {
   }
 }
 
-// Register widget
-customElements.define('header-controls-widget', HeaderControlsWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

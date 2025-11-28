@@ -235,5 +235,4 @@ export class ContentTabsWidget extends BaseWidget {
   }
 }
 
-// Register widget
-customElements.define('content-tabs-widget', ContentTabsWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry
