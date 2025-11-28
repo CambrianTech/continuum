@@ -41,6 +41,9 @@ import {
   type VectorIndexStats,
   type VectorSearchCapabilities
 } from '../shared/VectorSearchTypes';
+import { SqlNamingConverter } from '../shared/SqlNamingConverter';
+import { SqliteRawExecutor } from './SqliteRawExecutor';
+import { SqliteTransactionManager } from './SqliteTransactionManager';
 
 /**
  * SQLite Configuration Options
@@ -81,45 +84,17 @@ export function getRegisteredEntity(collectionName: string): EntityConstructor |
 }
 
 /**
- * SQL Naming Convention Converter
- */
-export class SqlNamingConverter {
-  /**
-   * Convert camelCase to snake_case for SQL columns
-   */
-  static toSnakeCase(camelCase: string): string {
-    return camelCase.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
-  }
-
-  /**
-   * Convert snake_case back to camelCase for object properties
-   */
-  static toCamelCase(snakeCase: string): string {
-    return snakeCase.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-  }
-
-  /**
-   * Convert collection name to table name (snake_case)
-   *
-   * ARCHITECTURE-RULES.md compliance:
-   * - Collection name IS the table name (no pluralization)
-   * - Entities define .collection property with correct name
-   * - No English grammar rules - use what's given
-   */
-  static toTableName(collectionName: string): string {
-    return SqlNamingConverter.toSnakeCase(collectionName);
-  }
-}
-
-/**
  * SQLite Storage Adapter with Proper Relational Schema
  */
 export class SqliteStorageAdapter extends SqlStorageAdapterBase implements VectorSearchAdapter {
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
-  private inTransaction: boolean = false; // Track transaction state to prevent nesting
   private vectorSearchBase: VectorSearchAdapterBase | null = null;
+
+  // Extracted utility classes (Phase 1 refactoring)
+  private executor!: SqliteRawExecutor;
+  private transactionManager!: SqliteTransactionManager;
 
   /**
    * SqlStorageAdapterBase abstract method implementations
@@ -129,11 +104,11 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   }
 
   protected async executeRawSql(sql: string, params?: SqlValue[]): Promise<Record<string, unknown>[]> {
-    return this.runSql(sql, params || []);
+    return this.executor.runSql(sql, params || []);
   }
 
   protected async executeRawStatement(sql: string, params?: SqlValue[]): Promise<{ lastID?: number; changes: number }> {
-    return this.runStatement(sql, params || []);
+    return this.executor.runStatement(sql, params || []);
   }
 
   /**
@@ -239,6 +214,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       });
     });
 
+    // Initialize extracted utility classes (Phase 1 refactoring)
+    console.log('🔧 SQLite: Initializing utility classes...');
+    this.executor = new SqliteRawExecutor(this.db);
+    this.transactionManager = new SqliteTransactionManager(this.executor);
+    console.log('✅ SQLite: Utility classes initialized');
+
     console.log('⚙️ SQLite: Configuring database settings...');
     // Configure SQLite settings
     await this.configureSqlite(options);
@@ -293,7 +274,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
     try {
       // Create system_info table to track database version and initialization
-      await this.runSql(`
+      await this.executor.runSql(`
         CREATE TABLE IF NOT EXISTS system_info (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL,
@@ -305,30 +286,30 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
       // Insert database version and metadata
       const initTime = new Date().toISOString();
-      await this.runSql(
+      await this.executor.runSql(
         'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
         ['db_version', '1.0.0', initTime, initTime]
       );
-      await this.runSql(
+      await this.executor.runSql(
         'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
         ['adapter_type', 'SqliteStorageAdapter', initTime, initTime]
       );
-      await this.runSql(
+      await this.executor.runSql(
         'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
         ['node_version', process.version, initTime, initTime]
       );
-      await this.runSql(
+      await this.executor.runSql(
         'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
         ['platform', process.platform, initTime, initTime]
       );
-      await this.runSql(
+      await this.executor.runSql(
         'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
         ['last_init', initTime, initTime, initTime]
       );
       console.log('✅ SQLite: System info populated');
 
       // Verify we can read it back
-      const results = await this.runSql('SELECT key, value FROM system_info WHERE key = ?', ['db_version']);
+      const results = await this.executor.runSql('SELECT key, value FROM system_info WHERE key = ?', ['db_version']);
       if (!results || results.length === 0 || results[0].value !== '1.0.0') {
         throw new Error('Read verification failed - system_info data mismatch');
       }
@@ -372,7 +353,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
     for (const sql of settings) {
       if (sql) {
-        await this.runSql(sql);
+        await this.executor.runSql(sql);
       }
     }
 
@@ -418,7 +399,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
           SqlNamingConverter.toTableName,
           SqlNamingConverter.toSnakeCase
         );
-        await this.runSql(createTableSql);
+        await this.executor.runSql(createTableSql);
         console.log(`✅ Table created: ${tableName}`);
       }
 
@@ -430,7 +411,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         SqlNamingConverter.toSnakeCase
       );
       for (const indexSql of indexSqls) {
-        await this.runSql(indexSql);
+        await this.executor.runSql(indexSql);
       }
 
       console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
@@ -450,7 +431,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Check if a table exists in the database
    */
   private async tableExists(tableName: string): Promise<boolean> {
-    const result = await this.runSql(
+    const result = await this.executor.runSql(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
       [tableName]
     );
@@ -461,7 +442,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Get existing columns for a table
    */
   private async getTableColumns(tableName: string): Promise<Set<string>> {
-    const result = await this.runSql(`PRAGMA table_info(${tableName})`);
+    const result = await this.executor.runSql(`PRAGMA table_info(${tableName})`);
     return new Set(result.map((row: { name: string }) => row.name));
   }
 
@@ -507,7 +488,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         }
 
         console.log(`   🔄 Adding column: ${columnName} (${sqlType})`);
-        await this.runSql(alterSql);
+        await this.executor.runSql(alterSql);
       }
     }
 
@@ -554,7 +535,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         }
 
         console.log(`   🔄 Adding missing column: ${column.name} (${column.type})`);
-        await this.runSql(alterSql);
+        await this.executor.runSql(alterSql);
       }
     }
 
@@ -646,7 +627,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    */
   private async createCoreSchema(): Promise<void> {
     // Collections registry table
-    await this.runSql(`
+    await this.executor.runSql(`
       CREATE TABLE IF NOT EXISTS _collections (
         name TEXT PRIMARY KEY,
         schema_version INTEGER DEFAULT 1,
@@ -658,7 +639,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     `);
 
     // Generic data table - stores all collection data as JSON
-    await this.runSql(`
+    await this.executor.runSql(`
       CREATE TABLE IF NOT EXISTS _data (
         id TEXT NOT NULL,
         collection TEXT NOT NULL,
@@ -675,10 +656,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     `);
 
     // Index for common queries
-    await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_collection ON _data(collection)');
-    await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_id ON _data(id)');
-    await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_created_at ON _data(created_at)');
-    await this.runSql('CREATE INDEX IF NOT EXISTS idx_data_updated_at ON _data(updated_at)');
+    await this.executor.runSql('CREATE INDEX IF NOT EXISTS idx_data_collection ON _data(collection)');
+    await this.executor.runSql('CREATE INDEX IF NOT EXISTS idx_data_id ON _data(id)');
+    await this.executor.runSql('CREATE INDEX IF NOT EXISTS idx_data_created_at ON _data(created_at)');
+    await this.executor.runSql('CREATE INDEX IF NOT EXISTS idx_data_updated_at ON _data(updated_at)');
 
     // Ready for future SQL query builder integration
 
@@ -690,99 +671,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   // Type mapping will be added back with SQL query builder
 
   /**
-   * Execute SQL query with parameters
-   */
-  private async runSql(sql: string, params: any[] = []): Promise<any[]> {
-    if (!this.db) {
-      throw new Error('SQLite database not initialized');
-    }
-
-    return new Promise((resolve, reject) => {
-      this.db!.all(sql, params, (err, rows) => {
-        if (err) {
-          console.error('❌ SQLite Query Error:', err.message);
-          console.error('SQL:', sql);
-          console.error('Params:', params);
-          reject(err);
-        } else {
-          resolve(rows || []);
-        }
-      });
-    });
-  }
-
-  /**
-   * Execute SQL statement (INSERT, UPDATE, DELETE)
-   */
-  private async runStatement(sql: string, params: any[] = []): Promise<{ lastID?: number; changes: number }> {
-    console.log(`🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL:`, { sql: sql.trim(), params });
-    if (!this.db) {
-      console.error(`❌ SQLite RUNSTATEMENT DEBUG: Database not initialized!`);
-      throw new Error('SQLite database not initialized');
-    }
-
-    return new Promise((resolve, reject) => {
-      this.db!.run(sql, params, function(err) {
-        if (err) {
-          console.error('❌ SQLite Statement Error:', err.message);
-          console.error('SQL:', sql);
-          console.error('Params:', params);
-          reject(err);
-        } else {
-          const result = { lastID: this.lastID, changes: this.changes };
-          console.log(`✅ SQLite RUNSTATEMENT DEBUG: Success:`, result);
-          resolve(result);
-        }
-      });
-    });
-  }
-
-  /**
-   * Begin a database transaction
-   */
-  private async beginTransaction(): Promise<void> {
-    await this.runStatement('BEGIN TRANSACTION');
-  }
-
-  /**
-   * Commit a database transaction
-   */
-  private async commitTransaction(): Promise<void> {
-    await this.runStatement('COMMIT');
-  }
-
-  /**
-   * Rollback a database transaction
-   */
-  private async rollbackTransaction(): Promise<void> {
-    await this.runStatement('ROLLBACK');
-  }
-
-  /**
    * Execute operations within a transaction for atomic consistency
    * Supports nested calls by only creating transaction if not already in one
+   * Delegated to SqliteTransactionManager (Phase 1 refactoring)
    */
   private async withTransaction<T>(operation: () => Promise<T>): Promise<T> {
-    // If already in a transaction, just execute the operation without nesting
-    if (this.inTransaction) {
-      return await operation();
-    }
-
-    // Start new transaction
-    this.inTransaction = true;
-    await this.beginTransaction();
-
-    try {
-      const result = await operation();
-      await this.commitTransaction();
-      return result;
-    } catch (error) {
-      await this.rollbackTransaction();
-      console.error(`❌ SQLite: Transaction rolled back due to error:`, error);
-      throw error;
-    } finally {
-      this.inTransaction = false;
-    }
+    return this.transactionManager.withTransaction(operation);
   }
 
   /**
@@ -853,7 +747,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
           VALUES (${placeholders.join(', ')})
         `;
 
-        await this.runStatement(sql, values);
+        await this.executor.runStatement(sql, values);
 
         console.log(`✅ SQLite: Inserted into entity table ${tableName} with ${columns.length} columns`);
         return record;
@@ -894,11 +788,11 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       )
     `;
 
-    await this.runSql(sql);
+    await this.executor.runSql(sql);
 
     // Create basic indexes
-    await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_created_at ON ${tableName}(created_at)`);
-    await this.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_updated_at ON ${tableName}(updated_at)`);
+    await this.executor.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_created_at ON ${tableName}(created_at)`);
+    await this.executor.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_updated_at ON ${tableName}(updated_at)`);
 
     console.log(`✅ Simple entity table created: ${tableName}`);
   }
@@ -923,7 +817,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       record.metadata.version
     ];
 
-    await this.runStatement(sql, params);
+    await this.executor.runStatement(sql, params);
     console.log(`✅ SQLite: Inserted into simple entity table ${tableName}`);
 
     return record;
@@ -955,7 +849,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       record.metadata.ttl || null
     ];
 
-    await this.runStatement(sql, params);
+    await this.executor.runStatement(sql, params);
     await this.updateCollectionStats(record.collection);
 
     return record;
@@ -993,7 +887,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private async readFromEntityTable<T extends RecordData>(collection: string, id: UUID, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>>> {
     const tableName = SqlNamingConverter.toTableName(collection);
     const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
-    const rows = await this.runSql(sql, [id]);
+    const rows = await this.executor.runSql(sql, [id]);
 
     if (rows.length === 0) {
       return {
@@ -1059,7 +953,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private async readFromSimpleEntityTable<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     const tableName = SqlNamingConverter.toTableName(collection);
     const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
-    const rows = await this.runSql(sql, [id]);
+    const rows = await this.executor.runSql(sql, [id]);
 
     if (rows.length === 0) {
       return {
@@ -1117,7 +1011,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    */
   private async queryFromEntityTable<T extends RecordData>(query: StorageQuery, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>[]>> {
     const { sql, params } = this.buildEntitySelectQuery(query, entityClass);
-    const rows = await this.runSql(sql, params);
+    const rows = await this.executor.runSql(sql, params);
 
     const records: DataRecord<T>[] = rows.map(row => {
       const entityData: any = {};
@@ -1181,7 +1075,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    */
   private async queryFromSimpleEntityTable<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     const { sql, params } = this.buildSimpleEntitySelectQuery(query);
-    const rows = await this.runSql(sql, params);
+    const rows = await this.executor.runSql(sql, params);
 
     const records: DataRecord<T>[] = rows.map(row => ({
       id: row.id,
@@ -1560,7 +1454,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     params.push(id);
 
     console.log(`🔧 SQLite UPDATE ENTITY: SQL:`, { sql, paramCount: params.length });
-    const result = await this.runStatement(sql, params);
+    const result = await this.executor.runStatement(sql, params);
     console.log(`🔧 SQLite UPDATE ENTITY: Result:`, result);
 
     if (result.changes === 0) {
@@ -1616,7 +1510,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     ];
 
     console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: SQL:`, { sql, params });
-    const result = await this.runStatement(sql, params);
+    const result = await this.executor.runStatement(sql, params);
     console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: Result:`, result);
 
     if (result.changes === 0) {
@@ -1662,7 +1556,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         // Delete from entity-specific table (not _data table)
         const tableName = SqlNamingConverter.toTableName(collection);
         const dataSql = `DELETE FROM ${tableName} WHERE id = ?`;
-        const dataResult = await this.runStatement(dataSql, [id]);
+        const dataResult = await this.executor.runStatement(dataSql, [id]);
 
         return dataResult.changes;
       });
@@ -1706,7 +1600,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         AND name NOT IN ('system_info', '_data', '_collections')
         ORDER BY name
       `;
-      const rows = await this.runSql(sql);
+      const rows = await this.executor.runSql(sql);
 
       const collections = rows.map(row => row.name);
 
@@ -1733,12 +1627,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
       // Count records directly from entity table
       const countSql = `SELECT COUNT(*) as count FROM ${tableName}`;
-      const countRows = await this.runSql(countSql);
+      const countRows = await this.executor.runSql(countSql);
       const recordCount = countRows[0]?.count || 0;
 
       // Get table info
       const infoSql = `SELECT sql FROM sqlite_master WHERE type='table' AND name = ?`;
-      const infoRows = await this.runSql(infoSql, [tableName]);
+      const infoRows = await this.executor.runSql(infoSql, [tableName]);
 
       if (infoRows.length === 0) {
         return {
@@ -1783,8 +1677,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     return new Promise((resolve) => {
       this.db!.serialize(() => {
         // Only begin transaction if not already in one
-        if (!this.inTransaction) {
-          this.inTransaction = true;
+        if (!this.transactionManager.isInTransaction()) {
+          // FIXME(Phase2): This manual transaction management should be replaced with withTransaction()
           this.db!.run('BEGIN TRANSACTION');
         }
 
@@ -1841,9 +1735,9 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
           }
 
           // Commit or rollback
+          // FIXME(Phase2): Manual transaction management - should use withTransaction()
           if (hasError) {
             this.db!.run('ROLLBACK', (err) => {
-              this.inTransaction = false;
               resolve({
                 success: false,
                 error: errorMessage,
@@ -1852,7 +1746,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
             });
           } else {
             this.db!.run('COMMIT', (err) => {
-              this.inTransaction = false;
               if (err) {
                 resolve({
                   success: false,
@@ -1888,7 +1781,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     try {
       const result = await this.withTransaction(async () => {
         // Get all entity tables
-        const tables = await this.runSql(`
+        const tables = await this.executor.runSql(`
           SELECT name FROM sqlite_master
           WHERE type='table'
           AND name NOT LIKE 'sqlite_%'
@@ -1897,7 +1790,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
         // Delete from each entity table
         for (const table of tables) {
-          await this.runStatement(`DELETE FROM ${table.name}`);
+          await this.executor.runStatement(`DELETE FROM ${table.name}`);
         }
 
         return true;
@@ -1940,7 +1833,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       const result: number = await this.withTransaction(async (): Promise<number> => {
         // Use DELETE with table name (cannot parameterize table names in SQL)
         // Table name validated above to prevent injection
-        const deleteResult = await this.runStatement(`DELETE FROM ${tableName}`, []);
+        const deleteResult = await this.executor.runStatement(`DELETE FROM ${tableName}`, []);
 
         // Update collection stats
         await this.updateCollectionStats(collection);
@@ -1971,7 +1864,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
     try {
       // Remove expired records
-      await this.runStatement('DELETE FROM _data WHERE ttl IS NOT NULL AND ttl < ?', [Date.now()]);
+      await this.executor.runStatement('DELETE FROM _data WHERE ttl IS NOT NULL AND ttl < ?', [Date.now()]);
 
       // Update collection stats
       const collections = await this.listCollections();
@@ -1982,10 +1875,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       }
 
       // VACUUM to reclaim space
-      await this.runStatement('VACUUM');
+      await this.executor.runStatement('VACUUM');
 
       // ANALYZE to update statistics
-      await this.runStatement('ANALYZE');
+      await this.executor.runStatement('ANALYZE');
 
       console.log('✅ SQLite: Cleanup completed');
 
@@ -2027,7 +1920,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     `;
 
     const now = new Date().toISOString();
-    await this.runStatement(sql, [collection, now, now]);
+    await this.executor.runStatement(sql, [collection, now, now]);
   }
 
   /**
@@ -2062,7 +1955,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     try {
       await this.withTransaction(async () => {
         // Get list of all tables to clear
-        const tables = await this.runSql(`
+        const tables = await this.executor.runSql(`
           SELECT name FROM sqlite_master
           WHERE type='table'
           AND name NOT LIKE 'sqlite_%'
@@ -2072,12 +1965,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
           const tableName = table.name;
 
           // Count records before deletion
-          const countRows = await this.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+          const countRows = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
           const recordCount = countRows[0]?.count || 0;
 
           if (recordCount > 0) {
             // Delete all records from this table
-            await this.runStatement(`DELETE FROM \`${tableName}\``);
+            await this.executor.runStatement(`DELETE FROM \`${tableName}\``);
 
             tablesCleared.push(tableName);
             totalRecordsDeleted += recordCount;
@@ -2091,12 +1984,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         // No collection statistics to reset (entity tables only)
 
         // Reset SQLite sequence counters for tables that use them
-        const sequenceTables = await this.runSql(`
+        const sequenceTables = await this.executor.runSql(`
           SELECT name FROM sqlite_sequence
         `);
 
         for (const seqTable of sequenceTables) {
-          await this.runStatement(`UPDATE sqlite_sequence SET seq = 0 WHERE name = ?`, [seqTable.name]);
+          await this.executor.runStatement(`UPDATE sqlite_sequence SET seq = 0 WHERE name = ?`, [seqTable.name]);
         }
       });
 
@@ -2165,7 +2058,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private async getSqliteQueryPlan(sql: string, params: unknown[]): Promise<string> {
     try {
       const planSql = `EXPLAIN QUERY PLAN ${sql}`;
-      const plan = await this.runSql(planSql, params);
+      const plan = await this.executor.runSql(planSql, params);
 
       return plan.map((row: any) => {
         return `${row.id || 0}|${row.parent || 0}|${row.notused || 0}|${row.detail || 'No details'}`;
@@ -2183,7 +2076,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       const tableName = SqlNamingConverter.toTableName(query.collection);
 
       // Simple count - could be enhanced with more sophisticated estimation
-      const result = await this.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+      const result = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
       return result[0]?.count || 0;
     } catch (error) {
       return 0;
@@ -2306,10 +2199,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       )
     `;
 
-    await this.runStatement(sql);
+    await this.executor.runStatement(sql);
 
     // Create index on record_id for faster lookups
-    await this.runStatement(`
+    await this.executor.runStatement(`
       CREATE INDEX IF NOT EXISTS \`${tableName}_record_id_idx\`
       ON \`${tableName}\`(record_id)
     `);
@@ -2324,7 +2217,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private async storeVectorInSQLite(collection: string, vector: StoredVector): Promise<void> {
     const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
 
-    await this.runStatement(
+    await this.executor.runStatement(
       `INSERT OR REPLACE INTO \`${tableName}\` (record_id, embedding, model, generated_at)
        VALUES (?, ?, ?, ?)`,
       [
@@ -2344,7 +2237,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
 
     // Check if table exists
-    const tableExists = await this.runSql(
+    const tableExists = await this.executor.runSql(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
       [tableName]
     );
@@ -2353,7 +2246,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       return [];  // No vectors yet
     }
 
-    const rows = await this.runSql(`SELECT record_id, embedding, model, generated_at FROM \`${tableName}\``);
+    const rows = await this.executor.runSql(`SELECT record_id, embedding, model, generated_at FROM \`${tableName}\``);
 
     return rows.map(row => ({
       recordId: row.record_id as UUID,
@@ -2370,7 +2263,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
 
     // Check if table exists
-    const tableExists = await this.runSql(
+    const tableExists = await this.executor.runSql(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
       [tableName]
     );
@@ -2379,7 +2272,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       return 0;
     }
 
-    const result = await this.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+    const result = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
     return (result[0]?.count as number) || 0;
   }
 }

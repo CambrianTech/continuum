@@ -6,7 +6,7 @@
  */
 
 import type { StorageQuery } from '../shared/DataStorageAdapter';
-import { SqlNamingConverter } from './SqliteStorageAdapter';
+import { SqlNamingConverter } from '../shared/SqlNamingConverter';
 
 export interface SqliteQueryResult {
   sql: string;
