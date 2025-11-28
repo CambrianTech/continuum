@@ -105,6 +105,7 @@ import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
 import { PersonaLogger } from './modules/PersonaLogger';
 import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
 import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
+import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBody';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -152,6 +153,9 @@ export class PersonaUser extends AIUser {
 
   // BEING ARCHITECTURE: Mind system (cognition, evaluation, planning)
   private mind: PersonaMind | null = null;
+
+  // BEING ARCHITECTURE: Body system (action, execution, output)
+  private body: PersonaBody | null = null;
 
   // BEING ARCHITECTURE: Delegate to soul for memory/genome/training/hippocampus
   public get memory(): PersonaMemory {
@@ -209,8 +213,11 @@ export class PersonaUser extends AIUser {
     return this.mind.planFormulator;
   }
 
-  // Tool execution adapter (keeps PersonaUser clean)
-  private toolExecutor: PersonaToolExecutor;
+  // BEING ARCHITECTURE: Delegate to body for toolExecutor
+  private get toolExecutor(): PersonaToolExecutor {
+    if (!this.body) throw new Error('Body not initialized');
+    return this.body.toolExecutor;
+  }
 
   // Tool registry for permission management and discovery
   private toolRegistry: PersonaToolRegistry;
@@ -278,6 +285,9 @@ export class PersonaUser extends AIUser {
     // BEING ARCHITECTURE Phase 2: Initialize Mind (cognition, evaluation, planning)
     this.mind = new PersonaMind(this as any as PersonaUserForMind);
 
+    // BEING ARCHITECTURE Phase 3: Initialize Body (action, execution, output)
+    this.body = new PersonaBody(this as any as PersonaUserForBody);
+
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     this.decisionChain = new DecisionAdapterChain();
     console.log(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
@@ -287,9 +297,6 @@ export class PersonaUser extends AIUser {
 
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
-
-    // Tool execution adapter (dynamic registry for code/read, list, system/daemons, etc.)
-    this.toolExecutor = new PersonaToolExecutor(this.id, this.displayName);
 
     // Tool registry for permission management and autonomous tool discovery
     this.toolRegistry = new PersonaToolRegistry();
