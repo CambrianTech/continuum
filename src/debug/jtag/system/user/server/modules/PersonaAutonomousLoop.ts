@@ -20,25 +20,14 @@ import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
 import { taskEntityToInboxTask, type InboxTask, type QueueItem } from './QueueItemTypes';
 
-// Forward declare PersonaUser to avoid circular dependency
-export interface PersonaUserForLoop {
-  readonly id: UUID;
-  readonly displayName: string;
-  readonly personaState: any; // PersonaState
-  readonly inbox: any; // PersonaInbox
-  readonly trainingManager: any; // PersonaTrainingManager
-  readonly taskGenerator: any; // PersonaTaskGenerator
-  readonly taskExecutor: any; // PersonaTaskExecutor
-  readonly cns: any; // PersonaCentralNervousSystem
-  readonly memory: any; // PersonaMemory (with genome)
-  evaluateAndPossiblyRespondWithCognition(messageEntity: any, senderIsHuman: boolean, messageText: string): Promise<void>;
-}
+// Import PersonaUser directly - circular dependency is fine for type-only imports
+import type { PersonaUser } from '../PersonaUser';
 
 export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
   private trainingCheckLoop: NodeJS.Timeout | null = null;
 
-  constructor(private readonly personaUser: PersonaUserForLoop) {}
+  constructor(private readonly personaUser: PersonaUser) {}
 
   /**
    * PHASE 3: Start autonomous servicing loop

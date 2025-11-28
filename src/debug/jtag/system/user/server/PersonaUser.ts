@@ -132,7 +132,7 @@ export class PersonaUser extends AIUser {
   public mediaConfig: PersonaMediaConfig;
 
   // Rate limiting module (TODO: Replace with AI-based coordination when ThoughtStream is solid)
-  private rateLimiter: RateLimiter;
+  readonly rateLimiter: RateLimiter;
 
   // PHASE 1: Autonomous servicing modules (inbox + personaState)
   // Inbox stores messages with priority, personaState tracks energy/mood
@@ -146,7 +146,7 @@ export class PersonaUser extends AIUser {
   }
 
   // PHASE 5: Self-task generation (autonomous work creation)
-  private taskGenerator: SelfTaskGenerator;
+  readonly taskGenerator: SelfTaskGenerator;
 
   // BEING ARCHITECTURE: Soul system (memory, learning, identity)
   private soul: PersonaSoul | null = null;
@@ -178,19 +178,19 @@ export class PersonaUser extends AIUser {
     return this.soul.hippocampus;
   }
 
-  private get trainingManager(): PersonaTrainingManager {
+  public get trainingManager(): PersonaTrainingManager {
     if (!this.soul) throw new Error('Soul not initialized');
     return this.soul.trainingManager;
   }
 
   // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
-  private decisionChain: DecisionAdapterChain;
+  readonly decisionChain: DecisionAdapterChain;
 
   // CNS: Central Nervous System orchestrator
-  private cns: PersonaCentralNervousSystem;
+  readonly cns: PersonaCentralNervousSystem;
 
   // Task execution module (extracted from PersonaUser for modularity)
-  private taskExecutor: PersonaTaskExecutor;
+  readonly taskExecutor: PersonaTaskExecutor;
 
   // Autonomous servicing loop module (extracted from PersonaUser for modularity)
   private autonomousLoop: PersonaAutonomousLoop;
@@ -315,10 +315,10 @@ export class PersonaUser extends AIUser {
     this.cns = CNSFactory.create(this);
 
     // Message evaluation module (pass PersonaUser reference for dependency injection)
-    this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
+    this.messageEvaluator = new PersonaMessageEvaluator(this);
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
-    this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
+    this.autonomousLoop = new PersonaAutonomousLoop(this);
 
     // RTOS subprocesses (Logger only - hippocampus now in soul)
     // Logger MUST be first - other subprocesses need it for logging
@@ -350,7 +350,7 @@ export class PersonaUser extends AIUser {
    * Log AI decision to dedicated AI log (separate from general system logs)
    * Uses AIDecisionLogger to write to .continuum/jtag/sessions/system/{sessionId}/logs/ai-decisions.log
    */
-  private logAIDecision(
+  public logAIDecision(
     decision: 'RESPOND' | 'SILENT',
     reason: string,
     context: {
@@ -606,7 +606,7 @@ export class PersonaUser extends AIUser {
    * 4. Store thoughts in WorkingMemory
    * 5. Update SelfState with focus and cognitive load
    */
-  private async evaluateAndPossiblyRespondWithCognition(
+  public async evaluateAndPossiblyRespondWithCognition(
     messageEntity: ChatMessageEntity,
     senderIsHuman: boolean,
     messageText: string
@@ -681,7 +681,7 @@ export class PersonaUser extends AIUser {
    *
    * **Dormancy filtering**: Checks dormancy state before responding
    */
-  private async respondToMessage(
+  public async respondToMessage(
     originalMessage: ChatMessageEntity,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {

@@ -43,32 +43,8 @@ import {
   getStageStatus
 } from '../../../conversation/shared/CognitionEventTypes';
 
-// Forward declare PersonaUser to avoid circular dependency
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface PersonaUser {
-  readonly id: UUID;
-  readonly displayName: string;
-  readonly entity: UserEntity;
-  readonly state: any; // UserStateEntity
-  readonly myRoomIds: Set<string>;
-  readonly client: any;
-  readonly modelConfig: any;
-  readonly rateLimiter: any;
-  readonly decisionChain: any;
-  readonly memory: any;
-  readonly planFormulator: any;
-  readonly selfState: any;
-  readonly workingMemory: any;
-  readonly worker: any;
-  readonly responseGenerator: any;
-  readonly personaState: any;
-  timestampToNumber(timestamp: Date | number | undefined): number;
-  logAIDecision(decision: string, reason: string, context: any): void;
-  respondToMessage(
-    originalMessage: ChatMessageEntity,
-    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
-  ): Promise<void>;
-}
+// Import PersonaUser directly - circular dependency is fine for type-only imports
+import type { PersonaUser } from '../PersonaUser';
 
 /**
  * PersonaMessageEvaluator - Message evaluation and response decision engine
@@ -175,7 +151,8 @@ export class PersonaMessageEvaluator {
       contextId: messageEntity.roomId,
       thoughtType: 'observation',
       thoughtContent: `Received message from ${messageEntity.senderName}: "${messageText.slice(0, 200)}"`,
-      importance: task.priority
+      importance: task.priority,
+      shareable: false
     });
 
     // STEP 5: Execute plan steps (existing chat logic inside)
@@ -203,7 +180,8 @@ export class PersonaMessageEvaluator {
         contextId: messageEntity.roomId,
         thoughtType: 'reflection',
         thoughtContent: `Completed response plan for message from ${messageEntity.senderName}`,
-        importance: 0.5
+        importance: 0.5,
+        shareable: false
       });
 
       console.log(`✅ ${this.personaUser.displayName}: COGNITION - Plan completed successfully`);
@@ -230,7 +208,8 @@ export class PersonaMessageEvaluator {
         contextId: messageEntity.roomId,
         thoughtType: 'observation',
         thoughtContent: `Error during response: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        importance: 0.8 // High importance for errors
+        importance: 0.8, // High importance for errors
+        shareable: false
       });
 
       // LOG: Plan failure
@@ -716,21 +695,15 @@ export class PersonaMessageEvaluator {
     }
 
     try {
-      // Query the sender's UserEntity to check their type
-      const result = await this.personaUser.client.daemons.commands.execute('data/read', {
-        collection: COLLECTIONS.USERS,
-        id: senderId,
-        context: this.personaUser.client.context,
-        sessionId: this.personaUser.client.sessionId,
-        backend: 'server'
-      });
+      // Query the sender's UserEntity to check their type using DataDaemon directly
+      const result = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, senderId);
 
-      if (!result.success || !result.found || !result.data) {
+      if (!result.success || !result.data) {
         console.warn(`⚠️  PersonaUser ${this.personaUser.displayName}: Could not read sender ${senderId}, BLOCKING response`);
         return false; // Fail CLOSED - don't respond if database fails (prevents loops)
       }
 
-      const senderType = result.data.type;
+      const senderType = result.data.data.type;
       return senderType === 'human';
 
     } catch (error: any) {

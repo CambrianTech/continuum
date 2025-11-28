@@ -40,10 +40,10 @@ export abstract class BaseUser {
     public readonly entity: UserEntity,
     public readonly state: UserStateEntity,
     protected readonly storage: IUserStateStorage,
-    protected readonly client?: JTAGClient
+    public readonly client?: JTAGClient
   ) {}
 
-  protected myRoomIds: Set<UUID> = new Set();
+  public myRoomIds: Set<UUID> = new Set();
 
   /**
    * Initialize user - common setup, subclasses extend with type-specific logic
