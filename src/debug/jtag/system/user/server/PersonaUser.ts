@@ -103,6 +103,7 @@ import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/Persona
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
 import { PersonaLogger } from './modules/PersonaLogger';
+import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -187,6 +188,9 @@ export class PersonaUser extends AIUser {
   // RTOS Subprocesses
   public logger: PersonaLogger; // Public: accessed by all subprocesses for logging
   private hippocampus: Hippocampus;
+
+  // BEING ARCHITECTURE: Soul system (Phase 1 - parallel to existing fields for safe migration)
+  private soul: PersonaSoul | null = null;
 
   constructor(
     entity: UserEntity,
@@ -341,6 +345,10 @@ export class PersonaUser extends AIUser {
     // Logger MUST be first - other subprocesses need it for logging
     this.logger = new PersonaLogger(this);
     this.hippocampus = new Hippocampus(this);
+
+    // BEING ARCHITECTURE Phase 1: Initialize Soul (memory, learning, identity)
+    // Soul wraps existing memory/genome/learning systems in elegant interface
+    this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 

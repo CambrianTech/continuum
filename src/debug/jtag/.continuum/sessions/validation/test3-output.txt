@@ -10,65 +10,81 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (53de7361-fdb6-43ce-a82c-ae63bdf86f8a) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (4f5018dd-d3f8-4d41-bdd5-24b4c429ebba) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
 🔗 websocket-server-client: Connecting to ws://localhost:9002
-✅ websocket-server-client: Connected
-✅ websocket-server-client: Handler compliance enforced by TypeScript
-🚀 Server Factory: Adapter WebSocketTransportClientServer connected successfully
-✅ Server Transport Factory (Registry-Based): web-socket-transport-client-server transport created successfully
-✅ JTAGClient: created_new connection established on port 9002
-🏷️ JTAGClient: Requesting session from SessionDaemon...
-🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
-🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
-🔑 JTAGClient: Computed uniqueId="@cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1764306314902_mtev1vh3
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764306314902_mtev1vh3
-✅ JTAGClient: Completed correlation client_1764306314902_mtev1vh3
-🏷️ JTAGClientServer: Session updated to: 49e16595-a68b-4f89-8e5f-58d9746f32b5 (managed by base class)
-📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764306314906_0ftnv97p
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764306314906_0ftnv97p
-✅ JTAGClient: Completed correlation client_1764306314906_0ftnv97p
-✅ JTAGClient: Connection established
-🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764306314910_2rsg7ezj
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:cognition_state_snapshots:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:cognition_state_snapshots:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for ai:decision:evaluating
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764306314910_2rsg7ezj
-✅ JTAGClient: Completed correlation client_1764306314910_2rsg7ezj
-✅ JTAGClient: Bootstrap complete! Discovered 123 commands
-✅ Server: JTAGClient connected with 123 commands
-📝 JTAGClient: Registered 'default' (server)
-✅ Connected to JTAG system
-
-🔍 Step 2: Verifying system health...
-📤 RemoteConnection: Sending command 'ping' with correlation client_1764306314924_nw7kje6n
-📥 JTAGClient: Transport message received (type: request)
-📋 JTAGClient: Non-response message type 'request' - acknowledging
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764306314924_nw7kje6n
-✅ JTAGClient: Completed correlation client_1764306314924_nw7kje6n
-✅ System is healthy
-
-🗄️ Step 3: Querying AI decisions and generating report...
-📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1764306314936_5un6f3pu
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:adapter_decision_logs:created
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+⏳ ConnectionBroker: Retrying in 1000ms (attempt 1/3)
+🔗 ConnectionBroker: Creating client connection to existing server
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+⏳ ConnectionBroker: Retrying in 2000ms (attempt 2/3)
+🔗 ConnectionBroker: Creating client connection to existing server
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+⏳ ConnectionBroker: Retrying in 4000ms (attempt 3/3)
+🔗 ConnectionBroker: Creating client connection to existing server
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
 ❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
 
 ❌ AI Decision Report Integration Test: FAILED
 ===============================================
-Request timeout after 30000ms
+WebSocket connection error: Connection failed
 
 💡 Debugging tips:
    1. Check DecisionEntity table: ./jtag data/list --collection=decisions --limit=5
@@ -76,14 +92,14 @@ Request timeout after 30000ms
    3. Check AI decisions log: .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log
    4. Check for errors: grep "ERROR" .continuum/jtag/system/logs/npm-start.log
 
-🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 49e16595-a68b-4f89-8e5f-58d9746f32b5 on disconnect (shared: true)
-🔌 websocket-server-client: Disconnecting
-✅ JTAGClient: Transport disconnected
-🛑 ConnectionBroker: Shutting down...
-✅ ConnectionBroker: Shutdown complete
-✅ JTAGClient: Connection Broker shut down
-🚨 AI decision report integration test failed: Error: Request timeout after 30000ms
-    at Timeout._onTimeout (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/core/shared/ResponseCorrelator.ts:39:16)
-    at listOnTimeout (node:internal/timers:614:17)
-    at process.processTimers (node:internal/timers:549:7)
+🚨 AI decision report integration test failed: Error: WebSocket connection error: Connection failed
+    at handleError (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:303:18)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
