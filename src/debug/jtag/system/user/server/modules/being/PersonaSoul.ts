@@ -45,14 +45,14 @@ export class PersonaSoul {
   public readonly memory: PersonaMemory;
 
   // Genome (identity, personality, skills)
-  private readonly genomeManager: PersonaGenomeManager;
+  public readonly genomeManager: PersonaGenomeManager;
 
   // Learning systems
   public readonly trainingAccumulator: TrainingDataAccumulator;
-  private readonly trainingManager: PersonaTrainingManager;
+  public readonly trainingManager: PersonaTrainingManager;
 
   // Memory consolidation subprocess (hippocampus)
-  private readonly hippocampus: Hippocampus;
+  public readonly hippocampus: Hippocampus;
 
   // Identity
   private readonly personaId: UUID;

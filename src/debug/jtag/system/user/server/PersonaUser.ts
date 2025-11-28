@@ -141,8 +141,34 @@ export class PersonaUser extends AIUser {
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
 
-  // COGNITIVE MODULE: Memory (knowledge, context, genome)
-  public memory: PersonaMemory;
+  // BEING ARCHITECTURE: Soul system (memory, learning, identity)
+  private soul: PersonaSoul | null = null;
+
+  // BEING ARCHITECTURE: Delegate to soul for memory/genome/training/hippocampus
+  public get memory(): PersonaMemory {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.memory;
+  }
+
+  public get trainingAccumulator(): TrainingDataAccumulator {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.trainingAccumulator;
+  }
+
+  private get genomeManager(): PersonaGenomeManager {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.genomeManager;
+  }
+
+  private get hippocampus(): Hippocampus {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.hippocampus;
+  }
+
+  private get trainingManager(): PersonaTrainingManager {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.trainingManager;
+  }
 
   // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
   private decisionChain: DecisionAdapterChain;
@@ -150,15 +176,8 @@ export class PersonaUser extends AIUser {
   // CNS: Central Nervous System orchestrator
   private cns: PersonaCentralNervousSystem;
 
-  // PHASE 7.4: Training data accumulation for recipe-embedded learning
-  // Accumulates training examples in RAM during recipe execution
-  public trainingAccumulator: TrainingDataAccumulator;
-
   // Task execution module (extracted from PersonaUser for modularity)
   private taskExecutor: PersonaTaskExecutor;
-
-  // Training management module (extracted from PersonaUser for modularity)
-  private trainingManager: PersonaTrainingManager;
 
   // Autonomous servicing loop module (extracted from PersonaUser for modularity)
   private autonomousLoop: PersonaAutonomousLoop;
@@ -180,17 +199,9 @@ export class PersonaUser extends AIUser {
   // Message evaluation module (extracted from PersonaUser for modularity)
   private messageEvaluator: PersonaMessageEvaluator;
 
-  // Genome management module (extracted from PersonaUser for better genomic daemon integration)
-  private genomeManager: PersonaGenomeManager;
-
-  // RTOS-style background subprocess for memory consolidation
-  // Phase 1: Minimal logging-only version to prove threading works
   // RTOS Subprocesses
   public logger: PersonaLogger; // Public: accessed by all subprocesses for logging
-  private hippocampus: Hippocampus;
-
-  // BEING ARCHITECTURE: Soul system (Phase 1 - parallel to existing fields for safe migration)
-  private soul: PersonaSoul | null = null;
+  // Note: genomeManager and hippocampus now accessed via soul getters
 
   constructor(
     entity: UserEntity,
@@ -243,59 +254,16 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
-    // COGNITIVE MODULE: Memory (RAG context + genome)
-    this.memory = new PersonaMemory(
-      this.id,
-      this.displayName,
-      {
-        baseModel: this.modelConfig.model || 'llama3.2:3b',
-        memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
-        adaptersPath: './lora-adapters',
-        initialAdapters: [
-          {
-            name: 'conversational',
-            domain: 'chat',
-            path: './lora-adapters/conversational.safetensors',
-            sizeMB: 50,
-            priority: 0.7  // High priority - used frequently
-          },
-          {
-            name: 'typescript-expertise',
-            domain: 'code',
-            path: './lora-adapters/typescript-expertise.safetensors',
-            sizeMB: 60,
-            priority: 0.6
-          },
-          {
-            name: 'self-improvement',
-            domain: 'self',
-            path: './lora-adapters/self-improvement.safetensors',
-            sizeMB: 40,
-            priority: 0.5
-          }
-        ]
-      },
-      client
-    );
+    // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
+    // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters
+    this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     this.decisionChain = new DecisionAdapterChain();
     console.log(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
-    // PHASE 7.4: Training data accumulator for recipe-embedded learning
-    this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
-
-    // Task execution module (delegated for modularity)
+    // Task execution module (delegated for modularity, uses this.memory getter)
     this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
-
-    // Training management module (delegated for modularity)
-    this.trainingManager = new PersonaTrainingManager(
-      this.id,
-      this.displayName,
-      this.trainingAccumulator,
-      () => this.state,
-      () => this.saveState()
-    );
 
     // COGNITION SYSTEM: Agent architecture components
     this.workingMemory = new WorkingMemoryManager(this.id);
@@ -328,27 +296,12 @@ export class PersonaUser extends AIUser {
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
 
-    // Genome management module (delegated for genomic daemon integration)
-    this.genomeManager = new PersonaGenomeManager(
-      this.id,
-      this.displayName,
-      () => this.entity,
-      () => this.client
-    );
-
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
 
-    // RTOS-style memory consolidation subprocess (will start in initialize())
-    // Phase 1: Minimal version - just logging to prove threading works
-    // Initialize RTOS subprocesses
+    // RTOS subprocesses (Logger only - hippocampus now in soul)
     // Logger MUST be first - other subprocesses need it for logging
     this.logger = new PersonaLogger(this);
-    this.hippocampus = new Hippocampus(this);
-
-    // BEING ARCHITECTURE Phase 1: Initialize Soul (memory, learning, identity)
-    // Soul wraps existing memory/genome/learning systems in elegant interface
-    this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
@@ -485,10 +438,8 @@ export class PersonaUser extends AIUser {
     await this.logger.start();
     console.log(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
 
-    // Start Hippocampus subprocess (RTOS-style background process)
-    // Phase 1: Minimal logging-only version to prove threading works
-    await this.hippocampus.start();
-    console.log(`🧠 ${this.displayName}: Hippocampus subprocess started (minimal/logging mode)`);
+    // Start soul memory consolidation (Hippocampus subprocess via soul interface)
+    await this.soul!.startMemoryConsolidation();
   }
 
   /**
@@ -1240,10 +1191,8 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
-    // Stop RTOS subprocesses in reverse order
-    // Stop Hippocampus first (generates final logs)
-    await this.hippocampus.stop();
-    console.log(`🧠 ${this.displayName}: Hippocampus subprocess stopped`);
+    // Stop soul systems (hippocampus + memory consolidation)
+    await this.soul!.shutdown();
 
     // Force flush all queued logs before stopping logger
     await this.logger.forceFlush();
