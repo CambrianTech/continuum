@@ -44,6 +44,8 @@ import {
 import { SqlNamingConverter } from '../shared/SqlNamingConverter';
 import { SqliteRawExecutor } from './SqliteRawExecutor';
 import { SqliteTransactionManager } from './SqliteTransactionManager';
+import { SqliteSchemaManager } from './managers/SqliteSchemaManager';
+import { ENTITY_REGISTRY, registerEntity, getRegisteredEntity, type EntityConstructor } from './EntityRegistry';
 
 /**
  * SQLite Configuration Options
@@ -59,29 +61,8 @@ interface SqliteOptions {
   timeout?: number;         // Busy timeout in ms
 }
 
-/**
- * Entity Class Registry - Maps collection names to entity classes
- * Entities register themselves when their modules are imported
- */
-type EntityConstructor = new (...args: any[]) => any;
-const ENTITY_REGISTRY = new Map<string, EntityConstructor>();
-
-/**
- * Register an entity class with its collection name
- * Called automatically when entity classes are imported/loaded
- */
-export function registerEntity(collectionName: string, entityClass: EntityConstructor): void {
-  console.log(`🏷️ SQLite: Registering entity ${collectionName} -> ${entityClass.name}`);
-  ENTITY_REGISTRY.set(collectionName, entityClass);
-}
-
-/**
- * Get registered entity class for a collection
- * Used by data/schema command for schema introspection
- */
-export function getRegisteredEntity(collectionName: string): EntityConstructor | undefined {
-  return ENTITY_REGISTRY.get(collectionName);
-}
+// Re-export entity registry functions for backwards compatibility
+export { registerEntity, getRegisteredEntity, type EntityConstructor };
 
 /**
  * SQLite Storage Adapter with Proper Relational Schema
@@ -95,6 +76,9 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   // Extracted utility classes (Phase 1 refactoring)
   private executor!: SqliteRawExecutor;
   private transactionManager!: SqliteTransactionManager;
+
+  // Extracted manager classes (Phase 0 refactoring)
+  private schemaManager!: SqliteSchemaManager;
 
   /**
    * SqlStorageAdapterBase abstract method implementations
@@ -214,15 +198,31 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       });
     });
 
+    // Ensure database is initialized before proceeding
+    if (!this.db) {
+      throw new Error('Database initialization failed - db is null');
+    }
+
     // Initialize extracted utility classes (Phase 1 refactoring)
     console.log('🔧 SQLite: Initializing utility classes...');
     this.executor = new SqliteRawExecutor(this.db);
     this.transactionManager = new SqliteTransactionManager(this.executor);
     console.log('✅ SQLite: Utility classes initialized');
 
+    // Initialize schema manager (Phase 0 refactoring)
+    console.log('🔧 SQLite: Initializing schema manager...');
+    this.schemaManager = new SqliteSchemaManager(
+      this.db,
+      this.executor,
+      this.generateCreateTableSql.bind(this),
+      this.generateCreateIndexSql.bind(this),
+      this.mapFieldTypeToSql.bind(this)
+    );
+    console.log('✅ SQLite: Schema manager initialized');
+
     console.log('⚙️ SQLite: Configuring database settings...');
     // Configure SQLite settings
-    await this.configureSqlite(options);
+    await this.schemaManager.configureSqlite(options);
 
     // EXFAT FIX: Re-apply permissions after SQLite opens and potentially modifies the file
     // This handles cases where filesystem doesn't properly support Unix permissions
@@ -243,7 +243,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
     // Verify integrity after initialization
     console.log('🔍 SQLite: Verifying database integrity...');
-    await this.verifyIntegrity();
+    await this.schemaManager.verifyIntegrity();
 
     // Initialize vector search with composition pattern
     console.log('🔍 SQLite: Initializing vector search capabilities...');
@@ -362,69 +362,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
   /**
    * Ensure schema exists for collection (orchestrated by DataDaemon)
-   *
-   * This is the ONLY place where tables are created.
-   * Handles both registered entities (with metadata) and unregistered entities (simple table).
-   * Adapter translates collection → table name and creates snake_case columns.
+   * Delegates to SqliteSchemaManager
    */
   async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
-    try {
-      const tableName = SqlNamingConverter.toTableName(collectionName);
-      const tableExists = await this.tableExists(tableName);
-
-      const entityClass = ENTITY_REGISTRY.get(collectionName);
-
-      if (!entityClass || !hasFieldMetadata(entityClass)) {
-        // Unregistered collection - handle simple entity table
-        if (tableExists) {
-          // Migrate simple entity table: add missing snake_case columns if old table has camelCase
-          console.log(`🔄 Migrating simple entity table: ${collectionName} -> ${tableName}`);
-          await this.migrateSimpleEntityTable(tableName);
-        }
-        // Note: If table doesn't exist, create() will handle it via createSimpleEntityTable()
-        return { success: true, data: true };
-      }
-
-      // Registered entity - handle full entity table with metadata
-      console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
-
-      if (tableExists) {
-        // Migrate schema: add missing columns
-        await this.migrateTableSchema(collectionName, tableName, entityClass);
-      } else {
-        // Create new table
-        const createTableSql = this.generateCreateTableSql(
-          collectionName,
-          entityClass,
-          SqlNamingConverter.toTableName,
-          SqlNamingConverter.toSnakeCase
-        );
-        await this.executor.runSql(createTableSql);
-        console.log(`✅ Table created: ${tableName}`);
-      }
-
-      // Create indexes (will skip if they already exist due to IF NOT EXISTS)
-      const indexSqls = this.generateCreateIndexSql(
-        collectionName,
-        entityClass,
-        SqlNamingConverter.toTableName,
-        SqlNamingConverter.toSnakeCase
-      );
-      for (const indexSql of indexSqls) {
-        await this.executor.runSql(indexSql);
-      }
-
-      console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
-
-      return { success: true, data: true };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ SQLite: Failed to ensure schema for ${collectionName}:`, errorMessage);
-      return {
-        success: false,
-        error: errorMessage
-      };
-    }
+    return this.schemaManager.ensureSchema(collectionName, _schema);
   }
 
   /**

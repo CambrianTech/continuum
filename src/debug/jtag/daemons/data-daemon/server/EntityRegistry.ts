@@ -5,7 +5,34 @@
  * Only runs on server side to avoid cross-environment import issues
  */
 
-import { registerEntity } from './SqliteStorageAdapter';
+/**
+ * Entity Class Registry - Maps collection names to entity classes
+ * This is dynamically populated as entities are registered
+ */
+type EntityConstructor = new (...args: any[]) => any;
+export const ENTITY_REGISTRY = new Map<string, EntityConstructor>();
+
+/**
+ * Register an entity class with its collection name
+ * Called automatically when entity classes are imported/loaded
+ */
+export function registerEntity(collectionName: string, entityClass: EntityConstructor): void {
+  console.log(`🏷️ SQLite: Registering entity ${collectionName} -> ${entityClass.name}`);
+  ENTITY_REGISTRY.set(collectionName, entityClass);
+}
+
+/**
+ * Get registered entity class for a collection
+ * Used by data/schema command for schema introspection
+ */
+export function getRegisteredEntity(collectionName: string): EntityConstructor | undefined {
+  return ENTITY_REGISTRY.get(collectionName);
+}
+
+/**
+ * Export EntityConstructor type for use in other files
+ */
+export type { EntityConstructor };
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
