@@ -28,7 +28,6 @@ import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SqliteQueryBuilder } from './SqliteQueryBuilder';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
-import { VectorSearchAdapterBase, type VectorStorageOperations, type StoredVector } from './VectorSearchAdapterBase';
 import {
   type VectorSearchAdapter,
   type VectorSearchOptions,
@@ -47,6 +46,7 @@ import { SqliteTransactionManager } from './SqliteTransactionManager';
 import { SqliteSchemaManager } from './managers/SqliteSchemaManager';
 import { SqliteQueryExecutor } from './managers/SqliteQueryExecutor';
 import { SqliteWriteManager } from './managers/SqliteWriteManager';
+import { SqliteVectorSearchManager } from './managers/SqliteVectorSearchManager';
 import { ENTITY_REGISTRY, registerEntity, getRegisteredEntity, type EntityConstructor } from './EntityRegistry';
 
 /**
@@ -73,7 +73,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
-  private vectorSearchBase: VectorSearchAdapterBase | null = null;
 
   // Extracted utility classes (Phase 1 refactoring)
   private executor!: SqliteRawExecutor;
@@ -83,6 +82,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private schemaManager!: SqliteSchemaManager;
   private queryExecutor!: SqliteQueryExecutor;
   private writeManager!: SqliteWriteManager;
+  private vectorSearchManager!: SqliteVectorSearchManager;
 
   /**
    * SqlStorageAdapterBase abstract method implementations
@@ -259,18 +259,13 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     console.log('🔍 SQLite: Verifying database integrity...');
     await this.schemaManager.verifyIntegrity();
 
-    // Initialize vector search with composition pattern
-    console.log('🔍 SQLite: Initializing vector search capabilities...');
-    this.vectorSearchBase = new VectorSearchAdapterBase(
-      this,  // DataStorageAdapter for CRUD operations
-      {      // VectorStorageOperations for SQLite-specific vector storage
-        ensureVectorStorage: (collection, dimensions) => this.ensureVectorTable(collection, dimensions),
-        storeVector: (collection, vector) => this.storeVectorInSQLite(collection, vector),
-        getAllVectors: (collection) => this.getVectorsFromSQLite(collection),
-        getVectorCount: (collection) => this.countVectorsInSQLite(collection)
-      }
+    // Initialize vector search manager (Phase 0 refactoring)
+    console.log('🔍 SQLite: Initializing vector search manager...');
+    this.vectorSearchManager = new SqliteVectorSearchManager(
+      this.executor,
+      this  // DataStorageAdapter for CRUD operations
     );
-    console.log('✅ SQLite: Vector search initialized');
+    console.log('✅ SQLite: Vector search manager initialized');
 
     this.isInitialized = true;
     console.log('🎯 SQLite: Initialization complete and verified');
@@ -1229,195 +1224,62 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   }
 
   // ============================================================================
-  // VECTOR SEARCH ADAPTER INTERFACE - Delegate to VectorSearchAdapterBase
+  // VECTOR SEARCH ADAPTER INTERFACE - Delegate to SqliteVectorSearchManager
   // ============================================================================
 
   /**
    * Perform vector similarity search
-   * Delegates to VectorSearchAdapterBase which uses the 4 SQLite-specific methods below
+   * Delegates to SqliteVectorSearchManager
    */
   async vectorSearch<T extends RecordData>(
     options: VectorSearchOptions
   ): Promise<StorageResult<VectorSearchResponse<T>>> {
-    if (!this.vectorSearchBase) {
-      return {
-        success: false,
-        error: 'Vector search not initialized - call initialize() first'
-      };
-    }
-    return this.vectorSearchBase.vectorSearch<T>(options);
+    return this.vectorSearchManager.vectorSearch<T>(options);
   }
 
   /**
    * Generate embedding for text
+   * Delegates to SqliteVectorSearchManager
    */
   async generateEmbedding(
     request: GenerateEmbeddingRequest
   ): Promise<StorageResult<GenerateEmbeddingResponse>> {
-    if (!this.vectorSearchBase) {
-      return {
-        success: false,
-        error: 'Vector search not initialized - call initialize() first'
-      };
-    }
-    return this.vectorSearchBase.generateEmbedding(request);
+    return this.vectorSearchManager.generateEmbedding(request);
   }
 
   /**
    * Index vector for a record
+   * Delegates to SqliteVectorSearchManager
    */
   async indexVector(request: IndexVectorRequest): Promise<StorageResult<boolean>> {
-    if (!this.vectorSearchBase) {
-      return {
-        success: false,
-        error: 'Vector search not initialized - call initialize() first'
-      };
-    }
-    return this.vectorSearchBase.indexVector(request);
+    return this.vectorSearchManager.indexVector(request);
   }
 
   /**
    * Backfill embeddings for existing records
+   * Delegates to SqliteVectorSearchManager
    */
   async backfillVectors(
     request: BackfillVectorsRequest,
     onProgress?: (progress: BackfillVectorsProgress) => void
   ): Promise<StorageResult<BackfillVectorsProgress>> {
-    if (!this.vectorSearchBase) {
-      return {
-        success: false,
-        error: 'Vector search not initialized - call initialize() first'
-      };
-    }
-    return this.vectorSearchBase.backfillVectors(request, onProgress);
+    return this.vectorSearchManager.backfillVectors(request, onProgress);
   }
 
   /**
    * Get vector index statistics
+   * Delegates to SqliteVectorSearchManager
    */
   async getVectorIndexStats(collection: string): Promise<StorageResult<VectorIndexStats>> {
-    if (!this.vectorSearchBase) {
-      return {
-        success: false,
-        error: 'Vector search not initialized - call initialize() first'
-      };
-    }
-    return this.vectorSearchBase.getVectorIndexStats(collection);
+    return this.vectorSearchManager.getVectorIndexStats(collection);
   }
 
   /**
    * Get vector search capabilities
+   * Delegates to SqliteVectorSearchManager
    */
   async getVectorSearchCapabilities(): Promise<VectorSearchCapabilities> {
-    if (!this.vectorSearchBase) {
-      return {
-        supportsVectorSearch: false,
-        supportsHybridSearch: false,
-        supportsEmbeddingGeneration: false,
-        maxVectorDimensions: 0,
-        supportedSimilarityMetrics: [],
-        embeddingProviders: []
-      };
-    }
-    return this.vectorSearchBase.getVectorSearchCapabilities();
+    return this.vectorSearchManager.getVectorSearchCapabilities();
   }
 
-  // ============================================================================
-  // SQLITE-SPECIFIC VECTOR STORAGE METHODS (4 methods)
-  // ============================================================================
-
-  /**
-   * Ensure vector table exists for a collection
-   * Creates {collection}_vectors table with proper schema
-   */
-  private async ensureVectorTable(collection: string, dimensions: number): Promise<void> {
-    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
-    const baseTableName = SqlNamingConverter.toTableName(collection);
-
-    const sql = `
-      CREATE TABLE IF NOT EXISTS \`${tableName}\` (
-        record_id TEXT PRIMARY KEY,
-        embedding TEXT NOT NULL,
-        model TEXT,
-        generated_at TEXT NOT NULL,
-        FOREIGN KEY (record_id) REFERENCES \`${baseTableName}\`(id) ON DELETE CASCADE
-      )
-    `;
-
-    await this.executor.runStatement(sql);
-
-    // Create index on record_id for faster lookups
-    await this.executor.runStatement(`
-      CREATE INDEX IF NOT EXISTS \`${tableName}_record_id_idx\`
-      ON \`${tableName}\`(record_id)
-    `);
-
-    console.log(`✅ SQLite: Vector table ${tableName} ready (${dimensions} dimensions)`);
-  }
-
-  /**
-   * Store vector for a record
-   * Stores embedding as JSON text (SQLite doesn't have native array type)
-   */
-  private async storeVectorInSQLite(collection: string, vector: StoredVector): Promise<void> {
-    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
-
-    await this.executor.runStatement(
-      `INSERT OR REPLACE INTO \`${tableName}\` (record_id, embedding, model, generated_at)
-       VALUES (?, ?, ?, ?)`,
-      [
-        vector.recordId,
-        JSON.stringify(vector.embedding),
-        vector.model || null,
-        vector.generatedAt
-      ]
-    );
-  }
-
-  /**
-   * Retrieve all vectors from a collection
-   * Parses JSON embeddings back to number arrays
-   */
-  private async getVectorsFromSQLite(collection: string): Promise<StoredVector[]> {
-    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
-
-    // Check if table exists
-    const tableExists = await this.executor.runSql(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
-      [tableName]
-    );
-
-    if (tableExists.length === 0) {
-      return [];  // No vectors yet
-    }
-
-    const rows = await this.executor.runSql(`SELECT record_id, embedding, model, generated_at FROM \`${tableName}\``);
-
-    return rows.map(row => ({
-      recordId: row.record_id as UUID,
-      embedding: JSON.parse(row.embedding as string) as number[],
-      model: row.model as string | undefined,
-      generatedAt: row.generated_at as string
-    }));
-  }
-
-  /**
-   * Get count of vectors in a collection
-   */
-  private async countVectorsInSQLite(collection: string): Promise<number> {
-    const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
-
-    // Check if table exists
-    const tableExists = await this.executor.runSql(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
-      [tableName]
-    );
-
-    if (tableExists.length === 0) {
-      return 0;
-    }
-
-    const result = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
-    return (result[0]?.count as number) || 0;
-  }
 }
