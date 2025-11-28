@@ -197,9 +197,17 @@ export class PersonaUser extends AIUser {
     return this.mind.workingMemory;
   }
 
-  // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
-  public selfState: PersonaSelfState;
-  public planFormulator: SimplePlanFormulator;
+  // BEING ARCHITECTURE: Delegate to mind for selfState
+  public get selfState(): PersonaSelfState {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.selfState;
+  }
+
+  // BEING ARCHITECTURE: Delegate to mind for planFormulator
+  public get planFormulator(): SimplePlanFormulator {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.planFormulator;
+  }
 
   // Tool execution adapter (keeps PersonaUser clean)
   private toolExecutor: PersonaToolExecutor;
@@ -276,10 +284,6 @@ export class PersonaUser extends AIUser {
 
     // Task execution module (delegated for modularity, uses this.memory getter)
     this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
-
-    // COGNITION SYSTEM: Agent architecture components
-    this.selfState = new PersonaSelfState(this.id);
-    this.planFormulator = new SimplePlanFormulator(this.id, this.displayName);
 
     // CNS: Central Nervous System orchestrator (capability-based)
     this.cns = CNSFactory.create(this);
