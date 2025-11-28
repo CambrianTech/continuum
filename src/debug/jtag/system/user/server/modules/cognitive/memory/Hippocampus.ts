@@ -34,6 +34,7 @@ import { AdaptiveConsolidationThreshold } from './AdaptiveConsolidationThreshold
 import { MemoryConsolidationAdapter } from './adapters/MemoryConsolidationAdapter';
 import { SemanticCompressionAdapter } from './adapters/SemanticCompressionAdapter';
 import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
+import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
 
 /**
  * Snapshot of persona state at tick time
@@ -318,7 +319,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     };
 
     // Snoop on PersonaUser's working memory (thoughts during cognition)
-    if (this.persona.workingMemory) {
+    if (this.persona.mind?.workingMemory) {
       await this.snoopAndConsolidate();
     }
 
@@ -348,13 +349,13 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       const currentThreshold = this.adaptiveThreshold.getThreshold();
 
       // 3. Recall thoughts above adaptive threshold
-      const thoughts = await this.persona.workingMemory.recall({
+      const thoughts = await this.persona.mind?.workingMemory?.recall({
         minImportance: currentThreshold,  // ← ADAPTIVE!
         limit: 50,
         includePrivate: true
       });
 
-      if (thoughts.length === 0) {
+      if (!thoughts || thoughts.length === 0) {
         return;
       }
 
@@ -415,7 +416,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
               consolidatedIds.push(...(memory.context.synthesizedFrom as string[]));
             } else {
               // Raw adapter: find matching thought by timestamp/content
-              const matchingThought = thoughts.find(t =>
+              const matchingThought = thoughts.find((t: WorkingMemoryEntry) =>
                 t.thoughtContent === memory.content ||
                 Math.abs(new Date(t.createdAt).getTime() - new Date(memory.timestamp).getTime()) < 1000
               );
@@ -436,7 +437,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       // Remove ONLY successfully consolidated thoughts from working memory
       if (consolidatedIds.length > 0) {
-        await this.persona.workingMemory.clearBatch(consolidatedIds as any);
+        await this.persona.mind?.workingMemory.clearBatch(consolidatedIds as any);
         this.log(`✅ Consolidated ${consolidatedIds.length} thoughts to LTM${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
 
         // Reset time decay timer (successful consolidation)
@@ -464,7 +465,11 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   private async calculateActivityLevel(): Promise<number> {
     try {
       // Get working memory capacity usage
-      const capacity = await this.persona.workingMemory.getCapacity('chat');
+      const capacity = await this.persona.mind?.workingMemory?.getCapacity('chat');
+
+      if (!capacity) {
+        return 1.0;  // Default to moderate activity if mind/workingMemory not available
+      }
 
       // Rough heuristic: working memory size indicates recent activity
       // If working memory is 40/100, estimate ~4 msg/min over last 10 min
@@ -496,8 +501,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    */
   public async getStats(): Promise<MemoryStats> {
     // Get working memory size (source of consolidation)
-    const workingMemorySize = this.persona.workingMemory
-      ? (await this.persona.workingMemory.getCapacity('chat')).used  // TODO: aggregate all domains
+    const workingMemorySize = this.persona.mind?.workingMemory
+      ? (await this.persona.mind.workingMemory.getCapacity('chat')).used  // TODO: aggregate all domains
       : 0;
 
     return {

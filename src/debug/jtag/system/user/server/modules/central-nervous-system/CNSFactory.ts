@@ -35,7 +35,9 @@ interface PersonaUserLike {
     };
   };
   inbox: PersonaInbox;
-  personaState: PersonaStateManager;
+  mind: {
+    personaState: PersonaStateManager;  // BEING ARCHITECTURE: personaState in PersonaMind
+  } | null;  // Nullable during construction, but must be non-null when CNS is created
   memory: {
     genome: PersonaGenome;  // Phase 2: genome moved inside memory module
   };
@@ -151,10 +153,15 @@ export class CNSFactory {
     // DeterministicCognitiveScheduler takes no constructor arguments
     const scheduler = new DeterministicCognitiveScheduler();
 
+    // Assert non-null: mind must be initialized before CNS creation
+    if (!persona.mind) {
+      throw new Error('CNSFactory.create() called before PersonaMind initialized');
+    }
+
     return new PersonaCentralNervousSystem({
       scheduler,
       inbox: persona.inbox,
-      personaState: persona.personaState,
+      personaState: persona.mind.personaState,  // BEING ARCHITECTURE: personaState in PersonaMind
       genome: persona.memory.genome,  // Phase 2: genome moved inside memory module
       personaId: persona.entity.id,
       personaName: persona.entity.displayName || 'Unknown',

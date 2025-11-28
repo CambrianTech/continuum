@@ -152,7 +152,7 @@ export class PersonaUser extends AIUser {
   private soul: PersonaSoul | null = null;
 
   // BEING ARCHITECTURE: Mind system (cognition, evaluation, planning)
-  private mind: PersonaMind | null = null;
+  public mind: PersonaMind | null = null;  // Public for CNS and Hippocampus access
 
   // BEING ARCHITECTURE: Body system (action, execution, output)
   private body: PersonaBody | null = null;
@@ -225,8 +225,11 @@ export class PersonaUser extends AIUser {
     return this.body.toolRegistry;
   }
 
-  // Response generation module (extracted from PersonaUser)
-  private responseGenerator: PersonaResponseGenerator;
+  // BEING ARCHITECTURE: Delegate to body for responseGenerator
+  private get responseGenerator(): PersonaResponseGenerator {
+    if (!this.body) throw new Error('Body not initialized');
+    return this.body.responseGenerator;
+  }
 
   // Message evaluation module (extracted from PersonaUser for modularity)
   private messageEvaluator: PersonaMessageEvaluator;
@@ -289,7 +292,16 @@ export class PersonaUser extends AIUser {
     this.mind = new PersonaMind(this as any as PersonaUserForMind);
 
     // BEING ARCHITECTURE Phase 3: Initialize Body (action, execution, output)
-    this.body = new PersonaBody(this as any as PersonaUserForBody);
+    // Note: Body creates toolExecutor, toolRegistry, and responseGenerator internally
+    this.body = new PersonaBody({
+      id: this.id,
+      displayName: this.displayName,
+      entity: this.entity,
+      modelConfig: this.modelConfig,
+      client,
+      mediaConfig: this.mediaConfig,
+      getSessionId: () => this.sessionId
+    });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     this.decisionChain = new DecisionAdapterChain();
@@ -299,20 +311,8 @@ export class PersonaUser extends AIUser {
     this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
 
     // CNS: Central Nervous System orchestrator (capability-based)
+    // Note: mind/soul/body are non-null at this point (initialized above)
     this.cns = CNSFactory.create(this);
-
-    // Response generation module (extracted from PersonaUser for clean separation)
-    this.responseGenerator = new PersonaResponseGenerator({
-      personaId: this.id,
-      personaName: this.displayName,
-      entity: this.entity,
-      modelConfig: this.modelConfig,
-      client,
-      toolExecutor: this.toolExecutor,
-      toolRegistry: this.toolRegistry,
-      mediaConfig: this.mediaConfig,
-      getSessionId: () => this.sessionId  // Dynamically get sessionId (set during initialize())
-    });
 
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
