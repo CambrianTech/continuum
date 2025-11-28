@@ -191,8 +191,13 @@ export class PersonaUser extends AIUser {
   // Autonomous servicing loop module (extracted from PersonaUser for modularity)
   private autonomousLoop: PersonaAutonomousLoop;
 
+  // BEING ARCHITECTURE: Delegate to mind for workingMemory
+  public get workingMemory(): WorkingMemoryManager {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.workingMemory;
+  }
+
   // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
-  public workingMemory: WorkingMemoryManager;
   public selfState: PersonaSelfState;
   public planFormulator: SimplePlanFormulator;
 
@@ -273,7 +278,6 @@ export class PersonaUser extends AIUser {
     this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
 
     // COGNITION SYSTEM: Agent architecture components
-    this.workingMemory = new WorkingMemoryManager(this.id);
     this.selfState = new PersonaSelfState(this.id);
     this.planFormulator = new SimplePlanFormulator(this.id, this.displayName);
 
