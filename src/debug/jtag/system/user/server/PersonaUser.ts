@@ -104,6 +104,7 @@ import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
 import { PersonaLogger } from './modules/PersonaLogger';
 import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
+import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -136,13 +137,21 @@ export class PersonaUser extends AIUser {
   // Inbox stores messages with priority, personaState tracks energy/mood
   // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
   public inbox: PersonaInbox;
-  public personaState: PersonaStateManager;
+
+  // BEING ARCHITECTURE: Delegate to mind for personaState
+  public get personaState(): PersonaStateManager {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.personaState;
+  }
 
   // PHASE 5: Self-task generation (autonomous work creation)
   private taskGenerator: SelfTaskGenerator;
 
   // BEING ARCHITECTURE: Soul system (memory, learning, identity)
   private soul: PersonaSoul | null = null;
+
+  // BEING ARCHITECTURE: Mind system (cognition, evaluation, planning)
+  private mind: PersonaMind | null = null;
 
   // BEING ARCHITECTURE: Delegate to soul for memory/genome/training/hippocampus
   public get memory(): PersonaMemory {
@@ -241,11 +250,6 @@ export class PersonaUser extends AIUser {
       enableLogging: true
     });
 
-    // PersonaState: Energy/mood tracking for adaptive behavior
-    this.personaState = new PersonaStateManager(this.displayName, {
-      enableLogging: true
-    });
-
     // PHASE 5: Self-task generation for autonomous work creation
     this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {
       enabled: true,  // Enable self-task generation
@@ -257,6 +261,9 @@ export class PersonaUser extends AIUser {
     // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
     // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters
     this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
+
+    // BEING ARCHITECTURE Phase 2: Initialize Mind (cognition, evaluation, planning)
+    this.mind = new PersonaMind(this as any as PersonaUserForMind);
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     this.decisionChain = new DecisionAdapterChain();
