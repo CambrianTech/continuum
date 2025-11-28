@@ -45,6 +45,8 @@ import { SqlNamingConverter } from '../shared/SqlNamingConverter';
 import { SqliteRawExecutor } from './SqliteRawExecutor';
 import { SqliteTransactionManager } from './SqliteTransactionManager';
 import { SqliteSchemaManager } from './managers/SqliteSchemaManager';
+import { SqliteQueryExecutor } from './managers/SqliteQueryExecutor';
+import { SqliteWriteManager } from './managers/SqliteWriteManager';
 import { ENTITY_REGISTRY, registerEntity, getRegisteredEntity, type EntityConstructor } from './EntityRegistry';
 
 /**
@@ -79,6 +81,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
   // Extracted manager classes (Phase 0 refactoring)
   private schemaManager!: SqliteSchemaManager;
+  private queryExecutor!: SqliteQueryExecutor;
+  private writeManager!: SqliteWriteManager;
 
   /**
    * SqlStorageAdapterBase abstract method implementations
@@ -219,6 +223,16 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       this.mapFieldTypeToSql.bind(this)
     );
     console.log('✅ SQLite: Schema manager initialized');
+
+    // Initialize query executor (Phase 0 refactoring)
+    console.log('🔧 SQLite: Initializing query executor...');
+    this.queryExecutor = new SqliteQueryExecutor(this.executor);
+    console.log('✅ SQLite: Query executor initialized');
+
+    // Initialize write manager (Phase 0 refactoring)
+    console.log('🔧 SQLite: Initializing write manager...');
+    this.writeManager = new SqliteWriteManager(this.executor);
+    console.log('✅ SQLite: Write manager initialized');
 
     console.log('⚙️ SQLite: Configuring database settings...');
     // Configure SQLite settings
@@ -622,92 +636,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
   /**
    * Create a record with proper relational schema (always use entity-specific tables)
+   * Delegates to SqliteWriteManager
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
-    try {
-      // Execute create operation in transaction for atomic consistency
-      const result = await this.withTransaction(async () => {
-        const tableName = SqlNamingConverter.toTableName(record.collection);
-        const entityClass = ENTITY_REGISTRY.get(record.collection);
-
-        if (!entityClass || !hasFieldMetadata(entityClass)) {
-          // For collections without registered entities, we still create entity-specific tables
-          // but with a simple structure
-          console.log(`🔧 Creating simple entity table for ${record.collection} without metadata`);
-          await this.createSimpleEntityTable(record.collection);
-          return await this.createInSimpleEntityTable(record);
-        }
-
-        // Process ALL fields uniformly using decorator metadata (min 4: id, createdAt, updatedAt, version)
-        const columns: string[] = [];
-        const values: any[] = [];
-        const placeholders: string[] = [];
-
-        const fieldMetadata = getFieldMetadata(entityClass);
-        for (const [fieldName, metadata] of fieldMetadata.entries()) {
-          const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-          let fieldValue: any;
-
-          // Get field value from appropriate source
-          if (fieldName === 'id') {
-            fieldValue = record.id;
-          } else if (fieldName === 'createdAt') {
-            fieldValue = record.metadata.createdAt;
-          } else if (fieldName === 'updatedAt') {
-            fieldValue = record.metadata.updatedAt;
-          } else if (fieldName === 'version') {
-            fieldValue = record.metadata.version;
-          } else {
-            fieldValue = (record.data as any)[fieldName];
-          }
-
-          if (fieldValue !== undefined) {
-            columns.push(columnName);
-            placeholders.push('?');
-
-            // Convert field value based on decorator type
-            switch (metadata.fieldType) {
-              case 'boolean':
-                values.push(fieldValue ? 1 : 0);
-                break;
-              case 'json':
-                values.push(JSON.stringify(fieldValue));
-                break;
-              case 'date':
-                values.push(typeof fieldValue === 'string' ? fieldValue : new Date(fieldValue).toISOString());
-                break;
-              default:
-                values.push(fieldValue);
-            }
-          }
-        }
-
-        // Build and execute INSERT statement
-        const sql = `
-          INSERT OR REPLACE INTO ${tableName} (${columns.join(', ')})
-          VALUES (${placeholders.join(', ')})
-        `;
-
-        await this.executor.runStatement(sql, values);
-
-        console.log(`✅ SQLite: Inserted into entity table ${tableName} with ${columns.length} columns`);
-        return record;
-      });
-
-      console.log(`✅ SQLite: Created record ${record.id} in entity table for ${record.collection}`);
-
-      return {
-        success: true,
-        data: result
-      };
-
-    } catch (error: any) {
-      console.error(`❌ SQLite: Create failed for ${record.id}:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+    return this.writeManager.create<T>(record.collection, record.data, record.id);
   }
 
   /**
@@ -736,32 +668,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     await this.executor.runSql(`CREATE INDEX IF NOT EXISTS idx_${tableName}_updated_at ON ${tableName}(updated_at)`);
 
     console.log(`✅ Simple entity table created: ${tableName}`);
-  }
-
-  /**
-   * Insert record into simple entity table (for unregistered entities)
-   */
-  private async createInSimpleEntityTable<T extends RecordData>(record: DataRecord<T>): Promise<DataRecord<T>> {
-    const tableName = SqlNamingConverter.toTableName(record.collection);
-
-    const sql = `
-      INSERT OR REPLACE INTO ${tableName} (
-        id, data, created_at, updated_at, version
-      ) VALUES (?, ?, ?, ?, ?)
-    `;
-
-    const params = [
-      record.id,
-      JSON.stringify(record.data),
-      record.metadata.createdAt,
-      record.metadata.updatedAt,
-      record.metadata.version
-    ];
-
-    await this.executor.runStatement(sql, params);
-    console.log(`✅ SQLite: Inserted into simple entity table ${tableName}`);
-
-    return record;
   }
 
   /**
@@ -802,501 +708,22 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Read a single record by ID - uses entity-specific tables
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
-    try {
-      const entityClass = ENTITY_REGISTRY.get(collection);
-
-      if (entityClass && hasFieldMetadata(entityClass)) {
-        // Use entity-specific table
-        return await this.readFromEntityTable<T>(collection, id, entityClass);
-      } else {
-        // Use simple entity table (fallback)
-        return await this.readFromSimpleEntityTable<T>(collection, id);
-      }
-
-    } catch (error: any) {
-      console.error(`❌ SQLite: Read failed for ${collection}/${id}:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+    return this.queryExecutor.read<T>(collection, id);
   }
 
-  /**
-   * Read from entity-specific table with proper column mapping
-   */
-  private async readFromEntityTable<T extends RecordData>(collection: string, id: UUID, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>>> {
-    const tableName = SqlNamingConverter.toTableName(collection);
-    const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
-    const rows = await this.executor.runSql(sql, [id]);
-
-    if (rows.length === 0) {
-      return {
-        success: false,
-        error: `Record not found: ${collection}/${id}`
-      };
-    }
-
-    const row = rows[0];
-    const entityData: any = {};
-
-    // Process ALL fields uniformly using decorator metadata
-    const fieldMetadata = getFieldMetadata(entityClass);
-    for (const [fieldName, metadata] of fieldMetadata.entries()) {
-      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-      let value = row[columnName];
-
-      if (value !== undefined && value !== null) {
-        // Convert SQL value back to JavaScript type based on decorator metadata
-        switch (metadata.fieldType) {
-          case 'boolean':
-            value = value === 1;
-            break;
-          case 'json':
-            value = JSON.parse(value);
-            break;
-          case 'date':
-            value = new Date(value);
-            break;
-        }
-
-        // Put BaseEntity fields in metadata, others in data
-        if (['createdAt', 'updatedAt', 'version'].includes(fieldName)) {
-          // BaseEntity metadata fields go to their proper locations
-          continue; // We'll handle these separately
-        } else {
-          // Include ALL entity fields (including id) in the data object
-          entityData[fieldName] = value;
-        }
-      }
-    }
-
-    const record: DataRecord<T> = {
-      id: row.id,
-      collection,
-      data: entityData as T,
-      metadata: {
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        version: row.version
-      }
-    };
-
-    return {
-      success: true,
-      data: record
-    };
-  }
-
-  /**
-   * Read from simple entity table (JSON data column)
-   */
-  private async readFromSimpleEntityTable<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
-    const tableName = SqlNamingConverter.toTableName(collection);
-    const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
-    const rows = await this.executor.runSql(sql, [id]);
-
-    if (rows.length === 0) {
-      return {
-        success: false,
-        error: `Record not found: ${collection}/${id}`
-      };
-    }
-
-    const row = rows[0];
-    const record: DataRecord<T> = {
-      id: row.id,
-      collection,
-      data: JSON.parse(row.data),
-      metadata: {
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        version: row.version
-      }
-    };
-
-    return {
-      success: true,
-      data: record
-    };
-  }
 
   /**
    * Query records with complex filters - uses entity-specific tables
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
-    try {
-      console.log(`🔍 SQLite: Querying ${query.collection} from entity-specific table`, query);
-
-      const entityClass = ENTITY_REGISTRY.get(query.collection);
-
-      if (entityClass && hasFieldMetadata(entityClass)) {
-        // Use entity-specific table
-        return await this.queryFromEntityTable<T>(query, entityClass);
-      } else {
-        // Use simple entity table (fallback)
-        return await this.queryFromSimpleEntityTable<T>(query);
-      }
-
-    } catch (error: any) {
-      console.error(`❌ SQLite: Query failed for ${query.collection}:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+    return this.queryExecutor.query<T>(query);
   }
 
-  /**
-   * Query from entity-specific table with proper column mapping
-   */
-  private async queryFromEntityTable<T extends RecordData>(query: StorageQuery, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>[]>> {
-    const { sql, params } = this.buildEntitySelectQuery(query, entityClass);
-    const rows = await this.executor.runSql(sql, params);
-
-    const records: DataRecord<T>[] = rows.map(row => {
-      const entityData: any = {};
-
-      // Process ALL fields uniformly using decorator metadata
-      const fieldMetadata = getFieldMetadata(entityClass);
-      for (const [fieldName, metadata] of fieldMetadata.entries()) {
-        const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-        let value = row[columnName];
-
-        if (value !== undefined && value !== null) {
-          // Convert SQL value back to JavaScript type based on decorator metadata
-          switch (metadata.fieldType) {
-            case 'boolean':
-              value = value === 1;
-              break;
-            case 'json':
-              value = JSON.parse(value);
-              break;
-            case 'date':
-              value = new Date(value);
-              break;
-          }
-
-          // Put BaseEntity fields in metadata, others in data
-          if (['id', 'createdAt', 'updatedAt', 'version'].includes(fieldName)) {
-            // BaseEntity fields go to their proper locations (handled below)
-            continue;
-          } else {
-            entityData[fieldName] = value;
-          }
-        }
-      }
-
-      return {
-        id: row.id,
-        collection: query.collection,
-        data: entityData as T,
-        metadata: {
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          version: row.version
-        }
-      };
-    });
-
-    console.log(`✅ SQLite: Entity query returned ${records.length} records`);
-
-    return {
-      success: true,
-      data: records,
-      metadata: {
-        totalCount: records.length,
-        queryTime: 0 // TODO: Add timing
-      }
-    };
-  }
-
-  /**
-   * Query from simple entity table (JSON data column)
-   */
-  private async queryFromSimpleEntityTable<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
-    const { sql, params } = this.buildSimpleEntitySelectQuery(query);
-    const rows = await this.executor.runSql(sql, params);
-
-    const records: DataRecord<T>[] = rows.map(row => ({
-      id: row.id,
-      collection: query.collection,
-      data: JSON.parse(row.data),
-      metadata: {
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        version: row.version
-      }
-    }));
-
-    console.log(`✅ SQLite: Simple entity query returned ${records.length} records`);
-
-    return {
-      success: true,
-      data: records,
-      metadata: {
-        totalCount: records.length,
-        queryTime: 0 // TODO: Add timing
-      }
-    };
-  }
-
-  /**
-   * Build SELECT SQL query for entity-specific tables
-   */
-  private buildEntitySelectQuery(query: StorageQuery, entityClass: EntityConstructor): { sql: string; params: any[] } {
-    const params: any[] = [];
-    const tableName = SqlNamingConverter.toTableName(query.collection);
-    let sql = `SELECT * FROM ${tableName}`;
-
-    // Build WHERE clause from filters
-    const whereClauses: string[] = [];
-
-    // Universal filters with operators
-    if (query.filter) {
-      for (const [field, filter] of Object.entries(query.filter)) {
-        const columnName = SqlNamingConverter.toSnakeCase(field);
-
-        if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
-          // Handle operators like { $gt: value, $in: [...] }
-          for (const [operator, value] of Object.entries(filter)) {
-            switch (operator) {
-              case '$eq':
-                whereClauses.push(`${columnName} = ?`);
-                params.push(value);
-                break;
-              case '$ne':
-                whereClauses.push(`${columnName} != ?`);
-                params.push(value);
-                break;
-              case '$gt':
-                whereClauses.push(`${columnName} > ?`);
-                params.push(value);
-                break;
-              case '$gte':
-                whereClauses.push(`${columnName} >= ?`);
-                params.push(value);
-                break;
-              case '$lt':
-                whereClauses.push(`${columnName} < ?`);
-                params.push(value);
-                break;
-              case '$lte':
-                whereClauses.push(`${columnName} <= ?`);
-                params.push(value);
-                break;
-              case '$in':
-                if (Array.isArray(value) && value.length > 0) {
-                  const placeholders = value.map(() => '?').join(',');
-                  whereClauses.push(`${columnName} IN (${placeholders})`);
-                  params.push(...value);
-                }
-                break;
-              case '$nin':
-                if (Array.isArray(value) && value.length > 0) {
-                  const placeholders = value.map(() => '?').join(',');
-                  whereClauses.push(`${columnName} NOT IN (${placeholders})`);
-                  params.push(...value);
-                }
-                break;
-              case '$exists':
-                if (value) {
-                  whereClauses.push(`${columnName} IS NOT NULL`);
-                } else {
-                  whereClauses.push(`${columnName} IS NULL`);
-                }
-                break;
-              case '$regex':
-                whereClauses.push(`${columnName} REGEXP ?`);
-                params.push(value);
-                break;
-              case '$contains':
-                whereClauses.push(`${columnName} LIKE ?`);
-                params.push(`%${value}%`);
-                break;
-            }
-          }
-        } else {
-          // Direct value implies $eq
-          whereClauses.push(`${columnName} = ?`);
-          params.push(filter);
-        }
-      }
-    }
-
-    if (whereClauses.length > 0) {
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    }
-
-    // DEBUG: Log generated SQL and params for range operator debugging
-    if (whereClauses.length > 0) {
-      console.log('🔍 SQL-DEBUG: WHERE clause:', sql.substring(sql.lastIndexOf('WHERE')));
-      console.log('🔍 SQL-DEBUG: Params:', params);
-    }
-
-    // Add time range filter
-    if (query.timeRange) {
-      const timeFilters: string[] = [];
-      if (query.timeRange.start) {
-        timeFilters.push('created_at >= ?');
-        params.push(query.timeRange.start);
-      }
-      if (query.timeRange.end) {
-        timeFilters.push('created_at <= ?');
-        params.push(query.timeRange.end);
-      }
-      if (timeFilters.length > 0) {
-        sql += ' WHERE ' + timeFilters.join(' AND ');
-      }
-    }
-
-    // Add cursor-based pagination filter (before sorting)
-    if (query.cursor) {
-      const cursorColumn = SqlNamingConverter.toSnakeCase(query.cursor.field);
-      const operator = query.cursor.direction === 'after' ? '>' : '<';
-      const cursorCondition = `${cursorColumn} ${operator} ?`;
-
-      // Add to WHERE clause or create one
-      if (whereClauses.length > 0) {
-        sql += ` AND ${cursorCondition}`;
-      } else {
-        sql += ` WHERE ${cursorCondition}`;
-      }
-
-      params.push(query.cursor.value);
-      console.log(`🔧 CURSOR-SQL: Added cursor condition: ${cursorColumn} ${operator} ${query.cursor.value}`);
-    }
-
-    // Add sorting (translate field names to column names)
-    if (query.sort && query.sort.length > 0) {
-      const sortClauses = query.sort.map(s => {
-        const columnName = SqlNamingConverter.toSnakeCase(s.field);
-        return `${columnName} ${s.direction.toUpperCase()}`;
-      });
-      sql += ` ORDER BY ${sortClauses.join(', ')}`;
-    }
-
-    // Add pagination
-    if (query.limit) {
-      sql += ' LIMIT ?';
-      params.push(query.limit);
-
-      if (query.offset) {
-        sql += ' OFFSET ?';
-        params.push(query.offset);
-      }
-    }
-
-    return { sql, params };
-  }
-
-  /**
-   * Build SELECT SQL query for simple entity tables (with JSON data column)
-   */
-  private buildSimpleEntitySelectQuery(query: StorageQuery): { sql: string; params: any[] } {
-    const params: any[] = [];
-    const tableName = SqlNamingConverter.toTableName(query.collection);
-    let sql = `SELECT * FROM ${tableName}`;
-
-    // Add time range filter
-    if (query.timeRange) {
-      const timeFilters: string[] = [];
-      if (query.timeRange.start) {
-        timeFilters.push('created_at >= ?');
-        params.push(query.timeRange.start);
-      }
-      if (query.timeRange.end) {
-        timeFilters.push('created_at <= ?');
-        params.push(query.timeRange.end);
-      }
-      if (timeFilters.length > 0) {
-        sql += ' WHERE ' + timeFilters.join(' AND ');
-      }
-    }
-
-    // Add sorting using JSON_EXTRACT on data column
-    if (query.sort && query.sort.length > 0) {
-      const sortClauses = query.sort.map(s =>
-        `JSON_EXTRACT(data, '$.${s.field}') ${s.direction.toUpperCase()}`
-      );
-      sql += ` ORDER BY ${sortClauses.join(', ')}`;
-    }
-
-    // Add pagination
-    if (query.limit) {
-      sql += ' LIMIT ?';
-      params.push(query.limit);
-
-      if (query.offset) {
-        sql += ' OFFSET ?';
-        params.push(query.offset);
-      }
-    }
-
-    return { sql, params };
-  }
-
-  /**
-   * Build SELECT SQL query - legacy method for backwards compatibility
-   */
-  private buildSelectQuery(query: StorageQuery): { sql: string; params: any[] } {
-    return this.buildJsonQuery(query);
-  }
-
-  /**
-   * Sanitize field path for JSON_EXTRACT to prevent injection
-   */
-  private sanitizeJsonPath(fieldPath: string): string {
-    // Only allow alphanumeric, dots, underscores, and array indices
-    return fieldPath.replace(/[^a-zA-Z0-9._\[\]]/g, '');
-  }
-
-  /**
-   * Build traditional JSON_EXTRACT query for collections without field extraction
-   */
-  private buildJsonQuery(query: StorageQuery): { sql: string; params: any[] } {
-    const params: any[] = [];
-    let sql = 'SELECT * FROM _data WHERE collection = ?';
-    params.push(query.collection);
-
-    // Add time range filter
-    if (query.timeRange) {
-      if (query.timeRange.start) {
-        sql += ' AND created_at >= ?';
-        params.push(query.timeRange.start);
-      }
-      if (query.timeRange.end) {
-        sql += ' AND created_at <= ?';
-        params.push(query.timeRange.end);
-      }
-    }
-
-    // Add sorting
-    if (query.sort && query.sort.length > 0) {
-      const sortClauses = query.sort.map(s =>
-        `JSON_EXTRACT(data, '$.${s.field}') ${s.direction.toUpperCase()}`
-      );
-      sql += ` ORDER BY ${sortClauses.join(', ')}`;
-    }
-
-    // Add pagination
-    if (query.limit) {
-      sql += ' LIMIT ?';
-      params.push(query.limit);
-
-      if (query.offset) {
-        sql += ' OFFSET ?';
-        params.push(query.offset);
-      }
-    }
-
-    return { sql, params };
-  }
 
   // Removed relational query methods - cross-cutting concerns
 
   /**
-   * Update an existing record - uses same table selection logic as read()
+   * Update an existing record - delegates to SqliteWriteManager
    */
   async update<T extends RecordData>(
     collection: string,
@@ -1305,9 +732,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     incrementVersion: boolean = true
   ): Promise<StorageResult<DataRecord<T>>> {
     try {
-      console.log(`🔧 SQLite UPDATE: Starting update for ${collection}/${id}`);
-
-      // First read existing record using same logic
+      // First read existing record to get current version
       const existing = await this.read<T>(collection, id);
       if (!existing.success || !existing.data) {
         return {
@@ -1316,24 +741,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         };
       }
 
-      console.log(`🔧 SQLite UPDATE: Found existing record, merging data`);
-
       // Merge data
       const updatedData = { ...existing.data.data, ...data };
       const version = incrementVersion ? existing.data.metadata.version + 1 : existing.data.metadata.version;
 
-      // Use same table selection logic as read()
-      const entityClass = ENTITY_REGISTRY.get(collection);
-
-      if (entityClass && hasFieldMetadata(entityClass)) {
-        // Update in entity-specific table (same as readFromEntityTable)
-        console.log(`🔧 SQLite UPDATE: Using entity-specific table for ${collection}`);
-        return await this.updateInEntityTable<T>(collection, id, updatedData as T, version, existing.data);
-      } else {
-        // Update in simple entity table (same as readFromSimpleEntityTable)
-        console.log(`🔧 SQLite UPDATE: Using simple entity table for ${collection}`);
-        return await this.updateInSimpleEntityTable<T>(collection, id, updatedData as T, version, existing.data);
-      }
+      // Delegate to write manager
+      return this.writeManager.update<T>(collection, id, updatedData as T, version);
 
     } catch (error: any) {
       console.error(`❌ SQLite: Update failed for ${collection}/${id}:`, error.message);
@@ -1344,188 +757,42 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     }
   }
 
-  /**
-   * Update record in entity-specific table (mirrors readFromEntityTable)
-   */
-  private async updateInEntityTable<T extends RecordData>(
-    collection: string,
-    id: UUID,
-    updatedData: T,
-    version: number,
-    existingRecord: DataRecord<T>
-  ): Promise<StorageResult<DataRecord<T>>> {
-    const tableName = SqlNamingConverter.toTableName(collection);
-    const entityClass = ENTITY_REGISTRY.get(collection);
-
-    if (!entityClass || !hasFieldMetadata(entityClass)) {
-      throw new Error(`Entity class not found or missing field metadata for ${collection}`);
-    }
-
-    const fieldMetadata = getFieldMetadata(entityClass);
-    const setColumns: string[] = [];
-    const params: any[] = [];
-
-    // Always update base entity fields
-    setColumns.push('updated_at = ?', 'version = ?');
-    params.push(new Date().toISOString(), version);
-
-    // Update each decorated field based on its type
-    for (const [fieldName, metadata] of fieldMetadata.entries()) {
-      if (fieldName === 'id') continue; // Skip primary key
-
-      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-      const value = (updatedData as any)[fieldName];
-
-      if (value !== undefined) {
-        setColumns.push(`${columnName} = ?`);
-
-        if (metadata.fieldType === 'json') {
-          params.push(JSON.stringify(value));
-        } else if (metadata.fieldType === 'date' && value instanceof Date) {
-          params.push(value.toISOString());
-        } else if (metadata.fieldType === 'date' && typeof value === 'string') {
-          params.push(value);
-        } else {
-          params.push(value);
-        }
-      }
-    }
-
-    const sql = `UPDATE ${tableName} SET ${setColumns.join(', ')} WHERE id = ?`;
-    params.push(id);
-
-    console.log(`🔧 SQLite UPDATE ENTITY: SQL:`, { sql, paramCount: params.length });
-    const result = await this.executor.runStatement(sql, params);
-    console.log(`🔧 SQLite UPDATE ENTITY: Result:`, result);
-
-    if (result.changes === 0) {
-      return {
-        success: false,
-        error: `No rows updated in ${tableName} for id: ${id}`
-      };
-    }
-
-    // Create updated record - ensure ID is preserved from existing record
-    const updatedRecord: DataRecord<T> = {
-      ...existingRecord,
-      data: {
-        ...existingRecord.data, // Preserve all existing data including ID
-        ...updatedData // Override with updated fields
-      } as T,
-      metadata: {
-        ...existingRecord.metadata,
-        updatedAt: new Date().toISOString(),
-        version
-      }
-    };
-
-    await this.updateCollectionStats(collection);
-
-    console.log(`✅ SQLite: Updated record ${id} in entity table ${tableName} - ID preserved in event data`);
-
-    return {
-      success: true,
-      data: updatedRecord
-    };
-  }
 
   /**
-   * Update record in simple entity table (mirrors readFromSimpleEntityTable)
-   */
-  private async updateInSimpleEntityTable<T extends RecordData>(
-    collection: string,
-    id: UUID,
-    updatedData: T,
-    version: number,
-    existingRecord: DataRecord<T>
-  ): Promise<StorageResult<DataRecord<T>>> {
-    const tableName = SqlNamingConverter.toTableName(collection);
-
-    // Use same WHERE clause as readFromSimpleEntityTable
-    const sql = `UPDATE ${tableName} SET data = ?, updated_at = ?, version = ? WHERE id = ?`;
-    const params = [
-      JSON.stringify(updatedData),
-      new Date().toISOString(),
-      version,
-      id
-    ];
-
-    console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: SQL:`, { sql, params });
-    const result = await this.executor.runStatement(sql, params);
-    console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: Result:`, result);
-
-    if (result.changes === 0) {
-      return {
-        success: false,
-        error: `No rows updated in ${tableName} for id: ${id}`
-      };
-    }
-
-    // Create updated record - merge updated fields with existing data to preserve all fields including id
-    const mergedData = {
-      ...existingRecord.data,  // Start with existing complete entity
-      ...updatedData           // Apply partial updates
-    };
-
-    const updatedRecord: DataRecord<T> = {
-      ...existingRecord,
-      data: mergedData as T,   // Use merged data to preserve all fields including id
-      metadata: {
-        ...existingRecord.metadata,
-        updatedAt: new Date().toISOString(),
-        version
-      }
-    };
-
-    await this.updateCollectionStats(collection);
-
-    console.log(`✅ SQLite: Updated record ${id} in simple entity table ${tableName}`);
-
-    return {
-      success: true,
-      data: updatedRecord
-    };
-  }
-
-  /**
-   * Delete a record
+   * Delete a record - delegates to SqliteWriteManager
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
-    try {
-      // Execute delete operation in transaction for atomic consistency
-      const deletedCount = await this.withTransaction(async () => {
-        // Delete from entity-specific table (not _data table)
-        const tableName = SqlNamingConverter.toTableName(collection);
-        const dataSql = `DELETE FROM ${tableName} WHERE id = ?`;
-        const dataResult = await this.executor.runStatement(dataSql, [id]);
+    return this.writeManager.delete(collection, id);
+  }
 
-        return dataResult.changes;
-      });
+  /**
+   * Batch create records - delegates to SqliteWriteManager
+   */
+  async batchCreate<T extends RecordData>(
+    collection: string,
+    records: T[]
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    return this.writeManager.batchCreate<T>(collection, records);
+  }
 
-      if (deletedCount === 0) {
-        return {
-          success: true,
-          data: false  // Record didn't exist
-        };
-      }
+  /**
+   * Batch update records - delegates to SqliteWriteManager
+   */
+  async batchUpdate<T extends RecordData>(
+    collection: string,
+    updates: Array<{ id: UUID; data: Partial<T>; version?: number }>
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    return this.writeManager.batchUpdate<T>(collection, updates);
+  }
 
-      // Update collection stats (outside transaction)
-      await this.updateCollectionStats(collection);
-
-      console.log(`✅ SQLite: Deleted record ${id} from ${collection} with full cleanup`);
-
-      return {
-        success: true,
-        data: true
-      };
-
-    } catch (error: any) {
-      console.error(`❌ SQLite: Delete failed for ${collection}/${id}:`, error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+  /**
+   * Batch delete records - delegates to SqliteWriteManager
+   */
+  async batchDelete(
+    collection: string,
+    ids: UUID[]
+  ): Promise<StorageResult<boolean>> {
+    return this.writeManager.batchDelete(collection, ids);
   }
 
   /**
@@ -1958,70 +1225,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Uses the same query builder as actual execution for true-to-life results
    */
   async explainQuery(query: StorageQuery): Promise<QueryExplanation> {
-    try {
-      // Apply SQL naming rules to collection name
-      const tableName = SqlNamingConverter.toTableName(query.collection);
-      const { sql, params, description } = SqliteQueryBuilder.buildSelect(query, tableName);
-
-      // Get SQLite query plan using EXPLAIN QUERY PLAN
-      const executionPlan = await this.getSqliteQueryPlan(sql, params);
-
-      // Estimate row count
-      const estimatedRows = await this.estimateRowCount(query);
-
-      return {
-        query,
-        translatedQuery: sql,
-        parameters: params,
-        estimatedRows,
-        executionPlan: `Query Operations:\n${description}\n\nSQLite Execution Plan:\n${executionPlan}`,
-        adapterType: 'sqlite',
-        timestamp: new Date().toISOString()
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown explanation error';
-      return {
-        query,
-        translatedQuery: `-- Error generating SQL: ${errorMessage}`,
-        parameters: [],
-        estimatedRows: 0,
-        executionPlan: `Error: ${errorMessage}`,
-        adapterType: 'sqlite',
-        timestamp: new Date().toISOString()
-      };
-    }
-  }
-
-
-  /**
-   * Get SQLite query execution plan
-   */
-  private async getSqliteQueryPlan(sql: string, params: unknown[]): Promise<string> {
-    try {
-      const planSql = `EXPLAIN QUERY PLAN ${sql}`;
-      const plan = await this.executor.runSql(planSql, params);
-
-      return plan.map((row: any) => {
-        return `${row.id || 0}|${row.parent || 0}|${row.notused || 0}|${row.detail || 'No details'}`;
-      }).join('\n');
-    } catch (error) {
-      return `Error getting query plan: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    }
-  }
-
-  /**
-   * Estimate row count for query
-   */
-  private async estimateRowCount(query: StorageQuery): Promise<number> {
-    try {
-      const tableName = SqlNamingConverter.toTableName(query.collection);
-
-      // Simple count - could be enhanced with more sophisticated estimation
-      const result = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
-      return result[0]?.count || 0;
-    } catch (error) {
-      return 0;
-    }
+    return this.queryExecutor.explainQuery(query);
   }
 
   // ============================================================================
