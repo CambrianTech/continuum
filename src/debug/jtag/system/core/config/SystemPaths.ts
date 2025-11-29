@@ -103,13 +103,13 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
     root: baseRoot,
 
     database: {
-      root: path.join(baseRoot, 'database'),
-      main: path.join(baseRoot, 'database', 'main.db'),
-      backup: path.join(baseRoot, 'database', 'backups')
+      root: path.join(baseRoot, 'jtag', 'database'),
+      main: path.join(baseRoot, 'jtag', 'database', 'main.db'),
+      backup: path.join(baseRoot, 'jtag', 'database', 'backups')
     },
 
     logs: {
-      root: path.join(baseRoot, 'logs'),
+      root: path.join(baseRoot, 'jtag', 'logs'),
 
       personas: (personaName: string): string => {
         const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
@@ -121,27 +121,27 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
         return path.join(baseRoot, 'personas', safeName, 'logs', `${subsystem}.log`);
       },
 
-      system: path.join(baseRoot, 'logs', 'system'),
-      sql: path.join(baseRoot, 'logs', 'system', 'sql.log'),
-      errors: path.join(baseRoot, 'logs', 'system', 'errors.log')
+      system: path.join(baseRoot, 'jtag', 'logs', 'system'),
+      sql: path.join(baseRoot, 'jtag', 'logs', 'system', 'sql.log'),
+      errors: path.join(baseRoot, 'jtag', 'logs', 'system', 'errors.log')
     },
 
     sessions: {
-      root: path.join(baseRoot, 'sessions'),
-      user: path.join(baseRoot, 'sessions', 'user'),
-      validation: path.join(baseRoot, 'sessions', 'validation')
+      root: path.join(baseRoot, 'jtag', 'sessions'),
+      user: path.join(baseRoot, 'jtag', 'sessions', 'user'),
+      validation: path.join(baseRoot, 'jtag', 'sessions', 'validation')
     },
 
     registry: {
-      root: path.join(baseRoot, 'registry'),
-      processes: path.join(baseRoot, 'registry', 'process-registry.json'),
-      ports: path.join(baseRoot, 'registry', 'dynamic-ports.json')
+      root: path.join(baseRoot, 'jtag', 'registry'),
+      processes: path.join(baseRoot, 'jtag', 'registry', 'process-registry.json'),
+      ports: path.join(baseRoot, 'jtag', 'registry', 'dynamic-ports.json')
     },
 
     temp: {
-      root: path.join(baseRoot, 'temp'),
-      screenshots: path.join(baseRoot, 'temp', 'screenshots'),
-      artifacts: path.join(baseRoot, 'temp', 'artifacts')
+      root: path.join(baseRoot, 'jtag', 'temp'),
+      screenshots: path.join(baseRoot, 'jtag', 'temp', 'screenshots'),
+      artifacts: path.join(baseRoot, 'jtag', 'temp', 'artifacts')
     },
 
     genome: {
@@ -179,8 +179,8 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 /**
  * Base locations - THE ONLY PLACES these strings should exist
  */
-const REPO_ROOT = path.join(process.cwd(), '.continuum', 'jtag');
-const HOME_ROOT = path.join(os.homedir(), '.continuum', 'jtag');
+const REPO_ROOT = path.join(process.cwd(), '.continuum');
+const HOME_ROOT = path.join(os.homedir(), '.continuum');
 
 /**
  * Default paths (repo-local) - use for project-specific resources
