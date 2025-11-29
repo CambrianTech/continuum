@@ -39,7 +39,12 @@ export interface LoggerConfig {
   enableFile?: boolean;
   /** Minimum log level (default: 'debug') */
   minLevel?: LogLevel;
-  /** Custom log directory (default: .continuum/logs/personas/{personaId}) */
+  /**
+   * Custom log directory - can be:
+   * - Absolute path: '/full/path/to/logs'
+   * - Relative path: 'personas/name-id/logs' (resolved relative to .continuum/)
+   * Default: .continuum/personas/{uniqueId}/logs
+   */
   logDir?: string;
 }
 
@@ -76,8 +81,13 @@ export class SubsystemLogger {
       logDir: config.logDir ?? this.getDefaultLogDir()
     };
 
+    // Resolve logDir (support both absolute and relative paths)
+    const resolvedLogDir = path.isAbsolute(this.config.logDir)
+      ? this.config.logDir
+      : path.join(SystemPaths.root, this.config.logDir);
+
     // Construct log file path
-    this.logFilePath = path.join(this.config.logDir, `${subsystem}.log`);
+    this.logFilePath = path.join(resolvedLogDir, `${subsystem}.log`);
 
     // Initialize log directory and file
     if (this.config.enableFile) {
