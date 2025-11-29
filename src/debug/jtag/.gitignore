@@ -7,8 +7,11 @@
 # Training outputs
 .continuum/genome/adapters/
 
-# Categorized logs (sql, persona-mind, genome, system)
-.continuum/jtag/logs/categorized/
+# Infrastructure logs (sql, tools, system)
+.continuum/jtag/logs/*.log
+
+# Persona cognitive logs (mind, body, soul, cns)
+.continuum/personas/*/logs/
 
 # Temporary files
 /tmp/

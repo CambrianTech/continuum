@@ -85,6 +85,8 @@ export interface ContinuumPaths {
     root: string;
     /** Get persona directory (by display name) */
     dir: (personaName: string) => string;
+    /** Get persona logs directory */
+    logs: (personaName: string) => string;
     /** Get persona state database */
     state: (personaName: string) => string;
     /** Get persona memory database */
@@ -111,12 +113,12 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 
       personas: (personaName: string): string => {
         const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'logs', safeName);
+        return path.join(baseRoot, 'personas', safeName, 'logs');
       },
 
       subsystem: (personaName: string, subsystem: 'mind' | 'body' | 'soul' | 'cns'): string => {
         const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'logs', safeName, `${subsystem}.log`);
+        return path.join(baseRoot, 'personas', safeName, 'logs', `${subsystem}.log`);
       },
 
       system: path.join(baseRoot, 'logs', 'system'),
@@ -154,6 +156,11 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
       dir: (personaName: string): string => {
         const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
         return path.join(baseRoot, 'personas', safeName);
+      },
+
+      logs: (personaName: string): string => {
+        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
+        return path.join(baseRoot, 'personas', safeName, 'logs');
       },
 
       state: (personaName: string): string => {

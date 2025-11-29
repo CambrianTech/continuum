@@ -30,6 +30,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { DATABASE_PATHS } from '../../data/config/DatabaseConfig';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -73,7 +74,7 @@ class LoggerClass {
     };
 
     this.fileStreams = new Map();
-    this.logDir = path.join(process.cwd(), '.continuum', 'jtag', 'logs', 'categorized');
+    this.logDir = path.join(process.cwd(), DATABASE_PATHS.LOGS_DIR);
   }
 
   static getInstance(): LoggerClass {
