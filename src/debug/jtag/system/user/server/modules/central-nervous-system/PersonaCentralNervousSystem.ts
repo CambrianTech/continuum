@@ -19,7 +19,7 @@ export class PersonaCentralNervousSystem {
 
   constructor(config: CNSConfig) {
     this.config = config;
-    this.logger = new SubsystemLogger('cns', config.personaId, config.personaName);
+    this.logger = new SubsystemLogger('cns', config.personaId, config.uniqueId);
 
     this.logger.info(`Initialized CNS with ${config.scheduler.name} scheduler`);
     this.logger.info(`Enabled domains: ${config.enabledDomains.join(', ')}`);

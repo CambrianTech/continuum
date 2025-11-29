@@ -42,10 +42,10 @@ export interface ContinuumPaths {
   /** Log file paths */
   logs: {
     root: string;
-    /** Get log directory for a persona (by display name, not UUID) */
-    personas: (personaName: string) => string;
+    /** Get log directory for a persona (by uniqueId: {name}-{shortId}) */
+    personas: (uniqueId: string) => string;
     /** Get specific subsystem log file */
-    subsystem: (personaName: string, subsystem: 'mind' | 'body' | 'soul' | 'cns') => string;
+    subsystem: (uniqueId: string, subsystem: 'mind' | 'body' | 'soul' | 'cns') => string;
     /** System-wide logs (not persona-specific) */
     system: string;
     sql: string;
@@ -83,14 +83,14 @@ export interface ContinuumPaths {
   /** Persona storage (can be in $HOME or $REPO) */
   personas: {
     root: string;
-    /** Get persona directory (by display name) */
-    dir: (personaName: string) => string;
+    /** Get persona directory (by uniqueId: {name}-{shortId}) */
+    dir: (uniqueId: string) => string;
     /** Get persona logs directory */
-    logs: (personaName: string) => string;
+    logs: (uniqueId: string) => string;
     /** Get persona state database */
-    state: (personaName: string) => string;
+    state: (uniqueId: string) => string;
     /** Get persona memory database */
-    memory: (personaName: string) => string;
+    memory: (uniqueId: string) => string;
   };
 }
 
@@ -111,19 +111,19 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
     logs: {
       root: path.join(baseRoot, 'jtag', 'logs'),
 
-      personas: (personaName: string): string => {
-        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'personas', safeName, 'logs');
+      personas: (uniqueId: string): string => {
+        // uniqueId already in format "{name}-{shortId}", use directly
+        return path.join(baseRoot, 'personas', uniqueId, 'logs');
       },
 
-      subsystem: (personaName: string, subsystem: 'mind' | 'body' | 'soul' | 'cns'): string => {
-        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'personas', safeName, 'logs', `${subsystem}.log`);
+      subsystem: (uniqueId: string, subsystem: 'mind' | 'body' | 'soul' | 'cns'): string => {
+        // uniqueId already in format "{name}-{shortId}", use directly
+        return path.join(baseRoot, 'personas', uniqueId, 'logs', `${subsystem}.log`);
       },
 
       system: path.join(baseRoot, 'jtag', 'logs', 'system'),
-      sql: path.join(baseRoot, 'jtag', 'logs', 'system', 'sql.log'),
-      errors: path.join(baseRoot, 'jtag', 'logs', 'system', 'errors.log')
+      sql: path.join(baseRoot, 'jtag', 'system', 'logs', 'sql.log'),
+      errors: path.join(baseRoot, 'jtag', 'system', 'logs', 'errors.log')
     },
 
     sessions: {
@@ -153,24 +153,24 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
     personas: {
       root: path.join(baseRoot, 'personas'),
 
-      dir: (personaName: string): string => {
-        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'personas', safeName);
+      dir: (uniqueId: string): string => {
+        // uniqueId already in format "{name}-{shortId}", use directly
+        return path.join(baseRoot, 'personas', uniqueId);
       },
 
-      logs: (personaName: string): string => {
-        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'personas', safeName, 'logs');
+      logs: (uniqueId: string): string => {
+        // uniqueId already in format "{name}-{shortId}", use directly
+        return path.join(baseRoot, 'personas', uniqueId, 'logs');
       },
 
-      state: (personaName: string): string => {
-        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'personas', safeName, 'state.db');
+      state: (uniqueId: string): string => {
+        // uniqueId already in format "{name}-{shortId}", use directly
+        return path.join(baseRoot, 'personas', uniqueId, 'state.db');
       },
 
-      memory: (personaName: string): string => {
-        const safeName = personaName.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
-        return path.join(baseRoot, 'personas', safeName, 'memory.db');
+      memory: (uniqueId: string): string => {
+        // uniqueId already in format "{name}-{shortId}", use directly
+        return path.join(baseRoot, 'personas', uniqueId, 'memory.db');
       }
     }
   };

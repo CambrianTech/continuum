@@ -30,6 +30,7 @@ interface PersonaUserLike {
   entity: {
     id: string;
     displayName?: string;  // UserEntity uses displayName, not name
+    uniqueId: string;  // Format: {name}-{shortId} for log paths
     modelConfig?: {
       capabilities?: readonly string[];  // AI capabilities (e.g., ['advanced-reasoning'])
     };
@@ -165,6 +166,7 @@ export class CNSFactory {
       genome: persona.memory.genome,  // Phase 2: genome moved inside memory module
       personaId: persona.entity.id,
       personaName: persona.entity.displayName || 'Unknown',
+      uniqueId: persona.entity.uniqueId,
       handleChatMessage: async (item: QueueItem): Promise<void> => {
         // Delegate to PersonaUser's existing chat handler
         await persona.handleChatMessageFromCNS(item);

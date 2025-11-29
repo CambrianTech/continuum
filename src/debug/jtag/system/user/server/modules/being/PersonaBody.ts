@@ -32,7 +32,7 @@ export class PersonaBody {
 
   constructor(personaUser: PersonaUserForBody) {
     // Initialize logger first
-    this.logger = new SubsystemLogger('body', personaUser.id, personaUser.displayName);
+    this.logger = new SubsystemLogger('body', personaUser.id, personaUser.entity.uniqueId);
     this.logger.info('Body subsystem initializing...');
 
     // Create toolExecutor and toolRegistry first

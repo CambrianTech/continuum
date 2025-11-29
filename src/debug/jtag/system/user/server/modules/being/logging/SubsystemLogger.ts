@@ -17,7 +17,7 @@
  *   private logger: SubsystemLogger;
  *
  *   constructor(personaUser: PersonaUserForMind) {
- *     this.logger = new SubsystemLogger('mind', personaUser.id, personaUser.displayName);
+ *     this.logger = new SubsystemLogger('mind', personaUser.id, personaUser.entity.uniqueId);
  *     this.logger.info('Mind initialized');
  *   }
  * }
@@ -53,7 +53,7 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 export class SubsystemLogger {
   private readonly subsystem: Subsystem;
   private readonly personaId: UUID;
-  private readonly personaName: string;
+  private readonly uniqueId: string;
   private readonly config: Required<LoggerConfig>;
   private readonly logFilePath: string;
   private writeStream: fs.WriteStream | null = null;
@@ -61,12 +61,12 @@ export class SubsystemLogger {
   constructor(
     subsystem: Subsystem,
     personaId: UUID,
-    personaName: string,
+    uniqueId: string,
     config: LoggerConfig = {}
   ) {
     this.subsystem = subsystem;
     this.personaId = personaId;
-    this.personaName = personaName;
+    this.uniqueId = uniqueId;
 
     // Default config
     this.config = {
@@ -86,11 +86,11 @@ export class SubsystemLogger {
   }
 
   /**
-   * Get default log directory based on persona name (not UUID)
+   * Get default log directory based on persona uniqueId ({name}-{shortId})
    * Uses SystemPaths - SINGLE SOURCE OF TRUTH for all paths
    */
   private getDefaultLogDir(): string {
-    return SystemPaths.logs.personas(this.personaName);
+    return SystemPaths.logs.personas(this.uniqueId);
   }
 
   /**
@@ -103,11 +103,11 @@ export class SubsystemLogger {
         fs.mkdirSync(this.config.logDir, { recursive: true });
       }
 
-      // Create write stream (append mode)
-      this.writeStream = fs.createWriteStream(this.logFilePath, { flags: 'a' });
+      // Create write stream (WRITE mode - truncate on each restart)
+      this.writeStream = fs.createWriteStream(this.logFilePath, { flags: 'w' });
 
       // Write header on new file
-      const header = `\n${'='.repeat(80)}\n[${new Date().toISOString()}] ${this.personaName} - ${this.subsystem.toUpperCase()} LOG STARTED\n${'='.repeat(80)}\n`;
+      const header = `${'='.repeat(80)}\n[${new Date().toISOString()}] ${this.uniqueId} - ${this.subsystem.toUpperCase()} LOG STARTED\n${'='.repeat(80)}\n`;
       this.writeStream.write(header);
 
     } catch (error) {
@@ -199,7 +199,7 @@ export class SubsystemLogger {
    */
   close(): void {
     if (this.writeStream) {
-      const footer = `${'='.repeat(80)}\n[${new Date().toISOString()}] ${this.personaName} - ${this.subsystem.toUpperCase()} LOG CLOSED\n${'='.repeat(80)}\n\n`;
+      const footer = `${'='.repeat(80)}\n[${new Date().toISOString()}] ${this.uniqueId} - ${this.subsystem.toUpperCase()} LOG CLOSED\n${'='.repeat(80)}\n`;
       this.writeStream.write(footer);
       this.writeStream.end();
       this.writeStream = null;

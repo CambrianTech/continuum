@@ -24,6 +24,7 @@ export interface CNSConfig {
   // Persona reference (for delegating chat handling)
   readonly personaId: UUID;
   readonly personaName: string;
+  readonly uniqueId: string;  // Format: {name}-{shortId} for log paths
 
   // Callbacks for delegating to PersonaUser (avoids circular dependency)
   readonly handleChatMessage: (item: QueueItem) => Promise<void>;

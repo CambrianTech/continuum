@@ -70,7 +70,7 @@ export class PersonaSoul {
     this.displayName = personaUser.displayName;
 
     // Initialize logger first
-    this.logger = new SubsystemLogger('soul', personaUser.id, personaUser.displayName);
+    this.logger = new SubsystemLogger('soul', personaUser.id, personaUser.entity.uniqueId);
     this.logger.info('Soul subsystem initializing...');
 
     // Initialize memory systems
