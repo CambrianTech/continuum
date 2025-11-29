@@ -22,6 +22,9 @@ import {
   hasFieldMetadata
 } from '../../../../system/data/decorators/FieldDecorators';
 import { ENTITY_REGISTRY, type EntityConstructor } from '../EntityRegistry';
+import { Logger } from '../../../../system/core/logging/Logger';
+
+const log = Logger.create('SqliteWriteManager', 'sql');
 
 /**
  * SqliteWriteManager - Manages create, update, and delete operations
@@ -133,7 +136,7 @@ export class SqliteWriteManager {
 
     await this.executor.runStatement(sql, values);
 
-    console.log(`✅ SQLite: Inserted into entity table ${tableName} with ${columns.length} columns`);
+    log.debug(`Inserted into entity table ${tableName} with ${columns.length} columns`);
 
     return {
       success: true,
@@ -164,7 +167,7 @@ export class SqliteWriteManager {
     ];
 
     await this.executor.runStatement(sql, params);
-    console.log(`✅ SQLite: Inserted into simple entity table ${tableName}`);
+    log.debug(`Inserted into simple entity table ${tableName}`);
 
     return {
       success: true,
@@ -182,22 +185,22 @@ export class SqliteWriteManager {
     version?: number
   ): Promise<StorageResult<DataRecord<T>>> {
     try {
-      console.log(`🔧 SQLite UPDATE: Starting update for ${collection}/${id}`);
+      log.debug(`Updating ${collection}/${id}`);
 
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
         // Update in entity-specific table
-        console.log(`🔧 SQLite UPDATE: Using entity-specific table for ${collection}`);
+        log.debug(`Using entity-specific table for ${collection}`);
         return await this.updateInEntityTable<T>(collection, id, data, version, entityClass);
       } else {
         // Update in simple entity table
-        console.log(`🔧 SQLite UPDATE: Using simple entity table for ${collection}`);
+        log.debug(`Using simple entity table for ${collection}`);
         return await this.updateInSimpleEntityTable<T>(collection, id, data, version);
       }
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Update failed for ${collection}/${id}:`, error.message);
+      log.error(`Update failed for ${collection}/${id}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -251,9 +254,9 @@ export class SqliteWriteManager {
     const sql = `UPDATE ${tableName} SET ${setColumns.join(', ')} WHERE id = ?`;
     params.push(id);
 
-    console.log(`🔧 SQLite UPDATE ENTITY: SQL:`, { sql, paramCount: params.length });
+    log.debugIf(() => ['UPDATE SQL', { sql, paramCount: params.length }]);
     const result = await this.executor.runStatement(sql, params);
-    console.log(`🔧 SQLite UPDATE ENTITY: Result:`, result);
+    log.debugIf(() => ['UPDATE result', result]);
 
     if (result.changes === 0) {
       return {
@@ -274,7 +277,7 @@ export class SqliteWriteManager {
       }
     };
 
-    console.log(`✅ SQLite: Updated record ${id} in entity table ${tableName}`);
+    log.debug(`Updated record ${id} in entity table ${tableName}`);
 
     return {
       success: true,
@@ -302,9 +305,9 @@ export class SqliteWriteManager {
       id
     ];
 
-    console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: SQL:`, { sql, params });
+    log.debugIf(() => ['UPDATE SIMPLE SQL', { sql, params }]);
     const result = await this.executor.runStatement(sql, params);
-    console.log(`🔧 SQLite UPDATE SIMPLE DEBUG: Result:`, result);
+    log.debugIf(() => ['UPDATE SIMPLE result', result]);
 
     if (result.changes === 0) {
       return {
@@ -324,7 +327,7 @@ export class SqliteWriteManager {
       }
     };
 
-    console.log(`✅ SQLite: Updated record ${id} in simple entity table ${tableName}`);
+    log.debug(`Updated record ${id} in simple entity table ${tableName}`);
 
     return {
       success: true,
@@ -348,7 +351,7 @@ export class SqliteWriteManager {
       }
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Delete failed for ${collection}/${id}:`, error.message);
+      log.error(`Delete failed for ${collection}/${id}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -371,7 +374,7 @@ export class SqliteWriteManager {
       };
     }
 
-    console.log(`✅ SQLite: Deleted record ${id} from entity table ${tableName}`);
+    log.debug(`Deleted record ${id} from entity table ${tableName}`);
 
     return {
       success: true,
@@ -394,7 +397,7 @@ export class SqliteWriteManager {
       };
     }
 
-    console.log(`✅ SQLite: Deleted record ${id} from simple entity table ${tableName}`);
+    log.debug(`Deleted record ${id} from simple entity table ${tableName}`);
 
     return {
       success: true,

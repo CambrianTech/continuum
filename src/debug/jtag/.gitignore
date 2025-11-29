@@ -7,6 +7,9 @@
 # Training outputs
 .continuum/genome/adapters/
 
+# Categorized logs (sql, persona-mind, genome, system)
+.continuum/jtag/logs/categorized/
+
 # Temporary files
 /tmp/
 *.pyc

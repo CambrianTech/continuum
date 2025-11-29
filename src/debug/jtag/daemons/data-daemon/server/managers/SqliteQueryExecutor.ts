@@ -24,6 +24,9 @@ import {
   hasFieldMetadata
 } from '../../../../system/data/decorators/FieldDecorators';
 import { ENTITY_REGISTRY, type EntityConstructor } from '../EntityRegistry';
+import { Logger } from '../../../../system/core/logging/Logger';
+
+const log = Logger.create('SqliteQueryExecutor', 'sql');
 
 /**
  * SqliteQueryExecutor - Manages read and query operations
@@ -49,7 +52,7 @@ export class SqliteQueryExecutor {
       }
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Read failed for ${collection}/${id}:`, error.message);
+      log.error(`Read failed for ${collection}/${id}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -161,7 +164,7 @@ export class SqliteQueryExecutor {
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
-      console.log(`🔍 SQLite: Querying ${query.collection} from entity-specific table`, query);
+      log.debug(`Querying ${query.collection}`, query);
 
       const entityClass = ENTITY_REGISTRY.get(query.collection);
 
@@ -174,7 +177,7 @@ export class SqliteQueryExecutor {
       }
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Query failed for ${query.collection}:`, error.message);
+      log.error(`Query failed for ${query.collection}:`, error.message);
       return {
         success: false,
         error: error.message
