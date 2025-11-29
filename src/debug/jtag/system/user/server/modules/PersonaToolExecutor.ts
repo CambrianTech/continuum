@@ -21,6 +21,7 @@ import { Commands } from '../../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
+import { Logger } from '../../../core/logging/Logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -65,16 +66,19 @@ export class PersonaToolExecutor {
   private personaName: string;
   private toolRegistry: ToolRegistry;
   private formatAdapters: ToolFormatAdapter[];
+  private log: ReturnType<typeof Logger.create>;
 
   constructor(personaId: UUID, personaName: string) {
     this.personaId = personaId;
     this.personaName = personaName;
     this.toolRegistry = ToolRegistry.getInstance();
     this.formatAdapters = getToolFormatAdapters();
+    this.log = Logger.create(`PersonaToolExecutor:${personaName}`, 'tools');
   }
 
   /**
    * Log to dedicated cognition file (separate from main logs)
+   * @deprecated Use Logger instead for categorized logging
    */
   private static logToCognitionFile(message: string): void {
     const timestamp = new Date().toISOString();
@@ -124,7 +128,7 @@ export class PersonaToolExecutor {
       return { formattedResults: '', storedResultIds: [] };
     }
 
-    console.log(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
+    this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
     PersonaToolExecutor.logToCognitionFile(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
     const results: string[] = [];
@@ -134,7 +138,7 @@ export class PersonaToolExecutor {
     for (const toolCall of toolCalls) {
       const startTime = Date.now();
 
-      console.log(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName}`, toolCall.parameters);
+      this.log.info(`Calling ${toolCall.toolName} with params:`, toolCall.parameters);
       PersonaToolExecutor.logToCognitionFile(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(toolCall.parameters)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
@@ -158,19 +162,28 @@ export class PersonaToolExecutor {
 
       const duration = Date.now() - startTime;
 
-      console.log(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars)`);
+      if (result.success) {
+        this.log.info(`${toolCall.toolName} ✓ ${duration}ms → ${result.content?.slice(0, 200) || 'no content'}${result.content && result.content.length > 200 ? '...' : ''}`);
+        if (result.media && result.media.length > 0) {
+          this.log.info(`  └─ Media: ${result.media.map(m => `${m.type} (${m.mimeType})`).join(', ')}`);
+        }
+      } else {
+        this.log.error(`${toolCall.toolName} ✗ ${duration}ms`);
+        this.log.error(`  └─ Error: ${result.error || 'unknown error'}`);
+        this.log.error(`  └─ Params:`, toolCall.parameters);
+      }
       PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
-      console.log(`🔍 [MEDIA-DEBUG] Tool "${toolCall.toolName}" returned media:`, result.media ? `${result.media.length} items` : 'NONE');
+      this.log.debugIf(() => [`${toolCall.toolName} returned media:`, result.media ? `${result.media.length} items` : 'NONE']);
       if (result.media && result.media.length > 0) {
-        console.log(`🔍 [MEDIA-DEBUG] Media details:`, result.media.map(m => ({
+        this.log.debugIf(() => ['Media details:', result.media!.map(m => ({
           type: m.type,
           hasBase64: !!m.base64,
           base64Length: m.base64?.length,
           mimeType: m.mimeType,
           hasUrl: !!m.url
-        })));
+        }))]);
       }
 
       const resultId = await this.storeToolResult(
@@ -185,7 +198,7 @@ export class PersonaToolExecutor {
         context.contextId  // Use contextId (room) for storage
       );
       storedResultIds.push(resultId);
-      console.log(`💾 ${this.personaName}: [PHASE 3B] Stored tool result #${resultId.slice(0, 8)} with media:`, result.media?.length || 0);
+      this.log.debug(`Stored tool result #${resultId.slice(0, 8)} with ${result.media?.length || 0} media`);
 
       // Check if THIS persona wants media
       if (result.media && context.personaConfig.autoLoadMedia) {
@@ -195,11 +208,11 @@ export class PersonaToolExecutor {
         );
 
         if (supportedMedia.length > 0) {
-          console.log(`📸 ${this.personaName}: [MEDIA] Loading ${supportedMedia.length} media item(s) (types: ${supportedMedia.map(m => m.type).join(', ')})`);
+          this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})`);
           allMedia.push(...supportedMedia);
         }
       } else if (result.media && result.media.length > 0) {
-        console.log(`🚫 ${this.personaName}: [MEDIA] Skipping ${result.media.length} media item(s) (autoLoadMedia=false)`);
+        this.log.debug(`Skipping ${result.media.length} media (autoLoadMedia=false)`);
       }
 
       // Log tool execution to cognition database (for interrogation)
@@ -224,7 +237,7 @@ export class PersonaToolExecutor {
     }
 
     const successCount = results.filter(r => r.includes('<status>success</status>')).length;
-    console.log(`🏁 ${this.personaName}: [TOOL] Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media item(s) loaded, ${storedResultIds.length} results stored`);
+    this.log.info(`Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media loaded, ${storedResultIds.length} stored`);
 
     return {
       formattedResults: results.join('\n\n'),
@@ -345,7 +358,7 @@ ${result.error || 'Unknown error'}
       }
     );
 
-    console.log(`🔧 ${this.personaName}: Stored tool result #${message.id.slice(0, 8)} (${summary})`);
+    this.log.debug(`Stored tool result #${message.id.slice(0, 8)} (${summary})`);
     return message.id;
   }
 

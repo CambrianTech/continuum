@@ -24,6 +24,7 @@
  *   - 'persona-mind': PersonaUser cognitive processes (inbox, state, coordination)
  *   - 'genome': LoRA genome operations (paging, training, adapters)
  *   - 'system': System-level operations (initialization, daemon startup)
+ *   - 'tools': Tool execution (parsing, execution, results, failures)
  *   - undefined: Console only (default, no file writing)
  */
 
@@ -45,7 +46,7 @@ interface LoggerConfig {
   enableFileLogging: boolean;
 }
 
-type LogCategory = 'sql' | 'persona-mind' | 'genome' | 'system';
+type LogCategory = 'sql' | 'persona-mind' | 'genome' | 'system' | 'tools';
 
 class LoggerClass {
   private static instance: LoggerClass;

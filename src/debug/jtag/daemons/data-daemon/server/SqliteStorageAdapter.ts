@@ -48,6 +48,9 @@ import { SqliteQueryExecutor } from './managers/SqliteQueryExecutor';
 import { SqliteWriteManager } from './managers/SqliteWriteManager';
 import { SqliteVectorSearchManager } from './managers/SqliteVectorSearchManager';
 import { ENTITY_REGISTRY, registerEntity, getRegisteredEntity, type EntityConstructor } from './EntityRegistry';
+import { Logger } from '../../../system/core/logging/Logger';
+
+const log = Logger.create('SqliteStorageAdapter', 'sql');
 
 /**
  * SQLite Configuration Options
@@ -103,10 +106,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Initialize SQLite database with configuration
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
-    console.log('🚀 SQLite: Starting initialization...');
+    log.info('Starting initialization...');
 
     if (this.isInitialized && this.db) {
-      console.log('✅ SQLite: Already initialized, skipping');
+      log.info('Already initialized, skipping');
       return;
     }
 
@@ -116,31 +119,31 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     // Use explicit filename from options, or fall back to default database path
     // This allows multi-database support (training DBs, etc.) while maintaining backward compatibility
     const dbPath = options.filename || DATABASE_PATHS.SQLITE;
-    console.log(`📍 SQLite: Using database path: ${dbPath}`);
+    log.info(`Using database path: ${dbPath}`);
 
     // Ensure directory exists with proper permissions
     const dbDir = path.dirname(dbPath);
     // CRITICAL: Save and set umask to ensure permissions stick
     const oldUmask = process.umask(0o000);
-    console.log(`🔒 SQLite: Saved umask ${oldUmask.toString(8)}, set to 0o000 for permission control`);
+    log.debug(`Saved umask ${oldUmask.toString(8)}, set to 0o000 for permission control`);
 
     try {
-      console.log(`📁 SQLite: Ensuring directory exists: ${dbDir}`);
+      log.debug(`Ensuring directory exists: ${dbDir}`);
       await fs.mkdir(dbDir, { recursive: true, mode: 0o755 });
 
       // Set directory permissions for SQLite write operations
-      console.log('🔒 SQLite: Setting directory permissions to 0o755...');
+      log.debug('Setting directory permissions to 0o755');
       await fs.chmod(dbDir, 0o755);
-      console.log('✅ SQLite: Directory permissions set successfully');
+      log.debug('Directory permissions set successfully');
 
       // Clear extended attributes on directory (macOS)
       if (process.platform === 'darwin') {
         try {
-          console.log('🍎 SQLite: Clearing directory extended attributes...');
+          log.debug('Clearing directory extended attributes');
           await execAsync(`xattr -c "${dbDir}"`);
-          console.log('✅ SQLite: Directory extended attributes cleared');
+          log.debug('Directory extended attributes cleared');
         } catch (error) {
-          console.warn('⚠️ SQLite: Could not clear directory xattr (non-fatal):', error);
+          log.debug('Could not clear directory xattr (non-fatal):', error);
         }
       }
 
@@ -148,55 +151,55 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       let dbFileExists = false;
       try {
         const stats = await fs.stat(dbPath);
-        console.log(`📊 SQLite: Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
+        log.debug(`Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
         dbFileExists = true;
       } catch (error) {
-        console.log('📄 SQLite: No existing database file, will create new');
+        log.debug('No existing database file, will create new');
       }
 
       // CRITICAL FIX: Create empty file BEFORE opening connection
       // This allows us to set permissions/clear xattr before SQLite touches it
       if (!dbFileExists) {
-        console.log('📝 SQLite: Creating empty database file...');
+        log.debug('Creating empty database file');
         await fs.writeFile(dbPath, '', { mode: 0o666 });
-        console.log('✅ SQLite: Empty file created with mode 0o666');
+        log.debug('Empty file created with mode 0o666');
       }
 
-      console.log('🔒 SQLite: Setting file permissions to 0o666...');
+      log.debug('Setting file permissions to 0o666');
       await fs.chmod(dbPath, 0o666);
-      console.log('✅ SQLite: File permissions set successfully');
+      log.debug('File permissions set successfully');
 
       // Clear extended attributes on macOS BEFORE opening connection (prevents SQLITE_READONLY errors)
       if (process.platform === 'darwin') {
         try {
-          console.log('🍎 SQLite: Clearing macOS extended attributes...');
+          log.debug('Clearing macOS extended attributes');
           await execAsync(`xattr -c "${dbPath}"`);
-          console.log('✅ SQLite: Extended attributes cleared');
+          log.debug('Extended attributes cleared');
         } catch (error) {
           // This is non-fatal, just log it
-          console.warn('⚠️ SQLite: Could not clear extended attributes (non-fatal):', error);
+          log.debug('Could not clear extended attributes (non-fatal):', error);
         }
       }
     } finally {
       // Restore original umask
       process.umask(oldUmask);
-      console.log(`🔒 SQLite: Restored umask to ${oldUmask.toString(8)}`);
+      log.debug(`Restored umask to ${oldUmask.toString(8)}`);
     }
 
-    console.log(`🔗 SQLite: Opening database connection with READWRITE | CREATE mode`);
+    log.info('Opening database connection');
 
     // Create database connection with explicit write mode
     await new Promise<void>((resolve, reject) => {
       const mode = sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE;
-      console.log(`🔧 SQLite: Connection mode flags: ${mode}`);
+      log.debug(`Connection mode flags: ${mode}`);
 
       this.db = new sqlite3.Database(dbPath, mode, (err) => {
         if (err) {
-          console.error('❌ SQLite: Failed to open database:', err);
-          console.error('❌ SQLite: Error details:', err.message, (err as any).code || 'NO_CODE');
+          log.error('Failed to open database:', err);
+          log.error('Error details:', err.message, (err as any).code || 'NO_CODE');
           reject(err);
         } else {
-          console.log('✅ SQLite: Database connection established successfully');
+          log.debug('Database connection established');
           resolve();
         }
       });
@@ -208,13 +211,13 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     }
 
     // Initialize extracted utility classes (Phase 1 refactoring)
-    console.log('🔧 SQLite: Initializing utility classes...');
+    log.debug('Initializing utility classes');
     this.executor = new SqliteRawExecutor(this.db);
     this.transactionManager = new SqliteTransactionManager(this.executor);
-    console.log('✅ SQLite: Utility classes initialized');
+    log.debug('Utility classes initialized');
 
     // Initialize schema manager (Phase 0 refactoring)
-    console.log('🔧 SQLite: Initializing schema manager...');
+    log.debug('Initializing schema manager');
     this.schemaManager = new SqliteSchemaManager(
       this.db,
       this.executor,
@@ -222,53 +225,53 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       this.generateCreateIndexSql.bind(this),
       this.mapFieldTypeToSql.bind(this)
     );
-    console.log('✅ SQLite: Schema manager initialized');
+    log.debug('Schema manager initialized');
 
     // Initialize query executor (Phase 0 refactoring)
-    console.log('🔧 SQLite: Initializing query executor...');
+    log.debug('Initializing query executor');
     this.queryExecutor = new SqliteQueryExecutor(this.executor);
-    console.log('✅ SQLite: Query executor initialized');
+    log.debug('Query executor initialized');
 
     // Initialize write manager (Phase 0 refactoring)
-    console.log('🔧 SQLite: Initializing write manager...');
+    log.debug('Initializing write manager');
     this.writeManager = new SqliteWriteManager(this.executor);
-    console.log('✅ SQLite: Write manager initialized');
+    log.debug('Write manager initialized');
 
-    console.log('⚙️ SQLite: Configuring database settings...');
+    log.debug('Configuring database settings');
     // Configure SQLite settings
     await this.schemaManager.configureSqlite(options);
 
     // EXFAT FIX: Re-apply permissions after SQLite opens and potentially modifies the file
     // This handles cases where filesystem doesn't properly support Unix permissions
     try {
-      console.log('🔧 SQLite: Re-applying file permissions after connection (exFAT workaround)...');
+      log.debug('Re-applying file permissions (exFAT workaround)');
       await fs.chmod(dbPath, 0o666);
-      console.log('✅ SQLite: Post-connection permissions applied');
+      log.debug('Post-connection permissions applied');
     } catch (error) {
-      console.warn('⚠️ SQLite: Could not re-apply permissions (non-fatal):', error);
+      log.debug('Could not re-apply permissions (non-fatal):', error);
     }
 
-    console.log('📋 SQLite: Initializing entity registry...');
+    log.debug('Initializing entity registry');
     // Import and register all known entities (server-side only)
     const { initializeEntityRegistry } = await import('./EntityRegistry');
     initializeEntityRegistry();
 
-    console.log('✅ SQLite: Entity registry initialized (tables will be created lazily on first use)');
+    log.debug('Entity registry initialized (tables created lazily on first use)');
 
     // Verify integrity after initialization
-    console.log('🔍 SQLite: Verifying database integrity...');
+    log.debug('Verifying database integrity');
     await this.schemaManager.verifyIntegrity();
 
     // Initialize vector search manager (Phase 0 refactoring)
-    console.log('🔍 SQLite: Initializing vector search manager...');
+    log.debug('Initializing vector search manager');
     this.vectorSearchManager = new SqliteVectorSearchManager(
       this.executor,
       this  // DataStorageAdapter for CRUD operations
     );
-    console.log('✅ SQLite: Vector search manager initialized');
+    log.debug('Vector search manager initialized');
 
     this.isInitialized = true;
-    console.log('🎯 SQLite: Initialization complete and verified');
+    log.info('Initialization complete');
   }
 
   /**
@@ -341,7 +344,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       return this.writeManager.update<T>(collection, id, updatedData as T, version);
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Update failed for ${collection}/${id}:`, error.message);
+      log.error(`Update failed for ${collection}/${id}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -410,7 +413,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       };
 
     } catch (error: any) {
-      console.error('❌ SQLite: List collections failed:', error.message);
+      log.error('List collections failed:', error.message);
       return {
         success: false,
         error: error.message
@@ -455,7 +458,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       };
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Get stats failed for ${collection}:`, error.message);
+      log.error(`Get stats failed for ${collection}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -596,14 +599,14 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         return true;
       });
 
-      console.log('🧹 SQLite: All entity data cleared successfully');
+      log.info('All entity data cleared');
       return {
         success: true,
         data: result
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('❌ SQLite: Error clearing data:', errorMessage);
+      log.error('Error clearing data:', errorMessage);
       return {
         success: false,
         error: errorMessage
@@ -638,14 +641,14 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         return deleteResult.changes ?? 0;
       });
 
-      console.log(`🧹 SQLite: Truncated collection '${collection}' - ${result} records removed`);
+      log.info(`Truncated collection '${collection}' - ${result} records removed`);
       return {
         success: true,
         data: result > 0
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ SQLite: Error truncating collection '${collection}':`, errorMessage);
+      log.error(`Error truncating collection '${collection}':`, errorMessage);
       return {
         success: false,
         error: errorMessage
@@ -666,10 +669,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       // ANALYZE to update statistics
       await this.executor.runStatement('ANALYZE');
 
-      console.log('✅ SQLite: Cleanup completed');
+      log.info('Cleanup completed');
 
     } catch (error) {
-      console.error('❌ SQLite: Cleanup failed:', error);
+      log.error('Cleanup failed:', error);
     }
   }
 
@@ -682,10 +685,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     return new Promise<void>((resolve, reject) => {
       this.db!.close((err) => {
         if (err) {
-          console.error('❌ SQLite: Failed to close database:', err);
+          log.error('Failed to close database:', err);
           reject(err);
         } else {
-          console.log('✅ SQLite: Database connection closed');
+          log.info('Database connection closed');
           this.db = null;
           this.isInitialized = false;
           resolve();
@@ -708,7 +711,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       throw new Error('SqliteStorageAdapter not initialized');
     }
 
-    console.log('🧹 SQLite: Starting complete database clear (preserving structure)...');
+    log.info('Starting complete database clear (preserving structure)');
 
     const tablesCleared: string[] = [];
     let totalRecordsDeleted = 0;
@@ -736,9 +739,9 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
             tablesCleared.push(tableName);
             totalRecordsDeleted += recordCount;
 
-            console.log(`✅ SQLite: Cleared ${recordCount} records from table '${tableName}'`);
+            log.debug(`Cleared ${recordCount} records from table '${tableName}'`);
           } else {
-            console.log(`📋 SQLite: Table '${tableName}' was already empty`);
+            log.debug(`Table '${tableName}' was already empty`);
           }
         }
 
@@ -754,10 +757,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
         }
       });
 
-      console.log(`🎉 SQLite: Database clearing complete!`);
-      console.log(`   📊 Tables processed: ${tablesCleared.length}`);
-      console.log(`   🗑️ Records deleted: ${totalRecordsDeleted}`);
-      console.log(`   🏗️ Database structure preserved`);
+      log.info(`Database clearing complete - ${tablesCleared.length} tables processed, ${totalRecordsDeleted} records deleted`);
 
       return {
         success: true,
@@ -768,7 +768,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       };
 
     } catch (error) {
-      console.error('❌ SQLite: Database clear failed:', error);
+      log.error('Database clear failed:', error);
       throw new Error(`Database clear failed: ${error}`);
     }
   }
