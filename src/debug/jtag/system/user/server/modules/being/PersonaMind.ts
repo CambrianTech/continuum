@@ -9,6 +9,7 @@ import { PersonaStateManager } from '../PersonaState';
 import { WorkingMemoryManager } from '../cognition/memory/WorkingMemoryManager';
 import { PersonaSelfState } from '../cognition/PersonaSelfState';
 import { SimplePlanFormulator } from '../cognition/reasoning/SimplePlanFormulator';
+import { SubsystemLogger } from './logging/SubsystemLogger';
 
 export interface PersonaUserForMind {
   readonly id: UUID;
@@ -16,17 +17,34 @@ export interface PersonaUserForMind {
 }
 
 export class PersonaMind {
+  private readonly logger: SubsystemLogger;
   public readonly personaState: PersonaStateManager;
   public readonly workingMemory: WorkingMemoryManager;
   public readonly selfState: PersonaSelfState;
   public readonly planFormulator: SimplePlanFormulator;
 
   constructor(personaUser: PersonaUserForMind) {
+    // Initialize logger first
+    this.logger = new SubsystemLogger('mind', personaUser.id, personaUser.displayName);
+    this.logger.info('Mind subsystem initializing...');
+
     this.personaState = new PersonaStateManager(personaUser.displayName, {
       enableLogging: true
     });
     this.workingMemory = new WorkingMemoryManager(personaUser.id);
     this.selfState = new PersonaSelfState(personaUser.id);
     this.planFormulator = new SimplePlanFormulator(personaUser.id, personaUser.displayName);
+
+    this.logger.info('Mind subsystem initialized', {
+      components: ['personaState', 'workingMemory', 'selfState', 'planFormulator']
+    });
+  }
+
+  /**
+   * Shutdown mind subsystem (cleanup)
+   */
+  shutdown(): void {
+    this.logger.info('Mind subsystem shutting down...');
+    this.logger.close();
   }
 }

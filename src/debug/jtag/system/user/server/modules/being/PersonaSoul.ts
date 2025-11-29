@@ -20,6 +20,11 @@ import { TrainingDataAccumulator } from '../TrainingDataAccumulator';
 import { PersonaTrainingManager } from '../PersonaTrainingManager';
 import { Hippocampus } from '../cognitive/memory/Hippocampus';
 import type { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
+import { SubsystemLogger } from './logging/SubsystemLogger';
+import type { UserEntity } from '../../../../data/entities/UserEntity';
+import type { ModelConfig } from '../../../../../commands/user/create/shared/UserCreateTypes';
+import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
+import type { UserStateEntity } from '../../../../data/entities/UserStateEntity';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -27,10 +32,10 @@ import type { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
 export interface PersonaUserForSoul {
   readonly id: UUID;
   readonly displayName: string;
-  readonly entity: any; // UserEntity
-  readonly modelConfig: any; // ModelConfig
-  readonly client?: any; // JTAGClient
-  readonly state: any; // UserStateEntity
+  readonly entity: UserEntity;
+  readonly modelConfig: ModelConfig;
+  readonly client?: JTAGClient;
+  readonly state: UserStateEntity;
   saveState(): Promise<void>;
 }
 
@@ -41,6 +46,8 @@ export interface PersonaUserForSoul {
  * Independent of cognition (Mind) and execution (Body).
  */
 export class PersonaSoul {
+  private readonly logger: SubsystemLogger;
+
   // Long-term Memory
   public readonly memory: PersonaMemory;
 
@@ -61,6 +68,10 @@ export class PersonaSoul {
   constructor(personaUser: PersonaUserForSoul) {
     this.personaId = personaUser.id;
     this.displayName = personaUser.displayName;
+
+    // Initialize logger first
+    this.logger = new SubsystemLogger('soul', personaUser.id, personaUser.displayName);
+    this.logger.info('Soul subsystem initializing...');
 
     // Initialize memory systems
     // PersonaMemory(personaId, displayName, genomeConfig, client?)
@@ -121,10 +132,13 @@ export class PersonaSoul {
       }
     );
 
-    // Hippocampus(personaUser)
+    // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
+    // This is safe because PersonaSoul is only instantiated by PersonaUser
     this.hippocampus = new Hippocampus(personaUser as any);
 
-    console.log(`🧬 ${this.displayName}: Soul initialized (memory, genome, learning, hippocampus)`);
+    this.logger.info('Soul subsystem initialized', {
+      components: ['memory', 'genomeManager', 'trainingAccumulator', 'trainingManager', 'hippocampus']
+    });
   }
 
   // ===== PUBLIC INTERFACE =====
@@ -151,7 +165,7 @@ export class PersonaSoul {
    */
   async startMemoryConsolidation(): Promise<void> {
     await this.hippocampus.start();
-    console.log(`🧠 ${this.displayName}: Hippocampus started (memory consolidation active)`);
+    this.logger.info('Hippocampus started (memory consolidation active)');
   }
 
   /**
@@ -159,11 +173,13 @@ export class PersonaSoul {
    * Stops hippocampus subprocess and any background tasks
    */
   async shutdown(): Promise<void> {
+    this.logger.info('Soul subsystem shutting down...');
     await this.hippocampus.stop();
     // Memory is just data access - no shutdown needed
     // Genome is just data access - no shutdown needed
     // Training accumulator is just data structure - no shutdown needed
-    console.log(`🧬 ${this.displayName}: Soul shutdown complete`);
+    this.logger.info('Soul shutdown complete');
+    this.logger.close();
   }
 
   /**

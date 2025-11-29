@@ -11,15 +11,19 @@
 import type { CNSConfig } from './CNSTypes';
 import type { CognitiveContext } from '../cognitive-schedulers/ICognitiveScheduler';
 import { ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
+import { SubsystemLogger } from '../being/logging/SubsystemLogger';
 
 export class PersonaCentralNervousSystem {
   private readonly config: CNSConfig;
+  private readonly logger: SubsystemLogger;
 
   constructor(config: CNSConfig) {
     this.config = config;
-    this.log(`Initialized CNS with ${config.scheduler.name} scheduler`);
-    this.log(`Enabled domains: ${config.enabledDomains.join(', ')}`);
-    this.log(`Background threads: ${config.allowBackgroundThreads ? 'enabled' : 'disabled'}`);
+    this.logger = new SubsystemLogger('cns', config.personaId, config.personaName);
+
+    this.logger.info(`Initialized CNS with ${config.scheduler.name} scheduler`);
+    this.logger.info(`Enabled domains: ${config.enabledDomains.join(', ')}`);
+    this.logger.info(`Background threads: ${config.allowBackgroundThreads ? 'enabled' : 'disabled'}`);
   }
 
   /**
@@ -55,7 +59,7 @@ export class PersonaCentralNervousSystem {
     );
 
     if (!shouldServiceChat) {
-      this.log('Scheduler decided not to service chat');
+      this.logger.debug('Scheduler decided not to service chat');
       return;
     }
 
@@ -108,7 +112,7 @@ export class PersonaCentralNervousSystem {
 
     // Check if we should engage based on mood/energy (existing behavior)
     if (!this.config.personaState.shouldEngage(message.priority)) {
-      this.log(`Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.config.personaState.getState().mood})`);
+      this.logger.debug(`Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.config.personaState.getState().mood})`);
 
       // Rest while skipping to recover energy
       const cadence = this.config.personaState.getCadence();
@@ -119,16 +123,17 @@ export class PersonaCentralNervousSystem {
     // Pop message from inbox (we're processing it now)
     await this.config.inbox.pop(0); // Immediate pop (no timeout)
 
-    this.log(`Processing message (priority=${message.priority.toFixed(2)}, mood=${this.config.personaState.getState().mood}, inbox remaining=${this.config.inbox.getSize()})`);
+    this.logger.info(`Processing message (priority=${message.priority.toFixed(2)}, mood=${this.config.personaState.getState().mood}, inbox remaining=${this.config.inbox.getSize()})`);
 
     // Delegate to PersonaUser via callback (existing logic)
     await this.config.handleChatMessage(message);
   }
 
   /**
-   * Logging helper
+   * Shutdown CNS subsystem (cleanup)
    */
-  private log(message: string): void {
-    console.log(`🧠 ${this.config.personaName} [CNS]: ${message}`);
+  shutdown(): void {
+    this.logger.info('CNS subsystem shutting down...');
+    this.logger.close();
   }
 }

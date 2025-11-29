@@ -12,6 +12,7 @@ import type { UserEntity } from '../../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { PersonaMediaConfig } from '../PersonaMediaConfig';
+import { SubsystemLogger } from './logging/SubsystemLogger';
 
 export interface PersonaUserForBody {
   readonly id: UUID;
@@ -24,11 +25,16 @@ export interface PersonaUserForBody {
 }
 
 export class PersonaBody {
+  private readonly logger: SubsystemLogger;
   public readonly toolExecutor: PersonaToolExecutor;
   public readonly toolRegistry: PersonaToolRegistry;
   public readonly responseGenerator: PersonaResponseGenerator;
 
   constructor(personaUser: PersonaUserForBody) {
+    // Initialize logger first
+    this.logger = new SubsystemLogger('body', personaUser.id, personaUser.displayName);
+    this.logger.info('Body subsystem initializing...');
+
     // Create toolExecutor and toolRegistry first
     this.toolExecutor = new PersonaToolExecutor(personaUser.id, personaUser.displayName);
     this.toolRegistry = new PersonaToolRegistry();
@@ -46,5 +52,17 @@ export class PersonaBody {
       mediaConfig: personaUser.mediaConfig,
       getSessionId: personaUser.getSessionId
     });
+
+    this.logger.info('Body subsystem initialized', {
+      components: ['toolExecutor', 'toolRegistry', 'responseGenerator']
+    });
+  }
+
+  /**
+   * Shutdown body subsystem (cleanup)
+   */
+  shutdown(): void {
+    this.logger.info('Body subsystem shutting down...');
+    this.logger.close();
   }
 }
