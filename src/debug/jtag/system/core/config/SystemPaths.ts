@@ -186,12 +186,3 @@ export const SystemPaths: ContinuumPaths = createPathsForBase(REPO_ROOT);
  */
 export const GlobalPaths: ContinuumPaths = createPathsForBase(HOME_ROOT);
 
-/**
- * Legacy paths that should NOT be used (for migration reference only)
- *
- * These exist in the wild and need to be migrated
- */
-export const DEPRECATED_PATHS = {
-  oldContinuumRoot: path.join(process.cwd(), '.continuum'),
-  oldSessionsRoot: path.join(process.cwd(), '.continuum', 'sessions')
-} as const;
