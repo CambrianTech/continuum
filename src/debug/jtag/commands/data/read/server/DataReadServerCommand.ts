@@ -20,6 +20,23 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
   }
 
   protected async executeDataCommand(params: DataReadParams): Promise<DataReadResult<BaseEntity>> {
+    // Validate required parameters
+    if (!params.collection) {
+      return createDataReadResultFromParams(params, {
+        success: false,
+        error: 'Missing required parameter: collection. Use data/list to see available collections.',
+        found: false
+      });
+    }
+
+    if (!params.id) {
+      return createDataReadResultFromParams(params, {
+        success: false,
+        error: 'Missing required parameter: id',
+        found: false
+      });
+    }
+
     console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id} via DataDaemon`);
 
     try {
