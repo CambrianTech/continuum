@@ -200,6 +200,10 @@ export class DataDaemon {
     _context: DataOperationContext // TODO: use context for read consistency
   ): Promise<StorageResult<DataRecord<T>>> {
     await this.ensureInitialized();
+
+    // Ensure schema exists before reading (prevents "no such table" errors)
+    await this.ensureSchema(collection);
+
     const result = await this.adapter.read<T>(collection, id);
 
     // Deserialize entity at the boundary (create new object to avoid readonly mutation)
@@ -245,6 +249,10 @@ export class DataDaemon {
     _context: DataOperationContext // TODO: use context for query consistency
   ): Promise<StorageResult<DataRecord<T>[]>> {
     await this.ensureInitialized();
+
+    // Ensure schema exists before querying (prevents "no such table" errors)
+    await this.ensureSchema(query.collection);
+
     const result = await this.adapter.query<T>(query);
 
     // Deserialize entities at the boundary (create new array to avoid readonly mutation)

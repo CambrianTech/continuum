@@ -839,3 +839,4 @@ Commands.execute() and Events.subscribe()/emit() - the two primitives everything
 - assume a new concept or group of functions ought to be in its own file and most likely own class. Use good OOP, interfaces, like java, dot net, or ts
   practices, and in some ways like C++ templating with generics. These are your superpowers
 - for getters in typescript we do not prefix methods with get, we use get or set like good properties and often this is backed by _theProperty type private var
+- never commit code until you validate it works. deploy and validate first, make sure it compiles, npm run build:ts before that

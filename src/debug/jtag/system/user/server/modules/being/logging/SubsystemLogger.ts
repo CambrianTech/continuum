@@ -1,11 +1,11 @@
 /**
- * SubsystemLogger - Base class for segregated logging in Being Architecture
+ * SubsystemLogger - Persona cognitive logging (thin wrapper around Logger)
  *
  * Provides file-based logging per persona and subsystem (Mind/Body/Soul/CNS).
- * Reduces console.log spam by routing logs to appropriate files.
+ * This is now just a convenience wrapper around the core Logger system.
  *
  * Directory structure:
- * .continuum/logs/personas/{personaId}/
+ * .continuum/personas/{uniqueId}/logs/
  *   ├── mind.log       (cognition, state tracking)
  *   ├── body.log       (action, execution, tools)
  *   ├── soul.log       (memory, learning, genome)
@@ -13,6 +13,8 @@
  *
  * Usage:
  * ```typescript
+ * import { SubsystemLogger } from './SubsystemLogger';
+ *
  * class PersonaMind {
  *   private logger: SubsystemLogger;
  *
@@ -24,21 +26,15 @@
  * ```
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
+import { Logger, FileMode } from '../../../../../core/logging/Logger';
+import type { ComponentLogger } from '../../../../../core/logging/Logger';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type Subsystem = 'mind' | 'body' | 'soul' | 'cns';
 
 export interface LoggerConfig {
-  /** Enable console output (default: true for errors/warnings, false for info/debug) */
-  enableConsole?: boolean;
-  /** Enable file output (default: true) */
-  enableFile?: boolean;
-  /** Minimum log level (default: 'debug') */
-  minLevel?: LogLevel;
   /**
    * Custom log directory - can be:
    * - Absolute path: '/full/path/to/logs'
@@ -46,22 +42,24 @@ export interface LoggerConfig {
    * Default: .continuum/personas/{uniqueId}/logs
    */
   logDir?: string;
+
+  /**
+   * File mode: CLEAN (default - start fresh), APPEND (keep old logs), ARCHIVE (future)
+   */
+  mode?: FileMode;
 }
 
-const LOG_LEVELS: Record<LogLevel, number> = {
-  debug: 0,
-  info: 1,
-  warn: 2,
-  error: 3
-};
-
+/**
+ * SubsystemLogger - Thin wrapper around Logger for persona cognitive logs
+ *
+ * All actual logging logic is handled by the core Logger system.
+ * This just provides a persona-specific interface with subsystem names.
+ */
 export class SubsystemLogger {
   private readonly subsystem: Subsystem;
   private readonly personaId: UUID;
   private readonly uniqueId: string;
-  private readonly config: Required<LoggerConfig>;
-  private readonly logFilePath: string;
-  private writeStream: fs.WriteStream | null = null;
+  private readonly logger: ComponentLogger;
 
   constructor(
     subsystem: Subsystem,
@@ -73,153 +71,60 @@ export class SubsystemLogger {
     this.personaId = personaId;
     this.uniqueId = uniqueId;
 
-    // Default config
-    this.config = {
-      enableConsole: config.enableConsole ?? false, // Default to file-only logging
-      enableFile: config.enableFile ?? true,
-      minLevel: config.minLevel ?? 'debug',
-      logDir: config.logDir ?? this.getDefaultLogDir()
-    };
+    // Determine log file path
+    const logDir = config.logDir
+      ? (path.isAbsolute(config.logDir) ? config.logDir : path.join(SystemPaths.root, config.logDir))
+      : SystemPaths.logs.personas(uniqueId);
 
-    // Resolve logDir (support both absolute and relative paths)
-    const resolvedLogDir = path.isAbsolute(this.config.logDir)
-      ? this.config.logDir
-      : path.join(SystemPaths.root, this.config.logDir);
+    const logFilePath = path.join(logDir, `${subsystem}.log`);
+    // Persona logs default to CLEAN (start fresh per session)
+    // Caller can override by passing mode in config
+    const mode = config.mode ?? FileMode.CLEAN;
 
-    // Construct log file path
-    this.logFilePath = path.join(resolvedLogDir, `${subsystem}.log`);
-
-    // Initialize log directory and file
-    if (this.config.enableFile) {
-      this.initializeLogFile();
-    }
+    // Create logger using core Logger system
+    const componentName = `${uniqueId}:${subsystem}`;
+    this.logger = Logger.createWithFile(componentName, logFilePath, mode);
   }
 
-  /**
-   * Get default log directory based on persona uniqueId ({name}-{shortId})
-   * Uses SystemPaths - SINGLE SOURCE OF TRUTH for all paths
-   */
-  private getDefaultLogDir(): string {
-    return SystemPaths.logs.personas(this.uniqueId);
-  }
-
-  /**
-   * Initialize log directory and file stream
-   */
-  private initializeLogFile(): void {
-    try {
-      // Create log directory if it doesn't exist
-      if (!fs.existsSync(this.config.logDir)) {
-        fs.mkdirSync(this.config.logDir, { recursive: true });
-      }
-
-      // Create write stream (WRITE mode - truncate on each restart)
-      this.writeStream = fs.createWriteStream(this.logFilePath, { flags: 'w' });
-
-      // Write header on new file
-      const header = `${'='.repeat(80)}\n[${new Date().toISOString()}] ${this.uniqueId} - ${this.subsystem.toUpperCase()} LOG STARTED\n${'='.repeat(80)}\n`;
-      this.writeStream.write(header);
-
-    } catch (error) {
-      console.error(`❌ SubsystemLogger: Failed to initialize log file: ${error}`);
-      this.config.enableFile = false; // Disable file logging if init fails
-    }
-  }
-
-  /**
-   * Check if a log level should be output
-   */
-  private shouldLog(level: LogLevel): boolean {
-    return LOG_LEVELS[level] >= LOG_LEVELS[this.config.minLevel];
-  }
-
-  /**
-   * Format log message with timestamp and context
-   */
-  private formatMessage(level: LogLevel, message: string, ...args: unknown[]): string {
-    const timestamp = new Date().toISOString();
-    const emoji = this.getEmojiForSubsystem();
-    const levelStr = level.toUpperCase().padEnd(5);
-
-    // Format additional arguments
-    const argsStr = args.length > 0 ? ' ' + args.map(arg =>
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-    ).join(' ') : '';
-
-    return `[${timestamp}] ${emoji} ${levelStr} [${this.subsystem}] ${message}${argsStr}`;
-  }
-
-  /**
-   * Get emoji for subsystem
-   */
-  private getEmojiForSubsystem(): string {
-    const emojiMap: Record<Subsystem, string> = {
-      mind: '🧠',
-      body: '🤸',
-      soul: '🧬',
-      cns: '🔮'
-    };
-    return emojiMap[this.subsystem] || '📋';
-  }
-
-  /**
-   * Write log entry
-   */
-  private log(level: LogLevel, message: string, ...args: unknown[]): void {
-    if (!this.shouldLog(level)) {
-      return;
-    }
-
-    const formattedMessage = this.formatMessage(level, message, ...args);
-
-    // Console output (only for errors and warnings by default)
-    if (this.config.enableConsole || level === 'error' || level === 'warn') {
-      const consoleMethod = level === 'error' ? console.error :
-                           level === 'warn' ? console.warn :
-                           console.log;
-      consoleMethod(formattedMessage);
-    }
-
-    // File output
-    if (this.config.enableFile && this.writeStream) {
-      this.writeStream.write(formattedMessage + '\n');
-    }
-  }
-
-  // Public API
+  // Delegate all logging methods to ComponentLogger
 
   debug(message: string, ...args: unknown[]): void {
-    this.log('debug', message, ...args);
+    this.logger.debug(message, ...args);
   }
 
   info(message: string, ...args: unknown[]): void {
-    this.log('info', message, ...args);
+    this.logger.info(message, ...args);
   }
 
   warn(message: string, ...args: unknown[]): void {
-    this.log('warn', message, ...args);
+    this.logger.warn(message, ...args);
   }
 
   error(message: string, ...args: unknown[]): void {
-    this.log('error', message, ...args);
+    this.logger.error(message, ...args);
   }
 
   /**
-   * Close log file stream
+   * Conditional debug logging (only executes if debug level enabled)
+   */
+  debugIf(messageFn: () => [string, ...any[]]): void {
+    this.logger.debugIf(messageFn);
+  }
+
+  /**
+   * Close logger (handled by Logger.shutdown(), but provided for compatibility)
    */
   close(): void {
-    if (this.writeStream) {
-      const footer = `${'='.repeat(80)}\n[${new Date().toISOString()}] ${this.uniqueId} - ${this.subsystem.toUpperCase()} LOG CLOSED\n${'='.repeat(80)}\n`;
-      this.writeStream.write(footer);
-      this.writeStream.end();
-      this.writeStream = null;
-    }
+    // No-op - Logger handles cleanup on shutdown
   }
 
   /**
    * Get log file path (for debugging)
    */
   getLogFilePath(): string {
-    return this.logFilePath;
+    return path.join(
+      SystemPaths.logs.personas(this.uniqueId),
+      `${this.subsystem}.log`
+    );
   }
 }

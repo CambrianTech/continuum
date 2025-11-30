@@ -17,6 +17,7 @@
 import { PersonaContinuousSubprocess } from '../../PersonaSubprocess';
 import type { PersonaUser } from '../../../PersonaUser';
 import { Commands } from '../../../../../core/shared/Commands';
+import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import type { DataOpenParams, DataOpenResult } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import type { DataListParams, DataListResult } from '../../../../../../commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../../../../commands/data/create/shared/DataCreateTypes';
@@ -118,8 +119,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Opens dedicated SQLite database for this persona
    */
   private async initializeDatabase(): Promise<void> {
-    const personaDirName = this.getPersonaDirName();
-    const dbPath = `.continuum/personas/${personaDirName}/memory/longterm.db`;
+    // Use SystemPaths.personas.longterm() as SINGLE SOURCE OF TRUTH for path
+    const dbPath = SystemPaths.personas.longterm(this.persona.entity.uniqueId);
 
     try {
       this.log(`Opening LTM database: ${dbPath}`);
@@ -140,10 +141,6 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       this.memoryDbHandle = result.dbHandle;
       this.log(`LTM database opened: ${this.memoryDbHandle}`);
-
-      // Ensure schema exists
-      await this.ensureSchema();
-
       this.log('LTM database initialized successfully');
     } catch (error) {
       const errorMsg = String(error);
@@ -177,8 +174,6 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
           this.memoryDbHandle = result.dbHandle;
           this.log(`LTM database opened (after recovery): ${this.memoryDbHandle}`);
-
-          await this.ensureSchema();
           this.log('✅ LTM database recovered and initialized successfully');
           return;
         } catch (recoveryError) {
@@ -192,47 +187,6 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       console.error(`❌ [Hippocampus] Failed to initialize database:`, error);
       // Continue without LTM (STM-only mode)
     }
-  }
-
-  /**
-   * Ensure schema exists (adapter handles table creation)
-   *
-   * Note: No direct table creation. The adapter (SqliteStorageAdapter) creates
-   * simple entity table with: id, data (JSON), created_at, updated_at, version
-   * All field names are snake_case - adapter responsibility, not ours.
-   */
-  private async ensureSchema(): Promise<void> {
-    if (!this.memoryDbHandle) return;
-
-    try {
-      this.log('Ensuring LTM schema...');
-
-      // Trigger table creation - adapter will handle it automatically
-      // Simple entity table: id, data (JSON), created_at, updated_at, version
-      await Commands.execute('data/list', {
-        dbHandle: this.memoryDbHandle,
-        collection: 'memories',
-        limit: 1
-      } as any);
-
-      this.log('✅ LTM schema ready (adapter created table with snake_case columns)');
-    } catch (error) {
-      this.log(`ERROR: Failed to ensure schema: ${error}`);
-      console.error(`❌ [Hippocampus] Failed to ensure schema:`, error);
-    }
-  }
-
-  /**
-   * Get persona directory name (helper-ai-154ee833)
-   */
-  private getPersonaDirName(): string {
-    const displayName = this.persona.entity.displayName
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9-]/g, '');
-
-    const shortId = this.persona.id.substring(0, 8);
-    return `${displayName}-${shortId}`;
   }
 
   /**

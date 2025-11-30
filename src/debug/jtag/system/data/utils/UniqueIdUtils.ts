@@ -2,29 +2,31 @@
  * Unique ID Utilities
  *
  * Generates short, simple, valid uniqueId formats for users
- * Format: @username (e.g., @joel, @sentinel, @helper)
+ * Format: username (e.g., joel, sentinel, helper)
+ *
+ * NOTE: @ symbol is ONLY for UI mentions, NOT part of uniqueId!
  */
 
 /**
  * Convert any string into a valid uniqueId format
  *
  * Rules:
- * - Prefix with @ if not already present
  * - Remove spaces, convert to lowercase
  * - Keep only alphanumeric and dashes
  * - Max length: 30 characters
+ * - NO @ prefix (@ is only for UI mentions)
  *
  * @param input - Any display name or identifier
- * @returns Valid uniqueId in @username format
+ * @returns Valid uniqueId as clean slug
  *
  * @example
- * generateUniqueId('Joel') → '@joel'
- * generateUniqueId('Helper AI') → '@helperai'
- * generateUniqueId('Code Review AI') → '@codereviewai'
- * generateUniqueId('Sentinel') → '@sentinel'
+ * generateUniqueId('Joel') → 'joel'
+ * generateUniqueId('Helper AI') → 'helperai'
+ * generateUniqueId('Code Review AI') → 'codereviewai'
+ * generateUniqueId('Sentinel') → 'sentinel'
  */
 export function generateUniqueId(input: string): string {
-  // Remove @ if present at start (we'll add it back)
+  // Remove @ if present at start
   let cleaned = input.trim();
   if (cleaned.startsWith('@')) {
     cleaned = cleaned.substring(1);
@@ -37,12 +39,12 @@ export function generateUniqueId(input: string): string {
   cleaned = cleaned.replace(/[^a-z0-9-]/g, '');
 
   // Limit length
-  if (cleaned.length > 29) {
-    cleaned = cleaned.substring(0, 29);
+  if (cleaned.length > 30) {
+    cleaned = cleaned.substring(0, 30);
   }
 
-  // Add @ prefix
-  return `@${cleaned}`;
+  // Return clean slug WITHOUT @ prefix
+  return cleaned;
 }
 
 /**

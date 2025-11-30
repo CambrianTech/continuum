@@ -30,7 +30,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { DATABASE_PATHS } from '../../data/config/DatabaseConfig';
+import { SystemPaths } from '../config/SystemPaths';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -45,6 +45,12 @@ interface LoggerConfig {
   enableColors: boolean;
   enableTimestamps: boolean;
   enableFileLogging: boolean;
+}
+
+export enum FileMode {
+  CLEAN = 'w',     // Start fresh on restart (default)
+  APPEND = 'a',    // Keep existing logs
+  ARCHIVE = 'archive'  // Archive and rotate logs (not implemented yet)
 }
 
 type LogCategory = 'sql' | 'persona-mind' | 'genome' | 'system' | 'tools';
@@ -70,11 +76,12 @@ class LoggerClass {
       level: levelMap[envLevel] || LogLevel.INFO,
       enableColors: process.env.NO_COLOR !== '1',
       enableTimestamps: process.env.LOG_TIMESTAMPS === '1',
-      enableFileLogging: process.env.LOG_TO_FILES === '1'
+      enableFileLogging: process.env.LOG_TO_FILES !== '0'  // Enabled by default, disable with LOG_TO_FILES=0
     };
 
     this.fileStreams = new Map();
-    this.logDir = path.join(process.cwd(), DATABASE_PATHS.LOGS_DIR);
+    // Use SystemPaths for correct log directory (.continuum/jtag/system/logs)
+    this.logDir = SystemPaths.logs.system;
   }
 
   static getInstance(): LoggerClass {
@@ -102,6 +109,7 @@ class LoggerClass {
     }
 
     const logFile = path.join(this.logDir, `${category}.log`);
+    // System logs ALWAYS use 'a' (append) - never truncate during runtime
     const stream = fs.createWriteStream(logFile, { flags: 'a', mode: 0o644 });
 
     this.fileStreams.set(category, stream);
@@ -117,6 +125,30 @@ class LoggerClass {
   create(component: string, category?: LogCategory): ComponentLogger {
     const fileStream = category ? this.getFileStream(category) : undefined;
     return new ComponentLogger(component, this.config, fileStream);
+  }
+
+  /**
+   * Create a logger with custom file path (for persona logs)
+   *
+   * @param component - Component name (e.g., 'PersonaMind')
+   * @param logFilePath - Full path to log file (e.g., '.continuum/personas/helper-ai/logs/mind.log')
+   * @param mode - File mode (CLEAN, APPEND, or ARCHIVE) - NO DEFAULT, caller must specify
+   */
+  createWithFile(component: string, logFilePath: string, mode: FileMode): ComponentLogger {
+    // Handle ARCHIVE mode (not implemented yet)
+    if (mode === FileMode.ARCHIVE) {
+      console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
+      mode = FileMode.APPEND;
+    }
+
+    // Create custom file stream with specified mode
+    const logDir = path.dirname(logFilePath);
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true, mode: 0o755 });
+    }
+
+    const stream = fs.createWriteStream(logFilePath, { flags: mode, mode: 0o644 });
+    return new ComponentLogger(component, this.config, stream);
   }
 
   /**

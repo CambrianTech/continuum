@@ -151,6 +151,8 @@ export async function updatePersonaConfig(userId: string, config: any): Promise<
 
 /**
  * Create a user via user/create command (proper factory-based creation)
+ *
+ * Note: Pass uniqueId from persona config (clean slug without @ prefix)
  */
 export async function createUserViaCommand(
   type: 'human' | 'agent' | 'persona',
@@ -167,7 +169,7 @@ export async function createUserViaCommand(
     const response: UserCreateResult = JSON.parse(stdout);
 
     if (response.success && response.user) {
-      console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${uniqueId || 'none'}, ID: ${response.user.id.slice(0, 8)}...)`);
+      console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
       return response.user;
     } else {
       console.error(`❌ Failed to create user ${displayName}: ${response.error || 'Unknown error'}`);
@@ -178,7 +180,7 @@ export async function createUserViaCommand(
       try {
         const response: UserCreateResult = JSON.parse(error.stdout);
         if (response.success && response.user) {
-          console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${uniqueId || 'none'}, ID: ${response.user.id.slice(0, 8)}...)`);
+          console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${response.user.uniqueId}, ID: ${response.user.id.slice(0, 8)}...)`);
           return response.user;
         }
       } catch (parseError) {

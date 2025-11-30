@@ -36,6 +36,7 @@ export interface PersonaUserForSoul {
   readonly modelConfig: ModelConfig;
   readonly client?: JTAGClient;
   readonly state: UserStateEntity;
+  readonly homeDirectory: string;
   saveState(): Promise<void>;
 }
 
@@ -70,7 +71,9 @@ export class PersonaSoul {
     this.displayName = personaUser.displayName;
 
     // Initialize logger first
-    this.logger = new SubsystemLogger('soul', personaUser.id, personaUser.entity.uniqueId);
+    this.logger = new SubsystemLogger('soul', personaUser.id, personaUser.entity.uniqueId, {
+      logDir: `${personaUser.homeDirectory}/logs`
+    });
     this.logger.info('Soul subsystem initializing...');
 
     // Initialize memory systems

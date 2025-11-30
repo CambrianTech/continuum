@@ -35,6 +35,7 @@ interface PersonaUserLike {
       capabilities?: readonly string[];  // AI capabilities (e.g., ['advanced-reasoning'])
     };
   };
+  homeDirectory: string;  // Persona's $HOME directory
   inbox: PersonaInbox;
   mind: {
     personaState: PersonaStateManager;  // BEING ARCHITECTURE: personaState in PersonaMind

@@ -15,6 +15,7 @@ export interface PersonaUserForMind {
   readonly id: UUID;
   readonly displayName: string;
   readonly entity: { uniqueId: string };
+  readonly homeDirectory: string;
 }
 
 export class PersonaMind {
@@ -26,7 +27,9 @@ export class PersonaMind {
 
   constructor(personaUser: PersonaUserForMind) {
     // Initialize logger first
-    this.logger = new SubsystemLogger('mind', personaUser.id, personaUser.entity.uniqueId);
+    this.logger = new SubsystemLogger('mind', personaUser.id, personaUser.entity.uniqueId, {
+      logDir: `${personaUser.homeDirectory}/logs`
+    });
     this.logger.info('Mind subsystem initializing...');
 
     this.personaState = new PersonaStateManager(personaUser.displayName, {

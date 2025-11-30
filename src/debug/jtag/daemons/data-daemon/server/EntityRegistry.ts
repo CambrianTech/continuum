@@ -66,6 +66,7 @@ import { AdapterReasoningLogEntity } from '../../../system/data/entities/Adapter
 import { CognitionPlanReplanEntity } from '../../../system/data/entities/CognitionPlanReplanEntity';
 import { FileVoteProposalEntity } from '../../../system/data/entities/FileVoteProposalEntity';
 import { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
+import { MemoryEntity } from '../../../system/data/entities/MemoryEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -109,6 +110,7 @@ export function initializeEntityRegistry(): void {
   new CognitionPlanReplanEntity();
   new FileVoteProposalEntity();
   new DecisionProposalEntity();
+  new MemoryEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -144,6 +146,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(CognitionPlanReplanEntity.collection, CognitionPlanReplanEntity);
   registerEntity(FileVoteProposalEntity.collection, FileVoteProposalEntity);
   registerEntity(DecisionProposalEntity.collection, DecisionProposalEntity);
+  registerEntity(MemoryEntity.collection, MemoryEntity);
 
   console.log('✅ EntityRegistry: All entities registered');
 }

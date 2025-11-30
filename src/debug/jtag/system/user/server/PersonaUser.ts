@@ -106,6 +106,7 @@ import { PersonaLogger } from './modules/PersonaLogger';
 import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
 import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
 import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBody';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -113,6 +114,15 @@ import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBod
  * First-class citizens with their own JTAGClient for universal Commands/Events API
  */
 export class PersonaUser extends AIUser {
+  /**
+   * Implementation of abstract homeDirectory getter from BaseUser
+   * PersonaUsers live in the 'personas/' directory
+   * Returns ABSOLUTE path via SystemPaths - THE SINGLE SOURCE OF TRUTH
+   */
+  get homeDirectory(): string {
+    return SystemPaths.personas.dir(this.entity.uniqueId);
+  }
+
   private isInitialized: boolean = false;
   private eventsSubscribed: boolean = false;
   // Note: client is now in BaseUser as protected property, accessible via this.client
@@ -300,7 +310,8 @@ export class PersonaUser extends AIUser {
       modelConfig: this.modelConfig,
       client,
       mediaConfig: this.mediaConfig,
-      getSessionId: () => this.sessionId
+      getSessionId: () => this.sessionId,
+      homeDirectory: this.homeDirectory
     });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)

@@ -22,6 +22,7 @@ export interface PersonaUserForBody {
   readonly client: JTAGClient | undefined;
   readonly mediaConfig: PersonaMediaConfig;
   readonly getSessionId: () => UUID | null;
+  readonly homeDirectory: string;
 }
 
 export class PersonaBody {
@@ -32,7 +33,9 @@ export class PersonaBody {
 
   constructor(personaUser: PersonaUserForBody) {
     // Initialize logger first
-    this.logger = new SubsystemLogger('body', personaUser.id, personaUser.entity.uniqueId);
+    this.logger = new SubsystemLogger('body', personaUser.id, personaUser.entity.uniqueId, {
+      logDir: `${personaUser.homeDirectory}/logs`
+    });
     this.logger.info('Body subsystem initializing...');
 
     // Create toolExecutor and toolRegistry first

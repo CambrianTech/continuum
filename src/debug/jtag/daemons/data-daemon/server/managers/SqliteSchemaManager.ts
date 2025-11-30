@@ -176,14 +176,21 @@ export class SqliteSchemaManager {
       const entityClass = ENTITY_REGISTRY.get(collectionName);
 
       if (!entityClass || !hasFieldMetadata(entityClass)) {
-        // Unregistered collection - handle simple entity table
-        if (tableExists) {
-          // Migrate simple entity table: add missing snake_case columns if old table has camelCase
-          console.log(`🔄 Migrating simple entity table: ${collectionName} -> ${tableName}`);
-          await this.migrateSimpleEntityTable(tableName);
-        }
-        // Note: If table doesn't exist, create() will handle it via createSimpleEntityTable()
-        return { success: true, data: true };
+        // ERROR: Unregistered entity - this is a bug that must be fixed
+        const errorMessage = `❌ Entity '${collectionName}' is not registered in EntityRegistry!\n\n` +
+          `To fix:\n` +
+          `1. Create entity class: system/data/entities/${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.ts\n` +
+          `2. Extend BaseEntity and add @TextField(), @NumberField(), @JsonField() decorators\n` +
+          `3. Register in EntityRegistry.ts:\n` +
+          `   - Import: import { ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity } from '../../../system/data/entities/${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity';\n` +
+          `   - Initialize: new ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity();\n` +
+          `   - Register: registerEntity(${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.collection, ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity);\n`;
+
+        console.error(errorMessage);
+        return {
+          success: false,
+          error: errorMessage
+        };
       }
 
       // Registered entity - handle full entity table with metadata

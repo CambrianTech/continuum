@@ -83,14 +83,18 @@ export interface ContinuumPaths {
   /** Persona storage (can be in $HOME or $REPO) */
   personas: {
     root: string;
-    /** Get persona directory (by uniqueId: {name}-{shortId}) */
+    /** Get persona directory (by uniqueId: {name}-{shortId}) - the persona's $HOME */
     dir: (uniqueId: string) => string;
+    /** Get persona data directory (all databases) */
+    data: (uniqueId: string) => string;
     /** Get persona logs directory */
     logs: (uniqueId: string) => string;
     /** Get persona state database */
     state: (uniqueId: string) => string;
     /** Get persona memory database */
     memory: (uniqueId: string) => string;
+    /** Get persona long-term memory database (Hippocampus) */
+    longterm: (uniqueId: string) => string;
   };
 }
 
@@ -158,19 +162,29 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
         return path.join(baseRoot, 'personas', uniqueId);
       },
 
+      data: (uniqueId: string): string => {
+        // All databases live in data/ subdirectory
+        return path.join(baseRoot, 'personas', uniqueId, 'data');
+      },
+
       logs: (uniqueId: string): string => {
-        // uniqueId already in format "{name}-{shortId}", use directly
+        // All log files live in logs/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'logs');
       },
 
       state: (uniqueId: string): string => {
-        // uniqueId already in format "{name}-{shortId}", use directly
-        return path.join(baseRoot, 'personas', uniqueId, 'state.db');
+        // State database in data/ subdirectory
+        return path.join(baseRoot, 'personas', uniqueId, 'data', 'state.db');
       },
 
       memory: (uniqueId: string): string => {
-        // uniqueId already in format "{name}-{shortId}", use directly
-        return path.join(baseRoot, 'personas', uniqueId, 'memory.db');
+        // Memory database in data/ subdirectory
+        return path.join(baseRoot, 'personas', uniqueId, 'data', 'memory.db');
+      },
+
+      longterm: (uniqueId: string): string => {
+        // Hippocampus long-term memory in data/ subdirectory
+        return path.join(baseRoot, 'personas', uniqueId, 'data', 'longterm.db');
       }
     }
   };

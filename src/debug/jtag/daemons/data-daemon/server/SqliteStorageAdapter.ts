@@ -106,12 +106,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Initialize SQLite database with configuration
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
-    log.info('Starting initialization...');
-
     if (this.isInitialized && this.db) {
-      log.info('Already initialized, skipping');
+      log.debug('Already initialized, skipping');
       return;
     }
+
+    log.info('Starting initialization...');
 
     this.config = config;
     const options = config.options as SqliteOptions || {};
@@ -296,6 +296,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Delegates to SqliteWriteManager
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
+    // Ensure schema exists before creating (prevents "no such table" errors)
+    await this.ensureSchema(record.collection);
     return this.writeManager.create<T>(record.collection, record.data, record.id);
   }
 
@@ -303,6 +305,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Read a single record by ID - uses entity-specific tables
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+    // Ensure schema exists before reading (prevents "no such table" errors)
+    await this.ensureSchema(collection);
     return this.queryExecutor.read<T>(collection, id);
   }
 
@@ -311,6 +315,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Query records with complex filters - uses entity-specific tables
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+    // Ensure schema exists before querying (prevents "no such table" errors)
+    await this.ensureSchema(query.collection);
     return this.queryExecutor.query<T>(query);
   }
 
@@ -357,6 +363,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Delete a record - delegates to SqliteWriteManager
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
+    // Ensure schema exists before deleting (prevents "no such table" errors)
+    await this.ensureSchema(collection);
     return this.writeManager.delete(collection, id);
   }
 
@@ -367,6 +375,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     collection: string,
     records: T[]
   ): Promise<StorageResult<DataRecord<T>[]>> {
+    // Ensure schema exists before batch creating (prevents "no such table" errors)
+    await this.ensureSchema(collection);
     return this.writeManager.batchCreate<T>(collection, records);
   }
 
