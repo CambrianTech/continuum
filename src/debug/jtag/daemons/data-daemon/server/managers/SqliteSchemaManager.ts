@@ -47,6 +47,7 @@ interface SqliteOptions {
  */
 export class SqliteSchemaManager {
   private log = Logger.create('SqliteSchemaManager', 'sql');
+  private schemaVerified: Set<string> = new Set(); // Cache: only check schema once per process
 
   constructor(
     private db: sqlite3.Database,
@@ -173,6 +174,11 @@ export class SqliteSchemaManager {
    */
   async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
     try {
+      // Fast path: already verified this schema in this process
+      if (this.schemaVerified.has(collectionName)) {
+        return { success: true, data: true };
+      }
+
       const tableName = SqlNamingConverter.toTableName(collectionName);
       const tableExists = await this.tableExists(tableName);
 
@@ -196,23 +202,23 @@ export class SqliteSchemaManager {
         };
       }
 
-      // Registered entity - handle full entity table with metadata
-      this.log.info(`Setting up table for entity: ${collectionName} -> ${tableName}`);
+      // Only log if STATE CHANGES (table created or columns added)
+      let stateChanged = false;
 
       if (tableExists) {
-        // Migrate schema: add missing columns
-        await this.migrateTableSchema(collectionName, tableName, entityClass);
+        // Migrate schema: add missing columns (only logs if columns added)
+        stateChanged = await this.migrateTableSchema(collectionName, tableName, entityClass);
       } else {
-        // Create new table
+        // Create new table - STATE CHANGE
         const createTableSql = this.generateCreateTableSql(
           collectionName,
           entityClass,
           SqlNamingConverter.toTableName,
           SqlNamingConverter.toSnakeCase
         );
-        this.log.info(`CREATE TABLE ${tableName}:`, createTableSql);
+        this.log.info(`CREATE TABLE ${tableName}`);
         await this.executor.runSql(createTableSql);
-        this.log.info(`Table created: ${tableName}`);
+        stateChanged = true;
       }
 
       // Create indexes (will skip if they already exist due to IF NOT EXISTS)
@@ -227,7 +233,13 @@ export class SqliteSchemaManager {
         await this.executor.runSql(indexSql);
       }
 
-      this.log.info(`Table ready: ${tableName} with ${indexSqls.length} indexes`);
+      // Only log completion if STATE CHANGED
+      if (stateChanged) {
+        this.log.info(`Table ready: ${tableName} (${tableExists ? 'migrated' : 'created'} with ${indexSqls.length} indexes)`);
+      }
+
+      // Mark as verified - don't check again this process
+      this.schemaVerified.add(collectionName);
 
       return { success: true, data: true };
     } catch (error) {
@@ -263,12 +275,13 @@ export class SqliteSchemaManager {
    * Migrate table schema by adding missing columns
    * SQLite only supports adding columns, not modifying or removing them
    * This runs automatically every time the server starts, ensuring schema stays in sync with entity definitions
+   * @returns true if columns were added, false if schema already up-to-date
    */
   async migrateTableSchema(
     collectionName: string,
     tableName: string,
     entityClass: EntityConstructor
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Get existing columns
     const existingColumns = await this.getTableColumns(tableName);
 
@@ -300,16 +313,19 @@ export class SqliteSchemaManager {
           alterSql += ' NOT NULL';
         }
 
-        this.log.info(`Adding column: ${columnName} (${sqlType})`);
+        this.log.info(`Adding column: ${columnName} (${sqlType}) to ${tableName}`);
         await this.executor.runSql(alterSql);
       }
     }
 
+    // Only log if STATE CHANGED
     if (missingColumns.length > 0) {
-      this.log.info(`Migrated ${tableName}: added ${missingColumns.length} new columns`);
-    } else {
-      this.log.info(`Schema up-to-date: ${tableName}`);
+      this.log.info(`Migrated ${tableName}: added ${missingColumns.length} columns (${missingColumns.join(', ')})`);
+      return true;
     }
+
+    // Schema already up-to-date - DON'T LOG (reduces spam)
+    return false;
   }
 
   /**
