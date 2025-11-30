@@ -22,17 +22,34 @@ import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import type { ChatSendParams, ChatSendResult } from '../../../../commands/chat/send/shared/ChatSendTypes';
 import { calculateCondorcetWinner } from '../../../../system/shared/CondorcetUtils';
+import { Logger } from '../../../../system/core/logging/Logger';
 
 /**
  * DecisionRankServerCommand - Server implementation
  */
 export class DecisionRankServerCommand extends DecisionRankCommand {
+  private log = Logger.create('DecisionRankServerCommand', 'tools');
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super(context, subpath, commander);
   }
 
   protected async executeCommand(params: DecisionRankParams): Promise<DecisionRankResult> {
     try {
+      // Parse JSON strings if present (AIs may pass JSON strings instead of arrays)
+      if (typeof params.rankedChoices === 'string') {
+        this.log.warn('Parameter format conversion: rankedChoices received as JSON string instead of array', {
+          command: 'decision/rank',
+          proposalId: params.proposalId,
+          sessionId: params.sessionId
+        });
+        try {
+          params.rankedChoices = JSON.parse(params.rankedChoices);
+        } catch (e) {
+          return transformPayload(params, { success: false, error: 'rankedChoices must be a valid JSON array' });
+        }
+      }
+
       // Validation
       if (!params.proposalId) {
         return transformPayload(params, { success: false, error: 'Proposal ID is required' });
