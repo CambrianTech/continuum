@@ -21,7 +21,8 @@ import { Commands } from '../../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
-import { Logger } from '../../../core/logging/Logger';
+import { Logger, FileMode } from '../../../core/logging/Logger';
+import { SystemPaths } from '../../../core/config/SystemPaths';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -59,21 +60,37 @@ export interface ToolResult {
 /**
  * PersonaToolExecutor - Clean tool execution via ToolRegistry
  */
+/**
+ * Minimal persona info needed by PersonaToolExecutor
+ */
+export interface PersonaUserForToolExecutor {
+  readonly id: UUID;
+  readonly displayName: string;
+  readonly entity: {
+    readonly uniqueId: string;
+  };
+}
+
 export class PersonaToolExecutor {
   private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/system/logs/cognition.log');
 
   private personaId: UUID;
   private personaName: string;
+  private uniqueId: string;
   private toolRegistry: ToolRegistry;
   private formatAdapters: ToolFormatAdapter[];
   private log: ReturnType<typeof Logger.create>;
 
-  constructor(personaId: UUID, personaName: string) {
-    this.personaId = personaId;
-    this.personaName = personaName;
+  constructor(personaUser: PersonaUserForToolExecutor) {
+    this.personaId = personaUser.id;
+    this.personaName = personaUser.displayName;
+    this.uniqueId = personaUser.entity.uniqueId;
     this.toolRegistry = ToolRegistry.getInstance();
     this.formatAdapters = getToolFormatAdapters();
-    this.log = Logger.create(`PersonaToolExecutor:${personaName}`, 'tools');
+
+    // Per-persona tools.log in their own directory
+    const logPath = path.join(SystemPaths.personas.logs(this.uniqueId), 'tools.log');
+    this.log = Logger.createWithFile(`PersonaToolExecutor:${this.personaName}`, logPath, FileMode.APPEND);
   }
 
   /**

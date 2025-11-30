@@ -39,7 +39,7 @@ export class PersonaBody {
     this.logger.info('Body subsystem initializing...');
 
     // Create toolExecutor and toolRegistry first
-    this.toolExecutor = new PersonaToolExecutor(personaUser.id, personaUser.displayName);
+    this.toolExecutor = new PersonaToolExecutor(personaUser);
     this.toolRegistry = new PersonaToolRegistry();
     this.toolRegistry.registerPersona(personaUser.id, 'assistant'); // Default to assistant role
 
