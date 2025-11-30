@@ -8,6 +8,7 @@
  * - Query explanation and performance analysis
  */
 
+import sqlite3 from 'sqlite3';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
   DataRecord,
@@ -32,9 +33,40 @@ const log = Logger.create('SqliteQueryExecutor', 'sql');
  * SqliteQueryExecutor - Manages read and query operations
  */
 export class SqliteQueryExecutor {
+  private acquireConnectionImpl?: () => Promise<sqlite3.Database>;
+  private releaseConnectionImpl?: (db: sqlite3.Database) => void;
+
   constructor(
     private executor: SqliteRawExecutor
   ) {}
+
+  /**
+   * Set connection pool methods (called by SqliteStorageAdapter)
+   */
+  setConnectionPool(
+    acquire: () => Promise<sqlite3.Database>,
+    release: (db: sqlite3.Database) => void
+  ): void {
+    this.acquireConnectionImpl = acquire;
+    this.releaseConnectionImpl = release;
+  }
+
+  /**
+   * Execute operation with connection from pool
+   */
+  private async withConnection<T>(
+    operation: (db: sqlite3.Database) => Promise<T>
+  ): Promise<T> {
+    if (!this.acquireConnectionImpl || !this.releaseConnectionImpl) {
+      throw new Error('Connection pool not configured - call setConnectionPool() first');
+    }
+    const db = await this.acquireConnectionImpl();
+    try {
+      return await operation(db);
+    } finally {
+      this.releaseConnectionImpl(db);
+    }
+  }
 
   /**
    * Read a single record by ID
@@ -66,7 +98,7 @@ export class SqliteQueryExecutor {
   private async readFromEntityTable<T extends RecordData>(collection: string, id: UUID, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>>> {
     const tableName = SqlNamingConverter.toTableName(collection);
     const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
-    const rows = await this.executor.runSql(sql, [id]);
+    const rows = await this.withConnection(db => this.executor.runSql(db, sql, [id]));
 
     if (rows.length === 0) {
       return {

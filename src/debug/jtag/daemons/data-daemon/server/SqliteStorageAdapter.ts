@@ -77,6 +77,10 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
 
+  // Connection pool methods (injected by DataDaemon)
+  private acquireConnectionImpl?: () => Promise<sqlite3.Database>;
+  private releaseConnectionImpl?: (db: sqlite3.Database) => void;
+
   // Extracted utility classes (Phase 1 refactoring)
   private executor!: SqliteRawExecutor;
   private transactionManager!: SqliteTransactionManager;
@@ -100,6 +104,56 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
   protected async executeRawStatement(sql: string, params?: SqlValue[]): Promise<{ lastID?: number; changes: number }> {
     return this.executor.runStatement(sql, params || []);
+  }
+
+  /**
+   * Set connection pool methods (called by DataDaemon)
+   * This implements Option A (DataDaemon-managed pool) from connection-pooling-design.md
+   */
+  setConnectionPool(
+    acquire: () => Promise<sqlite3.Database>,
+    release: (db: sqlite3.Database) => void
+  ): void {
+    this.acquireConnectionImpl = acquire;
+    this.releaseConnectionImpl = release;
+    log.info('Connection pool methods injected');
+  }
+
+  /**
+   * Acquire connection from pool
+   * @throws Error if connection pool not configured
+   */
+  protected async acquireConnection(): Promise<sqlite3.Database> {
+    if (!this.acquireConnectionImpl) {
+      throw new Error('Connection pool not configured - call setConnectionPool() first');
+    }
+    return this.acquireConnectionImpl();
+  }
+
+  /**
+   * Release connection back to pool
+   * @throws Error if connection pool not configured
+   */
+  protected releaseConnection(db: sqlite3.Database): void {
+    if (!this.releaseConnectionImpl) {
+      throw new Error('Connection pool not configured - call setConnectionPool() first');
+    }
+    this.releaseConnectionImpl(db);
+  }
+
+  /**
+   * Execute operation with connection from pool
+   * Automatically acquires and releases connection
+   */
+  protected async withConnection<T>(
+    operation: (db: sqlite3.Database) => Promise<T>
+  ): Promise<T> {
+    const db = await this.acquireConnection();
+    try {
+      return await operation(db);
+    } finally {
+      this.releaseConnection(db);
+    }
   }
 
   /**

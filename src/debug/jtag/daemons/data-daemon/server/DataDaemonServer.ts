@@ -16,12 +16,16 @@ import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/Data
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
+import { SqliteConnectionPool } from './SqliteConnectionPool';
+import { SqliteStorageAdapter } from './SqliteStorageAdapter';
+import path from 'path';
 
 /**
  * Data Daemon Server - JTAG Server Integration
  */
 export class DataDaemonServer extends DataDaemonBase {
   private dataDaemon: DataDaemon;
+  private connectionPool?: SqliteConnectionPool;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -54,6 +58,23 @@ export class DataDaemonServer extends DataDaemonBase {
     };
     const adapter = factory.createAdapter(adapterConfig);
 
+    // Create connection pool for SQLite adapter (Phase 1: 20-30% improvement)
+    if (adapter instanceof SqliteStorageAdapter) {
+      const dbPath = path.join(DATABASE_PATHS.DATA_DIR, DATABASE_FILES.SQLITE_FILENAME);
+      this.connectionPool = new SqliteConnectionPool({
+        path: dbPath,
+        poolSize: 5,  // Good balance for most workloads
+        idleTimeout: 60000,  // 1 minute
+        healthCheckInterval: 30000  // 30 seconds
+      });
+
+      // Inject connection pool methods into adapter
+      adapter.setConnectionPool(
+        () => this.connectionPool!.acquire(),
+        (db) => this.connectionPool!.release(db)
+      );
+    }
+
     // Initialize DataDaemon with injected adapter
     this.dataDaemon = new DataDaemon(storageConfig, adapter);
   }
@@ -68,6 +89,12 @@ export class DataDaemonServer extends DataDaemonBase {
 
     // Initialize entity registry before DataDaemon initialization
     await this.initializeEntityRegistry();
+
+    // Initialize connection pool before DataDaemon
+    if (this.connectionPool) {
+      await this.connectionPool.initialize();
+      console.log(`🏊 ${this.toString()}: Connection pool initialized with ${this.connectionPool.getStats().total} connections`);
+    }
 
     await this.dataDaemon.initialize();
 
@@ -242,5 +269,10 @@ export class DataDaemonServer extends DataDaemonBase {
    */
   async shutdown(): Promise<void> {
     await this.dataDaemon.shutdown();
+
+    // Close connection pool if it exists
+    if (this.connectionPool) {
+      await this.connectionPool.close();
+    }
   }
 }

@@ -8,25 +8,15 @@
 import sqlite3 from 'sqlite3';
 
 export class SqliteRawExecutor {
-  constructor(private db: sqlite3.Database | null) {}
-
-  /**
-   * Update database instance (used when reconnecting)
-   */
-  setDatabase(db: sqlite3.Database | null): void {
-    this.db = db;
-  }
-
   /**
    * Execute SQL query (SELECT) and return all rows
+   * @param db - Database connection from pool
+   * @param sql - SQL query to execute
+   * @param params - Query parameters
    */
-  async runSql(sql: string, params: any[] = []): Promise<any[]> {
-    if (!this.db) {
-      throw new Error('SQLite database not initialized');
-    }
-
+  async runSql(db: sqlite3.Database, sql: string, params: any[] = []): Promise<any[]> {
     return new Promise((resolve, reject) => {
-      this.db!.all(sql, params, (err, rows) => {
+      db.all(sql, params, (err, rows) => {
         if (err) {
           console.error('❌ SQLite Query Error:', err.message);
           console.error('SQL:', sql);
@@ -41,16 +31,15 @@ export class SqliteRawExecutor {
 
   /**
    * Execute SQL statement (INSERT, UPDATE, DELETE) and return result metadata
+   * @param db - Database connection from pool
+   * @param sql - SQL statement to execute
+   * @param params - Statement parameters
    */
-  async runStatement(sql: string, params: any[] = []): Promise<{ lastID?: number; changes: number }> {
+  async runStatement(db: sqlite3.Database, sql: string, params: any[] = []): Promise<{ lastID?: number; changes: number }> {
     console.log(`🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL:`, { sql: sql.trim(), params });
-    if (!this.db) {
-      console.error(`❌ SQLite RUNSTATEMENT DEBUG: Database not initialized!`);
-      throw new Error('SQLite database not initialized');
-    }
 
     return new Promise((resolve, reject) => {
-      this.db!.run(sql, params, function(err) {
+      db.run(sql, params, function(err) {
         if (err) {
           console.error('❌ SQLite Statement Error:', err.message);
           console.error('SQL:', sql);
