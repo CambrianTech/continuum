@@ -1095,6 +1095,428 @@ Could leverage existing solutions:
 - **sharp** - Image processing (thumbnail generation)
 - **multer** - File upload middleware (if exposing HTTP endpoints)
 
+### Migration Strategy: Hybrid Lazy + Background Approach
+
+**The Challenge**: We have 17,000+ existing messages with potential base64-encoded media stored in the database. How do we migrate them without downtime or data loss?
+
+**User Question**: "should it migrate the text fields over to the new form? that might take forever though. What should we do for cases like this? migrate as a subprocess as part of the ORM? just delete them?"
+
+**Answer**: Use a **hybrid approach** combining lazy migration (on read) + background job (systematic cleanup).
+
+#### Why Hybrid is Best
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Lazy Migration** | Zero downtime, works immediately | Gradual, unmigrated data remains |
+| **Background Job** | Complete cleanup, systematic | Takes time, adds system load |
+| **Manual Script** | User control, predictable | Requires downtime or coordination |
+| **Delete Old Data** | Fast, simple | DATA LOSS (unacceptable) |
+| **Hybrid (Recommended)** | Zero downtime + eventual consistency | Slightly more complex |
+
+**The Hybrid Approach**:
+- **Immediate**: System keeps working, old data reads migrate automatically
+- **Systematic**: Background job finds and migrates ALL blobs eventually
+- **Best of both**: No downtime + guaranteed complete cleanup
+
+#### Implementation: Lazy Migration on Read
+
+When reading data, check for old format and migrate automatically:
+
+```typescript
+// daemons/data-daemon/server/managers/SqliteQueryExecutor.ts
+
+async findById<T extends BaseEntity>(
+  collectionName: string,
+  id: string
+): Promise<StorageResult<T>> {
+  const result = await this.executeQuery(collectionName, id);
+
+  // Check if entity has blob fields
+  const entityClass = ENTITY_REGISTRY.get(collectionName);
+  const blobFields = getBlobFieldMetadata(entityClass);
+
+  if (blobFields.size > 0) {
+    // Check each blob field for old format
+    for (const [fieldName, metadata] of blobFields.entries()) {
+      const value = result[fieldName];
+
+      // Old format: base64 string still in database (starts with 'data:')
+      if (value && typeof value === 'string' && value.startsWith('data:')) {
+        this.log.info(`Lazy-migrating blob for ${collectionName}:${id}.${fieldName}`);
+
+        // Migrate on first access
+        const { blobId, url } = await this.migrateBlobToStorage(value, metadata);
+
+        // Update database with blobId reference
+        await this.updateBlobReference(collectionName, id, fieldName, blobId, url);
+
+        // Update result object
+        result[fieldName] = blobId;
+        result[`${fieldName}Url`] = url;
+      }
+    }
+  }
+
+  return { success: true, data: result };
+}
+
+/**
+ * Extract base64 data and store via BlobStorageAdapter
+ */
+private async migrateBlobToStorage(
+  base64Data: string,
+  metadata: BlobFieldMetadata
+): Promise<{ blobId: string; url: string }> {
+  // Parse data URI: data:image/png;base64,iVBORw0KG...
+  const matches = base64Data.match(/^data:([^;]+);base64,(.+)$/);
+  if (!matches) {
+    throw new Error('Invalid base64 data URI format');
+  }
+
+  const [, mimeType, base64] = matches;
+  const buffer = Buffer.from(base64, 'base64');
+
+  // Get storage adapter for this field
+  const adapter = this.getBlobStorageAdapter(metadata.options.storageAdapter);
+
+  // Store blob externally
+  const result = await adapter.store(buffer, {
+    mimeType,
+    filename: `migrated-${Date.now()}.${this.getExtension(mimeType)}`,
+    path: this.resolvePath(metadata.options.storagePath)
+  });
+
+  return result;
+}
+
+/**
+ * Update database record with blob reference
+ */
+private async updateBlobReference(
+  collectionName: string,
+  id: string,
+  fieldName: string,
+  blobId: string,
+  url: string
+): Promise<void> {
+  const tableName = SqlNamingConverter.toTableName(collectionName);
+  const columnName = SqlNamingConverter.toSnakeCase(fieldName);
+  const urlColumn = SqlNamingConverter.toSnakeCase(`${fieldName}Url`);
+
+  await this.executor.runSql(
+    `UPDATE ${tableName} SET ${columnName} = ?, ${urlColumn} = ? WHERE id = ?`,
+    [blobId, url, id]
+  );
+
+  this.log.debug(`Updated ${tableName}.${columnName} → blobId: ${blobId}`);
+}
+```
+
+**Key Insight**: "by merely accessing them they get migrated" - Yes! When any code reads a message with old base64 data, the ORM automatically migrates it and updates the database. Zero code changes needed in application layer.
+
+#### Implementation: Background Migration Job
+
+Systematically migrate all blobs in batches:
+
+```typescript
+// daemons/data-daemon/server/migration/BackgroundBlobMigration.ts
+
+export class BackgroundBlobMigration {
+  private running = false;
+  private batchSize = 100;
+  private delayBetweenBatches = 1000;  // 1 second
+  private log = Logger.create('BackgroundBlobMigration', 'sql');
+
+  constructor(
+    private adapter: SqliteStorageAdapter,
+    private blobFields: Map<string, Map<string, BlobFieldMetadata>>  // collection → field → metadata
+  ) {}
+
+  /**
+   * Start background migration (fire-and-forget)
+   */
+  async start(): Promise<void> {
+    if (this.running) {
+      this.log.warn('Background migration already running');
+      return;
+    }
+
+    this.running = true;
+    this.log.info('Starting background blob migration...');
+
+    // Run in background, don't block caller
+    this.migrateInBackground().catch(err => {
+      this.log.error('Background migration failed:', err);
+      this.running = false;
+    });
+  }
+
+  /**
+   * Stop background migration gracefully
+   */
+  stop(): void {
+    this.log.info('Stopping background blob migration...');
+    this.running = false;
+  }
+
+  /**
+   * Migrate all collections with blob fields
+   */
+  private async migrateInBackground(): Promise<void> {
+    for (const [collectionName, fields] of this.blobFields.entries()) {
+      if (!this.running) break;
+
+      this.log.info(`Migrating blobs for collection: ${collectionName}`);
+      await this.migrateCollection(collectionName, fields);
+    }
+
+    this.log.info('Background blob migration complete!');
+    this.running = false;
+  }
+
+  /**
+   * Migrate all blobs for a collection in batches
+   */
+  private async migrateCollection(
+    collectionName: string,
+    fields: Map<string, BlobFieldMetadata>
+  ): Promise<void> {
+    let offset = 0;
+    let migratedCount = 0;
+
+    while (this.running) {
+      // Find records with old-format blobs
+      const filter = this.buildOldFormatFilter(fields);
+      const records = await Commands.execute('data/list', {
+        collection: collectionName,
+        limit: this.batchSize,
+        offset,
+        filter
+      });
+
+      if (records.data.length === 0) {
+        // No more records to migrate
+        break;
+      }
+
+      // Migrate each record
+      for (const record of records.data) {
+        if (!this.running) break;
+
+        await this.migrateRecord(collectionName, record, fields);
+        migratedCount++;
+      }
+
+      this.log.info(`Migrated ${migratedCount} records for ${collectionName}...`);
+
+      offset += this.batchSize;
+
+      // Pause between batches to avoid system overload
+      await new Promise(resolve => setTimeout(resolve, this.delayBetweenBatches));
+    }
+
+    this.log.info(`Completed ${collectionName}: ${migratedCount} records migrated`);
+  }
+
+  /**
+   * Build filter to find records with old-format blobs
+   */
+  private buildOldFormatFilter(fields: Map<string, BlobFieldMetadata>): Record<string, any> {
+    const conditions: Record<string, any> = {};
+
+    // Find records where any blob field starts with 'data:'
+    for (const [fieldName] of fields.entries()) {
+      conditions[`${fieldName}.$regex`] = '^data:';
+    }
+
+    return { $or: conditions };
+  }
+
+  /**
+   * Migrate a single record
+   */
+  private async migrateRecord(
+    collectionName: string,
+    record: any,
+    fields: Map<string, BlobFieldMetadata>
+  ): Promise<void> {
+    let updated = false;
+
+    for (const [fieldName, metadata] of fields.entries()) {
+      const value = record[fieldName];
+
+      // Check for old format
+      if (value && typeof value === 'string' && value.startsWith('data:')) {
+        // Migrate this field
+        const { blobId, url } = await this.migrateBlobToStorage(value, metadata);
+
+        // Update record
+        record[fieldName] = blobId;
+        record[`${fieldName}Url`] = url;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      // Save migrated record
+      await Commands.execute('data/update', {
+        collection: collectionName,
+        id: record.id,
+        data: record
+      });
+    }
+  }
+
+  /**
+   * Extract and store blob (same as lazy migration)
+   */
+  private async migrateBlobToStorage(
+    base64Data: string,
+    metadata: BlobFieldMetadata
+  ): Promise<{ blobId: string; url: string }> {
+    // ... (same implementation as lazy migration)
+  }
+}
+```
+
+#### Implementation: Orchestration
+
+Coordinate lazy + background migration:
+
+```typescript
+// daemons/data-daemon/server/SqliteStorageAdapter.ts
+
+export class SqliteStorageAdapter implements DataStorageAdapter {
+  private backgroundMigration?: BackgroundBlobMigration;
+
+  async initialize(): Promise<void> {
+    // ... existing initialization ...
+
+    // Start background blob migration if needed
+    await this.initializeBackgroundMigration();
+  }
+
+  /**
+   * Check for unmigrated blobs and start background job if needed
+   */
+  private async initializeBackgroundMigration(): Promise<void> {
+    // Find all collections with blob fields
+    const blobFields = new Map<string, Map<string, BlobFieldMetadata>>();
+
+    for (const [collectionName, entityClass] of ENTITY_REGISTRY.entries()) {
+      const fields = getBlobFieldMetadata(entityClass);
+      if (fields.size > 0) {
+        blobFields.set(collectionName, fields);
+      }
+    }
+
+    if (blobFields.size === 0) {
+      // No blob fields in any entity
+      return;
+    }
+
+    // Count unmigrated blobs
+    const unmigrated = await this.countUnmigratedBlobs(blobFields);
+
+    if (unmigrated > 0) {
+      this.log.info(`Found ${unmigrated} blobs to migrate`);
+
+      // Start background migration (fire-and-forget)
+      this.backgroundMigration = new BackgroundBlobMigration(this, blobFields);
+      this.backgroundMigration.start();  // Non-blocking
+    } else {
+      this.log.info('All blobs already migrated');
+    }
+  }
+
+  /**
+   * Count records with old-format blobs
+   */
+  private async countUnmigratedBlobs(
+    blobFields: Map<string, Map<string, BlobFieldMetadata>>
+  ): Promise<number> {
+    let total = 0;
+
+    for (const [collectionName, fields] of blobFields.entries()) {
+      const filter = this.buildOldFormatFilter(fields);
+      const count = await Commands.execute('data/count', {
+        collection: collectionName,
+        filter
+      });
+      total += count.data;
+    }
+
+    return total;
+  }
+
+  async shutdown(): Promise<void> {
+    // Stop background migration gracefully
+    if (this.backgroundMigration) {
+      this.backgroundMigration.stop();
+    }
+
+    // ... existing shutdown ...
+  }
+}
+```
+
+#### Migration Timeline
+
+**Day 1** (Deploy):
+```bash
+npm start  # System deploys with hybrid migration
+```
+
+- Lazy migration: ✅ Active (migrates on read)
+- Background job: ✅ Starts automatically
+- Old data: Still readable (backward compatible)
+- System: Zero downtime
+
+**Day 1-7** (Background job runs):
+```bash
+# Check migration progress
+./jtag data/count --collection=chat_messages --filter='{"content.media.base64":{"$exists":true}}'
+# Shows: 17000 → 12000 → 7000 → 2000 → 0
+
+# Monitor logs
+tail -f .continuum/jtag/system/logs/sql.log | grep "Background"
+```
+
+**Day 7+** (Complete):
+```
+[INFO] Completed chat_messages: 17000 records migrated
+[INFO] All blobs migrated successfully
+```
+
+- All base64 data → filesystem/S3
+- Database size reduced 500x
+- Queries 500x faster
+- System never went down
+
+#### Testing Strategy
+
+```bash
+# 1. Unit tests
+npx vitest tests/unit/lazy-blob-migration.test.ts
+npx vitest tests/unit/background-blob-migration.test.ts
+
+# 2. Integration test
+npx vitest tests/integration/blob-migration-e2e.test.ts
+
+# 3. Manual verification
+npm start
+./jtag chat/send --room="general" --message="Test" --media="data:image/png;base64,..."
+./jtag data/list --collection=chat_messages --limit=1
+# Should show blobId instead of base64
+
+# 4. Check filesystem
+ls -lh .continuum/media/chat/2025/01/
+# Should see migrated files
+
+# 5. Monitor background job
+tail -f .continuum/jtag/system/logs/sql.log | grep "Background"
+```
+
 ### Status
 ❌ Not implemented - CRITICAL priority, should be Sprint 1 or 2
 
