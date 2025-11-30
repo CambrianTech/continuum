@@ -26,6 +26,7 @@ import {
   type FieldType
 } from '../../../../system/data/decorators/FieldDecorators';
 import { ENTITY_REGISTRY, type EntityConstructor } from '../EntityRegistry';
+import { Logger } from '../../../../system/core/logging/Logger';
 
 /**
  * SQLite Configuration Options
@@ -45,6 +46,8 @@ interface SqliteOptions {
  * SqliteSchemaManager - Manages database schema and initialization
  */
 export class SqliteSchemaManager {
+  private log = Logger.create('SqliteSchemaManager', 'sql');
+
   constructor(
     private db: sqlite3.Database,
     private executor: SqliteRawExecutor,
@@ -96,7 +99,7 @@ export class SqliteSchemaManager {
       }
     }
 
-    console.log('⚙️ SQLite: Configuration applied (exFAT-compatible settings)');
+    this.log.info('Configuration applied (exFAT-compatible settings)');
   }
 
   /**
@@ -107,7 +110,7 @@ export class SqliteSchemaManager {
       throw new Error('Database not initialized');
     }
 
-    console.log('🧪 SQLite: Creating system_info table for version tracking...');
+    this.log.info('Creating system_info table for version tracking...');
 
     try {
       // Create system_info table to track database version and initialization
@@ -119,7 +122,7 @@ export class SqliteSchemaManager {
           updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
       `);
-      console.log('✅ SQLite: system_info table created');
+      this.log.info('system_info table created');
 
       // Insert database version and metadata
       const initTime = new Date().toISOString();
@@ -143,20 +146,20 @@ export class SqliteSchemaManager {
         'INSERT OR REPLACE INTO system_info (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
         ['last_init', initTime, initTime, initTime]
       );
-      console.log('✅ SQLite: System info populated');
+      this.log.info('System info populated');
 
       // Verify we can read it back
       const results = await this.executor.runSql('SELECT key, value FROM system_info WHERE key = ?', ['db_version']);
       if (!results || results.length === 0 || results[0].value !== '1.0.0') {
         throw new Error('Read verification failed - system_info data mismatch');
       }
-      console.log('✅ SQLite: Read verification successful');
+      this.log.info('Read verification successful');
 
-      console.log('🎉 SQLite: Database integrity verified - adapter fully functional');
+      this.log.info('Database integrity verified - adapter fully functional');
 
     } catch (error) {
-      console.error('❌ SQLite: Integrity verification failed:', error);
-      console.error('❌ SQLite: Error details:', error instanceof Error ? error.message : String(error));
+      this.log.error('Integrity verification failed:', error);
+      this.log.error('Error details:', error instanceof Error ? error.message : String(error));
       throw new Error(`Database integrity check failed: ${error}`);
     }
   }
@@ -186,7 +189,7 @@ export class SqliteSchemaManager {
           `   - Initialize: new ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity();\n` +
           `   - Register: registerEntity(${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.collection, ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity);\n`;
 
-        console.error(errorMessage);
+        this.log.error(errorMessage);
         return {
           success: false,
           error: errorMessage
@@ -194,7 +197,7 @@ export class SqliteSchemaManager {
       }
 
       // Registered entity - handle full entity table with metadata
-      console.log(`🏗️ Setting up table for entity: ${collectionName} -> ${tableName}`);
+      this.log.info(`Setting up table for entity: ${collectionName} -> ${tableName}`);
 
       if (tableExists) {
         // Migrate schema: add missing columns
@@ -207,8 +210,9 @@ export class SqliteSchemaManager {
           SqlNamingConverter.toTableName,
           SqlNamingConverter.toSnakeCase
         );
+        this.log.info(`CREATE TABLE ${tableName}:`, createTableSql);
         await this.executor.runSql(createTableSql);
-        console.log(`✅ Table created: ${tableName}`);
+        this.log.info(`Table created: ${tableName}`);
       }
 
       // Create indexes (will skip if they already exist due to IF NOT EXISTS)
@@ -219,15 +223,16 @@ export class SqliteSchemaManager {
         SqlNamingConverter.toSnakeCase
       );
       for (const indexSql of indexSqls) {
+        this.log.debug(`Creating index: ${indexSql}`);
         await this.executor.runSql(indexSql);
       }
 
-      console.log(`✅ Table ready: ${tableName} with ${indexSqls.length} indexes`);
+      this.log.info(`Table ready: ${tableName} with ${indexSqls.length} indexes`);
 
       return { success: true, data: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ SQLite: Failed to ensure schema for ${collectionName}:`, errorMessage);
+      this.log.error(`Failed to ensure schema for ${collectionName}:`, errorMessage);
       return {
         success: false,
         error: errorMessage
@@ -295,15 +300,15 @@ export class SqliteSchemaManager {
           alterSql += ' NOT NULL';
         }
 
-        console.log(`   🔄 Adding column: ${columnName} (${sqlType})`);
+        this.log.info(`Adding column: ${columnName} (${sqlType})`);
         await this.executor.runSql(alterSql);
       }
     }
 
     if (missingColumns.length > 0) {
-      console.log(`✅ Migrated ${tableName}: added ${missingColumns.length} new columns`);
+      this.log.info(`Migrated ${tableName}: added ${missingColumns.length} new columns`);
     } else {
-      console.log(`✅ Schema up-to-date: ${tableName}`);
+      this.log.info(`Schema up-to-date: ${tableName}`);
     }
   }
 
@@ -342,15 +347,15 @@ export class SqliteSchemaManager {
           alterSql += ' DEFAULT NULL';
         }
 
-        console.log(`   🔄 Adding missing column: ${column.name} (${column.type})`);
+        this.log.info(`Adding missing column: ${column.name} (${column.type})`);
         await this.executor.runSql(alterSql);
       }
     }
 
     if (missingColumns.length > 0) {
-      console.log(`✅ Migrated simple entity table ${tableName}: added ${missingColumns.length} columns (${missingColumns.join(', ')})`);
+      this.log.info(`Migrated simple entity table ${tableName}: added ${missingColumns.length} columns (${missingColumns.join(', ')})`);
     } else {
-      console.log(`✅ Simple entity table ${tableName} schema is up-to-date`);
+      this.log.info(`Simple entity table ${tableName} schema is up-to-date`);
     }
   }
 
@@ -385,16 +390,16 @@ export class SqliteSchemaManager {
    * Log what schemas would be generated for all registered entities
    */
   async logEntitySchemas(): Promise<void> {
-    console.log('📋 SQLite: Analyzing registered entities...');
+    this.log.info('Analyzing registered entities...');
 
     for (const [collectionName, entityClass] of ENTITY_REGISTRY.entries()) {
       if (!hasFieldMetadata(entityClass)) {
-        console.log(`⚠️ ${collectionName}: No field metadata found`);
+        this.log.warn(`${collectionName}: No field metadata found`);
         continue;
       }
 
       const tableName = SqlNamingConverter.toTableName(collectionName);
-      console.log(`\n🏗️ ${collectionName} -> ${tableName}:`);
+      this.log.info(`${collectionName} -> ${tableName}:`);
 
       // Log what CREATE TABLE would look like
       const createTableSql = this.generateCreateTableSql(
@@ -403,15 +408,14 @@ export class SqliteSchemaManager {
         SqlNamingConverter.toTableName,
         SqlNamingConverter.toSnakeCase
       );
-      console.log('   CREATE TABLE SQL:');
-      console.log('   ' + createTableSql.split('\n').join('\n   '));
+      this.log.debug('CREATE TABLE SQL:', createTableSql);
 
       // Log field metadata
       const fieldMetadata = getFieldMetadata(entityClass);
-      console.log(`   📊 Fields: ${fieldMetadata.size}`);
+      this.log.debug(`Fields: ${fieldMetadata.size}`);
       for (const [fieldName, metadata] of fieldMetadata.entries()) {
         const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-        console.log(`   • ${fieldName} -> ${columnName} (${metadata.fieldType}${metadata.options?.index ? ', indexed' : ''})`);
+        this.log.debug(`  ${fieldName} -> ${columnName} (${metadata.fieldType}${metadata.options?.index ? ', indexed' : ''})`);
       }
 
       // Log indexes
@@ -422,12 +426,12 @@ export class SqliteSchemaManager {
         SqlNamingConverter.toSnakeCase
       );
       if (indexSqls.length > 0) {
-        console.log(`   🔍 Indexes: ${indexSqls.length}`);
-        indexSqls.forEach(sql => console.log(`   • ${sql}`));
+        this.log.debug(`Indexes: ${indexSqls.length}`);
+        indexSqls.forEach(sql => this.log.debug(`  ${sql}`));
       }
     }
 
-    console.log('\n✅ SQLite: Entity schema analysis complete');
+    this.log.info('Entity schema analysis complete');
   }
 
   /**
@@ -445,6 +449,6 @@ export class SqliteSchemaManager {
         metadata TEXT DEFAULT '{}'
       )
     `);
-    console.log('✅ Core schema: _collections table created');
+    this.log.info('Core schema: _collections table created');
   }
 }
