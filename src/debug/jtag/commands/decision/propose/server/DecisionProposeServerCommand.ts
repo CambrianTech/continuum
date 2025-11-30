@@ -204,6 +204,43 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
    */
   protected async executeCommand(params: DecisionProposeParams): Promise<DecisionProposeResult> {
   try {
+    // Parse JSON strings if present (AIs may pass JSON strings instead of arrays)
+    if (typeof params.options === 'string') {
+      try {
+        params.options = JSON.parse(params.options);
+      } catch (e) {
+        return transformPayload(params, { success: false, error: 'options must be a valid JSON array' });
+      }
+    }
+
+    if (typeof params.tags === 'string') {
+      try {
+        params.tags = JSON.parse(params.tags);
+      } catch (e) {
+        return transformPayload(params, { success: false, error: 'tags must be a valid JSON array' });
+      }
+    }
+
+    // Handle string arrays for options - convert to proper objects
+    if (Array.isArray(params.options) && params.options.length > 0 && typeof params.options[0] === 'string') {
+      const stringOptions = params.options as unknown as string[];
+      params.options = stringOptions.map((optionStr, idx) => {
+        // Try to split on colon to extract label and description
+        const colonIndex = optionStr.indexOf(':');
+        if (colonIndex > 0) {
+          return {
+            label: optionStr.substring(0, colonIndex).trim(),
+            description: optionStr.substring(colonIndex + 1).trim()
+          };
+        }
+        // Fallback: use entire string as label with generic description
+        return {
+          label: `Option ${idx + 1}`,
+          description: optionStr.trim()
+        };
+      });
+    }
+
     // Validation
     if (!params.topic?.trim()) {
       return transformPayload(params, { success: false, error: 'Topic is required' });
