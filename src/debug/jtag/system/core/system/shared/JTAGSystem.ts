@@ -162,7 +162,9 @@ export abstract class JTAGSystem extends JTAGBase {
   }
 
   /**
-   * Setup server-specific daemons using static structure
+   * Setup server-specific daemons using parallel initialization
+   * All daemons spawn immediately and initialize independently
+   * External systems (WebSocket) connect AFTER all daemons ready
    */
   async setupDaemons(): Promise<void> {
     // Emit daemons loading event
@@ -171,16 +173,10 @@ export abstract class JTAGSystem extends JTAGBase {
       timestamp: new Date().toISOString(),
       expectedDaemons: this.daemonEntries.map(d => d.name)
     });
-    console.log(`🏗️ JTAG Server: Loading ${this.daemonEntries.length} daemons...`);
+    console.log(`🏗️ JTAG Server: Starting ${this.daemonEntries.length} daemons in parallel...`);
 
-    // Sort by priority (lower = earlier initialization)
-    // DataDaemon (priority 0) MUST initialize first, others follow
-    const sortedDaemons = [...this.daemonEntries].sort((a, b) => a.priority - b.priority);
-
-    // Sequential initialization to respect dependencies
-    const initializedDaemons: (DaemonBase | null)[] = [];
-
-    for (const daemonEntry of sortedDaemons) {
+    // Spawn ALL daemons immediately - no dependencies, no waiting
+    const initPromises = this.daemonEntries.map(async (daemonEntry) => {
       try {
         const daemon = this.createDaemon(daemonEntry, this.context, this.router);
 
@@ -194,25 +190,30 @@ export abstract class JTAGSystem extends JTAGBase {
           if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
             (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
           }
-          initializedDaemons.push(daemon);
-        } else {
-          initializedDaemons.push(null);
+
+          console.log(`✅ ${daemonEntry.name} ready`);
+          return daemon;
         }
+        return null;
       } catch (error) {
-        console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error);
-        initializedDaemons.push(null);
+        console.error(`❌ Failed to initialize ${daemonEntry.name}:`, error);
+        return null;
       }
-    }
-    
+    });
+
+    // Wait for ALL daemons to finish initialization
+    await Promise.all(initPromises);
+
     // Emit daemons loaded event
     this.router.eventManager.events.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {
       context: this.context,
       timestamp: new Date().toISOString(),
       loadedDaemons: this.daemons.map(d => d.name)
     });
-    console.log(`🔌 JTAG Server System: Registered ${this.daemons.length} daemons statically`);
-    
-    // After daemons are set up, connect to SessionDaemon
+    console.log(`🔌 JTAG Server: All ${this.daemons.length} daemons initialized and ready`);
+
+    // NOW connect external systems - session, transports, etc
+    // This gates external access until internal initialization completes
     await this.connectSession();
   }
 
