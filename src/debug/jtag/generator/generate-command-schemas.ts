@@ -307,6 +307,14 @@ class CommandSchemaGenerator {
     const cleaned = tsType.replace(/readonly\s+/g, '').trim();
 
     // Map TypeScript types to JSON Schema types
+    // IMPORTANT: Check arrays FIRST before checking for primitives
+    // Otherwise "string[]" matches "includes('string')" and becomes "string" instead of "array"
+    if (cleaned.startsWith('Array<') || cleaned.includes('[]')) {
+      return 'array';
+    }
+    if (cleaned.startsWith('Record<') || cleaned.startsWith('{')) {
+      return 'object';
+    }
     if (cleaned === 'string' || cleaned.includes('string')) {
       return 'string';
     }
@@ -315,12 +323,6 @@ class CommandSchemaGenerator {
     }
     if (cleaned === 'boolean') {
       return 'boolean';
-    }
-    if (cleaned.startsWith('Array<') || cleaned.includes('[]')) {
-      return 'array';
-    }
-    if (cleaned.startsWith('Record<') || cleaned.startsWith('{')) {
-      return 'object';
     }
 
     // Default to string for complex types
