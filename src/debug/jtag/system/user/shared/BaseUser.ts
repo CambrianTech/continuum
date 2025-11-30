@@ -40,10 +40,10 @@ export abstract class BaseUser {
     public readonly entity: UserEntity,
     public readonly state: UserStateEntity,
     protected readonly storage: IUserStateStorage,
-    protected readonly client?: JTAGClient
+    public readonly client?: JTAGClient
   ) {}
 
-  protected myRoomIds: Set<UUID> = new Set();
+  public myRoomIds: Set<UUID> = new Set();
 
   /**
    * Initialize user - common setup, subclasses extend with type-specific logic
@@ -203,6 +203,23 @@ export abstract class BaseUser {
   get displayName(): string {
     return this.entity.displayName;
   }
+
+  /**
+   * Get home directory for this user - ABSOLUTE PATH from SystemPaths
+   * This is the user's $HOME - SINGLE SOURCE OF TRUTH for all user data paths.
+   *
+   * IMPORTANT: Returns ABSOLUTE paths via SystemPaths.personas.dir() / SystemPaths.users.dir()
+   * NOT relative paths - SystemPaths handles .continuum/ root resolution.
+   *
+   * Examples:
+   * - PersonaUser: SystemPaths.personas.dir(uniqueId) → '.continuum/personas/claude-assistant-79a5e548'
+   * - HumanUser: SystemPaths.users.dir(uniqueId) → '.continuum/users/joel-a1b2c3d4'
+   * - AgentUser: SystemPaths.agents.dir(uniqueId) → '.continuum/agents/claude-code-e5f6g7h8'
+   *
+   * ALL user-specific paths (logs, memory, sessions, databases) MUST be built from this.
+   * DO NOT construct paths anywhere else - delegate to SystemPaths for all path construction.
+   */
+  abstract get homeDirectory(): string;
 
   /**
    * Save state to storage backend

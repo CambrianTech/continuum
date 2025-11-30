@@ -385,6 +385,7 @@ export class CognitionLogger {
       toolResult?: unknown;
       errorMessage?: string;
       triggeredBy?: string;
+      storedResultId?: UUID;  // Phase 3B: Link to stored result in working memory
     } = {}
   ): Promise<void> {
     try {
@@ -425,6 +426,7 @@ export class CognitionLogger {
         domain,
         contextId,
         triggeredBy: options.triggeredBy,
+        storedResultId: options.storedResultId,  // Phase 3B: Link to stored result
         sequenceNumber
       };
 

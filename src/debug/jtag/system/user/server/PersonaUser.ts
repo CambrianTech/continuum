@@ -92,6 +92,7 @@ import { SimplePlanFormulator } from './modules/cognition/reasoning/SimplePlanFo
 import type { Task, Plan } from './modules/cognition/reasoning/types';
 import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
+import { PersonaToolRegistry } from './modules/PersonaToolRegistry';
 import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
@@ -102,6 +103,10 @@ import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/Persona
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
 import { PersonaLogger } from './modules/PersonaLogger';
+import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
+import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
+import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBody';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -109,6 +114,15 @@ import { PersonaLogger } from './modules/PersonaLogger';
  * First-class citizens with their own JTAGClient for universal Commands/Events API
  */
 export class PersonaUser extends AIUser {
+  /**
+   * Implementation of abstract homeDirectory getter from BaseUser
+   * PersonaUsers live in the 'personas/' directory
+   * Returns ABSOLUTE path via SystemPaths - THE SINGLE SOURCE OF TRUTH
+   */
+  get homeDirectory(): string {
+    return SystemPaths.personas.dir(this.entity.uniqueId);
+  }
+
   private isInitialized: boolean = false;
   private eventsSubscribed: boolean = false;
   // Note: client is now in BaseUser as protected property, accessible via this.client
@@ -128,61 +142,111 @@ export class PersonaUser extends AIUser {
   public mediaConfig: PersonaMediaConfig;
 
   // Rate limiting module (TODO: Replace with AI-based coordination when ThoughtStream is solid)
-  private rateLimiter: RateLimiter;
+  readonly rateLimiter: RateLimiter;
 
   // PHASE 1: Autonomous servicing modules (inbox + personaState)
   // Inbox stores messages with priority, personaState tracks energy/mood
   // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
   public inbox: PersonaInbox;
-  public personaState: PersonaStateManager;
+
+  // BEING ARCHITECTURE: Delegate to mind for personaState
+  public get personaState(): PersonaStateManager {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.personaState;
+  }
 
   // PHASE 5: Self-task generation (autonomous work creation)
-  private taskGenerator: SelfTaskGenerator;
+  readonly taskGenerator: SelfTaskGenerator;
 
-  // COGNITIVE MODULE: Memory (knowledge, context, genome)
-  public memory: PersonaMemory;
+  // BEING ARCHITECTURE: Soul system (memory, learning, identity)
+  private soul: PersonaSoul | null = null;
+
+  // BEING ARCHITECTURE: Mind system (cognition, evaluation, planning)
+  public mind: PersonaMind | null = null;  // Public for CNS and Hippocampus access
+
+  // BEING ARCHITECTURE: Body system (action, execution, output)
+  private body: PersonaBody | null = null;
+
+  // BEING ARCHITECTURE: Delegate to soul for memory/genome/training/hippocampus
+  public get memory(): PersonaMemory {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.memory;
+  }
+
+  public get trainingAccumulator(): TrainingDataAccumulator {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.trainingAccumulator;
+  }
+
+  private get genomeManager(): PersonaGenomeManager {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.genomeManager;
+  }
+
+  private get hippocampus(): Hippocampus {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.hippocampus;
+  }
+
+  public get trainingManager(): PersonaTrainingManager {
+    if (!this.soul) throw new Error('Soul not initialized');
+    return this.soul.trainingManager;
+  }
 
   // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
-  private decisionChain: DecisionAdapterChain;
+  readonly decisionChain: DecisionAdapterChain;
 
   // CNS: Central Nervous System orchestrator
-  private cns: PersonaCentralNervousSystem;
-
-  // PHASE 7.4: Training data accumulation for recipe-embedded learning
-  // Accumulates training examples in RAM during recipe execution
-  public trainingAccumulator: TrainingDataAccumulator;
+  readonly cns: PersonaCentralNervousSystem;
 
   // Task execution module (extracted from PersonaUser for modularity)
-  private taskExecutor: PersonaTaskExecutor;
-
-  // Training management module (extracted from PersonaUser for modularity)
-  private trainingManager: PersonaTrainingManager;
+  readonly taskExecutor: PersonaTaskExecutor;
 
   // Autonomous servicing loop module (extracted from PersonaUser for modularity)
   private autonomousLoop: PersonaAutonomousLoop;
 
-  // COGNITION SYSTEM: Agent architecture components (memory, reasoning, self-awareness)
-  public workingMemory: WorkingMemoryManager;
-  public selfState: PersonaSelfState;
-  public planFormulator: SimplePlanFormulator;
+  // BEING ARCHITECTURE: Delegate to mind for workingMemory
+  public get workingMemory(): WorkingMemoryManager {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.workingMemory;
+  }
 
-  // Tool execution adapter (keeps PersonaUser clean)
-  private toolExecutor: PersonaToolExecutor;
+  // BEING ARCHITECTURE: Delegate to mind for selfState
+  public get selfState(): PersonaSelfState {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.selfState;
+  }
 
-  // Response generation module (extracted from PersonaUser)
-  private responseGenerator: PersonaResponseGenerator;
+  // BEING ARCHITECTURE: Delegate to mind for planFormulator
+  public get planFormulator(): SimplePlanFormulator {
+    if (!this.mind) throw new Error('Mind not initialized');
+    return this.mind.planFormulator;
+  }
+
+  // BEING ARCHITECTURE: Delegate to body for toolExecutor
+  private get toolExecutor(): PersonaToolExecutor {
+    if (!this.body) throw new Error('Body not initialized');
+    return this.body.toolExecutor;
+  }
+
+  // BEING ARCHITECTURE: Delegate to body for toolRegistry
+  private get toolRegistry(): PersonaToolRegistry {
+    if (!this.body) throw new Error('Body not initialized');
+    return this.body.toolRegistry;
+  }
+
+  // BEING ARCHITECTURE: Delegate to body for responseGenerator
+  private get responseGenerator(): PersonaResponseGenerator {
+    if (!this.body) throw new Error('Body not initialized');
+    return this.body.responseGenerator;
+  }
 
   // Message evaluation module (extracted from PersonaUser for modularity)
   private messageEvaluator: PersonaMessageEvaluator;
 
-  // Genome management module (extracted from PersonaUser for better genomic daemon integration)
-  private genomeManager: PersonaGenomeManager;
-
-  // RTOS-style background subprocess for memory consolidation
-  // Phase 1: Minimal logging-only version to prove threading works
   // RTOS Subprocesses
   public logger: PersonaLogger; // Public: accessed by all subprocesses for logging
-  private hippocampus: Hippocampus;
+  // Note: genomeManager and hippocampus now accessed via soul getters
 
   constructor(
     entity: UserEntity,
@@ -222,11 +286,6 @@ export class PersonaUser extends AIUser {
       enableLogging: true
     });
 
-    // PersonaState: Energy/mood tracking for adaptive behavior
-    this.personaState = new PersonaStateManager(this.displayName, {
-      enableLogging: true
-    });
-
     // PHASE 5: Self-task generation for autonomous work creation
     this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {
       enabled: true,  // Enable self-task generation
@@ -235,103 +294,46 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
-    // COGNITIVE MODULE: Memory (RAG context + genome)
-    this.memory = new PersonaMemory(
-      this.id,
-      this.displayName,
-      {
-        baseModel: this.modelConfig.model || 'llama3.2:3b',
-        memoryBudgetMB: 200,  // 200MB GPU memory budget for adapters
-        adaptersPath: './lora-adapters',
-        initialAdapters: [
-          {
-            name: 'conversational',
-            domain: 'chat',
-            path: './lora-adapters/conversational.safetensors',
-            sizeMB: 50,
-            priority: 0.7  // High priority - used frequently
-          },
-          {
-            name: 'typescript-expertise',
-            domain: 'code',
-            path: './lora-adapters/typescript-expertise.safetensors',
-            sizeMB: 60,
-            priority: 0.6
-          },
-          {
-            name: 'self-improvement',
-            domain: 'self',
-            path: './lora-adapters/self-improvement.safetensors',
-            sizeMB: 40,
-            priority: 0.5
-          }
-        ]
-      },
-      client
-    );
+    // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
+    // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters
+    this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
+
+    // BEING ARCHITECTURE Phase 2: Initialize Mind (cognition, evaluation, planning)
+    this.mind = new PersonaMind(this as any as PersonaUserForMind);
+
+    // BEING ARCHITECTURE Phase 3: Initialize Body (action, execution, output)
+    // Note: Body creates toolExecutor, toolRegistry, and responseGenerator internally
+    this.body = new PersonaBody({
+      id: this.id,
+      displayName: this.displayName,
+      entity: this.entity,
+      modelConfig: this.modelConfig,
+      client,
+      mediaConfig: this.mediaConfig,
+      getSessionId: () => this.sessionId,
+      homeDirectory: this.homeDirectory
+    });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     this.decisionChain = new DecisionAdapterChain();
     console.log(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
-    // PHASE 7.4: Training data accumulator for recipe-embedded learning
-    this.trainingAccumulator = new TrainingDataAccumulator(this.id, this.displayName);
-
-    // Task execution module (delegated for modularity)
+    // Task execution module (delegated for modularity, uses this.memory getter)
     this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
 
-    // Training management module (delegated for modularity)
-    this.trainingManager = new PersonaTrainingManager(
-      this.id,
-      this.displayName,
-      this.trainingAccumulator,
-      () => this.state,
-      () => this.saveState()
-    );
-
-    // COGNITION SYSTEM: Agent architecture components
-    this.workingMemory = new WorkingMemoryManager(this.id);
-    this.selfState = new PersonaSelfState(this.id);
-    this.planFormulator = new SimplePlanFormulator(this.id, this.displayName);
-
     // CNS: Central Nervous System orchestrator (capability-based)
+    // Note: mind/soul/body are non-null at this point (initialized above)
     this.cns = CNSFactory.create(this);
 
-    // Tool execution adapter (dynamic registry for code/read, list, system/daemons, etc.)
-    this.toolExecutor = new PersonaToolExecutor(this.id, this.displayName);
-
-    // Response generation module (extracted from PersonaUser for clean separation)
-    this.responseGenerator = new PersonaResponseGenerator({
-      personaId: this.id,
-      personaName: this.displayName,
-      entity: this.entity,
-      modelConfig: this.modelConfig,
-      client,
-      toolExecutor: this.toolExecutor,
-      mediaConfig: this.mediaConfig,
-      getSessionId: () => this.sessionId  // Dynamically get sessionId (set during initialize())
-    });
-
     // Message evaluation module (pass PersonaUser reference for dependency injection)
-    this.messageEvaluator = new PersonaMessageEvaluator(this as any); // Cast to match interface
-
-    // Genome management module (delegated for genomic daemon integration)
-    this.genomeManager = new PersonaGenomeManager(
-      this.id,
-      this.displayName,
-      () => this.entity,
-      () => this.client
-    );
+    this.messageEvaluator = new PersonaMessageEvaluator(this);
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
-    this.autonomousLoop = new PersonaAutonomousLoop(this as any); // Cast to match interface
+    this.autonomousLoop = new PersonaAutonomousLoop(this);
 
-    // RTOS-style memory consolidation subprocess (will start in initialize())
-    // Phase 1: Minimal version - just logging to prove threading works
-    // Initialize RTOS subprocesses
+    // RTOS subprocesses (Logger only - hippocampus now in soul)
     // Logger MUST be first - other subprocesses need it for logging
     this.logger = new PersonaLogger(this);
-    this.hippocampus = new Hippocampus(this);
 
     console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
@@ -359,7 +361,7 @@ export class PersonaUser extends AIUser {
    * Log AI decision to dedicated AI log (separate from general system logs)
    * Uses AIDecisionLogger to write to .continuum/jtag/sessions/system/{sessionId}/logs/ai-decisions.log
    */
-  private logAIDecision(
+  public logAIDecision(
     decision: 'RESPOND' | 'SILENT',
     reason: string,
     context: {
@@ -468,10 +470,8 @@ export class PersonaUser extends AIUser {
     await this.logger.start();
     console.log(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
 
-    // Start Hippocampus subprocess (RTOS-style background process)
-    // Phase 1: Minimal logging-only version to prove threading works
-    await this.hippocampus.start();
-    console.log(`🧠 ${this.displayName}: Hippocampus subprocess started (minimal/logging mode)`);
+    // Start soul memory consolidation (Hippocampus subprocess via soul interface)
+    await this.soul!.startMemoryConsolidation();
   }
 
   /**
@@ -617,7 +617,7 @@ export class PersonaUser extends AIUser {
    * 4. Store thoughts in WorkingMemory
    * 5. Update SelfState with focus and cognitive load
    */
-  private async evaluateAndPossiblyRespondWithCognition(
+  public async evaluateAndPossiblyRespondWithCognition(
     messageEntity: ChatMessageEntity,
     senderIsHuman: boolean,
     messageText: string
@@ -692,7 +692,7 @@ export class PersonaUser extends AIUser {
    *
    * **Dormancy filtering**: Checks dormancy state before responding
    */
-  private async respondToMessage(
+  public async respondToMessage(
     originalMessage: ChatMessageEntity,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {
@@ -1223,10 +1223,8 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
-    // Stop RTOS subprocesses in reverse order
-    // Stop Hippocampus first (generates final logs)
-    await this.hippocampus.stop();
-    console.log(`🧠 ${this.displayName}: Hippocampus subprocess stopped`);
+    // Stop soul systems (hippocampus + memory consolidation)
+    await this.soul!.shutdown();
 
     // Force flush all queued logs before stopping logger
     await this.logger.forceFlush();

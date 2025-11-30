@@ -69,35 +69,51 @@ Thumbs.db
 packages/cli/bin/debug-*.js
 
 # AI system generated files and directories
-# Ignore all .continuum directories except sessions/validation
-**/.continuum/data/
-**/.continuum/generator/
-**/.continuum/jtag/
-**/.continuum/test*/
+# Runtime data (logs, databases, sessions, temp files)
+**/.continuum/jtag/data/*.sqlite
+**/.continuum/jtag/data/*.sqlite-*
+**/.continuum/jtag/logs/
+**/.continuum/jtag/sessions/
+**/.continuum/jtag/signals/
+**/.continuum/jtag/backups/
+**/.continuum/jtag/performance/
+**/.continuum/jtag/temp/
 **/.continuum/sessions/user/
 **/.continuum/sessions/shared/
 **/.continuum/sessions/cli/
-**/.continuum/shared/
-**/.continuum/directory.json
-**/.continuum/*.log
-**/examples/**/.continuum/
+**/.continuum/media/temp/
 
-# Genome training environment (Python/conda)
-# Keep bootstrap scripts (source code), ignore installed environment
+# Keep structure but ignore data
+**/.continuum/datasets/prepared/*.sqlite
+**/.continuum/genome/python/envs/
+**/.continuum/genome/python/pkgs/
 **/.continuum/genome/python/micromamba/
 **/.continuum/genome/python/test-output/
 **/.continuum/genome/python/*.log
 **/.continuum/genome/python/test-training-*.json
+
+# Trained adapters (user-specific runtime data)
+**/.continuum/genome/adapters/
+**/.continuum/genome/models/
+
+# Keep these (source code and configs)
 !**/.continuum/genome/python/bootstrap.sh
 !**/.continuum/genome/python/train-wrapper.sh
 !**/.continuum/genome/python/activate.sh
 !**/.continuum/genome/python/environment.yml
 !**/.continuum/genome/python/README.md
 
-# Trained adapters (user-specific runtime data)
-**/.continuum/genome/adapters/
-**/.continuum/genome/models/
 # Keep validation directory for historical test artifacts
+!**/.continuum/sessions/validation/
+
+# Legacy paths (can be removed after cleanup)
+**/.continuum/data/
+**/.continuum/generator/
+**/.continuum/test*/
+**/.continuum/shared/
+**/.continuum/directory.json
+**/.continuum/*.log
+**/examples/**/.continuum/
 .claude-pool/
 .claude-messages/
 .continuum-comm/

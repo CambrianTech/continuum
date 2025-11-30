@@ -7,6 +7,12 @@
 # Training outputs
 .continuum/genome/adapters/
 
+# Infrastructure logs (sql, tools, system)
+.continuum/jtag/logs/*.log
+
+# Persona cognitive logs (mind, body, soul, cns)
+.continuum/personas/*/logs/
+
 # Temporary files
 /tmp/
 *.pyc

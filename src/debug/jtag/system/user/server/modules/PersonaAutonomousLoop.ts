@@ -20,39 +20,29 @@ import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
 import { taskEntityToInboxTask, type InboxTask, type QueueItem } from './QueueItemTypes';
 
-// Forward declare PersonaUser to avoid circular dependency
-export interface PersonaUserForLoop {
-  readonly id: UUID;
-  readonly displayName: string;
-  readonly personaState: any; // PersonaState
-  readonly inbox: any; // PersonaInbox
-  readonly trainingManager: any; // PersonaTrainingManager
-  readonly taskGenerator: any; // PersonaTaskGenerator
-  readonly taskExecutor: any; // PersonaTaskExecutor
-  readonly cns: any; // PersonaCentralNervousSystem
-  readonly memory: any; // PersonaMemory (with genome)
-  evaluateAndPossiblyRespondWithCognition(messageEntity: any, senderIsHuman: boolean, messageText: string): Promise<void>;
-}
+// Import PersonaUser directly - circular dependency is fine for type-only imports
+import type { PersonaUser } from '../PersonaUser';
 
 export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
-  private servicingLoop: NodeJS.Timeout | null = null;
   private trainingCheckLoop: NodeJS.Timeout | null = null;
 
-  constructor(private readonly personaUser: PersonaUserForLoop) {}
+  constructor(private readonly personaUser: PersonaUser) {}
 
   /**
    * PHASE 3: Start autonomous servicing loop
    *
    * Creates:
-   * 1. Continuous async service loop (signal-based, not polling)
+   * 1. Continuous async service loop (signal-based waiting, not polling)
    * 2. Training readiness check loop (every 60 seconds)
+   *
+   * Architecture:
+   * - Loop uses signal/mutex pattern (RTOS-style, performant, no CPU spinning)
+   * - CNS handles intelligence (priority, mood, coordination)
+   * - Inbox provides EventEmitter-based signaling
    */
   startAutonomousServicing(): void {
-    const cadence = this.personaUser.personaState.getCadence();
-    const mood = this.personaUser.personaState.getState().mood;
-
-    console.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED, timeout=${cadence}ms, mood=${mood})`);
+    console.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
 
     // Create continuous async loop (not setInterval) - signal-based waiting
     this.servicingLoopActive = true;
@@ -71,6 +61,11 @@ export class PersonaAutonomousLoop {
   /**
    * Continuous service loop - runs until servicingLoopActive = false
    * Uses signal-based waiting (not polling) for instant response
+   *
+   * CPU Safety:
+   * - Every iteration MUST block on inbox.waitForWork() (EventEmitter-based)
+   * - Errors logged but loop continues (will block again on next waitForWork)
+   * - Node.js event loop handles scheduling (no pthread primitives needed)
    */
   private async runServiceLoop(): Promise<void> {
     while (this.servicingLoopActive) {
@@ -78,7 +73,7 @@ export class PersonaAutonomousLoop {
         await this.serviceInbox();
       } catch (error) {
         console.error(`❌ ${this.personaUser.displayName}: Error in service loop: ${error}`);
-        // Continue loop despite errors
+        // Loop continues - next iteration will block on waitForWork() again
       }
     }
     console.log(`🛑 ${this.personaUser.displayName}: Service loop stopped`);
@@ -252,15 +247,15 @@ export class PersonaAutonomousLoop {
     // Update inbox load in state (affects mood calculation)
     this.personaUser.personaState.updateInboxLoad(this.personaUser.inbox.getSize());
 
-    // Check if cadence should adjust (mood may have changed after processing)
-    this.adjustCadence();
+    // Note: No cadence adjustment needed with signal-based waiting
+    // Loop naturally adapts: fast when busy (instant signal), slow when idle (blocked on wait)
   }
 
   /**
-   * PHASE 3: Service inbox (one polling iteration)
+   * PHASE 3: Service inbox (one iteration)
    *
-   * NOW DELEGATED TO CNS (Central Nervous System orchestrator)
-   * CNS handles: task polling, self-task generation, message prioritization, domain scheduling
+   * Delegates to CNS orchestrator for intelligent scheduling and coordination.
+   * CNS handles: priority selection, mood/energy checks, domain scheduling, coordination
    */
   private async serviceInbox(): Promise<void> {
     // Delegate to CNS orchestrator (capability-based multi-domain attention management)
@@ -279,38 +274,14 @@ export class PersonaAutonomousLoop {
   }
 
   /**
-   * PHASE 3: Adjust polling cadence if mood changed
-   *
-   * Dynamically adjusts the setInterval cadence when mood transitions occur
-   */
-  private adjustCadence(): void {
-    const currentCadence = this.personaUser.personaState.getCadence();
-
-    // Get current interval (we need to restart to change cadence)
-    if (this.servicingLoop) {
-      clearInterval(this.servicingLoop);
-      this.servicingLoop = setInterval(async () => {
-        await this.serviceInbox();
-      }, currentCadence);
-
-      console.log(`⏱️ ${this.personaUser.displayName}: Adjusted cadence to ${currentCadence}ms (mood=${this.personaUser.personaState.getState().mood})`);
-    }
-  }
-
-  /**
    * Stop autonomous servicing loops and cleanup
    */
   async stopServicing(): Promise<void> {
-    // Stop service loop
+    // Stop service loop (signal-based while loop)
     this.servicingLoopActive = false;
+    console.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
 
-    if (this.servicingLoop) {
-      clearInterval(this.servicingLoop);
-      this.servicingLoop = null;
-      console.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
-    }
-
-    // Stop training check loop
+    // Stop training check loop (interval-based)
     if (this.trainingCheckLoop) {
       clearInterval(this.trainingCheckLoop);
       this.trainingCheckLoop = null;

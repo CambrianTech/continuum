@@ -1,5 +1,5 @@
 {
-  "generated": "2025-11-25T15:02:08.585Z",
+  "generated": "2025-11-30T23:08:27.471Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -247,7 +247,7 @@
           "description": "dependsOn parameter"
         },
         "metadata": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "metadata parameter"
         }
@@ -278,7 +278,7 @@
           "description": "error parameter"
         },
         "metrics": {
-          "type": "number",
+          "type": "object",
           "required": false,
           "description": "metrics parameter"
         },
@@ -320,7 +320,7 @@
           "description": "command parameter"
         },
         "args": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "args parameter"
         },
@@ -340,7 +340,7 @@
           "description": "maxOutputSize parameter"
         },
         "env": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "env parameter"
         }
@@ -743,7 +743,7 @@
           "description": "importance parameter"
         },
         "metadata": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "metadata parameter"
         },
@@ -789,7 +789,7 @@
           "description": "shareable parameter"
         },
         "metadata": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "metadata parameter"
         }
@@ -815,7 +815,7 @@
           "description": "reason parameter"
         },
         "correction": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "correction parameter"
         },
@@ -846,7 +846,7 @@
           "description": "domain parameter"
         },
         "thoughtTypes": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "thoughtTypes parameter"
         },
@@ -1020,7 +1020,7 @@
           "description": "body parameter"
         },
         "labels": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "labels parameter"
         },
@@ -1204,7 +1204,7 @@
           "description": "outcome parameter"
         },
         "participants": {
-          "type": "string",
+          "type": "object",
           "required": true,
           "description": "participants parameter"
         }
@@ -1471,7 +1471,7 @@
           "description": "timeout parameter"
         },
         "parameters": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "parameters parameter"
         },
@@ -1522,7 +1522,7 @@
           "description": "proposalId parameter"
         },
         "rankedChoices": {
-          "type": "string",
+          "type": "array",
           "required": true,
           "description": "rankedChoices parameter"
         },
@@ -1548,12 +1548,12 @@
           "description": "rationale parameter"
         },
         "tags": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "tags parameter"
         },
         "options": {
-          "type": "string",
+          "type": "array",
           "required": true,
           "description": "options parameter"
         },
@@ -1876,7 +1876,7 @@
       "description": "CRUD Sync Debug Command Types\n *\n * Verifies database/UI synchronization across all three main widgets:\n * - room-list-widget: Rooms data\n * - chat-widget: Messages data\n * - user-list-widget: Users data",
       "params": {
         "collections": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "collections parameter"
         },
@@ -1916,6 +1916,42 @@
           "type": "string",
           "required": false,
           "description": "testFile parameter"
+        }
+      }
+    },
+    {
+      "name": "continuum/set",
+      "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
+      "params": {
+        "emoji": {
+          "type": "string",
+          "required": false,
+          "description": "emoji parameter"
+        },
+        "color": {
+          "type": "string",
+          "required": false,
+          "description": "color parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "description": "duration parameter"
+        },
+        "clear": {
+          "type": "boolean",
+          "required": false,
+          "description": "clear parameter"
+        },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "description": "priority parameter"
         }
       }
     },
@@ -2042,7 +2078,7 @@
           "description": "includeHidden parameter"
         },
         "excludeDirs": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "excludeDirs parameter"
         }
@@ -2107,6 +2143,11 @@
           "type": "boolean",
           "required": false,
           "description": "isSystemTest parameter"
+        },
+        "media": {
+          "type": "array",
+          "required": false,
+          "description": "media parameter"
         }
       }
     },
@@ -2150,7 +2191,7 @@
           "description": "includeTests parameter"
         },
         "filter": {
-          "type": "string",
+          "type": "object",
           "required": false,
           "description": "filter parameter"
         },
@@ -2163,6 +2204,32 @@
           "type": "boolean",
           "required": false,
           "description": "includeThreading parameter"
+        }
+      }
+    },
+    {
+      "name": "chat/analyze",
+      "description": "chat/analyze command",
+      "params": {
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
+        },
+        "checkDuplicates": {
+          "type": "boolean",
+          "required": false,
+          "description": "checkDuplicates parameter"
+        },
+        "checkTimestamps": {
+          "type": "boolean",
+          "required": false,
+          "description": "checkTimestamps parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
         }
       }
     },
@@ -2335,7 +2402,7 @@
           "description": "ragContext parameter"
         },
         "triggerMessage": {
-          "type": "string",
+          "type": "object",
           "required": true,
           "description": "triggerMessage parameter"
         },
@@ -2427,7 +2494,7 @@
           "description": "endDate parameter"
         },
         "actors": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "actors parameter"
         },
@@ -2458,7 +2525,7 @@
           "description": "query parameter"
         },
         "queryEmbedding": {
-          "type": "number",
+          "type": "array",
           "required": false,
           "description": "queryEmbedding parameter"
         },
@@ -2567,7 +2634,7 @@
       "description": "Codebase Index Command Types\n *\n * Index TypeScript and Markdown files with domain-specific embeddings\n * for semantic code search via RAG",
       "params": {
         "paths": {
-          "type": "string",
+          "type": "array",
           "required": true,
           "description": "paths parameter"
         },
@@ -2648,7 +2715,7 @@
           "description": "exportName parameter"
         },
         "embedding": {
-          "type": "number",
+          "type": "array",
           "required": false,
           "description": "embedding parameter"
         },
@@ -2658,17 +2725,17 @@
           "description": "embeddingModel parameter"
         },
         "imports": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "imports parameter"
         },
         "exports": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "exports parameter"
         },
         "tags": {
-          "type": "string",
+          "type": "array",
           "required": false,
           "description": "tags parameter"
         }
@@ -2731,7 +2798,7 @@
       "description": "Embedding Generate Command Types\n *\n * Low-level primitive for generating embeddings from text",
       "params": {
         "input": {
-          "type": "string",
+          "type": "array",
           "required": true,
           "description": "input parameter"
         },

@@ -16,6 +16,9 @@ export const FILE_COMMANDS = {
 
   /** Append to file */
   APPEND: 'file/append',
+
+  /** Detect MIME type from file path */
+  MIME_TYPE: 'file/mime-type',
 } as const;
 
 /**

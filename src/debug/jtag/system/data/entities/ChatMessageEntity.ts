@@ -75,6 +75,15 @@ export interface MessageMetadata {
   resolvedAt?: number; // When it was marked resolved
   isSystemTest?: boolean;  // Mark as system test (precommit hook, integration test) - AIs should skip
   testType?: string;  // Type of test (e.g., 'precommit-hook', 'integration-test')
+
+  // Phase 3B: Tool result storage in working memory
+  toolResult?: boolean;  // Flag that this message is a tool result
+  toolName?: string;  // Name of the tool executed
+  parameters?: Record<string, unknown>;  // Tool parameters
+  fullData?: unknown;  // Full tool result data (stored, not in RAG)
+  success?: boolean;  // Whether tool execution succeeded
+  error?: string;  // Error message if tool failed
+  storedAt?: number;  // Timestamp when tool result was stored
 }
 
 export interface MessageReaction {

@@ -43,6 +43,8 @@ import type { JTAGPayload, JTAGContext, JTAGMessage } from '../../types/JTAGType
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
 import { Events } from '../../shared/Events';
+import { startConnectionMonitoring } from './ConnectionMonitor';
+import { initializeFaviconManager } from './FaviconManager';
 
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
@@ -196,7 +198,7 @@ export class JTAGClientBrowser extends JTAGClient {
    * Uses shared base class connect() logic
    */
   static async connectRemote(config: RemoteConnectionConfig): Promise<{ client: JTAGClientBrowser; listResult: ListResult }> {
-    return await JTAGClientBrowser.connect({
+    const result = await JTAGClientBrowser.connect({
       targetEnvironment: 'server', // Remote system is typically server
       transportType: config.transportType ?? 'websocket',
       serverUrl: config.serverUrl,
@@ -204,6 +206,12 @@ export class JTAGClientBrowser extends JTAGClient {
       maxRetries: config.maxRetries ?? 30,
       retryDelay: config.retryDelay ?? 1000
     });
+
+    // Initialize independent monitoring systems after successful connection
+    startConnectionMonitoring();
+    initializeFaviconManager();
+
+    return result;
   }
 
   // Commands interface inherited from base JTAGClient - now uses dynamic discovery!
@@ -364,7 +372,7 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   private updateSystemConsoleDaemon(): void {
     const system = (this.connection as LocalConnection).localSystem;
-    
+
     // Use proper public interface - JTAGSystem.systemDaemons getter
     if ('systemDaemons' in system) {
       // Find ConsoleDaemon using proper type checking
@@ -380,6 +388,26 @@ export class JTAGClientBrowser extends JTAGClient {
       console.warn(`⚠️ JTAGClientBrowser: Local system has no systemDaemons property`);
     }
   }
+}
 
+/**
+ * Cached WebSocket transport reference for ConnectionMonitor
+ * Updated by JTAGClientBrowser when connection is established
+ */
+let cachedTransport: WebSocket | null = null;
 
+/**
+ * Get WebSocket transport for ConnectionMonitor
+ * Exported for use by ConnectionMonitor to check connection health
+ */
+export function getWebSocketTransport(): WebSocket | null {
+  return cachedTransport;
+}
+
+/**
+ * Update cached WebSocket transport reference
+ * Called internally by JTAGClientBrowser after connection established
+ */
+export function updateWebSocketTransport(transport: WebSocket | null): void {
+  cachedTransport = transport;
 }

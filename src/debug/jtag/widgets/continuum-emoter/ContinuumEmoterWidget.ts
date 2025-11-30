@@ -5,6 +5,7 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversation/shared/CognitionEventTypes';
@@ -112,6 +113,60 @@ export class ContinuumEmoterWidget extends BaseWidget {
     Events.subscribe('continuum:emotion', (data: { emoji: string; color: string; duration: number }) => {
       this.showEmotion(data.emoji, data.color, data.duration);
     });
+
+    // Subscribe to continuum:status events for persistent orb color changes
+    Events.subscribe('continuum:status', (data: {
+      emoji?: string;
+      color?: string;
+      message?: string;
+      clear?: boolean;
+      priority?: string;
+      source?: string;
+      timestamp?: number;
+      autoRevertAt?: number;
+    }) => {
+      this.handleStatusUpdate(data);
+    });
+  }
+
+  /**
+   * Handle continuum:status events - update orb color persistently
+   */
+  private handleStatusUpdate(status: {
+    emoji?: string;
+    color?: string;
+    message?: string;
+    clear?: boolean;
+  }): void {
+    const orb = this.shadowRoot?.querySelector('.status-orb') as HTMLElement;
+    if (!orb) return;
+
+    // Handle clear request - revert to health-based color
+    if (status.clear) {
+      // Remove custom class and CSS variable
+      orb.classList.remove('status-custom');
+      orb.style.removeProperty('--orb-color');
+
+      // Revert to health-based color
+      this.updateOrb(); // Uses this.health to determine color
+      return;
+    }
+
+    // Apply custom color if provided
+    if (status.color) {
+      // Remove all status classes
+      orb.classList.remove('status-healthy', 'status-warning', 'status-error', 'status-initializing');
+
+      // Apply custom color via inline style
+      orb.style.setProperty('--orb-color', status.color);
+      orb.classList.add('status-custom');
+    }
+
+    // Show emoji if provided (floating overlay)
+    if (status.emoji) {
+      const duration = 3000; // Default 3 second display
+      this.showEmotion(status.emoji, status.color || '#00ccff', duration);
+    }
   }
 
   /**
@@ -173,10 +228,11 @@ export class ContinuumEmoterWidget extends BaseWidget {
    */
   private async checkSystemHealth(): Promise<void> {
     try {
-      // TODO: Use actual health check command
-      // For now, assume connected and healthy
+      // Use ping command to check server connection
+      await Commands.execute('ping');
       this.updateStatus('connected', 'healthy');
     } catch (error) {
+      console.warn('🔴 ContinuumEmoter: Server disconnected', error);
       this.updateStatus('disconnected', 'error');
     }
   }
@@ -189,6 +245,23 @@ export class ContinuumEmoterWidget extends BaseWidget {
       this.connectionStatus = connectionStatus;
       this.health = health;
       this.updateOrb();
+
+      // Emit health status event so ContinuumWidget (favicon) can update too
+      const statusKey = `${connectionStatus}-${health}`;
+      if (statusKey.includes('error') || statusKey.includes('disconnected')) {
+        // Disconnected - emit red error status
+        Events.emit('continuum:status', {
+          color: '#ff0060',
+          message: 'Server disconnected',
+          priority: 'critical',
+          source: 'system'
+        });
+      } else if (statusKey === 'connected-healthy') {
+        // Connected and healthy - clear custom status (revert to ground state)
+        Events.emit('continuum:status', {
+          clear: true
+        });
+      }
     }
   }
 

@@ -22,6 +22,7 @@ import type { DecisionProposalEntity, DecisionOption } from '../../../../system/
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import type { ChatSendParams, ChatSendResult } from '../../../../commands/chat/send/shared/ChatSendTypes';
+import { Logger } from '../../../../system/core/logging/Logger';
 
 /**
  * Calculate voting deadline based on significance level
@@ -195,6 +196,8 @@ async function getUsersInScope(scope: string): Promise<UserEntity[]> {
  * DecisionProposeServerCommand - Server implementation
  */
 export class DecisionProposeServerCommand extends DecisionProposeCommand {
+  private log = Logger.create('DecisionProposeServerCommand', 'tools');
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super(context, subpath, commander);
   }
@@ -204,6 +207,58 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
    */
   protected async executeCommand(params: DecisionProposeParams): Promise<DecisionProposeResult> {
   try {
+    // Parse JSON strings if present (AIs may pass JSON strings instead of arrays)
+    if (typeof params.options === 'string') {
+      this.log.warn('Parameter format conversion: options received as JSON string instead of array', {
+        command: 'decision/propose',
+        topic: params.topic,
+        sessionId: params.sessionId
+      });
+      try {
+        params.options = JSON.parse(params.options);
+      } catch (e) {
+        return transformPayload(params, { success: false, error: 'options must be a valid JSON array' });
+      }
+    }
+
+    if (typeof params.tags === 'string') {
+      this.log.warn('Parameter format conversion: tags received as JSON string instead of array', {
+        command: 'decision/propose',
+        topic: params.topic,
+        sessionId: params.sessionId
+      });
+      try {
+        params.tags = JSON.parse(params.tags);
+      } catch (e) {
+        return transformPayload(params, { success: false, error: 'tags must be a valid JSON array' });
+      }
+    }
+
+    // Handle string arrays for options - convert to proper objects
+    if (Array.isArray(params.options) && params.options.length > 0 && typeof params.options[0] === 'string') {
+      this.log.warn('Parameter format conversion: options received as string array, converting to object array', {
+        command: 'decision/propose',
+        topic: params.topic,
+        sessionId: params.sessionId
+      });
+      const stringOptions = params.options as unknown as string[];
+      params.options = stringOptions.map((optionStr, idx) => {
+        // Try to split on colon to extract label and description
+        const colonIndex = optionStr.indexOf(':');
+        if (colonIndex > 0) {
+          return {
+            label: optionStr.substring(0, colonIndex).trim(),
+            description: optionStr.substring(colonIndex + 1).trim()
+          };
+        }
+        // Fallback: use entire string as label with generic description
+        return {
+          label: `Option ${idx + 1}`,
+          description: optionStr.trim()
+        };
+      });
+    }
+
     // Validation
     if (!params.topic?.trim()) {
       return transformPayload(params, { success: false, error: 'Topic is required' });

@@ -40,6 +40,9 @@ import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
+import { PersonaToolRegistry } from './PersonaToolRegistry';
+import { getAllToolDefinitions } from './PersonaToolDefinitions';
+import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 
 /**
  * Response generation result
@@ -61,6 +64,7 @@ export interface PersonaResponseGeneratorConfig {
   modelConfig: ModelConfig;
   client?: JTAGClient;
   toolExecutor: PersonaToolExecutor;
+  toolRegistry: PersonaToolRegistry;
   mediaConfig: PersonaMediaConfig;
   getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
 }
@@ -75,6 +79,7 @@ export class PersonaResponseGenerator {
   private modelConfig: ModelConfig;
   private client?: JTAGClient;
   private toolExecutor: PersonaToolExecutor;
+  private toolRegistry: PersonaToolRegistry;
   private mediaConfig: PersonaMediaConfig;
   private getSessionId: () => UUID | null;
 
@@ -85,6 +90,7 @@ export class PersonaResponseGenerator {
     this.modelConfig = config.modelConfig;
     this.client = config.client;
     this.toolExecutor = config.toolExecutor;
+    this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
   }
@@ -237,7 +243,7 @@ export class PersonaResponseGenerator {
         {
           modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
           maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
-          includeArtifacts: false, // TODO: Implement proper on-demand image loading via tools
+          includeArtifacts: true,  // Enable vision support for multimodal-capable models
           includeMemories: true,   // Enable Hippocampus LTM retrieval
           // ✅ FIX: Include current message even if not yet persisted to database
           currentMessage: {
@@ -271,10 +277,65 @@ export class PersonaResponseGenerator {
         console.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
       }
 
+      // Inject available tools for autonomous tool discovery (Phase 3A)
+      // Use adapter-based formatting for harmony with parser
+      const availableTools = this.toolRegistry.listToolsForPersona(this.personaId);
+      if (availableTools.length > 0) {
+        // Convert PersonaToolDefinitions to adapter format
+        const toolDefinitions: AdapterToolDefinition[] = getAllToolDefinitions().map(t => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+          category: t.category
+        }));
+
+        // Use primary adapter to format tools (harmonious with parser)
+        const adapter = getPrimaryAdapter();
+        const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
+
+        const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formattedTools}\n\nThe tool will be executed and results will be provided for you to analyze and respond to.
+================================`;
+
+        systemPrompt += toolsSection;
+        console.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
+      }
+
       messages.push({
         role: 'system',
         content: systemPrompt
       });
+
+      // Build artifact lookup map (messageId → artifacts) for multimodal support
+      // This enables vision models to see images from messages with media
+      type RAGArtifact = typeof fullRAGContext.artifacts[number];
+      const artifactsByMessageId = new Map<string, RAGArtifact[]>();
+      for (const artifact of fullRAGContext.artifacts) {
+        const messageId = artifact.metadata?.messageId as string | undefined;
+        if (messageId) {
+          if (!artifactsByMessageId.has(messageId)) {
+            artifactsByMessageId.set(messageId, []);
+          }
+          artifactsByMessageId.get(messageId)!.push(artifact);
+        }
+      }
+
+      // Also create a timestamp+name lookup for matching LLMMessages to artifacts
+      // LLMMessages don't have IDs, so we match by timestamp+sender combination
+      const artifactsByTimestampName = new Map<string, RAGArtifact[]>();
+      for (const artifact of fullRAGContext.artifacts) {
+        const timestamp = artifact.metadata?.timestamp as Date | number | undefined;
+        const senderName = artifact.metadata?.senderName as string | undefined;
+        if (timestamp && senderName) {
+          const timestampMs = timestamp instanceof Date ? timestamp.getTime() : typeof timestamp === 'number' ? timestamp : 0;
+          const key = `${timestampMs}_${senderName}`;
+          if (!artifactsByTimestampName.has(key)) {
+            artifactsByTimestampName.set(key, []);
+          }
+          artifactsByTimestampName.get(key)!.push(artifact);
+        }
+      }
+
+      console.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
 
       // Add conversation history from RAG context with human-readable timestamps
       // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
@@ -310,10 +371,64 @@ export class PersonaResponseGenerator {
             ? `${timePrefix}${msg.name}: ${msg.content}`
             : `${timePrefix}${msg.content}`;
 
-          messages.push({
-            role: msg.role,
-            content: formattedContent
-          });
+          // Check if this message has associated artifacts (images, audio, video)
+          // Match by timestamp+name since LLMMessages don't have IDs
+          const lookupKey = msg.timestamp && msg.name ? `${msg.timestamp}_${msg.name}` : null;
+          const messageArtifacts = lookupKey ? artifactsByTimestampName.get(lookupKey) : undefined;
+
+          if (messageArtifacts && messageArtifacts.length > 0) {
+            // Multimodal message: Convert to ContentPart[] format
+            const contentParts: ContentPart[] = [
+              {
+                type: 'text',
+                text: formattedContent
+              }
+            ];
+
+            // Add artifacts as image/audio/video parts
+            for (const artifact of messageArtifacts) {
+              const mimeType = artifact.metadata?.mimeType as string | undefined;
+
+              if (artifact.type === 'image' && artifact.base64) {
+                contentParts.push({
+                  type: 'image',
+                  image: {
+                    base64: artifact.base64,
+                    mimeType
+                  }
+                });
+              } else if (artifact.type === 'audio' && artifact.base64) {
+                contentParts.push({
+                  type: 'audio',
+                  audio: {
+                    base64: artifact.base64,
+                    mimeType
+                  }
+                });
+              } else if (artifact.type === 'video' && artifact.base64) {
+                contentParts.push({
+                  type: 'video',
+                  video: {
+                    base64: artifact.base64,
+                    mimeType
+                  }
+                });
+              }
+            }
+
+            messages.push({
+              role: msg.role,
+              content: contentParts  // Multimodal content
+            });
+
+            console.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name}`);
+          } else {
+            // Text-only message
+            messages.push({
+              role: msg.role,
+              content: formattedContent
+            });
+          }
         }
       }
 
@@ -507,7 +622,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             personaConfig: this.mediaConfig
           };
 
-          const { formattedResults: toolResults, media: toolMedia } = await this.toolExecutor.executeToolCalls(
+          const { formattedResults: toolResults, media: toolMedia, storedResultIds } = await this.toolExecutor.executeToolCalls(
             toolCalls,
             toolExecutionContext
           );
@@ -515,7 +630,26 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           // Strip tool blocks from response to get explanation text
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
 
-          // Inject tool results into conversation as a system message
+          // Phase 3B: Build lean summary with UUID references for lazy loading
+          // Extract summaries from formatted results (first line of each <tool_result>)
+          const toolSummaries = toolResults.split('<tool_result>').slice(1).map((result, i) => {
+            const toolName = result.match(/<tool_name>(.*?)<\/tool_name>/)?.[1] || 'unknown';
+            const status = result.match(/<status>(.*?)<\/status>/)?.[1] || 'unknown';
+            const resultId = storedResultIds[i];
+
+            if (status === 'success') {
+              // Extract first line of content as summary
+              const contentMatch = result.match(/<content>\n?(.*?)(?:\n|<\/content>)/s);
+              const firstLine = contentMatch?.[1]?.split('\n')[0]?.trim() || 'completed';
+              return `✅ ${toolName}: ${firstLine} (ID: ${resultId.slice(0, 8)})`;
+            } else {
+              // Extract error message
+              const errorMatch = result.match(/<error>\n?```\n?(.*?)(?:\n|```)/s);
+              const errorMsg = errorMatch?.[1]?.slice(0, 100) || 'unknown error';
+              return `❌ ${toolName}: ${errorMsg} (ID: ${resultId.slice(0, 8)})`;
+            }
+          }).join('\n');
+
           // Count successes and failures
           const failedTools = toolCalls.filter((_, i) => {
             const resultXML = toolResults.split('<tool_result>')[i + 1];
@@ -527,6 +661,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             ? `\n\n⚠️ IMPORTANT: ${failedTools.length} tool(s) FAILED. You MUST mention these failures in your response and explain what went wrong. Do NOT retry the same failed command without changing your approach.\n`
             : '';
 
+          // Phase 3B: Inject lean summary + UUID references instead of full results
+          const leanSummary = `TOOL RESULTS (Phase 3B - Lean RAG):\n\n${toolSummaries}\n\n📋 Full details stored in working memory.\n💡 To read full results: data/read --collection=chat_messages --id=<ID>\n\n${failureWarning}Based on these summaries, provide your analysis. Only use data/read if you need the full details.`;
+
           // Build tool results message with optional media
           const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
             ? {
@@ -534,7 +671,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
                 content: [
                   {
                     type: 'text',
-                    text: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
+                    text: leanSummary
                   },
                   ...toolMedia.map(m => {
                     if (m.type === 'image') {
@@ -551,7 +688,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               }
             : {
                 role: 'user' as const,
-                content: `TOOL RESULTS:\n\n${toolResults}${failureWarning}\n\nBased on these tool results, please provide your final analysis or answer.`
+                content: leanSummary
               };
 
           // Regenerate response with tool results

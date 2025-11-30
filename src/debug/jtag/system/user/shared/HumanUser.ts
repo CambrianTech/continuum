@@ -38,6 +38,14 @@ export class HumanUser extends BaseUser {
   }
 
   /**
+   * HumanUsers don't have persistent home directories on the server
+   * They maintain state in-memory during their session
+   */
+  get homeDirectory(): string {
+    throw new Error('HumanUser does not have a home directory - humans maintain session state in-memory only');
+  }
+
+  /**
    * Initialize human user
    */
   async initialize(): Promise<void> {

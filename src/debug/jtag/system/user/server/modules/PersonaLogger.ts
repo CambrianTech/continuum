@@ -38,7 +38,6 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   private logQueue: LogEntry[] = [];
   private readonly maxLogQueueSize: number = 1000; // Prevent unbounded growth
   private readonly batchSize: number = 50; // Flush up to 50 lines per tick
-  private readonly sessionTimestamp: string; // Session start time for log filenames
 
   constructor(persona: PersonaUser) {
     // Highest priority - logging should be fast and responsive
@@ -46,9 +45,6 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
       priority: 'highest',
       name: 'PersonaLogger'
     });
-
-    // Capture session start time for log filenames (readable format)
-    this.sessionTimestamp = new Date().toISOString().replace(/:/g, '-').split('.')[0];
   }
 
   /**
@@ -128,31 +124,14 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   /**
    * Get full log file path for a given file name
    *
-   * Format: .continuum/personas/{name}-{id}/sessions/{timestamp}/logs/{subprocess}.log
-   * Example: .continuum/personas/grok-aff84949/sessions/2025-11-23T03-38-51/logs/hippocampus.log
+   * Format: .continuum/personas/{name}-{id}/logs/{subprocess}.log
+   * Example: .continuum/personas/grok-aff84949/logs/hippocampus.log
    *
-   * Uses timestamp instead of sessionId for human-readable, stable log paths
+   * Uses persona.homeDirectory as the single source of truth
    */
   private getLogFilePath(fileName: string): string {
-    // Use persona name-id format: grok-aff84949
-    const personaDirName = this.getPersonaDirName();
-
-    // Always use timestamp for session directory (human-readable, no race conditions)
-    return `${process.cwd()}/.continuum/personas/${personaDirName}/sessions/${this.sessionTimestamp}/logs/${fileName}`;
-  }
-
-  /**
-   * Get persona directory name in format: name-shortid
-   * Example: grok-aff84949, helper-ai-abc12345
-   */
-  private getPersonaDirName(): string {
-    const displayName = this.persona.entity.displayName
-      .toLowerCase()
-      .replace(/\s+/g, '-') // spaces to hyphens
-      .replace(/[^a-z0-9-]/g, ''); // remove special chars
-
-    const shortId = this.persona.id.substring(0, 8);
-    return `${displayName}-${shortId}`;
+    // Use persona's homeDirectory (already absolute path from SystemPaths)
+    return `${this.persona.homeDirectory}/logs/${fileName}`;
   }
 
   /**

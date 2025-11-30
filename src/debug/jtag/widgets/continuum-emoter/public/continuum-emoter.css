@@ -158,6 +158,11 @@
   animation: pulse-initializing 2s infinite;
 }
 
+.status-orb.status-custom {
+  color: var(--orb-color, #00d9ff);
+  animation: pulse-healthy 2s infinite;
+}
+
 /* Pulse Animations - Animate the inner orb glow via opacity */
 @keyframes pulse-healthy {
   0%, 100% { opacity: 1; }

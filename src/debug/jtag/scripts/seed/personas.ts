@@ -4,8 +4,10 @@
  * All persona definitions in one place for easy maintenance.
  * Used by seed-continuum.ts to create persona users.
  *
- * uniqueId format: @username (short, simple, no spaces)
- * Examples: @claude, @helper, @sentinel
+ * uniqueId format: Simple slug WITHOUT @ prefix
+ * Examples: claude, helper, grok, sentinel
+ *
+ * The @ symbol is ONLY for UI mentions, NOT part of uniqueId
  */
 
 import { generateUniqueId } from '../../system/data/utils/UniqueIdUtils';
@@ -19,7 +21,9 @@ export interface PersonaConfig {
 
 /**
  * Complete list of all personas in the system
- * uniqueId is auto-generated from displayName using generateUniqueId()
+ * uniqueId is clean slug (no @ prefix, no UUID suffix)
+ *
+ * generateUniqueId() now returns clean slugs without @ prefix
  */
 export const PERSONA_CONFIGS: PersonaConfig[] = [
   // Core agents
@@ -45,8 +49,6 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
 
 /**
  * Helper constants for commonly referenced personas
- * Export the uniqueId directly so callers can use constants, not magic strings
- * Using type as stable lookup property (more robust than array indices)
  */
 export const PERSONA_UNIQUE_IDS = {
   CLAUDE: generateUniqueId('Claude'),

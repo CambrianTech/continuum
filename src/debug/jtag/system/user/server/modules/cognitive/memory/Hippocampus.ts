@@ -17,6 +17,7 @@
 import { PersonaContinuousSubprocess } from '../../PersonaSubprocess';
 import type { PersonaUser } from '../../../PersonaUser';
 import { Commands } from '../../../../../core/shared/Commands';
+import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import type { DataOpenParams, DataOpenResult } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import type { DataListParams, DataListResult } from '../../../../../../commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../../../../commands/data/create/shared/DataCreateTypes';
@@ -34,6 +35,7 @@ import { AdaptiveConsolidationThreshold } from './AdaptiveConsolidationThreshold
 import { MemoryConsolidationAdapter } from './adapters/MemoryConsolidationAdapter';
 import { SemanticCompressionAdapter } from './adapters/SemanticCompressionAdapter';
 import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
+import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
 
 /**
  * Snapshot of persona state at tick time
@@ -117,8 +119,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Opens dedicated SQLite database for this persona
    */
   private async initializeDatabase(): Promise<void> {
-    const personaDirName = this.getPersonaDirName();
-    const dbPath = `.continuum/personas/${personaDirName}/memory/longterm.db`;
+    // Use SystemPaths.personas.longterm() as SINGLE SOURCE OF TRUTH for path
+    const dbPath = SystemPaths.personas.longterm(this.persona.entity.uniqueId);
 
     try {
       this.log(`Opening LTM database: ${dbPath}`);
@@ -139,10 +141,6 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       this.memoryDbHandle = result.dbHandle;
       this.log(`LTM database opened: ${this.memoryDbHandle}`);
-
-      // Ensure schema exists
-      await this.ensureSchema();
-
       this.log('LTM database initialized successfully');
     } catch (error) {
       const errorMsg = String(error);
@@ -176,8 +174,6 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
           this.memoryDbHandle = result.dbHandle;
           this.log(`LTM database opened (after recovery): ${this.memoryDbHandle}`);
-
-          await this.ensureSchema();
           this.log('✅ LTM database recovered and initialized successfully');
           return;
         } catch (recoveryError) {
@@ -191,47 +187,6 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       console.error(`❌ [Hippocampus] Failed to initialize database:`, error);
       // Continue without LTM (STM-only mode)
     }
-  }
-
-  /**
-   * Ensure schema exists (adapter handles table creation)
-   *
-   * Note: No direct table creation. The adapter (SqliteStorageAdapter) creates
-   * simple entity table with: id, data (JSON), created_at, updated_at, version
-   * All field names are snake_case - adapter responsibility, not ours.
-   */
-  private async ensureSchema(): Promise<void> {
-    if (!this.memoryDbHandle) return;
-
-    try {
-      this.log('Ensuring LTM schema...');
-
-      // Trigger table creation - adapter will handle it automatically
-      // Simple entity table: id, data (JSON), created_at, updated_at, version
-      await Commands.execute('data/list', {
-        dbHandle: this.memoryDbHandle,
-        collection: 'memories',
-        limit: 1
-      } as any);
-
-      this.log('✅ LTM schema ready (adapter created table with snake_case columns)');
-    } catch (error) {
-      this.log(`ERROR: Failed to ensure schema: ${error}`);
-      console.error(`❌ [Hippocampus] Failed to ensure schema:`, error);
-    }
-  }
-
-  /**
-   * Get persona directory name (helper-ai-154ee833)
-   */
-  private getPersonaDirName(): string {
-    const displayName = this.persona.entity.displayName
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9-]/g, '');
-
-    const shortId = this.persona.id.substring(0, 8);
-    return `${displayName}-${shortId}`;
   }
 
   /**
@@ -318,7 +273,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     };
 
     // Snoop on PersonaUser's working memory (thoughts during cognition)
-    if (this.persona.workingMemory) {
+    if (this.persona.mind?.workingMemory) {
       await this.snoopAndConsolidate();
     }
 
@@ -348,13 +303,13 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       const currentThreshold = this.adaptiveThreshold.getThreshold();
 
       // 3. Recall thoughts above adaptive threshold
-      const thoughts = await this.persona.workingMemory.recall({
+      const thoughts = await this.persona.mind?.workingMemory?.recall({
         minImportance: currentThreshold,  // ← ADAPTIVE!
         limit: 50,
         includePrivate: true
       });
 
-      if (thoughts.length === 0) {
+      if (!thoughts || thoughts.length === 0) {
         return;
       }
 
@@ -415,7 +370,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
               consolidatedIds.push(...(memory.context.synthesizedFrom as string[]));
             } else {
               // Raw adapter: find matching thought by timestamp/content
-              const matchingThought = thoughts.find(t =>
+              const matchingThought = thoughts.find((t: WorkingMemoryEntry) =>
                 t.thoughtContent === memory.content ||
                 Math.abs(new Date(t.createdAt).getTime() - new Date(memory.timestamp).getTime()) < 1000
               );
@@ -436,7 +391,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       // Remove ONLY successfully consolidated thoughts from working memory
       if (consolidatedIds.length > 0) {
-        await this.persona.workingMemory.clearBatch(consolidatedIds as any);
+        await this.persona.mind?.workingMemory.clearBatch(consolidatedIds as any);
         this.log(`✅ Consolidated ${consolidatedIds.length} thoughts to LTM${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
 
         // Reset time decay timer (successful consolidation)
@@ -464,7 +419,11 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   private async calculateActivityLevel(): Promise<number> {
     try {
       // Get working memory capacity usage
-      const capacity = await this.persona.workingMemory.getCapacity('chat');
+      const capacity = await this.persona.mind?.workingMemory?.getCapacity('chat');
+
+      if (!capacity) {
+        return 1.0;  // Default to moderate activity if mind/workingMemory not available
+      }
 
       // Rough heuristic: working memory size indicates recent activity
       // If working memory is 40/100, estimate ~4 msg/min over last 10 min
@@ -496,8 +455,8 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    */
   public async getStats(): Promise<MemoryStats> {
     // Get working memory size (source of consolidation)
-    const workingMemorySize = this.persona.workingMemory
-      ? (await this.persona.workingMemory.getCapacity('chat')).used  // TODO: aggregate all domains
+    const workingMemorySize = this.persona.mind?.workingMemory
+      ? (await this.persona.mind.workingMemory.getCapacity('chat')).used  // TODO: aggregate all domains
       : 0;
 
     return {

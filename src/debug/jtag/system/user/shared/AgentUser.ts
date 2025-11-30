@@ -29,6 +29,14 @@ export class AgentUser extends AIUser {
   }
 
   /**
+   * AgentUsers don't have persistent home directories on the server
+   * They connect externally and maintain state in-memory only
+   */
+  get homeDirectory(): string {
+    throw new Error('AgentUser does not have a home directory - agents are ephemeral and maintain no server-side files');
+  }
+
+  /**
    * AgentUser creation recipe
    *
    * Simpler than PersonaUser - agents connect externally via WebSocket

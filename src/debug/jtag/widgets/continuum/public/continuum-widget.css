@@ -91,3 +91,62 @@ sidebar-resizer:active, sidebar-resizer.dragging {
   z-index: 2000;
   max-width: 320px;
 }
+
+/* Continuum Status Display - HAL 9000 inspired */
+.continuum-status {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  z-index: 3000;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.status-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: var(--color-system, #0066cc);
+  box-shadow: 0 0 8px var(--color-system, #0066cc);
+  animation: pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.1);
+  }
+}
+
+.status-emoji {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.status-message {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Hide empty status */
+.continuum-status:has(.status-dot:empty):has(.status-emoji:empty):has(.status-message:empty) {
+  opacity: 0;
+  pointer-events: none;
+}

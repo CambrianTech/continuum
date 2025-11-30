@@ -112,11 +112,18 @@ export interface ModelConfig {
  * - capabilities: What the caller can process (vision, audio, parsing)
  * - Enables commands to return output optimized for the caller
  *
+ * ANDROID CONTEXT PATTERN (NEW):
+ * - homeDir: Home directory for this context (like Android Context)
+ * - System contexts → `.continuum/jtag`
+ * - Persona contexts → `.continuum/personas/{uniqueId}`
+ * - Enables sandboxing and per-context resource isolation
+ *
  * @param uuid - Unique identifier for this context instance
  * @param environment - Execution environment (server/browser/remote)
  * @param getConfig - Environment-appropriate configuration accessor
  * @param callerType - Optional explicit caller type hint
  * @param capabilities - Optional caller capability information
+ * @param homeDir - Optional home directory for sandboxed operations
  *
  * @see docs/CALLER-ADAPTIVE-OUTPUTS.md for architecture details
  */
@@ -137,6 +144,9 @@ export interface JTAGContext {
 
   /** Optional model configuration (for PersonaUsers, used to determine appropriate resource sizing) */
   modelConfig?: ModelConfig;
+
+  /** Optional home directory for context-specific operations (Android Context pattern) */
+  homeDir?: string;
 }
 
 /**

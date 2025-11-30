@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.5339",
+  "version": "1.0.5656",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -286,7 +286,8 @@
     "data:clear": "npm run data:backup && npx tsx scripts/data-clear.ts",
     "data:seed": "npx tsx scripts/seed-continuum.ts",
     "data:reseed": "npm run data:clear && npm run data:seed",
-    "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'"
+    "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'",
+    "python:ensure": "npx tsx scripts/ensure-python-env.ts"
   },
   "keywords": [
     "global-cli",
