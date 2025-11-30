@@ -16,9 +16,17 @@ export interface DaemonEntry {
   name: string;
   className: string;
   daemonClass: new (...args: any[]) => DaemonBase;
+  priority: number;  // Lower = earlier initialization (0 = first, 10 = last)
 }
 
 export abstract class DaemonBase extends JTAGModule implements MessageSubscriber {
+  /**
+   * Daemon initialization priority - lower values initialize first
+   * Override in subclasses to control initialization order
+   * Default: 10 (last)
+   */
+  static priority?: number;
+
   public readonly router: JTAGRouter;
   public abstract readonly subpath: string;
   public readonly uuid: string;

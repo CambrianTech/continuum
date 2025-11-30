@@ -173,10 +173,17 @@ export abstract class JTAGSystem extends JTAGBase {
     });
     console.log(`🏗️ JTAG Server: Loading ${this.daemonEntries.length} daemons...`);
 
-    const daemonPromises = this.daemonEntries.map(async (daemonEntry) => {
+    // Sort by priority (lower = earlier initialization)
+    // DataDaemon (priority 0) MUST initialize first, others follow
+    const sortedDaemons = [...this.daemonEntries].sort((a, b) => a.priority - b.priority);
+
+    // Sequential initialization to respect dependencies
+    const initializedDaemons: (DaemonBase | null)[] = [];
+
+    for (const daemonEntry of sortedDaemons) {
       try {
         const daemon = this.createDaemon(daemonEntry, this.context, this.router);
-        
+
         if (daemon) {
           // Initialize daemon after construction is complete
           await daemon.initializeDaemon();
@@ -187,16 +194,15 @@ export abstract class JTAGSystem extends JTAGBase {
           if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
             (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
           }
-          return daemon;
+          initializedDaemons.push(daemon);
+        } else {
+          initializedDaemons.push(null);
         }
-        return null;
       } catch (error) {
         console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error);
-        return null;
+        initializedDaemons.push(null);
       }
-    });
-
-    await Promise.all(daemonPromises);
+    }
     
     // Emit daemons loaded event
     this.router.eventManager.events.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {

@@ -177,7 +177,8 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
         entryTemplate: `{
     name: '{name}',
     className: '{className}',
-    daemonClass: {className}
+    daemonClass: {className},
+    priority: {className}.priority || 10
   }`
       }
     },
