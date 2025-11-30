@@ -21,12 +21,6 @@ import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
  * Data Daemon Server - JTAG Server Integration
  */
 export class DataDaemonServer extends DataDaemonBase {
-  /**
-   * Daemon priority - lower values initialize first
-   * DataDaemon MUST be first (priority 0) since other daemons depend on it
-   */
-  static readonly priority = 0;
-
   private dataDaemon: DataDaemon;
 
   constructor(context: JTAGContext, router: JTAGRouter) {

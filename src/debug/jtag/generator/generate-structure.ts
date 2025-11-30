@@ -178,7 +178,6 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
     name: '{name}',
     className: '{className}',
     daemonClass: {className},
-    priority: {className}.priority || 10
   }`
       }
     },

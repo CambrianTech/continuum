@@ -13,13 +13,6 @@ import { EventSubscriptionManager } from '../../../system/events/shared/EventSub
 import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
 
 export class EventsDaemonServer extends EventsDaemon implements IEventSubscriptionProvider {
-  /**
-   * Daemon priority - lower values initialize first
-   * EventsDaemon needs priority 2 (initialize after SessionDaemon)
-   * since other daemons may emit events during their own initialization
-   */
-  static readonly priority = 2;
-
   protected eventManager = new EventManager();
   private subscriptionManager = new EventSubscriptionManager();
 

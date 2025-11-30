@@ -59,13 +59,6 @@ const createSessionErrorResponse = (
 };
 
 export class SessionDaemonServer extends SessionDaemon {
-  /**
-   * Daemon priority - lower values initialize first
-   * SessionDaemon needs priority 1 (initialize right after DataDaemon)
-   * since browser immediately requests session creation on WebSocket connect
-   */
-  static readonly priority = 1;
-
   private sessions: SessionMetadata[] = []; // In-memory active sessions for server
   private sessionTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map(); // Timeout tracking
   private readonly SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes for ephemeral sessions
