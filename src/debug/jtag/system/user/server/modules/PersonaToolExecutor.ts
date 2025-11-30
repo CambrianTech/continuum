@@ -74,23 +74,19 @@ export interface PersonaUserForToolExecutor {
 export class PersonaToolExecutor {
   private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/system/logs/cognition.log');
 
-  private personaId: UUID;
-  private personaName: string;
-  private uniqueId: string;
+  private persona: PersonaUserForToolExecutor;
   private toolRegistry: ToolRegistry;
   private formatAdapters: ToolFormatAdapter[];
   private log: ReturnType<typeof Logger.create>;
 
   constructor(personaUser: PersonaUserForToolExecutor) {
-    this.personaId = personaUser.id;
-    this.personaName = personaUser.displayName;
-    this.uniqueId = personaUser.entity.uniqueId;
+    this.persona = personaUser;
     this.toolRegistry = ToolRegistry.getInstance();
     this.formatAdapters = getToolFormatAdapters();
 
     // Per-persona tools.log in their own directory
-    const logPath = path.join(SystemPaths.personas.logs(this.uniqueId), 'tools.log');
-    this.log = Logger.createWithFile(`PersonaToolExecutor:${this.personaName}`, logPath, FileMode.APPEND);
+    const logPath = path.join(SystemPaths.personas.logs(this.persona.entity.uniqueId), 'tools.log');
+    this.log = Logger.createWithFile(`PersonaToolExecutor:${this.persona.displayName}`, logPath, FileMode.APPEND);
   }
 
   /**
@@ -146,7 +142,7 @@ export class PersonaToolExecutor {
     }
 
     this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
-    PersonaToolExecutor.logToCognitionFile(`🔧 ${this.personaName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
+    PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
     const results: string[] = [];
     const allMedia: MediaItem[] = [];
@@ -156,7 +152,7 @@ export class PersonaToolExecutor {
       const startTime = Date.now();
 
       this.log.info(`Calling ${toolCall.toolName} with params:`, toolCall.parameters);
-      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.personaName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(toolCall.parameters)}`);
+      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(toolCall.parameters)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
       // NO try-catch - let exceptions bubble to PersonaResponseGenerator
@@ -189,7 +185,7 @@ export class PersonaToolExecutor {
         this.log.error(`  └─ Error: ${result.error || 'unknown error'}`);
         this.log.error(`  └─ Params:`, toolCall.parameters);
       }
-      PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.personaName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
+      PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.persona.displayName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
       this.log.debugIf(() => [`${toolCall.toolName} returned media:`, result.media ? `${result.media.length} items` : 'NONE']);
@@ -234,8 +230,8 @@ export class PersonaToolExecutor {
 
       // Log tool execution to cognition database (for interrogation)
       await CognitionLogger.logToolExecution(
-        this.personaId,
-        this.personaName,
+        this.persona.id,
+        this.persona.displayName,
         toolCall.toolName,
         toolCall.parameters,
         result.success ? 'success' : 'error',
@@ -347,8 +343,8 @@ ${result.error || 'Unknown error'}
     const message = new ChatMessageEntity();
     message.id = generateUUID();
     message.roomId = roomId;
-    message.senderId = this.personaId;
-    message.senderName = this.personaName;
+    message.senderId = this.persona.id;
+    message.senderName = this.persona.displayName;
     message.senderType = 'system';  // Tool results are system messages
     message.content = { text: summary, media: result.media || [] };  // Include media from tool results
     message.metadata = {
