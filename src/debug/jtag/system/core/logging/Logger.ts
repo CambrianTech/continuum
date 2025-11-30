@@ -55,11 +55,20 @@ export enum FileMode {
 
 type LogCategory = 'sql' | 'persona-mind' | 'genome' | 'system' | 'tools';
 
+interface LogQueueEntry {
+  message: string;
+  stream: fs.WriteStream;
+}
+
 class LoggerClass {
   private static instance: LoggerClass;
   private config: LoggerConfig;
-  private fileStreams: Map<LogCategory, fs.WriteStream>;
+  private fileStreams: Map<string, fs.WriteStream>;  // file path -> stream
+  private logQueues: Map<string, LogQueueEntry[]>;    // file path -> queue
+  private logTimers: Map<string, NodeJS.Timeout>;     // file path -> flush timer
   private logDir: string;
+  private readonly FLUSH_INTERVAL_MS = 100;           // Flush every 100ms
+  private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
 
   private constructor() {
     // Default: INFO for development, WARN for production
@@ -80,6 +89,8 @@ class LoggerClass {
     };
 
     this.fileStreams = new Map();
+    this.logQueues = new Map();
+    this.logTimers = new Map();
     // Use SystemPaths for correct log directory (.continuum/jtag/system/logs)
     this.logDir = SystemPaths.logs.system;
   }
@@ -99,8 +110,10 @@ class LoggerClass {
       return null as any;
     }
 
-    if (this.fileStreams.has(category)) {
-      return this.fileStreams.get(category)!;
+    const logFile = path.join(this.logDir, `${category}.log`);
+
+    if (this.fileStreams.has(logFile)) {
+      return this.fileStreams.get(logFile)!;
     }
 
     // Create log directory if it doesn't exist
@@ -108,12 +121,68 @@ class LoggerClass {
       fs.mkdirSync(this.logDir, { recursive: true, mode: 0o755 });
     }
 
-    const logFile = path.join(this.logDir, `${category}.log`);
     // System logs ALWAYS use 'a' (append) - never truncate during runtime
     const stream = fs.createWriteStream(logFile, { flags: 'a', mode: 0o644 });
 
-    this.fileStreams.set(category, stream);
+    this.fileStreams.set(logFile, stream);
+    this.logQueues.set(logFile, []);
+    this.startFlushTimer(logFile);
+
     return stream;
+  }
+
+  /**
+   * Start periodic flush timer for a log file
+   */
+  private startFlushTimer(logFile: string): void {
+    if (this.logTimers.has(logFile)) {
+      return; // Timer already running
+    }
+
+    const timer = setInterval(() => {
+      this.flushQueue(logFile);
+    }, this.FLUSH_INTERVAL_MS);
+
+    this.logTimers.set(logFile, timer);
+  }
+
+  /**
+   * Queue a log message for async writing
+   * Fire-and-forget - never blocks the caller
+   */
+  private queueMessage(logFile: string, message: string): void {
+    const queue = this.logQueues.get(logFile);
+    const stream = this.fileStreams.get(logFile);
+
+    if (!queue || !stream) {
+      return; // Logging disabled or stream not initialized
+    }
+
+    queue.push({ message, stream });
+
+    // Immediate flush if queue is getting full
+    if (queue.length >= this.MAX_QUEUE_SIZE) {
+      this.flushQueue(logFile);
+    }
+  }
+
+  /**
+   * Flush queued messages to file (batched write)
+   */
+  private flushQueue(logFile: string): void {
+    const queue = this.logQueues.get(logFile);
+    const stream = this.fileStreams.get(logFile);
+
+    if (!queue || !stream || queue.length === 0) {
+      return;
+    }
+
+    // Batch all messages into single write
+    const batch = queue.map(entry => entry.message).join('');
+    stream.write(batch);
+
+    // Clear queue
+    queue.length = 0;
   }
 
   /**
@@ -124,7 +193,8 @@ class LoggerClass {
    */
   create(component: string, category?: LogCategory): ComponentLogger {
     const fileStream = category ? this.getFileStream(category) : undefined;
-    return new ComponentLogger(component, this.config, fileStream);
+    const logFile = category ? path.join(this.logDir, `${category}.log`) : undefined;
+    return new ComponentLogger(component, this.config, fileStream, logFile, this);
   }
 
   /**
@@ -141,6 +211,12 @@ class LoggerClass {
       mode = FileMode.APPEND;
     }
 
+    // Check if stream already exists
+    if (this.fileStreams.has(logFilePath)) {
+      const stream = this.fileStreams.get(logFilePath)!;
+      return new ComponentLogger(component, this.config, stream, logFilePath, this);
+    }
+
     // Create custom file stream with specified mode
     const logDir = path.dirname(logFilePath);
     if (!fs.existsSync(logDir)) {
@@ -148,7 +224,11 @@ class LoggerClass {
     }
 
     const stream = fs.createWriteStream(logFilePath, { flags: mode, mode: 0o644 });
-    return new ComponentLogger(component, this.config, stream);
+    this.fileStreams.set(logFilePath, stream);
+    this.logQueues.set(logFilePath, []);
+    this.startFlushTimer(logFilePath);
+
+    return new ComponentLogger(component, this.config, stream, logFilePath, this);
   }
 
   /**
@@ -169,10 +249,23 @@ class LoggerClass {
    * Close all file streams (call on shutdown)
    */
   shutdown(): void {
+    // Flush all queues before closing streams
+    for (const logFile of this.logQueues.keys()) {
+      this.flushQueue(logFile);
+      const timer = this.logTimers.get(logFile);
+      if (timer) {
+        clearInterval(timer);
+      }
+    }
+
+    // Close all streams
     for (const stream of this.fileStreams.values()) {
       stream.end();
     }
+
     this.fileStreams.clear();
+    this.logQueues.clear();
+    this.logTimers.clear();
   }
 }
 
@@ -180,7 +273,9 @@ class ComponentLogger {
   constructor(
     private component: string,
     private config: LoggerConfig,
-    private fileStream?: fs.WriteStream
+    private fileStream?: fs.WriteStream,
+    private logFilePath?: string,
+    private logger?: LoggerClass
   ) {}
 
   private shouldLog(level: LogLevel): boolean {
@@ -205,8 +300,8 @@ class ComponentLogger {
       console.log(prefix, message, ...args);
     }
 
-    // File output (if category specified)
-    if (this.fileStream) {
+    // File output (if category specified) - FIRE-AND-FORGET via queue
+    if (this.fileStream && this.logFilePath && this.logger) {
       const formattedArgs = args.length > 0
         ? ' ' + args.map(arg =>
             typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
@@ -214,7 +309,8 @@ class ComponentLogger {
         : '';
 
       const logLine = `${timestamp}[${level}] ${this.component}: ${message}${formattedArgs}\n`;
-      this.fileStream.write(logLine);
+      // Queue the message - never blocks!
+      (this.logger as any).queueMessage(this.logFilePath, logLine);
     }
   }
 
