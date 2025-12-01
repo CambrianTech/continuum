@@ -9,7 +9,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (49a9f011-8365-4dd8-814d-b235f10a1ae0) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (6b835a43-147a-44c1-9557-3ea0725bc945) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -23,62 +23,154 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1764574818878_2uul0235
-🏷️ JTAGClientServer: Session updated to: 6fad74f4-b84e-462e-a1e3-e3cc67bb5a61 (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1764607085159_palkze02
+🏷️ JTAGClientServer: Session updated to: 4a98169f-5112-4b77-a1e1-2fc54c743352 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764574818882_nfi8pzad
+📤 RemoteConnection: Sending command 'list' with correlation client_1764607085165_43l6v0qe
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764574818885_4haybgf5
+📤 RemoteConnection: Sending command 'list' with correlation client_1764607085167_einojhof
 ✅ Server: JTAGClient connected with 124 commands
 ✅ Connected
 ⏳ Waiting for widgets to initialize...
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764574821887_7w0x2hp6
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607088170_1y11nnjw
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 ✅ Widget user-list-widget initialized
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764574821893_d9h8n0pt
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607088186_fdm38lf5
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 ✅ Widget room-list-widget initialized
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764574821896_plir6c87
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607088191_hssnajk8
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 ✅ Widget chat-widget initialized
 
 🧪 CRUD TEST: users → user-list-widget
 
 📋 VERIFY after BEFORE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607090196_ijkjx48t
 📋 JTAGClient: Non-response message type 'request' - acknowledging
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764574823902_x6r3t2r8
-📋 JTAGClient: Non-response message type 'request' - acknowledging
-  🎨 Widget: ✅ Widget working (15 entities)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764574823906_hob250l3
+  🎨 Widget: ✅ Widget working (14 entities)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607090210_x7u8lujg
 📋 JTAGClient: Non-response message type 'request' - acknowledging
   📸 Screenshot: user-before.png
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1764574825082_jrkcc5os
-✅ CREATE: 1764574825082-hfplyw4xe
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1764607091344_tixbuv5x
+✅ CREATE: 1764607091347-ayb7qmqx3
 
 📋 VERIFY after CREATE:
-📋 JTAGClient: Non-response message type 'request' - acknowledging
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1764574827093_61t0jklk
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607093365_bsfdoll9
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764574827094_llnmdca1
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607093369_ayvvrwfa
 📋 JTAGClient: Non-response message type 'request' - acknowledging
-  🎨 Widget: ✅ Entity 1764574825082-hfplyw4xe found in widget (16 total)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764574827099_4b8xgqna
+  🎨 Widget: ✅ Entity 1764607091347-ayb7qmqx3 found in widget (15 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607093390_zif62wrb
 📋 JTAGClient: Non-response message type 'request' - acknowledging
   📸 Screenshot: user-create.png
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1764574828163_8cwqzu02
-❌ Test failed: Error: UPDATE failed: Entity not found for update: users/1764574825082-hfplyw4xe
-    at testCrud (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:153:11)
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async testDatabaseChatIntegration (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:191:24)
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1764607094452_3hfx3fou
+✅ UPDATE: Modified
+
+📋 VERIFY after UPDATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607096467_6ktxqp89
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607096472_y798pt8b
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Entity 1764607091347-ayb7qmqx3 found in widget (15 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607096484_jauuk3jg
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: user-update.png
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764607097521_ezcnljyv
+✅ DELETE: Removed
+
+📋 VERIFY after DELETE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607099535_nmf2qfzc
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607099552_96no8ofk
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: user-delete.png
+
+🧪 CRUD TEST: rooms → room-list-widget
+
+📋 VERIFY after BEFORE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607102579_t5lfgeyf
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Widget working (7 entities)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607102594_3xl4h88q
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: room-before.png
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1764607103630_ryoxbpkj
+✅ CREATE: 1764607103631-pd5p0hwzy
+
+📋 VERIFY after CREATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607105643_1esit95p
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607105649_rfiq3jpf
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Entity 1764607103631-pd5p0hwzy found in widget (8 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607105661_8wz2rpst
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: room-create.png
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1764607106701_mhc7b7ux
+✅ UPDATE: Modified
+
+📋 VERIFY after UPDATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607108714_v1zjovqx
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607108724_5ewq6lsd
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Entity 1764607103631-pd5p0hwzy found in widget (8 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607108734_eanpm6ju
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: room-update.png
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764607109769_qc9bagt3
+✅ DELETE: Removed
+
+📋 VERIFY after DELETE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607111787_na4dehff
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1764607111799_3em8ft36
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: room-delete.png
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1764607112805_pl26chau
+
+🧪 CRUD TEST: chat_messages → chat-widget
+
+📋 VERIFY after BEFORE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607114820_xt77w142
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Widget working (30 entities)
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1764607114836_4s959ped
+✅ CREATE: 1764607114836-1xsbst7wm
+
+📋 VERIFY after CREATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607116884_dzz7m913
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607117748_ac5psuk7
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Entity 1764607114836-1xsbst7wm found in widget (31 total)
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1764607117771_t168jd5b
+✅ UPDATE: Modified
+
+📋 VERIFY after UPDATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607120142_j5krziwl
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607120501_yemnvo50
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  🎨 Widget: ✅ Entity 1764607114836-1xsbst7wm found in widget (31 total)
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764607120722_bugkefbc
+✅ DELETE: Removed
+
+📋 VERIFY after DELETE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1764607124264_26r493i8
+📋 JTAGClient: Non-response message type 'request' - acknowledging
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+
+🎉 ALL CRUD TESTS PASSED (3 entities × 4 operations = 12 screenshots)
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 6fad74f4-b84e-462e-a1e3-e3cc67bb5a61 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session 4a98169f-5112-4b77-a1e1-2fc54c743352 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...
 ✅ ConnectionBroker: Shutdown complete
 ✅ JTAGClient: Connection Broker shut down
-🚨 Database chat integration test failed: Error: UPDATE failed: Entity not found for update: users/1764574825082-hfplyw4xe
-    at testCrud (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:153:11)
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async testDatabaseChatIntegration (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:191:24)
+✅ Database chat integration test completed successfully

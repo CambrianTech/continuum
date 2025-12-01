@@ -20,7 +20,8 @@ export interface DaemonEntry {
 
 /**
  * Simple logger interface for daemons
- * Wraps console.log with prefix for easy identification in logs
+ * Browser-safe: No-op logger that doesn't spam console
+ * Server overrides this with proper file-based Logger in server-side constructors
  */
 interface DaemonLogger {
   info(message: string, ...args: any[]): void;
@@ -40,13 +41,13 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
     this.router = router;
     this.uuid = `${name}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-    // Create console.log proxy with daemon prefix for easy identification
-    const prefix = `[DAEMON:${name}]`;
+    // Browser-safe no-op logger (prevents console spam)
+    // Server-side subclasses MUST override this with Logger.create() in their constructor
     this.log = {
-      info: (message: string, ...args: any[]) => console.log(prefix, message, ...args),
-      warn: (message: string, ...args: any[]) => console.warn(prefix, message, ...args),
-      error: (message: string, ...args: any[]) => console.error(prefix, message, ...args),
-      debug: (message: string, ...args: any[]) => console.log(prefix, '[DEBUG]', message, ...args)
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {}
     };
 
     // Initialization will be called explicitly after construction completes

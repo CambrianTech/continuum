@@ -11,13 +11,19 @@
  *   log.warn('Unusual condition');
  *   log.error('Error occurred', error);
  *
- * Control via environment variable:
+ * Control via environment variables:
  *   LOG_LEVEL=error  - Only errors
  *   LOG_LEVEL=warn   - Warnings and errors (default for production)
  *   LOG_LEVEL=info   - Info, warnings, errors (default for development)
  *   LOG_LEVEL=debug  - Everything (verbose, for debugging only)
  *
- * Alpha launch default: LOG_LEVEL=warn (minimal noise)
+ *   LOG_TO_CONSOLE=0 - Disable console output (logs only to files)
+ *   LOG_TO_CONSOLE=1 - Enable console output (default)
+ *
+ *   LOG_TO_FILES=0   - Disable file logging
+ *   LOG_TO_FILES=1   - Enable file logging (default)
+ *
+ * Alpha launch default: LOG_LEVEL=warn, LOG_TO_CONSOLE=0 (clean console, files only)
  *
  * Log File Categories:
  *   - 'sql': All database operations (queries, writes, schema)
@@ -45,6 +51,7 @@ interface LoggerConfig {
   enableColors: boolean;
   enableTimestamps: boolean;
   enableFileLogging: boolean;
+  enableConsoleLogging: boolean;
 }
 
 export enum FileMode {
@@ -85,7 +92,8 @@ class LoggerClass {
       level: levelMap[envLevel] || LogLevel.INFO,
       enableColors: process.env.NO_COLOR !== '1',
       enableTimestamps: process.env.LOG_TIMESTAMPS === '1',
-      enableFileLogging: process.env.LOG_TO_FILES !== '0'  // Enabled by default, disable with LOG_TO_FILES=0
+      enableFileLogging: process.env.LOG_TO_FILES !== '0',  // Enabled by default, disable with LOG_TO_FILES=0
+      enableConsoleLogging: process.env.LOG_TO_CONSOLE !== '0'  // Enabled by default, disable with LOG_TO_CONSOLE=0
     };
 
     this.fileStreams = new Map();
@@ -293,11 +301,13 @@ class ComponentLogger {
 
     const prefix = `${timestamp}${emoji} ${this.component}:`;
 
-    // Console output
-    if (args.length === 0) {
-      console.log(prefix, message);
-    } else {
-      console.log(prefix, message, ...args);
+    // Console output (if enabled)
+    if (this.config.enableConsoleLogging) {
+      if (args.length === 0) {
+        console.log(prefix, message);
+      } else {
+        console.log(prefix, message, ...args);
+      }
     }
 
     // File output (if category specified) - FIRE-AND-FORGET via queue
