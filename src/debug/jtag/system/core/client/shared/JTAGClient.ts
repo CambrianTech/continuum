@@ -335,7 +335,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     }
 
     // Handle other transport protocol messages (health checks, etc.)
-    console.log(`📋 JTAGClient: Non-response message type '${message.messageType}' - acknowledging`);
+    // console.log(`📋 JTAGClient: Non-response message type '${message.messageType}' - acknowledging`);
     const response: BaseResponsePayload = {
       success: true,
       timestamp: new Date().toISOString(),

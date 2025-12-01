@@ -770,7 +770,7 @@ export class DataDaemon {
       await Events.emit(DataDaemon.jtagContext, eventName, entity);
     }
 
-    console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
+    // console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
 
     return entity;
   }

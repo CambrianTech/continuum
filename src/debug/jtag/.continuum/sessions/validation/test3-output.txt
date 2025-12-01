@@ -10,7 +10,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (54eab87c-d046-4aed-82ae-43300231e5a3) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (3c4fa5c3-4a86-4fe1-8b61-3ace53afb4bf) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -24,23 +24,23 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1764619034213_c9ibsok1
-🏷️ JTAGClientServer: Session updated to: f6838206-a11d-4cc9-a369-61ec8cffcbf0 (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1764625269010_0o4zaoh8
+🏷️ JTAGClientServer: Session updated to: 82d0f357-39b7-4613-9030-3cc74f24c975 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764619034217_cg5rz9za
+📤 RemoteConnection: Sending command 'list' with correlation client_1764625269279_voqstna4
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764619034220_d0v5thm0
+📤 RemoteConnection: Sending command 'list' with correlation client_1764625269378_xn7rodd5
 ✅ Server: JTAGClient connected with 124 commands
 ✅ Connected to JTAG system
 
 🔍 Step 2: Verifying system health...
-📤 RemoteConnection: Sending command 'ping' with correlation client_1764619034222_2f2jw25b
+📤 RemoteConnection: Sending command 'ping' with correlation client_1764625269476_xbs4xjzl
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 ✅ System is healthy
 
 🗄️ Step 3: Querying AI decisions and generating report...
-📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1764619034230_n4zb69dc
+📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1764625269510_g4h4l3sd
 
 ❌ AI Decision Report Integration Test: FAILED
 ===============================================
@@ -53,7 +53,7 @@ Request timeout after 30000ms
    4. Check for errors: grep "ERROR" .continuum/jtag/system/logs/npm-start.log
 
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session f6838206-a11d-4cc9-a369-61ec8cffcbf0 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session 82d0f357-39b7-4613-9030-3cc74f24c975 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

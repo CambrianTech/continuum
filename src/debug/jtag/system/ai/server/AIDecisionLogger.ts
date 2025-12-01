@@ -116,7 +116,7 @@ export class AIDecisionLogger {
     }
 
     // Also log to console with AI prefix for backward compatibility
-    console.log(`🤖 AI-DECISION: ${mainLine}`);
+    // console.log(`🤖 AI-DECISION: ${mainLine}`);
   }
 
   /**

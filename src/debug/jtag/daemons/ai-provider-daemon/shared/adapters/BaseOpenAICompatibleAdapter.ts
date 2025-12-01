@@ -31,7 +31,6 @@ import type {
   EmbeddingRequest,
   EmbeddingResponse,
   HealthStatus,
-  UsageMetrics,
 } from '../AIProviderTypesV2';
 import { AIProviderError } from '../AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';

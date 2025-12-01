@@ -78,7 +78,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
     super();
 
     // Get port from environment or use default
-    this.serverPort = process.env.SENTINEL_PORT || '11435';
+    this.serverPort = process.env.SENTINEL_PORT ?? '11435';
     this.apiEndpoint = `http://127.0.0.1:${this.serverPort}`;
 
     console.log('🧬 Sentinel Adapter initialized (HTTP mode)');

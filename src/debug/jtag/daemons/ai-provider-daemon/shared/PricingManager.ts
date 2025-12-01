@@ -132,7 +132,7 @@ export class PricingManager {
       fetchedAt: Date.now(),
       source: 'adapter'
     };
-    console.log(`✅ PricingManager: Cached adapter pricing for ${provider}/${model}`);
+    //console.log(`✅ PricingManager: Cached adapter pricing for ${provider}/${model}`);
   }
 
   /**

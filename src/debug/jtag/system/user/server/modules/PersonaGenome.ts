@@ -137,18 +137,18 @@ export class PersonaGenome {
       const adapter = this.activeAdapters.get(skillName)!;
       adapter.markUsed();
       this.currentAdapter = adapter;
-      console.log(`🧬 PersonaGenome: Skill ${skillName} already active (cache hit)`);
+      // console.log(`🧬 PersonaGenome: Skill ${skillName} already active (cache hit)`);
       return;
     }
 
     // Check if adapter is registered
     const adapter = this.availableAdapters.get(skillName);
     if (!adapter) {
-      console.warn(`⚠️ PersonaGenome: Skill ${skillName} not registered - cannot activate`);
+      // console.warn(`⚠️ PersonaGenome: Skill ${skillName} not registered - cannot activate`);
       return;
     }
 
-    console.log(`🧬 PersonaGenome: Activating skill ${skillName} (cache miss - paging in)...`);
+    // console.log(`🧬 PersonaGenome: Activating skill ${skillName} (cache miss - paging in)...`);
 
     // Check if we need to evict adapters to make space
     const adapterSize = adapter.getSize();
@@ -164,7 +164,7 @@ export class PersonaGenome {
     this.memoryUsedMB += adapterSize;
     this.currentAdapter = adapter;
 
-    console.log(`✅ PersonaGenome: Skill ${skillName} activated (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
+    // console.log(`✅ PersonaGenome: Skill ${skillName} activated (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }
 
   /**

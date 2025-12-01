@@ -14,8 +14,6 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
-import type { StorageQuery, RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
-
 // Rust-style config defaults for generic data access
 const DEFAULT_CONFIG = {
   database: {
@@ -36,7 +34,6 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
 
   async execute(params: DataListParams<T>): Promise<DataListResult<T>> {
     const collection = params.collection;
-    console.debug(`🗄️ DATA SERVER: Listing ${collection} entities via elegant type extraction`);
 
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
@@ -48,7 +45,6 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       };
       const countResult = await DataDaemon.query<BaseEntity>(countQuery);
       const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
-      console.debug(`📊 DATA SERVER: Total count for ${collection}: ${totalCount}`);
 
       // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {
@@ -76,8 +72,6 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
           error: errorWithHint
         });
       }
-
-      console.debug(`✅ DATA SERVER: Listed ${result.data?.length || 0} items from ${collection} via DataDaemon`);
 
       // Extract data from DataRecord array and merge database ID into entity data
       const items: T[] = result.data ? result.data.map(record => ({
