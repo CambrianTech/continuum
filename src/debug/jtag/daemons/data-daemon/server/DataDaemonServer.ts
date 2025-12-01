@@ -16,6 +16,9 @@ import { DATABASE_PATHS, DATABASE_FILES } from '../../../system/data/config/Data
 import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
+import { Logger } from '../../../system/core/logging/Logger';
+
+const log = Logger.create('DataDaemonServer', 'sql');
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -64,7 +67,7 @@ export class DataDaemonServer extends DataDaemonBase {
   protected async initialize(): Promise<void> {
     // Register router for universal event system
     RouterRegistry.register(this.context, this.router);
-    console.log(`🗂️ ${this.toString()}: Registered router with RouterRegistry`);
+    log.info('Registered router with RouterRegistry');
 
     // Initialize entity registry before DataDaemon initialization
     await this.initializeEntityRegistry();
@@ -75,18 +78,18 @@ export class DataDaemonServer extends DataDaemonBase {
     const context = this.createDataContext('data-daemon-server');
     DataDaemon.initialize(this.dataDaemon, context, this.context);
 
-    console.log(`🗄️ ${this.toString()}: Data daemon server initialized with SQLite backend`);
+    log.info('Data daemon server initialized with SQLite backend');
 
     // Initialize CodeDaemon for code/read operations
     const { initializeCodeDaemon } = await import('../../code-daemon/server/CodeDaemonServer');
     await initializeCodeDaemon(this.context);
-    console.log(`📂 ${this.toString()}: Code daemon initialized`);
+    log.info('Code daemon initialized');
 
     // Emit system ready event so other daemons can proceed with initialization
     const { Events } = await import('../../../system/core/shared/Events');
     const { SYSTEM_EVENTS } = await import('../../../system/core/shared/EventConstants');
     await Events.emit(SYSTEM_EVENTS.READY, { daemon: 'data' });
-    console.log(`📡 ${this.toString()}: Emitted system:ready event`);
+    log.info('Emitted system:ready event');
   }
 
   /**
@@ -96,9 +99,9 @@ export class DataDaemonServer extends DataDaemonBase {
     try {
       const { initializeEntityRegistry } = await import('./EntityRegistry');
       initializeEntityRegistry();
-      console.log(`🏷️ ${this.toString()}: Entity registry initialized`);
+      log.info('Entity registry initialized');
     } catch (error) {
-      console.error(`❌ ${this.toString()}: Failed to initialize entity registry:`, error);
+      log.error('Failed to initialize entity registry:', error);
       throw error;
     }
   }

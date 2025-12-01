@@ -12,12 +12,16 @@
 type EntityConstructor = new (...args: any[]) => any;
 export const ENTITY_REGISTRY = new Map<string, EntityConstructor>();
 
+import { Logger } from '../../../system/core/logging/Logger';
+
+const log = Logger.create('EntityRegistry', 'sql');
+
 /**
  * Register an entity class with its collection name
  * Called automatically when entity classes are imported/loaded
  */
 export function registerEntity(collectionName: string, entityClass: EntityConstructor): void {
-  console.log(`🏷️ SQLite: Registering entity ${collectionName} -> ${entityClass.name}`);
+  log.debug(`Registering entity ${collectionName} -> ${entityClass.name}`);
   ENTITY_REGISTRY.set(collectionName, entityClass);
 }
 
@@ -73,10 +77,10 @@ import { MemoryEntity } from '../../../system/data/entities/MemoryEntity';
  * Called during server startup to register all known entities
  */
 export function initializeEntityRegistry(): void {
-  console.log('🏷️ EntityRegistry: Registering all known entities...');
+  log.info('Registering all known entities...');
 
   // Initialize decorators by creating instances (required for Stage 3 decorators)
-  console.log('🔧 EntityRegistry: Initializing decorator metadata...');
+  log.debug('Initializing decorator metadata...');
   new UserEntity();
   new RoomEntity();
   new ChatMessageEntity();
@@ -148,5 +152,5 @@ export function initializeEntityRegistry(): void {
   registerEntity(DecisionProposalEntity.collection, DecisionProposalEntity);
   registerEntity(MemoryEntity.collection, MemoryEntity);
 
-  console.log('✅ EntityRegistry: All entities registered');
+  log.info('All entities registered');
 }
