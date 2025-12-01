@@ -18,16 +18,37 @@ export interface DaemonEntry {
   daemonClass: new (...args: any[]) => DaemonBase;
 }
 
+/**
+ * Simple logger interface for daemons
+ * Wraps console.log with prefix for easy identification in logs
+ */
+interface DaemonLogger {
+  info(message: string, ...args: any[]): void;
+  warn(message: string, ...args: any[]): void;
+  error(message: string, ...args: any[]): void;
+  debug(message: string, ...args: any[]): void;
+}
+
 export abstract class DaemonBase extends JTAGModule implements MessageSubscriber {
   public readonly router: JTAGRouter;
   public abstract readonly subpath: string;
   public readonly uuid: string;
+  protected readonly log: DaemonLogger;
 
   constructor(name: string, context: JTAGContext, router: JTAGRouter) {
     super(name, context);
     this.router = router;
     this.uuid = `${name}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    
+
+    // Create console.log proxy with daemon prefix for easy identification
+    const prefix = `[DAEMON:${name}]`;
+    this.log = {
+      info: (message: string, ...args: any[]) => console.log(prefix, message, ...args),
+      warn: (message: string, ...args: any[]) => console.warn(prefix, message, ...args),
+      error: (message: string, ...args: any[]) => console.error(prefix, message, ...args),
+      debug: (message: string, ...args: any[]) => console.log(prefix, '[DEBUG]', message, ...args)
+    };
+
     // Initialization will be called explicitly after construction completes
     // to ensure all subclass properties are properly initialized
   }
@@ -77,17 +98,17 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
    * Execute remote daemon operation - universal cross-environment method
    * Allows any daemon to call operations on any other daemon
    */
-  protected async executeRemote(message: JTAGMessage, environment: JTAGEnvironment): Promise<RouterResult> { 
+  protected async executeRemote(message: JTAGMessage, environment: JTAGEnvironment): Promise<RouterResult> {
     message.endpoint = useEnvironment(message.endpoint, environment);
-    console.log(`⚡ ${this.toString()}: Executing remote operation: ${message.endpoint}`);
+    this.log.info(`⚡ ${this.toString()}: Executing remote operation: ${message.endpoint}`);
     return this.router.postMessage(message);
   }
-  
+
   /**
    * Cleanup resources when daemon shuts down
    * Override in subclasses if cleanup is needed
    */
   async shutdown(): Promise<void> {
-    console.log(`🔄 ${this.toString()}: Shutting down...`);
+    this.log.info(`🔄 ${this.toString()}: Shutting down...`);
   }
 }
