@@ -40,12 +40,12 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    */
   protected async initialize(): Promise<void> {
     // Initialize SecretManager FIRST (adapters depend on it)
-    console.log('🔐 AIProviderDaemonServer: Initializing SecretManager...');
+    this.log.info('🔐 AIProviderDaemonServer: Initializing SecretManager...');
     await initializeSecrets();
-    console.log('✅ AIProviderDaemonServer: SecretManager initialized');
+    this.log.info('✅ AIProviderDaemonServer: SecretManager initialized');
 
     // Register adapters dynamically (server-only code)
-    console.log('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
+    this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
 
     // Register Ollama adapter (local, free, private)
     // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
@@ -62,7 +62,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       priority: 95, // High priority - local and free, but slower than Ollama
       enabled: true,
     });
-    console.log('✅ AIProviderDaemonServer: Sentinel adapter registered');
+    this.log.info('✅ AIProviderDaemonServer: Sentinel adapter registered');
 
     // Register cloud adapters if API keys are available
     // Priority order: Ollama (100) > DeepSeek (90) > Groq (85) > OpenAI/Anthropic (80) > Together/Fireworks (70)
@@ -75,7 +75,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 90,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: DeepSeek adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: DeepSeek adapter registered');
     }
 
     // Groq: Fastest inference (LPU hardware, <100ms latency)
@@ -86,7 +86,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 85,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Groq adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Groq adapter registered');
     }
 
     // X.AI: Grok models with advanced reasoning
@@ -97,7 +97,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 83,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
     }
 
     // OpenAI: Premium quality (GPT-4, expensive)
@@ -108,7 +108,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 80,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: OpenAI adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: OpenAI adapter registered');
     }
 
     // Anthropic: Best reasoning (Claude 3)
@@ -119,7 +119,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 80,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Anthropic adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Anthropic adapter registered');
     }
 
     // Together.ai: Cheap + diverse models
@@ -130,7 +130,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 70,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Together.ai adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Together.ai adapter registered');
     }
 
     // Fireworks: Fast inference + coding models
@@ -141,7 +141,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 70,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Fireworks adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Fireworks adapter registered');
     }
 
     // Call base initialization
@@ -150,12 +150,12 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // DISABLED: ProcessPool adds 40s overhead - direct Ollama adapter is 132x faster
     // ProcessPool with HTTP workers → 41s per request
     // Direct Ollama adapter → 310ms per request
-    console.log('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
+    this.log.info('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
 
     // Initialize static AIProviderDaemon interface for commands to use (like DataDaemon.query)
     AIProviderDaemon.initialize(this);
 
-    console.log(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
+    this.log.info(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
   }
 
   /**
@@ -163,11 +163,11 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    * Shuts down ProcessPool gracefully, then delegates to base class
    */
   async shutdown(): Promise<void> {
-    console.log('🔄 AIProviderDaemonServer: Shutting down ProcessPool...');
+    this.log.info('🔄 AIProviderDaemonServer: Shutting down ProcessPool...');
 
     if (this.processPool) {
       await this.processPool.shutdown();
-      console.log('✅ AIProviderDaemonServer: ProcessPool shutdown complete');
+      this.log.info('✅ AIProviderDaemonServer: ProcessPool shutdown complete');
     }
 
     await super.shutdown();

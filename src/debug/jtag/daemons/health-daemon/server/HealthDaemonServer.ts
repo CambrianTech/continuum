@@ -19,6 +19,6 @@ export class HealthDaemonServer extends HealthDaemon {
    */
   protected async initialize(): Promise<void> {
     await super.initialize();
-    console.log(`💓 ${this.toString()}: Server health daemon ready`);
+    this.log.info(`💓 ${this.toString()}: Server health daemon ready`);
   }
 }
