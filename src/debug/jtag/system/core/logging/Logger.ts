@@ -93,7 +93,7 @@ class LoggerClass {
       enableColors: process.env.NO_COLOR !== '1',
       enableTimestamps: process.env.LOG_TIMESTAMPS === '1',
       enableFileLogging: process.env.LOG_TO_FILES !== '0',  // Enabled by default, disable with LOG_TO_FILES=0
-      enableConsoleLogging: process.env.LOG_TO_CONSOLE !== '0'  // Enabled by default, disable with LOG_TO_CONSOLE=0
+      enableConsoleLogging: process.env.LOG_TO_CONSOLE === '1'  // Disabled by default, disable with LOG_TO_CONSOLE=0
     };
 
     this.fileStreams = new Map();
@@ -299,10 +299,9 @@ class ComponentLogger {
       ? `[${new Date().toISOString()}] `
       : '';
 
-    const prefix = `${timestamp}${emoji} ${this.component}:`;
-
     // Console output (if enabled)
     if (this.config.enableConsoleLogging) {
+      const prefix = `${timestamp}${emoji} ${this.component}:`;
       if (args.length === 0) {
         console.log(prefix, message);
       } else {
