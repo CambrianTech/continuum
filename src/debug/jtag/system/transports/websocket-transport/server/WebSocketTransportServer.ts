@@ -186,32 +186,32 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
       
       // First check: Does this correlation exist in our router?
       if (correlationId && this.responseRouter.hasCorrelation(correlationId)) {
-        console.log(`🎯 WebSocket Server: Routing response ${correlationId} to specific client`);
+        // console.log(`🎯 WebSocket Server: Routing response ${correlationId} to specific client`);
         const success = await this.responseRouter.sendResponse(message);
         return this.createResult(success, success ? 1 : 0);
       }
-      
+
       // Second check: Is this a server client response that we should try to route?
       // Server client responses have endpoint "server" but should be sent via WebSocket
       if (correlationId?.startsWith('client_')) {
-        console.log(`🔍 WebSocket Server: Attempting to route server client response ${correlationId}`);
+        // console.log(`🔍 WebSocket Server: Attempting to route server client response ${correlationId}`);
         // Try to send anyway in case correlation was briefly removed
         const success = await this.responseRouter.sendResponse(message);
         if (success) {
-          console.log(`✅ WebSocket Server: Successfully sent late response ${correlationId}`);
+          // console.log(`✅ WebSocket Server: Successfully sent late response ${correlationId}`);
           return this.createResult(true, 1);
         } else {
-          console.log(`⚠️ WebSocket Server: Failed to send response ${correlationId} - client may have disconnected`);
+          // console.log(`⚠️ WebSocket Server: Failed to send response ${correlationId} - client may have disconnected`);
         }
       }
     }
     
     // Fallback to broadcast for non-responses or responses without correlation
-    console.log(`📤 WebSocket Server: Broadcasting message to ${this.clients.size} clients`);
-    
+    // console.log(`📤 WebSocket Server: Broadcasting message to ${this.clients.size} clients`);
+
     const messageData = JSON.stringify(message);
     let sentCount = 0;
-    
+
     for (const client of this.clients) {
       try {
         if (client.readyState === 1) { // WebSocket.OPEN
@@ -223,8 +223,8 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
         this.clients.delete(client);
       }
     }
-    
-    console.log(`📤 WebSocket Server: Message sent to ${sentCount} clients`);
+
+    // console.log(`📤 WebSocket Server: Message sent to ${sentCount} clients`);
     return this.createResult(true, sentCount);
   }
 

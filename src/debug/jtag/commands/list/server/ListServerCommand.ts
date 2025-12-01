@@ -64,7 +64,7 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
   async execute(params: JTAGPayload): Promise<ListResult> {
     const listParams = params as ListParams;
 
-    console.log(`📋 SERVER: Listing available commands`);
+    // console.log(`📋 SERVER: Listing available commands`);
 
     try {
       // Get commands from CommandDaemon

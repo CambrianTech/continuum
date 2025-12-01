@@ -21,10 +21,11 @@ import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { UserIdentityResolver } from '../../../system/user/shared/UserIdentityResolver';
-import {  
-  type SessionMetadata, 
-  type CreateSessionParams, 
-  type CreateSessionResult, 
+import { Logger } from '../../../system/core/logging/Logger';
+import {
+  type SessionMetadata,
+  type CreateSessionParams,
+  type CreateSessionResult,
   type SessionResponse,
   type SessionErrorResponse,
   type SessionOperation,
@@ -59,6 +60,7 @@ const createSessionErrorResponse = (
 };
 
 export class SessionDaemonServer extends SessionDaemon {
+  protected log = Logger.create('SessionDaemon', 'system');
   private sessions: SessionMetadata[] = []; // In-memory active sessions for server
   private sessionTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map(); // Timeout tracking
   private readonly SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes for ephemeral sessions
@@ -121,13 +123,7 @@ export class SessionDaemonServer extends SessionDaemon {
           this.scheduleSessionExpiry(session.sessionId, session.isShared);
         }
         
-        // Log cleanup if bootstrap sessions were filtered
-        const filteredCount = metadata.sessions.length - validSessions.length;
-        if (filteredCount > 0) {
-          console.log(`🗑️ SessionDaemon: Filtered out ${filteredCount} bootstrap sessions during load`);
-        }
-        
-        // console.debug(`📖 ${this.toString()}: Loaded ${this.sessions.length} sessions from ${metadataPath} with timeout restoration`);
+        // Silently filter bootstrap sessions - routine cleanup, no logging needed
       }
     } catch {
       // File doesn't exist or is invalid, start with empty sessions
@@ -154,7 +150,7 @@ export class SessionDaemonServer extends SessionDaemon {
       await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
       // console.debug(`💾 ${this.toString()}: Saved ${this.sessions.length} sessions to ${metadataPath}`);
     } catch (error) {
-      console.error(`❌ ${this.toString()}: Failed to save session metadata:`, error);
+      this.log.error('Failed to save session metadata:', error);
     }
   }
 
@@ -168,7 +164,7 @@ export class SessionDaemonServer extends SessionDaemon {
     // Start session cleanup interval - check every 5 minutes
     this.cleanupInterval = setInterval(() => {
       this.cleanupExpiredSessions().catch(error => {
-        console.error(`❌ ${this.toString()}: Cleanup interval error:`, error);
+        this.log.error('Cleanup interval error:', error);
       });
     }, 5 * 60 * 1000);
     
@@ -221,7 +217,7 @@ export class SessionDaemonServer extends SessionDaemon {
         // console.debug(`✅ ${this.toString()}: Session ${sessionId} expired and cleaned up`);
       }
     } catch (error) {
-      console.error(`❌ ${this.toString()}: Failed to expire session ${sessionId}:`, error);
+      this.log.error(`Failed to expire session ${sessionId}:`, error);
     }
   }
 
@@ -344,14 +340,14 @@ export class SessionDaemonServer extends SessionDaemon {
           case 'destroy':
             return await this.destroySession(requestPayload as DestroySessionParams);
           default:
-            console.warn(`⚠️ ${this.toString()}: Unknown session operation: ${operation}`);
+            this.log.warn(`Unknown session operation: ${operation}`);
             return createSessionErrorResponse(`Unknown session operation: ${operation}`, requestContext, requestSessionId);
         }
       } catch (error) {
         const errorMessage = (error && typeof error === 'object' && 'message' in error)
           ? (error as { message: string }).message
           : String(error);
-        console.error(`❌ ${this.toString()}: Error processing session operation ${operation}:`, errorMessage);
+        this.log.error(`Error processing session operation ${operation}:`, errorMessage);
         return createSessionErrorResponse(errorMessage, requestContext, requestSessionId);
       }
     }
@@ -360,8 +356,6 @@ export class SessionDaemonServer extends SessionDaemon {
      * Find existing user (citizen) by uniqueId (single source of truth for identity)
      */
     private async findUserByUniqueId(uniqueId: string): Promise<BaseUser | null> {
-      console.log(`🔍 SessionDaemon: Looking for existing citizen with uniqueId: ${uniqueId}`);
-
       // Query users by uniqueId (the single source of truth for citizen identity)
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
@@ -369,15 +363,12 @@ export class SessionDaemonServer extends SessionDaemon {
       });
 
       if (!result.success || !result.data || result.data.length === 0) {
-        console.log(`ℹ️ SessionDaemon: No existing citizen found with uniqueId: ${uniqueId}`);
         return null;
       }
 
       // Found existing citizen - load and return
       const userRecord = result.data[0];
       const userId = userRecord.id;
-
-      console.log(`✅ SessionDaemon: Found existing citizen: ${uniqueId} (userId: ${userId.slice(0, 8)}...)`);
 
       return await this.getUserById(userId);
     }
@@ -386,8 +377,6 @@ export class SessionDaemonServer extends SessionDaemon {
      * Load existing user (citizen) by ID
      */
     private async getUserById(userId: UUID): Promise<BaseUser> {
-      console.log(`👤 SessionDaemon: Loading existing citizen: ${userId}`);
-
       // Load UserEntity from database
       const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
       if (!userResult.success || !userResult.data) {
@@ -420,8 +409,6 @@ export class SessionDaemonServer extends SessionDaemon {
 
       await user.loadState();
 
-      console.log(`✅ SessionDaemon: Loaded existing citizen: ${userEntity.displayName} (${userEntity.type})`);
-
       return user;
     }
 
@@ -431,22 +418,14 @@ export class SessionDaemonServer extends SessionDaemon {
      */
     private async createUser(params: CreateSessionParams): Promise<BaseUser> {
       // Use UserIdentityResolver to detect identity and lookup existing user BEFORE creating
-      console.log(`🔍 SessionDaemon: Resolving user identity via AgentDetector...`);
       const resolvedIdentity = await UserIdentityResolver.resolve();
-
-      console.log(`📋 SessionDaemon: Resolved identity - ${resolvedIdentity.displayName} (${resolvedIdentity.type})`);
-      console.log(`   uniqueId: ${resolvedIdentity.uniqueId}`);
-      console.log(`   exists: ${resolvedIdentity.exists}`);
-      console.log(`   agent: ${resolvedIdentity.agentInfo.name} (${Math.round(resolvedIdentity.agentInfo.confidence * 100)}%)`);
 
       // If user already exists, return it (prevent ghost users!)
       if (resolvedIdentity.exists && resolvedIdentity.userId) {
-        console.log(`✅ SessionDaemon: Found existing user, reusing: ${resolvedIdentity.displayName}`);
         return await this.getUserById(resolvedIdentity.userId);
       }
 
       // User doesn't exist - create new one with resolved identity
-      console.log(`📝 SessionDaemon: Creating new ${resolvedIdentity.type} user via UserFactory: ${resolvedIdentity.displayName}`);
 
       const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
         type: resolvedIdentity.type,
@@ -510,7 +489,6 @@ export class SessionDaemonServer extends SessionDaemon {
           user = await this.getUserById(params.userId);
         } catch (error) {
           // userId doesn't exist, create new user
-          console.log(`ℹ️ SessionDaemon: userId ${params.userId} not found, creating new user`);
           user = await this.createUser(params);
         }
       } else {
@@ -533,7 +511,7 @@ export class SessionDaemonServer extends SessionDaemon {
           enrichedContext.callerType = 'script';
           break;
         default:
-          // Unknown types default to script (safest fallback)
+          // Unknown types default to script (safest fallback) - KEEP THIS WARNING
           console.warn(`SessionDaemon: Unknown user type '${user.entity.type}', defaulting callerType to 'script'`);
           enrichedContext.callerType = 'script';
       }
@@ -550,8 +528,6 @@ export class SessionDaemonServer extends SessionDaemon {
         isShared: params.isShared, // Use original isShared request
         user: user // Add User object to session
       };
-
-      // console.debug(`✅ ${this.toString()}: New session created:`, newSession);
 
       this.sessions.push(newSession);
 
@@ -610,7 +586,7 @@ export class SessionDaemonServer extends SessionDaemon {
     const sessionIndex = this.sessions.findIndex(s => s.sessionId === params.sessionId);
     
     if (sessionIndex === -1) {
-      console.warn(`⚠️ ${this.toString()}: Session ${params.sessionId} not found for destruction`);
+      this.log.warn(`Session ${params.sessionId} not found for destruction`);
       return createPayload(params.context, params.sessionId, {
         success: false,
         timestamp: new Date().toISOString(),
@@ -636,7 +612,7 @@ export class SessionDaemonServer extends SessionDaemon {
       await this.saveSessionsToFile();
       // console.debug(`✅ ${this.toString()}: Updated session metadata file`);
     } catch (error) {
-      console.error(`❌ ${this.toString()}: Failed to update session metadata:`, error);
+      this.log.error(`Failed to update session metadata:`, error);
       // Session still destroyed from memory, but file sync failed
     }
     

@@ -154,7 +154,7 @@ export class Events {
         document.dispatchEvent(domEvent);
       }
 
-      console.log(`✅ Events: Emitted ${eventName} from ${context.environment}/${context.uuid}`);
+      // console.log(`✅ Events: Emitted ${eventName} from ${context.environment}/${context.uuid}`);
       return { success: true };
 
     } catch (error) {

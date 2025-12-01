@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.5675",
+  "version": "1.0.5684",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -130,7 +130,7 @@
     "build:ts": "npx tsx generator/generate-version.ts && npx tsx scripts/build-with-loud-failure.ts",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
-    "build": "npm run prebuild && npm run build:ts",
+    "build": "npm run build:ts",
     "postbuild": "npx tsx scripts/create-import-map.ts && npx tsx scripts/convert-imports-to-relative.ts",
     "version:bump": "npm version patch --no-git-tag-version",
     "prepack": "npx tsx scripts/create-import-map.ts",
