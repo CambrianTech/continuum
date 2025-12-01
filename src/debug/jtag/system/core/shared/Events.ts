@@ -418,7 +418,7 @@ export class Events {
               subscription.listener(enhancedEvent);
               totalMatchCount++;
             } else {
-              console.log(`🔍 Events: Pattern matched but filter rejected for ${subscription.originalPattern}`);
+              // console.log(`🔍 Events: Pattern matched but filter rejected for ${subscription.originalPattern}`);
             }
           }
         } catch (error) {
@@ -434,11 +434,11 @@ export class Events {
           try {
             // Check if event data matches filters
             if (ElegantSubscriptionParser.matchesFilter(eventData, subscription.filter)) {
-              console.log(`🎯 Events: Exact-match server subscription triggered for ${eventName} (${subscriptionId})`);
+              // console.log(`🎯 Events: Exact-match server subscription triggered for ${eventName} (${subscriptionId})`);
               subscription.listener(eventData);
               totalMatchCount++;
             } else {
-              console.log(`🔍 Events: Exact-match matched but filter rejected for ${eventName}`);
+              // console.log(`🔍 Events: Exact-match matched but filter rejected for ${eventName}`);
             }
           } catch (error) {
             console.error(`❌ Events: Exact-match subscription error for ${subscriptionId}:`, error);
