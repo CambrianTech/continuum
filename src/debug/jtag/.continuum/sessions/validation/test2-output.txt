@@ -9,7 +9,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (f61c3473-9558-4caa-95a4-31589231f6bc) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (563955d6-9bdb-4082-8532-7a63304c1395) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -23,52 +23,52 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1764607128433_o37znsvm
-🏷️ JTAGClientServer: Session updated to: 4a98169f-5112-4b77-a1e1-2fc54c743352 (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1764619027532_v9g3nq0x
+🏷️ JTAGClientServer: Session updated to: f6838206-a11d-4cc9-a369-61ec8cffcbf0 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764607128439_m5e6uzj1
+📤 RemoteConnection: Sending command 'list' with correlation client_1764619027592_0eg8oyuz
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764607128685_f1vmjw03
+📤 RemoteConnection: Sending command 'list' with correlation client_1764619027603_31q55an4
 ✅ Server: JTAGClient connected with 124 commands
 ✅ Connected
 👤 1. Testing state/create for user with context injection...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1764607128926_sy4vyroa
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1764619027629_skfrvar2
 📋 JTAGClient: Non-response message type 'request' - acknowledging
-👤 Created state user with ID: 1764607130846-u1x681is8
+👤 Created state user with ID: 1764619027700-lffybfd5y
 ✅ State user created successfully
 🏠 2. Testing state/create for room with user context...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1764607130939_bx3m7tu6
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1764619029675_boj0t4da
 📋 JTAGClient: Non-response message type 'request' - acknowledging
-🏠 Created state room with ID: 1764607130947-4c4o87o4p
+🏠 Created state room with ID: 1764619029724-3iegiq36l
 ✅ State room created successfully
 💬 3. Testing state/create for chat message with context...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1764607131423_odlf1nz0
+📤 RemoteConnection: Sending command 'state/create' with correlation client_1764619029786_jxvlk51t
 📋 JTAGClient: Non-response message type 'request' - acknowledging
-💬 Created state message with ID: 1764607131428-09wbfc4oe
+💬 Created state message with ID: 1764619029978-fipzhhzu7
 ✅ State message created successfully
 👤 4. Testing state/get for user retrieval with context...
-📤 RemoteConnection: Sending command 'state/get' with correlation client_1764607134546_kk7qvlh5
+📤 RemoteConnection: Sending command 'state/get' with correlation client_1764619030169_3drsr44p
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 👤 Retrieved state user: State Test User
 ✅ State user retrieved successfully
 🔧 5. Testing state/update with context enhancement...
-📤 RemoteConnection: Sending command 'state/update' with correlation client_1764607135104_frdc7c0p
+📤 RemoteConnection: Sending command 'state/update' with correlation client_1764619030452_qo0opvf5
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 🔧 Updated state user version: undefined
 ✅ State user updated successfully
 👤 6. Verifying update via state/get...
-📤 RemoteConnection: Sending command 'state/get' with correlation client_1764607135625_eb87mo4a
+📤 RemoteConnection: Sending command 'state/get' with correlation client_1764619030656_lgdf1ow7
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 👤 Verified updated user: Updated State Test User (busy)
 ✅ State update verification successful
 🏠 7. Testing cross-entity state operations (room update)...
-📤 RemoteConnection: Sending command 'state/update' with correlation client_1764607135746_1n4jg7dh
+📤 RemoteConnection: Sending command 'state/update' with correlation client_1764619030825_o2mphmu4
 📋 JTAGClient: Non-response message type 'request' - acknowledging
 🏠 Updated state room version: undefined
 ✅ Cross-entity state update successful
 🔍 8. Verifying state delegation to data layer...
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607135885_9a8a6s22
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764619031353_dgt557eq
 🔍 Verified data layer contains: Updated State Test User
 ✅ State→Data delegation verified
 
@@ -80,22 +80,22 @@
   - Cross-entity: ✅ Works with User, Room, ChatMessage
   - Data layer: ✅ Proper delegation and persistence
 🧹 Cleaning up test data...
-🗑️ Deleting message 1764607131428-09wbfc4oe...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764607135902_i9n920rg
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607135991_14nyefv0
-✅ Deleted message 1764607131428-09wbfc4oe
-🗑️ Deleting room 1764607130947-4c4o87o4p...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764607135998_4tho4p9h
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607136029_1h1mrgww
-✅ Deleted room 1764607130947-4c4o87o4p
-🗑️ Deleting user 1764607130846-u1x681is8...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764607136032_ohfp4hvg
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1764607136048_q4upalr8
-✅ Deleted user 1764607130846-u1x681is8
+🗑️ Deleting message 1764619029978-fipzhhzu7...
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764619031453_oappgof4
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764619031533_7vow1dpm
+✅ Deleted message 1764619029978-fipzhhzu7
+🗑️ Deleting room 1764619029724-3iegiq36l...
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764619031549_cvkze6wf
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764619031602_5i78dazl
+✅ Deleted room 1764619029724-3iegiq36l
+🗑️ Deleting user 1764619027700-lffybfd5y...
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1764619031607_8qr2qffa
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1764619031644_f28y3xjt
+✅ Deleted user 1764619027700-lffybfd5y
 ✅ Test data cleanup verified
 🔌 Disconnecting...
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 4a98169f-5112-4b77-a1e1-2fc54c743352 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session f6838206-a11d-4cc9-a369-61ec8cffcbf0 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

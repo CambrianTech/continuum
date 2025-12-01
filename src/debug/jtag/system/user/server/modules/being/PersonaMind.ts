@@ -32,8 +32,10 @@ export class PersonaMind {
     });
     this.logger.info('Mind subsystem initializing...');
 
+    // PersonaState logs to mind.log (state tracking is part of cognition)
     this.personaState = new PersonaStateManager(personaUser.displayName, {
-      enableLogging: true
+      enableLogging: true,
+      logger: this.logger  // Share mind logger
     });
     this.workingMemory = new WorkingMemoryManager(personaUser.id);
     this.selfState = new PersonaSelfState(personaUser.id);
