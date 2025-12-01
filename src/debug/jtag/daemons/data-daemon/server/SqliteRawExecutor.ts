@@ -6,6 +6,9 @@
  */
 
 import sqlite3 from 'sqlite3';
+import { Logger } from '../../../system/core/logging/Logger';
+
+const log = Logger.create('SqliteRawExecutor', 'sql');
 
 export class SqliteRawExecutor {
   constructor(private db: sqlite3.Database | null) {}
@@ -28,9 +31,9 @@ export class SqliteRawExecutor {
     return new Promise((resolve, reject) => {
       this.db!.all(sql, params, (err, rows) => {
         if (err) {
-          console.error('❌ SQLite Query Error:', err.message);
-          console.error('SQL:', sql);
-          console.error('Params:', params);
+          log.error('SQLite Query Error:', err.message);
+          log.error('SQL:', sql);
+          log.error('Params:', params);
           reject(err);
         } else {
           resolve(rows || []);
@@ -43,22 +46,22 @@ export class SqliteRawExecutor {
    * Execute SQL statement (INSERT, UPDATE, DELETE) and return result metadata
    */
   async runStatement(sql: string, params: any[] = []): Promise<{ lastID?: number; changes: number }> {
-    console.log(`🔧 SQLite RUNSTATEMENT DEBUG: Executing SQL:`, { sql: sql.trim(), params });
+    log.debug('Executing SQL:', { sql: sql.trim(), params });
     if (!this.db) {
-      console.error(`❌ SQLite RUNSTATEMENT DEBUG: Database not initialized!`);
+      log.error('Database not initialized!');
       throw new Error('SQLite database not initialized');
     }
 
     return new Promise((resolve, reject) => {
       this.db!.run(sql, params, function(err) {
         if (err) {
-          console.error('❌ SQLite Statement Error:', err.message);
-          console.error('SQL:', sql);
-          console.error('Params:', params);
+          log.error('SQLite Statement Error:', err.message);
+          log.error('SQL:', sql);
+          log.error('Params:', params);
           reject(err);
         } else {
           const result = { lastID: this.lastID, changes: this.changes };
-          console.log(`✅ SQLite RUNSTATEMENT DEBUG: Success:`, result);
+          log.debug('Statement success:', result);
           resolve(result);
         }
       });

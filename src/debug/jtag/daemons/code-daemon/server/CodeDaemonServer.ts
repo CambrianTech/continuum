@@ -21,7 +21,10 @@ import type {
 import { Events } from '../../../system/core/shared/Events';
 import { PathValidator } from './modules/PathValidator';
 import { FileReader } from './modules/FileReader';
+import { Logger } from '../../../system/core/logging/Logger';
 import * as path from 'path';
+
+const log = Logger.create('CodeDaemonServer', 'system');
 
 /**
  * Server-side implementation of CodeDaemon
@@ -107,7 +110,7 @@ let codeDaemonInstance: CodeDaemonImpl | undefined;
  * Initialize CodeDaemon for server usage
  */
 export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<void> {
-  console.log('🔧 CodeDaemonServer: Initializing CodeDaemon...');
+  log.info('Initializing CodeDaemon...');
 
   // Determine repository root (go up from daemons/code-daemon/server to jtag root)
   const repositoryRoot = path.resolve(__dirname, '../../..');
@@ -159,6 +162,5 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
     return codeDaemonInstance?.getIsInitialized() || false;
   };
 
-  console.log(`✅ CodeDaemonServer: Initialized successfully`);
-  console.log(`   Repository root: ${repositoryRoot}`);
+  log.info(`Initialized successfully (repository root: ${repositoryRoot})`);
 }
