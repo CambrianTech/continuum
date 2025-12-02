@@ -74,6 +74,7 @@ class LoggerClass {
   private fileStreams: Map<string, fs.WriteStream>;  // file path -> stream
   private logQueues: Map<string, LogQueueEntry[]>;    // file path -> queue
   private logTimers: Map<string, NodeJS.Timeout>;     // file path -> flush timer
+  private cleanedFiles: Set<string>;                   // track files cleaned with mode='w' (CLEAN)
   private logDir: string;
   private readonly FLUSH_INTERVAL_MS = 100;           // Flush every 100ms
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
@@ -100,6 +101,7 @@ class LoggerClass {
     this.fileStreams = new Map();
     this.logQueues = new Map();
     this.logTimers = new Map();
+    this.cleanedFiles = new Set();
     // Use SystemPaths for correct log directory (.continuum/jtag/system/logs)
     this.logDir = SystemPaths.logs.system;
   }
@@ -130,8 +132,18 @@ class LoggerClass {
       fs.mkdirSync(this.logDir, { recursive: true, mode: 0o755 });
     }
 
-    // System logs ALWAYS use 'a' (append) - never truncate during runtime
-    const stream = fs.createWriteStream(logFile, { flags: 'a', mode: 0o644 });
+    // Default: CLEAN mode (start fresh per session)
+    // First call for this file: 'w' (truncate), subsequent calls: 'a' (append)
+    let flags = 'a'; // Default to append
+    if (!this.cleanedFiles.has(logFile)) {
+      flags = 'w'; // First time: truncate (clean)
+      this.cleanedFiles.add(logFile);
+      console.log(`🧹 [Logger] Cleaning log file (first open): ${path.basename(logFile)}`);
+    } else {
+      console.log(`📝 [Logger] Appending to already-cleaned log: ${path.basename(logFile)}`);
+    }
+
+    const stream = fs.createWriteStream(logFile, { flags, mode: 0o644 });
 
     this.fileStreams.set(logFile, stream);
     this.logQueues.set(logFile, []);
@@ -232,7 +244,20 @@ class LoggerClass {
       fs.mkdirSync(logDir, { recursive: true, mode: 0o755 });
     }
 
-    const stream = fs.createWriteStream(logFilePath, { flags: mode, mode: 0o644 });
+    // If mode is CLEAN and file was already cleaned this session, switch to APPEND
+    // This prevents multiple CLEAN calls from truncating the same file repeatedly
+    let effectiveMode = mode;
+    if (mode === FileMode.CLEAN) {
+      if (this.cleanedFiles.has(logFilePath)) {
+        effectiveMode = FileMode.APPEND; // Already cleaned, just append from now on
+        console.log(`📝 [Logger] CLEAN→APPEND (already cleaned): ${path.basename(logFilePath)}`);
+      } else {
+        this.cleanedFiles.add(logFilePath); // Mark as cleaned
+        console.log(`🧹 [Logger] CLEAN mode (truncating): ${path.basename(logFilePath)}`);
+      }
+    }
+
+    const stream = fs.createWriteStream(logFilePath, { flags: effectiveMode, mode: 0o644 });
     this.fileStreams.set(logFilePath, stream);
     this.logQueues.set(logFilePath, []);
     this.startFlushTimer(logFilePath);
