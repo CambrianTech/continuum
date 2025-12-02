@@ -237,7 +237,7 @@ export class Events {
     subscriberId?: string
   ): () => void {
     try {
-      console.log(`🎧 Events: Subscribing to ${patternOrEventName}`);
+      //console.log(`🎧 Events: Subscribing to ${patternOrEventName}`);
 
       // Check if we're in browser environment (document available)
       const isBrowser = typeof document !== 'undefined';
@@ -257,9 +257,7 @@ export class Events {
           : `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
         // Store elegant subscriptions in registry
-        if (!this.elegantSubscriptions) {
-          this.elegantSubscriptions = new Map();
-        }
+        this.elegantSubscriptions ??= new Map();
 
         // Check if replacing existing subscription (deduplication)
         const existingSubscription = this.elegantSubscriptions.get(subscriptionId);
@@ -291,9 +289,7 @@ export class Events {
           ? `${patternOrEventName}_${subscriberId}`
           : `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-        if (!this.wildcardSubscriptions) {
-          this.wildcardSubscriptions = new Map();
-        }
+        this.wildcardSubscriptions ??= new Map();
 
         // Check if replacing existing subscription (deduplication)
         const existingSubscription = this.wildcardSubscriptions.get(subscriptionId);
@@ -307,7 +303,7 @@ export class Events {
           eventName: patternOrEventName
         });
 
-        console.log(`🎧 Events: ${existingSubscription ? 'Replaced' : 'Added'} wildcard subscription ${subscriptionId}`);
+        //console.log(`🎧 Events: ${existingSubscription ? 'Replaced' : 'Added'} wildcard subscription ${subscriptionId}`);
 
         return () => {
           this.wildcardSubscriptions?.delete(subscriptionId);
@@ -315,7 +311,7 @@ export class Events {
 
       } else if (isBrowser) {
         // Regular exact match subscription (browser only - DOM events)
-        const eventHandler = (event: Event) => {
+        const eventHandler = (event: Event): void => {
           const customEvent = event as CustomEvent<T>;
           listener(customEvent.detail);
         };
@@ -324,7 +320,7 @@ export class Events {
 
         return () => {
           document.removeEventListener(patternOrEventName, eventHandler);
-          console.log(`🔌 Events: Unsubscribed from ${patternOrEventName}`);
+          //console.log(`🔌 Events: Unsubscribed from ${patternOrEventName}`);
         };
       } else {
         // Server environment - store exact-match subscriptions in map
@@ -334,9 +330,7 @@ export class Events {
           ? `${patternOrEventName}_${subscriberId}`
           : `${patternOrEventName}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-        if (!this.exactMatchSubscriptions) {
-          this.exactMatchSubscriptions = new Map();
-        }
+        this.exactMatchSubscriptions ??= new Map();
 
         // Check if replacing existing subscription (deduplication)
         const existingSubscription = this.exactMatchSubscriptions.get(subscriptionId);
@@ -350,11 +344,11 @@ export class Events {
           filter
         });
 
-        console.log(`✅ Events: ${existingSubscription ? 'Replaced' : 'Added'} exact-match server subscription for ${patternOrEventName} (${subscriptionId})`);
+        //console.log(`✅ Events: ${existingSubscription ? 'Replaced' : 'Added'} exact-match server subscription for ${patternOrEventName} (${subscriptionId})`);
 
         return () => {
           this.exactMatchSubscriptions?.delete(subscriptionId);
-          console.log(`🔌 Events: Unsubscribed from ${patternOrEventName} (${subscriptionId})`);
+          //console.log(`🔌 Events: Unsubscribed from ${patternOrEventName} (${subscriptionId})`);
         };
       }
     } catch (error) {
@@ -447,8 +441,8 @@ export class Events {
       });
     }
 
-    if (totalMatchCount > 0) {
-      console.log(`🎯 Events: Triggered ${totalMatchCount} subscription(s) for ${eventName}`);
-    }
+    // if (totalMatchCount > 0) {
+    //   console.log(`🎯 Events: Triggered ${totalMatchCount} subscription(s) for ${eventName}`);
+    // }
   }
 }

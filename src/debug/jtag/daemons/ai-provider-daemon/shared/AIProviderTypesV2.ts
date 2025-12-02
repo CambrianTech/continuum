@@ -121,6 +121,14 @@ export interface TextGenerationRequest {
   userId?: UUID;
   roomId?: UUID;
   purpose?: string;  // 'chat', 'should-respond', 'rag', 'embedding', etc.
+
+  // Persona context for logging (optional)
+  // When provided, adapters can log to persona-specific log files
+  personaContext?: {
+    logDir: string;      // e.g., '.continuum/personas/helper-ai-12345678/logs'
+    displayName: string; // e.g., 'Helper AI'
+    uniqueId: string;    // e.g., 'helper-ai-12345678'
+  };
 }
 
 export interface AudioGenerationRequest {

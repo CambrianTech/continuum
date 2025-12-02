@@ -6,7 +6,6 @@ import type {
   ModelCapability,
   ModelInfo
 } from './AIProviderTypesV2';
-
 /**
  * Abstract base class for all AI provider adapters
  *
@@ -30,6 +29,18 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private readonly MAX_CONSECUTIVE_FAILURES = 3;
   private readonly HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
   private isRestarting: boolean = false;
+
+  /**
+   * Helper to log with persona context
+   * If persona context provided in request, prepends persona info
+   * Otherwise just logs the message
+   */
+  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string): void {
+    const prefix = request?.personaContext
+      ? `[${request.personaContext.displayName}] `
+      : '';
+    console.log(`${prefix}${message}`);
+  }
 
   // Abstract methods subclasses MUST implement
   abstract generateText(request: TextGenerationRequest): Promise<TextGenerationResponse>;

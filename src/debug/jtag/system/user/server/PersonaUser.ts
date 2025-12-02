@@ -749,7 +749,12 @@ export class PersonaUser extends AIUser {
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
-        intelligenceLevel: this.entity.intelligenceLevel
+        intelligenceLevel: this.entity.intelligenceLevel,
+        personaContext: {
+          uniqueId: this.entity.uniqueId,
+          displayName: this.displayName,
+          logDir: SystemPaths.personas.dir(this.entity.uniqueId)
+        }
       };
 
       // Use same 180s timeout as chat responses
