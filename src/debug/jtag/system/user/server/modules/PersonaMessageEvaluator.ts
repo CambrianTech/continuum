@@ -774,7 +774,7 @@ export class PersonaMessageEvaluator {
       this.log(`🔗 ${this.personaUser.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
 
       // Build RAG context for decision logging (all adapters need this)
-      const ragBuilder = new ChatRAGBuilder();
+      const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,

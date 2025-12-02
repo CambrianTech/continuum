@@ -319,7 +319,11 @@ export class PersonaUser extends AIUser {
     });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
-    this.decisionChain = new DecisionAdapterChain();
+    // Pass logger for cognition.log
+    const cognitionLogger = (message: string, ...args: any[]) => {
+      this.logger.enqueueLog('cognition.log', message);
+    };
+    this.decisionChain = new DecisionAdapterChain(cognitionLogger);
     this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // Task execution module (delegated for modularity, uses this.memory getter)

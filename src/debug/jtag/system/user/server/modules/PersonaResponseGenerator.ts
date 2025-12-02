@@ -253,7 +253,7 @@ export class PersonaResponseGenerator {
       // 🔧 SUB-PHASE 3.1: Build RAG context
       // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
       this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
-      const ragBuilder = new ChatRAGBuilder();
+      const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
         this.personaId,

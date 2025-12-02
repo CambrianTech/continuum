@@ -407,6 +407,13 @@ class ComponentLogger {
       this.logger.queueMessage(this.logFilePath, message);
     }
   }
+
+  /**
+   * Get the file path for this logger (for testing/debugging)
+   */
+  getLogFilePath(): string | undefined {
+    return this.logFilePath;
+  }
 }
 
 /**

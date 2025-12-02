@@ -37,6 +37,13 @@ import { Events } from '../../core/shared/Events';
  */
 export class ChatRAGBuilder extends RAGBuilder {
   readonly domain: RAGDomain = 'chat';
+  private log: (message: string, ...args: any[]) => void;
+
+  constructor(logger?: (message: string, ...args: any[]) => void) {
+    super();
+    // Default to console.log if no logger provided (for tests)
+    this.log = logger || console.log.bind(console);
+  }
 
   /**
    * Build RAG context from a chat room
@@ -79,7 +86,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       if (!isDuplicate) {
         conversationHistory.push(options.currentMessage);
       } else {
-        console.log(`⚠️ ChatRAGBuilder: Skipping duplicate currentMessage (already in history)`);
+        this.log(`⚠️ ChatRAGBuilder: Skipping duplicate currentMessage (already in history)`);
       }
     }
 
@@ -102,7 +109,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     // Bug #5 fix: Calculate adjusted maxTokens based on actual input size (dimension 2)
     const budgetCalculation = this.calculateAdjustedMaxTokens(conversationHistory, options);
 
-    console.log(`🔍 [ChatRAGBuilder] Budget calculation for model ${options?.modelId || 'unknown'}:`, {
+    this.log(`🔍 [ChatRAGBuilder] Budget calculation for model ${options?.modelId || 'unknown'}:`, {
       inputTokenCount: budgetCalculation.inputTokenCount,
       adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
       requestedMaxTokens: options?.maxTokens,
@@ -181,7 +188,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       const result = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
 
       if (!result.success || !result.data) {
-        console.warn(`⚠️ ChatRAGBuilder: Could not load persona ${personaId}, using defaults`);
+        this.log(`⚠️ ChatRAGBuilder: Could not load persona ${personaId}, using defaults`);
         return {
           name: 'AI Assistant',
           systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
@@ -200,7 +207,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         capabilities: user.capabilities ? Object.keys(user.capabilities) : []
       };
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error loading persona identity:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading persona identity:`, error);
       return {
         name: 'AI Assistant',
         systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
@@ -331,7 +338,7 @@ ${toolRegistry.generateToolDocumentation()}`;
 
       return llmMessages;
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error loading conversation history:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading conversation history:`, error);
       return [];
     }
   }
@@ -386,7 +393,7 @@ ${toolRegistry.generateToolDocumentation()}`;
 
       return artifacts;
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error extracting artifacts:`, error);
+      this.log(`❌ ChatRAGBuilder: Error extracting artifacts:`, error);
       return [];
     }
   }
@@ -420,7 +427,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       const userDaemon = UserDaemonServer.getInstance();
 
       if (!userDaemon) {
-        console.warn('⚠️ ChatRAGBuilder: UserDaemon not available, skipping memories');
+        this.log('⚠️ ChatRAGBuilder: UserDaemon not available, skipping memories');
         return [];
       }
 
@@ -435,7 +442,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       // Type assertion needed because BaseUser doesn't expose hippocampus
       const persona = personaUser as any;
       if (!persona.hippocampus) {
-        console.warn(`⚠️ ChatRAGBuilder: PersonaUser ${personaId.slice(0, 8)} has no Hippocampus`);
+        this.log(`⚠️ ChatRAGBuilder: PersonaUser ${personaId.slice(0, 8)} has no Hippocampus`);
         return [];
       }
 
@@ -451,7 +458,7 @@ ${toolRegistry.generateToolDocumentation()}`;
         return [];
       }
 
-      console.log(`📚 ChatRAGBuilder: Loaded ${memories.length} consolidated memories for persona ${personaId.slice(0, 8)}`);
+      this.log(`📚 ChatRAGBuilder: Loaded ${memories.length} consolidated memories for persona ${personaId.slice(0, 8)}`);
 
       // Convert MemoryEntity → PersonaMemory
       return memories.map((mem: any) => ({
@@ -462,7 +469,7 @@ ${toolRegistry.generateToolDocumentation()}`;
         relevanceScore: mem.importance  // Use importance as relevance score
       }));
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error loading private memories:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading private memories:`, error);
       return [];
     }
   }
@@ -494,7 +501,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       // 1. Load room entity
       const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
       if (!roomResult.success || !roomResult.data) {
-        console.warn(`⚠️ ChatRAGBuilder: Could not load room ${roomId}`);
+        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}`);
         return [];
       }
 
@@ -514,7 +521,7 @@ ${toolRegistry.generateToolDocumentation()}`;
 
       return memberNames;
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error loading room members:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading room members:`, error);
       return [];
     }
   }
@@ -528,7 +535,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
 
       if (!roomResult.success || !roomResult.data) {
-        console.warn(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe strategy`);
+        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe strategy`);
         return undefined;
       }
 
@@ -536,7 +543,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       const recipeId = room.recipeId;
 
       if (!recipeId) {
-        console.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no recipeId, using default behavior`);
+        this.log(`ℹ️ ChatRAGBuilder: Room ${roomId.slice(0, 8)} has no recipeId, using default behavior`);
         return undefined;
       }
 
@@ -545,14 +552,14 @@ ${toolRegistry.generateToolDocumentation()}`;
       const recipe = await recipeLoader.loadRecipe(recipeId);
 
       if (!recipe || !recipe.strategy) {
-        console.warn(`⚠️ ChatRAGBuilder: Could not load recipe ${recipeId}, no strategy`);
+        this.log(`⚠️ ChatRAGBuilder: Could not load recipe ${recipeId}, no strategy`);
         return undefined;
       }
 
-      console.log(`✅ ChatRAGBuilder: Loaded recipe strategy "${recipe.displayName}" (${recipeId})`);
+      this.log(`✅ ChatRAGBuilder: Loaded recipe strategy "${recipe.displayName}" (${recipeId})`);
       return recipe.strategy;
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error loading recipe strategy:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading recipe strategy:`, error);
       return undefined;
     }
   }
@@ -569,7 +576,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       // 1. Load room entity
       const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
       if (!roomResult.success || !roomResult.data) {
-        console.warn(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for learning config`);
+        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for learning config`);
         return undefined;
       }
 
@@ -578,7 +585,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       // 2. Find this persona's membership
       const member = room.members.find(m => m.userId === personaId);
       if (!member) {
-        console.log(`ℹ️ ChatRAGBuilder: Persona ${personaId.slice(0, 8)} not a member of room ${roomId.slice(0, 8)}`);
+        this.log(`ℹ️ ChatRAGBuilder: Persona ${personaId.slice(0, 8)} not a member of room ${roomId.slice(0, 8)}`);
         return undefined;
       }
 
@@ -591,14 +598,14 @@ ${toolRegistry.generateToolDocumentation()}`;
 
       // Log learning mode status for debugging
       if (config.learningMode) {
-        console.log(`🧠 ChatRAGBuilder: Persona ${personaId.slice(0, 8)} learning mode: ${config.learningMode}` +
+        this.log(`🧠 ChatRAGBuilder: Persona ${personaId.slice(0, 8)} learning mode: ${config.learningMode}` +
                     `${config.participantRole ? ` (${config.participantRole})` : ''}` +
                     `${config.genomeId ? ` genome=${config.genomeId.slice(0, 8)}` : ''}`);
       }
 
       return config;
     } catch (error) {
-      console.error(`❌ ChatRAGBuilder: Error loading learning config:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading learning config:`, error);
       return undefined;
     }
   }
@@ -615,7 +622,7 @@ ${toolRegistry.generateToolDocumentation()}`;
 
     // If no modelId provided, fall back to conservative default
     if (!options?.modelId) {
-      console.log('⚠️ ChatRAGBuilder: No modelId provided, using default maxMessages=10');
+      this.log('⚠️ ChatRAGBuilder: No modelId provided, using default maxMessages=10');
       return 10;
     }
 
@@ -666,7 +673,7 @@ ${toolRegistry.generateToolDocumentation()}`;
     // Clamp between 5 and 50
     const clampedMessageCount = Math.max(5, Math.min(50, safeMessageCount));
 
-    console.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
+    this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
   Context Window: ${contextWindow} tokens
   Available for Messages: ${availableForMessages}
   Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
@@ -693,7 +700,7 @@ ${toolRegistry.generateToolDocumentation()}`;
     // If no modelId, can't calculate - return original maxTokens
     if (!options?.modelId) {
       const defaultMaxTokens = options?.maxTokens ?? 3000;
-      console.log('⚠️ ChatRAGBuilder: No modelId for maxTokens adjustment, using default:', defaultMaxTokens);
+      this.log('⚠️ ChatRAGBuilder: No modelId for maxTokens adjustment, using default:', defaultMaxTokens);
       return { adjustedMaxTokens: defaultMaxTokens, inputTokenCount: 0 };
     }
 
@@ -737,7 +744,7 @@ ${toolRegistry.generateToolDocumentation()}`;
       Math.min(requestedMaxTokens, availableForCompletion)
     );
 
-    console.log(`📊 ChatRAGBuilder: Two-dimensional budget for ${modelId}:
+    this.log(`📊 ChatRAGBuilder: Two-dimensional budget for ${modelId}:
   Context Window: ${contextWindow} tokens
   Input Tokens (estimated): ${inputTokenCount} (${conversationHistory.length} messages + ${systemPromptTokens} system)
   Available for Completion: ${availableForCompletion}
