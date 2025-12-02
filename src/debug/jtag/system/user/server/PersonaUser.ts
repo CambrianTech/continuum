@@ -294,6 +294,9 @@ export class PersonaUser extends AIUser {
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
 
+    // Initialize logger FIRST - other subsystems need it
+    this.logger = new PersonaLogger(this);
+
     // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
     // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters
     this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
@@ -311,7 +314,8 @@ export class PersonaUser extends AIUser {
       client,
       mediaConfig: this.mediaConfig,
       getSessionId: () => this.sessionId,
-      homeDirectory: this.homeDirectory
+      homeDirectory: this.homeDirectory,
+      logger: this.logger
     });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
@@ -330,10 +334,6 @@ export class PersonaUser extends AIUser {
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this);
-
-    // RTOS subprocesses (Logger only - hippocampus now in soul)
-    // Logger MUST be first - other subprocesses need it for logging
-    this.logger = new PersonaLogger(this);
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
