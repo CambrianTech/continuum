@@ -142,32 +142,32 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-disable @typescript-eslint/naming-convention */
   protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log('🚀 Fireworks: Starting training job (async pattern)...');
+    this.log('info', '🚀 Fireworks: Starting training job (async pattern)...');
 
     // 1. Export dataset to JSONL
-    console.log('   Exporting dataset...');
+    this.log('debug', '   Exporting dataset...');
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-    console.log(`   Dataset exported: ${datasetPath}`);
+    this.log('debug', `   Dataset exported: ${datasetPath}`);
 
     // 2. Create dataset record
-    console.log('   Creating dataset record...');
+    this.log('debug', '   Creating dataset record...');
     const datasetId = await this.createDatasetRecord(request);
-    console.log(`   Dataset ID: ${datasetId}`);
+    this.log('debug', `   Dataset ID: ${datasetId}`);
 
     // 3. Upload dataset file
-    console.log('   Uploading dataset file...');
+    this.log('debug', '   Uploading dataset file...');
     await this.uploadDatasetFile(datasetId, datasetPath);
-    console.log(`   Upload complete`);
+    this.log('debug', `   Upload complete`);
 
     // 4. Wait for dataset to be READY
-    console.log('   Waiting for dataset validation...');
+    this.log('debug', '   Waiting for dataset validation...');
     await this.waitForDatasetReady(datasetId);
-    console.log(`   Dataset ready`);
+    this.log('debug', `   Dataset ready`);
 
     // 5. Create fine-tuning job
-    console.log('   Creating training job...');
+    this.log('debug', '   Creating training job...');
     const jobId = await this.createFineTuningJob(request, datasetId);
-    console.log(`   Job ID: ${jobId}`);
+    this.log('info', `   Job ID: ${jobId}`);
 
     // 6. Clean up temp file immediately
     await this.cleanupTempFiles(datasetPath);
@@ -201,7 +201,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log(`🔍 Fireworks: Querying job status: ${providerJobId}`);
+    this.log('debug', `🔍 Fireworks: Querying job status: ${providerJobId}`);
 
     const apiKey = this.config.apiKey;
     const accountId = getSecret('FIREWORKS_ACCOUNT_ID', 'FireworksLoRAAdapter');
@@ -250,7 +250,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
         }
       };
     } catch (error) {
-      console.error(`❌ Fireworks: Failed to query status:`, error);
+      this.log('error', `❌ Fireworks: Failed to query status: ${error instanceof Error ? error.message : String(error)}`);
       return {
         status: 'failed',
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -277,7 +277,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       case 'CANCELLED':
         return 'cancelled';
       default:
-        console.warn(`Unknown Fireworks status: ${fireworksStatus}, treating as running`);
+        this.log('warn', `Unknown Fireworks status: ${fireworksStatus}, treating as running`);
         return 'running';
     }
   }
@@ -462,7 +462,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
       );
 
       if (!response.ok) {
-        console.warn(`   Dataset check attempt ${attempts}: HTTP ${response.status}`);
+        this.log('warn', `   Dataset check attempt ${attempts}: HTTP ${response.status}`);
         await new Promise(resolve => setTimeout(resolve, 5000));
         continue;
       }
@@ -578,7 +578,7 @@ export class FireworksLoRAAdapter extends BaseLoRATrainerServer {
     try {
       await fs.promises.unlink(datasetPath);
     } catch (error) {
-      console.warn(`   Failed to clean up temp file: ${datasetPath}`, error);
+      this.log('warn', `   Failed to clean up temp file: ${datasetPath} - ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

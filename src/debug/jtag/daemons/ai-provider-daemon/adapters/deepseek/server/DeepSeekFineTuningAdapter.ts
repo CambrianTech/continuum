@@ -134,37 +134,37 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
       };
     }
 
-    console.log('🚀 DeepSeek: Starting cloud-based LoRA training...');
+    this.log('info', '🚀 DeepSeek: Starting cloud-based LoRA training...');
     const startTime = Date.now();
 
     try {
       // 1. Export dataset to JSONL
-      console.log('   Exporting dataset to JSONL...');
+      this.log('info', '   Exporting dataset to JSONL...');
       const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-      console.log(`   Dataset exported: ${datasetPath}`);
+      this.log('debug', `   Dataset exported: ${datasetPath}`);
 
       // 2. Upload dataset to DeepSeek
-      console.log('   Uploading dataset to DeepSeek API...');
+      this.log('info', '   Uploading dataset to DeepSeek API...');
       const datasetId = await this.uploadDataset(datasetPath, apiKey);
-      console.log(`   Dataset uploaded: ${datasetId}`);
+      this.log('debug', `   Dataset uploaded: ${datasetId}`);
 
       // 3. Create fine-tuning job
-      console.log('   Creating fine-tuning job...');
+      this.log('info', '   Creating fine-tuning job...');
       const jobId = await this.createFineTuningJob(request, datasetId, apiKey);
-      console.log(`   Job created: ${jobId}`);
+      this.log('debug', `   Job created: ${jobId}`);
 
       // 4. Monitor job progress
-      console.log('   Monitoring training progress...');
+      this.log('info', '   Monitoring training progress...');
       const metrics = await this.monitorTrainingJob(jobId, apiKey);
-      console.log('   Training complete!');
+      this.log('info', '   Training complete!');
 
       // 5. Get trained model ID
       const modelId = await this.getTrainedModelId(jobId, apiKey);
-      console.log(`   Model ID: ${modelId}`);
+      this.log('debug', `   Model ID: ${modelId}`);
 
       // 6. Save adapter metadata
       const metadataPath = await this.saveAdapterMetadata(request, modelId, metrics);
-      console.log(`   Metadata saved: ${metadataPath}`);
+      this.log('debug', `   Metadata saved: ${metadataPath}`);
 
       // 7. Clean up temp files
       await this.cleanupTempFiles(datasetPath);
@@ -184,7 +184,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
       };
 
     } catch (error) {
-      console.error('❌ DeepSeek training failed:', error);
+      this.log('error', `❌ DeepSeek training failed: ${error instanceof Error ? error.message : String(error)}`);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
@@ -361,7 +361,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
       }
 
       // Log progress
-      console.log(`   Status: ${job.status} (attempt ${attempts + 1}/${maxAttempts})`);
+      this.log('debug', `   Status: ${job.status} (attempt ${attempts + 1}/${maxAttempts})`);
 
       // Wait 10 seconds before next poll
       await new Promise(resolve => setTimeout(resolve, 10000));
@@ -430,7 +430,7 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
       try {
         await fs.promises.unlink(filePath);
       } catch (error) {
-        console.warn(`Failed to clean up temp file: ${filePath}`, error);
+        this.log('warn', `Failed to clean up temp file: ${filePath} - ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }

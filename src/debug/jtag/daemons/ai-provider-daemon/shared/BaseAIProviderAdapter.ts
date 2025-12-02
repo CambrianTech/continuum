@@ -39,7 +39,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
    * Writes to persona-specific log directory if personaContext provided
    * Otherwise writes to shared adapter log file
    */
-  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string): void {
+  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: any[]): void {
     if (request?.personaContext) {
       // Write to persona-specific log directory
       const logDir = request.personaContext.logDir;
@@ -51,16 +51,17 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
         fs.mkdirSync(logsDir, { recursive: true });
       }
 
-      // Format message with timestamp
+      // Format message with timestamp and any additional args
       const timestamp = new Date().toISOString();
-      const formattedMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}\n`;
+      const formattedArgs = args.length > 0 ? ' ' + args.map(a => JSON.stringify(a)).join(' ') : '';
+      const formattedMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}${formattedArgs}\n`;
 
       // Append to file
       fs.appendFileSync(logFile, formattedMessage);
     } else {
       // No persona context - write to shared adapter log
       const systemLogger = Logger.create('AIProviderAdapter', 'adapters');
-      systemLogger[level](message);
+      systemLogger[level](message, ...args);
     }
   }
 
@@ -81,13 +82,13 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
   // Lifecycle methods
   async initialize(): Promise<void> {
-    console.log(`🔧 ${this.providerName}: Initializing with health monitoring...`);
+    this.log(null, 'info', `🔧 ${this.providerName}: Initializing with health monitoring...`);
     await this.initializeProvider();
     this.startHealthMonitoring();
   }
 
   async shutdown(): Promise<void> {
-    console.log(`🛑 ${this.providerName}: Shutting down...`);
+    this.log(null, 'info', `🛑 ${this.providerName}: Shutting down...`);
     this.stopHealthMonitoring();
     await this.shutdownProvider();
   }
@@ -103,7 +104,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
   // Health monitoring logic
   private startHealthMonitoring(): void {
-    console.log(`💚 ${this.providerName}: Starting health monitoring (every ${this.HEALTH_CHECK_INTERVAL}ms)`);
+    this.log(null, 'info', `💚 ${this.providerName}: Starting health monitoring (every ${this.HEALTH_CHECK_INTERVAL}ms)`);
 
     this.healthMonitorInterval = setInterval(async () => {
       await this.checkHealthAndRecover();
@@ -123,7 +124,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
       if (health.status === 'healthy') {
         if (this.consecutiveFailures > 0) {
-          console.log(`✅ ${this.providerName}: Recovered after ${this.consecutiveFailures} failures`);
+          this.log(null, 'info', `✅ ${this.providerName}: Recovered after ${this.consecutiveFailures} failures`);
         }
         this.consecutiveFailures = 0;
         return;
@@ -131,14 +132,14 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
       // Health check failed
       this.consecutiveFailures++;
-      console.log(`⚠️  ${this.providerName}: Health check failed (${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES})`);
+      this.log(null, 'warn', `⚠️  ${this.providerName}: Health check failed (${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES})`);
 
       if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES && !this.isRestarting) {
         await this.attemptRestart();
       }
     } catch (error) {
       this.consecutiveFailures++;
-      console.log(`❌ ${this.providerName}: Health check error (${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES}):`, error);
+      this.log(null, 'error', `❌ ${this.providerName}: Health check error (${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES}):`, error);
 
       if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES && !this.isRestarting) {
         await this.attemptRestart();
@@ -150,7 +151,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
     this.isRestarting = true;
 
     try {
-      console.log(`🔄 ${this.providerName}: Attempting restart after ${this.consecutiveFailures} consecutive failures...`);
+      this.log(null, 'warn', `🔄 ${this.providerName}: Attempting restart after ${this.consecutiveFailures} consecutive failures...`);
 
       await this.restartProvider();
 
@@ -161,13 +162,13 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
       const health = await this.healthCheck();
 
       if (health.status === 'healthy') {
-        console.log(`✅ ${this.providerName}: Restart successful`);
+        this.log(null, 'info', `✅ ${this.providerName}: Restart successful`);
         this.consecutiveFailures = 0;
       } else {
-        console.log(`⚠️  ${this.providerName}: Restart completed but health check still failing`);
+        this.log(null, 'warn', `⚠️  ${this.providerName}: Restart completed but health check still failing`);
       }
     } catch (error) {
-      console.log(`❌ ${this.providerName}: Restart failed:`, error);
+      this.log(null, 'error', `❌ ${this.providerName}: Restart failed:`, error);
     } finally {
       this.isRestarting = false;
     }

@@ -138,22 +138,22 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-disable @typescript-eslint/naming-convention */
   protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log('🚀 Together: Starting training job (async pattern)...');
+    this.log('info', '🚀 Together: Starting training job (async pattern)...');
 
     // 1. Export dataset to JSONL
-    console.log('   Exporting dataset...');
+    this.log('debug', '   Exporting dataset...');
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-    console.log(`   Dataset exported: ${datasetPath}`);
+    this.log('debug', `   Dataset exported: ${datasetPath}`);
 
     // 2. Upload dataset to Together
-    console.log('   Uploading to Together...');
+    this.log('debug', '   Uploading to Together...');
     const fileId = await this.uploadDataset(datasetPath);
-    console.log(`   File ID: ${fileId}`);
+    this.log('debug', `   File ID: ${fileId}`);
 
     // 3. Create fine-tuning job
-    console.log('   Creating training job...');
+    this.log('debug', '   Creating training job...');
     const jobId = await this.createFineTuningJob(request, fileId);
-    console.log(`   Job ID: ${jobId}`);
+    this.log('info', `   Job ID: ${jobId}`);
 
     // 4. Clean up temp file immediately
     await this.cleanupTempFiles(datasetPath);
@@ -186,7 +186,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log(`🔍 Together: Querying job status: ${providerJobId}`);
+    this.log('debug', `🔍 Together: Querying job status: ${providerJobId}`);
 
     if (!this.config.hasApiKey()) {
       return {
@@ -232,7 +232,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
         }
       };
     } catch (error) {
-      console.error(`❌ Together: Failed to query status:`, error);
+      this.log('error', `❌ Together: Failed to query status: ${error instanceof Error ? error.message : String(error)}`);
       return {
         status: 'failed',
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -257,7 +257,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
       case 'cancelled':
         return 'cancelled';
       default:
-        console.warn(`Unknown Together status: ${openaiStatus}, treating as running`);
+        this.log('warn', `Unknown Together status: ${openaiStatus}, treating as running`);
         return 'running';
     }
   }
@@ -435,7 +435,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
         });
 
         if (!response.ok) {
-          console.warn(`   Poll attempt ${attempts}: HTTP ${response.status}`);
+          this.log('warn', `   Poll attempt ${attempts}: HTTP ${response.status}`);
           await new Promise(resolve => setTimeout(resolve, 5000));
           continue;
         }
@@ -450,7 +450,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
           error?: { message: string };
         };
 
-        console.log(`   Status: ${job.status} (attempt ${attempts}/${maxAttempts})`);
+        this.log('debug', `   Status: ${job.status} (attempt ${attempts}/${maxAttempts})`);
 
         if (job.status === 'succeeded') {
           if (!job.fine_tuned_model) {
@@ -468,7 +468,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
       } catch (error) {
         // Socket timeout or network error - job continues on server
         if (error instanceof Error && error.message.includes('fetch failed')) {
-          console.warn(`   Socket error (attempt ${attempts}), job continues on server...`);
+          this.log('warn', `   Socket error (attempt ${attempts}), job continues on server...`);
           await new Promise(resolve => setTimeout(resolve, 5000));
           continue;
         }
@@ -530,7 +530,7 @@ export class TogetherLoRAAdapter extends BaseLoRATrainerServer {
     try {
       await fs.promises.unlink(datasetPath);
     } catch (error) {
-      console.warn(`   Failed to clean up temp file: ${datasetPath}`, error);
+      this.log('warn', `   Failed to clean up temp file: ${datasetPath} - ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

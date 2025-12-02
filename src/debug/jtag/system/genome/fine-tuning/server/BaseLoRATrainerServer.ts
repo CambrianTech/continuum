@@ -140,7 +140,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     // 1. Validate request
     this.validateRequest(request);
 
-    console.log(`🚀 ${this.providerId}: Starting training (async pattern)...`);
+    this.log('info', `🚀 ${this.providerId}: Starting training (async pattern)...`);
     const startTime = Date.now();
 
     try {
@@ -152,10 +152,10 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
 
       // 4. Return immediately
       const elapsed = Date.now() - startTime;
-      console.log(`✅ ${this.providerId}: Training started in ${elapsed}ms`);
-      console.log(`   Session ID: ${sessionId}`);
-      console.log(`   Provider Job ID: ${handle.jobId}`);
-      console.log(`   Use checkStatus(sessionId) to monitor progress`);
+      this.log('info', `✅ ${this.providerId}: Training started in ${elapsed}ms`);
+      this.log('info', `   Session ID: ${sessionId}`);
+      this.log('info', `   Provider Job ID: ${handle.jobId}`);
+      this.log('info', `   Use checkStatus(sessionId) to monitor progress`);
 
       return {
         success: true,
@@ -168,7 +168,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       };
     } catch (error) {
       const elapsed = Date.now() - startTime;
-      console.error(`❌ ${this.providerId}: Training failed in ${elapsed}ms:`, error);
+      this.log('error', `❌ ${this.providerId}: Training failed in ${elapsed}ms:`, error);
 
       return {
         success: false,
@@ -209,7 +209,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       // 4. Return current status
       return status;
     } catch (error) {
-      console.error(`❌ ${this.providerId}: checkStatus failed:`, error);
+      this.log('error', `❌ ${this.providerId}: checkStatus failed:`, error);
 
       return {
         status: 'failed',

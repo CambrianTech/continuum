@@ -430,7 +430,7 @@ export class AnthropicLoRAAdapter extends BaseLoRATrainer {
       try {
         await fs.promises.unlink(filePath);
       } catch (error) {
-        console.warn(`Failed to clean up temp file: ${filePath}`, error);
+        this.log('warn', `Failed to clean up temp file: ${filePath}`, error);
       }
     }
   }
