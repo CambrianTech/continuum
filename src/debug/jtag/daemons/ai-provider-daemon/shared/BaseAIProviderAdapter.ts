@@ -6,10 +6,8 @@ import type {
   ModelCapability,
   ModelInfo
 } from './AIProviderTypesV2';
-import { Logger } from '../../../system/core/logging/Logger';
-import * as fs from 'fs';
+import { Logger, FileMode, type ComponentLogger } from '../../../system/core/logging/Logger';
 import * as path from 'path';
-import { inspect } from 'util';
 
 /**
  * Abstract base class for all AI provider adapters
@@ -35,34 +33,33 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private readonly HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
   private isRestarting: boolean = false;
 
+  // Logger cache for persona-specific adapters logs
+  private personaLoggers: Map<string, ComponentLogger> = new Map();
+
   /**
    * Helper to log with persona context
    * Writes to persona-specific log directory if personaContext provided
    * Otherwise writes to shared adapter log file
+   *
+   * Uses Logger.ts for all logging (respects CLEAN mode for fresh logs per session)
    */
   protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: any[]): void {
     if (request?.personaContext) {
-      // Write to persona-specific log directory
+      // Get or create logger for this persona's adapters.log
       const logDir = request.personaContext.logDir;
       const logFile = path.join(logDir, 'logs', 'adapters.log');
 
-      // Ensure log directory exists
-      const logsDir = path.join(logDir, 'logs');
-      if (!fs.existsSync(logsDir)) {
-        fs.mkdirSync(logsDir, { recursive: true });
+      if (!this.personaLoggers.has(logFile)) {
+        const componentName = `${this.providerName}:${request.personaContext.displayName}`;
+        this.personaLoggers.set(
+          logFile,
+          Logger.createWithFile(componentName, logFile, FileMode.CLEAN)
+        );
       }
 
-      // Format message with timestamp and any additional args
-      const timestamp = new Date().toISOString();
-      const formattedArgs = args.length > 0
-        ? ' ' + args.map(a =>
-            typeof a === 'object' ? inspect(a, { depth: 2, colors: false, compact: true }) : String(a)
-          ).join(' ')
-        : '';
-      const formattedMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}${formattedArgs}\n`;
-
-      // Append to file
-      fs.appendFileSync(logFile, formattedMessage);
+      // Use Logger.ts (handles queuing, async writes, and CLEAN mode)
+      const logger = this.personaLoggers.get(logFile)!;
+      logger[level](message, ...args);
     } else {
       // No persona context - write to shared adapter log
       const systemLogger = Logger.create('AIProviderAdapter', 'adapters');

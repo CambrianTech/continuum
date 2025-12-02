@@ -18,12 +18,19 @@
  *   LOG_LEVEL=debug  - Everything (verbose, for debugging only)
  *
  *   LOG_TO_CONSOLE=0 - Disable console output (logs only to files)
- *   LOG_TO_CONSOLE=1 - Enable console output (default)
+ *   LOG_TO_CONSOLE=1 - Enable console output (default: 0)
  *
  *   LOG_TO_FILES=0   - Disable file logging
- *   LOG_TO_FILES=1   - Enable file logging (default)
+ *   LOG_TO_FILES=1   - Enable file logging (default: 1)
  *
- * Alpha launch default: LOG_LEVEL=warn, LOG_TO_CONSOLE=0 (clean console, files only)
+ *   LOG_FILE_MODE=clean   - Start fresh each session (truncate existing logs)
+ *   LOG_FILE_MODE=append  - Keep existing logs and add to them
+ *   LOG_FILE_MODE=archive - Rotate logs (not implemented, falls back to append)
+ *   (default: clean)
+ *
+ * Recommended defaults:
+ *   Development: LOG_LEVEL=info, LOG_TO_CONSOLE=0, LOG_FILE_MODE=clean
+ *   Production: LOG_LEVEL=warn, LOG_TO_CONSOLE=0, LOG_FILE_MODE=clean
  *
  * Log File Categories:
  *   - 'sql': All database operations (queries, writes, schema)
@@ -75,6 +82,7 @@ class LoggerClass {
   private logQueues: Map<string, LogQueueEntry[]>;    // file path -> queue
   private logTimers: Map<string, NodeJS.Timeout>;     // file path -> flush timer
   private cleanedFiles: Set<string>;                   // track files cleaned with mode='w' (CLEAN)
+  private defaultFileMode: FileMode;                   // default mode for log files (from LOG_FILE_MODE env var)
   private logDir: string;
   private readonly FLUSH_INTERVAL_MS = 100;           // Flush every 100ms
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
@@ -89,6 +97,15 @@ class LoggerClass {
       'ERROR': LogLevel.ERROR,
       'SILENT': LogLevel.SILENT
     };
+
+    // Read file mode from environment (default: CLEAN)
+    const envFileMode = process.env.LOG_FILE_MODE?.toLowerCase() || 'clean';
+    const fileModeMap: Record<string, FileMode> = {
+      'clean': FileMode.CLEAN,
+      'append': FileMode.APPEND,
+      'archive': FileMode.ARCHIVE
+    };
+    this.defaultFileMode = fileModeMap[envFileMode] || FileMode.CLEAN;
 
     this.config = {
       level: levelMap[envLevel] || LogLevel.INFO,
@@ -132,12 +149,17 @@ class LoggerClass {
       fs.mkdirSync(this.logDir, { recursive: true, mode: 0o755 });
     }
 
-    // Default: CLEAN mode (start fresh per session)
-    // First call for this file: 'w' (truncate), subsequent calls: 'a' (append)
+    // Use configured file mode (from LOG_FILE_MODE env var)
+    // First call for this file: use defaultFileMode, subsequent calls: append
     let flags = 'a'; // Default to append
-    if (!this.cleanedFiles.has(logFile)) {
+    if (this.defaultFileMode === FileMode.CLEAN && !this.cleanedFiles.has(logFile)) {
       flags = 'w'; // First time: truncate (clean)
       this.cleanedFiles.add(logFile);
+    } else if (this.defaultFileMode === FileMode.APPEND) {
+      flags = 'a'; // Always append
+    } else if (this.defaultFileMode === FileMode.ARCHIVE) {
+      // ARCHIVE not implemented yet, fall back to append
+      flags = 'a';
     }
 
     const stream = fs.createWriteStream(logFile, { flags, mode: 0o644 });
