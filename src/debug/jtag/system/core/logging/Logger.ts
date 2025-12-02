@@ -36,6 +36,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { inspect } from 'util';
 import { SystemPaths } from '../config/SystemPaths';
 
 export enum LogLevel {
@@ -313,7 +314,7 @@ class ComponentLogger {
     if (this.fileStream && this.logFilePath && this.logger) {
       const formattedArgs = args.length > 0
         ? ' ' + args.map(arg =>
-            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+            typeof arg === 'object' ? inspect(arg, { depth: 2, colors: false, compact: true }) : String(arg)
           ).join(' ')
         : '';
 

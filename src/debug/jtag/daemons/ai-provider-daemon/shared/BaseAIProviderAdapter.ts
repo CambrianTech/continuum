@@ -9,6 +9,7 @@ import type {
 import { Logger } from '../../../system/core/logging/Logger';
 import * as fs from 'fs';
 import * as path from 'path';
+import { inspect } from 'util';
 
 /**
  * Abstract base class for all AI provider adapters
@@ -53,7 +54,11 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
       // Format message with timestamp and any additional args
       const timestamp = new Date().toISOString();
-      const formattedArgs = args.length > 0 ? ' ' + args.map(a => JSON.stringify(a)).join(' ') : '';
+      const formattedArgs = args.length > 0
+        ? ' ' + args.map(a =>
+            typeof a === 'object' ? inspect(a, { depth: 2, colors: false, compact: true }) : String(a)
+          ).join(' ')
+        : '';
       const formattedMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}${formattedArgs}\n`;
 
       // Append to file
