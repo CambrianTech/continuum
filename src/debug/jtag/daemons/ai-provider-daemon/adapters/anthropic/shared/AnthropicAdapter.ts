@@ -49,8 +49,20 @@ export class AnthropicAdapter implements AIProviderAdapter {
     this.apiKey = apiKey || getSecret('ANTHROPIC_API_KEY', 'AnthropicAdapter') || '';
   }
 
+  /**
+   * Helper to log with persona context
+   * If persona context provided in request, prepends persona info
+   * Otherwise just logs the message
+   */
+  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string): void {
+    const prefix = request?.personaContext
+      ? `[${request.personaContext.displayName}] `
+      : '';
+    console.log(`${prefix}${message}`);
+  }
+
   async initialize(): Promise<void> {
-    console.log(`🔌 ${this.providerName}: Initializing...`);
+    this.log(null, 'info', `🔌 ${this.providerName}: Initializing...`);
 
     if (!this.apiKey) {
       throw new AIProviderError(
@@ -62,7 +74,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
 
     // Basic connectivity check (Anthropic doesn't have a health endpoint)
     this.isInitialized = true;
-    console.log(`✅ ${this.providerName}: Initialized successfully`);
+    this.log(null, 'info', `✅ ${this.providerName}: Initialized successfully`);
   }
 
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
@@ -77,16 +89,12 @@ export class AnthropicAdapter implements AIProviderAdapter {
 
     try {
       // Log incoming request messages
-      console.log('📸 [ANTHROPIC-ADAPTER] generateText() called with:', {
-        totalMessages: request.messages.length,
-        messageTypes: request.messages.map(m => typeof m.content === 'string' ? 'text' : 'multimodal'),
-        multimodalCount: request.messages.filter(m => typeof m.content !== 'string').length
-      });
+      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal`);
 
       // Convert messages to Anthropic format
       const messages = request.messages.map((msg, index) => {
         const isMultimodal = typeof msg.content !== 'string';
-        console.log(`📸 [ANTHROPIC-ADAPTER] Message ${index}: ${msg.role}, ${isMultimodal ? 'MULTIMODAL' : 'text-only'}`);
+        this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${msg.role}, ${isMultimodal ? 'MULTIMODAL' : 'text-only'}`);
 
         return {
           role: msg.role === 'assistant' ? 'assistant' : 'user',
@@ -96,7 +104,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
         };
       });
 
-      console.log('📸 [ANTHROPIC-ADAPTER] Sending API request with', messages.length, 'messages to Anthropic');
+      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Sending API request with ${messages.length} messages to Anthropic`);
 
       // Make API request
       const response = await this.makeRequest<any>('/v1/messages', {
@@ -230,7 +238,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
   }
 
   async shutdown(): Promise<void> {
-    console.log(`🔄 ${this.providerName}: Shutting down (API adapter, no cleanup needed)`);
+    this.log(null, 'info', `🔄 ${this.providerName}: Shutting down (API adapter, no cleanup needed)`);
     this.isInitialized = false;
   }
 
@@ -255,25 +263,14 @@ export class AnthropicAdapter implements AIProviderAdapter {
   }
 
   private formatMultimodalContent(content: any[]): any {
-    console.log('📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() called with content array:', {
-      totalParts: content.length,
-      partTypes: content.map(p => p.type),
-      hasImages: content.some(p => p.type === 'image')
-    });
+    this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() called with ${content.length} parts, ${content.some(p => p.type === 'image') ? 'has images' : 'no images'}`);
 
     const formatted = content.map((part, index) => {
       if (part.type === 'text') {
-        console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: text (${part.text.length} chars)`);
+        this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: text (${part.text.length} chars)`);
         return { type: 'text', text: part.text };
       } else if (part.type === 'image') {
-        console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: image detected`, {
-          hasBase64: !!part.base64,
-          base64Length: part.base64?.length,
-          hasUrl: !!part.url,
-          url: part.url?.substring(0, 50),
-          mimeType: part.mimeType,
-          hasLegacyFormat: !!part.image?.url
-        });
+        this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: image detected (base64: ${!!part.base64}, url: ${!!part.url})`);
 
         // Handle base64 images (from screenshots, tool results)
         // Support both flat format (part.base64) and nested format (part.image.base64)
@@ -289,7 +286,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
               data: base64Data
             }
           };
-          console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as base64 image (${formatted.source.data.length} chars, ${formatted.source.media_type})`);
+          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as base64 image (${formatted.source.data.length} chars, ${formatted.source.media_type})`);
           return formatted;
         }
         // Handle URL images
@@ -301,7 +298,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
               url: part.url
             }
           };
-          console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as URL image (${formatted.source.url})`);
+          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as URL image (${formatted.source.url})`);
           return formatted;
         }
         // Fallback: try legacy format (part.image.url)
@@ -313,20 +310,16 @@ export class AnthropicAdapter implements AIProviderAdapter {
               url: part.image.url
             }
           };
-          console.log(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as legacy URL image (${formatted.source.url})`);
+          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as legacy URL image (${formatted.source.url})`);
           return formatted;
         }
 
-        console.warn(`📸 [ANTHROPIC-ADAPTER] Part ${index}: Image part has no valid source (no base64, url, or image.url)`, part);
+        this.log(null, 'warn', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Image part has no valid source`);
       }
       return part;
     });
 
-    console.log('📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() result:', {
-      totalParts: formatted.length,
-      imageCount: formatted.filter(p => p.type === 'image').length,
-      textCount: formatted.filter(p => p.type === 'text').length
-    });
+    this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() result: ${formatted.length} parts (${formatted.filter(p => p.type === 'image').length} images, ${formatted.filter(p => p.type === 'text').length} text)`);
 
     return formatted;
   }

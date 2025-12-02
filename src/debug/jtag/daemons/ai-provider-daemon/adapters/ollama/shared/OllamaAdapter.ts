@@ -248,12 +248,12 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     }
 
     // Clear Ollama context for consistent results
-    console.log('🧹 Ollama: Clearing loaded models for fresh state...');
+    this.log(null, 'info', '🧹 Ollama: Clearing loaded models for fresh state...');
     await this.clearLoadedModels();
 
     // Log available models
     const models = await this.getAvailableModels();
-    console.log(`   ${models.length} models available: ${models.join(', ')}`);
+    this.log(null, 'info', `   ${models.length} models available: ${models.join(', ')}`);
   }
 
   /**
@@ -292,9 +292,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       };
 
       if (this.config.logRequests) {
-        console.log(`🤖 ${this.providerName}: Generating text with model ${ollamaRequest.model}`);
-        console.log(`   Request ID: ${requestId}`);
-        console.log(`   Prompt length: ${prompt.length} chars`);
+        this.log(request, 'info', `🤖 ${this.providerName}: Generating text with model ${ollamaRequest.model}`);
+        this.log(request, 'debug', `   Request ID: ${requestId}`);
+        this.log(request, 'debug', `   Prompt length: ${prompt.length} chars`);
       }
 
       // Make request to Ollama
@@ -315,9 +315,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       usage.totalTokens = usage.inputTokens + usage.outputTokens;
 
       if (this.config.logRequests) {
-        console.log(`✅ ${this.providerName}: Generated response in ${responseTime}ms`);
-        console.log(`   Output length: ${response.response.length} chars`);
-        console.log(`   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
+        this.log(request, 'info', `✅ ${this.providerName}: Generated response in ${responseTime}ms`);
+        this.log(request, 'debug', `   Output length: ${response.response.length} chars`);
+        this.log(request, 'debug', `   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
       }
 
       return {
@@ -332,8 +332,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     } catch (error) {
       const responseTime = Date.now() - startTime;
 
-      console.error(`❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(request, 'error', `❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
+      this.log(request, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
 
       throw new AIProviderError(
         `Text generation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -358,8 +358,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       const inputs = Array.isArray(request.input) ? request.input : [request.input];
 
       if (this.config.logRequests) {
-        console.log(`🔢 ${this.providerName}: Generating ${inputs.length} embedding(s) with model ${model}`);
-        console.log(`   Request ID: ${requestId}`);
+        this.log(null, 'info', `🔢 ${this.providerName}: Generating ${inputs.length} embedding(s) with model ${model}`);
+        this.log(null, 'debug', `   Request ID: ${requestId}`);
       }
 
       // Generate embeddings for each input
@@ -391,9 +391,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       };
 
       if (this.config.logRequests) {
-        console.log(`✅ ${this.providerName}: Generated ${embeddings.length} embedding(s) in ${responseTime}ms`);
-        console.log(`   Embedding dimensions: ${embeddings[0]?.length || 0}`);
-        console.log(`   Input tokens: ${totalInputTokens}`);
+        this.log(null, 'info', `✅ ${this.providerName}: Generated ${embeddings.length} embedding(s) in ${responseTime}ms`);
+        this.log(null, 'debug', `   Embedding dimensions: ${embeddings[0]?.length || 0}`);
+        this.log(null, 'debug', `   Input tokens: ${totalInputTokens}`);
       }
 
       return {
@@ -407,8 +407,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     } catch (error) {
       const responseTime = Date.now() - startTime;
 
-      console.error(`❌ ${this.providerName}: Embedding generation failed after ${responseTime}ms`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(null, 'error', `❌ ${this.providerName}: Embedding generation failed after ${responseTime}ms`);
+      this.log(null, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
 
       throw new AIProviderError(
         `Embedding generation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -423,11 +423,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     // Return cached health if recent
     if (this.healthCache && Date.now() - this.healthCache.timestamp < this.healthCacheTTL) {
       const cacheAge = Math.floor((Date.now() - this.healthCache.timestamp) / 1000);
-      console.log(`🔍 Ollama Health: Returning cached ${this.healthCache.status.status} (${cacheAge}s old)`);
+      this.log(null, 'debug', `🔍 Ollama Health: Returning cached ${this.healthCache.status.status} (${cacheAge}s old)`);
       return this.healthCache.status;
     }
 
-    console.log(`🔍 Ollama Health: Running actual health check...`);
+    this.log(null, 'info', `🔍 Ollama Health: Running actual health check...`);
     const startTime = Date.now();
 
     try {
@@ -448,7 +448,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
           message,
         };
         this.healthCache = { status, timestamp: Date.now() };
-        console.log(`❌ Ollama Health: ${message}`);
+        this.log(null, 'error', `❌ Ollama Health: ${message}`);
         return status;
       }
 
@@ -481,7 +481,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
             message,
           };
           this.healthCache = { status, timestamp: Date.now() };
-          console.log(`❌ Ollama Health: ${message}`);
+          this.log(null, 'error', `❌ Ollama Health: ${message}`);
           return status;
         }
 
@@ -513,11 +513,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
         // Log result based on status
         if (healthStatus === 'healthy') {
-          console.log(`✅ Ollama Health: ${message}`);
+          this.log(null, 'info', `✅ Ollama Health: ${message}`);
         } else if (healthStatus === 'degraded') {
-          console.log(`⚠️  Ollama Health: ${message}`);
+          this.log(null, 'warn', `⚠️  Ollama Health: ${message}`);
         } else {
-          console.log(`❌ Ollama Health: ${message}`);
+          this.log(null, 'error', `❌ Ollama Health: ${message}`);
         }
 
         return status;
@@ -535,7 +535,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
           message,
         };
         this.healthCache = { status, timestamp: Date.now() };
-        console.log(`❌ Ollama Health: ${message}`);
+        this.log(null, 'error', `❌ Ollama Health: ${message}`);
         return status;
       }
 
@@ -553,7 +553,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       };
 
       this.healthCache = { status, timestamp: Date.now() };
-      console.log(`❌ Ollama Health: ${message}`);
+      this.log(null, 'error', `❌ Ollama Health: ${message}`);
       return status;
     }
   }
@@ -574,16 +574,16 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         if (modelName && modelName !== 'NAME') {
           try {
             execSync(`ollama stop ${modelName}`, { stdio: 'ignore', timeout: 2000 });
-            console.log(`🧹 Ollama: Unloaded ${modelName}`);
+            this.log(null, 'debug', `🧹 Ollama: Unloaded ${modelName}`);
           } catch (e) {
             // Individual model stop failed, continue
           }
         }
       }
-      console.log('✅ Ollama: All models unloaded for fresh state');
+      this.log(null, 'info', '✅ Ollama: All models unloaded for fresh state');
     } catch (error) {
       // Non-critical - log but continue
-      console.log('⚠️  Ollama: Could not unload models (non-critical)');
+      this.log(null, 'warn', '⚠️  Ollama: Could not unload models (non-critical)');
     }
   }
 
@@ -600,8 +600,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         supportsFunctions: false
       }));
     } catch (error) {
-      console.error(`❌ ${this.providerName}: Failed to list models`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(null, 'error', `❌ ${this.providerName}: Failed to list models`);
+      this.log(null, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
   }
@@ -637,7 +637,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       } catch (error) {
         // Retry logic
         if (attempt < this.config.retryAttempts) {
-          console.log(`⚠️  ${this.providerName}: Request failed (attempt ${attempt}/${this.config.retryAttempts}), retrying...`);
+          this.log(null, 'warn', `⚠️  ${this.providerName}: Request failed (attempt ${attempt}/${this.config.retryAttempts}), retrying...`);
 
           // Wait before retry
           await new Promise(resolve => setTimeout(resolve, this.config.retryDelay));
