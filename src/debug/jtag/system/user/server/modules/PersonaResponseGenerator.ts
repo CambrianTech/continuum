@@ -14,6 +14,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
@@ -103,7 +104,11 @@ export class PersonaResponseGenerator {
    */
   private log(message: string, ...args: any[]): void {
     const timestamp = new Date().toISOString();
-    const formattedArgs = args.length > 0 ? ' ' + args.map(a => String(a)).join(' ') : '';
+    const formattedArgs = args.length > 0
+      ? ' ' + args.map(a =>
+          typeof a === 'object' ? inspect(a, { depth: 2, colors: false, compact: true }) : String(a)
+        ).join(' ')
+      : '';
     this.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
@@ -705,6 +710,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
           // Regenerate response with tool results
           this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
+          this.log(`📊 ${this.personaName}: Tool summary length: ${leanSummary.length} chars, ${toolCalls.length} calls, ${toolMedia?.length || 0} media items`);
+
           const regenerateRequest: TextGenerationRequest = {
             ...request,
             messages: [
@@ -714,17 +721,33 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             ]
           };
 
-          const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
-          if (!regeneratedResponse.text) {
-            this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Tool regeneration failed, using previous response`);
+          this.log(`📊 ${this.personaName}: Regenerate request has ${regenerateRequest.messages.length} messages total`);
+
+          try {
+            const regenerateStartTime = Date.now();
+            const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
+            const regenerateDuration = Date.now() - regenerateStartTime;
+
+            this.log(`⏱️  ${this.personaName}: Regeneration took ${regenerateDuration}ms`);
+
+            if (!regeneratedResponse.text) {
+              this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Tool regeneration returned empty response, using previous response`);
+              // Remove tool blocks from original response before posting
+              aiResponse.text = explanationText;
+              break;
+            }
+
+            // Update aiResponse with regenerated response
+            aiResponse.text = this.cleanAIResponse(regeneratedResponse.text.trim());
+            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars)`);
+          } catch (regenerateError) {
+            const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
+            this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Regeneration failed with error: ${errorMsg}`);
+            this.log(`   Stack:`, regenerateError instanceof Error ? regenerateError.stack : 'N/A');
             // Remove tool blocks from original response before posting
             aiResponse.text = explanationText;
             break;
           }
-
-          // Update aiResponse with regenerated response
-          aiResponse.text = this.cleanAIResponse(regeneratedResponse.text.trim());
-          this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results`);
 
           // Loop will check again for more tool calls (up to MAX_TOOL_ITERATIONS)
         }

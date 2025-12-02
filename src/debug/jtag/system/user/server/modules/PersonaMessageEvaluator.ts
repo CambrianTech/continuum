@@ -13,6 +13,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
@@ -63,7 +64,11 @@ export class PersonaMessageEvaluator {
    */
   private log(message: string, ...args: any[]): void {
     const timestamp = new Date().toISOString();
-    const formattedArgs = args.length > 0 ? ' ' + args.map(a => String(a)).join(' ') : '';
+    const formattedArgs = args.length > 0
+      ? ' ' + args.map(a =>
+          typeof a === 'object' ? inspect(a, { depth: 2, colors: false, compact: true }) : String(a)
+        ).join(' ')
+      : '';
     this.personaUser.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
