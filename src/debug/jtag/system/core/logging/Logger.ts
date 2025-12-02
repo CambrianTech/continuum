@@ -138,9 +138,6 @@ class LoggerClass {
     if (!this.cleanedFiles.has(logFile)) {
       flags = 'w'; // First time: truncate (clean)
       this.cleanedFiles.add(logFile);
-      console.log(`🧹 [Logger] Cleaning log file (first open): ${path.basename(logFile)}`);
-    } else {
-      console.log(`📝 [Logger] Appending to already-cleaned log: ${path.basename(logFile)}`);
     }
 
     const stream = fs.createWriteStream(logFile, { flags, mode: 0o644 });
@@ -171,7 +168,7 @@ class LoggerClass {
    * Queue a log message for async writing
    * Fire-and-forget - never blocks the caller
    */
-  private queueMessage(logFile: string, message: string): void {
+  public queueMessage(logFile: string, message: string): void {
     const queue = this.logQueues.get(logFile);
     const stream = this.fileStreams.get(logFile);
 
@@ -375,6 +372,17 @@ class ComponentLogger {
     if (this.shouldLog(LogLevel.DEBUG)) {
       const [message, ...args] = messageFn();
       this.debug(message, ...args);
+    }
+  }
+
+  /**
+   * Write raw pre-formatted message to log file
+   * Used by PersonaLogger which already formats its messages
+   * NOTE: Does NOT check enableFileLogging - persona logs are always written
+   */
+  writeRaw(message: string): void {
+    if (this.fileStream && this.logFilePath && this.logger) {
+      this.logger.queueMessage(this.logFilePath, message);
     }
   }
 }

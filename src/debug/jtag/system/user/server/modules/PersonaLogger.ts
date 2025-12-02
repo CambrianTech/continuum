@@ -1,28 +1,24 @@
 /**
- * PersonaLogger - Queued logging subprocess for non-blocking log writes
+ * PersonaLogger - Wrapper around Logger.ts for persona-specific logging
  *
  * Architecture:
- * - Each persona has ONE logger subprocess
- * - All other subprocesses enqueue log messages (non-blocking)
- * - Logger batches and flushes to files asynchronously
+ * - Wraps Logger.ts to get CLEAN mode (fresh logs per session)
+ * - Creates ComponentLogger instances for each log file
+ * - Uses Logger.ts queuing and batching infrastructure
  * - Prevents blocking subprocesses on file I/O
  *
  * Benefits:
- * - Non-blocking: enqueue is instant, file I/O happens in background
- * - Batch writes: flush multiple log lines at once (efficient)
- * - Centralized: one place handles all per-persona logging
- * - Clean separation: logging concern isolated from business logic
+ * - Automatic log cleaning (via Logger.ts FileMode.CLEAN)
+ * - Non-blocking: Logger.ts handles async writes
+ * - Consistent behavior with all other system logs
  */
 
 import { PersonaContinuousSubprocess } from './PersonaSubprocess';
 import type { PersonaUser } from '../PersonaUser';
-import { appendFileSync, appendFile, mkdirSync, existsSync } from 'fs';
-import { dirname } from 'path';
+import { Logger, FileMode, type ComponentLogger } from '../../../core/logging/Logger';
 
-interface LogEntry {
-  readonly filePath: string;
-  readonly message: string;
-  readonly timestamp: Date;
+interface LoggerMap {
+  [fileName: string]: ComponentLogger;
 }
 
 /**
@@ -35,9 +31,7 @@ interface LogEntry {
  * ```
  */
 export class PersonaLogger extends PersonaContinuousSubprocess {
-  private logQueue: LogEntry[] = [];
-  private readonly maxLogQueueSize: number = 1000; // Prevent unbounded growth
-  private readonly batchSize: number = 50; // Flush up to 50 lines per tick
+  private loggers: LoggerMap = {};
 
   constructor(persona: PersonaUser) {
     // Highest priority - logging should be fast and responsive
@@ -48,77 +42,29 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   }
 
   /**
-   * Enqueue a log message (non-blocking, instant return)
+   * Enqueue a log message (uses Logger.ts infrastructure)
    *
-   * @param fileName - Log file name (e.g., 'hippocampus.log')
+   * @param fileName - Log file name (e.g., 'hippocampus.log', 'cognition.log')
    * @param message - Pre-formatted log message (already has timestamp, etc.)
    */
   enqueueLog(fileName: string, message: string): void {
-    // Drop oldest if queue full (prevent memory exhaustion)
-    if (this.logQueue.length >= this.maxLogQueueSize) {
-      this.logQueue.shift();
-      // Log to console as fallback (queue overflow)
-      console.warn(`⚠️ [PersonaLogger] Queue full, dropped log: ${fileName}`);
+    // Get or create logger for this file
+    if (!this.loggers[fileName]) {
+      const filePath = this.getLogFilePath(fileName);
+      const componentName = `${this.persona.displayName}:${fileName.replace('.log', '')}`;
+      this.loggers[fileName] = Logger.createWithFile(componentName, filePath, FileMode.CLEAN);
     }
 
-    // Build full path
-    const filePath = this.getLogFilePath(fileName);
-
-    this.logQueue.push({
-      filePath,
-      message,
-      timestamp: new Date()
-    });
+    // Write directly (Logger.ts handles queuing and async writes)
+    this.loggers[fileName].writeRaw(message);
   }
 
   /**
-   * Continuous tick - flush queued logs to files in batches
+   * Continuous tick - no-op (Logger.ts handles all flushing)
    */
   protected async tick(): Promise<void> {
-    if (this.logQueue.length === 0) {
-      return; // Nothing to flush
-    }
-
-    // Take up to batchSize entries from queue
-    const batch = this.logQueue.splice(0, Math.min(this.batchSize, this.logQueue.length));
-
-    // Group by file path (efficient: batch writes to same file)
-    const byFile = new Map<string, string>();
-
-    for (const entry of batch) {
-      const existing = byFile.get(entry.filePath) || '';
-      byFile.set(entry.filePath, existing + entry.message);
-    }
-
-    // Flush each file (async, but sequential per file to maintain order)
-    for (const [filePath, content] of byFile) {
-      await this.flushToFile(filePath, content);
-    }
-  }
-
-  /**
-   * Flush content to file asynchronously
-   */
-  private async flushToFile(filePath: string, content: string): Promise<void> {
-    try {
-      // Ensure directory exists
-      const dir = dirname(filePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      // Async append (non-blocking)
-      await new Promise<void>((resolve, reject) => {
-        appendFile(filePath, content, 'utf8', (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-    } catch (error) {
-      // Fallback to console (don't lose logs)
-      console.error(`❌ [PersonaLogger] Failed to write to ${filePath}:`, error);
-      console.log(`[PersonaLogger] Dropped content:\n${content}`);
-    }
+    // Logger.ts handles all async writes and batching
+    // Nothing to do here
   }
 
   /**
@@ -135,49 +81,23 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   }
 
   /**
-   * Synchronous emergency log (use only for critical errors)
-   *
-   * This bypasses the queue and writes immediately.
-   * Only use when logging MUST happen before process might crash.
+   * Emergency log (fallback to console)
    */
   emergencyLog(fileName: string, message: string): void {
-    const filePath = this.getLogFilePath(fileName);
-
-    try {
-      const dir = dirname(filePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      appendFileSync(filePath, message, 'utf8');
-    } catch (error) {
-      console.error(`❌ [PersonaLogger] Emergency log failed:`, error);
-      console.log(message);
-    }
+    console.error(`❌ [PersonaLogger:${this.persona.displayName}] ${fileName}: ${message}`);
   }
 
   /**
-   * Get current queue statistics
+   * Get current queue statistics (no-op - Logger.ts handles queue)
    */
-  getQueueStats(): {
-    queueSize: number;
-    maxQueueSize: number;
-    utilizationPercent: number;
-  } {
-    return {
-      queueSize: this.logQueue.length,
-      maxQueueSize: this.maxLogQueueSize,
-      utilizationPercent: (this.logQueue.length / this.maxLogQueueSize) * 100
-    };
+  getQueueStats(): { queueSize: number; maxQueueSize: number; utilizationPercent: number } {
+    return { queueSize: 0, maxQueueSize: 0, utilizationPercent: 0 };
   }
 
   /**
-   * Force flush all queued logs immediately (blocking)
-   *
-   * Use during shutdown to ensure all logs are written.
+   * Force flush all queued logs (Logger.ts handles this)
    */
   async forceFlush(): Promise<void> {
-    while (this.logQueue.length > 0) {
-      await this.tick();
-    }
+    // Logger.ts handles flushing
   }
 }
