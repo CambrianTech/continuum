@@ -29,8 +29,9 @@ import {
   calculateCostTier,
 } from '../../../shared/ModelTiers';
 import { MODEL_IDS } from '../../../../../system/shared/Constants';
+import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 
-export class AnthropicAdapter implements AIProviderAdapter {
+export class AnthropicAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'anthropic';
   readonly providerName = 'Anthropic';
   readonly supportedCapabilities: ModelCapability[] = [
@@ -46,19 +47,8 @@ export class AnthropicAdapter implements AIProviderAdapter {
   private isInitialized = false;
 
   constructor(apiKey?: string) {
+    super();
     this.apiKey = apiKey || getSecret('ANTHROPIC_API_KEY', 'AnthropicAdapter') || '';
-  }
-
-  /**
-   * Helper to log with persona context
-   * If persona context provided in request, prepends persona info
-   * Otherwise just logs the message
-   */
-  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string): void {
-    const prefix = request?.personaContext
-      ? `[${request.personaContext.displayName}] `
-      : '';
-    console.log(`${prefix}${message}`);
   }
 
   async initialize(): Promise<void> {
@@ -240,6 +230,12 @@ export class AnthropicAdapter implements AIProviderAdapter {
   async shutdown(): Promise<void> {
     this.log(null, 'info', `🔄 ${this.providerName}: Shutting down (API adapter, no cleanup needed)`);
     this.isInitialized = false;
+  }
+
+  protected async restartProvider(): Promise<void> {
+    // API-based provider, no restart needed - just reinitialize
+    await this.shutdown();
+    await this.initialize();
   }
 
   // Helper methods

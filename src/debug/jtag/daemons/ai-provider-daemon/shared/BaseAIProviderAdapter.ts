@@ -6,6 +6,10 @@ import type {
   ModelCapability,
   ModelInfo
 } from './AIProviderTypesV2';
+import { Logger } from '../../../system/core/logging/Logger';
+import * as fs from 'fs';
+import * as path from 'path';
+
 /**
  * Abstract base class for all AI provider adapters
  *
@@ -32,14 +36,32 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
   /**
    * Helper to log with persona context
-   * If persona context provided in request, prepends persona info
-   * Otherwise just logs the message
+   * Writes to persona-specific log directory if personaContext provided
+   * Otherwise writes to shared adapter log file
    */
   protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string): void {
-    const prefix = request?.personaContext
-      ? `[${request.personaContext.displayName}] `
-      : '';
-    console.log(`${prefix}${message}`);
+    if (request?.personaContext) {
+      // Write to persona-specific log directory
+      const logDir = request.personaContext.logDir;
+      const logFile = path.join(logDir, 'logs', 'adapters.log');
+
+      // Ensure log directory exists
+      const logsDir = path.join(logDir, 'logs');
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+
+      // Format message with timestamp
+      const timestamp = new Date().toISOString();
+      const formattedMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}\n`;
+
+      // Append to file
+      fs.appendFileSync(logFile, formattedMessage);
+    } else {
+      // No persona context - write to shared adapter log
+      const systemLogger = Logger.create('AIProviderAdapter', 'adapters');
+      systemLogger[level](message);
+    }
   }
 
   // Abstract methods subclasses MUST implement

@@ -60,7 +60,7 @@ export enum FileMode {
   ARCHIVE = 'archive'  // Archive and rotate logs (not implemented yet)
 }
 
-type LogCategory = 'sql' | 'persona-mind' | 'genome' | 'system' | 'tools';
+type LogCategory = string;
 
 interface LogQueueEntry {
   message: string;
