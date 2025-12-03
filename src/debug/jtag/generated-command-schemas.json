@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-03T03:36:52.961Z",
+  "generated": "2025-12-03T05:43:12.611Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -975,6 +975,89 @@
       }
     },
     {
+      "name": "logs/search",
+      "description": "logs/search command",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        }
+      }
+    },
+    {
+      "name": "logs/read",
+      "description": "logs/read command",
+      "params": {
+        "log": {
+          "type": "string",
+          "required": true,
+          "description": "log parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "tail": {
+          "type": "number",
+          "required": false,
+          "description": "tail parameter"
+        },
+        "level": {
+          "type": "string",
+          "required": false,
+          "description": "level parameter"
+        },
+        "component": {
+          "type": "string",
+          "required": false,
+          "description": "component parameter"
+        }
+      }
+    },
+    {
+      "name": "logs/list",
+      "description": "logs/list Command Types",
+      "params": {
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaUniqueId": {
+          "type": "string",
+          "required": false,
+          "description": "personaUniqueId parameter"
+        },
+        "component": {
+          "type": "string",
+          "required": false,
+          "description": "component parameter"
+        },
+        "logType": {
+          "type": "string",
+          "required": false,
+          "description": "logType parameter"
+        },
+        "includeStats": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeStats parameter"
+        }
+      }
+    },
+    {
       "name": "git/issue/list",
       "description": "git/issue/list command",
       "params": {
@@ -1509,6 +1592,79 @@
           "type": "string",
           "required": false,
           "description": "executedIn parameter"
+        }
+      }
+    },
+    {
+      "name": "docs/search",
+      "description": "docs/search command",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "caseSensitive": {
+          "type": "boolean",
+          "required": false,
+          "description": "caseSensitive parameter"
+        },
+        "maxMatches": {
+          "type": "number",
+          "required": false,
+          "description": "maxMatches parameter"
+        }
+      }
+    },
+    {
+      "name": "docs/read",
+      "description": "docs/read command",
+      "params": {
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "toc": {
+          "type": "boolean",
+          "required": false,
+          "description": "toc parameter"
+        },
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "section parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        }
+      }
+    },
+    {
+      "name": "docs/list",
+      "description": "docs/list command",
+      "params": {
+        "dir": {
+          "type": "string",
+          "required": false,
+          "description": "dir parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        },
+        "includeReadmes": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeReadmes parameter"
         }
       }
     },
