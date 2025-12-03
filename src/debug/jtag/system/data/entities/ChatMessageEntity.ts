@@ -152,7 +152,7 @@ export class ChatMessageEntity extends BaseEntity {
   @TextField({ index: true })
   senderId: UUID;
 
-  @TextField()
+  @TextField({ description: true })
   senderName: string;
 
   @EnumField({ index: true }) // Index for efficient AI vs human filtering

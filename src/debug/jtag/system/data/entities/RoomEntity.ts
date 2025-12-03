@@ -64,7 +64,7 @@ export class RoomEntity extends BaseEntity {
   @TextField({ index: true })
   name: string;
 
-  @TextField()
+  @TextField({ description: true })
   displayName: string;
 
   @TextField({ nullable: true })

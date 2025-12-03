@@ -1,7 +1,43 @@
 {
-  "generated": "2025-12-03T06:55:03.486Z",
+  "generated": "2025-12-03T20:30:10.641Z",
   "version": "1.0.0",
   "commands": [
+    {
+      "name": "wall",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "append": {
+          "type": "boolean",
+          "required": false,
+          "description": "append parameter"
+        },
+        "author": {
+          "type": "string",
+          "required": false,
+          "description": "author parameter"
+        },
+        "commitMessage": {
+          "type": "string",
+          "required": false,
+          "description": "commitMessage parameter"
+        }
+      }
+    },
     {
       "name": "wait-for-element",
       "description": "wait-for-element command",
@@ -1059,6 +1095,42 @@
           "type": "boolean",
           "required": false,
           "description": "includeStats parameter"
+        }
+      }
+    },
+    {
+      "name": "lease/request",
+      "description": "Lease Request Command - Shared Types\n *\n * Command to request a file lease for editing",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "requesterId": {
+          "type": "string",
+          "required": true,
+          "description": "requesterId parameter"
+        },
+        "requesterName": {
+          "type": "string",
+          "required": true,
+          "description": "requesterName parameter"
+        },
+        "requesterType": {
+          "type": "string",
+          "required": true,
+          "description": "requesterType parameter"
+        },
+        "intent": {
+          "type": "string",
+          "required": true,
+          "description": "intent parameter"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "required": false,
+          "description": "durationSeconds parameter"
         }
       }
     },
@@ -2899,6 +2971,87 @@
           "type": "array",
           "required": false,
           "description": "tags parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/mute",
+      "description": "AI Mute Command - Shared Types\n *\n * Mute or unmute an AI persona from acting in the system.\n * Enforces democratic governance with permission checks and veto power.\n *\n * Command: ai/mute\n *\n * Examples:\n *   ./jtag ai/mute --persona=\"helper-ai\" --reason=\"Repeated errors\" --duration=3600\n *   ./jtag ai/mute --userId=\"UUID\" --reason=\"Hostile behavior\" --permanent=true\n *   ./jtag ai/unmute --persona=\"helper-ai\" --reason=\"Appeal granted\"\n *   ./jtag ai/mute --persona=\"local-assistant\" --rooms='[\"general\"]' --reason=\"Room-specific timeout\"",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "persona": {
+          "type": "string",
+          "required": false,
+          "description": "persona parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
+        },
+        "reason": {
+          "type": "string",
+          "required": true,
+          "description": "reason parameter"
+        },
+        "evidence": {
+          "type": "string",
+          "required": false,
+          "description": "evidence parameter"
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "description": "duration parameter"
+        },
+        "permanent": {
+          "type": "boolean",
+          "required": false,
+          "description": "permanent parameter"
+        },
+        "rooms": {
+          "type": "array",
+          "required": false,
+          "description": "rooms parameter"
+        },
+        "commands": {
+          "type": "array",
+          "required": false,
+          "description": "commands parameter"
+        },
+        "mutedBy": {
+          "type": "string",
+          "required": false,
+          "description": "mutedBy parameter"
+        },
+        "mutedByName": {
+          "type": "string",
+          "required": false,
+          "description": "mutedByName parameter"
+        },
+        "mutedByType": {
+          "type": "string",
+          "required": false,
+          "description": "mutedByType parameter"
+        },
+        "restorationReason": {
+          "type": "string",
+          "required": false,
+          "description": "restorationReason parameter"
+        },
+        "canAppeal": {
+          "type": "boolean",
+          "required": false,
+          "description": "canAppeal parameter"
+        },
+        "appealId": {
+          "type": "string",
+          "required": false,
+          "description": "appealId parameter"
         }
       }
     },

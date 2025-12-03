@@ -38,6 +38,7 @@ export interface FieldMetadata {
     nullable?: boolean;
     default?: any;
     maxLength?: number;
+    description?: boolean;      // Mark this field as the entity's description (for data/list summaries)
   };
 }
 
@@ -76,6 +77,20 @@ export function getFieldMetadata(entityClass: EntityConstructor): Map<string, Fi
  */
 export function hasFieldMetadata(entityClass: EntityConstructor): boolean {
   return FIELD_METADATA.has(entityClass) && FIELD_METADATA.get(entityClass)!.size > 0;
+}
+
+/**
+ * Get the description field name for an entity (for data/list summaries)
+ * Returns the field name marked with description:true, or null if none found
+ */
+export function getDescriptionField(entityClass: EntityConstructor): string | null {
+  const metadata = getFieldMetadata(entityClass);
+  for (const [fieldName, fieldMetadata] of metadata) {
+    if (fieldMetadata.options?.description === true) {
+      return fieldName;
+    }
+  }
+  return null;
 }
 
 /**
@@ -158,7 +173,7 @@ export function EnumField(options?: { index?: boolean; nullable?: boolean; defau
 /**
  * Text field
  */
-export function TextField(options?: { maxLength?: number; index?: boolean; nullable?: boolean; unique?: boolean }) {
+export function TextField(options?: { maxLength?: number; index?: boolean; nullable?: boolean; unique?: boolean; description?: boolean }) {
   return function (target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {

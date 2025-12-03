@@ -167,9 +167,13 @@ async function main() {
           const [key, ...valueParts] = argWithoutDashes.split('=');
           const value = valueParts.join('='); // Handle values that contain =
 
-          // Try to parse JSON values, fall back to string
-          let parsedValue = value;
-          if (value.startsWith('{') || value.startsWith('[')) {
+          // SERDE-STYLE JSON PARSING: Try to parse as JSON primitives
+          let parsedValue: any = value;
+
+          // Always try JSON.parse for known JSON types
+          if (value === 'true' || value === 'false' || value === 'null' ||
+              value.startsWith('{') || value.startsWith('[') ||
+              /^-?\d+(\.\d+)?$/.test(value)) { // Numbers (int or float)
             try {
               parsedValue = JSON.parse(value);
             } catch (e) {
@@ -196,9 +200,13 @@ async function main() {
           const key = argWithoutDashes;
           const value = rawParams[i + 1];
           if (value !== undefined && !value.startsWith('--')) {
-            // Try to parse JSON values, fall back to string
-            let parsedValue = value;
-            if (value.startsWith('{') || value.startsWith('[')) {
+            // SERDE-STYLE JSON PARSING: Try to parse as JSON primitives
+            let parsedValue: any = value;
+
+            // Always try JSON.parse for known JSON types
+            if (value === 'true' || value === 'false' || value === 'null' ||
+                value.startsWith('{') || value.startsWith('[') ||
+                /^-?\d+(\.\d+)?$/.test(value)) { // Numbers (int or float)
               try {
                 parsedValue = JSON.parse(value);
               } catch (e) {
@@ -230,9 +238,13 @@ async function main() {
         const [key, ...valueParts] = arg.split('=');
         const value = valueParts.join('='); // Handle values that contain =
 
-        // Try to parse JSON values, fall back to string
-        let parsedValue = value;
-        if (value.startsWith('{') || value.startsWith('[')) {
+        // SERDE-STYLE JSON PARSING: Try to parse as JSON primitives
+        let parsedValue: any = value;
+
+        // Always try JSON.parse for known JSON types
+        if (value === 'true' || value === 'false' || value === 'null' ||
+            value.startsWith('{') || value.startsWith('[') ||
+            /^-?\d+(\.\d+)?$/.test(value)) { // Numbers (int or float)
           try {
             parsedValue = JSON.parse(value);
           } catch (e) {

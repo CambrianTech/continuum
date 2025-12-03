@@ -247,7 +247,9 @@ class LoggerClass {
   createWithFile(component: string, logFilePath: string, mode: FileMode): ComponentLogger {
     // Handle ARCHIVE mode (not implemented yet)
     if (mode === FileMode.ARCHIVE) {
-      console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
+      if (this.config.enableConsoleLogging) {
+        console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
+      }
       mode = FileMode.APPEND;
     }
 
@@ -269,10 +271,14 @@ class LoggerClass {
     if (mode === FileMode.CLEAN) {
       if (this.cleanedFiles.has(logFilePath)) {
         effectiveMode = FileMode.APPEND; // Already cleaned, just append from now on
-        console.log(`📝 [Logger] CLEAN→APPEND (already cleaned): ${path.basename(logFilePath)}`);
+        if (this.config.enableConsoleLogging) {
+          console.log(`📝 [Logger] CLEAN→APPEND (already cleaned): ${path.basename(logFilePath)}`);
+        }
       } else {
         this.cleanedFiles.add(logFilePath); // Mark as cleaned
-        console.log(`🧹 [Logger] CLEAN mode (truncating): ${path.basename(logFilePath)}`);
+        if (this.config.enableConsoleLogging) {
+          console.log(`🧹 [Logger] CLEAN mode (truncating): ${path.basename(logFilePath)}`);
+        }
       }
     }
 

@@ -74,10 +74,40 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       }
 
       // Extract data from DataRecord array and merge database ID into entity data
-      const items: T[] = result.data ? result.data.map(record => ({
-        ...record.data as T,
-        id: record.id  // Merge database-generated UUID into entity
-      })) : [];
+      const items: T[] = result.data ? result.data.map(record => {
+        const fullEntity = {
+          ...record.data as T,
+          id: record.id  // Merge database-generated UUID into entity
+        };
+
+        // Determine which fields to return based on params
+        let fieldsToProject: string[] | undefined;
+
+        if (params.fields && params.fields.length > 0) {
+          // Explicit fields specified - use those
+          fieldsToProject = [...params.fields];
+        } else if (params.verbose === false) {
+          // Lean mode - return only id + description field
+          const descriptionField = DataDaemon.getDescriptionFieldForCollection(collection);
+          if (descriptionField) {
+            fieldsToProject = [descriptionField];
+          }
+          // If no description field, fall through to return all fields
+        }
+
+        // Apply field projection if we determined fields to project
+        if (fieldsToProject && fieldsToProject.length > 0) {
+          const projected: Partial<T> = { id: record.id } as Partial<T>;
+          for (const field of fieldsToProject) {
+            if (field in fullEntity) {
+              (projected as any)[field] = (fullEntity as any)[field];
+            }
+          }
+          return projected as T;
+        }
+
+        return fullEntity;
+      }) : [];
 
       return createDataListResultFromParams(params, {
         success: true,

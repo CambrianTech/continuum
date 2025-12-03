@@ -19,6 +19,12 @@ export interface DataListParams<T extends BaseEntity = BaseEntity> extends JTAGP
     readonly value: any;
     readonly direction: 'before' | 'after';
   };
+  // Field projection - if specified, only return these fields (plus 'id' always)
+  // If omitted, returns all fields (SELECT *) for backward compatibility
+  readonly fields?: readonly string[];
+  // Verbose flag - if false, returns only id + description field (lean mode)
+  // Default: undefined (returns all fields for backward compatibility)
+  readonly verbose?: boolean;
 }
 
 export interface DataListResult<T extends BaseEntity> extends JTAGPayload {
