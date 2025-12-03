@@ -21,8 +21,10 @@
  */
 
 import { EventEmitter } from 'events';
+import * as path from 'path';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * Domain-agnostic thought (claim to respond)
@@ -112,7 +114,8 @@ export abstract class BaseCoordinationStream<
     this.config = { ...DEFAULT_COORDINATION_CONFIG, ...config };
 
     // Initialize logger for coordination (logs to coordination.log)
-    this.logger = Logger.createWithFile('CoordinationStream', 'coordination', FileMode.CLEAN);
+    const logPath = path.join(SystemPaths.logs.system, 'coordination.log');
+    this.logger = Logger.createWithFile('CoordinationStream', logPath, FileMode.CLEAN);
 
     // Cleanup old streams periodically
     this.cleanupInterval = setInterval(() => {

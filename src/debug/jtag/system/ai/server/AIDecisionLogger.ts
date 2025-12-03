@@ -5,7 +5,9 @@
  * Location: .continuum/jtag/sessions/system/{systemSessionId}/logs/ai-decisions.log
  */
 
+import * as path from 'path';
 import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 export class AIDecisionLogger {
   private static logger: ComponentLogger | null = null;
@@ -14,7 +16,7 @@ export class AIDecisionLogger {
    * Initialize logger with session-specific log path
    */
   static initialize(sessionId: string): void {
-    const logPath = `ai-decisions-${sessionId}`;
+    const logPath = path.join(SystemPaths.logs.system, `ai-decisions-${sessionId}.log`);
 
     // Create logger using Logger.ts (handles directory creation, async writes, CLEAN mode)
     this.logger = Logger.createWithFile('AIDecisionLogger', logPath, FileMode.CLEAN);
