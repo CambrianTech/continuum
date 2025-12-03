@@ -39,6 +39,7 @@ export interface FieldMetadata {
     default?: any;
     maxLength?: number;
     description?: boolean;      // Mark this field as the entity's description (for data/list summaries)
+    summary?: boolean;          // Mark field for inclusion in data/list results (default: false)
   };
 }
 
@@ -141,7 +142,7 @@ export function ForeignKeyField(options: { references: string; index?: boolean; 
 /**
  * Date field (auto-converts Date ↔ ISO string)
  */
-export function DateField(options?: { index?: boolean; nullable?: boolean }) {
+export function DateField(options?: { index?: boolean; nullable?: boolean; summary?: boolean }) {
   return function (target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {
@@ -173,7 +174,7 @@ export function EnumField(options?: { index?: boolean; nullable?: boolean; defau
 /**
  * Text field
  */
-export function TextField(options?: { maxLength?: number; index?: boolean; nullable?: boolean; unique?: boolean; description?: boolean }) {
+export function TextField(options?: { maxLength?: number; index?: boolean; nullable?: boolean; unique?: boolean; description?: boolean; summary?: boolean }) {
   return function (target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {
@@ -205,7 +206,7 @@ export function JsonField(options?: { nullable?: boolean }) {
 /**
  * Number field
  */
-export function NumberField(options?: { nullable?: boolean; default?: number }) {
+export function NumberField(options?: { nullable?: boolean; default?: number; summary?: boolean }) {
   return function (target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {
