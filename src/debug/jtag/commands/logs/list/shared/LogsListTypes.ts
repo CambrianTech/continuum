@@ -29,7 +29,6 @@ export interface LogsListResult {
 
 export interface LogInfo {
   name: string;
-  path: string;
   category: 'system' | 'persona' | 'session' | 'external';
   component?: string;
   personaName?: string;

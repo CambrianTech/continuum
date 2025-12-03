@@ -29,7 +29,6 @@ export class LogsListServerCommand extends LogsListCommand {
 
     const logInfos: LogInfo[] = logs.map(log => ({
       name: pathToLogName(log.filePath),
-      path: log.filePath,
       category: log.category,
       component: log.component,
       personaName: log.personaName,
