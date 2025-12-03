@@ -227,10 +227,27 @@ export class PersonaInbox {
 
   /**
    * Logging helper
+   * Can be overridden by injecting a logger function
    */
+  private logFn: ((message: string) => void) | null = null;
+
+  /**
+   * Set custom logger (optional dependency injection)
+   */
+  setLogger(logger: (message: string) => void): void {
+    this.logFn = logger;
+  }
+
   private log(message: string): void {
     if (!this.config.enableLogging) return;
-    console.log(`[${this.personaName}:Inbox] ${message}`);
+    const formattedMessage = `[${this.personaName}:Inbox] ${message}`;
+
+    if (this.logFn) {
+      this.logFn(formattedMessage);
+    } else {
+      // Fallback to console if no logger injected
+      console.log(formattedMessage);
+    }
   }
 }
 

@@ -57,7 +57,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         cursor: params.cursor,
         limit
       };
-      console.debug(`🔧 CURSOR-DEBUG: Received cursor from client: ${params.cursor ? JSON.stringify(params.cursor) : 'NONE'}`);
+      //console.debug(`🔧 CURSOR-DEBUG: Received cursor from client: ${params.cursor ? JSON.stringify(params.cursor) : 'NONE'}`);
 
       const result = await DataDaemon.query<BaseEntity>(storageQuery);
 

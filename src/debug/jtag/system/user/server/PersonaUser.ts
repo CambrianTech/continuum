@@ -285,6 +285,10 @@ export class PersonaUser extends AIUser {
       maxSize: 100,
       enableLogging: true
     });
+    // Inject logger for cognition.log
+    this.inbox.setLogger((message: string) => {
+      this.logger.enqueueLog('cognition.log', message);
+    });
 
     // PHASE 5: Self-task generation for autonomous work creation
     this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {
@@ -327,7 +331,7 @@ export class PersonaUser extends AIUser {
     this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // Task execution module (delegated for modularity, uses this.memory getter)
-    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
+    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState, cognitionLogger);
 
     // CNS: Central Nervous System orchestrator (capability-based)
     // Note: mind/soul/body are non-null at this point (initialized above)
@@ -337,7 +341,7 @@ export class PersonaUser extends AIUser {
     this.messageEvaluator = new PersonaMessageEvaluator(this);
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
-    this.autonomousLoop = new PersonaAutonomousLoop(this);
+    this.autonomousLoop = new PersonaAutonomousLoop(this, cognitionLogger);
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 

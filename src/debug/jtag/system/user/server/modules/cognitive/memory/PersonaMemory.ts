@@ -48,14 +48,15 @@ export class PersonaMemory {
     personaId: UUID,
     displayName: string,
     genomeConfig: PersonaGenomeConfig,
-    client?: JTAGClient
+    client?: JTAGClient,
+    genomeLogger?: (message: string) => void
   ) {
     this.personaId = personaId;
     this.displayName = displayName;
     this.client = client;
 
     // Initialize genome (skill adapters)
-    this.genome = new PersonaGenome(genomeConfig);
+    this.genome = new PersonaGenome(genomeConfig, genomeLogger);
   }
 
   /**

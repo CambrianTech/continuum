@@ -16,6 +16,7 @@ export interface PersonaUserForMind {
   readonly displayName: string;
   readonly entity: { uniqueId: string };
   readonly homeDirectory: string;
+  readonly logger: { enqueueLog(fileName: string, message: string): void };
 }
 
 export class PersonaMind {
@@ -37,7 +38,11 @@ export class PersonaMind {
       enableLogging: true,
       logger: this.logger  // Share mind logger
     });
-    this.workingMemory = new WorkingMemoryManager(personaUser.id);
+    // WorkingMemory logs to cognition.log (shared with decision-making)
+    const cognitionLogger = (message: string) => {
+      personaUser.logger.enqueueLog('cognition.log', message);
+    };
+    this.workingMemory = new WorkingMemoryManager(personaUser.id, cognitionLogger);
     this.selfState = new PersonaSelfState(personaUser.id);
     this.planFormulator = new SimplePlanFormulator(personaUser.id, personaUser.displayName);
 

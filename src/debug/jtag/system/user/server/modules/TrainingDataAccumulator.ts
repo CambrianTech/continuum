@@ -79,11 +79,15 @@ export class TrainingDataAccumulator {
   private readonly MIN_BATCH_SIZE = 10;
   private readonly MAX_BATCH_SIZE = 1000;
 
+  private log: (message: string) => void;
+
   constructor(
     private personaId: UUID,
-    private displayName: string
+    private displayName: string,
+    logger?: (message: string) => void
   ) {
-    console.log(`🧬 ${displayName}: TrainingDataAccumulator initialized`);
+    this.log = logger || console.log.bind(console);
+    this.log(`🧬 ${displayName}: TrainingDataAccumulator initialized`);
   }
 
   /**
@@ -114,7 +118,7 @@ export class TrainingDataAccumulator {
     this.interactionIndex.set(exampleId, example);
 
     const bufferSize = this.domainBuffers.get(capture.domain)!.length;
-    console.log(`📝 ${this.displayName}: Captured ${capture.domain} example (buffer: ${bufferSize}/${this.getBatchThreshold(capture.domain)})`);
+    this.log(`📝 ${this.displayName}: Captured ${capture.domain} example (buffer: ${bufferSize}/${this.getBatchThreshold(capture.domain)})`);
 
     return exampleId;
   }
@@ -126,7 +130,7 @@ export class TrainingDataAccumulator {
     const example = this.interactionIndex.get(feedback.interactionId);
 
     if (!example) {
-      console.warn(`⚠️ ${this.displayName}: Feedback for unknown interaction ${feedback.interactionId}`);
+      this.log(`⚠️ ${this.displayName}: Feedback for unknown interaction ${feedback.interactionId}`);
       return;
     }
 
@@ -137,7 +141,7 @@ export class TrainingDataAccumulator {
       corrections: feedback.corrections
     };
 
-    console.log(`💬 ${this.displayName}: Attached ${feedback.source} feedback to ${example.domain} example`);
+    this.log(`💬 ${this.displayName}: Attached ${feedback.source} feedback to ${example.domain} example`);
   }
 
   /**
@@ -171,7 +175,7 @@ export class TrainingDataAccumulator {
   setBatchThreshold(domain: string, threshold: number): void {
     const clamped = Math.max(this.MIN_BATCH_SIZE, Math.min(threshold, this.MAX_BATCH_SIZE));
     this.batchThresholds.set(domain, clamped);
-    console.log(`🎚️ ${this.displayName}: Set ${domain} batch threshold to ${clamped}`);
+    this.log(`🎚️ ${this.displayName}: Set ${domain} batch threshold to ${clamped}`);
   }
 
   /**
@@ -192,7 +196,7 @@ export class TrainingDataAccumulator {
       this.interactionIndex.delete(example.id);
     }
 
-    console.log(`🔄 ${this.displayName}: Consumed ${examples.length} ${domain} examples for training`);
+    this.log(`🔄 ${this.displayName}: Consumed ${examples.length} ${domain} examples for training`);
 
     return examples;
   }
@@ -252,6 +256,6 @@ export class TrainingDataAccumulator {
   clearAll(): void {
     this.domainBuffers.clear();
     this.interactionIndex.clear();
-    console.log(`🧹 ${this.displayName}: Cleared all training buffers`);
+    this.log(`🧹 ${this.displayName}: Cleared all training buffers`);
   }
 }

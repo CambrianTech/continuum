@@ -127,4 +127,23 @@ export class SubsystemLogger {
       `${this.subsystem}.log`
     );
   }
+
+  /**
+   * Enqueue log to specific file (used by persona modules)
+   * @param fileName - Log file name (e.g., 'genome.log', 'training.log')
+   * @param message - Log message to write
+   */
+  enqueueLog(fileName: string, message: string): void {
+    // Determine full path for the log file
+    const logDir = SystemPaths.logs.personas(this.uniqueId);
+    const logFilePath = path.join(logDir, fileName);
+
+    // Create a ComponentLogger for this file and write the raw message
+    const fileLogger = Logger.createWithFile(
+      `${this.uniqueId}:${fileName.replace('.log', '')}`,
+      logFilePath,
+      FileMode.CLEAN
+    );
+    fileLogger.writeRaw(message + '\n');
+  }
 }

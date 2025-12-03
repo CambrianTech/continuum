@@ -72,7 +72,7 @@ function resolveOllamaModelPath(modelName: string): string | null {
 
     return fs.existsSync(blobPath) ? blobPath : null;
   } catch (error) {
-    console.error(`Failed to resolve Ollama model ${modelName}:`, error);
+    // Silent failure - caller will handle missing model
     return null;
   }
 }
@@ -88,8 +88,10 @@ export class LlamaCppAdapter implements AIProviderAdapter {
   private context: LlamaContext | null = null;
   private session: LlamaChatSession | null = null;
   private currentModelName: string | null = null;
+  private log: (message: string) => void;
 
-  constructor(config?: Partial<ProviderConfiguration>) {
+  constructor(config?: Partial<ProviderConfiguration>, logger?: (message: string) => void) {
+    this.log = logger || console.log.bind(console);
     this.config = {
       apiEndpoint: '', // Not used for native bindings
       timeout: 60000, // Longer timeout for native inference
@@ -103,20 +105,20 @@ export class LlamaCppAdapter implements AIProviderAdapter {
   }
 
   async initialize(): Promise<void> {
-    console.log(`🤖 ${this.providerName}: Initializing native llama.cpp bindings...`);
+    this.log(`🤖 ${this.providerName}: Initializing native llama.cpp bindings...`);
 
     try {
       this.llama = await getLlama();
-      console.log(`✅ ${this.providerName}: llama.cpp bindings loaded`);
+      this.log(`✅ ${this.providerName}: llama.cpp bindings loaded`);
 
       // Pre-load default model
       const modelPath = resolveOllamaModelPath(this.config.defaultModel);
       if (modelPath) {
-        console.log(`🔄 ${this.providerName}: Pre-loading default model ${this.config.defaultModel}...`);
+        this.log(`🔄 ${this.providerName}: Pre-loading default model ${this.config.defaultModel}...`);
         await this.loadModel(this.config.defaultModel);
-        console.log(`✅ ${this.providerName}: Default model loaded and ready`);
+        this.log(`✅ ${this.providerName}: Default model loaded and ready`);
       } else {
-        console.warn(`⚠️  ${this.providerName}: Default model ${this.config.defaultModel} not found`);
+        this.log(`⚠️  ${this.providerName}: Default model ${this.config.defaultModel} not found`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -130,7 +132,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
   }
 
   async shutdown(): Promise<void> {
-    console.log(`🔄 ${this.providerName}: Shutting down...`);
+    this.log(`🔄 ${this.providerName}: Shutting down...`);
 
     // Cleanup resources
     this.session = null;
@@ -139,7 +141,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
     this.llama = null;
     this.currentModelName = null;
 
-    console.log(`✅ ${this.providerName}: Shutdown complete`);
+    this.log(`✅ ${this.providerName}: Shutdown complete`);
   }
 
   private async loadModel(modelName: string): Promise<void> {
@@ -159,7 +161,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
     }
 
     if (this.config.logRequests) {
-      console.log(`🔄 ${this.providerName}: Loading model from ${modelPath}...`);
+      this.log(`🔄 ${this.providerName}: Loading model from ${modelPath}...`);
     }
 
     try {
@@ -175,7 +177,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       this.currentModelName = modelName;
 
       if (this.config.logRequests) {
-        console.log(`✅ ${this.providerName}: Model ${modelName} loaded successfully`);
+        this.log(`✅ ${this.providerName}: Model ${modelName} loaded successfully`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -206,9 +208,9 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       const { prompt } = chatMessagesToPrompt(request.messages);
 
       if (this.config.logRequests) {
-        console.log(`🤖 ${this.providerName}: Generating text with model ${modelName}`);
-        console.log(`   Request ID: ${requestId}`);
-        console.log(`   Prompt length: ${prompt.length} chars`);
+        this.log(`🤖 ${this.providerName}: Generating text with model ${modelName}`);
+        this.log(`   Request ID: ${requestId}`);
+        this.log(`   Prompt length: ${prompt.length} chars`);
       }
 
       // Generate response using native llama.cpp
@@ -229,9 +231,9 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       usage.totalTokens = usage.inputTokens + usage.outputTokens;
 
       if (this.config.logRequests) {
-        console.log(`✅ ${this.providerName}: Generated response in ${responseTime}ms`);
-        console.log(`   Output length: ${response.length} chars`);
-        console.log(`   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
+        this.log(`✅ ${this.providerName}: Generated response in ${responseTime}ms`);
+        this.log(`   Output length: ${response.length} chars`);
+        this.log(`   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
       }
 
       return {
@@ -245,7 +247,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`❌ ${this.providerName}: Text generation failed:`, error);
+      this.log(`❌ ${this.providerName}: Text generation failed: ${errorMsg}`);
 
       throw new AIProviderError(
         `Text generation failed: ${errorMsg}`,
@@ -289,7 +291,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
         }
       }
     } catch (error) {
-      console.error(`Failed to list models:`, error);
+      this.log(`Failed to list models: ${error}`);
     }
 
     return models;

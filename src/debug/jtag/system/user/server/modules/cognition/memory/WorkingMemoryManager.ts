@@ -21,8 +21,11 @@ export interface RecallQuery {
 
 export class WorkingMemoryManager {
   private readonly MAX_CAPACITY = 100;
+  private log: (message: string) => void;
 
-  constructor(private personaId: UUID) {}
+  constructor(private personaId: UUID, logger?: (message: string) => void) {
+    this.log = logger || console.log.bind(console);
+  }
 
   /**
    * Store a thought in working memory
@@ -153,7 +156,7 @@ export class WorkingMemoryManager {
     allFiltered.forEach(m => cognitionStorage.addWorkingMemory(m));
 
     const evictedCount = domainMemories.length - this.MAX_CAPACITY;
-    console.log(`🗑️ [WorkingMemory] Evicted ${evictedCount} memories for ${domain}`);
+    this.log(`🗑️ [WorkingMemory] Evicted ${evictedCount} memories for ${domain}`);
   }
 
   /**
@@ -207,6 +210,6 @@ export class WorkingMemoryManager {
     cognitionStorage.clearWorkingMemory(this.personaId);
     filtered.forEach(m => cognitionStorage.addWorkingMemory(m));
 
-    console.log(`🗑️ [WorkingMemory] Cleared ${thoughtIds.length} thoughts`);
+    this.log(`🗑️ [WorkingMemory] Cleared ${thoughtIds.length} thoughts`);
   }
 }

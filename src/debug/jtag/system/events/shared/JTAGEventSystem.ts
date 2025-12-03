@@ -2,10 +2,6 @@
  * JTAG Event System - Promise-Powered Event Architecture
  */
 
-import type { JTAGMessage, JTAGContext } from '../../core/types/JTAGTypes';
-import { type UUID } from '../../core/types/CrossPlatformUUID';
-import type { SystemEventData, SystemEventName } from './SystemEvents';
-
 export interface EventsInterface<T = unknown> {
   emit(eventName: string, data?: T): void;
   on(eventName: string, listener: (data?: T) => void): () => void;
@@ -164,7 +160,7 @@ export class EventManager {
         this.flushCoalescedEvent(bufferKey);
       }, this.COALESCE_DELAY);
 
-      console.log(`🔄 Event coalesced: ${eventName} (${existing.count} merged)`);
+      //console.log(`🔄 Event coalesced: ${eventName} (${existing.count} merged)`);
     } else {
       // Create new pending event
       const timer = setTimeout(() => {
@@ -202,9 +198,9 @@ export class EventManager {
         return (aEvent.timestamp || 0) - (bEvent.timestamp || 0);
       });
 
-      if (pending.count > 1) {
-        console.log(`✅ Emitting ${pending.count} coalesced messages in chronological order (saved ${pending.count - 1} handler calls)`);
-      }
+      // if (pending.count > 1) {
+      //   console.log(`✅ Emitting ${pending.count} coalesced messages in chronological order (saved ${pending.count - 1} handler calls)`);
+      // }
 
       // Emit each message individually in ORIGINAL chronological order
       for (const data of sortedData) {
@@ -219,9 +215,9 @@ export class EventManager {
         lastTimestamp: pending.lastTimestamp
       };
 
-      if (pending.count > 1) {
-        console.log(`✅ Emitting coalesced state update: ${pending.eventName} (merged ${pending.count} events, saved ${pending.count - 1} emissions)`);
-      }
+      // if (pending.count > 1) {
+      //   console.log(`✅ Emitting coalesced state update: ${pending.eventName} (merged ${pending.count} events, saved ${pending.count - 1} emissions)`);
+      // }
 
       this.emitImmediate(pending.eventName, coalescedData);
     }
@@ -231,7 +227,7 @@ export class EventManager {
    * Emit event immediately to all listeners
    */
   private emitImmediate(eventName: string, data: unknown): void {
-    const listeners = this.listeners.get(eventName) || [];
+    const listeners = this.listeners.get(eventName) ?? [];
     listeners.forEach(listener => listener(data));
   }
 }
