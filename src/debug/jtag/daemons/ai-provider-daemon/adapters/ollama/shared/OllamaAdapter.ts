@@ -94,10 +94,12 @@ class OllamaRequestQueue {
   private readonly maxConcurrent: number;
   private activeRequestIds: Set<string> = new Set();
   private readonly REQUEST_TIMEOUT = 90000; // 90 seconds max wait time in queue
+  private log: (message: string) => void;
 
-  constructor(maxConcurrent: number = 4) {
+  constructor(maxConcurrent: number = 4, logger?: (message: string) => void) {
     this.maxConcurrent = maxConcurrent;
-    console.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, timeout=${this.REQUEST_TIMEOUT}ms`);
+    this.log = logger || console.log.bind(console);
+    this.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, timeout=${this.REQUEST_TIMEOUT}ms`);
   }
 
   async enqueue<T>(executor: () => Promise<T>, requestId: string, abortController?: AbortController): Promise<T> {
@@ -118,13 +120,13 @@ class OllamaRequestQueue {
           // Still in queue after timeout - reject it
           this.queue.splice(queueIndex, 1);
           const waitTime = Date.now() - queuedRequest.enqueuedAt;
-          console.error(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.REQUEST_TIMEOUT}ms)`);
+          this.log(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.REQUEST_TIMEOUT}ms)`);
           reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.REQUEST_TIMEOUT}ms)`));
         }
       }, this.REQUEST_TIMEOUT);
 
       this.queue.push(queuedRequest);
-      console.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      this.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
 
       // Setup abort handler
       if (abortController) {
@@ -154,13 +156,13 @@ class OllamaRequestQueue {
       }
 
       request.reject(new Error('Request cancelled while queued'));
-      console.log(`❌ Ollama Queue: Cancelled queued request ${requestId} (queue size: ${this.queue.length})`);
+      this.log(`❌ Ollama Queue: Cancelled queued request ${requestId} (queue size: ${this.queue.length})`);
       return;
     }
 
     // If active, AbortController already handles cancellation
     if (this.activeRequestIds.has(requestId)) {
-      console.log(`⚠️  Ollama Queue: Request ${requestId} is active, aborting via AbortController`);
+      this.log(`⚠️  Ollama Queue: Request ${requestId} is active, aborting via AbortController`);
     }
   }
 
@@ -180,7 +182,7 @@ class OllamaRequestQueue {
     }
 
     const queueWaitTime = Date.now() - request.enqueuedAt;
-    console.log(`▶️  Ollama Queue: Starting request ${request.requestId} after ${queueWaitTime}ms wait (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+    this.log(`▶️  Ollama Queue: Starting request ${request.requestId} after ${queueWaitTime}ms wait (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
 
     try {
       const result = await request.executor();
@@ -190,7 +192,7 @@ class OllamaRequestQueue {
     } finally {
       this.activeRequests--;
       this.activeRequestIds.delete(request.requestId);
-      console.log(`✅ Ollama Queue: Completed request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      this.log(`✅ Ollama Queue: Completed request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
       this.processQueue();  // Process next request in queue
     }
   }
@@ -228,8 +230,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       ...config,
     };
 
-    // Initialize queue with configured maxConcurrent
-    this.requestQueue = new OllamaRequestQueue(this.config.maxConcurrent || 12);
+    // Initialize queue with configured maxConcurrent and logger
+    this.requestQueue = new OllamaRequestQueue(
+      this.config.maxConcurrent || 12,
+      (msg: string) => this.log(null, 'info', msg)
+    );
   }
 
   /**

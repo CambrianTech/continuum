@@ -21,15 +21,10 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
 
   protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     const collection = params.collection;
-    console.debug(`🔄 DATA UPDATE: Updating ${collection}/${params.id} entity`);
 
     // DataDaemon returns updated entity directly or throws
     // Events are emitted by DataDaemon.update() via universal Events system
     const entity = await DataDaemon.update(collection, params.id, params.data);
-
-    // Better typed logging - use params.id since entity.id might be undefined
-    const entityId = entity?.id ?? params.id;
-    console.debug(`✅ DATA UPDATE: Updated ${collection}/${entityId}`);
 
     // Event emission handled by DataDaemon layer (no duplicate emission)
     // const eventName = BaseEntity.getEventName(collection, 'updated');

@@ -66,6 +66,9 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     this.providerId = config.providerId;
     this.providerName = config.providerName;
     this.supportedCapabilities = config.supportedCapabilities;
+
+    // Inject logger into PricingManager singleton (first adapter wins)
+    PricingManager.getInstance().setLogger((msg: string) => this.log(null, 'warn', msg));
   }
 
   protected async initializeProvider(): Promise<void> {
