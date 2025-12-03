@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-03T05:43:12.611Z",
+  "generated": "2025-12-03T06:31:19.864Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1018,6 +1018,11 @@
           "type": "string",
           "required": false,
           "description": "component parameter"
+        },
+        "analyzeStructure": {
+          "type": "boolean",
+          "required": false,
+          "description": "analyzeStructure parameter"
         }
       }
     },
