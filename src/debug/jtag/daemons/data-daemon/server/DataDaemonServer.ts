@@ -85,6 +85,11 @@ export class DataDaemonServer extends DataDaemonBase {
     await initializeCodeDaemon(this.context);
     log.info('Code daemon initialized');
 
+    // Initialize SystemDaemon for efficient system config access
+    const { SystemDaemon } = await import('../../system-daemon/shared/SystemDaemon');
+    await SystemDaemon.initialize(this.context);
+    log.info('System daemon initialized');
+
     // Emit system ready event so other daemons can proceed with initialization
     const { Events } = await import('../../../system/core/shared/Events');
     const { SYSTEM_EVENTS } = await import('../../../system/core/shared/EventConstants');
