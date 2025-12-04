@@ -25,6 +25,11 @@ import { WIDGET_DEFAULTS} from './WidgetConstants';
 import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from '../../daemons/command-daemon/shared/CommandResponseTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
+import type { UserEntity } from '../../system/data/entities/UserEntity';
+import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
+import { COLLECTIONS } from '../../system/data/config/DatabaseConfig';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
@@ -104,19 +109,23 @@ export abstract class BaseWidget extends HTMLElement {
   protected dispatcherEventTypes?: Set<string>; // Track event types with active dispatchers
   protected config: WidgetConfig;
   protected state: WidgetState;
-  
+
   // Daemon connections (abstracted away from subclasses)
   private databaseDaemon?: DaemonInstance;
   private routerDaemon?: DaemonInstance;
   private academyDaemon?: DaemonInstance;
-  
+
   // Performance and caching
   private operationCache = new Map<string, WidgetData>();
   private throttledOperations = new Map<string, number>();
-  
+
   // Template resources (loaded from external files)
   protected templateHTML?: string;
   protected templateCSS?: string;
+
+  // User context - first-class access to current user and state
+  protected _currentUser?: UserEntity;
+  protected _userState?: UserStateEntity;
   
   constructor(config: Partial<WidgetConfig> = {}) {
     super();
@@ -148,7 +157,73 @@ export abstract class BaseWidget extends HTMLElement {
       data: new Map(),
       cache: new Map()
     };
-    
+
+  }
+
+  /**
+   * Get current user entity (lazy load on first access)
+   */
+  protected get currentUser(): UserEntity | undefined {
+    return this._currentUser;
+  }
+
+  /**
+   * Get current user state (lazy load on first access)
+   */
+  protected get userState(): UserStateEntity | undefined {
+    return this._userState;
+  }
+
+  /**
+   * Load user context from database
+   * Called automatically on widget initialization, but can be called manually to refresh
+   */
+  protected async loadUserContext(): Promise<void> {
+    try {
+      // For now, get the first human user (Joel)
+      // TODO: Get from session/auth system when available
+      const usersResult = await this.executeCommand<DataListParams, DataListResult<UserEntity>>('data/list', {
+        collection: COLLECTIONS.USERS,
+        filter: { userType: 'human' },
+        limit: 1
+      });
+
+      if (usersResult.success && usersResult.items && usersResult.items.length > 0) {
+        this._currentUser = usersResult.items[0];
+
+        // Load user state
+        const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>('data/list', {
+          collection: COLLECTIONS.USER_STATES,
+          filter: { userId: this._currentUser.id },
+          limit: 1
+        });
+
+        if (stateResult.success && stateResult.items && stateResult.items.length > 0) {
+          this._userState = stateResult.items[0];
+        }
+      }
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: Failed to load user context:`, error);
+    }
+  }
+
+  /**
+   * Save user state to database
+   * TODO: Fix backend injection for data/update command
+   */
+  protected async saveUserState(): Promise<void> {
+    if (!this._userState) {
+      console.warn(`⚠️ ${this.config.widgetName}: Cannot save user state - no state loaded`);
+      return;
+    }
+
+    try {
+      // TODO: data/update needs backend parameter - will fix when we actually use this
+      console.warn(`⚠️ ${this.config.widgetName}: saveUserState not yet implemented`);
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: Failed to save user state:`, error);
+      throw error;
+    }
   }
 
   async connectedCallback(): Promise<void> {
@@ -158,6 +233,9 @@ export abstract class BaseWidget extends HTMLElement {
 
       // 1. Connect to daemon systems (abstracted) WAS DEAD CODE
       //await this.initializeDaemonConnections();
+
+      // 2. Load user context (currentUser and userState)
+      await this.loadUserContext();
 
       // 3. Restore persisted state (abstracted) - removed unused persistence system
 
