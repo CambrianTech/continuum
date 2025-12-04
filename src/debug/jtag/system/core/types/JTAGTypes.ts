@@ -551,6 +551,12 @@ export interface CommandParams extends JTAGPayload {
   // Base command parameters - specific commands add specific fields
 
   /**
+   * User ID of the calling user (auto-injected from session by Commands.execute())
+   * REQUIRED for all commands - infrastructure injects from jtagClient.userId
+   */
+  readonly userId?: UUID;
+
+  /**
    * Optional execution timeout in milliseconds
    * If command execution exceeds this timeout, it will be automatically aborted
    * Default: No timeout (command runs until completion or error)

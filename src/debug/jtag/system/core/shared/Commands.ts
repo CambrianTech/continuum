@@ -67,10 +67,11 @@ export class Commands {
     // Client-side or fallback: Use JTAGClient
     const jtagClient = await JTAGClient.sharedInstance;
 
-    // Auto-inject context and sessionId
+    // Auto-inject context, sessionId, and userId
     const finalParams: T = {
       context: jtagClient.context,
       sessionId: jtagClient.sessionId,
+      userId: jtagClient.userId, // Auto-inject userId from session
       ...(params || {})
     } as T;
 

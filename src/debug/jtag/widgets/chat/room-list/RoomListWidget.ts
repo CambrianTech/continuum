@@ -15,10 +15,12 @@ import { Events } from '../../../system/core/shared/Events';
 import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
+import type { ContentOpenParams, ContentOpenResult } from '../../../commands/content/open/shared/ContentOpenTypes';
 
 export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID; // Sync with ChatWidget's default
   private unreadCounts: Map<string, number> = new Map();
+  private clickHandlerAdded: boolean = false;
   
   constructor() {
     super({
@@ -141,10 +143,15 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
 
 
   protected setupEventListeners(): void {
+    // Only add listener once to prevent duplicate calls
+    if (this.clickHandlerAdded) {
+      return;
+    }
+
     this.shadowRoot?.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
       const roomItem = target.closest('.room-item') as HTMLElement;
-      
+
       if (roomItem) {
         const roomId = roomItem.dataset.roomId as UUID;
         if (roomId) {
@@ -152,6 +159,8 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
         }
       }
     });
+
+    this.clickHandlerAdded = true;
   }
 
   /*** 
@@ -165,7 +174,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
      * 5. The chat message list widget also receives the event and re-renders to show messages for the new room.
      * 
     **/
-  private async selectRoom(roomId: UUID): Promise<void> {
+  private selectRoom(roomId: UUID): void {
     // Early exit - prevent unnecessary work if already in this room
     if (this.currentRoomId === roomId) {
       console.log(`🔄 RoomListWidget: Already in room "${roomId}", ignoring selection`);

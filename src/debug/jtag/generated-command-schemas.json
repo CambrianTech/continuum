@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-04T04:55:46.603Z",
+  "generated": "2025-12-04T07:13:59.981Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2389,6 +2389,52 @@
           "type": "number",
           "required": false,
           "description": "duration parameter"
+        }
+      }
+    },
+    {
+      "name": "content-open",
+      "description": "Content Open Command Types\n *\n * Opens content and adds it to user's openItems array.\n * Emits content:opened event for widgets to respond to.",
+      "params": {
+        "userId": {
+          "type": "string",
+          "required": true,
+          "description": "userId parameter"
+        },
+        "contentType": {
+          "type": "string",
+          "required": true,
+          "description": "contentType parameter"
+        },
+        "entityId": {
+          "type": "string",
+          "required": true,
+          "description": "entityId parameter"
+        },
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "title parameter"
+        },
+        "subtitle": {
+          "type": "string",
+          "required": false,
+          "description": "subtitle parameter"
+        },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "description": "priority parameter"
+        },
+        "setAsCurrent": {
+          "type": "boolean",
+          "required": false,
+          "description": "setAsCurrent parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
         }
       }
     },

@@ -123,14 +123,13 @@ export abstract class BaseWidget extends HTMLElement {
   protected templateHTML?: string;
   protected templateCSS?: string;
 
-  // User context - first-class access to current user and state
-  protected _currentUser?: UserEntity;
+  // User state cache
   protected _userState?: UserStateEntity;
-  
+
   constructor(config: Partial<WidgetConfig> = {}) {
     super();
     this.attachShadow({ mode: WIDGET_DEFAULTS.SHADOW_MODE });
-    
+
     // Default configuration with smart defaults
     this.config = {
       widgetId: this.generateWidgetId(),
@@ -147,7 +146,7 @@ export abstract class BaseWidget extends HTMLElement {
       performanceMonitoring: true,
       ...config
     };
-    
+
     // Initialize state
     this.state = {
       isInitialized: false,
@@ -161,10 +160,11 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   /**
-   * Get current user entity (lazy load on first access)
+   * Get current user from JTAGClient session
    */
   protected get currentUser(): UserEntity | undefined {
-    return this._currentUser;
+    const jtagClient = (window as WindowWithJTAG).jtag;
+    return jtagClient?.user?.entity as UserEntity | undefined;
   }
 
   /**
@@ -180,27 +180,23 @@ export abstract class BaseWidget extends HTMLElement {
    */
   protected async loadUserContext(): Promise<void> {
     try {
-      // For now, get the first human user (Joel)
-      // TODO: Get from session/auth system when available
-      const usersResult = await this.executeCommand<DataListParams, DataListResult<UserEntity>>('data/list', {
-        collection: COLLECTIONS.USERS,
-        filter: { userType: 'human' },
+      const jtagClient = (window as WindowWithJTAG).jtag;
+      const currentUser = jtagClient?.user;
+
+      if (!currentUser) {
+        console.warn('⚠️ BaseWidget: No user in session');
+        return;
+      }
+
+      // Load user state
+      const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>('data/list', {
+        collection: COLLECTIONS.USER_STATES,
+        filter: { userId: currentUser.id },
         limit: 1
       });
 
-      if (usersResult.success && usersResult.items && usersResult.items.length > 0) {
-        this._currentUser = usersResult.items[0];
-
-        // Load user state
-        const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>('data/list', {
-          collection: COLLECTIONS.USER_STATES,
-          filter: { userId: this._currentUser.id },
-          limit: 1
-        });
-
-        if (stateResult.success && stateResult.items && stateResult.items.length > 0) {
-          this._userState = stateResult.items[0];
-        }
+      if (stateResult.success && stateResult.items && stateResult.items.length > 0) {
+        this._userState = stateResult.items[0];
       }
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Failed to load user context:`, error);
