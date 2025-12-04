@@ -39,25 +39,30 @@ export class WallReadServerCommand extends WallReadCommand {
         params.includeMetadata || false
       );
 
-      // Resolve room info for result
+      // Get room info for result
       const roomInfo = await this.wallManager.resolveRoomPath(params.room);
 
-      // If TOC requested, generate it
-      let content = readResult.content;
+      let outputContent: string;
+
+      // If TOC requested, generate and format it
       if (params.toc) {
         const toc = await this.wallManager.generateTOC(readResult.content);
-        const tocLines = toc.map(entry =>
-          `${'  '.repeat(entry.level - 1)}- ${entry.text} (line ${entry.line})`
-        );
-        content = `# Table of Contents\n\n${tocLines.join('\n')}\n`;
+        // Format matching spec: "## 1. Permission Levels (line 5)"
+        const tocLines = toc.map(entry => {
+          const prefix = '#'.repeat(entry.level);
+          return `${prefix} ${entry.text} (line ${entry.line})`;
+        });
+        outputContent = tocLines.join('\n');
+      } else {
+        // Raw content
+        outputContent = readResult.content;
       }
 
+      // Return structured result
       return {
-        context: params.context,
-        sessionId: params.sessionId,
         success: true,
         timestamp: new Date().toISOString(),
-        content,
+        content: outputContent,
         roomId: roomInfo.roomId,
         roomName: roomInfo.roomName,
         filePath: readResult.filePath,
@@ -67,20 +72,13 @@ export class WallReadServerCommand extends WallReadCommand {
           lastModified: readResult.lastModified!,
           lineCount: readResult.lineCount,
           byteCount: readResult.byteCount
-        } : undefined
+        } : undefined,
+        context: params.context,
+        sessionId: params.sessionId
       };
     } catch (error) {
-      return {
-        context: params.context,
-        sessionId: params.sessionId,
-        success: false,
-        timestamp: new Date().toISOString(),
-        content: '',
-        roomId: '' as any,
-        roomName: '',
-        filePath: '',
-        error: error instanceof Error ? error.message : String(error)
-      };
+      const errorMessage = `Failed to read ${params.doc}: ${error instanceof Error ? error.message : String(error)}`;
+      throw new Error(errorMessage);
     }
   }
 }
