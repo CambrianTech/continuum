@@ -27,7 +27,7 @@ export class LogsListServerCommand extends LogsListCommand {
       logType: params.logType
     });
 
-    const logInfos: LogInfo[] = logs.map(log => ({
+    let logInfos: LogInfo[] = logs.map(log => ({
       name: pathToLogName(log.filePath),
       category: log.category,
       component: log.component,
@@ -38,6 +38,12 @@ export class LogsListServerCommand extends LogsListCommand {
       lastModified: log.lastModified.toISOString(),
       isActive: log.isActive
     }));
+
+    // Filter out session logs by default to keep results concise
+    // Use --includeSessionLogs=true to see all logs
+    if (!params.includeSessionLogs) {
+      logInfos = logInfos.filter(log => !log.name.startsWith('session/'));
+    }
 
     const totalSizeMB = logInfos.reduce((sum, log) => sum + log.sizeMB, 0);
     const categories: Record<string, number> = {};

@@ -9,6 +9,7 @@ export interface LogsReadParams extends CommandParams {
   level?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
   component?: string;
   analyzeStructure?: boolean;  // Return multi-dimensional structure analysis
+  includeSessionLogs?: boolean;  // Include session logs in error message (default: false)
 }
 
 export interface LogsReadResult {

@@ -35,7 +35,18 @@ export class LogsReadServerCommand extends LogsReadCommand {
   async execute(params: LogsReadParams): Promise<LogsReadResult> {
     const allLogs = await this.registry.discover();
     const filePath = logNameToPath(params.log, allLogs);
-    if (!filePath) throw new Error(`Log not found: ${params.log}`);
+    if (!filePath) {
+      const { pathToLogName } = await import('../../shared/LogsShared');
+      // Filter out session logs by default to keep error message concise
+      // Use --includeSessionLogs=true to see all logs
+      let logNames = allLogs.map(l => pathToLogName(l.filePath));
+      if (!params.includeSessionLogs) {
+        logNames = logNames.filter(name => !name.startsWith('session/'));
+      }
+      const availableLogs = logNames.join(', ');
+      const hint = params.includeSessionLogs ? '' : ' (use --includeSessionLogs=true to see session logs)';
+      throw new Error(`Log not found: ${params.log}. Use logs/list to see available logs. Available: ${availableLogs}${hint}`);
+    }
 
     // If analyzeStructure flag is set, return structure analysis instead of lines
     if (params.analyzeStructure) {

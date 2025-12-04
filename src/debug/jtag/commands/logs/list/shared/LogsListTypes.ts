@@ -12,6 +12,7 @@ export interface LogsListParams extends CommandParams {
   component?: string;
   logType?: string;
   includeStats?: boolean;
+  includeSessionLogs?: boolean;  // Include session logs in results (default: false)
 }
 
 export interface LogsListResult {
