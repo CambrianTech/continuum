@@ -289,6 +289,14 @@ export class PersonaUser extends AIUser {
     this.inbox.setLogger((message: string) => {
       this.logger.enqueueLog('cognition.log', message);
     });
+    // Inject queue stats provider for load-aware deduplication (feedback loop)
+    this.inbox.setQueueStatsProvider(() => {
+      const adapter = AIProviderDaemon.getAdapter('ollama');
+      if (adapter && adapter.getQueueStats) {
+        return adapter.getQueueStats();
+      }
+      return { queueSize: 0, activeRequests: 0, maxConcurrent: 1, load: 0.0 };
+    });
 
     // PHASE 5: Self-task generation for autonomous work creation
     this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {

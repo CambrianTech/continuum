@@ -27,6 +27,7 @@ import {
   chatMessagesToPrompt,
   AIProviderError,
 } from '../../../shared/AIProviderTypesV2';
+import { Events } from '../../../../../system/core/shared/Events';
 
 // Helper function previously imported from old AIProviderTypes
 function createRequestId(): string {
@@ -95,10 +96,16 @@ class OllamaRequestQueue {
   private activeRequestIds: Set<string> = new Set();
   private readonly REQUEST_TIMEOUT = 90000; // 90 seconds max wait time in queue
   private log: (message: string) => void;
+  private onQueueTimeout?: (waitTime: number) => Promise<void>;  // Callback when queue timeout occurs
 
-  constructor(maxConcurrent: number = 4, logger?: (message: string) => void) {
+  constructor(
+    maxConcurrent: number = 4,
+    logger?: (message: string) => void,
+    onQueueTimeout?: (waitTime: number) => Promise<void>
+  ) {
     this.maxConcurrent = maxConcurrent;
     this.log = logger || console.log.bind(console);
+    this.onQueueTimeout = onQueueTimeout;
     this.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, timeout=${this.REQUEST_TIMEOUT}ms`);
   }
 
@@ -114,13 +121,19 @@ class OllamaRequestQueue {
       };
 
       // Setup queue timeout - reject if request waits too long
-      queuedRequest.timeoutHandle = setTimeout(() => {
+      queuedRequest.timeoutHandle = setTimeout(async () => {
         const queueIndex = this.queue.findIndex(req => req.requestId === requestId);
         if (queueIndex !== -1) {
           // Still in queue after timeout - reject it
           this.queue.splice(queueIndex, 1);
           const waitTime = Date.now() - queuedRequest.enqueuedAt;
           this.log(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.REQUEST_TIMEOUT}ms)`);
+
+          // CRITICAL: Notify adapter of queue timeout (triggers immediate restart)
+          if (this.onQueueTimeout) {
+            await this.onQueueTimeout(waitTime);
+          }
+
           reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.REQUEST_TIMEOUT}ms)`));
         }
       }, this.REQUEST_TIMEOUT);
@@ -230,10 +243,31 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       ...config,
     };
 
-    // Initialize queue with configured maxConcurrent and logger
+    // Initialize queue with configured maxConcurrent, logger, and queue timeout handler
     this.requestQueue = new OllamaRequestQueue(
       this.config.maxConcurrent || 12,
-      (msg: string) => this.log(null, 'info', msg)
+      (msg: string) => this.log(null, 'info', msg),
+      async (waitTime: number) => {
+        // Queue timeout detected - emit unhealthy event immediately
+        this.log(null, 'warn', `🔥 QUEUE TIMEOUT DETECTED - Invalidating health cache and triggering immediate restart check`);
+
+        // Invalidate health cache so next health check will run full test
+        this.healthCache = null;
+
+        // Emit unhealthy event immediately (triggers AdapterHealthMonitor restart)
+        await Events.emit('system:adapter:unhealthy', {
+          providerId: this.providerId,
+          consecutiveFailures: 1,
+          lastStatus: {
+            status: 'unhealthy',
+            apiAvailable: true, // Ollama is running but degraded
+            responseTime: waitTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message: `Queue timeout after ${waitTime}ms - Ollama degraded/overloaded`,
+          },
+        });
+      }
     );
   }
 
@@ -362,8 +396,34 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       this.log(request, 'error', `❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
       this.log(request, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
 
+      // CRITICAL: Immediately invalidate health cache and emit unhealthy event
+      // Don't wait for next periodic health check (30-60s delay)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('timed out') || responseTime >= 120000;
+
+      if (isTimeout) {
+        this.log(request, 'warn', `🔥 TIMEOUT DETECTED - Invalidating health cache and triggering immediate restart check`);
+
+        // Invalidate health cache so next health check will run full test
+        this.healthCache = null;
+
+        // Emit unhealthy event immediately (triggers AdapterHealthMonitor restart)
+        await Events.emit('system:adapter:unhealthy', {
+          providerId: this.providerId,
+          consecutiveFailures: 1,
+          lastStatus: {
+            status: 'unhealthy',
+            apiAvailable: false,
+            responseTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message: `Generation timeout after ${responseTime}ms`,
+          },
+        });
+      }
+
       throw new AIProviderError(
-        `Text generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Text generation failed: ${errorMessage}`,
         'adapter',
         'GENERATION_FAILED',
         { requestId, responseTime, originalError: error }
@@ -512,13 +572,34 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
           return status;
         }
 
+        // Step 2b: Validate output quality (detect corruption/garbage output)
+        const responseData = await genResponse.json() as OllamaGenerateResponse;
+        const outputText = responseData.response || '';
+
+        // Check for garbage output patterns
+        const isGarbageOutput = this.detectGarbageOutput(outputText);
+        if (isGarbageOutput) {
+          const message = `Ollama generating garbage output: "${outputText.slice(0, 50)}" (likely token limit/corruption bug)`;
+          const status: HealthStatus = {
+            status: 'unhealthy',
+            apiAvailable: true,
+            responseTime: genTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message,
+          };
+          this.healthCache = { status, timestamp: Date.now() };
+          this.log(null, 'error', `❌ Ollama Health: ${message}`);
+          return status;
+        }
+
         // Determine health based on generation time
         let healthStatus: 'healthy' | 'degraded' | 'unhealthy';
         let message: string;
 
         if (genTime < 3000) {
           healthStatus = 'healthy';
-          message = `Ollama generating normally (${genTime}ms)`;
+          message = `Ollama generating normally (${genTime}ms, output valid)`;
         } else if (genTime < 8000) {
           healthStatus = 'degraded';
           message = `Ollama is slow (${genTime}ms, expected <3s)`;
@@ -583,6 +664,46 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       this.log(null, 'error', `❌ Ollama Health: ${message}`);
       return status;
     }
+  }
+
+  /**
+   * Detect garbage/corrupted output patterns
+   *
+   * Common patterns indicating Ollama is in degraded state:
+   * - Repeated single character ("@@@@@", "......", "-----")
+   * - Only special characters (no letters)
+   * - Empty or whitespace-only output
+   * - Token limit overflow symptoms
+   */
+  private detectGarbageOutput(text: string): boolean {
+    if (!text || text.trim().length === 0) {
+      return true; // Empty output is garbage
+    }
+
+    // Check for repeated character spam (e.g., "@@@@@@@@@@@")
+    const repeatedCharPattern = /^(.)\1{10,}$/; // Same character repeated 10+ times
+    if (repeatedCharPattern.test(text.trim())) {
+      return true;
+    }
+
+    // Check if output is ONLY special characters (no alphanumeric)
+    const onlySpecialChars = /^[^a-zA-Z0-9]+$/;
+    if (onlySpecialChars.test(text.trim()) && text.trim().length > 5) {
+      return true; // More than 5 non-alphanumeric characters and nothing else
+    }
+
+    // Check for extremely high repetition rate (>80% of characters are the same)
+    const charCounts = new Map<string, number>();
+    for (const char of text) {
+      charCounts.set(char, (charCounts.get(char) || 0) + 1);
+    }
+    const maxCount = Math.max(...charCounts.values());
+    const repetitionRate = maxCount / text.length;
+    if (repetitionRate > 0.8 && text.length > 10) {
+      return true; // More than 80% of output is the same character
+    }
+
+    return false; // Output looks valid
   }
 
   /**

@@ -223,7 +223,6 @@ export class ChatExportServerCommand extends ChatExportCommand {
 
     // Messages
     for (const msg of messages) {
-      console.log('🔧 generateMarkdown msg:', { hasId: !!msg.id, id: msg.id, senderName: msg.senderName });
       const shortId = msg.id?.slice(-6) || 'no-id';
       const timestamp = new Date(msg.timestamp).toLocaleString();
 
