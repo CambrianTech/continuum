@@ -44,6 +44,9 @@ import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
 import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
+import { ContentDeduplicator } from './ContentDeduplicator';
+import { ResponseCleaner } from './ResponseCleaner';
 
 /**
  * Response generation result
@@ -86,6 +89,11 @@ export class PersonaResponseGenerator {
   private getSessionId: () => UUID | null;
   private logger: import('./PersonaLogger').PersonaLogger;
 
+  /** Content deduplicator - prevents same content from being posted within time window */
+  private contentDeduplicator: ContentDeduplicator;
+  /** Response cleaner - strips unwanted prefixes from AI responses */
+  private responseCleaner: ResponseCleaner;
+
   constructor(config: PersonaResponseGeneratorConfig) {
     this.personaId = config.personaId;
     this.personaName = config.personaName;
@@ -97,6 +105,10 @@ export class PersonaResponseGenerator {
     this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
+
+    // Initialize modular helpers
+    this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
+    this.responseCleaner = new ResponseCleaner({ log: this.log.bind(this) });
   }
 
   /**
@@ -534,6 +546,23 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
       };
 
+      // 🎰 PHASE 3.3a: Request inference slot from coordinator
+      // This prevents thundering herd - only N personas can generate simultaneously per provider
+      const provider = this.modelConfig.provider || 'ollama';
+      const isMentioned = originalMessage.content.text.toLowerCase().includes(`@${this.personaName.toLowerCase()}`);
+
+      const slotGranted = await InferenceCoordinator.requestSlot(
+        this.personaId,
+        originalMessage.id,
+        provider,
+        { isMentioned }
+      );
+
+      if (!slotGranted) {
+        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied - skipping response`);
+        return { success: true, wasRedundant: true }; // Treat as redundant (another AI will respond)
+      }
+
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
       // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
@@ -549,6 +578,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           AIProviderDaemon.generateText(request),
           timeoutPromise
         ]);
+
+        // 🎰 Release slot on success
+        InferenceCoordinator.releaseSlot(this.personaId, provider);
         const generateDuration = Date.now() - generateStartTime;
         this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
@@ -599,11 +631,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
         // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-        const cleanedResponse = this.cleanAIResponse(aiResponse.text.trim());
+        const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
         if (cleanedResponse !== aiResponse.text.trim()) {
-          this.log(`⚠️  ${this.personaName}: Stripped name prefix from AI response`);
-          this.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
-          this.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
           aiResponse.text = cleanedResponse;
         }
 
@@ -739,7 +768,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             }
 
             // Update aiResponse with regenerated response
-            aiResponse.text = this.cleanAIResponse(regeneratedResponse.text.trim());
+            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text.trim());
             this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars)`);
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
@@ -777,6 +806,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           this.log(`❌ ${this.personaName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
         }
       } catch (error) {
+        // 🎰 Release slot on error - CRITICAL to prevent slot leaks
+        InferenceCoordinator.releaseSlot(this.personaId, provider);
+
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.log(`❌ ${this.personaName}: [PHASE 3.3] AI generation failed:`, errorMessage);
 
@@ -1029,46 +1061,6 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
   }
 
-  /**
-   * Clean AI response by stripping any name prefixes the LLM added despite system prompt instructions
-   * LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-   *
-   * CURRENT: Heuristic regex-based cleaning (defensive programming)
-   * FUTURE: Should become AI-powered via ThoughtStream adapter (like gating)
-   *         - An AI evaluates: "Does this response have formatting issues?"
-   *         - Returns cleaned version with confidence score
-   *         - Pluggable via recipe configuration
-   *
-   * Examples to strip:
-   * - "[11:59] GPT Assistant: Yes, Joel..." → "Yes, Joel..."
-   * - "GPT Assistant: Yes, Joel..." → "Yes, Joel..."
-   * - "[11:59] Yes, Joel..." → "Yes, Joel..."
-   */
-  private cleanAIResponse(response: string): string {
-    let cleaned = response.trim();
-
-    // Pattern 1: Strip "[HH:MM] Name: " prefix
-    // Matches: [11:59] GPT Assistant: message
-    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*/, '');
-
-    // Pattern 2: Strip "Name: " prefix at start
-    // Matches: GPT Assistant: message
-    // Only if it looks like a name (contains letters, spaces, and ends with colon)
-    cleaned = cleaned.replace(/^[A-Z][A-Za-z\s]+:\s*/, '');
-
-    // Pattern 3: Strip just "[HH:MM] " timestamp prefix
-    // Matches: [11:59] message
-    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s*/, '');
-
-    return cleaned.trim();
-  }
-
-  /**
-   * Self-review: Check if generated response is redundant compared to conversation history
-   * Like a human who drafts a response, re-reads the chat, and thinks "oh someone already said that"
-   *
-   * NOTE: Currently disabled (too flaky) - returns false
-   */
   async checkResponseRedundancy(
     myResponse: string,
     roomId: UUID,

@@ -43,6 +43,17 @@ export class LogsReadServerCommand extends LogsReadCommand {
       if (!params.includeSessionLogs) {
         logNames = logNames.filter(name => !name.startsWith('session/'));
       }
+
+      // Check if the user passed a UUID - this is a common mistake from AI tool use
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidPattern.test(params.log)) {
+        throw new Error(
+          `Invalid log parameter: "${params.log}" is a UUID, not a log name. ` +
+          `The logs/read command expects a log name like "system/adapters" or "helper/cognition", ` +
+          `not a message UUID or context ID. Use logs/list to see available log names.`
+        );
+      }
+
       const availableLogs = logNames.join(', ');
       const hint = params.includeSessionLogs ? '' : ' (use --includeSessionLogs=true to see session logs)';
       throw new Error(`Log not found: ${params.log}. Use logs/list to see available logs. Available: ${availableLogs}${hint}`);
