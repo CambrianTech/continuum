@@ -157,17 +157,55 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // Direct Ollama adapter → 310ms per request
     this.log.info('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
 
-    // Initialize static AIProviderDaemon interface for commands to use (like DataDaemon.query)
+    // Initialize static AIProviderDaemon interface FIRST (critical for PersonaUsers)
+    // This must happen before health monitoring to prevent race conditions where
+    // PersonaUsers try to call AIProviderDaemon.generateText() before sharedInstance is set
     AIProviderDaemon.initialize(this);
+    this.log.info('✅ AIProviderDaemonServer: Static daemon interface initialized');
+
+    // Initialize adapter health monitoring
+    this.log.info('💓 AIProviderDaemonServer: Initializing adapter health monitoring...');
+    const { AdapterHealthMonitor } = await import('./AdapterHealthMonitor');
+    const { SystemHealthTicker } = await import('../../system-daemon/server/SystemHealthTicker');
+
+    // Register all adapters with health monitor
+    const healthMonitor = AdapterHealthMonitor.getInstance();
+    for (const [providerId, registration] of this.adapters) {
+      healthMonitor.registerAdapter(registration.adapter);
+      this.log.info(`💚 Registered ${providerId} with health monitor`);
+    }
+
+    // Initialize health monitor (subscribes to system:health-check:tick events)
+    await healthMonitor.initialize();
+
+    // Start health ticker (emits system:health-check:tick events)
+    const healthTicker = SystemHealthTicker.getInstance();
+    await healthTicker.start();
+
+    this.log.info('✅ AIProviderDaemonServer: Adapter health monitoring active');
 
     this.log.info(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
   }
 
   /**
    * Server-specific shutdown
-   * Shuts down ProcessPool gracefully, then delegates to base class
+   * Shuts down health monitoring, ProcessPool, then delegates to base class
    */
   async shutdown(): Promise<void> {
+    this.log.info('🔄 AIProviderDaemonServer: Shutting down health monitoring...');
+
+    // Stop health ticker
+    const { SystemHealthTicker } = await import('../../system-daemon/server/SystemHealthTicker');
+    const healthTicker = SystemHealthTicker.getInstance();
+    await healthTicker.stop();
+
+    // Shutdown health monitor
+    const { AdapterHealthMonitor } = await import('./AdapterHealthMonitor');
+    const healthMonitor = AdapterHealthMonitor.getInstance();
+    await healthMonitor.shutdown();
+
+    this.log.info('✅ AIProviderDaemonServer: Health monitoring shutdown complete');
+
     this.log.info('🔄 AIProviderDaemonServer: Shutting down ProcessPool...');
 
     if (this.processPool) {

@@ -308,6 +308,9 @@ export interface AIProviderAdapter {
   getAvailableModels(): Promise<ModelInfo[]>;
   healthCheck(): Promise<HealthStatus>;
 
+  // Health monitoring (called by AdapterHealthMonitor when adapter is unhealthy)
+  handleRestartRequest?(): Promise<void>;
+
   // Semantic Model Tier Resolution (NEW)
   // Bidirectional mapping: tier ↔ model ID
   // User requirement: "turn api results into these terms"

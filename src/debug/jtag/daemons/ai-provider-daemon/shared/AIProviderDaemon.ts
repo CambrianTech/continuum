@@ -63,7 +63,7 @@ export type AIProviderResponse = AIProviderSuccessResponse | AIProviderErrorResp
 export class AIProviderDaemon extends DaemonBase {
   public readonly subpath = '/ai-provider';
 
-  private adapters: Map<string, ProviderRegistration> = new Map();
+  protected adapters: Map<string, ProviderRegistration> = new Map();
   private initialized = false;
 
   constructor(context: JTAGContext, router: JTAGRouter) {

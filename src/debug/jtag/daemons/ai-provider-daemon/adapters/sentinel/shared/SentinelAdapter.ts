@@ -24,6 +24,7 @@ import type {
 import type { ChatMessage } from '../../../shared/PromptFormatters';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { truncateMessages } from '../../../shared/PromptFormatters';
+import { SystemDaemon } from '../../../../system-daemon/shared/SystemDaemon';
 
 // Helper function for token estimation
 function estimateTokenCount(text: string): number {
@@ -87,11 +88,14 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
   /**
    * Initialize Sentinel server (auto-start if needed)
+   *
+   * Event-driven: doesn't block on server startup
+   * Health monitoring (AdapterHealthMonitor) will detect when server is ready
    */
   protected async initializeProvider(): Promise<void> {
     this.log(null, 'info', '🧬 Sentinel: Initializing provider...');
 
-    // Check if server is already running
+    // Check if server is already running (non-blocking)
     const health = await this.healthCheck();
 
     if (health.status === 'healthy') {
@@ -99,49 +103,46 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       return;
     }
 
-    // Try to auto-start the server
+    // Try to auto-start the server (non-blocking)
     this.log(null, 'info', '🚀 Sentinel: Server not found, attempting auto-start...');
     try {
       await this.startServer();
 
-      // Wait for server to be ready
-      const maxWaitTime = 30000; // 30 seconds
-      const startTime = Date.now();
+      // Don't wait for startup - AdapterHealthMonitor will detect when ready
+      const systemDaemon = SystemDaemon.sharedInstance();
+      const startupTimeout = systemDaemon.getSetting('system/adapters/sentinel/startup-timeout') as number ?? 30000;
 
-      while (Date.now() - startTime < maxWaitTime) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        const checkHealth = await this.healthCheck();
-        if (checkHealth.status === 'healthy') {
-          this.log(null, 'info', '✅ Sentinel: Server started and ready');
-          return;
-        }
-      }
-
-      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
-      this.log(null, 'warn',
-        `⚠️  Sentinel: Server failed to start after 30s. Start manually: cd ${sentinelPath} && ./server/start_server.sh`
-      );
+      this.log(null, 'info', `🧬 Sentinel: Server process spawned, health monitoring will verify readiness (timeout: ${startupTimeout}ms)`);
     } catch (error) {
       this.log(null, 'warn', `⚠️  Sentinel: Auto-start failed: ${error instanceof Error ? error.message : String(error)}`);
-      this.log(null, 'warn', '   Sentinel AI will be unavailable until manually started');
+      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
+      this.log(null, 'warn', `   Start manually: cd ${sentinelPath} && ./server/start_server.sh`);
+      this.log(null, 'warn', '   Sentinel AI will be unavailable until started');
     }
   }
 
   /**
    * Restart Sentinel server
+   *
+   * Event-driven: doesn't block on process termination
+   * Health monitoring will verify when server is back up
    */
   protected async restartProvider(): Promise<void> {
     this.log(null, 'info', '🔄 Sentinel: Restarting server...');
 
-    // Kill existing process if we have one
+    // Kill existing process if we have one (non-blocking)
     if (this.serverProcess && !this.serverProcess.killed) {
       this.serverProcess.kill();
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      this.log(null, 'info', '🔄 Sentinel: Killed existing process, starting fresh');
     }
 
-    // Start fresh
+    // Start fresh (non-blocking)
     await this.startServer();
+
+    // Don't wait - AdapterHealthMonitor will detect when healthy again
+    const systemDaemon = SystemDaemon.sharedInstance();
+    const stabilizationDelay = systemDaemon.getSetting('system/adapters/sentinel/restart-stabilization-delay') as number ?? 3000;
+    this.log(null, 'info', `🔄 Sentinel: Restart initiated, health monitoring will verify recovery (stabilization: ${stabilizationDelay}ms)`);
   }
 
   /**

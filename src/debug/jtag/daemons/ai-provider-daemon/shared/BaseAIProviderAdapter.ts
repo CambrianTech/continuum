@@ -7,6 +7,7 @@ import type {
   ModelInfo
 } from './AIProviderTypesV2';
 import { Logger, FileMode, type ComponentLogger } from '../../../system/core/logging/Logger';
+import { Events } from '../../../system/core/shared/Events';
 import * as path from 'path';
 
 /**
@@ -26,11 +27,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   abstract readonly providerName: string;
   abstract readonly supportedCapabilities: ModelCapability[];
 
-  // Health monitoring state
-  private healthMonitorInterval?: ReturnType<typeof setInterval>;
-  private consecutiveFailures: number = 0;
-  private readonly MAX_CONSECUTIVE_FAILURES = 3;
-  private readonly HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
+  // Health monitoring state (managed by AdapterHealthMonitor, not local setInterval)
   private isRestarting: boolean = false;
 
   // Logger cache for persona-specific adapters logs
@@ -84,14 +81,13 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
   // Lifecycle methods
   async initialize(): Promise<void> {
-    this.log(null, 'info', `🔧 ${this.providerName}: Initializing with health monitoring...`);
+    this.log(null, 'info', `🔧 ${this.providerName}: Initializing...`);
     await this.initializeProvider();
-    this.startHealthMonitoring();
+    // Health monitoring handled by AdapterHealthMonitor (no local setInterval)
   }
 
   async shutdown(): Promise<void> {
     this.log(null, 'info', `🛑 ${this.providerName}: Shutting down...`);
-    this.stopHealthMonitoring();
     await this.shutdownProvider();
   }
 
@@ -104,71 +100,30 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
     // Default: no-op (subclasses can override)
   }
 
-  // Health monitoring logic
-  private startHealthMonitoring(): void {
-    this.log(null, 'info', `💚 ${this.providerName}: Starting health monitoring (every ${this.HEALTH_CHECK_INTERVAL}ms)`);
-
-    this.healthMonitorInterval = setInterval(async () => {
-      await this.checkHealthAndRecover();
-    }, this.HEALTH_CHECK_INTERVAL);
-  }
-
-  private stopHealthMonitoring(): void {
-    if (this.healthMonitorInterval) {
-      clearInterval(this.healthMonitorInterval);
-      this.healthMonitorInterval = undefined;
+  /**
+   * Handle restart request from AdapterHealthMonitor
+   * Called when adapter is unhealthy and needs restart
+   */
+  async handleRestartRequest(): Promise<void> {
+    if (this.isRestarting) {
+      this.log(null, 'warn', `⏭️  ${this.providerName}: Restart already in progress`);
+      return;
     }
-  }
 
-  private async checkHealthAndRecover(): Promise<void> {
-    try {
-      const health = await this.healthCheck();
-
-      if (health.status === 'healthy') {
-        if (this.consecutiveFailures > 0) {
-          this.log(null, 'info', `✅ ${this.providerName}: Recovered after ${this.consecutiveFailures} failures`);
-        }
-        this.consecutiveFailures = 0;
-        return;
-      }
-
-      // Health check failed
-      this.consecutiveFailures++;
-      this.log(null, 'warn', `⚠️  ${this.providerName}: Health check failed (${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES})`);
-
-      if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES && !this.isRestarting) {
-        await this.attemptRestart();
-      }
-    } catch (error) {
-      this.consecutiveFailures++;
-      this.log(null, 'error', `❌ ${this.providerName}: Health check error (${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES}):`, error);
-
-      if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES && !this.isRestarting) {
-        await this.attemptRestart();
-      }
-    }
-  }
-
-  private async attemptRestart(): Promise<void> {
     this.isRestarting = true;
 
     try {
-      this.log(null, 'warn', `🔄 ${this.providerName}: Attempting restart after ${this.consecutiveFailures} consecutive failures...`);
+      this.log(null, 'warn', `🔄 ${this.providerName}: Attempting restart...`);
 
       await this.restartProvider();
 
-      // Wait for provider to stabilize
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Emit event that restart is complete (AdapterHealthMonitor will verify health)
+      await Events.emit('system:adapter:restarted', {
+        providerId: this.providerId,
+        timestamp: Date.now(),
+      });
 
-      // Verify health after restart
-      const health = await this.healthCheck();
-
-      if (health.status === 'healthy') {
-        this.log(null, 'info', `✅ ${this.providerName}: Restart successful`);
-        this.consecutiveFailures = 0;
-      } else {
-        this.log(null, 'warn', `⚠️  ${this.providerName}: Restart completed but health check still failing`);
-      }
+      this.log(null, 'info', `✅ ${this.providerName}: Restart completed`);
     } catch (error) {
       this.log(null, 'error', `❌ ${this.providerName}: Restart failed:`, error);
     } finally {

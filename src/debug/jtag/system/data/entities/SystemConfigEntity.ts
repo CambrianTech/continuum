@@ -372,6 +372,40 @@ export const FACTORY_DEFAULTS = {
     displayName: 'Load Scaling Exponent',
     affectsComponents: ['SystemSchedulingState'],
   },
+  'system/scheduling/policies/adapter-max-consecutive-failures': {
+    type: 'number' as const,
+    description: 'Max consecutive health check failures before restart',
+    defaultValue: 3,
+    min: 1,
+    max: 10,
+    category: 'Scheduling',
+    displayName: 'Adapter Max Failures',
+    affectsComponents: ['AdapterHealthMonitor'],
+  },
+
+  // system/adapters/*
+  'system/adapters/sentinel/startup-timeout': {
+    type: 'number' as const,
+    description: 'Sentinel server startup timeout (milliseconds)',
+    defaultValue: 30000,
+    min: 5000,
+    max: 120000,
+    unit: 'ms',
+    category: 'Adapters',
+    displayName: 'Sentinel Startup Timeout',
+    affectsComponents: ['SentinelAdapter'],
+  },
+  'system/adapters/sentinel/restart-stabilization-delay': {
+    type: 'number' as const,
+    description: 'Delay after Sentinel restart before health check (milliseconds)',
+    defaultValue: 3000,
+    min: 1000,
+    max: 10000,
+    unit: 'ms',
+    category: 'Adapters',
+    displayName: 'Sentinel Restart Delay',
+    affectsComponents: ['SentinelAdapter'],
+  },
 
   // Add more settings as we migrate constants...
   // system/ai/providers/*
