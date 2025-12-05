@@ -20,7 +20,7 @@ export interface BaseCodeParams {
  * Parameters for code/read command
  */
 export interface CodeReadParams extends BaseCodeParams {
-  /** File path (relative to repository root) */
+  /** File path relative to jtag root, e.g. "commands/wall/write.ts" or "system/core/shared/Events.ts" (NOT absolute paths, NOT starting with "src/") */
   readonly path: string;
 
   /** Start line (1-indexed, optional) */

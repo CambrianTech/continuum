@@ -219,14 +219,19 @@ export class PersonaToolExecutor {
       this.log.debug(`Stored tool result #${resultId.slice(0, 8)} with ${result.media?.length || 0} media`);
 
       // Check if THIS persona wants media
-      if (result.media && context.personaConfig.autoLoadMedia) {
-        // Filter by supported types
+      // IMPORTANT: If AI explicitly called screenshot tool, they want the image!
+      // So we pass through media for screenshot regardless of autoLoadMedia config
+      const isScreenshotTool = toolCall.toolName === 'screenshot';
+      const shouldLoadMedia = context.personaConfig.autoLoadMedia || isScreenshotTool;
+
+      if (result.media && shouldLoadMedia) {
+        // Filter by supported types (unless it's screenshot - then pass through images)
         const supportedMedia = result.media.filter(m =>
-          context.personaConfig.supportedMediaTypes.includes(m.type)
+          isScreenshotTool || context.personaConfig.supportedMediaTypes.includes(m.type)
         );
 
         if (supportedMedia.length > 0) {
-          this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})`);
+          this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})${isScreenshotTool ? ' [screenshot override]' : ''}`);
           allMedia.push(...supportedMedia);
         }
       } else if (result.media && result.media.length > 0) {

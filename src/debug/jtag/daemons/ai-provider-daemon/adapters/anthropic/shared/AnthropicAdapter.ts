@@ -67,7 +67,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
     this.log(null, 'info', `✅ ${this.providerName}: Initialized successfully`);
   }
 
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     if (!this.isInitialized) {
       throw new AIProviderError('Adapter not initialized', 'adapter', 'NOT_INITIALIZED');
     }

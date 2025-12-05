@@ -192,7 +192,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
     }
   }
 
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     const requestId = `sentinel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
 

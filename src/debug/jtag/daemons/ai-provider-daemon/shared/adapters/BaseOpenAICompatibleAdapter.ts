@@ -131,8 +131,9 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
   /**
    * Text generation using OpenAI chat completions API
+   * NOTE: This implements generateTextImpl (not generateText) - base class wraps with timeout/circuit breaker
    */
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     if (!this.isInitialized) {
       throw new AIProviderError('Adapter not initialized', 'adapter', 'NOT_INITIALIZED');
     }

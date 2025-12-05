@@ -94,7 +94,8 @@ class OllamaRequestQueue {
   private activeRequests = 0;
   private readonly maxConcurrent: number;
   private activeRequestIds: Set<string> = new Set();
-  private readonly REQUEST_TIMEOUT = 90000; // 90 seconds max wait time in queue
+  private readonly QUEUE_TIMEOUT = 15000; // 15 seconds max wait time in queue
+  private readonly ACTIVE_TIMEOUT = 30000; // 30 seconds max execution time for active requests
   private log: (message: string) => void;
   private onQueueTimeout?: (waitTime: number) => Promise<void>;  // Callback when queue timeout occurs
 
@@ -106,7 +107,7 @@ class OllamaRequestQueue {
     this.maxConcurrent = maxConcurrent;
     this.log = logger || console.log.bind(console);
     this.onQueueTimeout = onQueueTimeout;
-    this.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, timeout=${this.REQUEST_TIMEOUT}ms`);
+    this.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, queueTimeout=${this.QUEUE_TIMEOUT}ms, activeTimeout=${this.ACTIVE_TIMEOUT}ms`);
   }
 
   async enqueue<T>(executor: () => Promise<T>, requestId: string, abortController?: AbortController): Promise<T> {
@@ -127,16 +128,16 @@ class OllamaRequestQueue {
           // Still in queue after timeout - reject it
           this.queue.splice(queueIndex, 1);
           const waitTime = Date.now() - queuedRequest.enqueuedAt;
-          this.log(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.REQUEST_TIMEOUT}ms)`);
+          this.log(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.QUEUE_TIMEOUT}ms)`);
 
           // CRITICAL: Notify adapter of queue timeout (triggers immediate restart)
           if (this.onQueueTimeout) {
             await this.onQueueTimeout(waitTime);
           }
 
-          reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.REQUEST_TIMEOUT}ms)`));
+          reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.QUEUE_TIMEOUT}ms)`));
         }
-      }, this.REQUEST_TIMEOUT);
+      }, this.QUEUE_TIMEOUT);
 
       this.queue.push(queuedRequest);
       this.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
@@ -198,9 +199,31 @@ class OllamaRequestQueue {
     this.log(`▶️  Ollama Queue: Starting request ${request.requestId} after ${queueWaitTime}ms wait (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
 
     try {
-      const result = await request.executor();
+      // CRITICAL FIX: Add timeout for ACTIVE requests (not just queued ones)
+      // This prevents stuck Ollama requests from blocking the entire system
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Active request timed out after ${this.ACTIVE_TIMEOUT}ms`));
+        }, this.ACTIVE_TIMEOUT);
+      });
+
+      const result = await Promise.race([
+        request.executor(),
+        timeoutPromise
+      ]);
       request.resolve(result);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Check if this was an active timeout - trigger health check
+      if (errorMessage.includes('Active request timed out')) {
+        this.log(`🔥 ACTIVE TIMEOUT - Request ${request.requestId} exceeded ${this.ACTIVE_TIMEOUT}ms execution time`);
+        // Notify adapter of timeout (triggers health invalidation and potential restart)
+        if (this.onQueueTimeout) {
+          await this.onQueueTimeout(this.ACTIVE_TIMEOUT);
+        }
+      }
+
       request.reject(error as Error);
     } finally {
       this.activeRequests--;
@@ -229,6 +252,13 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   private readonly healthCacheTTL = 5000; // 5 seconds - reduced from 30s to detect degradation faster
   private readonly requestQueue: OllamaRequestQueue;
 
+  // Self-healing: track Ollama-specific failures for direct restart
+  // Separate from base class circuit breaker - this triggers restartProvider() directly
+  private ollamaFailureCount = 0;
+  private lastOllamaRestartTime = 0;
+  private readonly OLLAMA_MAX_FAILURES = 3;
+  private readonly OLLAMA_MIN_RESTART_INTERVAL = 60000; // 60 seconds between restarts
+
   constructor(config?: Partial<ProviderConfiguration>) {
     super();
     this.config = {
@@ -248,27 +278,57 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       this.config.maxConcurrent || 12,
       (msg: string) => this.log(null, 'info', msg),
       async (waitTime: number) => {
-        // Queue timeout detected - emit unhealthy event immediately
-        this.log(null, 'warn', `🔥 QUEUE TIMEOUT DETECTED - Invalidating health cache and triggering immediate restart check`);
+        // Queue timeout detected - track consecutive failures and trigger direct restart
+        this.ollamaFailureCount++;
+        this.log(null, 'warn', `🔥 QUEUE TIMEOUT DETECTED (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures) - ${waitTime}ms wait time`);
 
         // Invalidate health cache so next health check will run full test
         this.healthCache = null;
 
-        // Emit unhealthy event immediately (triggers AdapterHealthMonitor restart)
-        await Events.emit('system:adapter:unhealthy', {
-          providerId: this.providerId,
-          consecutiveFailures: 1,
-          lastStatus: {
-            status: 'unhealthy',
-            apiAvailable: true, // Ollama is running but degraded
-            responseTime: waitTime,
-            errorRate: 1.0,
-            lastChecked: Date.now(),
-            message: `Queue timeout after ${waitTime}ms - Ollama degraded/overloaded`,
-          },
-        });
+        // SELF-HEALING: Direct restart after N consecutive failures
+        // Don't rely on events which may not be subscribed properly
+        await this.maybeAutoRestart('queue timeout');
       }
     );
+  }
+
+  /**
+   * Self-healing: Auto-restart Ollama after consecutive failures
+   * Called from queue timeout handler and error handlers
+   */
+  private async maybeAutoRestart(reason: string): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastRestart = now - this.lastOllamaRestartTime;
+
+    // Check if we should restart
+    if (this.ollamaFailureCount >= this.OLLAMA_MAX_FAILURES &&
+        timeSinceLastRestart >= this.OLLAMA_MIN_RESTART_INTERVAL) {
+      this.log(null, 'error', `🔄 AUTO-RESTART: ${this.ollamaFailureCount} consecutive failures (${reason}), restarting Ollama...`);
+
+      // Reset tracking
+      this.ollamaFailureCount = 0;
+      this.lastOllamaRestartTime = now;
+
+      // Direct restart (don't rely on events)
+      try {
+        await this.restartProvider();
+        this.log(null, 'info', `✅ AUTO-RESTART: Ollama restart initiated`);
+      } catch (error) {
+        this.log(null, 'error', `❌ AUTO-RESTART: Failed to restart Ollama: ${error}`);
+      }
+    } else if (timeSinceLastRestart < this.OLLAMA_MIN_RESTART_INTERVAL) {
+      this.log(null, 'debug', `⏳ AUTO-RESTART: Skipping - only ${Math.round(timeSinceLastRestart/1000)}s since last restart (min: ${this.OLLAMA_MIN_RESTART_INTERVAL/1000}s)`);
+    }
+  }
+
+  /**
+   * Reset Ollama-specific failure count on success
+   */
+  private resetOllamaFailures(): void {
+    if (this.ollamaFailureCount > 0) {
+      this.log(null, 'debug', `✅ Resetting Ollama failure count (was ${this.ollamaFailureCount})`);
+      this.ollamaFailureCount = 0;
+    }
   }
 
   /**
@@ -334,7 +394,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     };
   }
 
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     const startTime = Date.now();
     const requestId = request.requestId || createRequestId();
 
@@ -381,6 +441,45 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         this.log(request, 'debug', `   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
       }
 
+      // Validate response quality - detect garbage/degraded output
+      if (this.detectGarbageOutput(response.response)) {
+        this.log(request, 'error', `🗑️ ${this.providerName}: GARBAGE OUTPUT DETECTED: "${response.response.slice(0, 100)}"`);
+
+        // SELF-HEALING: Track Ollama failures
+        this.ollamaFailureCount++;
+        this.log(request, 'warn', `🔥 GARBAGE OUTPUT (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures)`);
+
+        // Invalidate health cache
+        this.healthCache = null;
+
+        // SELF-HEALING: Direct restart after N consecutive failures
+        await this.maybeAutoRestart('garbage output');
+
+        // Also emit event for monitoring (but don't rely on it for restart)
+        await Events.emit('system:adapter:unhealthy', {
+          providerId: this.providerId,
+          consecutiveFailures: this.ollamaFailureCount,
+          lastStatus: {
+            status: 'unhealthy',
+            apiAvailable: true,
+            responseTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message: `Garbage output detected: "${response.response.slice(0, 50)}"`,
+          },
+        });
+
+        throw new AIProviderError(
+          `Generation produced garbage output (model degradation): "${response.response.slice(0, 100)}"`,
+          'adapter',
+          'GARBAGE_OUTPUT',
+          { requestId, responseTime, output: response.response.slice(0, 200) }
+        );
+      }
+
+      // SUCCESS: Reset Ollama failure counter
+      this.resetOllamaFailures();
+
       return {
         text: response.response,
         finishReason: response.done ? 'stop' : 'length',
@@ -400,24 +499,32 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       // Don't wait for next periodic health check (30-60s delay)
       const errorMessage = error instanceof Error ? error.message : String(error);
       const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('timed out') || responseTime >= 120000;
+      const isGarbageOutput = errorMessage.includes('garbage output') || errorMessage.includes('GARBAGE_OUTPUT');
 
-      if (isTimeout) {
-        this.log(request, 'warn', `🔥 TIMEOUT DETECTED - Invalidating health cache and triggering immediate restart check`);
+      if (isTimeout || isGarbageOutput) {
+        // SELF-HEALING: Track Ollama failures (only if not already tracked for garbage output)
+        if (isTimeout && !isGarbageOutput) {
+          this.ollamaFailureCount++;
+        }
+        this.log(request, 'warn', `🔥 ${isTimeout ? 'TIMEOUT' : 'ERROR'} DETECTED (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures) - Invalidating health cache`);
 
         // Invalidate health cache so next health check will run full test
         this.healthCache = null;
 
-        // Emit unhealthy event immediately (triggers AdapterHealthMonitor restart)
+        // SELF-HEALING: Direct restart after N consecutive failures
+        await this.maybeAutoRestart(isTimeout ? 'timeout' : 'generation error');
+
+        // Also emit unhealthy event for monitoring (but don't rely on it for restart)
         await Events.emit('system:adapter:unhealthy', {
           providerId: this.providerId,
-          consecutiveFailures: 1,
+          consecutiveFailures: this.ollamaFailureCount,
           lastStatus: {
             status: 'unhealthy',
             apiAvailable: false,
             responseTime,
             errorRate: 1.0,
             lastChecked: Date.now(),
-            message: `Generation timeout after ${responseTime}ms`,
+            message: `Generation ${isTimeout ? 'timeout' : 'error'} after ${responseTime}ms`,
           },
         });
       }

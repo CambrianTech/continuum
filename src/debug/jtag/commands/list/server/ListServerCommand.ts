@@ -120,7 +120,11 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
   } {
     // Try to find command in generated schemas
     if (ListServerCommand.generatedSchemas) {
-      const schema = ListServerCommand.generatedSchemas.commands.find(cmd => cmd.name === commandName);
+      // Normalize command name: code/read → code-read (generator uses kebab-case from file paths)
+      const normalizedName = commandName.replace(/\//g, '-');
+      const schema = ListServerCommand.generatedSchemas.commands.find(
+        cmd => cmd.name === commandName || cmd.name === normalizedName
+      );
 
       if (schema) {
         // Filter out framework injection params
