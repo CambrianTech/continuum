@@ -80,8 +80,9 @@ export class AdapterHealthMonitor {
     this.isRunning = true;
     log.info('✅ AdapterHealthMonitor initialized');
 
-    // Perform initial health check
-    await this.performHealthChecks();
+    // Don't perform initial health check synchronously - it blocks main thread
+    // The first system:health-check:tick event will trigger health checks
+    // This prevents initialization order issues with SystemDaemon
   }
 
   /**

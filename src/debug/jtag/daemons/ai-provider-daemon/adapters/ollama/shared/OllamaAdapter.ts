@@ -270,12 +270,34 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
   /**
    * Restart frozen Ollama service
+   *
+   * Non-blocking: Kills and restarts Ollama, returns immediately
+   * Health monitoring will detect when it's back online
    */
   protected async restartProvider(): Promise<void> {
+    this.log(null, 'info', '🔄 Ollama: Restarting service...');
+
+    // Kill existing Ollama processes (non-blocking)
     spawn('killall', ['ollama']);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Start fresh Ollama server (non-blocking, detached from parent)
+    // Health monitoring (AdapterHealthMonitor) will detect when server is ready
     spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' }).unref();
-    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    this.log(null, 'info', '🔄 Ollama: Restart initiated, health monitoring will verify recovery');
+  }
+
+  /**
+   * Get current queue statistics for load-aware PersonaInbox consolidation
+   * Exposes Ollama request queue state for feedback-driven load management
+   */
+  getQueueStats(): { queueSize: number; activeRequests: number; maxConcurrent: number; load: number } {
+    const stats = this.requestQueue.getStats();
+    const load = (stats.queueSize + stats.activeRequests) / stats.maxConcurrent;
+    return {
+      ...stats,
+      load: Math.min(1.0, load) // Cap at 1.0
+    };
   }
 
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {

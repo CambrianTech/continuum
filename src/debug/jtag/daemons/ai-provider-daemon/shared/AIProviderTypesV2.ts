@@ -308,6 +308,15 @@ export interface AIProviderAdapter {
   getAvailableModels(): Promise<ModelInfo[]>;
   healthCheck(): Promise<HealthStatus>;
 
+  // Queue monitoring (for load-aware PersonaInbox consolidation)
+  // Returns current queue state for feedback-driven load management
+  getQueueStats?(): {
+    queueSize: number;      // Number of requests waiting
+    activeRequests: number; // Number currently being processed
+    maxConcurrent: number;  // Maximum allowed concurrent requests
+    load: number;           // Queue pressure (0.0-1.0, calculated as (queueSize + activeRequests) / maxConcurrent)
+  };
+
   // Health monitoring (called by AdapterHealthMonitor when adapter is unhealthy)
   handleRestartRequest?(): Promise<void>;
 

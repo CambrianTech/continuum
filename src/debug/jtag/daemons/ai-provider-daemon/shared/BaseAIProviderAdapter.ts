@@ -29,6 +29,8 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
 
   // Health monitoring state (managed by AdapterHealthMonitor, not local setInterval)
   private isRestarting: boolean = false;
+  private isPermanentlyDisabled: boolean = false;
+  private permanentDisableReason: string = '';
 
   // Logger cache for persona-specific adapters logs
   private personaLoggers: Map<string, ComponentLogger> = new Map();
