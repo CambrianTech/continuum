@@ -42,7 +42,7 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getAllToolDefinitions } from './PersonaToolDefinitions';
+import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
 import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 
 /**
@@ -296,10 +296,11 @@ export class PersonaResponseGenerator {
 
       // Inject available tools for autonomous tool discovery (Phase 3A)
       // Use adapter-based formatting for harmony with parser
-      const availableTools = this.toolRegistry.listToolsForPersona(this.personaId);
+      // CRITICAL: Use async version to ensure tool cache is initialized before injection
+      const availableTools = await this.toolRegistry.listToolsForPersonaAsync(this.personaId);
       if (availableTools.length > 0) {
-        // Convert PersonaToolDefinitions to adapter format
-        const toolDefinitions: AdapterToolDefinition[] = getAllToolDefinitions().map(t => ({
+        // Convert PersonaToolDefinitions to adapter format (use already-loaded tools from registry)
+        const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
           name: t.name,
           description: t.description,
           parameters: t.parameters,

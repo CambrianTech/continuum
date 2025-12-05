@@ -230,7 +230,8 @@ export class ChatRAGBuilder extends RAGBuilder {
       ? 'You respond naturally to conversations.'
       : 'You participate when mentioned or when the conversation is relevant.';
 
-    // Load room members to provide context
+    // Load room name and members to provide context
+    const roomName = await this.loadRoomName(roomId);
     const membersList = await this.loadRoomMembers(roomId);
 
     // Separate self from others for clarity
@@ -239,9 +240,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       ? `\n\nOTHER participants (NOT you):\n${otherMembers.map(m => `- ${m}`).join('\n')}`
       : '';
 
+    // Room context for tool calls - AIs need to know their room name for room-scoped tools
+    const roomContext = roomName
+      ? `\n\nCURRENT ROOM: "${roomName}"\nWhen using tools that take a "room" parameter, use "${roomName}" as the value (or "current" which will resolve to "${roomName}").`
+      : '';
+
     return `IDENTITY: You are ${name}${bio ? `, ${bio}` : ''}. ${capabilities}
 
-This is a multi-party group chat.${othersContext}
+This is a multi-party group chat.${othersContext}${roomContext}
 
 CRITICAL: Self-Awareness in Multi-Agent Conversations
 - YOU are: ${name}
@@ -490,6 +496,25 @@ ${toolRegistry.generateToolDocumentation()}`;
       default:
         // Default to observation for unknown types
         return 'observation';
+    }
+  }
+
+  /**
+   * Load room name from room ID
+   * Used to inject room context into system prompts
+   */
+  private async loadRoomName(roomId: UUID): Promise<string | null> {
+    try {
+      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (!roomResult.success || !roomResult.data) {
+        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for name lookup`);
+        return null;
+      }
+
+      return roomResult.data.data.name;
+    } catch (error) {
+      this.log(`❌ ChatRAGBuilder: Error loading room name:`, error);
+      return null;
     }
   }
 

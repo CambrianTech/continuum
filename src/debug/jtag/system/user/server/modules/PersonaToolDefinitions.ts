@@ -181,12 +181,26 @@ function inferCategoryFromName(name: string): ToolDefinition['category'] {
 
 /**
  * Get all available tools (from cache)
- * Call refreshToolDefinitions() first to populate cache
+ * Auto-refreshes if cache is empty or stale
  */
 export function getAllToolDefinitions(): ToolDefinition[] {
-  // Auto-refresh if cache is stale
+  // Auto-refresh if cache is stale or empty
   if (toolCache.length === 0 || (Date.now() - lastRefreshTime) > CACHE_TTL_MS) {
-    console.warn('[PersonaToolDefinitions] Tool cache is stale or empty - call refreshToolDefinitions() to update');
+    // Trigger async refresh in background (first call may return empty, subsequent calls will have tools)
+    refreshToolDefinitions().catch(err => {
+      console.error('[PersonaToolDefinitions] Auto-refresh failed:', err);
+    });
+  }
+  return toolCache;
+}
+
+/**
+ * Get all available tools with guaranteed initialization
+ * Blocks until tools are loaded (use for critical paths)
+ */
+export async function getAllToolDefinitionsAsync(): Promise<ToolDefinition[]> {
+  if (toolCache.length === 0 || (Date.now() - lastRefreshTime) > CACHE_TTL_MS) {
+    await refreshToolDefinitions();
   }
   return toolCache;
 }

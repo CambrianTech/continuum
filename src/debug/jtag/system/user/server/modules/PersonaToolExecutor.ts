@@ -23,6 +23,7 @@ import type { DataCreateParams, DataCreateResult } from '../../../../commands/da
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
 import { Logger, FileMode } from '../../../core/logging/Logger';
 import { SystemPaths } from '../../../core/config/SystemPaths';
+import { RoomResolver } from '../../../core/server/RoomResolver';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -151,15 +152,19 @@ export class PersonaToolExecutor {
     for (const toolCall of toolCalls) {
       const startTime = Date.now();
 
-      this.log.info(`Calling ${toolCall.toolName} with params:`, toolCall.parameters);
-      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(toolCall.parameters)}`);
+      // Resolve "current" room parameter to actual room name
+      // This handles wall/*, chat/*, and any other room-scoped commands
+      const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
+
+      this.log.info(`Calling ${toolCall.toolName} with params:`, resolvedParams);
+      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(resolvedParams)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
       // NO try-catch - let exceptions bubble to PersonaResponseGenerator
       // ToolRegistry returns {success: false, error} for expected failures
       const registryResult = await this.toolRegistry.executeTool(
         toolCall.toolName,
-        toolCall.parameters,
+        resolvedParams,
         context.sessionId,  // Pass AI's sessionId for proper attribution
         context.contextId,
         context.context  // Pass PersonaUser's enriched context (with callerType='persona')
@@ -283,6 +288,34 @@ ${result.error || 'Unknown error'}
 </error>
 </tool_result>`;
     }
+  }
+
+  /**
+   * Resolve "current" room parameters to actual room names
+   * Handles any parameter named "room" that has value "current"
+   *
+   * @param params - Tool parameters from AI
+   * @param contextId - The contextId (roomId) from execution context
+   * @returns Parameters with resolved room values
+   */
+  private async resolveRoomParameters(
+    params: Record<string, string>,
+    contextId: UUID
+  ): Promise<Record<string, string>> {
+    const resolved = { ...params };
+
+    // Check if there's a room parameter that needs resolution
+    if (resolved.room === 'current') {
+      const roomName = await RoomResolver.resolveCurrentParam('current', contextId);
+      if (roomName) {
+        this.log.info(`Resolved room="current" to "${roomName}"`);
+        resolved.room = roomName;
+      } else {
+        this.log.warn(`Could not resolve room="current" from contextId ${contextId}`);
+      }
+    }
+
+    return resolved;
   }
 
   /**
