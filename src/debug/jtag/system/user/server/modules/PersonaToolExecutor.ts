@@ -145,11 +145,10 @@ export class PersonaToolExecutor {
     this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
     PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
-    const results: string[] = [];
-    const allMedia: MediaItem[] = [];
-    const storedResultIds: UUID[] = [];  // Phase 3B: Collect UUIDs for working memory
-
-    for (const toolCall of toolCalls) {
+    // PARALLELIZED: Execute all tools concurrently instead of sequentially
+    // This reduces tool execution time from O(sum of all tool times) to O(max tool time)
+    // Example: 3 tools × 500ms each = 1500ms sequential → 500ms parallel (3x speedup)
+    const toolExecutionPromises = toolCalls.map(async (toolCall) => {
       const startTime = Date.now();
 
       // Resolve "current" room parameter to actual room name
@@ -193,6 +192,7 @@ export class PersonaToolExecutor {
       PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.persona.displayName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
+      // Fire-and-forget pattern: storage is non-critical, don't block on it
       this.log.debugIf(() => [`${toolCall.toolName} returned media:`, result.media ? `${result.media.length} items` : 'NONE']);
       if (result.media && result.media.length > 0) {
         this.log.debugIf(() => ['Media details:', result.media!.map(m => ({
@@ -204,6 +204,7 @@ export class PersonaToolExecutor {
         }))]);
       }
 
+      // Store tool result (awaited to get UUID, but could be fire-and-forget if needed)
       const resultId = await this.storeToolResult(
         toolCall.toolName,
         toolCall.parameters,
@@ -215,8 +216,10 @@ export class PersonaToolExecutor {
         },
         context.contextId  // Use contextId (room) for storage
       );
-      storedResultIds.push(resultId);
       this.log.debug(`Stored tool result #${resultId.slice(0, 8)} with ${result.media?.length || 0} media`);
+
+      // Collect media for this tool
+      const collectedMedia: MediaItem[] = [];
 
       // Check if THIS persona wants media
       // IMPORTANT: If AI explicitly called screenshot tool, they want the image!
@@ -232,14 +235,15 @@ export class PersonaToolExecutor {
 
         if (supportedMedia.length > 0) {
           this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})${isScreenshotTool ? ' [screenshot override]' : ''}`);
-          allMedia.push(...supportedMedia);
+          collectedMedia.push(...supportedMedia);
         }
       } else if (result.media && result.media.length > 0) {
         this.log.debug(`Skipping ${result.media.length} media (autoLoadMedia=false)`);
       }
 
-      // Log tool execution to cognition database (for interrogation)
-      await CognitionLogger.logToolExecution(
+      // Fire-and-forget: Log tool execution to cognition database (non-blocking)
+      // This is telemetry - don't block the response pipeline for it
+      CognitionLogger.logToolExecution(
         this.persona.id,
         this.persona.displayName,
         toolCall.toolName,
@@ -253,13 +257,31 @@ export class PersonaToolExecutor {
           errorMessage: result.error,
           storedResultId: resultId  // Phase 3B: Link to stored result
         }
-      );
+      ).catch(err => this.log.error('Failed to log tool execution:', err));
 
-      // Always include text description (for non-vision AIs or logging)
-      results.push(this.formatToolResult(result));
+      return {
+        result,
+        resultId,
+        media: collectedMedia,
+        formattedResult: this.formatToolResult(result)
+      };
+    });
+
+    // Wait for all tool executions to complete in parallel
+    const toolResults = await Promise.all(toolExecutionPromises);
+
+    // Aggregate results maintaining original order
+    const results: string[] = [];
+    const allMedia: MediaItem[] = [];
+    const storedResultIds: UUID[] = [];
+
+    for (const { result, resultId, media, formattedResult } of toolResults) {
+      results.push(formattedResult);
+      storedResultIds.push(resultId);
+      allMedia.push(...media);
     }
 
-    const successCount = results.filter(r => r.includes('<status>success</status>')).length;
+    const successCount = toolResults.filter(r => r.result.success).length;
     this.log.info(`Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media loaded, ${storedResultIds.length} stored`);
 
     return {

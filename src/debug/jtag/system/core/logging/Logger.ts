@@ -17,6 +17,8 @@
  *   LOG_LEVEL=info   - Info, warnings, errors (default for development)
  *   LOG_LEVEL=debug  - Everything (verbose, for debugging only)
  *
+ *   LOG_TIMESTAMPS=0 - Disable timestamps (default: 1, timestamps always on)
+ *
  *   LOG_TO_CONSOLE=0 - Disable console output (logs only to files)
  *   LOG_TO_CONSOLE=1 - Enable console output (default: 0)
  *
@@ -110,7 +112,7 @@ class LoggerClass {
     this.config = {
       level: levelMap[envLevel] || LogLevel.INFO,
       enableColors: process.env.NO_COLOR !== '1',
-      enableTimestamps: process.env.LOG_TIMESTAMPS === '1',
+      enableTimestamps: process.env.LOG_TIMESTAMPS !== '0',  // ALWAYS ON by default (timestamps essential for debugging)
       enableFileLogging: process.env.LOG_TO_FILES !== '0',  // Enabled by default, disable with LOG_TO_FILES=0
       enableConsoleLogging: process.env.LOG_TO_CONSOLE === '1'  // Disabled by default, disable with LOG_TO_CONSOLE=0
     };

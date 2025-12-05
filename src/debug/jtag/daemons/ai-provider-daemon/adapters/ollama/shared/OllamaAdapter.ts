@@ -107,7 +107,7 @@ class OllamaRequestQueue {
     this.maxConcurrent = maxConcurrent;
     this.log = logger || console.log.bind(console);
     this.onQueueTimeout = onQueueTimeout;
-    this.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, queueTimeout=${this.QUEUE_TIMEOUT}ms, activeTimeout=${this.ACTIVE_TIMEOUT}ms`);
+    // Initialization log - only on first start, not needed in ongoing logs
   }
 
   async enqueue<T>(executor: () => Promise<T>, requestId: string, abortController?: AbortController): Promise<T> {
@@ -140,7 +140,10 @@ class OllamaRequestQueue {
       }, this.QUEUE_TIMEOUT);
 
       this.queue.push(queuedRequest);
-      this.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      // Only log when queue is backing up (more than 3 pending)
+      if (this.queue.length > 3) {
+        this.log(`⚠️ Ollama Queue: Backlog ${this.queue.length} pending, ${this.activeRequests}/${this.maxConcurrent} active`);
+      }
 
       // Setup abort handler
       if (abortController) {
@@ -196,7 +199,10 @@ class OllamaRequestQueue {
     }
 
     const queueWaitTime = Date.now() - request.enqueuedAt;
-    this.log(`▶️  Ollama Queue: Starting request ${request.requestId} after ${queueWaitTime}ms wait (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+    // Only log slow queue waits (> 2 seconds)
+    if (queueWaitTime > 2000) {
+      this.log(`⏳ Ollama Queue: Request waited ${queueWaitTime}ms in queue`);
+    }
 
     try {
       // CRITICAL FIX: Add timeout for ACTIVE requests (not just queued ones)
@@ -228,7 +234,10 @@ class OllamaRequestQueue {
     } finally {
       this.activeRequests--;
       this.activeRequestIds.delete(request.requestId);
-      this.log(`✅ Ollama Queue: Completed request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      // Only log completion if queue had backlog (shows queue clearing)
+      if (this.queue.length > 0) {
+        this.log(`✅ Ollama Queue: Cleared 1, ${this.queue.length} remaining`);
+      }
       this.processQueue();  // Process next request in queue
     }
   }
@@ -412,11 +421,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         stream: false,
       };
 
-      if (this.config.logRequests) {
-        this.log(request, 'info', `🤖 ${this.providerName}: Generating text with model ${ollamaRequest.model}`);
-        this.log(request, 'debug', `   Request ID: ${requestId}`);
-        this.log(request, 'debug', `   Prompt length: ${prompt.length} chars`);
-      }
+      // Minimal logging - only log if verbose debug needed
+      // this.log(request, 'debug', `🤖 ${this.providerName}: Generating with ${ollamaRequest.model}`);
 
       // Make request to Ollama
       const response = await this.makeRequest<OllamaGenerateResponse>(

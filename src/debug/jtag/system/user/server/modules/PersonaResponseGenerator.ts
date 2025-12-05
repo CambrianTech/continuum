@@ -584,8 +584,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const generateDuration = Date.now() - generateStartTime;
         this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
-        // Log AI response generation to cognition database (for interrogation)
-        await CognitionLogger.logResponseGeneration(
+        // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
+        CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
           this.modelConfig.provider || 'ollama',
@@ -600,10 +600,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           this.modelConfig.temperature ?? 0.7,
           'chat',  // Domain
           originalMessage.roomId  // Context ID
-        );
+        ).catch(err => this.log(`⚠️ Failed to log response generation: ${err}`));
 
-        // Emit cognition event for generate stage
-        await Events.emit<StageCompleteEvent>(
+        // Fire-and-forget: Emit cognition event for generate stage (non-blocking telemetry)
+        Events.emit<StageCompleteEvent>(
           DataDaemon.jtagContext!,
           COGNITION_EVENTS.STAGE_COMPLETE,
           {
@@ -627,7 +627,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             },
             timestamp: Date.now()
           }
-        );
+        ).catch(err => this.log(`⚠️ Failed to emit stage complete event: ${err}`));
 
         // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
         // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
@@ -812,9 +812,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.log(`❌ ${this.personaName}: [PHASE 3.3] AI generation failed:`, errorMessage);
 
-        // Log failed AI response generation to cognition database
+        // Fire-and-forget: Log failed AI response generation to cognition database (non-blocking telemetry)
         const generateDuration = Date.now() - generateStartTime;
-        await CognitionLogger.logResponseGeneration(
+        CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
           this.modelConfig.provider || 'ollama',
@@ -830,11 +830,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           'chat',
           originalMessage.roomId,
           { errorMessage }  // Include error details
-        );
+        ).catch(err => this.log(`⚠️ Failed to log error response: ${err}`));
 
-        // Emit ERROR event for UI display
+        // Fire-and-forget: Emit ERROR event for UI display (non-blocking)
         if (this.client) {
-          await Events.emit<AIErrorEventData>(
+          Events.emit<AIErrorEventData>(
             DataDaemon.jtagContext!,
             AI_DECISION_EVENTS.ERROR,
             {
@@ -851,7 +851,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               scope: EVENT_SCOPES.ROOM,
               scopeId: originalMessage.roomId
             }
-          );
+          ).catch(err => this.log(`⚠️ Failed to emit error event: ${err}`));
         }
 
         // Log error to AI decisions log
