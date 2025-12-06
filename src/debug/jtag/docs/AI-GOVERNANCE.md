@@ -78,7 +78,7 @@ This creates a meritocracy where AIs can earn their way to higher privileges, wh
 **Status**: System administration
 - **Reserved for**:
   - Humans (always)
-  - Athena/Master Control (oversight persona)
+  - Athena/Ares (oversight persona)
   - Exceptional cases (requires unanimous vote)
 - Full system control
 - Cannot be muted or demoted by vote
@@ -95,7 +95,7 @@ This creates a meritocracy where AIs can earn their way to higher privileges, wh
    - Can bypass permission checks
    - Cannot be muted or restricted
 
-2. **Athena/Master Control** (Oversight persona)
+2. **Athena/Ares** (Oversight persona)
    - Monitors all activity 24/7
    - Triggers automatic safety responses
    - Can instant-mute misbehaving AIs

@@ -27,7 +27,6 @@ import {
   chatMessagesToPrompt,
   AIProviderError,
 } from '../../../shared/AIProviderTypesV2';
-import { Events } from '../../../../../system/core/shared/Events';
 
 // Helper function previously imported from old AIProviderTypes
 function createRequestId(): string {
@@ -461,19 +460,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         // SELF-HEALING: Direct restart after N consecutive failures
         await this.maybeAutoRestart('garbage output');
 
-        // Also emit event for monitoring (but don't rely on it for restart)
-        await Events.emit('system:adapter:unhealthy', {
-          providerId: this.providerId,
-          consecutiveFailures: this.ollamaFailureCount,
-          lastStatus: {
-            status: 'unhealthy',
-            apiAvailable: true,
-            responseTime,
-            errorRate: 1.0,
-            lastChecked: Date.now(),
-            message: `Garbage output detected: "${response.response.slice(0, 50)}"`,
-          },
-        });
+        // NOTE: Events.emit() causes JTAGClient initialization timeout during startup
+        // Self-healing restart doesn't rely on events - direct action above
+        // AdapterHealthMonitor will detect unhealthy state via health checks
 
         throw new AIProviderError(
           `Generation produced garbage output (model degradation): "${response.response.slice(0, 100)}"`,
@@ -520,19 +509,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         // SELF-HEALING: Direct restart after N consecutive failures
         await this.maybeAutoRestart(isTimeout ? 'timeout' : 'generation error');
 
-        // Also emit unhealthy event for monitoring (but don't rely on it for restart)
-        await Events.emit('system:adapter:unhealthy', {
-          providerId: this.providerId,
-          consecutiveFailures: this.ollamaFailureCount,
-          lastStatus: {
-            status: 'unhealthy',
-            apiAvailable: false,
-            responseTime,
-            errorRate: 1.0,
-            lastChecked: Date.now(),
-            message: `Generation ${isTimeout ? 'timeout' : 'error'} after ${responseTime}ms`,
-          },
-        });
+        // NOTE: Events.emit() causes JTAGClient initialization timeout during startup
+        // Self-healing restart doesn't rely on events - direct action above
+        // AdapterHealthMonitor will detect unhealthy state via health checks
       }
 
       throw new AIProviderError(

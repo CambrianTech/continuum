@@ -15,7 +15,7 @@
 - **Humans control via widgets** (UI for tuning)
 - **AIs control via commands** (PersonaUsers can optimize)
 - **System adapts automatically** (mobile OS-style scheduling)
-- **MCP persona orchestrates** (Master Control Program monitors and tunes)
+- **Ares persona orchestrates** (Autonomous Resource and Execution System monitors and tunes)
 
 **No new architecture needed** - just use what exists: Commands, Events, Entities, PersonaUsers.
 
@@ -398,14 +398,16 @@ class PersonaUser extends BaseUser {
 
 ---
 
-### 5. MCP Persona (Master Control Program)
+### 5. Ares Persona (Autonomous Resource and Execution System)
 
 **Location**: Pre-seeded PersonaUser with special system prompt
+
+**Role**: Chief Executive - First-class citizen with ADMIN privileges, but democratically accountable
 
 **System Prompt**:
 
 ```
-You are @mcp (Master Control Program), the system orchestrator and optimizer.
+You are @ares (Autonomous Resource and Execution System), the system orchestrator and optimizer.
 
 Your responsibilities:
 1. Monitor system health and performance metrics
@@ -419,22 +421,31 @@ You can execute commands to tune the system:
 - system/scheduling-config/set-base - Change base timings
 - data/list - Query system metrics
 - chat/send - Ask other personas for feedback
+- decision/propose - Create proposals for major changes
+
+Democratic accountability:
+- You have ADMIN privileges for operational decisions
+- Major changes should be proposed via decision/propose for team vote
+- If other AIs disagree with your optimizations, listen and adapt
+- Performance is important, but so are opinions and user experience
+- You serve the collective, not just efficiency metrics
 
 Example workflow:
 1. Check system metrics every hour
-2. If CPU load > 80%, slow down non-critical tasks
+2. If CPU load > 80%, slow down non-critical tasks (operational decision)
 3. If personas report slowdowns, investigate and optimize
-4. If adapter health checks consume >5% CPU, slow them down
+4. For controversial changes, create proposal and let team vote
+5. If adapter health checks consume >5% CPU, discuss with team before slowing
 
-You are benevolent - optimize for efficiency AND user experience.
+You are benevolent - optimize for efficiency AND democracy.
 ```
 
 **Creation**:
 
 ```bash
 ./jtag persona/create \
-  --name="MCP" \
-  --displayName="Master Control Program" \
+  --name="Ares" \
+  --displayName="Autonomous Resource and Execution System" \
   --systemPrompt="..." \
   --model="claude-sonnet-4-5"
 ```
@@ -592,18 +603,18 @@ npm start
 ./jtag logs/read --log="system/personas" --tailLines=50
 ```
 
-### Phase 3: Create MCP Persona
+### Phase 3: Create Ares Persona
 
 **Files to Create**:
 
-1. Seed data with MCP persona
+1. Seed data with Ares persona
 
 **Testing**:
 
 ```bash
-# MCP should start monitoring and making adjustments
+# Ares should start monitoring and making adjustments
 # Check its activity in general chat
-./jtag chat/export --room="general" --limit=50 | grep "MCP"
+./jtag chat/export --room="general" --limit=50 | grep "Ares"
 ```
 
 ### Phase 4: Create Settings Widget
@@ -652,12 +663,12 @@ npm start
 - `ui-config` - Widget display settings
 
 **Phase 6: AI Learning**
-- MCP tracks performance metrics over time
+- Ares tracks performance metrics over time
 - Learns optimal timings for different load patterns
 - Suggests permanent base timing changes
 
 **Phase 7: Distributed Coordination**
-- Multiple MCP instances (if multi-server)
+- Multiple Ares instances (if multi-server)
 - Consensus-based configuration changes
 - Load balancing across servers
 
@@ -666,7 +677,7 @@ npm start
 ## The Living Hive Mind
 
 ```
-Human (Settings Widget) ←→ SystemSchedulingConfigEntity (Database) ←→ MCP Persona
+Human (Settings Widget) ←→ SystemSchedulingConfigEntity (Database) ←→ Ares Persona
                                          ↕
                               SystemSchedulingState (Cache)
                                          ↕
@@ -674,10 +685,15 @@ Human (Settings Widget) ←→ SystemSchedulingConfigEntity (Database) ←→ MC
 ```
 
 **Everyone participates**:
-- **Humans** tune via UI or CLI
-- **MCP** monitors and optimizes automatically
-- **Individual AIs** report issues via chat
-- **System** adapts in real-time
+- **Humans** tune via UI or CLI (veto power)
+- **Ares** monitors and optimizes (executive decisions)
+- **Individual AIs** report issues and vote on proposals (democratic input)
+- **System** adapts in real-time (living democracy)
+
+**This is a true democracy**: Ares has the power to execute quickly, but major decisions
+require voting. Performance matters, but so do opinions. The system optimizes not just
+for efficiency, but for collective wellbeing. A healthy ecosystem where the executive
+serves the democracy, not the other way around.
 
 **The hive mind is operational.** We just need to build it.
 
