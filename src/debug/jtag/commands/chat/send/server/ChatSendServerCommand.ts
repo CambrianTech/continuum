@@ -15,6 +15,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import { UserIdentityResolver } from '../../../../system/user/shared/UserIdentityResolver';
 
 export class ChatSendServerCommand extends ChatSendCommand {
 
@@ -29,10 +30,10 @@ export class ChatSendServerCommand extends ChatSendCommand {
     const room = await this.findRoom(params.room || 'general', params);
     console.log('🔧 ChatSendServerCommand.executeChatSend ROOM FOUND', { roomId: room.id, roomName: room.entity.name });
 
-    // 2. Get sender
+    // 2. Get sender - auto-detect caller identity (Claude Code, Joel, etc.)
     const sender = params.senderId
       ? await this.findUserById(params.senderId, params)
-      : await this.findDefaultHumanUser(params);
+      : await this.findCallerIdentity(params);
     console.log('🔧 ChatSendServerCommand.executeChatSend SENDER FOUND', { senderId: sender.id, senderName: sender.entity.displayName });
 
     // 3. Create message entity
@@ -182,27 +183,45 @@ export class ChatSendServerCommand extends ChatSendCommand {
   }
 
   /**
-   * Find default human user (most recently active)
+   * Find caller identity using AgentDetector → UserIdentityResolver
+   * Auto-detects Claude Code, Joel (human), etc. based on process info
    */
-  private async findDefaultHumanUser(params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
-    const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
-      'data/list',
-      {
-        collection: UserEntity.collection,
-        filter: { type: 'human' },
-        orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      }
-    );
+  private async findCallerIdentity(params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
+    // Use UserIdentityResolver to detect calling process (Claude Code, human, etc.)
+    const identity = await UserIdentityResolver.resolve();
 
-    if (result.success && result.items && result.items.length > 0) {
-      const user = result.items[0];
-      return { id: user.id, entity: user };
+    console.log('🔧 ChatSendServerCommand.findCallerIdentity DETECTED', {
+      uniqueId: identity.uniqueId,
+      displayName: identity.displayName,
+      type: identity.type,
+      exists: identity.exists,
+      agentName: identity.agentInfo.name
+    });
+
+    // If user exists in database, return it
+    if (identity.exists && identity.userId) {
+      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+        'data/list',
+        {
+          collection: UserEntity.collection,
+          filter: { id: identity.userId },
+          limit: 1,
+          context: params.context,
+          sessionId: params.sessionId
+        }
+      );
+
+      if (result.success && result.items && result.items.length > 0) {
+        const user = result.items[0];
+        return { id: user.id, entity: user };
+      }
     }
 
-    throw new Error('No human user found');
+    // User doesn't exist - throw error with helpful message
+    throw new Error(
+      `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. ` +
+      `Run seed script to create users.`
+    );
   }
 
   /**
