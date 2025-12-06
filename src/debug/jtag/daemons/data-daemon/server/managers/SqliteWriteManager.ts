@@ -67,7 +67,7 @@ export class SqliteWriteManager {
       }
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Create failed for ${collection}:`, error.message);
+      log.error(`Create failed for ${collection}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -427,7 +427,7 @@ export class SqliteWriteManager {
         }
       }
 
-      console.log(`✅ SQLite: Batch created ${results.length} records in ${collection}`);
+      log.debug(`Batch created ${results.length} records in ${collection}`);
 
       return {
         success: true,
@@ -435,7 +435,7 @@ export class SqliteWriteManager {
       };
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Batch create failed for ${collection}:`, error.message);
+      log.error(`Batch create failed for ${collection}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -465,7 +465,7 @@ export class SqliteWriteManager {
         }
       }
 
-      console.log(`✅ SQLite: Batch updated ${results.length} records in ${collection}`);
+      log.debug(`Batch updated ${results.length} records in ${collection}`);
 
       return {
         success: true,
@@ -473,7 +473,7 @@ export class SqliteWriteManager {
       };
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Batch update failed for ${collection}:`, error.message);
+      log.error(`Batch update failed for ${collection}:`, error.message);
       return {
         success: false,
         error: error.message
@@ -498,7 +498,7 @@ export class SqliteWriteManager {
         }
       }
 
-      console.log(`✅ SQLite: Batch deleted ${deletedCount}/${ids.length} records from ${collection}`);
+      log.debug(`Batch deleted ${deletedCount}/${ids.length} records from ${collection}`);
 
       return {
         success: true,
@@ -506,7 +506,7 @@ export class SqliteWriteManager {
       };
 
     } catch (error: any) {
-      console.error(`❌ SQLite: Batch delete failed for ${collection}:`, error.message);
+      log.error(`Batch delete failed for ${collection}:`, error.message);
       return {
         success: false,
         error: error.message

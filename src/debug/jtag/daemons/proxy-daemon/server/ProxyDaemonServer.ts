@@ -21,7 +21,7 @@ export class ProxyDaemonServer extends ProxyDaemon {
    * Initialize server proxy daemon
    */
   protected async initialize(): Promise<void> {
-    console.log('✅ ProxyDaemonServer: Initialized HTTP proxy');
+    this.log.info('✅ ProxyDaemonServer: Initialized HTTP proxy');
   }
 
   /**
@@ -30,22 +30,22 @@ export class ProxyDaemonServer extends ProxyDaemon {
   protected async executeProxy(request: ProxyRequest): Promise<ProxyResponse> {
     try {
       const startTime = Date.now();
-      
-      console.log(`🌐 ProxyDaemonServer: Proxying ${request.method || 'GET'} ${request.url} via JTAG HTTP transport`);
-      
+
+      this.log.info(`🌐 ProxyDaemonServer: Proxying ${request.method || 'GET'} ${request.url} via JTAG HTTP transport`);
+
       // Use router's HTTP transport for external requests
       // This leverages the existing JTAG infrastructure instead of direct fetch
       const proxyResponse = await this.makeHTTPRequest(request);
       
       const loadTime = Date.now() - startTime;
-      console.log(`✅ ProxyDaemonServer: Proxied ${request.url} (${proxyResponse.statusCode || 200}) in ${loadTime}ms`);
+      this.log.info(`✅ ProxyDaemonServer: Proxied ${request.url} (${proxyResponse.statusCode || 200}) in ${loadTime}ms`);
 
       return proxyResponse;
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error(`❌ ProxyDaemonServer: Proxy failed for ${request.url}:`, error);
-      
+      this.log.error(`❌ ProxyDaemonServer: Proxy failed for ${request.url}:`, error);
+
       return {
         success: false,
         error: errorMessage
@@ -145,7 +145,7 @@ export class ProxyDaemonServer extends ProxyDaemon {
       return content;
 
     } catch (error) {
-      console.warn('ProxyDaemonServer: URL rewriting failed:', error);
+      this.log.warn('ProxyDaemonServer: URL rewriting failed:', error);
       return content;
     }
   }
@@ -194,7 +194,7 @@ export class ProxyDaemonServer extends ProxyDaemon {
 
       return testResult.success && testResult.statusCode === 200;
     } catch (error) {
-      console.error('ProxyDaemonServer: Health check failed:', error);
+      this.log.error('ProxyDaemonServer: Health check failed:', error);
       return false;
     }
   }

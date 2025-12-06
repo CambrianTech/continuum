@@ -10,6 +10,8 @@
  * - Compute budget: Resource constraints (rate limits, API quotas)
  */
 
+import type { SubsystemLogger } from './being/logging/SubsystemLogger';
+
 /**
  * Persona internal state
  */
@@ -31,6 +33,7 @@ export interface StateConfig {
   energyRecoveryRate: number;   // How fast energy recovers (per ms of rest)
   attentionFatigueRate: number; // How fast attention decays when tired
   enableLogging: boolean;
+  logger?: SubsystemLogger;     // Optional logger for state changes
 }
 
 export const DEFAULT_STATE_CONFIG: StateConfig = {
@@ -47,10 +50,12 @@ export class PersonaStateManager {
   private readonly config: StateConfig;
   private state: PersonaState;
   private readonly personaName: string;
+  private readonly logger?: SubsystemLogger;
 
   constructor(personaName: string, config: Partial<StateConfig> = {}) {
     this.personaName = personaName;
     this.config = { ...DEFAULT_STATE_CONFIG, ...config };
+    this.logger = config.logger;
 
     // Initialize state
     this.state = {
@@ -63,7 +68,7 @@ export class PersonaStateManager {
       computeBudget: 1.0
     };
 
-    this.log(`🧠 State initialized (energy=${this.state.energy.toFixed(2)}, mood=${this.state.mood})`);
+    this.log(`State initialized (energy=${this.state.energy.toFixed(2)}, mood=${this.state.mood})`);
   }
 
   /**
@@ -268,6 +273,12 @@ export class PersonaStateManager {
    */
   private log(message: string): void {
     if (!this.config.enableLogging) return;
-    console.log(`[${this.personaName}:State] ${message}`);
+
+    // Use file logger if available, otherwise fallback to console
+    if (this.logger) {
+      this.logger.debug(`State] ${message}`);
+    } else {
+      console.log(`[${this.personaName}:State] ${message}`);
+    }
   }
 }

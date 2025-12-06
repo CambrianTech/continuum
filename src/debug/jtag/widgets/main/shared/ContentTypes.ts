@@ -8,7 +8,7 @@
 export interface ContentInfo {
   id: string;
   name: string;
-  type: 'room' | 'user_chat' | 'system';
+  type: 'room' | 'user_chat' | 'system' | 'browser';
   path: string;
   displayName: string;
   description?: string;

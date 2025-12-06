@@ -84,28 +84,34 @@ export class SystemMetricsCollector {
 
   private async checkBootstrap(): Promise<boolean> {
     try {
-      // ROBUST FIX: Use ./jtag ping as single source of truth
-      // All the fragile log parsing, port checking, and file system searching
-      // is replaced by the command that already works: ./jtag ping
-
+      // ROBUST: Handle malformed JSON output from ping command
+      // Log lines may appear before JSON, so extract just the JSON object
       const jtagPath = path.join(process.cwd(), 'jtag');
-      const { stdout, stderr } = await execAsync(`${jtagPath} ping`, {
+      const { stdout } = await execAsync(`${jtagPath} ping`, {
         timeout: 5000,
         cwd: process.cwd()
       });
 
-      // Parse JSON response from ping command
-      const response = JSON.parse(stdout.trim());
+      // Extract JSON from potentially polluted output
+      // Look for first '{' to last '}' (handles log lines before/after)
+      const firstBrace = stdout.indexOf('{');
+      const lastBrace = stdout.lastIndexOf('}');
+
+      if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+        return false;
+      }
+
+      const jsonStr = stdout.substring(firstBrace, lastBrace + 1);
+      const response = JSON.parse(jsonStr);
 
       if (response.success === true) {
         console.log('✅ Bootstrap complete: ./jtag ping succeeded');
         return true;
       }
 
-      // Ping returned but system not ready
       return false;
     } catch (error) {
-      // Ping failed - system not ready yet
+      // Ping failed or malformed JSON - system not ready yet
       return false;
     }
   }
@@ -305,20 +311,52 @@ export class SystemMetricsCollector {
 
   private async checkBrowserReady(): Promise<boolean> {
     try {
-      // TIMEOUT ELIMINATION: Replace cascading curl timeouts with native HTTP client
-      // This eliminates the progressive timeout pattern (1s, 2s, 4s, 6s) and external process overhead
-      
+      // ROBUST: Handle malformed JSON output from ping command (same as checkBootstrap)
+      const jtagPath = path.join(process.cwd(), 'jtag');
+      const { stdout } = await execAsync(`${jtagPath} ping`, {
+        timeout: 2000,
+        cwd: process.cwd()
+      });
+
+      // Extract JSON from potentially polluted output
+      // Look for first '{' to last '}' (handles log lines before/after)
+      const firstBrace = stdout.indexOf('{');
+      const lastBrace = stdout.lastIndexOf('}');
+
+      if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+        return false;
+      }
+
+      const jsonStr = stdout.substring(firstBrace, lastBrace + 1);
+      const response = JSON.parse(jsonStr);
+
+      if (response.success === true) {
+        if (!this.browserReadyLogged) {
+          console.log('✅ Browser readiness confirmed via ./jtag ping');
+          this.browserReadyLogged = true;
+        }
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      // Ping failed or malformed JSON - browser not ready yet
+      return false;
+    }
+  }
+
+  // OLD IMPLEMENTATION (kept for reference - replaced by ping-based check above)
+  private async checkBrowserReadyViaHTTP(): Promise<boolean> {
+    try {
       const activePorts = this.getActiveInstancePorts();
       const httpUrl = `http://localhost:${activePorts.http_server}`;
-      
-      // Use native HTTP client instead of external curl command
+
       const http = await import('http');
-      
+
       return new Promise<boolean>((resolve) => {
-        // Single fast request instead of multiple cascading timeouts
         const req = http.request(httpUrl, {
           method: 'GET',
-          timeout: 1000, // Single 1-second timeout instead of cascading 1s+2s+4s+6s
+          timeout: 1000,
           headers: {
             'User-Agent': 'JTAG-SystemMetricsCollector/1.0'
           }
@@ -327,22 +365,17 @@ export class SystemMetricsCollector {
           res.on('data', (chunk) => {
             data += chunk;
           });
-          
+
           res.on('end', () => {
-            // Check for Continuum in response (same logic, but no external process)
             const isReady = data.toLowerCase().includes('continuum');
-            if (isReady && !this.browserReadyLogged) {
-              console.log('✅ Browser readiness confirmed via native HTTP (no curl cascading timeouts)');
-              this.browserReadyLogged = true;
-            }
             resolve(isReady);
           });
         });
-        
+
         req.on('error', () => {
           resolve(false);
         });
-        
+
         req.on('timeout', () => {
           req.destroy();
           resolve(false);

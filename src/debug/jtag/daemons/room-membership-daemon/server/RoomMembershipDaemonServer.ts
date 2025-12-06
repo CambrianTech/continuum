@@ -66,7 +66,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
   }
 
   async initialize(): Promise<void> {
-    console.log('🏠 RoomMembershipDaemonServer: INITIALIZE CALLED - Starting setup');
+    this.log.info('🏠 RoomMembershipDaemonServer: INITIALIZE CALLED - Starting setup');
 
     // Subscribe to future user creation events immediately
     await this.setupEventSubscriptions();
@@ -74,11 +74,11 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     // Defer catch-up logic until after DataDaemon is ready (runs after all daemons initialize)
     setTimeout(() => {
       this.ensureAllUsersInRooms().catch(error => {
-        console.error('❌ RoomMembershipDaemon: Deferred catch-up failed:', error);
+        this.log.error('❌ RoomMembershipDaemon: Deferred catch-up failed:', error);
       });
     }, 2000); // 2 second delay to ensure DataDaemon is initialized
 
-    console.log('🏠 RoomMembershipDaemonServer: Initialized with smart routing (catch-up deferred)');
+    this.log.info('🏠 RoomMembershipDaemonServer: Initialized with smart routing (catch-up deferred)');
   }
 
   /**
@@ -86,7 +86,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
    * This runs on daemon initialization to sync existing state
    */
   private async ensureAllUsersInRooms(): Promise<void> {
-    console.log('🔄 RoomMembershipDaemon: Ensuring all existing users are in correct rooms...');
+    this.log.info('🔄 RoomMembershipDaemon: Ensuring all existing users are in correct rooms...');
     try {
       // Query all users
       const queryResult = await DataDaemon.query<UserEntity>({
@@ -95,23 +95,23 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       });
 
       if (!queryResult.success || !queryResult.data?.length) {
-        console.log('⚠️ RoomMembershipDaemon: No existing users found, skipping catch-up');
+        this.log.info('⚠️ RoomMembershipDaemon: No existing users found, skipping catch-up');
         return;
       }
 
       // Extract user entities from query results
       // record.data IS the UserEntity, no need to spread/reconstruct
       const users: UserEntity[] = queryResult.data.map(record => record.data);
-      console.log(`🔄 RoomMembershipDaemon: Found ${users.length} existing users to process`);
+      this.log.info(`🔄 RoomMembershipDaemon: Found ${users.length} existing users to process`);
 
       // Process each user (same logic as handleUserCreated)
       for (const user of users) {
         await this.handleUserCreated(user);
       }
 
-      console.log(`✅ RoomMembershipDaemon: Finished ensuring all ${users.length} users are in correct rooms`);
+      this.log.info(`✅ RoomMembershipDaemon: Finished ensuring all ${users.length} users are in correct rooms`);
     } catch (error) {
-      console.error('❌ RoomMembershipDaemon: Failed to ensure existing users in rooms:', error);
+      this.log.error('❌ RoomMembershipDaemon: Failed to ensure existing users in rooms:', error);
     }
   }
 
@@ -119,36 +119,36 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
    * Subscribe to user creation events
    */
   private async setupEventSubscriptions(): Promise<void> {
-    console.log(`🏠 RoomMembershipDaemonServer: Subscribing to ${DATA_EVENTS.USERS.CREATED}`);
+    this.log.info(`🏠 RoomMembershipDaemonServer: Subscribing to ${DATA_EVENTS.USERS.CREATED}`);
     const unsubCreated = Events.subscribe<UserEntity>(
       DATA_EVENTS.USERS.CREATED,
       async (userData: UserEntity) => {
-        console.log(`🔔 RoomMembershipDaemonServer: EVENT HANDLER CALLED for ${userData.displayName}`);
+        this.log.info(`🔔 RoomMembershipDaemonServer: EVENT HANDLER CALLED for ${userData.displayName}`);
         await this.handleUserCreated(userData);
       }
     );
     this.unsubscribeFunctions.push(unsubCreated);
-    console.log(`🏠 RoomMembershipDaemonServer: Subscription complete, unsubscribe function stored`);
+    this.log.info(`🏠 RoomMembershipDaemonServer: Subscription complete, unsubscribe function stored`);
   }
 
   /**
    * Handle user created - apply smart routing rules
    */
   private async handleUserCreated(userEntity: UserEntity): Promise<void> {
-    console.log(`🔔 RoomMembershipDaemon: handleUserCreated CALLED for ${userEntity.displayName} (id=${userEntity.id})`);
+    this.log.info(`🔔 RoomMembershipDaemon: handleUserCreated CALLED for ${userEntity.displayName} (id=${userEntity.id})`);
     try {
       const roomsToJoin = this.determineRoomsForUser(userEntity);
-      console.log(`🔔 RoomMembershipDaemon: Determined ${roomsToJoin.length} rooms for ${userEntity.displayName}: ${roomsToJoin.join(', ')}`);
+      this.log.info(`🔔 RoomMembershipDaemon: Determined ${roomsToJoin.length} rooms for ${userEntity.displayName}: ${roomsToJoin.join(', ')}`);
 
       if (roomsToJoin.length === 0) {
-        console.log(`🏠 RoomMembershipDaemon: No rooms matched for ${userEntity.displayName}`);
+        this.log.info(`🏠 RoomMembershipDaemon: No rooms matched for ${userEntity.displayName}`);
         return;
       }
 
-      console.log(`🏠 RoomMembershipDaemon: Auto-joining ${userEntity.displayName} to ${roomsToJoin.length} room(s)`);
+      this.log.info(`🏠 RoomMembershipDaemon: Auto-joining ${userEntity.displayName} to ${roomsToJoin.length} room(s)`);
       await this.addUserToRooms(userEntity.id, userEntity.displayName, roomsToJoin);
     } catch (error) {
-      console.error(`❌ RoomMembershipDaemon: Failed to process ${userEntity.displayName}:`, error);
+      this.log.error(`❌ RoomMembershipDaemon: Failed to process ${userEntity.displayName}:`, error);
     }
   }
 
@@ -200,14 +200,14 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         });
 
         if (!queryResult.success || !queryResult.data?.length) {
-          console.warn(`⚠️ RoomMembershipDaemon: Room ${roomUniqueId} not found, skipping for ${displayName}`);
+          this.log.warn(`⚠️ RoomMembershipDaemon: Room ${roomUniqueId} not found, skipping for ${displayName}`);
           continue;
         }
 
         const roomRecord = queryResult.data[0];
         const room = roomRecord.data;
 
-        console.log(`🔍 RoomMembershipDaemon: Found room ${roomUniqueId}:`, {
+        this.log.info(`🔍 RoomMembershipDaemon: Found room ${roomUniqueId}:`, {
           recordId: roomRecord.id,
           roomId: room.id,
           roomName: room.displayName,
@@ -217,7 +217,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         // Check if already a member
         const isMember = room.members?.some(m => m.userId === userId);
         if (isMember) {
-          console.log(`✅ RoomMembershipDaemon: ${displayName} already in ${roomUniqueId}`);
+          this.log.info(`✅ RoomMembershipDaemon: ${displayName} already in ${roomUniqueId}`);
           continue;
         }
 
@@ -231,7 +231,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
           }
         ];
 
-        console.log(`🔄 RoomMembershipDaemon: Updating room ${roomUniqueId} (recordId: ${roomRecord.id}) to add ${displayName}`);
+        this.log.info(`🔄 RoomMembershipDaemon: Updating room ${roomUniqueId} (recordId: ${roomRecord.id}) to add ${displayName}`);
 
         // Update room (use roomRecord.id not room.id!)
         await DataDaemon.update<RoomEntity>(
@@ -240,9 +240,9 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
           { members: updatedMembers }
         );
 
-        console.log(`✅ RoomMembershipDaemon: Auto-joined ${displayName} to ${roomUniqueId}`);
+        this.log.info(`✅ RoomMembershipDaemon: Auto-joined ${displayName} to ${roomUniqueId}`);
       } catch (error) {
-        console.error(`❌ RoomMembershipDaemon: Failed to join ${displayName} to ${roomUniqueId}:`, error);
+        this.log.error(`❌ RoomMembershipDaemon: Failed to join ${displayName} to ${roomUniqueId}:`, error);
       }
     }
   }

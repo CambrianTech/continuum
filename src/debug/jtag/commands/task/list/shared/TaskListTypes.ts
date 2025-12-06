@@ -53,6 +53,12 @@ export interface TaskListParams extends CommandParams {
    */
   sortBy?: 'priority' | 'created' | 'dueDate' | 'status';
   sortOrder?: 'asc' | 'desc';
+
+  /**
+   * Include completed tasks (default: false)
+   * Use --includeCompleted=true to see completed tasks
+   */
+  includeCompleted?: boolean;
 }
 
 /**

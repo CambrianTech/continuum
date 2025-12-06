@@ -26,8 +26,11 @@ import type { PersonaUser } from '../PersonaUser';
 export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
   private trainingCheckLoop: NodeJS.Timeout | null = null;
+  private log: (message: string) => void;
 
-  constructor(private readonly personaUser: PersonaUser) {}
+  constructor(private readonly personaUser: PersonaUser, logger?: (message: string) => void) {
+    this.log = logger || console.log.bind(console);
+  }
 
   /**
    * PHASE 3: Start autonomous servicing loop
@@ -42,17 +45,17 @@ export class PersonaAutonomousLoop {
    * - Inbox provides EventEmitter-based signaling
    */
   startAutonomousServicing(): void {
-    console.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
+    this.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
 
     // Create continuous async loop (not setInterval) - signal-based waiting
     this.servicingLoopActive = true;
     this.runServiceLoop().catch((error: any) => {
-      console.error(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
+      this.log(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
     });
 
     // PHASE 7.5.1: Create training check loop (every 60 seconds)
     // Checks less frequently than inbox servicing to avoid overhead
-    console.log(`🧬 ${this.personaUser.displayName}: Starting training readiness checks (every 60s)`);
+    this.log(`🧬 ${this.personaUser.displayName}: Starting training readiness checks (every 60s)`);
     this.trainingCheckLoop = setInterval(async () => {
       await this.checkTrainingReadiness();
     }, 60000); // 60 seconds
@@ -72,11 +75,11 @@ export class PersonaAutonomousLoop {
       try {
         await this.serviceInbox();
       } catch (error) {
-        console.error(`❌ ${this.personaUser.displayName}: Error in service loop: ${error}`);
+        this.log(`❌ ${this.personaUser.displayName}: Error in service loop: ${error}`);
         // Loop continues - next iteration will block on waitForWork() again
       }
     }
-    console.log(`🛑 ${this.personaUser.displayName}: Service loop stopped`);
+    this.log(`🛑 ${this.personaUser.displayName}: Service loop stopped`);
   }
 
   /**
@@ -127,13 +130,13 @@ export class PersonaAutonomousLoop {
         // Enqueue in inbox (unified priority queue)
         await this.personaUser.inbox.enqueue(inboxTask);
 
-        console.log(`📋 ${this.personaUser.displayName}: Enqueued task ${task.taskType} (priority=${task.priority.toFixed(2)})`);
+        this.log(`📋 ${this.personaUser.displayName}: Enqueued task ${task.taskType} (priority=${task.priority.toFixed(2)})`);
       }
 
-      console.log(`✅ ${this.personaUser.displayName}: Polled ${queryResult.data.length} pending tasks`);
+      this.log(`✅ ${this.personaUser.displayName}: Polled ${queryResult.data.length} pending tasks`);
 
     } catch (error) {
-      console.error(`❌ ${this.personaUser.displayName}: Error polling tasks:`, error);
+      this.log(`❌ ${this.personaUser.displayName}: Error polling tasks: ${error}`);
     }
   }
 
@@ -155,7 +158,7 @@ export class PersonaAutonomousLoop {
     try {
       const selfTasks = await this.personaUser.taskGenerator.generateSelfTasks();
       if (selfTasks.length > 0) {
-        console.log(`🧠 ${this.personaUser.displayName}: Generated ${selfTasks.length} self-tasks`);
+        this.log(`🧠 ${this.personaUser.displayName}: Generated ${selfTasks.length} self-tasks`);
 
         // Persist each task to database and enqueue in inbox
         for (const task of selfTasks) {
@@ -164,14 +167,14 @@ export class PersonaAutonomousLoop {
             // Convert to InboxTask and enqueue (use storedTask which has database ID)
             const inboxTask = taskEntityToInboxTask(storedTask);
             await this.personaUser.inbox.enqueue(inboxTask);
-            console.log(`📋 ${this.personaUser.displayName}: Created self-task: ${task.description}`);
+            this.log(`📋 ${this.personaUser.displayName}: Created self-task: ${task.description}`);
           } else {
-            console.error(`❌ ${this.personaUser.displayName}: Failed to create self-task`);
+            this.log(`❌ ${this.personaUser.displayName}: Failed to create self-task`);
           }
         }
       }
     } catch (error) {
-      console.error(`❌ ${this.personaUser.displayName}: Error generating self-tasks: ${error}`);
+      this.log(`❌ ${this.personaUser.displayName}: Error generating self-tasks: ${error}`);
     }
   }
 
@@ -279,13 +282,13 @@ export class PersonaAutonomousLoop {
   async stopServicing(): Promise<void> {
     // Stop service loop (signal-based while loop)
     this.servicingLoopActive = false;
-    console.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
+    this.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
 
     // Stop training check loop (interval-based)
     if (this.trainingCheckLoop) {
       clearInterval(this.trainingCheckLoop);
       this.trainingCheckLoop = null;
-      console.log(`🧬 ${this.personaUser.displayName}: Stopped training readiness check loop`);
+      this.log(`🧬 ${this.personaUser.displayName}: Stopped training readiness check loop`);
     }
   }
 }

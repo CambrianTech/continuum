@@ -23,6 +23,7 @@ export interface PersonaUserForBody {
   readonly mediaConfig: PersonaMediaConfig;
   readonly getSessionId: () => UUID | null;
   readonly homeDirectory: string;
+  readonly logger: import('../PersonaLogger').PersonaLogger;
 }
 
 export class PersonaBody {
@@ -53,7 +54,8 @@ export class PersonaBody {
       toolExecutor: this.toolExecutor,
       toolRegistry: this.toolRegistry,
       mediaConfig: personaUser.mediaConfig,
-      getSessionId: personaUser.getSessionId
+      getSessionId: personaUser.getSessionId,
+      logger: personaUser.logger
     });
 
     this.logger.info('Body subsystem initialized', {

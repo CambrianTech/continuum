@@ -45,6 +45,41 @@ export abstract class BaseUser {
 
   public myRoomIds: Set<UUID> = new Set();
 
+  private _log?: any;
+
+  /**
+   * Get logger instance for this user
+   * Server environment: File-based logging to user's home directory
+   * Browser environment: No-op logger (logs nothing)
+   */
+  get log(): any {
+    if (!this._log) {
+      try {
+        // Server environment - dynamic imports
+        const { Logger, FileMode } = require('../../core/logging/Logger');
+        const path = require('path');
+
+        const logDir = path.join(this.homeDirectory, 'logs');
+        const logFile = path.join(logDir, 'user.log');
+
+        this._log = Logger.createWithFile(
+          `${this.constructor.name}:${this.displayName}`,
+          logFile,
+          FileMode.CLEAN
+        );
+      } catch (error) {
+        // Browser environment - no-op logger
+        this._log = {
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {}
+        };
+      }
+    }
+    return this._log;
+  }
+
   /**
    * Initialize user - common setup, subclasses extend with type-specific logic
    * Base implementation loads user state, subclasses call super.initialize() then add their own
@@ -59,7 +94,7 @@ export abstract class BaseUser {
     // Note: Auto-join to rooms is now handled by RoomMembershipDaemon via events
     // User creation → Event emitted → Daemon subscribes → Daemon adds user to rooms
 
-    console.log(`✅ BaseUser ${this.displayName}: Base initialization complete`);
+    this.log.info(`✅ BaseUser ${this.displayName}: Base initialization complete`);
   }
 
   /**
@@ -68,7 +103,7 @@ export abstract class BaseUser {
    */
   protected async loadMyRooms(): Promise<void> {
     try {
-      console.log(`🔧 LOAD-ROOMS-START: ${this.constructor.name} ${this.displayName} (id=${this.id.slice(0,8)}), current myRoomIds.size=${this.myRoomIds.size}`);
+      this.log.debug(`🔧 LOAD-ROOMS-START: ${this.constructor.name} ${this.displayName} (id=${this.id.slice(0,8)}), current myRoomIds.size=${this.myRoomIds.size}`);
 
       // Query all rooms
       const roomsResult = await DataDaemon.query<RoomEntity>({
@@ -77,33 +112,33 @@ export abstract class BaseUser {
       });
 
       if (!roomsResult.success || !roomsResult.data) {
-        console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: Failed to load rooms`);
+        this.log.warn(`⚠️ ${this.constructor.name} ${this.displayName}: Failed to load rooms`);
         return;
       }
 
-      console.log(`🔧 LOAD-ROOMS-QUERY: ${this.constructor.name} ${this.displayName} found ${roomsResult.data.length} total rooms`);
+      this.log.debug(`🔧 LOAD-ROOMS-QUERY: ${this.constructor.name} ${this.displayName} found ${roomsResult.data.length} total rooms`);
 
       // Filter rooms where this user is a member
       let memberCount = 0;
       for (const roomRecord of roomsResult.data) {
         const room = roomRecord.data;
-        console.log(`🔧 ROOM-RECORD STRUCTURE: roomRecord.id=${roomRecord.id}, roomRecord.data.id=${room.id}, room.name=${room.name}`);
+        this.log.debug(`🔧 ROOM-RECORD STRUCTURE: roomRecord.id=${roomRecord.id}, roomRecord.data.id=${room.id}, room.name=${room.name}`);
 
         // Use roomRecord.id (the record ID) not room.id (might be undefined in data payload)
         const roomId = roomRecord.id || room.id;
-        console.log(`🔧 ROOM-RECORD: roomId=${roomId}, room.name=${room.name}, hasMembers=${!!room.members}`);
+        this.log.debug(`🔧 ROOM-RECORD: roomId=${roomId}, room.name=${room.name}, hasMembers=${!!room.members}`);
 
         const isMember = room.members.some((m: { userId: UUID }) => m.userId === this.id);
         if (isMember) {
           this.myRoomIds.add(roomId);
           memberCount++;
-          console.log(`🚪 ${this.constructor.name} ${this.displayName}: Member of room "${room.name}"`);
+          this.log.debug(`🚪 ${this.constructor.name} ${this.displayName}: Member of room "${room.name}"`);
         }
       }
 
-      console.log(`🔧 LOAD-ROOMS-END: ${this.constructor.name} ${this.displayName}, found ${memberCount} memberships, myRoomIds.size=${this.myRoomIds.size}`);
+      this.log.debug(`🔧 LOAD-ROOMS-END: ${this.constructor.name} ${this.displayName}, found ${memberCount} memberships, myRoomIds.size=${this.myRoomIds.size}`);
     } catch (error) {
-      console.error(`❌ ${this.constructor.name} ${this.displayName}: Error loading rooms:`, error);
+      this.log.error(`❌ ${this.constructor.name} ${this.displayName}: Error loading rooms:`, error);
     }
   }
 
@@ -123,7 +158,7 @@ export abstract class BaseUser {
           await handler(messageData);
         }
       });
-      console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room chat via Events.subscribe`);
+      this.log.info(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room chat via Events.subscribe`);
     } else {
       // ❌ FALLBACK: Create isolated EventManager (won't receive events, but won't crash)
       const { EventManager } = require('../../events/shared/JTAGEventSystem');
@@ -133,7 +168,7 @@ export abstract class BaseUser {
           await handler(messageData);
         }
       });
-      console.warn(`⚠️ ${this.constructor.name} ${this.displayName}: No client available, using isolated EventManager (events won't work)`);
+      this.log.warn(`⚠️ ${this.constructor.name} ${this.displayName}: No client available, using isolated EventManager (events won't work)`);
     }
   }
 
@@ -146,20 +181,20 @@ export abstract class BaseUser {
     const eventName = DataEventNames.created(COLLECTIONS.CHAT_MESSAGES);
 
     // Subscribe to each room separately with filter - only receive messages for rooms we're in
-    console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribing to chat events for ${this.myRoomIds.size} room(s)`);
+    this.log.info(`📢 ${this.constructor.name} ${this.displayName}: Subscribing to chat events for ${this.myRoomIds.size} room(s)`);
 
     for (const roomId of this.myRoomIds) {
       // ✅ Use Events.subscribe() with filter parameter - event system handles filtering
       // Pass userId+roomId as subscriberId to enable per-room deduplication
       // This ensures: 1 subscription per user per room, replacing old subscriptions on re-init
       Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
-        console.log(`🔔 ${this.constructor.name} ${this.displayName}: EVENT HANDLER TRIGGERED for message ${messageData.id} in room ${roomId.slice(0,8)}`);
-        console.log(`   Message: "${messageData.content?.text?.slice(0, 100)}"`);
-        console.log(`   From: ${messageData.senderName} (${messageData.senderId.slice(0,8)})`);
+        this.log.debug(`🔔 ${this.constructor.name} ${this.displayName}: EVENT HANDLER TRIGGERED for message ${messageData.id} in room ${roomId.slice(0,8)}`);
+        this.log.debug(`   Message: "${messageData.content?.text?.slice(0, 100)}"`);
+        this.log.debug(`   From: ${messageData.senderName} (${messageData.senderId.slice(0,8)})`);
         await handler(messageData);
       }, { where: { roomId } }, `${this.id}_${roomId}`);
 
-      console.log(`✅ ${this.constructor.name} ${this.displayName}: Subscribed to room ${roomId.slice(0,8)}`);
+      this.log.info(`✅ ${this.constructor.name} ${this.displayName}: Subscribed to room ${roomId.slice(0,8)}`);
     }
   }
 
@@ -180,7 +215,7 @@ export abstract class BaseUser {
     Events.subscribe(eventName, async (roomData: RoomEntity) => {
       await handler(roomData);
     }, undefined, this.id);
-    console.log(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via Events.subscribe`);
+    this.log.info(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via Events.subscribe`);
   }
 
   /**

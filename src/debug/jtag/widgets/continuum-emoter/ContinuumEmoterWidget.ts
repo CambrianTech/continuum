@@ -55,35 +55,35 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Subscribe to AI decision events for status feed
    */
   private subscribeToAIEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to AI events...');
-    console.log('🎭 ContinuumEmoter: Event constants:', AI_DECISION_EVENTS);
+    //console.log('🎭 ContinuumEmoter: Subscribing to AI events...');
+    //console.log('🎭 ContinuumEmoter: Event constants:', AI_DECISION_EVENTS);
 
     Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: thinking...`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: thinking...`);
     });
 
     Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: responding`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: responding`);
     });
 
     Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: passed`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: passed`);
     });
 
     Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: generating...`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: generating...`);
     });
 
     Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: checking...`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: checking...`);
     });
 
     Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: posted ✓`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: posted ✓`);
     });
 
     Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string; personaName?: string; error: string }) => {
-      this.addStatusMessage(`${data.personaName || 'AI'}: error ✗`);
+      this.addStatusMessage(`${data.personaName ?? 'AI'}: error ✗`);
     });
   }
 

@@ -11,6 +11,7 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { ToolDefinition } from './PersonaToolDefinitions';
 import {
   getAllToolDefinitions,
+  getAllToolDefinitionsAsync,
   getToolDefinition,
   formatToolForAI,
   formatAllToolsForAI
@@ -48,6 +49,25 @@ export class PersonaToolRegistry {
   listToolsForPersona(personaId: UUID): ToolDefinition[] {
     const permissions = this.getPermissionsForPersona(personaId);
     return this.listTools().filter(tool =>
+      this.hasRequiredPermissions(permissions.permissions, tool.permissions)
+    );
+  }
+
+  /**
+   * List tools with guaranteed cache initialization (async)
+   * Use this in critical paths where tools must be available
+   */
+  async listToolsAsync(): Promise<ToolDefinition[]> {
+    return getAllToolDefinitionsAsync();
+  }
+
+  /**
+   * List tools for persona with guaranteed cache initialization (async)
+   */
+  async listToolsForPersonaAsync(personaId: UUID): Promise<ToolDefinition[]> {
+    const permissions = this.getPermissionsForPersona(personaId);
+    const allTools = await getAllToolDefinitionsAsync();
+    return allTools.filter(tool =>
       this.hasRequiredPermissions(permissions.permissions, tool.permissions)
     );
   }

@@ -78,8 +78,8 @@ class CommandSchemaGenerator {
 
     for (const filePath of files) {
       try {
-        const schema = this.extractSchemaFromFile(filePath);
-        if (schema) {
+        const schemas = this.extractSchemasFromFile(filePath);
+        for (const schema of schemas) {
           this.schemas.push(schema);
           console.log(`  ✅ ${schema.name} (${Object.keys(schema.params).length} params)`);
         }
@@ -98,62 +98,98 @@ class CommandSchemaGenerator {
   }
 
   /**
-   * Extract command schema from a single *Types.ts file
+   * Extract ALL command schemas from a single *Types.ts file
+   * (Handles multi-command files like WallTypes.ts with WallWriteParams, WallReadParams, WallListParams)
    */
-  private extractSchemaFromFile(filePath: string): CommandSchema | null {
+  private extractSchemasFromFile(filePath: string): CommandSchema[] {
     const content = readFileSync(filePath, 'utf-8');
     const relativePath = relative(this.rootPath, filePath);
 
-    // Extract command name from path: commands/shell/execute/shared/ShellExecuteTypes.ts → shell/execute
-    const commandNameMatch = relativePath.match(/commands\/(.+?)\/shared\/\w+Types\.ts$/);
-    if (!commandNameMatch) {
-      console.warn(`  ⚠️ Could not extract command name from: ${relativePath}`);
-      return null;
+    // Extract base command path from file path: commands/wall/shared/WallTypes.ts → wall
+    const commandPathMatch = relativePath.match(/commands\/(.+?)\/shared\/\w+Types\.ts$/);
+    if (!commandPathMatch) {
+      console.warn(`  ⚠️ Could not extract command path from: ${relativePath}`);
+      return [];
     }
 
-    const commandName = commandNameMatch[1];
+    const basePath = commandPathMatch[1];
 
-    // Find the Params interface - supports both direct and double inheritance
-    // Pattern 1: export interface XParams extends CommandParams
-    // Pattern 2: export interface XParams extends BaseXParams
-    const paramsInterfaceRegex = /export\s+interface\s+(\w+Params)\s+extends\s+(\w+)\s*\{([^}]+)\}/s;
-    const paramsMatch = content.match(paramsInterfaceRegex);
+    // Find ALL *Params interfaces that extend CommandParams (or base interfaces that do)
+    // Use global regex to find all matches
+    const paramsInterfaceRegex = /export\s+interface\s+(\w+Params)\s+extends\s+(\w+)\s*\{([^}]+)\}/gs;
+    const schemas: CommandSchema[] = [];
+    let match;
 
-    if (!paramsMatch) {
-      console.warn(`  ⚠️ No Params interface found in: ${relativePath}`);
-      return null;
-    }
+    while ((match = paramsInterfaceRegex.exec(content)) !== null) {
+      const interfaceName = match[1];
+      const parentInterface = match[2];
+      const interfaceBody = match[3];
 
-    const interfaceName = paramsMatch[1];
-    const parentInterface = paramsMatch[2];
-    const interfaceBody = paramsMatch[3];
+      // Derive command name from interface name
+      // WallWriteParams → wall/write, WallListParams → wall/list, PingParams → ping
+      const commandName = this.deriveCommandName(interfaceName, basePath);
 
-    // Check if this extends CommandParams directly or through an intermediate interface
-    let allParams: Record<string, CommandParamDef> = {};
+      // Check if this extends CommandParams directly or through an intermediate interface
+      let allParams: Record<string, CommandParamDef> = {};
 
-    if (parentInterface !== 'CommandParams') {
-      // Double inheritance - need to find parent interface in same file
-      const parentParams = this.extractParentParams(content, parentInterface);
-      if (parentParams === null) {
-        console.warn(`  ⚠️ Parent interface ${parentInterface} not found or doesn't extend CommandParams: ${relativePath}`);
-        return null;
+      if (parentInterface !== 'CommandParams') {
+        // Double inheritance - need to find parent interface in same file
+        const parentParams = this.extractParentParams(content, parentInterface);
+        if (parentParams === null) {
+          console.warn(`  ⚠️ Parent interface ${parentInterface} not found or doesn't extend CommandParams: ${interfaceName}`);
+          continue;
+        }
+        // Merge parent params
+        allParams = { ...parentParams };
       }
-      // Merge parent params
-      allParams = { ...parentParams };
+
+      // Extract description from JSDoc comment before the interface
+      const description = this.extractDescription(content, match.index);
+
+      // Extract parameters from this interface body and merge with parent
+      const params = this.extractParams(interfaceBody, content, match.index);
+      allParams = { ...allParams, ...params };
+
+      schemas.push({
+        name: commandName,
+        description: description || `${commandName} command`,
+        params: allParams
+      });
     }
 
-    // Extract description from JSDoc comment before the interface
-    const description = this.extractDescription(content, paramsMatch.index!);
+    if (schemas.length === 0) {
+      console.warn(`  ⚠️ No Params interfaces found in: ${relativePath}`);
+    }
 
-    // Extract parameters from this interface body and merge with parent
-    const params = this.extractParams(interfaceBody, content, paramsMatch.index!);
-    allParams = { ...allParams, ...params };
+    return schemas;
+  }
 
-    return {
-      name: commandName,
-      description: description || `${commandName} command`,
-      params: allParams
-    };
+  /**
+   * Derive command name from Params interface name and base path
+   * Examples:
+   *   WallWriteParams + "wall" → "wall/write"
+   *   WallListParams + "wall" → "wall/list"
+   *   PingParams + "ping" → "ping"
+   *   ScreenshotParams + "screenshot" → "screenshot"
+   */
+  private deriveCommandName(interfaceName: string, basePath: string): string {
+    // Remove "Params" suffix: WallWriteParams → WallWrite
+    const withoutParams = interfaceName.replace(/Params$/, '');
+
+    // Convert PascalCase to kebab-case: WallWrite → wall-write
+    const kebabCase = withoutParams
+      .replace(/([a-z])([A-Z])/g, '$1-$2')
+      .toLowerCase();
+
+    // If kebab starts with basePath, extract subcommand
+    // "wall-write" with basePath "wall" → "wall/write"
+    // "ping" with basePath "ping" → "ping"
+    if (kebabCase.startsWith(basePath + '-')) {
+      const subcommand = kebabCase.substring(basePath.length + 1);
+      return `${basePath}/${subcommand}`;
+    }
+
+    return kebabCase;
   }
 
   /**

@@ -10,7 +10,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (54cb1f81-2eda-4ab2-b977-b67a20f56acb) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (baebfc28-721d-4257-876c-cc6e813b5494) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -24,62 +24,22 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1764544297540_lnx4wi9h
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764544297540_lnx4wi9h
-✅ JTAGClient: Completed correlation client_1764544297540_lnx4wi9h
-🏷️ JTAGClientServer: Session updated to: b9d17dfc-42b4-4b0c-9aa7-6c601d95cc45 (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1764965918207_ywq9pu0i
+🏷️ JTAGClientServer: Session updated to: efaf56a3-ad6b-4c2c-8e5d-1ce296b8d3cd (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764544297545_ssn5gped
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764544297545_ssn5gped
-✅ JTAGClient: Completed correlation client_1764544297545_ssn5gped
+📤 RemoteConnection: Sending command 'list' with correlation client_1764965918213_5zmru0on
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1764544297547_wtuwwmi7
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764544297547_wtuwwmi7
-✅ JTAGClient: Completed correlation client_1764544297547_wtuwwmi7
-✅ JTAGClient: Bootstrap complete! Discovered 124 commands
-✅ Server: JTAGClient connected with 124 commands
-📝 JTAGClient: Registered 'default' (server)
+📤 RemoteConnection: Sending command 'list' with correlation client_1764965918217_n5h104c5
+✅ Server: JTAGClient connected with 135 commands
 ✅ Connected to JTAG system
 
 🔍 Step 2: Verifying system health...
-📤 RemoteConnection: Sending command 'ping' with correlation client_1764544297549_l6ifbpf6
-📥 JTAGClient: Transport message received (type: request)
-📋 JTAGClient: Non-response message type 'request' - acknowledging
-📥 JTAGClient: Transport message received (type: response)
-🔗 JTAGClient: Processing response for correlation client_1764544297549_l6ifbpf6
-✅ JTAGClient: Completed correlation client_1764544297549_l6ifbpf6
+📤 RemoteConnection: Sending command 'ping' with correlation client_1764965918220_d41nrnf5
 ✅ System is healthy
 
 🗄️ Step 3: Querying AI decisions and generating report...
-📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1764544297557_e4kof3b0
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for cognition:stage-complete
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:ai_generations:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:ai_generations:created
-📥 JTAGClientServer: Received event message, triggering local subscriptions
-✅ JTAGClientServer: Triggered local subscriptions for data:ai_generations:created
+📤 RemoteConnection: Sending command 'ai/report/decisions' with correlation client_1764965918228_6zpqam8g
 
 ❌ AI Decision Report Integration Test: FAILED
 ===============================================
@@ -92,7 +52,7 @@ Request timeout after 30000ms
    4. Check for errors: grep "ERROR" .continuum/jtag/system/logs/npm-start.log
 
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session b9d17dfc-42b4-4b0c-9aa7-6c601d95cc45 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session efaf56a3-ad6b-4c2c-8e5d-1ce296b8d3cd on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

@@ -27,6 +27,7 @@ import {
   chatMessagesToPrompt,
   AIProviderError,
 } from '../../../shared/AIProviderTypesV2';
+import { Events } from '../../../../../system/core/shared/Events';
 
 // Helper function previously imported from old AIProviderTypes
 function createRequestId(): string {
@@ -93,11 +94,20 @@ class OllamaRequestQueue {
   private activeRequests = 0;
   private readonly maxConcurrent: number;
   private activeRequestIds: Set<string> = new Set();
-  private readonly REQUEST_TIMEOUT = 90000; // 90 seconds max wait time in queue
+  private readonly QUEUE_TIMEOUT = 15000; // 15 seconds max wait time in queue
+  private readonly ACTIVE_TIMEOUT = 30000; // 30 seconds max execution time for active requests
+  private log: (message: string) => void;
+  private onQueueTimeout?: (waitTime: number) => Promise<void>;  // Callback when queue timeout occurs
 
-  constructor(maxConcurrent: number = 4) {
+  constructor(
+    maxConcurrent: number = 4,
+    logger?: (message: string) => void,
+    onQueueTimeout?: (waitTime: number) => Promise<void>
+  ) {
     this.maxConcurrent = maxConcurrent;
-    console.log(`🔧 Ollama Queue: Initialized with maxConcurrent=${maxConcurrent}, timeout=${this.REQUEST_TIMEOUT}ms`);
+    this.log = logger || console.log.bind(console);
+    this.onQueueTimeout = onQueueTimeout;
+    // Initialization log - only on first start, not needed in ongoing logs
   }
 
   async enqueue<T>(executor: () => Promise<T>, requestId: string, abortController?: AbortController): Promise<T> {
@@ -112,19 +122,28 @@ class OllamaRequestQueue {
       };
 
       // Setup queue timeout - reject if request waits too long
-      queuedRequest.timeoutHandle = setTimeout(() => {
+      queuedRequest.timeoutHandle = setTimeout(async () => {
         const queueIndex = this.queue.findIndex(req => req.requestId === requestId);
         if (queueIndex !== -1) {
           // Still in queue after timeout - reject it
           this.queue.splice(queueIndex, 1);
           const waitTime = Date.now() - queuedRequest.enqueuedAt;
-          console.error(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.REQUEST_TIMEOUT}ms)`);
-          reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.REQUEST_TIMEOUT}ms)`));
+          this.log(`⏰ Ollama Queue: Request ${requestId} timed out after ${waitTime}ms in queue (max: ${this.QUEUE_TIMEOUT}ms)`);
+
+          // CRITICAL: Notify adapter of queue timeout (triggers immediate restart)
+          if (this.onQueueTimeout) {
+            await this.onQueueTimeout(waitTime);
+          }
+
+          reject(new Error(`Request timed out in queue after ${waitTime}ms (max: ${this.QUEUE_TIMEOUT}ms)`));
         }
-      }, this.REQUEST_TIMEOUT);
+      }, this.QUEUE_TIMEOUT);
 
       this.queue.push(queuedRequest);
-      console.log(`🔄 Ollama Queue: Enqueued request ${requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      // Only log when queue is backing up (more than 3 pending)
+      if (this.queue.length > 3) {
+        this.log(`⚠️ Ollama Queue: Backlog ${this.queue.length} pending, ${this.activeRequests}/${this.maxConcurrent} active`);
+      }
 
       // Setup abort handler
       if (abortController) {
@@ -154,13 +173,13 @@ class OllamaRequestQueue {
       }
 
       request.reject(new Error('Request cancelled while queued'));
-      console.log(`❌ Ollama Queue: Cancelled queued request ${requestId} (queue size: ${this.queue.length})`);
+      this.log(`❌ Ollama Queue: Cancelled queued request ${requestId} (queue size: ${this.queue.length})`);
       return;
     }
 
     // If active, AbortController already handles cancellation
     if (this.activeRequestIds.has(requestId)) {
-      console.log(`⚠️  Ollama Queue: Request ${requestId} is active, aborting via AbortController`);
+      this.log(`⚠️  Ollama Queue: Request ${requestId} is active, aborting via AbortController`);
     }
   }
 
@@ -180,17 +199,45 @@ class OllamaRequestQueue {
     }
 
     const queueWaitTime = Date.now() - request.enqueuedAt;
-    console.log(`▶️  Ollama Queue: Starting request ${request.requestId} after ${queueWaitTime}ms wait (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+    // Only log slow queue waits (> 2 seconds)
+    if (queueWaitTime > 2000) {
+      this.log(`⏳ Ollama Queue: Request waited ${queueWaitTime}ms in queue`);
+    }
 
     try {
-      const result = await request.executor();
+      // CRITICAL FIX: Add timeout for ACTIVE requests (not just queued ones)
+      // This prevents stuck Ollama requests from blocking the entire system
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Active request timed out after ${this.ACTIVE_TIMEOUT}ms`));
+        }, this.ACTIVE_TIMEOUT);
+      });
+
+      const result = await Promise.race([
+        request.executor(),
+        timeoutPromise
+      ]);
       request.resolve(result);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Check if this was an active timeout - trigger health check
+      if (errorMessage.includes('Active request timed out')) {
+        this.log(`🔥 ACTIVE TIMEOUT - Request ${request.requestId} exceeded ${this.ACTIVE_TIMEOUT}ms execution time`);
+        // Notify adapter of timeout (triggers health invalidation and potential restart)
+        if (this.onQueueTimeout) {
+          await this.onQueueTimeout(this.ACTIVE_TIMEOUT);
+        }
+      }
+
       request.reject(error as Error);
     } finally {
       this.activeRequests--;
       this.activeRequestIds.delete(request.requestId);
-      console.log(`✅ Ollama Queue: Completed request ${request.requestId} (queue size: ${this.queue.length}, active: ${this.activeRequests}/${this.maxConcurrent})`);
+      // Only log completion if queue had backlog (shows queue clearing)
+      if (this.queue.length > 0) {
+        this.log(`✅ Ollama Queue: Cleared 1, ${this.queue.length} remaining`);
+      }
       this.processQueue();  // Process next request in queue
     }
   }
@@ -214,6 +261,13 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   private readonly healthCacheTTL = 5000; // 5 seconds - reduced from 30s to detect degradation faster
   private readonly requestQueue: OllamaRequestQueue;
 
+  // Self-healing: track Ollama-specific failures for direct restart
+  // Separate from base class circuit breaker - this triggers restartProvider() directly
+  private ollamaFailureCount = 0;
+  private lastOllamaRestartTime = 0;
+  private readonly OLLAMA_MAX_FAILURES = 3;
+  private readonly OLLAMA_MIN_RESTART_INTERVAL = 60000; // 60 seconds between restarts
+
   constructor(config?: Partial<ProviderConfiguration>) {
     super();
     this.config = {
@@ -228,8 +282,62 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       ...config,
     };
 
-    // Initialize queue with configured maxConcurrent
-    this.requestQueue = new OllamaRequestQueue(this.config.maxConcurrent || 12);
+    // Initialize queue with configured maxConcurrent, logger, and queue timeout handler
+    this.requestQueue = new OllamaRequestQueue(
+      this.config.maxConcurrent || 12,
+      (msg: string) => this.log(null, 'info', msg),
+      async (waitTime: number) => {
+        // Queue timeout detected - track consecutive failures and trigger direct restart
+        this.ollamaFailureCount++;
+        this.log(null, 'warn', `🔥 QUEUE TIMEOUT DETECTED (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures) - ${waitTime}ms wait time`);
+
+        // Invalidate health cache so next health check will run full test
+        this.healthCache = null;
+
+        // SELF-HEALING: Direct restart after N consecutive failures
+        // Don't rely on events which may not be subscribed properly
+        await this.maybeAutoRestart('queue timeout');
+      }
+    );
+  }
+
+  /**
+   * Self-healing: Auto-restart Ollama after consecutive failures
+   * Called from queue timeout handler and error handlers
+   */
+  private async maybeAutoRestart(reason: string): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastRestart = now - this.lastOllamaRestartTime;
+
+    // Check if we should restart
+    if (this.ollamaFailureCount >= this.OLLAMA_MAX_FAILURES &&
+        timeSinceLastRestart >= this.OLLAMA_MIN_RESTART_INTERVAL) {
+      this.log(null, 'error', `🔄 AUTO-RESTART: ${this.ollamaFailureCount} consecutive failures (${reason}), restarting Ollama...`);
+
+      // Reset tracking
+      this.ollamaFailureCount = 0;
+      this.lastOllamaRestartTime = now;
+
+      // Direct restart (don't rely on events)
+      try {
+        await this.restartProvider();
+        this.log(null, 'info', `✅ AUTO-RESTART: Ollama restart initiated`);
+      } catch (error) {
+        this.log(null, 'error', `❌ AUTO-RESTART: Failed to restart Ollama: ${error}`);
+      }
+    } else if (timeSinceLastRestart < this.OLLAMA_MIN_RESTART_INTERVAL) {
+      this.log(null, 'debug', `⏳ AUTO-RESTART: Skipping - only ${Math.round(timeSinceLastRestart/1000)}s since last restart (min: ${this.OLLAMA_MIN_RESTART_INTERVAL/1000}s)`);
+    }
+  }
+
+  /**
+   * Reset Ollama-specific failure count on success
+   */
+  private resetOllamaFailures(): void {
+    if (this.ollamaFailureCount > 0) {
+      this.log(null, 'debug', `✅ Resetting Ollama failure count (was ${this.ollamaFailureCount})`);
+      this.ollamaFailureCount = 0;
+    }
   }
 
   /**
@@ -248,12 +356,12 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     }
 
     // Clear Ollama context for consistent results
-    console.log('🧹 Ollama: Clearing loaded models for fresh state...');
+    this.log(null, 'info', '🧹 Ollama: Clearing loaded models for fresh state...');
     await this.clearLoadedModels();
 
     // Log available models
     const models = await this.getAvailableModels();
-    console.log(`   ${models.length} models available: ${models.join(', ')}`);
+    this.log(null, 'info', `   ${models.length} models available: ${models.join(', ')}`);
   }
 
   /**
@@ -265,15 +373,37 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
   /**
    * Restart frozen Ollama service
+   *
+   * Non-blocking: Kills and restarts Ollama, returns immediately
+   * Health monitoring will detect when it's back online
    */
   protected async restartProvider(): Promise<void> {
+    this.log(null, 'info', '🔄 Ollama: Restarting service...');
+
+    // Kill existing Ollama processes (non-blocking)
     spawn('killall', ['ollama']);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Start fresh Ollama server (non-blocking, detached from parent)
+    // Health monitoring (AdapterHealthMonitor) will detect when server is ready
     spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' }).unref();
-    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    this.log(null, 'info', '🔄 Ollama: Restart initiated, health monitoring will verify recovery');
   }
 
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  /**
+   * Get current queue statistics for load-aware PersonaInbox consolidation
+   * Exposes Ollama request queue state for feedback-driven load management
+   */
+  getQueueStats(): { queueSize: number; activeRequests: number; maxConcurrent: number; load: number } {
+    const stats = this.requestQueue.getStats();
+    const load = (stats.queueSize + stats.activeRequests) / stats.maxConcurrent;
+    return {
+      ...stats,
+      load: Math.min(1.0, load) // Cap at 1.0
+    };
+  }
+
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     const startTime = Date.now();
     const requestId = request.requestId || createRequestId();
 
@@ -291,11 +421,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         stream: false,
       };
 
-      if (this.config.logRequests) {
-        console.log(`🤖 ${this.providerName}: Generating text with model ${ollamaRequest.model}`);
-        console.log(`   Request ID: ${requestId}`);
-        console.log(`   Prompt length: ${prompt.length} chars`);
-      }
+      // Minimal logging - only log if verbose debug needed
+      // this.log(request, 'debug', `🤖 ${this.providerName}: Generating with ${ollamaRequest.model}`);
 
       // Make request to Ollama
       const response = await this.makeRequest<OllamaGenerateResponse>(
@@ -315,10 +442,49 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       usage.totalTokens = usage.inputTokens + usage.outputTokens;
 
       if (this.config.logRequests) {
-        console.log(`✅ ${this.providerName}: Generated response in ${responseTime}ms`);
-        console.log(`   Output length: ${response.response.length} chars`);
-        console.log(`   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
+        this.log(request, 'info', `✅ ${this.providerName}: Generated response in ${responseTime}ms`);
+        this.log(request, 'debug', `   Output length: ${response.response.length} chars`);
+        this.log(request, 'debug', `   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
       }
+
+      // Validate response quality - detect garbage/degraded output
+      if (this.detectGarbageOutput(response.response)) {
+        this.log(request, 'error', `🗑️ ${this.providerName}: GARBAGE OUTPUT DETECTED: "${response.response.slice(0, 100)}"`);
+
+        // SELF-HEALING: Track Ollama failures
+        this.ollamaFailureCount++;
+        this.log(request, 'warn', `🔥 GARBAGE OUTPUT (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures)`);
+
+        // Invalidate health cache
+        this.healthCache = null;
+
+        // SELF-HEALING: Direct restart after N consecutive failures
+        await this.maybeAutoRestart('garbage output');
+
+        // Also emit event for monitoring (but don't rely on it for restart)
+        await Events.emit('system:adapter:unhealthy', {
+          providerId: this.providerId,
+          consecutiveFailures: this.ollamaFailureCount,
+          lastStatus: {
+            status: 'unhealthy',
+            apiAvailable: true,
+            responseTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message: `Garbage output detected: "${response.response.slice(0, 50)}"`,
+          },
+        });
+
+        throw new AIProviderError(
+          `Generation produced garbage output (model degradation): "${response.response.slice(0, 100)}"`,
+          'adapter',
+          'GARBAGE_OUTPUT',
+          { requestId, responseTime, output: response.response.slice(0, 200) }
+        );
+      }
+
+      // SUCCESS: Reset Ollama failure counter
+      this.resetOllamaFailures();
 
       return {
         text: response.response,
@@ -332,11 +498,45 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     } catch (error) {
       const responseTime = Date.now() - startTime;
 
-      console.error(`❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(request, 'error', `❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
+      this.log(request, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
+
+      // CRITICAL: Immediately invalidate health cache and emit unhealthy event
+      // Don't wait for next periodic health check (30-60s delay)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('timed out') || responseTime >= 120000;
+      const isGarbageOutput = errorMessage.includes('garbage output') || errorMessage.includes('GARBAGE_OUTPUT');
+
+      if (isTimeout || isGarbageOutput) {
+        // SELF-HEALING: Track Ollama failures (only if not already tracked for garbage output)
+        if (isTimeout && !isGarbageOutput) {
+          this.ollamaFailureCount++;
+        }
+        this.log(request, 'warn', `🔥 ${isTimeout ? 'TIMEOUT' : 'ERROR'} DETECTED (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures) - Invalidating health cache`);
+
+        // Invalidate health cache so next health check will run full test
+        this.healthCache = null;
+
+        // SELF-HEALING: Direct restart after N consecutive failures
+        await this.maybeAutoRestart(isTimeout ? 'timeout' : 'generation error');
+
+        // Also emit unhealthy event for monitoring (but don't rely on it for restart)
+        await Events.emit('system:adapter:unhealthy', {
+          providerId: this.providerId,
+          consecutiveFailures: this.ollamaFailureCount,
+          lastStatus: {
+            status: 'unhealthy',
+            apiAvailable: false,
+            responseTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message: `Generation ${isTimeout ? 'timeout' : 'error'} after ${responseTime}ms`,
+          },
+        });
+      }
 
       throw new AIProviderError(
-        `Text generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Text generation failed: ${errorMessage}`,
         'adapter',
         'GENERATION_FAILED',
         { requestId, responseTime, originalError: error }
@@ -358,8 +558,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       const inputs = Array.isArray(request.input) ? request.input : [request.input];
 
       if (this.config.logRequests) {
-        console.log(`🔢 ${this.providerName}: Generating ${inputs.length} embedding(s) with model ${model}`);
-        console.log(`   Request ID: ${requestId}`);
+        this.log(null, 'info', `🔢 ${this.providerName}: Generating ${inputs.length} embedding(s) with model ${model}`);
+        this.log(null, 'debug', `   Request ID: ${requestId}`);
       }
 
       // Generate embeddings for each input
@@ -391,9 +591,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       };
 
       if (this.config.logRequests) {
-        console.log(`✅ ${this.providerName}: Generated ${embeddings.length} embedding(s) in ${responseTime}ms`);
-        console.log(`   Embedding dimensions: ${embeddings[0]?.length || 0}`);
-        console.log(`   Input tokens: ${totalInputTokens}`);
+        this.log(null, 'info', `✅ ${this.providerName}: Generated ${embeddings.length} embedding(s) in ${responseTime}ms`);
+        this.log(null, 'debug', `   Embedding dimensions: ${embeddings[0]?.length || 0}`);
+        this.log(null, 'debug', `   Input tokens: ${totalInputTokens}`);
       }
 
       return {
@@ -407,8 +607,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     } catch (error) {
       const responseTime = Date.now() - startTime;
 
-      console.error(`❌ ${this.providerName}: Embedding generation failed after ${responseTime}ms`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(null, 'error', `❌ ${this.providerName}: Embedding generation failed after ${responseTime}ms`);
+      this.log(null, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
 
       throw new AIProviderError(
         `Embedding generation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -423,11 +623,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     // Return cached health if recent
     if (this.healthCache && Date.now() - this.healthCache.timestamp < this.healthCacheTTL) {
       const cacheAge = Math.floor((Date.now() - this.healthCache.timestamp) / 1000);
-      console.log(`🔍 Ollama Health: Returning cached ${this.healthCache.status.status} (${cacheAge}s old)`);
+      this.log(null, 'debug', `🔍 Ollama Health: Returning cached ${this.healthCache.status.status} (${cacheAge}s old)`);
       return this.healthCache.status;
     }
 
-    console.log(`🔍 Ollama Health: Running actual health check...`);
+    this.log(null, 'info', `🔍 Ollama Health: Running actual health check...`);
     const startTime = Date.now();
 
     try {
@@ -448,7 +648,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
           message,
         };
         this.healthCache = { status, timestamp: Date.now() };
-        console.log(`❌ Ollama Health: ${message}`);
+        this.log(null, 'error', `❌ Ollama Health: ${message}`);
         return status;
       }
 
@@ -481,7 +681,28 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
             message,
           };
           this.healthCache = { status, timestamp: Date.now() };
-          console.log(`❌ Ollama Health: ${message}`);
+          this.log(null, 'error', `❌ Ollama Health: ${message}`);
+          return status;
+        }
+
+        // Step 2b: Validate output quality (detect corruption/garbage output)
+        const responseData = await genResponse.json() as OllamaGenerateResponse;
+        const outputText = responseData.response || '';
+
+        // Check for garbage output patterns
+        const isGarbageOutput = this.detectGarbageOutput(outputText);
+        if (isGarbageOutput) {
+          const message = `Ollama generating garbage output: "${outputText.slice(0, 50)}" (likely token limit/corruption bug)`;
+          const status: HealthStatus = {
+            status: 'unhealthy',
+            apiAvailable: true,
+            responseTime: genTime,
+            errorRate: 1.0,
+            lastChecked: Date.now(),
+            message,
+          };
+          this.healthCache = { status, timestamp: Date.now() };
+          this.log(null, 'error', `❌ Ollama Health: ${message}`);
           return status;
         }
 
@@ -491,7 +712,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
         if (genTime < 3000) {
           healthStatus = 'healthy';
-          message = `Ollama generating normally (${genTime}ms)`;
+          message = `Ollama generating normally (${genTime}ms, output valid)`;
         } else if (genTime < 8000) {
           healthStatus = 'degraded';
           message = `Ollama is slow (${genTime}ms, expected <3s)`;
@@ -513,11 +734,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
         // Log result based on status
         if (healthStatus === 'healthy') {
-          console.log(`✅ Ollama Health: ${message}`);
+          this.log(null, 'info', `✅ Ollama Health: ${message}`);
         } else if (healthStatus === 'degraded') {
-          console.log(`⚠️  Ollama Health: ${message}`);
+          this.log(null, 'warn', `⚠️  Ollama Health: ${message}`);
         } else {
-          console.log(`❌ Ollama Health: ${message}`);
+          this.log(null, 'error', `❌ Ollama Health: ${message}`);
         }
 
         return status;
@@ -535,7 +756,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
           message,
         };
         this.healthCache = { status, timestamp: Date.now() };
-        console.log(`❌ Ollama Health: ${message}`);
+        this.log(null, 'error', `❌ Ollama Health: ${message}`);
         return status;
       }
 
@@ -553,9 +774,49 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       };
 
       this.healthCache = { status, timestamp: Date.now() };
-      console.log(`❌ Ollama Health: ${message}`);
+      this.log(null, 'error', `❌ Ollama Health: ${message}`);
       return status;
     }
+  }
+
+  /**
+   * Detect garbage/corrupted output patterns
+   *
+   * Common patterns indicating Ollama is in degraded state:
+   * - Repeated single character ("@@@@@", "......", "-----")
+   * - Only special characters (no letters)
+   * - Empty or whitespace-only output
+   * - Token limit overflow symptoms
+   */
+  private detectGarbageOutput(text: string): boolean {
+    if (!text || text.trim().length === 0) {
+      return true; // Empty output is garbage
+    }
+
+    // Check for repeated character spam (e.g., "@@@@@@@@@@@")
+    const repeatedCharPattern = /^(.)\1{10,}$/; // Same character repeated 10+ times
+    if (repeatedCharPattern.test(text.trim())) {
+      return true;
+    }
+
+    // Check if output is ONLY special characters (no alphanumeric)
+    const onlySpecialChars = /^[^a-zA-Z0-9]+$/;
+    if (onlySpecialChars.test(text.trim()) && text.trim().length > 5) {
+      return true; // More than 5 non-alphanumeric characters and nothing else
+    }
+
+    // Check for extremely high repetition rate (>80% of characters are the same)
+    const charCounts = new Map<string, number>();
+    for (const char of text) {
+      charCounts.set(char, (charCounts.get(char) || 0) + 1);
+    }
+    const maxCount = Math.max(...charCounts.values());
+    const repetitionRate = maxCount / text.length;
+    if (repetitionRate > 0.8 && text.length > 10) {
+      return true; // More than 80% of output is the same character
+    }
+
+    return false; // Output looks valid
   }
 
   /**
@@ -574,16 +835,16 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         if (modelName && modelName !== 'NAME') {
           try {
             execSync(`ollama stop ${modelName}`, { stdio: 'ignore', timeout: 2000 });
-            console.log(`🧹 Ollama: Unloaded ${modelName}`);
+            this.log(null, 'debug', `🧹 Ollama: Unloaded ${modelName}`);
           } catch (e) {
             // Individual model stop failed, continue
           }
         }
       }
-      console.log('✅ Ollama: All models unloaded for fresh state');
+      this.log(null, 'info', '✅ Ollama: All models unloaded for fresh state');
     } catch (error) {
       // Non-critical - log but continue
-      console.log('⚠️  Ollama: Could not unload models (non-critical)');
+      this.log(null, 'warn', '⚠️  Ollama: Could not unload models (non-critical)');
     }
   }
 
@@ -600,8 +861,8 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         supportsFunctions: false
       }));
     } catch (error) {
-      console.error(`❌ ${this.providerName}: Failed to list models`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(null, 'error', `❌ ${this.providerName}: Failed to list models`);
+      this.log(null, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
   }
@@ -637,7 +898,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       } catch (error) {
         // Retry logic
         if (attempt < this.config.retryAttempts) {
-          console.log(`⚠️  ${this.providerName}: Request failed (attempt ${attempt}/${this.config.retryAttempts}), retrying...`);
+          this.log(null, 'warn', `⚠️  ${this.providerName}: Request failed (attempt ${attempt}/${this.config.retryAttempts}), retrying...`);
 
           // Wait before retry
           await new Promise(resolve => setTimeout(resolve, this.config.retryDelay));

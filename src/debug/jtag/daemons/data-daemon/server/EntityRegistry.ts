@@ -12,12 +12,16 @@
 type EntityConstructor = new (...args: any[]) => any;
 export const ENTITY_REGISTRY = new Map<string, EntityConstructor>();
 
+import { Logger } from '../../../system/core/logging/Logger';
+
+const log = Logger.create('EntityRegistry', 'sql');
+
 /**
  * Register an entity class with its collection name
  * Called automatically when entity classes are imported/loaded
  */
 export function registerEntity(collectionName: string, entityClass: EntityConstructor): void {
-  console.log(`🏷️ SQLite: Registering entity ${collectionName} -> ${entityClass.name}`);
+  log.debug(`Registering entity ${collectionName} -> ${entityClass.name}`);
   ENTITY_REGISTRY.set(collectionName, entityClass);
 }
 
@@ -67,16 +71,17 @@ import { CognitionPlanReplanEntity } from '../../../system/data/entities/Cogniti
 import { FileVoteProposalEntity } from '../../../system/data/entities/FileVoteProposalEntity';
 import { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
 import { MemoryEntity } from '../../../system/data/entities/MemoryEntity';
+import { WallDocumentEntity } from '../../../system/data/entities/WallDocumentEntity';
 
 /**
  * Initialize entity registration for the storage adapter
  * Called during server startup to register all known entities
  */
 export function initializeEntityRegistry(): void {
-  console.log('🏷️ EntityRegistry: Registering all known entities...');
+  log.info('Registering all known entities...');
 
   // Initialize decorators by creating instances (required for Stage 3 decorators)
-  console.log('🔧 EntityRegistry: Initializing decorator metadata...');
+  log.debug('Initializing decorator metadata...');
   new UserEntity();
   new RoomEntity();
   new ChatMessageEntity();
@@ -111,6 +116,7 @@ export function initializeEntityRegistry(): void {
   new FileVoteProposalEntity();
   new DecisionProposalEntity();
   new MemoryEntity();
+  new WallDocumentEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -147,6 +153,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(FileVoteProposalEntity.collection, FileVoteProposalEntity);
   registerEntity(DecisionProposalEntity.collection, DecisionProposalEntity);
   registerEntity(MemoryEntity.collection, MemoryEntity);
+  registerEntity(WallDocumentEntity.collection, WallDocumentEntity);
 
-  console.log('✅ EntityRegistry: All entities registered');
+  log.info('All entities registered');
 }

@@ -211,24 +211,19 @@ export class EventSubscriptionManager {
   public off(eventName: string, handler?: EventHandler): void {
     if (!handler) {
       // Remove all subscriptions for this event
-      const count = this.subscriptions.get(eventName)?.size || 0;
       this.subscriptions.delete(eventName);
-      console.log(`🔌 EventSubscriptionManager: Removed all ${count} subscription(s) for '${eventName}'`);
     } else {
       // Remove specific handler
       const eventSubs = this.subscriptions.get(eventName);
       if (eventSubs) {
-        let removed = 0;
         eventSubs.forEach((sub, id) => {
           if (sub.handler === handler) {
             eventSubs.delete(id);
-            removed++;
           }
         });
         if (eventSubs.size === 0) {
           this.subscriptions.delete(eventName);
         }
-        console.log(`🔌 EventSubscriptionManager: Removed ${removed} specific handler(s) for '${eventName}'`);
       }
     }
   }
@@ -313,10 +308,8 @@ export class EventSubscriptionManager {
    * Clear all subscriptions (useful for testing/cleanup)
    */
   public clear(): void {
-    const stats = this.getStats();
     this.subscriptions.clear();
     this.wildcardSubscriptions.clear();
     this.elegantSubscriptions.clear();
-    console.log(`🧹 EventSubscriptionManager: Cleared ${stats.totalCount} subscription(s)`);
   }
 }

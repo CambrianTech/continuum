@@ -33,11 +33,13 @@ interface ThoughtGroup {
 export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
   private persona: PersonaUser;
   private maxThoughtsPerGroup: number;
+  private log: (message: string, ...args: any[]) => void;
 
-  constructor(persona: PersonaUser, config?: { maxThoughtsPerGroup?: number }) {
+  constructor(persona: PersonaUser, config?: { maxThoughtsPerGroup?: number; logger?: (message: string, ...args: any[]) => void }) {
     super();
     this.persona = persona;
     this.maxThoughtsPerGroup = config?.maxThoughtsPerGroup || 10;
+    this.log = config?.logger || console.log.bind(console);
   }
 
   async consolidate(
@@ -51,7 +53,7 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
     // Group related thoughts by context and domain
     const groups = this.groupRelatedThoughts(thoughts);
 
-    console.log(`🧠 [${context.personaName}] SemanticCompression: ${thoughts.length} thoughts → ${groups.length} groups`);
+    this.log(`🧠 [${context.personaName}] SemanticCompression: ${thoughts.length} thoughts → ${groups.length} groups`);
 
     // Synthesize each group via LLM
     const memories: MemoryEntity[] = [];

@@ -670,7 +670,7 @@ async function getMissingUsers(): Promise<string[]> {
 /**
  * Wait for JTAG system to be fully ready with commands registered
  */
-async function waitForJTAGReady(maxWaitSeconds: number = 60): Promise<boolean> {
+async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> {
   const startTime = Date.now();
   let attempts = 0;
 
@@ -679,7 +679,17 @@ async function waitForJTAGReady(maxWaitSeconds: number = 60): Promise<boolean> {
   while (Date.now() - startTime < maxWaitSeconds * 1000) {
     try {
       const { stdout } = await execAsync('./jtag ping');
-      const response = JSON.parse(stdout);
+
+      // ROBUST: Extract JSON from potentially polluted output (same as SystemMetricsCollector)
+      const firstBrace = stdout.indexOf('{');
+      const lastBrace = stdout.lastIndexOf('}');
+
+      if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+        throw new Error('No valid JSON in ping output');
+      }
+
+      const jsonStr = stdout.substring(firstBrace, lastBrace + 1);
+      const response = JSON.parse(jsonStr);
 
       if (response.success &&
           response.server?.health?.systemReady &&
@@ -737,8 +747,10 @@ async function seedViaJTAG() {
       throw new Error('❌ JTAG system not ready - commands not registered yet');
     }
 
-    // Clean up test entities from failed integration tests
-    await cleanupTestEntities();
+    // NOTE: Test cleanup disabled during startup to avoid deadlock
+    // The cleanup script tries to connect to the server (jtag.connect()) which hangs
+    // during startup. Run manually if needed: npx tsx scripts/cleanup-test-entities.ts
+    // await cleanupTestEntities();
 
     // Check which users are missing
     const missingUsers = await getMissingUsers();

@@ -109,7 +109,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
    * Subscribe to chat message creation events
    */
   private async setupEventSubscriptions(): Promise<void> {
-    console.log(`🧠 TrainingDaemonServer: Subscribing to ${DATA_EVENTS.CHAT_MESSAGES.CREATED}`);
+    //console.log(`🧠 TrainingDaemonServer: Subscribing to ${DATA_EVENTS.CHAT_MESSAGES.CREATED}`);
 
     const unsubCreated = Events.subscribe<ChatMessageEntity>(
       DATA_EVENTS.CHAT_MESSAGES.CREATED,

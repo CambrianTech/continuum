@@ -55,6 +55,7 @@ export interface LoRAAdapterState {
 export class LoRAAdapter {
   private state: LoRAAdapterState;
   private aiProvider?: AIProviderAdapter;
+  private log: (message: string) => void;
 
   constructor(config: {
     id: UUID;
@@ -64,7 +65,9 @@ export class LoRAAdapter {
     sizeMB: number;
     priority?: number;
     aiProvider?: AIProviderAdapter;
+    logger?: (message: string) => void;
   }) {
+    this.log = config.logger || console.log.bind(console);
     this.state = {
       id: config.id,
       name: config.name,
@@ -158,13 +161,13 @@ export class LoRAAdapter {
    */
   async load(): Promise<void> {
     if (this.state.loaded) {
-      console.log(`🧬 LoRAAdapter: ${this.state.name} already loaded`);
+      this.log(`🧬 LoRAAdapter: ${this.state.name} already loaded`);
       // Update LRU timestamp even if already loaded (fixes LRU eviction bug)
       this.markUsed();
       return;
     }
 
-    console.log(`📥 LoRAAdapter: Loading ${this.state.name} from ${this.state.path}...`);
+    this.log(`📥 LoRAAdapter: Loading ${this.state.name} from ${this.state.path}...`);
 
     // Delegate to AI provider if available and supports skill management
     if (this.aiProvider?.applySkill) {
@@ -180,7 +183,7 @@ export class LoRAAdapter {
     this.state.loaded = true;
     this.state.lastUsed = Date.now();
 
-    console.log(`✅ LoRAAdapter: ${this.state.name} loaded successfully`);
+    this.log(`✅ LoRAAdapter: ${this.state.name} loaded successfully`);
   }
 
   /**
@@ -192,11 +195,11 @@ export class LoRAAdapter {
    */
   async unload(): Promise<void> {
     if (!this.state.loaded) {
-      console.log(`🧬 LoRAAdapter: ${this.state.name} already unloaded`);
+      this.log(`🧬 LoRAAdapter: ${this.state.name} already unloaded`);
       return;
     }
 
-    console.log(`📤 LoRAAdapter: Unloading ${this.state.name}...`);
+    this.log(`📤 LoRAAdapter: Unloading ${this.state.name}...`);
 
     // Delegate to AI provider if available and supports skill management
     if (this.aiProvider?.removeSkill) {
@@ -206,7 +209,7 @@ export class LoRAAdapter {
 
     this.state.loaded = false;
 
-    console.log(`✅ LoRAAdapter: ${this.state.name} unloaded successfully`);
+    this.log(`✅ LoRAAdapter: ${this.state.name} unloaded successfully`);
   }
 
   /**
@@ -228,7 +231,7 @@ export class LoRAAdapter {
       throw new Error(`Cannot enable training - adapter ${this.state.name} not loaded`);
     }
 
-    console.log(`🧬 LoRAAdapter: Enabling training mode for ${this.state.name}...`);
+    this.log(`🧬 LoRAAdapter: Enabling training mode for ${this.state.name}...`);
 
     // Delegate to AI provider if available and supports skill training
     if (this.aiProvider?.enableSkillTraining) {
@@ -238,7 +241,7 @@ export class LoRAAdapter {
 
     this.state.trainingActive = true;
 
-    console.log(`✅ LoRAAdapter: Training mode enabled for ${this.state.name}`);
+    this.log(`✅ LoRAAdapter: Training mode enabled for ${this.state.name}`);
   }
 
   /**
@@ -253,7 +256,7 @@ export class LoRAAdapter {
       return;
     }
 
-    console.log(`🧬 LoRAAdapter: Disabling training mode for ${this.state.name}...`);
+    this.log(`🧬 LoRAAdapter: Disabling training mode for ${this.state.name}...`);
 
     // Delegate to AI provider if available and supports skill training
     if (this.aiProvider?.disableSkillTraining) {
@@ -263,7 +266,7 @@ export class LoRAAdapter {
 
     this.state.trainingActive = false;
 
-    console.log(`✅ LoRAAdapter: Training mode disabled for ${this.state.name}`);
+    this.log(`✅ LoRAAdapter: Training mode disabled for ${this.state.name}`);
   }
 
   /**

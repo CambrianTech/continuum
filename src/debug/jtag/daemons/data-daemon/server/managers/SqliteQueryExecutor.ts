@@ -237,7 +237,7 @@ export class SqliteQueryExecutor {
       };
     });
 
-    console.log(`✅ SQLite: Entity query returned ${records.length} records`);
+    log.debug(`Entity query returned ${records.length} records`);
 
     return {
       success: true,
@@ -267,7 +267,7 @@ export class SqliteQueryExecutor {
       }
     }));
 
-    console.log(`✅ SQLite: Simple entity query returned ${records.length} records`);
+    log.debug(`Simple entity query returned ${records.length} records`);
 
     return {
       success: true,
@@ -368,8 +368,8 @@ export class SqliteQueryExecutor {
 
     // DEBUG: Log generated SQL and params for range operator debugging
     if (whereClauses.length > 0) {
-      console.log('🔍 SQL-DEBUG: WHERE clause:', sql.substring(sql.lastIndexOf('WHERE')));
-      console.log('🔍 SQL-DEBUG: Params:', params);
+      log.debug('WHERE clause:', sql.substring(sql.lastIndexOf('WHERE')));
+      log.debug('Query params:', params);
     }
 
     // Add time range filter
@@ -402,7 +402,7 @@ export class SqliteQueryExecutor {
       }
 
       params.push(query.cursor.value);
-      console.log(`🔧 CURSOR-SQL: Added cursor condition: ${cursorColumn} ${operator} ${query.cursor.value}`);
+      log.debug(`Added cursor condition: ${cursorColumn} ${operator} ${query.cursor.value}`);
     }
 
     // Add sorting (translate field names to column names)

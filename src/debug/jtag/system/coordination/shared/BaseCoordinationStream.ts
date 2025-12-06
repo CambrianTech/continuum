@@ -21,7 +21,10 @@
  */
 
 import { EventEmitter } from 'events';
+import * as path from 'path';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * Domain-agnostic thought (claim to respond)
@@ -97,6 +100,9 @@ export abstract class BaseCoordinationStream<
 
   protected readonly config: CoordinationConfig;
 
+  /** Logger instance */
+  private logger: ComponentLogger;
+
   /** Active streams by event ID */
   protected streams: Map<string, TStream> = new Map();
 
@@ -106,6 +112,10 @@ export abstract class BaseCoordinationStream<
   constructor(config: Partial<CoordinationConfig> = {}) {
     super();
     this.config = { ...DEFAULT_COORDINATION_CONFIG, ...config };
+
+    // Initialize logger for coordination (logs to coordination.log)
+    const logPath = path.join(SystemPaths.logs.system, 'coordination.log');
+    this.logger = Logger.createWithFile('CoordinationStream', logPath, FileMode.CLEAN);
 
     // Cleanup old streams periodically
     this.cleanupInterval = setInterval(() => {
@@ -469,9 +479,9 @@ export abstract class BaseCoordinationStream<
     if (!this.config.enableLogging) return;
 
     if (isError) {
-      console.error(message);
+      this.logger.error(message);
     } else {
-      console.log(message);
+      this.logger.info(message);
     }
   }
 }

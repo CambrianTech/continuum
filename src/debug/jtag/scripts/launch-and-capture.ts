@@ -177,136 +177,101 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
               signalCode: null
             });
             
-            // Set up server readiness detection with timeout
-            let serverDetectionTimeout: NodeJS.Timeout;
-            let serverStartupDetected = false;
-            let detectionAttempts = 0;
-            const maxDetectionAttempts = 24; // 2 minutes (24 * 5s = 120s)
-            
-            const detectServerStartup = () => {
-              serverDetectionTimeout = setTimeout(async () => {
-                if (serverStartupDetected) return;
-                
-                detectionAttempts++;
-                
-                // Only show message on first attempt, then show dots for progress
-                if (detectionAttempts === 1) {
-                  process.stdout.write('🔍 Waiting for JTAG server to be ready');
-                } else if (detectionAttempts <= maxDetectionAttempts) {
+            // Wait for PID file to appear (signal that server process started)
+            console.log('⏳ Waiting for server process to start...');
+
+            let pidCheckAttempts = 0;
+            const maxPidCheckAttempts = 30; // 30 seconds max to wait for PID file
+
+            const pidCheckInterval = setInterval(() => {
+              pidCheckAttempts++;
+
+              if (fs.existsSync(pidFile)) {
+                clearInterval(pidCheckInterval);
+                console.log('✅ Server process started (PID file detected)');
+                console.log('🔍 Waiting for JTAG server to be ready');
+
+                // Now start polling for readiness using setInterval (clean, predictable)
+                let detectionAttempts = 0;
+                const maxDetectionAttempts = 48; // 4 minutes (48 * 5s = 240s)
+
+                const readinessCheckInterval = setInterval(async () => {
+                  detectionAttempts++;
                   process.stdout.write('.');
-                }
-                
-                try {
-                  // Check if the server is actually running by testing readiness
-                  const signal = await signaler.generateReadySignal();
-                  
-                  // Use proper well-defined constants for health check
-                  const isSystemReady = (
-                    signal.bootstrapComplete &&         // System bootstrap done
-                    (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')   // Accept healthy or degraded
-                  );
-                  
-                  if (isSystemReady) {
-                    serverStartupDetected = true;
-                    clearTimeout(serverDetectionTimeout);
-                    
-                    console.log(' ✅');
-                    console.log(`🚀 JTAG system fully ready! (${signal.commandCount} commands, browser launched, health: ${signal.systemHealth})`);
-                    
-                    resolve({
-                      success: true,
-                      reason: 'launch_success',
-                      processId: tmuxPid,
-                      logFile,
-                      diagnostics: createDiagnostics()
-                    });
-                    
-                  } else if (detectionAttempts < maxDetectionAttempts) {
-                    // Show detailed status for debugging
-                    if (detectionAttempts % 5 === 0) {  // Every 5th attempt show details
-                      console.log(`\n📊 System Status:`);
-                      console.log(`   Bootstrap: ${signal.bootstrapComplete}`);  
-                      console.log(`   Browser: ${signal.browserReady}`);
-                      console.log(`   Commands: ${signal.commandCount}`);
-                      console.log(`   Health: ${signal.systemHealth}`);
-                      if (signal.autonomousGuidance?.length) {
-                        console.log(`   Issue: ${signal.autonomousGuidance[0]}`);
-                      }
+
+                  try {
+                    const signal = await signaler.generateReadySignal();
+
+                    const isSystemReady = (
+                      signal.bootstrapComplete &&
+                      (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')
+                    );
+
+                    if (isSystemReady) {
+                      clearInterval(readinessCheckInterval);
+                      console.log(' ✅');
+                      console.log(`🚀 JTAG system fully ready! (${signal.commandCount} commands, health: ${signal.systemHealth})`);
+
+                      resolve({
+                        success: true,
+                        reason: 'launch_success',
+                        processId: tmuxPid,
+                        logFile,
+                        diagnostics: createDiagnostics()
+                      });
+                    } else if (detectionAttempts >= maxDetectionAttempts) {
+                      clearInterval(readinessCheckInterval);
+                      console.log('\n⏰ Server detection timeout - system not fully ready');
+                      console.log(`📊 Final Status: bootstrap=${signal.bootstrapComplete}, commands=${signal.commandCount}, health=${signal.systemHealth}`);
+                      console.log(`🔧 Check: tmux attach-session -t ${sessionName}`);
+
+                      resolve({
+                        success: false,
+                        reason: 'launch_failure',
+                        processId: tmuxPid,
+                        logFile,
+                        errorMessage: 'System launched but not fully ready after 4 minutes',
+                        diagnostics: createDiagnostics()
+                      });
+                    } else if (detectionAttempts % 5 === 0) {
+                      // Show status every 25 seconds
+                      console.log(`\n📊 Status: bootstrap=${signal.bootstrapComplete}, commands=${signal.commandCount}, health=${signal.systemHealth}`);
+                      process.stdout.write('🔍 Still waiting');
                     }
-                    detectServerStartup(); // Try again
-                  } else {
-                    console.log('\n⏰ Server detection timeout - system not fully ready');
-                    console.log(`📊 Final Status: bootstrap=${signal.bootstrapComplete}, browser=${signal.browserReady}, commands=${signal.commandCount}, health=${signal.systemHealth}`);
-                    if (signal.autonomousGuidance?.length) {
-                      console.log(`💡 Issue: ${signal.autonomousGuidance[0]}`);
+                  } catch (error) {
+                    // Server not responding yet - continue polling
+                    if (detectionAttempts >= maxDetectionAttempts) {
+                      clearInterval(readinessCheckInterval);
+                      console.log('\n⏰ Server detection timeout');
+                      console.log(`💥 Error: ${error instanceof Error ? error.message : String(error)}`);
+
+                      resolve({
+                        success: false,
+                        reason: 'launch_failure',
+                        processId: tmuxPid,
+                        logFile,
+                        errorMessage: 'System launched but readiness check timed out',
+                        diagnostics: createDiagnostics()
+                      });
                     }
-                    console.log(`🔧 The system is running but not ready. Check: tmux attach-session -t ${sessionName}`);
-                    
-                    resolve({
-                      success: false, // Changed to false - system not fully ready
-                      reason: 'launch_failure',
-                      processId: tmuxPid,
-                      logFile,
-                      errorMessage: 'System launched but not fully ready - browser or health check failing',
-                      diagnostics: createDiagnostics()
-                    });
                   }
-                  
-                } catch (error) {
-                  if (detectionAttempts < maxDetectionAttempts) {
-                    if (detectionAttempts === 1) {
-                      console.log('⏳ System starting up, waiting for readiness...');
-                    }
-                    detectServerStartup(); // Try again
-                  } else {
-                    console.log('\n⏰ Server detection timeout after multiple attempts');  
-                    console.log(`💥 Final Error: ${error instanceof Error ? error.message : String(error)}`);
-                    console.log(`🔧 The system may be running in the background. Check: tmux attach-session -t ${sessionName}`);
-                    
-                    resolve({
-                      success: false, // Changed to false - system not ready
-                      reason: 'launch_failure', 
-                      processId: tmuxPid,
-                      logFile,
-                      errorMessage: 'System launched but readiness detection timed out',
-                      diagnostics: createDiagnostics()
-                    });
-                  }
-                }
-                
-              }, 5000); // Check every 5 seconds
-            };
-            
-            // CRITICAL: Check for build failures before checking server readiness
-            setTimeout(() => {
-              // First check if tmux session is still alive (build didn't fail)
-              const checkSession = spawn('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' });
-              checkSession.on('close', (sessionCode) => {
-                if (sessionCode !== 0) {
-                  // Session died - likely build failure
-                  console.log('');
-                  console.log('🚨🚨🚨 CRITICAL BUILD FAILURE 🚨🚨🚨');
-                  console.log('📋 The tmux session exited early - likely TypeScript compilation error');
-                  console.log(`📄 Check build logs: tail -20 ${logFile}`);
-                  console.log('💥 BUILD FAILED - npm start cannot continue');
-                  console.log('🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨');
-                  console.log('');
-                  
-                  resolve({
-                    success: false,
-                    reason: 'build_failure',
-                    processId: tmuxPid,
-                    logFile,
-                    errorMessage: 'Build failed - check TypeScript compilation errors',
-                    diagnostics: createDiagnostics()
-                  });
-                  return;
-                }
-                
-                // Session is alive, proceed with server readiness check
-                detectServerStartup();
-              });
-            }, 3000); // Check session status after 3 seconds (before server detection)
+                }, 5000); // Check every 5 seconds
+
+              } else if (pidCheckAttempts >= maxPidCheckAttempts) {
+                clearInterval(pidCheckInterval);
+                console.log('\n⏰ PID file never appeared - server process may have failed to start');
+                console.log(`📄 Check build logs: tail -50 ${logFile}`);
+
+                resolve({
+                  success: false,
+                  reason: 'launch_failure',
+                  processId: tmuxPid,
+                  logFile,
+                  errorMessage: 'Server process did not start (PID file not created)',
+                  diagnostics: createDiagnostics()
+                });
+              }
+            }, 1000); // Check for PID file every second
             
           });
           

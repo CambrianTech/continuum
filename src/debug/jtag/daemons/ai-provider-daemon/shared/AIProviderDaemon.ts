@@ -63,7 +63,7 @@ export type AIProviderResponse = AIProviderSuccessResponse | AIProviderErrorResp
 export class AIProviderDaemon extends DaemonBase {
   public readonly subpath = '/ai-provider';
 
-  private adapters: Map<string, ProviderRegistration> = new Map();
+  protected adapters: Map<string, ProviderRegistration> = new Map();
   private initialized = false;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
@@ -79,7 +79,7 @@ export class AIProviderDaemon extends DaemonBase {
   }
 
   protected async initialize(): Promise<void> {
-    console.log('🤖 AIProviderDaemon: Base initialization (adapters registered by subclass)');
+    this.log.info('🤖 AIProviderDaemon: Base initialization (adapters registered by subclass)');
     this.initialized = true;
   }
 
@@ -144,7 +144,7 @@ export class AIProviderDaemon extends DaemonBase {
     // Check if ProcessPool is available (server-side only)
     const processPool = this.getProcessPoolInstance() as any;
     if (processPool && typeof processPool.executeInference === 'function') {
-      console.log(`🏊 AIProviderDaemon: Routing ${adapter.providerId} inference through ProcessPool`);
+      this.log.info(`🏊 AIProviderDaemon: Routing ${adapter.providerId} inference through ProcessPool`);
 
       try {
         // Convert chat messages to prompt
@@ -179,13 +179,13 @@ export class AIProviderDaemon extends DaemonBase {
           requestId: request.requestId || `req-${Date.now()}`,
         };
       } catch (error) {
-        console.error(`❌ AIProviderDaemon: ProcessPool inference failed, falling back to direct adapter call`);
+        this.log.error(`❌ AIProviderDaemon: ProcessPool inference failed, falling back to direct adapter call`);
         // Fall through to direct adapter call
       }
     }
 
     // Direct adapter call (browser-side or fallback)
-    console.log(`🤖 AIProviderDaemon: Using direct ${adapter.providerId} adapter call (no ProcessPool)`);
+    this.log.info(`🤖 AIProviderDaemon: Using direct ${adapter.providerId} adapter call (no ProcessPool)`);
 
     if (!adapter.generateText) {
       throw new AIProviderError(
@@ -204,7 +204,7 @@ export class AIProviderDaemon extends DaemonBase {
 
       return response;
     } catch (error) {
-      console.error(`❌ AIProviderDaemon: Text generation failed with ${adapter.providerId}`);
+      this.log.error(`❌ AIProviderDaemon: Text generation failed with ${adapter.providerId}`);
 
       // Log failed generation to database
       await this.logFailedGeneration(
@@ -244,7 +244,7 @@ export class AIProviderDaemon extends DaemonBase {
       });
 
       if (!result.success || !result.entity) {
-        console.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity: ${result.error}`);
+        this.log.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity: ${result.error}`);
         return;
       }
 
@@ -258,10 +258,10 @@ export class AIProviderDaemon extends DaemonBase {
         }
       );
 
-      console.log(`💾 AIProviderDaemon: Logged generation (${response.provider}/${response.model}, ${response.usage.totalTokens} tokens, $${(response.usage.estimatedCost || 0).toFixed(4)})`);
+      this.log.info(`💾 AIProviderDaemon: Logged generation (${response.provider}/${response.model}, ${response.usage.totalTokens} tokens, $${(response.usage.estimatedCost || 0).toFixed(4)})`);
     } catch (error) {
       // Don't fail generation if logging fails - just warn
-      console.error(`❌ AIProviderDaemon: Failed to log generation:`, error);
+      this.log.error(`❌ AIProviderDaemon: Failed to log generation:`, error);
     }
   }
 
@@ -295,7 +295,7 @@ export class AIProviderDaemon extends DaemonBase {
       });
 
       if (!result.success || !result.entity) {
-        console.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity for error: ${result.error}`);
+        this.log.error(`❌ AIProviderDaemon: Failed to create AIGenerationEntity for error: ${result.error}`);
         return;
       }
 
@@ -309,9 +309,9 @@ export class AIProviderDaemon extends DaemonBase {
         }
       );
 
-      console.log(`💾 AIProviderDaemon: Logged failed generation (${providerId}/${model})`);
+      this.log.info(`💾 AIProviderDaemon: Logged failed generation (${providerId}/${model})`);
     } catch (logError) {
-      console.error(`❌ AIProviderDaemon: Failed to log error:`, logError);
+      this.log.error(`❌ AIProviderDaemon: Failed to log error:`, logError);
     }
   }
 
@@ -379,7 +379,7 @@ export class AIProviderDaemon extends DaemonBase {
       const response = await adapter.createEmbedding(request);
       return response;
     } catch (error) {
-      console.error(`❌ AIProviderDaemon: Embedding generation failed with ${adapter.providerId}`);
+      this.log.error(`❌ AIProviderDaemon: Embedding generation failed with ${adapter.providerId}`);
       throw error;
     }
   }
@@ -449,7 +449,7 @@ export class AIProviderDaemon extends DaemonBase {
     adapter: AIProviderAdapter,
     options: { priority: number; enabled: boolean }
   ): Promise<void> {
-    console.log(`🔌 AIProviderDaemon: Registering ${adapter.providerName} (priority ${options.priority})...`);
+    this.log.info(`🔌 AIProviderDaemon: Registering ${adapter.providerName} (priority ${options.priority})...`);
 
     try {
       // Initialize adapter
@@ -471,10 +471,10 @@ export class AIProviderDaemon extends DaemonBase {
         enabled: options.enabled,
       });
 
-      console.log(`✅ AIProviderDaemon: ${adapter.providerName} registered successfully`);
+      this.log.info(`✅ AIProviderDaemon: ${adapter.providerName} registered successfully`);
     } catch (error) {
-      console.error(`❌ AIProviderDaemon: Failed to register ${adapter.providerName}`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log.error(`❌ AIProviderDaemon: Failed to register ${adapter.providerName}`);
+      this.log.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
 
       // Register anyway but mark as disabled
       this.adapters.set(adapter.providerId, {
@@ -591,14 +591,14 @@ export class AIProviderDaemon extends DaemonBase {
    * Shutdown daemon and all adapters
    */
   async shutdown(): Promise<void> {
-    console.log('🔄 AIProviderDaemon: Shutting down...');
+    this.log.info('🔄 AIProviderDaemon: Shutting down...');
 
     for (const [providerId, registration] of this.adapters) {
       try {
-        console.log(`   Shutting down ${providerId}...`);
+        this.log.info(`   Shutting down ${providerId}...`);
         await registration.adapter.shutdown();
       } catch (error) {
-        console.error(`   Failed to shutdown ${providerId}: ${error instanceof Error ? error.message : String(error)}`);
+        this.log.error(`   Failed to shutdown ${providerId}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -606,7 +606,7 @@ export class AIProviderDaemon extends DaemonBase {
     this.initialized = false;
 
     await super.shutdown();
-    console.log('✅ AIProviderDaemon: Shutdown complete');
+    this.log.info('✅ AIProviderDaemon: Shutdown complete');
   }
 
   // =============================================
@@ -730,7 +730,7 @@ export class AIProviderDaemon extends DaemonBase {
    * @example
    * const adapters = AIProviderDaemon.getAllAdapters();
    * for (const [providerId, adapter] of adapters) {
-   *   console.log(`Provider: ${providerId}`);
+   *   this.log.info(`Provider: ${providerId}`);
    * }
    */
   static getAllAdapters(): Map<string, AIProviderAdapter> {

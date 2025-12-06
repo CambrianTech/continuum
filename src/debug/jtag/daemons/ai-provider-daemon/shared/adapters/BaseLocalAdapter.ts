@@ -43,7 +43,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
   }
 
   protected async initializeProvider(): Promise<void> {
-    console.log(`🔌 ${this.providerName}: Initializing local adapter...`);
+    this.log(null, 'info', `🔌 ${this.providerName}: Initializing local adapter...`);
 
     // Check if local server is running
     const health = await this.healthCheck();
@@ -52,7 +52,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
     }
 
     this.isInitialized = true;
-    console.log(`✅ ${this.providerName}: Initialized successfully`);
+    this.log(null, 'info', `✅ ${this.providerName}: Initialized successfully`);
   }
 
   async healthCheck(): Promise<HealthStatus> {
@@ -111,7 +111,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
       const data = await response.json();
       return this.parseModelsResponse(data);
     } catch (error) {
-      console.error(`❌ ${this.providerName}: Failed to get models:`, error);
+      this.log(null, 'error', `❌ ${this.providerName}: Failed to get models:`, error);
       return [];
     }
   }
@@ -127,7 +127,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
   abstract generateText(request: TextGenerationRequest): Promise<TextGenerationResponse>;
 
   protected async shutdownProvider(): Promise<void> {
-    console.log(`🔄 ${this.providerName}: Shutting down (local adapter, no cleanup needed)`);
+    this.log(null, 'info', `🔄 ${this.providerName}: Shutting down (local adapter, no cleanup needed)`);
     this.isInitialized = false;
   }
 
@@ -135,8 +135,8 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
    * Restart local server (override in subclass for provider-specific restart)
    */
   protected async restartProvider(): Promise<void> {
-    console.log(`⚠️  ${this.providerName}: No restart logic implemented for this local provider`);
-    console.log(`   Please manually restart the server at ${this.config.baseUrl}`);
+    this.log(null, 'warn', `⚠️  ${this.providerName}: No restart logic implemented for this local provider`);
+    this.log(null, 'warn', `   Please manually restart the server at ${this.config.baseUrl}`);
   }
 
   /**
@@ -172,7 +172,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
         return await response.json();
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        console.warn(`⚠️  ${this.providerName}: Request attempt ${attempt + 1} failed:`, lastError.message);
+        this.log(null, 'warn', `⚠️  ${this.providerName}: Request attempt ${attempt + 1} failed:`, lastError.message);
 
         if (attempt < retries - 1) {
           await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));

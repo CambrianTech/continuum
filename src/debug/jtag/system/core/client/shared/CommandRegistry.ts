@@ -30,6 +30,7 @@ import type { RagQueryOpenParams, RagQueryOpenResult } from '../../../../command
 import type { RagQueryFetchParams, RagQueryFetchResult } from '../../../../commands/ai/rag/query-fetch/shared/RagQueryFetchTypes';
 import type { RagQueryCloseParams, RagQueryCloseResult } from '../../../../commands/ai/rag/query-close/shared/RagQueryCloseTypes';
 import type { TreeParams, TreeResult } from '../../../../commands/tree/shared/TreeTypes';
+import type { ContentOpenParams, ContentOpenResult } from '../../../../commands/content/open/shared/ContentOpenTypes';
 
 /**
  * Command Registry - Maps command names to their param/result types
@@ -119,6 +120,10 @@ export interface CommandRegistry {
   'tree': {
     params: TreeParams;
     result: TreeResult;
+  };
+  'content/open': {
+    params: ContentOpenParams;
+    result: ContentOpenResult;
   };
   // Add more commands here...
 }

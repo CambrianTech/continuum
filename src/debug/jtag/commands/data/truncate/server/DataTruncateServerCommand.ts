@@ -21,7 +21,6 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
 
   async execute(params: DataTruncateParams): Promise<DataTruncateResult> {
     const { collection } = params;
-    console.debug(`🗑️ DATA SERVER: Truncating collection '${collection}' via adapter truncate() method`);
 
     try {
       // Get record count before truncating for reporting
@@ -38,7 +37,6 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
       const result = await DataDaemon.truncate(collection);
 
       if (result.success) {
-        console.log(`✅ DATA SERVER: Truncated collection '${collection}' via adapter`);
 
         // Emit truncated event for widgets to clear their state
         // For truncate, we don't have entity data (clearing all), so use empty object with proper typing
@@ -75,7 +73,6 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
 
         // Emit event so browser widgets can clear their caches
         await Events.emit<TruncateEventData>(this.context, eventName, eventData);
-        console.log(`📢 DATA SERVER: Emitted ${eventName} event`);
 
         return createDataTruncateResultFromParams(params, {
           success: true,

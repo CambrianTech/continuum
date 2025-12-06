@@ -11,13 +11,28 @@
  *   log.warn('Unusual condition');
  *   log.error('Error occurred', error);
  *
- * Control via environment variable:
+ * Control via environment variables:
  *   LOG_LEVEL=error  - Only errors
  *   LOG_LEVEL=warn   - Warnings and errors (default for production)
  *   LOG_LEVEL=info   - Info, warnings, errors (default for development)
  *   LOG_LEVEL=debug  - Everything (verbose, for debugging only)
  *
- * Alpha launch default: LOG_LEVEL=warn (minimal noise)
+ *   LOG_TIMESTAMPS=0 - Disable timestamps (default: 1, timestamps always on)
+ *
+ *   LOG_TO_CONSOLE=0 - Disable console output (logs only to files)
+ *   LOG_TO_CONSOLE=1 - Enable console output (default: 0)
+ *
+ *   LOG_TO_FILES=0   - Disable file logging
+ *   LOG_TO_FILES=1   - Enable file logging (default: 1)
+ *
+ *   LOG_FILE_MODE=clean   - Start fresh each session (truncate existing logs)
+ *   LOG_FILE_MODE=append  - Keep existing logs and add to them
+ *   LOG_FILE_MODE=archive - Rotate logs (not implemented, falls back to append)
+ *   (default: clean)
+ *
+ * Recommended defaults:
+ *   Development: LOG_LEVEL=info, LOG_TO_CONSOLE=0, LOG_FILE_MODE=clean
+ *   Production: LOG_LEVEL=warn, LOG_TO_CONSOLE=0, LOG_FILE_MODE=clean
  *
  * Log File Categories:
  *   - 'sql': All database operations (queries, writes, schema)
@@ -30,6 +45,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { inspect } from 'util';
 import { SystemPaths } from '../config/SystemPaths';
 
 export enum LogLevel {
@@ -45,6 +61,7 @@ interface LoggerConfig {
   enableColors: boolean;
   enableTimestamps: boolean;
   enableFileLogging: boolean;
+  enableConsoleLogging: boolean;
 }
 
 export enum FileMode {
@@ -53,7 +70,7 @@ export enum FileMode {
   ARCHIVE = 'archive'  // Archive and rotate logs (not implemented yet)
 }
 
-type LogCategory = 'sql' | 'persona-mind' | 'genome' | 'system' | 'tools';
+type LogCategory = string;
 
 interface LogQueueEntry {
   message: string;
@@ -66,6 +83,8 @@ class LoggerClass {
   private fileStreams: Map<string, fs.WriteStream>;  // file path -> stream
   private logQueues: Map<string, LogQueueEntry[]>;    // file path -> queue
   private logTimers: Map<string, NodeJS.Timeout>;     // file path -> flush timer
+  private cleanedFiles: Set<string>;                   // track files cleaned with mode='w' (CLEAN)
+  private defaultFileMode: FileMode;                   // default mode for log files (from LOG_FILE_MODE env var)
   private logDir: string;
   private readonly FLUSH_INTERVAL_MS = 100;           // Flush every 100ms
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
@@ -81,16 +100,27 @@ class LoggerClass {
       'SILENT': LogLevel.SILENT
     };
 
+    // Read file mode from environment (default: CLEAN)
+    const envFileMode = process.env.LOG_FILE_MODE?.toLowerCase() || 'clean';
+    const fileModeMap: Record<string, FileMode> = {
+      'clean': FileMode.CLEAN,
+      'append': FileMode.APPEND,
+      'archive': FileMode.ARCHIVE
+    };
+    this.defaultFileMode = fileModeMap[envFileMode] || FileMode.CLEAN;
+
     this.config = {
       level: levelMap[envLevel] || LogLevel.INFO,
       enableColors: process.env.NO_COLOR !== '1',
-      enableTimestamps: process.env.LOG_TIMESTAMPS === '1',
-      enableFileLogging: process.env.LOG_TO_FILES !== '0'  // Enabled by default, disable with LOG_TO_FILES=0
+      enableTimestamps: process.env.LOG_TIMESTAMPS !== '0',  // ALWAYS ON by default (timestamps essential for debugging)
+      enableFileLogging: process.env.LOG_TO_FILES !== '0',  // Enabled by default, disable with LOG_TO_FILES=0
+      enableConsoleLogging: process.env.LOG_TO_CONSOLE === '1'  // Disabled by default, disable with LOG_TO_CONSOLE=0
     };
 
     this.fileStreams = new Map();
     this.logQueues = new Map();
     this.logTimers = new Map();
+    this.cleanedFiles = new Set();
     // Use SystemPaths for correct log directory (.continuum/jtag/system/logs)
     this.logDir = SystemPaths.logs.system;
   }
@@ -121,8 +151,20 @@ class LoggerClass {
       fs.mkdirSync(this.logDir, { recursive: true, mode: 0o755 });
     }
 
-    // System logs ALWAYS use 'a' (append) - never truncate during runtime
-    const stream = fs.createWriteStream(logFile, { flags: 'a', mode: 0o644 });
+    // Use configured file mode (from LOG_FILE_MODE env var)
+    // First call for this file: use defaultFileMode, subsequent calls: append
+    let flags = 'a'; // Default to append
+    if (this.defaultFileMode === FileMode.CLEAN && !this.cleanedFiles.has(logFile)) {
+      flags = 'w'; // First time: truncate (clean)
+      this.cleanedFiles.add(logFile);
+    } else if (this.defaultFileMode === FileMode.APPEND) {
+      flags = 'a'; // Always append
+    } else if (this.defaultFileMode === FileMode.ARCHIVE) {
+      // ARCHIVE not implemented yet, fall back to append
+      flags = 'a';
+    }
+
+    const stream = fs.createWriteStream(logFile, { flags, mode: 0o644 });
 
     this.fileStreams.set(logFile, stream);
     this.logQueues.set(logFile, []);
@@ -150,7 +192,7 @@ class LoggerClass {
    * Queue a log message for async writing
    * Fire-and-forget - never blocks the caller
    */
-  private queueMessage(logFile: string, message: string): void {
+  public queueMessage(logFile: string, message: string): void {
     const queue = this.logQueues.get(logFile);
     const stream = this.fileStreams.get(logFile);
 
@@ -207,7 +249,9 @@ class LoggerClass {
   createWithFile(component: string, logFilePath: string, mode: FileMode): ComponentLogger {
     // Handle ARCHIVE mode (not implemented yet)
     if (mode === FileMode.ARCHIVE) {
-      console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
+      if (this.config.enableConsoleLogging) {
+        console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
+      }
       mode = FileMode.APPEND;
     }
 
@@ -223,7 +267,24 @@ class LoggerClass {
       fs.mkdirSync(logDir, { recursive: true, mode: 0o755 });
     }
 
-    const stream = fs.createWriteStream(logFilePath, { flags: mode, mode: 0o644 });
+    // If mode is CLEAN and file was already cleaned this session, switch to APPEND
+    // This prevents multiple CLEAN calls from truncating the same file repeatedly
+    let effectiveMode = mode;
+    if (mode === FileMode.CLEAN) {
+      if (this.cleanedFiles.has(logFilePath)) {
+        effectiveMode = FileMode.APPEND; // Already cleaned, just append from now on
+        if (this.config.enableConsoleLogging) {
+          console.log(`📝 [Logger] CLEAN→APPEND (already cleaned): ${path.basename(logFilePath)}`);
+        }
+      } else {
+        this.cleanedFiles.add(logFilePath); // Mark as cleaned
+        if (this.config.enableConsoleLogging) {
+          console.log(`🧹 [Logger] CLEAN mode (truncating): ${path.basename(logFilePath)}`);
+        }
+      }
+    }
+
+    const stream = fs.createWriteStream(logFilePath, { flags: effectiveMode, mode: 0o644 });
     this.fileStreams.set(logFilePath, stream);
     this.logQueues.set(logFilePath, []);
     this.startFlushTimer(logFilePath);
@@ -291,20 +352,21 @@ class ComponentLogger {
       ? `[${new Date().toISOString()}] `
       : '';
 
-    const prefix = `${timestamp}${emoji} ${this.component}:`;
-
-    // Console output
-    if (args.length === 0) {
-      console.log(prefix, message);
-    } else {
-      console.log(prefix, message, ...args);
+    // Console output (if enabled)
+    if (this.config.enableConsoleLogging) {
+      const prefix = `${timestamp}${emoji} ${this.component}:`;
+      if (args.length === 0) {
+        console.log(prefix, message);
+      } else {
+        console.log(prefix, message, ...args);
+      }
     }
 
     // File output (if category specified) - FIRE-AND-FORGET via queue
     if (this.fileStream && this.logFilePath && this.logger) {
       const formattedArgs = args.length > 0
         ? ' ' + args.map(arg =>
-            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+            typeof arg === 'object' ? inspect(arg, { depth: 2, colors: false, compact: true }) : String(arg)
           ).join(' ')
         : '';
 
@@ -341,6 +403,24 @@ class ComponentLogger {
       const [message, ...args] = messageFn();
       this.debug(message, ...args);
     }
+  }
+
+  /**
+   * Write raw pre-formatted message to log file
+   * Used by PersonaLogger which already formats its messages
+   * NOTE: Does NOT check enableFileLogging - persona logs are always written
+   */
+  writeRaw(message: string): void {
+    if (this.fileStream && this.logFilePath && this.logger) {
+      this.logger.queueMessage(this.logFilePath, message);
+    }
+  }
+
+  /**
+   * Get the file path for this logger (for testing/debugging)
+   */
+  getLogFilePath(): string | undefined {
+    return this.logFilePath;
   }
 }
 

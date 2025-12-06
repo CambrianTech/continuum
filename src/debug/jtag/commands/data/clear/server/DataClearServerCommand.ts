@@ -18,7 +18,6 @@ export class DataClearServerCommand extends CommandBase<DataClearParams, DataCle
   }
 
   async execute(params: DataClearParams): Promise<DataClearResult> {
-    console.debug('🧹 DATA SERVER: Clearing all collections via adapter clear() method');
 
     try {
       // Get collections before clearing for reporting
@@ -29,7 +28,6 @@ export class DataClearServerCommand extends CommandBase<DataClearParams, DataCle
       const result = await DataDaemon.clear();
 
       if (result.success) {
-        console.log(`✅ DATA SERVER: Cleared all collections via adapter (${collectionCount} collections)`);
 
         return createDataClearResultFromParams(params, {
           success: true,

@@ -110,7 +110,7 @@ export class JTAGClientServer extends JTAGClient {
   async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
     // Handle event messages - trigger local subscriptions
     if (JTAGMessageTypes.isEvent(message)) {
-      console.log(`📥 JTAGClientServer: Received event message, triggering local subscriptions`);
+      // console.log(`📥 JTAGClientServer: Received event message, triggering local subscriptions`);
 
       // Extract event name and data from payload (EventBridgePayload structure)
       const payload = message.payload as any;
@@ -120,7 +120,7 @@ export class JTAGClientServer extends JTAGClient {
       if (eventName && eventData !== undefined) {
         // Trigger local subscriptions (wildcard, elegant, exact-match)
         Events.checkWildcardSubscriptions(eventName, eventData);
-        console.log(`✅ JTAGClientServer: Triggered local subscriptions for ${eventName}`);
+        // console.log(`✅ JTAGClientServer: Triggered local subscriptions for ${eventName}`);
       } else {
         console.warn(`⚠️ JTAGClientServer: Event message missing eventName or data`, payload);
       }

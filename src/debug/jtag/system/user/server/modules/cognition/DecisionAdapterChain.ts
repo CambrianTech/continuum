@@ -20,8 +20,12 @@ import type { AdapterDecision, DecisionContextMetadata } from '../../../../data/
 
 export class DecisionAdapterChain {
   private adapters: IDecisionAdapter[] = [];
+  private log: (message: string, ...args: any[]) => void;
 
-  constructor() {
+  constructor(logger?: (message: string, ...args: any[]) => void) {
+    // Default to console.log if no logger provided (for tests)
+    this.log = logger || console.log.bind(console);
+
     // Register adapters in priority order (high to low)
     this.registerAdapter(new FastPathAdapter());
     this.registerAdapter(new ThermalAdapter());
@@ -46,12 +50,12 @@ export class DecisionAdapterChain {
   async processDecision<TEvent extends BaseEntity>(
     context: DecisionContext<TEvent>
   ): Promise<CognitiveDecision> {
-    console.log(`🔗 DecisionAdapterChain: Processing decision for ${context.personaDisplayName}`);
-    console.log(`   Event: ${context.eventContent.slice(0, 60)}...`);
-    console.log(`   isMentioned: ${context.isMentioned}, senderIsHuman: ${context.senderIsHuman}`);
+    this.log(`🔗 DecisionAdapterChain: Processing decision for ${context.personaDisplayName}`);
+    this.log(`   Event: ${context.eventContent.slice(0, 60)}...`);
+    this.log(`   isMentioned: ${context.isMentioned}, senderIsHuman: ${context.senderIsHuman}`);
 
     for (const adapter of this.adapters) {
-      console.log(`   🔍 Trying adapter: ${adapter.name} (priority ${adapter.priority})`);
+      this.log(`   🔍 Trying adapter: ${adapter.name} (priority ${adapter.priority})`);
 
       // Let adapter evaluate the decision
       const startTime = Date.now();
@@ -71,8 +75,8 @@ export class DecisionAdapterChain {
       const contextId = (context.triggerEvent as any).roomId || (context.triggerEvent as any).contextId || context.personaId;
 
       if (decision !== null) {
-        console.log(`   ✅ ${adapter.name} handled decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (confidence: ${decision.confidence.toFixed(2)})`);
-        console.log(`   💭 Reason: ${decision.reason}`);
+        this.log(`   ✅ ${adapter.name} handled decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (confidence: ${decision.confidence.toFixed(2)})`);
+        this.log(`   💭 Reason: ${decision.reason}`);
 
         // Log adapter decision to cognition database
         const adapterDecision: AdapterDecision = decision.shouldRespond ? 'RESPOND' : 'SILENT';
@@ -91,7 +95,7 @@ export class DecisionAdapterChain {
 
         return decision;
       } else {
-        console.log(`   ⏭️  ${adapter.name} returned null - trying next adapter`);
+        this.log(`   ⏭️  ${adapter.name} returned null - trying next adapter`);
 
         // Log PASS decision (adapter chose not to handle)
         await CognitionLogger.logAdapterDecision(
@@ -110,7 +114,7 @@ export class DecisionAdapterChain {
     }
 
     // Should never reach here (LLMAdapter always returns non-null as fallback)
-    console.error(`❌ DecisionAdapterChain: No adapter handled the decision! This should not happen.`);
+    this.log(`❌ DecisionAdapterChain: No adapter handled the decision! This should not happen.`);
 
     // Return safe default
     return {

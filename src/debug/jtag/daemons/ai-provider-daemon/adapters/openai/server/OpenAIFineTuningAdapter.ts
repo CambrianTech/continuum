@@ -130,22 +130,22 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
   /* eslint-disable @typescript-eslint/naming-convention */
   protected async _startTraining(request: LoRATrainingRequest): Promise<TrainingHandle> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log('🚀 OpenAI: Starting training job (async pattern)...');
+    this.log('info', '🚀 OpenAI: Starting training job (async pattern)...');
 
     // 1. Export dataset to JSONL
-    console.log('   Exporting dataset...');
+    this.log('debug', '   Exporting dataset...');
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-    console.log(`   Dataset exported: ${datasetPath}`);
+    this.log('debug', `   Dataset exported: ${datasetPath}`);
 
     // 2. Upload dataset to OpenAI
-    console.log('   Uploading to OpenAI...');
+    this.log('debug', '   Uploading to OpenAI...');
     const fileId = await this.uploadDataset(datasetPath);
-    console.log(`   File ID: ${fileId}`);
+    this.log('debug', `   File ID: ${fileId}`);
 
     // 3. Create fine-tuning job
-    console.log('   Creating training job...');
+    this.log('debug', '   Creating training job...');
     const jobId = await this.createFineTuningJob(request, fileId);
-    console.log(`   Job ID: ${jobId}`);
+    this.log('info', `   Job ID: ${jobId}`);
 
     // 4. Clean up temp file immediately
     await this.cleanupTempFiles(datasetPath);
@@ -178,7 +178,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log(`🔍 OpenAI: Querying job status: ${providerJobId}`);
+    this.log('debug', `🔍 OpenAI: Querying job status: ${providerJobId}`);
 
     const apiKey = this.config.apiKey;
     if (!apiKey) {
@@ -225,7 +225,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
         }
       };
     } catch (error) {
-      console.error(`❌ OpenAI: Failed to query status:`, error);
+      this.log('error', `❌ OpenAI: Failed to query status: ${error instanceof Error ? error.message : String(error)}`);
       return {
         status: 'failed',
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -250,7 +250,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       case 'cancelled':
         return 'cancelled';
       default:
-        console.warn(`Unknown OpenAI status: ${openaiStatus}, treating as running`);
+        this.log('warn', `Unknown OpenAI status: ${openaiStatus}, treating as running`);
         return 'running';
     }
   }
@@ -451,7 +451,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
         });
 
         if (!response.ok) {
-          console.warn(`   Poll attempt ${attempts}: HTTP ${response.status}`);
+          this.log('warn', `   Poll attempt ${attempts}: HTTP ${response.status}`);
           await new Promise(resolve => setTimeout(resolve, 5000));
           continue;
         }
@@ -466,7 +466,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
           error?: { message: string };
         };
 
-        console.log(`   Status: ${job.status} (attempt ${attempts}/${maxAttempts})`);
+        this.log('debug', `   Status: ${job.status} (attempt ${attempts}/${maxAttempts})`);
 
         if (job.status === 'succeeded') {
           if (!job.fine_tuned_model) {
@@ -484,7 +484,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
       } catch (error) {
         // Socket timeout or network error - job continues on server
         if (error instanceof Error && error.message.includes('fetch failed')) {
-          console.warn(`   Socket error (attempt ${attempts}), job continues on server...`);
+          this.log('warn', `   Socket error (attempt ${attempts}), job continues on server...`);
           await new Promise(resolve => setTimeout(resolve, 5000));
           continue;
         }
@@ -546,7 +546,7 @@ export class OpenAILoRAAdapter extends BaseLoRATrainerServer {
     try {
       await fs.promises.unlink(datasetPath);
     } catch (error) {
-      console.warn(`   Failed to clean up temp file: ${datasetPath}`, error);
+      this.log('warn', `   Failed to clean up temp file: ${datasetPath} - ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

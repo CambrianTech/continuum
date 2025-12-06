@@ -103,9 +103,12 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
     // Initialize consolidation adapter (default: semantic compression)
     // Pass persona directly - adapter uses persona.generateText() for synthesis (same code path as chat)
+    const hippocampusLogger = (message: string, ...args: any[]) => {
+      this.persona.logger.enqueueLog('hippocampus.log', message);
+    };
     this.consolidationAdapter = adapter || new SemanticCompressionAdapter(
       persona,
-      { maxThoughtsPerGroup: 10 }
+      { maxThoughtsPerGroup: 10, logger: hippocampusLogger }
     );
 
     this.log(`Initialized with ${this.consolidationAdapter.getName()} adapter`);

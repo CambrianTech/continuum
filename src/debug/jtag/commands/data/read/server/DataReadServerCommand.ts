@@ -37,14 +37,11 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
       });
     }
 
-    console.log(`🗄️ DATA SERVER: Reading ${params.collection}/${params.id} via DataDaemon`);
-
     try {
       // Use DataDaemon for consistent storage access
       const result = await DataDaemon.read<BaseEntity>(params.collection, params.id);
 
       if (result.success && result.data) {
-        console.log(`✅ DATA SERVER: Read ${params.collection}/${params.id}`);
 
         // Extract media if this is a chat message with attachments
         let media: MediaItem[] = [];
@@ -55,7 +52,6 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
           if (messageData.content?.media && Array.isArray(messageData.content.media)) {
             // Extract media to top level
             media = messageData.content.media;
-            console.log(`📸 DATA SERVER: Extracted ${media.length} media item(s) from message ${params.id}`);
 
             // Create cleaned entity without media duplication (preserve prototype)
             cleanedData = Object.assign(
@@ -78,7 +74,6 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
           media
         });
       } else {
-        console.log(`ℹ️ DATA SERVER: Record not found ${params.collection}/${params.id}`);
 
         return createDataReadResultFromParams(params, {
           success: true,

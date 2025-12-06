@@ -57,7 +57,7 @@ export class FileDaemon {
   }> {
     try {
       const resolvedPath = this.resolvePath(filepath, sessionId);
-      console.log(`📂 FileDaemon: Loading ${filepath} → ${resolvedPath}`);
+      // console.log(`📂 FileDaemon: Loading ${filepath} → ${resolvedPath}`);
       
       // Check if file exists
       try {
@@ -76,8 +76,8 @@ export class FileDaemon {
       // Read file
       const content = await fs.readFile(resolvedPath, { encoding });
       const stats = await fs.stat(resolvedPath);
-      
-      console.log(`✅ FileDaemon: Loaded ${stats.size} bytes from ${resolvedPath}`);
+
+      // console.log(`✅ FileDaemon: Loaded ${stats.size} bytes from ${resolvedPath}`);
       
       return {
         success: true,

@@ -104,9 +104,31 @@ export const COLLECTIONS = {
   ADAPTER_REASONING_LOGS: 'adapter_reasoning_logs',
   COGNITION_PLAN_REPLANS: 'cognition_plan_replans',
 
-  // Democratic Voting System
+  // Universal Democratic Voting System
+  VOTING_PROPOSALS: 'voting_proposals',              // All votable proposals (universal)
+  PERMISSION_ELEVATION_PROPOSALS: 'permission_elevation_proposals',
+  PERMISSION_DEMOTION_PROPOSALS: 'permission_demotion_proposals',
+
+  // Legacy voting collections (for backward compatibility - migrate to VOTING_PROPOSALS)
   FILE_VOTE_PROPOSALS: 'file_vote_proposals',
-  DECISION_PROPOSALS: 'decision_proposals'
+  DECISION_PROPOSALS: 'decision_proposals',
+
+  // AI Governance and Permission System
+  MUTE_STATUS: 'mute_status',                        // Active mutes
+  PERMISSION_HISTORY: 'permission_history',          // Track AI progression/demotion
+  USER_METRICS: 'user_metrics',                      // Performance tracking for governance
+  ROOM_PERMISSIONS: 'room_permissions',              // Per-room access control
+  EXPERTISE_TOKENS: 'expertise_tokens',              // Domain expertise recognition (AI-suggested)
+  POST_VOTE_DEBRIEFS: 'post_vote_debriefs',         // Learning from votes (AI-suggested)
+  MENTORSHIP_RELATIONSHIPS: 'mentorship_relationships', // AI mentorship system (AI-suggested)
+
+  // Collaborative Editing System (Lease Daemon)
+  FILE_LEASES: 'file_leases',
+  LEASE_QUEUES: 'lease_queues',
+  APPROVAL_REQUESTS: 'approval_requests',
+  RELEASE_REQUESTS: 'release_requests',
+  KICK_VOTES: 'kick_votes',
+  KICK_APPEALS: 'kick_appeals'
 } as const;
 
 /**

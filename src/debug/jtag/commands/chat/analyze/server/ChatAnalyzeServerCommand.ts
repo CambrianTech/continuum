@@ -10,6 +10,8 @@ import type {
 } from '../shared/ChatAnalyzeTypes';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
+import { RoomEntity } from '../../../../system/data/entities/RoomEntity';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import crypto from 'crypto';
 
 export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
@@ -21,12 +23,15 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
   protected async executeChatAnalyze(params: ChatAnalyzeParams): Promise<ChatAnalyzeResult> {
     const { roomId, checkDuplicates = true, checkTimestamps = true, limit = 500 } = params;
 
+    // Resolve room name to UUID if needed
+    const resolvedRoomId = await this.resolveRoom(roomId, params);
+
     // Get all messages from room
     const listResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(
       'data/list',
       {
         collection: ChatMessageEntity.collection,
-        filter: { roomId },
+        filter: { roomId: resolvedRoomId },
         orderBy: [{ field: 'timestamp', direction: 'asc' }],
         limit,
       }
@@ -175,5 +180,44 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
     }
 
     return anomalies;
+  }
+
+  /**
+   * Resolve room name or ID to actual UUID
+   * Accepts either a room name (e.g., "general") or a room UUID
+   */
+  private async resolveRoom(roomIdOrName: string, params: ChatAnalyzeParams): Promise<UUID> {
+    // Check if it already looks like a UUID
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidPattern.test(roomIdOrName)) {
+      return roomIdOrName as UUID;
+    }
+
+    // Query all rooms to find by name
+    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+      'data/list',
+      {
+        collection: RoomEntity.collection,
+        filter: {},
+        context: params.context,
+        sessionId: params.sessionId
+      }
+    );
+
+    if (!result.success || !result.items) {
+      throw new Error('Failed to query rooms');
+    }
+
+    // Find by ID or name
+    const room = result.items.find((r: RoomEntity) =>
+      r.id === roomIdOrName || r.name === roomIdOrName
+    );
+
+    if (!room) {
+      const roomNames = result.items.map((r: RoomEntity) => r.name).join(', ');
+      throw new Error(`Room not found: ${roomIdOrName}. Available rooms: ${roomNames}`);
+    }
+
+    return room.id;
   }
 }

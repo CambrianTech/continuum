@@ -88,7 +88,7 @@ export class UserEntity extends BaseEntity {
   @TextField({ index: true, unique: true })
   uniqueId!: string;
 
-  @TextField({ index: true })
+  @TextField({ index: true, description: true })
   displayName: string;
 
   @TextField({ maxLength: TEXT_LENGTH.SHORT, nullable: true })

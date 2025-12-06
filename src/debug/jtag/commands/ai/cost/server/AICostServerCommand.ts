@@ -24,8 +24,6 @@ export class AICostServerCommand extends AICostCommand {
       // Parse time range
       const { startTime, endTime } = this.parseTimeRange(params.startTime || '24h', params.endTime);
 
-      console.log(`💰 ai/cost: Querying generations from ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()}`);
-
       // Build filter with range operators (SQLite adapter supports $gte, $lte, etc.)
       const filter: Record<string, any> = {
         timestamp: {

@@ -36,8 +36,8 @@ export class SimplePlanFormulator {
       domain: task.domain
     };
 
-    console.log(`📋 [SimplePlanFormulator] Created plan for: ${plan.goal}`);
-    console.log(`   Steps: ${plan.steps.map(s => s.action).join(' → ')}`);
+    // console.log(`📋 [SimplePlanFormulator] Created plan for: ${plan.goal}`);
+    // console.log(`   Steps: ${plan.steps.map(s => s.action).join(' → ')}`);
 
     return plan;
   }

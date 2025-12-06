@@ -24,8 +24,8 @@ export class FileLoadServerCommand extends CommandBase<FileLoadParams, FileLoadR
    */
   async execute(params: JTAGPayload): Promise<FileLoadResult> {
     const loadParams = params as FileLoadParams;
-    
-    console.log(`📖 SERVER: Loading file: ${loadParams.filepath}`);
+
+    // console.log(`📖 SERVER: Loading file: ${loadParams.filepath}`);
 
     try {
       const result = await this.fileDaemon.loadFile(
