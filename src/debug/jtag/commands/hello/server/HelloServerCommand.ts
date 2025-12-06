@@ -6,7 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
-import { ValidationError } from '../../../system/core/types/ErrorTypes';
+// import { ValidationError } from '../../../system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { HelloParams, HelloResult } from '../shared/HelloTypes';
 import { createHelloResultFromParams } from '../shared/HelloTypes';
 

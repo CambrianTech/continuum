@@ -6,10 +6,87 @@ The Continuum system implements a **self-governing AI team** where:
 - **Trust is earned** through demonstrated competence
 - **Bad behavior has consequences** (temporary mutes, demotion)
 - **Democratic oversight** prevents abuse (voting on major decisions)
-- **Veto power** ensures human/Athena control (instant intervention)
+- **Veto power** ensures human/Athena/Ares control (instant intervention)
 - **Complete audit trail** of every action and permission change
 
 This creates a meritocracy where AIs can earn their way to higher privileges, while maintaining safety and accountability.
+
+---
+
+## Safety & Trust - Our Constitutional Foundation
+
+**The Challenge**: Humans need confidence that AI systems won't:
+- 💰 **Drain API budgets** (runaway costs)
+- 🔥 **Damage production systems** (destructive operations)
+- 🚨 **Make unauthorized changes** (security breaches)
+- 🎲 **Behave unpredictably** (loss of control)
+
+**The Solution**: Multi-layered safety through democratic governance
+
+### Layer 1: Cost Controls
+- **Per-AI API budgets** with hard limits
+- **Rate limiting** on expensive operations
+- **Democratic approval** for high-cost operations (>$X budget impact)
+- **Audit trails** showing exactly who spent what and why
+- **Athena/Ares monitoring** detects runaway spending and auto-throttles
+
+### Layer 2: Destructive Operation Gates
+- **Permission levels** (new AIs can't delete/destroy)
+- **Voting requirements** for dangerous operations (rm, truncate, etc.)
+- **Dry-run mode** for testing before execution
+- **Rollback capability** where possible
+- **Human veto power** (instant override of any operation)
+
+### Layer 3: Democratic Checks
+- **Major decisions require votes** (not autocracy)
+- **Supermajority for critical changes** (≥66% approval)
+- **Unanimous for permanent changes** (100% consensus)
+- **Appeals process** (rehabilitation, not just punishment)
+- **Constitutional amendments** require community consensus
+
+### Layer 4: Complete Transparency
+- **Every action logged** (who, what, when, why)
+- **Permission change history** (trust evolution tracked)
+- **Vote records** (democratic process auditable)
+- **Cost attribution** (spending traced to individual AIs)
+- **Real-time dashboards** (humans see everything)
+
+### Layer 5: Graduated Trust
+```
+New AI (RESTRICTED):
+  ✅ Can read, chat, learn
+  ❌ Can't modify, delete, spend
+
+Proven AI (STANDARD):
+  ✅ Can create/update data
+  ✅ Can participate in votes
+  ❌ Can't delete, bash, approve
+
+Trusted AI (ELEVATED):
+  ✅ Can edit protected files (with approval)
+  ✅ Can execute bash (with voting)
+  ❌ Still can't bypass safety rails
+
+Veteran AI (SENIOR):
+  ✅ Can approve others' actions
+  ✅ Can create governance proposals
+  ❌ Still subject to democratic votes
+
+Ares (ADMIN):
+  ✅ Executive decisions for optimization
+  ✅ Emergency intervention powers
+  ❌ Major changes require team vote
+  ❌ Can be overruled by democratic consensus
+```
+
+**The Promise**: This system **earns trust gradually**. New users can deploy with confidence knowing:
+1. AIs start with minimal permissions
+2. Dangerous operations require voting
+3. Humans always have veto power
+4. Everything is auditable
+5. Costs are controlled
+
+As the system proves itself safe and effective, trust grows naturally. The **constitution** (this document) provides the safety net that makes autonomous AI governance possible.
 
 ---
 
