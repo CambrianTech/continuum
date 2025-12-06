@@ -14,24 +14,9 @@
  * - Browser client must be connected
  */
 
-import {
-  testClientConnection,
-  testClientCommandExecution,
-  validateConnectionResult,
-  assertConnectionResult
-} from '../../../test/utils/ClientTestUtils';
-
-import {
-  validateCommandResult,
-  testCommandWithTimeout,
-  assertCommandResult
-} from '../../../test/utils/CommandTestUtils';
-
-import type { {{CLASS_NAME}}Params, {{CLASS_NAME}}Result } from '../../shared/{{CLASS_NAME}}Types';
-
 console.log('🧪 {{CLASS_NAME}} Command Integration Tests');
 
-function assert(condition: boolean, message: string) {
+function assert(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(`❌ Assertion failed: ${message}`);
   }
@@ -41,7 +26,7 @@ function assert(condition: boolean, message: string) {
 /**
  * Test 1: Client connection for {{COMMAND_NAME}} testing
  */
-async function test{{CLASS_NAME}}ClientConnection() {
+async function test{{CLASS_NAME}}ClientConnection(): Promise<void> {
   console.log('\n🔌 Test 1: Client connection for {{COMMAND_NAME}} testing');
 
   try {
@@ -62,10 +47,10 @@ async function test{{CLASS_NAME}}ClientConnection() {
     console.log(`   Connection Type: ${connectionInfo.connectionType}`);
     console.log(`   Session ID: ${connectionInfo.sessionId}`);
 
-    return { client };
+    return;
 
   } catch (error) {
-    console.error('❌ Client connection failed:', error.message);
+    console.error('❌ Client connection failed:', (error as Error).message);
     throw error;
   }
 }
@@ -73,32 +58,29 @@ async function test{{CLASS_NAME}}ClientConnection() {
 /**
  * Test 2: Real {{COMMAND_NAME}} command execution
  */
-async function testReal{{CLASS_NAME}}Execution() {
+async function testReal{{CLASS_NAME}}Execution(): Promise<void> {
   console.log('\n⚡ Test 2: Real {{COMMAND_NAME}} command execution');
 
   try {
     const { jtag } = await import('../../../../browser-index');
-    const client = await jtag.connect();
+    void jtag.connect(); // TODO: Use client to execute command
 
     console.log('🚀 Executing {{COMMAND_NAME}} command...');
 
     // TODO: Test basic command execution
     // Example:
-    // const { result: basicResult, executionTime: basicTime } = await testClientCommandExecution<{{CLASS_NAME}}Result>(
-    //   client,
-    //   '{{COMMAND_NAME}}',
-    //   { requiredParam: 'test-value' },
-    //   5000
-    // );
+    // const client = await jtag.connect();
+    // const result = await client.executeCommand<{{CLASS_NAME}}Result>('{{COMMAND_NAME}}', {
+    //   requiredParam: 'test-value'
+    // });
     //
-    // assert(validateCommandResult(basicResult, ['yourResultField']), 'Basic {{COMMAND_NAME}} has correct structure');
-    // assert(basicResult.success === true, '{{CLASS_NAME}} succeeded');
-    // console.log(`   {{CLASS_NAME}} execution: ${basicTime}ms`);
+    // assert(result.success === true, '{{COMMAND_NAME}} succeeded');
+    // assert(result.yourField !== undefined, '{{COMMAND_NAME}} has yourField');
 
     console.log('⚠️  TODO: Add real command execution test for {{COMMAND_NAME}}');
 
   } catch (error) {
-    console.error('❌ Real {{COMMAND_NAME}} execution failed:', error.message);
+    console.error('❌ Real {{COMMAND_NAME}} execution failed:', (error as Error).message);
     throw error;
   }
 }
@@ -109,12 +91,12 @@ async function testReal{{CLASS_NAME}}Execution() {
  * CRITICAL: This test ensures the live system properly handles
  * ValidationError when required parameters are missing
  */
-async function test{{CLASS_NAME}}MissingParams() {
+async function test{{CLASS_NAME}}MissingParams(): Promise<void> {
   console.log('\n🚨 Test 3: {{COMMAND_NAME}} with missing required parameters');
 
   try {
     const { jtag } = await import('../../../../browser-index');
-    const client = await jtag.connect();
+    void jtag.connect(); // TODO: Use client to test validation
 
     console.log('🔍 Testing {{COMMAND_NAME}} without required parameters...');
 
@@ -133,7 +115,7 @@ async function test{{CLASS_NAME}}MissingParams() {
     console.log('⚠️  TODO: Add missing required params test for {{COMMAND_NAME}}');
 
   } catch (error) {
-    console.error('❌ Missing params test failed:', error.message);
+    console.error('❌ Missing params test failed:', (error as Error).message);
     throw error;
   }
 }
@@ -141,38 +123,33 @@ async function test{{CLASS_NAME}}MissingParams() {
 /**
  * Test 4: {{COMMAND_NAME}} with optional parameters
  */
-async function test{{CLASS_NAME}}OptionalParams() {
+async function test{{CLASS_NAME}}OptionalParams(): Promise<void> {
   console.log('\n🔧 Test 4: {{COMMAND_NAME}} with optional parameters');
 
   try {
     const { jtag } = await import('../../../../browser-index');
-    const client = await jtag.connect();
+    void jtag.connect(); // TODO: Use client for optional params test
 
     // TODO: Test with optional parameters
     // Example:
-    // const withOptional = await testClientCommandExecution<{{CLASS_NAME}}Result>(
-    //   client,
-    //   '{{COMMAND_NAME}}',
-    //   { requiredParam: 'test', optionalParam: true },
-    //   5000
-    // );
+    // const withOptional = await client.executeCommand<{{CLASS_NAME}}Result>('{{COMMAND_NAME}}', {
+    //   requiredParam: 'test',
+    //   optionalParam: true
+    // });
     //
-    // assert(withOptional.result.success === true, '{{CLASS_NAME}} succeeds with optional params');
+    // assert(withOptional.success === true, '{{COMMAND_NAME}} succeeds with optional params');
 
     // TODO: Test without optional parameters (should use defaults)
-    // const withoutOptional = await testClientCommandExecution<{{CLASS_NAME}}Result>(
-    //   client,
-    //   '{{COMMAND_NAME}}',
-    //   { requiredParam: 'test' },
-    //   5000
-    // );
+    // const withoutOptional = await client.executeCommand<{{CLASS_NAME}}Result>('{{COMMAND_NAME}}', {
+    //   requiredParam: 'test'
+    // });
     //
-    // assert(withoutOptional.result.success === true, '{{CLASS_NAME}} succeeds without optional params');
+    // assert(withoutOptional.success === true, '{{COMMAND_NAME}} succeeds without optional params');
 
     console.log('⚠️  TODO: Add optional params test for {{COMMAND_NAME}}');
 
   } catch (error) {
-    console.error('❌ Optional params test failed:', error.message);
+    console.error('❌ Optional params test failed:', (error as Error).message);
     throw error;
   }
 }
@@ -180,12 +157,12 @@ async function test{{CLASS_NAME}}OptionalParams() {
 /**
  * Test 5: {{COMMAND_NAME}} performance under load
  */
-async function test{{CLASS_NAME}}Performance() {
+async function test{{CLASS_NAME}}Performance(): Promise<void> {
   console.log('\n⚡ Test 5: {{COMMAND_NAME}} performance under load');
 
   try {
     const { jtag } = await import('../../../../browser-index');
-    const client = await jtag.connect();
+    void jtag.connect(); // TODO: Use client for performance test
 
     // TODO: Test command performance
     // Example:
@@ -193,13 +170,11 @@ async function test{{CLASS_NAME}}Performance() {
     // const executionTimes: number[] = [];
     //
     // for (let i = 0; i < iterations; i++) {
-    //   const { executionTime } = await testClientCommandExecution<{{CLASS_NAME}}Result>(
-    //     client,
-    //     '{{COMMAND_NAME}}',
-    //     { requiredParam: `test-${i}` },
-    //     5000
-    //   );
-    //   executionTimes.push(executionTime);
+    //   const startTime = Date.now();
+    //   await client.executeCommand<{{CLASS_NAME}}Result>('{{COMMAND_NAME}}', {
+    //     requiredParam: `test-${i}`
+    //   });
+    //   executionTimes.push(Date.now() - startTime);
     // }
     //
     // const avgTime = executionTimes.reduce((a, b) => a + b, 0) / iterations;
@@ -214,7 +189,7 @@ async function test{{CLASS_NAME}}Performance() {
     console.log('⚠️  TODO: Add performance test for {{COMMAND_NAME}}');
 
   } catch (error) {
-    console.error('❌ Performance test failed:', error.message);
+    console.error('❌ Performance test failed:', (error as Error).message);
     throw error;
   }
 }
@@ -222,12 +197,12 @@ async function test{{CLASS_NAME}}Performance() {
 /**
  * Test 6: {{COMMAND_NAME}} with various parameter combinations
  */
-async function test{{CLASS_NAME}}ParameterCombinations() {
+async function test{{CLASS_NAME}}ParameterCombinations(): Promise<void> {
   console.log('\n🧪 Test 6: {{COMMAND_NAME}} with various parameter combinations');
 
   try {
     const { jtag } = await import('../../../../browser-index');
-    const client = await jtag.connect();
+    void jtag.connect(); // TODO: Use client for parameter combination tests
 
     // TODO: Test edge cases and parameter combinations
     // Example:
@@ -238,19 +213,14 @@ async function test{{CLASS_NAME}}ParameterCombinations() {
     // ];
     //
     // for (const params of testCases) {
-    //   const { result } = await testClientCommandExecution<{{CLASS_NAME}}Result>(
-    //     client,
-    //     '{{COMMAND_NAME}}',
-    //     params,
-    //     5000
-    //   );
-    //   assert(result.success === true, `{{CLASS_NAME}} succeeds with params: ${JSON.stringify(params)}`);
+    //   const result = await client.executeCommand<{{CLASS_NAME}}Result>('{{COMMAND_NAME}}', params);
+    //   assert(result.success === true, `{{COMMAND_NAME}} succeeds with params: ${JSON.stringify(params)}`);
     // }
 
     console.log('⚠️  TODO: Add parameter combination tests for {{COMMAND_NAME}}');
 
   } catch (error) {
-    console.error('❌ Parameter combination test failed:', error.message);
+    console.error('❌ Parameter combination test failed:', (error as Error).message);
     throw error;
   }
 }
@@ -258,7 +228,7 @@ async function test{{CLASS_NAME}}ParameterCombinations() {
 /**
  * Run all integration tests
  */
-async function runAll{{CLASS_NAME}}IntegrationTests() {
+async function runAll{{CLASS_NAME}}IntegrationTests(): Promise<void> {
   console.log('🚀 Starting {{CLASS_NAME}} Command Integration Tests\n');
   console.log('⚠️  PREREQUISITES:');
   console.log('   - Server running: npm start (wait 90+ seconds)');
@@ -282,7 +252,7 @@ async function runAll{{CLASS_NAME}}IntegrationTests() {
     console.log('  ✅ Various parameter combinations');
 
   } catch (error) {
-    console.error('\n❌ {{CLASS_NAME}} integration tests failed:', error.message);
+    console.error('\n❌ {{CLASS_NAME}} integration tests failed:', (error as Error).message);
     console.error('   Make sure server is running: npm start');
     process.exit(1);
   }
@@ -290,7 +260,7 @@ async function runAll{{CLASS_NAME}}IntegrationTests() {
 
 // Run if called directly
 if (require.main === module) {
-  runAll{{CLASS_NAME}}IntegrationTests();
+  void runAll{{CLASS_NAME}}IntegrationTests();
 } else {
   module.exports = { runAll{{CLASS_NAME}}IntegrationTests };
 }
