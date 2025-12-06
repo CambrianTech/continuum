@@ -1,36 +1,11 @@
 /**
- * TokenBuilder - Helper functions to generate token values for template replacement
+ * TokenBuilder - Generic string manipulation utilities
  *
- * Provides utilities to convert user input into properly formatted token values.
+ * Provides case conversion and formatting utilities independent of domain (commands/daemons/widgets).
  */
 
-export interface CommandSpec {
-  name: string;           // e.g., "docs/read" or "Screenshot"
-  description: string;    // Human-readable description
-  params: ParamSpec[];    // Parameter definitions
-  results: ResultSpec[];  // Result field definitions
-  examples?: ExampleSpec[];
-  accessLevel?: 'ai-safe' | 'internal' | 'system' | 'dangerous';
-}
-
-export interface ParamSpec {
-  name: string;
-  type: string;
-  optional?: boolean;
-  description?: string;
-}
-
-export interface ResultSpec {
-  name: string;
-  type: string;
-  description?: string;
-}
-
-export interface ExampleSpec {
-  description: string;
-  command: string;
-  expectedResult?: string;
-}
+import type { CommandSpec, ParamSpec, ResultSpec, ExampleSpec } from './CommandNaming';
+import { CommandNaming } from './CommandNaming';
 
 export class TokenBuilder {
   /**
@@ -140,7 +115,7 @@ export class TokenBuilder {
   /**
    * Build example usage for README
    */
-  static buildExamples(examples: ExampleSpec[]): string {
+  static buildExamples(examples: ExampleSpec[] | undefined): string {
     if (!examples || examples.length === 0) {
       return '```bash\n./jtag command-name\n```';
     }
@@ -187,18 +162,161 @@ export class TokenBuilder {
   }
 
   /**
+   * Build factory function data parameter type for createParams
+   * Explicitly types required fields without ? and optional fields with ?
+   *
+   * @example
+   * buildFactoryDataType([
+   *   { name: 'selector', type: 'string', optional: false },
+   *   { name: 'timeout', type: 'number', optional: true }
+   * ])
+   * => "{\n    selector: string;\n    timeout?: number;\n  }"
+   */
+  static buildFactoryDataType(params: ParamSpec[]): string {
+    if (params.length === 0) {
+      return '{}';
+    }
+
+    const fields = params
+      .map(param => {
+        const optional = param.optional ? '?' : '';
+        const comment = param.description ? `    // ${param.description}\n` : '';
+        return `${comment}    ${param.name}${optional}: ${param.type};`;
+      })
+      .join('\n');
+
+    return `{\n${fields}\n  }`;
+  }
+
+  /**
+   * Build default value assignments for optional parameters in factory functions
+   *
+   * @example
+   * buildFactoryDefaults([
+   *   { name: 'timeout', type: 'number', optional: true },
+   *   { name: 'button', type: "'left' | 'right'", optional: true }
+   * ])
+   * => "  timeout: data.timeout ?? 30000,\n  button: data.button ?? 'left',"
+   */
+  static buildFactoryDefaults(params: ParamSpec[]): string {
+    const optionalParams = params.filter(p => p.optional);
+
+    if (optionalParams.length === 0) {
+      return '';
+    }
+
+    return optionalParams
+      .map(param => {
+        // Generate sensible defaults based on type
+        let defaultValue: string;
+        if (param.type === 'boolean') {
+          defaultValue = 'false';
+        } else if (param.type === 'number') {
+          defaultValue = '0';
+        } else if (param.type === 'string') {
+          defaultValue = "''";
+        } else {
+          defaultValue = 'undefined';
+        }
+
+        return `  ${param.name}: data.${param.name} ?? ${defaultValue},`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * Build factory function data parameter type for createResult
+   * Result fields are typically more flexible (success required, most others optional)
+   */
+  static buildResultFactoryDataType(results: ResultSpec[]): string {
+    // success is always required in result factories
+    const fields = ['    success: boolean;'];
+
+    // All other result fields are typically optional (for error cases)
+    results.forEach(result => {
+      const comment = result.description ? `    // ${result.description}\n` : '';
+      fields.push(`${comment}    ${result.name}?: ${result.type};`);
+    });
+
+    // error is always optional
+    fields.push('    error?: JTAGError;');
+
+    return `{\n${fields.join('\n')}\n  }`;
+  }
+
+  /**
+   * Build default value assignments for result fields in factory functions
+   */
+  static buildResultFactoryDefaults(results: ResultSpec[]): string {
+    if (results.length === 0) {
+      return '';
+    }
+
+    return results
+      .map(result => {
+        // Generate sensible defaults based on type
+        let defaultValue: string;
+        if (result.type === 'boolean') {
+          defaultValue = 'false';
+        } else if (result.type === 'number') {
+          defaultValue = '0';
+        } else if (result.type === 'string') {
+          defaultValue = "''";
+        } else {
+          defaultValue = 'undefined';
+        }
+
+        return `  ${result.name}: data.${result.name} ?? ${defaultValue},`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * Build example result field assignments for server template
+   * Generates placeholder values based on result field types
+   */
+  static buildResultFieldExamples(results: ResultSpec[]): string {
+    if (results.length === 0) {
+      return '// No additional result fields needed';
+    }
+
+    return results
+      .map(result => {
+        let exampleValue: string;
+
+        if (result.type === 'string') {
+          exampleValue = `'TODO: ${result.description || result.name}'`;
+        } else if (result.type === 'number') {
+          exampleValue = result.name.toLowerCase().includes('time') ? 'Date.now()' : '0';
+        } else if (result.type === 'boolean') {
+          exampleValue = 'true';
+        } else {
+          exampleValue = `{} /* TODO: ${result.type} */`;
+        }
+
+        const comment = result.description ? ` // ${result.description}` : '';
+        return `      ${result.name}: ${exampleValue},${comment}`;
+      })
+      .join('\n');
+  }
+
+  /**
    * Build all tokens for a command from specification
+   * Uses CommandNaming for command-specific naming conventions
    */
   static buildAllTokens(spec: CommandSpec): Record<string, string> {
-    const className = this.toClassName(spec.name);
+    const naming = new CommandNaming(spec);
     const commandName = this.toCommandName(spec.name);
-    const commandPath = spec.name.toLowerCase();
 
     return {
       COMMAND_NAME: commandName,
       DESCRIPTION: spec.description,
-      CLASS_NAME: className,
-      COMMAND_PATH: commandPath,
+      CLASS_NAME: naming.baseName,
+      PARAMS_TYPE: naming.paramsType,
+      RESULT_TYPE: naming.resultType,
+      SERVER_CLASS: naming.serverClass,
+      BROWSER_CLASS: naming.browserClass,
+      COMMAND_PATH: spec.name.toLowerCase(),
       PARAM_FIELDS: this.buildParamFields(spec.params),
       RESULT_FIELDS: this.buildResultFields(spec.results),
       PARAM_DOCS: this.buildParamDocs(spec.params),
@@ -206,7 +324,13 @@ export class TokenBuilder {
       EXAMPLES: this.buildExamples(spec.examples),
       EXAMPLE_ARGS: this.buildExampleArgs(spec.params),
       ACCESS_LEVEL: spec.accessLevel || 'internal',
-      ACCESS_LEVEL_DESCRIPTION: this.getAccessLevelDescription(spec.accessLevel || 'internal')
+      ACCESS_LEVEL_DESCRIPTION: this.getAccessLevelDescription(spec.accessLevel || 'internal'),
+      IMPLEMENTATION: naming.implementation,
+      FACTORY_DATA_TYPE: this.buildFactoryDataType(spec.params),
+      FACTORY_DEFAULTS: this.buildFactoryDefaults(spec.params),
+      RESULT_FACTORY_DATA_TYPE: this.buildResultFactoryDataType(spec.results),
+      RESULT_FACTORY_DEFAULTS: this.buildResultFactoryDefaults(spec.results),
+      RESULT_FIELD_EXAMPLES: this.buildResultFieldExamples(spec.results)
     };
   }
 }

@@ -114,6 +114,108 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 ---
 
+## 🔍 ANTI-PATTERN DETECTION: PROTECT THE MODULAR ARCHITECTURE
+
+**CRITICAL TASK: Always search for and eliminate these anti-patterns that violate the modular command architecture**
+
+### The Modular Architecture Pattern
+
+The command system is built on these principles:
+- **Self-contained modules**: Each command is complete (types, implementation, docs, schema)
+- **Dynamic discovery**: File system scanning discovers commands at runtime
+- **Zero coupling**: Adding/removing commands can't break other commands
+- **Schema-driven**: TypeScript interfaces ARE the schema (no separate definitions)
+- **Self-documenting**: Generated docs come from source of truth
+
+### Anti-Patterns That Break This (FORBIDDEN)
+
+1. **Switch Statements on Command Names**
+   ```typescript
+   // ❌ FORBIDDEN - Hard-coded command list
+   switch (commandName) {
+     case 'ping': return PingCommand;
+     case 'screenshot': return ScreenshotCommand;
+     // ...
+   }
+   ```
+
+2. **Central Command Registries**
+   ```typescript
+   // ❌ FORBIDDEN - Central list that must be updated
+   export const COMMANDS = {
+     ping: PingCommand,
+     screenshot: ScreenshotCommand,
+     // Adding a command requires editing this file
+   };
+   ```
+
+3. **Hard-Coded Command Arrays/Enums**
+   ```typescript
+   // ❌ FORBIDDEN - Enumeration of all commands
+   export enum CommandType {
+     PING = 'ping',
+     SCREENSHOT = 'screenshot',
+     // ...
+   }
+   ```
+
+4. **Type Unions Listing Specific Commands**
+   ```typescript
+   // ❌ FORBIDDEN - Type system depends on knowing all commands
+   type CommandName = 'ping' | 'screenshot' | 'hello' | ...;
+   ```
+
+### How to Search for Anti-Patterns
+
+Run these searches regularly to find violations:
+
+```bash
+# Search for switch statements on command/event names
+grep -r "switch.*command" --include="*.ts" | grep -v node_modules
+grep -r "case.*'.*':" --include="*.ts" | grep -v node_modules | grep -v test
+
+# Search for central registries
+grep -r "COMMANDS\s*=" --include="*.ts" | grep -v node_modules
+grep -r "CommandRegistry" --include="*.ts" | grep -v "CommandDaemon"
+
+# Search for command enums
+grep -r "enum.*Command" --include="*.ts" | grep -v node_modules
+
+# Search for hard-coded command type unions
+grep -r "type.*Command.*=.*'.*'.*|" --include="*.ts" | grep -v node_modules
+```
+
+### The Correct Pattern (Dynamic Discovery)
+
+```typescript
+// ✅ CORRECT - Dynamic discovery via file system
+const commandDirs = fs.readdirSync('./commands');
+for (const dir of commandDirs) {
+  const CommandClass = await import(`./commands/${dir}/server/...`);
+  // Register dynamically without knowing command names in advance
+}
+```
+
+### Why This Matters
+
+**Each violation creates technical debt:**
+- Adding a command requires editing multiple files (coupling)
+- Type system breaks when commands change
+- Documentation falls out of sync
+- Central registries become bottlenecks
+- The self-contained module pattern is violated
+
+**When you find violations:**
+1. Document the location (file path, line numbers)
+2. Refactor to use dynamic discovery
+3. Remove the hard-coded list/switch/enum
+4. Verify commands still work
+5. Update tests if needed
+
+**This is not optional** - protecting the modular architecture is critical to the system's maintainability.
+
+---
+
 ## 🔧 TYPE SAFETY (RUST-LIKE)
 
 **NEVER use `any` or `unknown` - import correct types instead**

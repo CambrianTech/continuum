@@ -2,7 +2,7 @@
  * FileScanner - File pattern matching and glob expansion
  *
  * Extracted from generate-structure.ts for Phase 2 refactoring.
- * Handles glob patterns like "commands/**/shared/*Types.ts"
+ * Handles glob patterns like "commands/star-star/shared/star-Types.ts"
  */
 
 import { existsSync, readdirSync, statSync } from 'fs';

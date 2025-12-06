@@ -7,7 +7,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { TokenReplacer } from './TokenReplacer';
-import { TokenBuilder, type CommandSpec } from './TokenBuilder';
+import { TokenBuilder } from './TokenBuilder';
+import type { CommandSpec } from './CommandNaming';
 
 export class TemplateLoader {
   private static readonly TEMPLATE_DIR = path.join(__dirname, 'templates');
@@ -55,14 +56,22 @@ export class TemplateLoader {
    */
   static renderCommand(spec: CommandSpec): {
     sharedTypes: string;
+    browser: string;
+    server: string;
     readme: string;
+    unitTest: string;
+    integrationTest: string;
     tokens: Record<string, string>;
   } {
     const tokens = TokenBuilder.buildAllTokens(spec);
 
     return {
       sharedTypes: this.renderTemplate('command/shared-types.template.ts', tokens),
+      browser: this.renderTemplate('command/browser.template.ts', tokens),
+      server: this.renderTemplate('command/server.template.ts', tokens),
       readme: this.renderTemplate('command/README.template.md', tokens),
+      unitTest: this.renderTemplate('command/unit-test.template.ts', tokens),
+      integrationTest: this.renderTemplate('command/integration-test.template.ts', tokens),
       tokens // Return tokens for debugging
     };
   }

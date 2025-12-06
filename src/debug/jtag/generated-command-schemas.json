@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-05T23:41:41.394Z",
+  "generated": "2025-12-06T22:37:14.681Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -237,62 +237,6 @@
           "type": "number",
           "required": false,
           "description": "delay parameter"
-        }
-      }
-    },
-    {
-      "name": "test-run-suite",
-      "description": "Test Run Suite Command Types\n * Replaces shell script-based test runners with configurable JTAG commands",
-      "params": {
-        "profile": {
-          "type": "string",
-          "required": false,
-          "description": "profile parameter"
-        },
-        "tests": {
-          "type": "string",
-          "required": false,
-          "description": "tests parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "parallel": {
-          "type": "boolean",
-          "required": false,
-          "description": "parallel parameter"
-        },
-        "parallelism": {
-          "type": "number",
-          "required": false,
-          "description": "parallelism parameter"
-        },
-        "format": {
-          "type": "string",
-          "required": false,
-          "description": "format parameter"
-        },
-        "verbose": {
-          "type": "boolean",
-          "required": false,
-          "description": "verbose parameter"
-        },
-        "failFast": {
-          "type": "boolean",
-          "required": false,
-          "description": "failFast parameter"
-        },
-        "save": {
-          "type": "boolean",
-          "required": false,
-          "description": "save parameter"
-        },
-        "name": {
-          "type": "string",
-          "required": false,
-          "description": "name parameter"
         }
       }
     },
@@ -1254,6 +1198,22 @@
       }
     },
     {
+      "name": "hello",
+      "description": "Hello Command - Shared Types\n *\n * A simple greeting command for testing the generator",
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "name parameter"
+        },
+        "emoji": {
+          "type": "boolean",
+          "required": false,
+          "description": "emoji parameter"
+        }
+      }
+    },
+    {
       "name": "git-issue-list",
       "description": "git-issue-list command",
       "params": {
@@ -1775,6 +1735,22 @@
           "type": "number",
           "required": false,
           "description": "maxExamples parameter"
+        }
+      }
+    },
+    {
+      "name": "generate",
+      "description": "Generate Command - Shared Types\n *\n * Generate a new command from a CommandSpec JSON definition",
+      "params": {
+        "spec": {
+          "type": "string",
+          "required": true,
+          "description": "spec parameter"
+        },
+        "template": {
+          "type": "boolean",
+          "required": false,
+          "description": "template parameter"
         }
       }
     },

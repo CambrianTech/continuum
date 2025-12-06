@@ -56,8 +56,13 @@
  * ============================================================================
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
-import { join, relative } from 'path';
+import { readFileSync } from 'fs';
+import { relative } from 'path';
+import { FileScanner } from './core/FileScanner';
+import { EntryExtractor } from './core/EntryExtractor';
+import type { EntryInfo, NameExtractor } from './core/EntryExtractor';
+import { RegistryBuilder } from './core/RegistryBuilder';
+import type { RegistryConfig, EntryTypeConfig } from './core/RegistryBuilder';
 
 // ============================================================================
 // UNIVERSAL MODULE STRUCTURE SCHEMA
@@ -287,10 +292,16 @@ interface GeneratedEntry {
 class StructureGenerator {
   private config: GeneratorConfig;
   private rootPath: string;
+  private fileScanner: FileScanner;
+  private entryExtractor: EntryExtractor;
+  private registryBuilder: RegistryBuilder;
 
   constructor(rootPath: string, config?: GeneratorConfig) {
     this.rootPath = rootPath;
     this.config = config ?? STRUCTURE_CONFIG;
+    this.fileScanner = new FileScanner(rootPath);
+    this.entryExtractor = new EntryExtractor(rootPath);
+    this.registryBuilder = new RegistryBuilder(rootPath);
   }
 
   /**
@@ -361,87 +372,6 @@ class StructureGenerator {
     );
   }
 
-  private isExcluded(filePath: string, excludePatterns: string[]): boolean {
-    const relativePath = relative(this.rootPath, filePath).replace(/\\/g, '/');
-    return excludePatterns.some(pattern => this.matchesGlobPattern(relativePath, pattern));
-  }
-
-  /**
-   * Efficient glob pattern matching
-   */
-  private matchesGlobPattern(filePath: string, pattern: string): boolean {
-    // Convert glob pattern to regex - be more careful about order
-    const regexPattern = pattern
-      .replace(/\./g, '\\.')            // Escape dots first
-      .replace(/\*\*/g, '§DOUBLESTAR§')  // Temporarily replace ** to avoid conflicts
-      .replace(/\*/g, '[^/]*')          // * matches within a segment  
-      .replace(/§DOUBLESTAR§/g, '.*');  // ** matches any path segments
-    
-    const regex = new RegExp(`^${regexPattern}$`);
-    return regex.test(filePath);
-  }
-
-  private findFiles(patterns: string[], excludePatterns: string[]): string[] {
-    return patterns
-      .flatMap(pattern => this.expandPattern(pattern.split('/'), this.rootPath))
-      .filter(path => existsSync(path) && !this.isExcluded(path, excludePatterns))
-      .sort();
-  }
-
-  private expandPattern(patternParts: string[], basePath: string, index = 0): string[] {
-    if (index >= patternParts.length) return [basePath];
-    
-    const part = patternParts[index];
-    
-    const safeReadDir = (path: string): string[] => {
-      try { return readdirSync(path); } catch { return []; }
-    };
-    
-    const safeIsDirectory = (path: string): boolean => {
-      try { return statSync(path).isDirectory(); } catch { return false; }
-    };
-    
-    const safeIsFile = (path: string): boolean => {
-      try { return statSync(path).isFile(); } catch { return false; }
-    };
-    
-    // Handle different pattern types
-    if (part === '**') {
-      return [
-        // Zero directories matched - continue from current directory
-        ...this.expandPattern(patternParts, basePath, index + 1),
-        // Recursively descend into subdirectories
-        ...safeReadDir(basePath)
-          .map(entry => join(basePath, entry))
-          .filter(safeIsDirectory)
-          .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index))
-      ];
-    }
-    
-    if (part === '*') {
-      return safeReadDir(basePath)
-        .map(entry => join(basePath, entry))
-        .filter(safeIsDirectory)
-        .flatMap(fullPath => this.expandPattern(patternParts, fullPath, index + 1));
-    }
-    
-    if (part.includes('*')) {
-      return safeReadDir(basePath)
-        .filter(entry => this.matchesPattern(entry, part))
-        .map(entry => join(basePath, entry))
-        .filter(safeIsFile);
-    }
-    
-    // Literal path component
-    return this.expandPattern(patternParts, join(basePath, part), index + 1);
-  }
-
-  private matchesPattern(filename: string, pattern: string): boolean {
-    // Simple pattern matching - convert * to regex
-    const regexPattern = pattern.replace(/\*/g, '.*');
-    const regex = new RegExp(`^${regexPattern}$`);
-    return regex.test(filename);
-  }
 
   /**
    * Check for duplicate names in entries and warn
@@ -470,122 +400,6 @@ class StructureGenerator {
     return entries;
   }
 
-  /**
-   * Generic entry extraction with type-specific name extraction
-   */
-  private extractEntryInfo<T extends { name: string; className: string; importPath: string }>(
-    filePath: string, 
-    outputPath: string,
-    nameExtractor: (filePath: string, className: string) => string,
-    type: string
-  ): T | null {
-    try {
-      const content = readFileSync(filePath, 'utf8');
-      const filename = filePath.split('/').pop()!;
-      const className = filename.replace('.ts', '');
-      
-      // Check if file exports the expected class
-      const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
-      if (!exportPattern.test(content)) {
-        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
-        return null;
-      }
-      
-      // Extract name using provided strategy
-      const name = nameExtractor(filePath, className);
-      
-      // Calculate proper relative import path
-      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, '');
-      const relativeImportPath = relative(outputDir, filePath).replace('.ts', '').replace(/\\/g, '/');
-      
-      return {
-        name,
-        className,
-        importPath: `./${relativeImportPath}`
-      } as T;
-    } catch (e) {
-      console.warn(`Ignoring ${type} info from ${filePath}:`, e);
-      return null;
-    }
-  }
-
-
-  /**
-   * Generate structure file using new configuration system
-   */
-  private generateStructureFileFromConfig(
-    target: EnvironmentTarget,
-    allEntries: Map<string, GeneratedEntry[]>
-  ): void {
-    const envCap = target.environment.charAt(0).toUpperCase() + target.environment.slice(1);
-    const envUpper = target.environment.toUpperCase();
-    
-    const sections: string[] = [];
-    
-    // Header
-    const entryTypeCounts = Array.from(allEntries.entries())
-      .map(([type, entries]) => `${entries.length} ${type}${entries.length !== 1 ? 's' : ''}`)
-      .join(' and ');
-    
-    sections.push(`/**
- * ${envCap} Structure Registry - Auto-generated on ${new Date().toISOString()}
- * 
- * Contains ${entryTypeCounts}.
- * Generated by scripts/generate-structure.ts - DO NOT EDIT MANUALLY
- */`);
-    
-    // Imports by entry type
-    Array.from(allEntries.entries()).forEach(([entryTypeName, entries]) => {
-      if (entries.length > 0) {
-        const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
-        sections.push(`\n// ${envCap} ${entryType?.pluralName ?? entryTypeName} Imports`);
-        sections.push(entries.map(e => `import { ${e.className} } from '${e.importPath}';`).join('\n'));
-      }
-    });
-    
-    // Type imports
-    sections.push('\n// Types');
-    for (const [typeName, importPath] of Object.entries(target.typeImports)) {
-      const outputDir = join(this.rootPath, target.outputFile).replace(/[^/]*$/, '');
-      const fullImportPath = join(this.rootPath, importPath + '.ts');
-      const relativeImportPath = relative(outputDir, fullImportPath).replace('.ts', '').replace(/\\/g, '/');
-      sections.push(`import type { ${typeName} } from './${relativeImportPath}';`);
-    }
-    
-    // Exports
-    sections.push(`\n/**\n * ${envCap} Environment Registry\n */`);
-    
-    Array.from(allEntries.entries()).forEach(([entryTypeName, entries], index) => {
-      if (entries.length > 0) {
-        const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
-        if (entryType) {
-          const arrayName = entryType.registryTemplate.arrayName.replace('{ENV}', envUpper);
-          sections.push(`export const ${arrayName}: ${this.getEntryTypeName(entryTypeName)}[] = [`);
-          
-          const entryStrings = entries.map(entry => {
-            return entryType.registryTemplate.entryTemplate
-              .replace(/\{name\}/g, entry.name)
-              .replace(/\{className\}/g, entry.className)
-              .replace(/\{importPath\}/g, entry.importPath);
-          });
-          
-          sections.push(entryStrings.join(',\n'));
-          sections.push('];');
-          
-          if (index < allEntries.size - 1) {
-            sections.push('');
-          }
-        }
-      }
-    });
-    
-    const content = sections.join('\n') + '\n';
-    const fullOutputPath = join(this.rootPath, target.outputFile);
-    writeFileSync(fullOutputPath, content, 'utf8');
-    
-    const totalEntries = Array.from(allEntries.values()).reduce((sum, entries) => sum + entries.length, 0);
-    console.log(`✅ Generated ${target.outputFile} with ${totalEntries} entries`);
-  }
 
   /**
    * Get TypeScript type name for entry type from configuration
@@ -601,7 +415,7 @@ class StructureGenerator {
   private processEntriesFromConfig(
     target: EnvironmentTarget,
     entryTypeName: string
-  ): GeneratedEntry[] {
+  ): EntryInfo[] {
     const entryType = this.config.entryTypes.find(et => et.name === entryTypeName);
     if (!entryType) {
       console.warn(`⚠️  Entry type '${entryTypeName}' not found in configuration`);
@@ -615,60 +429,22 @@ class StructureGenerator {
     }
 
     console.log(`   Searching for ${entryType.pluralName}: ${patterns.join(', ')}`);
-    
-    const files = this.findFiles(patterns, this.config.rootPatterns.exclude);
-    const uniqueFiles = Array.from(new Set(files));
-    
-    const nameExtractor = this.createNameExtractor(entryType.nameExtraction);
-    
-    const entries = uniqueFiles
-      .map(filePath => this.extractEntryFromConfig(filePath, target.outputFile, nameExtractor, entryType.name))
-      .filter((entry): entry is GeneratedEntry => entry !== null);
-    
-    const validatedEntries = this.validateUniqueNames(entries, entryType.name);
-    
-    console.log(`   Found ${validatedEntries.length} ${entryType.pluralName}: ${validatedEntries.map(e => e.name).join(', ')}`);
-    
-    return validatedEntries;
-  }
 
-  /**
-   * Extract entry info using configuration-driven approach
-   */
-  private extractEntryFromConfig(
-    filePath: string,
-    outputPath: string,
-    nameExtractor: (filePath: string, className: string) => string,
-    entryType: string
-  ): GeneratedEntry | null {
-    try {
-      const content = readFileSync(filePath, 'utf8');
-      const filename = filePath.split('/').pop()!;
-      const className = filename.replace('.ts', '');
-      
-      // Check if file exports the expected class
-      const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
-      if (!exportPattern.test(content)) {
-        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
-        return null;
-      }
-      
-      // Extract name using configured strategy  
-      const name = nameExtractor(filePath, className);
-      
-      // Calculate proper relative import path
-      const outputDir = join(this.rootPath, outputPath).replace(/[^/]*$/, '');
-      const relativeImportPath = relative(outputDir, filePath).replace('.ts', '').replace(/\\/g, '/');
-      
-      return {
-        name,
-        className,
-        importPath: `./${relativeImportPath}`
-      };
-    } catch (e) {
-      console.warn(`Ignoring ${entryType} info from ${filePath}:`, e);
-      return null;
-    }
+    // Use FileScanner for file finding
+    const files = this.fileScanner.findFiles(patterns, this.config.rootPatterns.exclude);
+    const uniqueFiles = Array.from(new Set(files));
+
+    // Create name extractor function
+    const nameExtractor = this.createNameExtractor(entryType.nameExtraction);
+
+    // Use EntryExtractor for entry extraction
+    const entries = this.entryExtractor.extractMultiple(uniqueFiles, target.outputFile, nameExtractor, entryType.name);
+
+    const validatedEntries = this.validateUniqueNames(entries, entryType.name);
+
+    console.log(`   Found ${validatedEntries.length} ${entryType.pluralName}: ${validatedEntries.map(e => e.name).join(', ')}`);
+
+    return validatedEntries;
   }
 
 
@@ -678,22 +454,36 @@ class StructureGenerator {
     console.log(`📍 Root path: ${this.rootPath}`);
     console.log(`📋 Entry types: ${this.config.entryTypes.map(et => et.name).join(', ')}`);
     console.log(`📂 Targets: ${this.config.targets.map(t => `${t.environment} (${t.outputFile})`).join(', ')}`);
-    
+
     for (const target of this.config.targets) {
       console.log(`\n🔍 Processing ${target.environment} target...`);
-      
+
       // Process all configured entry types for this target
-      const allEntries = new Map<string, GeneratedEntry[]>();
-      
+      const allEntries = new Map<string, EntryInfo[]>();
+
       for (const entryTypeName of target.entryTypes) {
         const entries = this.processEntriesFromConfig(target, entryTypeName);
         allEntries.set(entryTypeName, entries);
       }
-      
-      // Generate structure file using new configuration-driven approach
-      this.generateStructureFileFromConfig(target, allEntries);
+
+      // Build RegistryConfig for RegistryBuilder
+      const registryConfig: RegistryConfig = {
+        environment: target.environment,
+        outputFile: target.outputFile,
+        typeImports: target.typeImports,
+        entryTypes: this.config.entryTypes.map(et => ({
+          name: et.name,
+          pluralName: et.pluralName,
+          typeScriptTypeName: et.typeScriptTypeName,
+          arrayName: et.registryTemplate.arrayName,
+          entryTemplate: et.registryTemplate.entryTemplate
+        }))
+      };
+
+      // Use RegistryBuilder to generate the registry file
+      this.registryBuilder.generate(registryConfig, allEntries);
     }
-    
+
     console.log('\n🎉 Structure generation complete!');
   }
 }

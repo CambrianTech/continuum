@@ -1,6 +1,6 @@
-# {{COMMAND_NAME}} Command
+# Hello Command
 
-{{DESCRIPTION}}
+A simple greeting command for testing the generator
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@
 From the command line using the jtag CLI:
 
 ```bash
-./jtag {{COMMAND_PATH}} {{EXAMPLE_ARGS}}
+./jtag hello --name=<value>
 ```
 
 ### Tool Usage
@@ -34,24 +34,43 @@ From Persona tools or programmatic access using `Commands.execute()`:
 ```typescript
 import { Commands } from '@system/core/shared/Commands';
 
-const result = await Commands.execute('{{COMMAND_PATH}}', {
+const result = await Commands.execute('hello', {
   // your parameters here
 });
 ```
 
 ## Parameters
 
-{{PARAM_DOCS}}
+- **name** (required): `string` - The name to greet
+- **emoji** (optional): `boolean` - Add emoji to the greeting
 
 ## Result
 
-Returns `{{CLASS_NAME}}Result` with:
+Returns `HelloResult` with:
 
-{{RESULT_DOCS}}
+Returns CommandResult with:
+- **greeting**: `string` - The generated greeting message
+- **timestamp**: `number` - When the greeting was generated
 
 ## Examples
 
-{{EXAMPLES}}
+### Basic greeting
+
+```bash
+./jtag hello --name="World"
+```
+
+**Expected result:**
+{ greeting: "Hello, World!", timestamp: 1733520000000 }
+
+### Greeting with emoji
+
+```bash
+./jtag hello --name="Claude" --emoji=true
+```
+
+**Expected result:**
+{ greeting: "Hello, Claude! 👋", timestamp: 1733520000000 }
 
 ## Getting Help
 
@@ -61,12 +80,12 @@ Get detailed usage information for this command:
 
 **CLI:**
 ```bash
-./jtag help {{COMMAND_PATH}}
+./jtag help hello
 ```
 
 **Tool:**
 ```typescript
-// Use your help tool with command name '{{COMMAND_PATH}}'
+// Use your help tool with command name 'hello'
 ```
 
 ### Using the README Tool
@@ -75,12 +94,12 @@ Access this README programmatically:
 
 **CLI:**
 ```bash
-./jtag readme {{COMMAND_PATH}}
+./jtag readme hello
 ```
 
 **Tool:**
 ```typescript
-// Use your readme tool with command name '{{COMMAND_PATH}}'
+// Use your readme tool with command name 'hello'
 ```
 
 ## Testing
@@ -91,7 +110,7 @@ Test command logic in isolation using mock dependencies:
 
 ```bash
 # Run unit tests (no server required)
-npx tsx commands/{{COMMAND_NAME}}/test/unit/{{CLASS_NAME}}Command.test.ts
+npx tsx commands/Hello/test/unit/HelloCommand.test.ts
 ```
 
 **What's tested:**
@@ -118,7 +137,7 @@ Test command with real client connections and system integration:
 npm start  # Wait 90+ seconds for deployment
 
 # Run integration tests
-npx tsx commands/{{COMMAND_NAME}}/test/integration/{{CLASS_NAME}}Integration.test.ts
+npx tsx commands/Hello/test/integration/HelloIntegration.test.ts
 ```
 
 **What's tested:**
@@ -134,12 +153,12 @@ Run unit tests frequently during development (fast feedback). Run integration te
 
 ## Access Level
 
-**{{ACCESS_LEVEL}}** - {{ACCESS_LEVEL_DESCRIPTION}}
+**ai-safe** - Safe for AI personas to call autonomously
 
 ## Implementation Notes
 
-- **Shared Logic**: Core business logic in `shared/{{CLASS_NAME}}Types.ts`
-- **Browser**: Browser-specific implementation in `browser/{{CLASS_NAME}}BrowserCommand.ts`
-- **Server**: Server-specific implementation in `server/{{CLASS_NAME}}ServerCommand.ts`
-- **Unit Tests**: Isolated testing in `test/unit/{{CLASS_NAME}}Command.test.ts`
-- **Integration Tests**: System testing in `test/integration/{{CLASS_NAME}}Integration.test.ts`
+- **Shared Logic**: Core business logic in `shared/HelloTypes.ts`
+- **Browser**: Browser-specific implementation in `browser/HelloBrowserCommand.ts`
+- **Server**: Server-specific implementation in `server/HelloServerCommand.ts`
+- **Unit Tests**: Isolated testing in `test/unit/HelloCommand.test.ts`
+- **Integration Tests**: System testing in `test/integration/HelloIntegration.test.ts`

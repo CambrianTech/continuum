@@ -22,8 +22,11 @@ export interface {{CLASS_NAME}}Params extends CommandParams {
 export const create{{CLASS_NAME}}Params = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<Partial<{{CLASS_NAME}}Params>, 'context' | 'sessionId'>
-): {{CLASS_NAME}}Params => createPayload(context, sessionId, data);
+  data: {{FACTORY_DATA_TYPE}}
+): {{CLASS_NAME}}Params => createPayload(context, sessionId, {
+{{FACTORY_DEFAULTS}}
+  ...data
+});
 
 /**
  * {{COMMAND_NAME}} Command Result
@@ -40,21 +43,18 @@ export interface {{CLASS_NAME}}Result extends CommandResult {
 export const create{{CLASS_NAME}}Result = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<Partial<{{CLASS_NAME}}Result>, 'context' | 'sessionId'>
+  data: {{RESULT_FACTORY_DATA_TYPE}}
 ): {{CLASS_NAME}}Result => createPayload(context, sessionId, {
-  success: false,
+{{RESULT_FACTORY_DEFAULTS}}
   ...data
 });
 
 /**
  * Smart {{COMMAND_NAME}}-specific inheritance from params
- * Auto-inherits common fields from params
- * Only specify what changed: success, error, and result-specific fields
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
  */
 export const create{{CLASS_NAME}}ResultFromParams = (
   params: {{CLASS_NAME}}Params,
-  differences: Omit<Partial<{{CLASS_NAME}}Result>, 'context' | 'sessionId'>
-): {{CLASS_NAME}}Result => transformPayload(params, {
-  success: false,
-  ...differences
-});
+  differences: Omit<{{CLASS_NAME}}Result, 'context' | 'sessionId'>
+): {{CLASS_NAME}}Result => transformPayload(params, differences);
