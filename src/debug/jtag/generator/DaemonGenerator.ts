@@ -118,8 +118,7 @@ import { DaemonBase } from '../../../daemons/command-daemon/shared/DaemonBase';
 import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
 import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import { createSuccessResponse, createErrorResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
-import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
+import { type BaseResponsePayload, createConsoleSuccessResponse, createConsoleErrorResponse } from '../../../system/core/types/ResponseTypes';
 
 /**
  * ${className} Payload
@@ -135,27 +134,15 @@ export interface ${className}Payload extends JTAGPayload {
 export abstract class ${className} extends DaemonBase {
   public readonly subpath: string = '${this.kebabCase(spec.name)}';
 
-  // Concurrency helpers
-  protected readonly rateLimiter: RateLimiter;
-  protected readonly requestQueue: AsyncQueue<BaseResponsePayload>;
-  protected readonly semaphore: Semaphore;
-  protected readonly metrics: DaemonMetrics;
-
   constructor(context: JTAGContext, router: JTAGRouter) {
     super('${this.kebabCase(spec.name)}', context, router);
-
-    // Initialize concurrency helpers with sensible defaults
-    this.rateLimiter = new RateLimiter(100, 10); // 100 tokens, refill 10/sec
-    this.requestQueue = new AsyncQueue<BaseResponsePayload>();
-    this.semaphore = new Semaphore(10); // Max 10 concurrent operations
-    this.metrics = new DaemonMetrics();
   }
 
   /**
    * Initialize daemon
    */
   protected async initialize(): Promise<void> {
-    console.log(\`💾 \${this.toString()}: ${className} initialized\`);
+    this.log.info(\`💾 \${this.toString()}: ${className} initialized\`);
     ${spec.lifecycle?.onStart ? `await this.onStart();` : ''}
   }
 
@@ -165,48 +152,24 @@ export abstract class ${className} extends DaemonBase {
   async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const payload = message.payload as ${className}Payload;
 
-    // Rate limiting
-    if (!this.rateLimiter.tryConsume()) {
-      this.metrics.recordRateLimited();
-      return createErrorResponse(
-        'Rate limit exceeded',
-        payload.context,
-        payload.sessionId
-      );
-    }
+    try {
+      let result: BaseResponsePayload;
 
-    // Queue request for serialization
-    return this.requestQueue.enqueue(async () => {
-      const startTime = Date.now();
-      this.metrics.recordRequest();
-
-      try {
-        // Acquire semaphore permit
-        await this.semaphore.acquire();
-
-        let result: BaseResponsePayload;
-
-        switch (payload.type) {
+      switch (payload.type) {
 ${jobHandlers}
-          default:
-            result = createErrorResponse(
-              \`Unknown job type: \${payload.type}\`,
-              payload.context,
-              payload.sessionId
-            );
-        }
-
-        this.metrics.recordSuccess(Date.now() - startTime);
-        return result;
-      } catch (error: unknown) {
-        this.metrics.recordFailure();
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        return createErrorResponse(errorMessage, payload.context, payload.sessionId);
-      } finally {
-        // Release semaphore permit
-        this.semaphore.release();
+        default:
+          result = createConsoleErrorResponse(
+            \`Unknown job type: \${payload.type}\`,
+            payload.context,
+            payload.sessionId
+          );
       }
-    });
+
+      return result;
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return createConsoleErrorResponse(errorMessage, payload.context, payload.sessionId);
+    }
   }
 
   /**
@@ -238,16 +201,6 @@ ${jobMethods}
     // TODO: Implement onStop logic
   }
   ` : ''}
-
-  /**
-   * Get metrics snapshot
-   */
-  getMetrics() {
-    return this.metrics.getSnapshot(
-      this.requestQueue.size,
-      this.semaphore.maxPermits - this.semaphore.available
-    );
-  }
 }
 `;
   }
@@ -267,14 +220,14 @@ ${jobMethods}
 
   private generateJobHandler(job: DaemonJob): string {
     const paramExtraction = job.params
-      .map(p => `            const ${p.name} = payload.params?.${p.name} as ${p.type};`)
+      .map(p => `            const ${job.name}_${p.name} = payload.params?.${p.name} as ${p.type};`)
       .join('\n');
 
-    const paramList = job.params.map(p => p.name).join(', ');
+    const paramList = job.params.map(p => `${job.name}_${p.name}`).join(', ');
 
     return `          case '${job.name}':
 ${paramExtraction}
-            result = createSuccessResponse(
+            result = createConsoleSuccessResponse(
               await this.${job.name}(${paramList}),
               payload.context,
               payload.sessionId
@@ -317,14 +270,11 @@ export class ${className}Browser extends ${className} {
 import { ${className} } from '../shared/${className}';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import { Logger } from '../../../system/core/server/Logger';
 
 export class ${className}Server extends ${className} {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
-
-    // Override with file-based logger
-    (this as any).log = Logger.create('${className}Server');
+    // Logging automatically set up by DaemonBase
   }
 
   // Server-specific overrides go here

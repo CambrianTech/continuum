@@ -119,7 +119,7 @@ export class AsyncQueue<T> {
  */
 export class Semaphore {
   private permits: number;
-  private readonly maxPermits: number;
+  public readonly maxPermits: number; // Public so metrics can access it
   private waitQueue: Array<() => void> = [];
 
   constructor(maxPermits: number) {
