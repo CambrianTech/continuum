@@ -1,7 +1,147 @@
 {
-  "generated": "2025-11-30T23:08:27.471Z",
+  "generated": "2025-12-07T04:39:23.581Z",
   "version": "1.0.0",
   "commands": [
+    {
+      "name": "wall/write",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "append": {
+          "type": "boolean",
+          "required": false,
+          "description": "append parameter"
+        },
+        "author": {
+          "type": "string",
+          "required": false,
+          "description": "author parameter"
+        },
+        "commitMessage": {
+          "type": "string",
+          "required": false,
+          "description": "commitMessage parameter"
+        }
+      }
+    },
+    {
+      "name": "wall/read",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "toc": {
+          "type": "boolean",
+          "required": false,
+          "description": "toc parameter"
+        },
+        "lines": {
+          "type": "string",
+          "required": false,
+          "description": "lines parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "includeMetadata": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMetadata parameter"
+        }
+      }
+    },
+    {
+      "name": "wall/list",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        }
+      }
+    },
+    {
+      "name": "wall/history",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "wall/diff",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "from": {
+          "type": "string",
+          "required": false,
+          "description": "from parameter"
+        },
+        "to": {
+          "type": "string",
+          "required": false,
+          "description": "to parameter"
+        }
+      }
+    },
     {
       "name": "wait-for-element",
       "description": "wait-for-element command",
@@ -29,7 +169,7 @@
       }
     },
     {
-      "name": "vote/propose",
+      "name": "vote-propose",
       "description": "Vote Propose Command Types\n *\n * Creates a new file operation proposal that requires democratic approval",
       "params": {
         "filepath": {
@@ -70,7 +210,7 @@
       }
     },
     {
-      "name": "user/get-me",
+      "name": "user-get-me",
       "description": "User Get Me Command - Get current user info\n *\n * Convenience command that returns the caller's full user information.\n * No parameters needed - sessionId is auto-injected and used to look up user.",
       "params": {}
     },
@@ -101,63 +241,7 @@
       }
     },
     {
-      "name": "test/run/suite",
-      "description": "Test Run Suite Command Types\n * Replaces shell script-based test runners with configurable JTAG commands",
-      "params": {
-        "profile": {
-          "type": "string",
-          "required": false,
-          "description": "profile parameter"
-        },
-        "tests": {
-          "type": "string",
-          "required": false,
-          "description": "tests parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "parallel": {
-          "type": "boolean",
-          "required": false,
-          "description": "parallel parameter"
-        },
-        "parallelism": {
-          "type": "number",
-          "required": false,
-          "description": "parallelism parameter"
-        },
-        "format": {
-          "type": "string",
-          "required": false,
-          "description": "format parameter"
-        },
-        "verbose": {
-          "type": "boolean",
-          "required": false,
-          "description": "verbose parameter"
-        },
-        "failFast": {
-          "type": "boolean",
-          "required": false,
-          "description": "failFast parameter"
-        },
-        "save": {
-          "type": "boolean",
-          "required": false,
-          "description": "save parameter"
-        },
-        "name": {
-          "type": "string",
-          "required": false,
-          "description": "name parameter"
-        }
-      }
-    },
-    {
-      "name": "task/list",
+      "name": "task-list",
       "description": "TaskListTypes - List tasks for PersonaUsers\n *\n * Query tasks by assignee, status, domain, etc.\n * Used for monitoring AI work queues and debugging.",
       "params": {
         "assigneeId": {
@@ -199,11 +283,16 @@
           "type": "string",
           "required": false,
           "description": "sortOrder parameter"
+        },
+        "includeCompleted": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeCompleted parameter"
         }
       }
     },
     {
-      "name": "task/create",
+      "name": "task-create",
       "description": "TaskCreateTypes - Create new tasks for PersonaUsers\n *\n * Allows users to assign tasks to AI personas (or themselves).\n * Tasks can be chat responses, code reviews, analysis, or self-improvement.",
       "params": {
         "assigneeId": {
@@ -254,7 +343,7 @@
       }
     },
     {
-      "name": "task/complete",
+      "name": "task-complete",
       "description": "TaskCompleteTypes - Mark tasks as completed (or failed)\n *\n * Updates task status and records results.\n * Used by PersonaUsers to report task completion.",
       "params": {
         "taskId": {
@@ -295,7 +384,7 @@
       }
     },
     {
-      "name": "system/daemons",
+      "name": "daemons",
       "description": "Daemons Command Types\n *\n * List all registered system daemons with their status",
       "params": {
         "nameFilter": {
@@ -311,7 +400,7 @@
       }
     },
     {
-      "name": "shell/execute",
+      "name": "shell-execute",
       "description": "Shell Execute Command Types\n *\n * Provides safe shell command execution for PersonaUsers and other AI agents.\n * Commands are whitelisted and sanitized to prevent security issues.",
       "params": {
         "command": {
@@ -347,8 +436,8 @@
       }
     },
     {
-      "name": "session/get-user",
-      "description": "session/get-user command",
+      "name": "session-get-user",
+      "description": "session-get-user command",
       "params": {
         "targetSessionId": {
           "type": "string",
@@ -358,12 +447,12 @@
       }
     },
     {
-      "name": "session/get-id",
+      "name": "session-get-id",
       "description": "Session Get ID Command - Get current session ID\n *\n * Convenience command that returns the caller's session ID.\n * No parameters needed - sessionId is auto-injected by framework.",
       "params": {}
     },
     {
-      "name": "session/destroy",
+      "name": "session-destroy",
       "description": "Session Destroy Command Types\n * \n * Shared types for session destroy command across client/server contexts.",
       "params": {
         "reason": {
@@ -374,8 +463,8 @@
       }
     },
     {
-      "name": "security/setup",
-      "description": "security/setup command",
+      "name": "security-setup",
+      "description": "security-setup command",
       "params": {
         "statusOnly": {
           "type": "boolean",
@@ -517,7 +606,7 @@
       }
     },
     {
-      "name": "recipe/load",
+      "name": "recipe-load",
       "description": "Recipe Load Command Types\n *\n * Loads recipe JSON files from system/recipes/*.json into database",
       "params": {
         "recipeId": {
@@ -538,7 +627,7 @@
       }
     },
     {
-      "name": "rag/load",
+      "name": "ragload",
       "description": "RAG Load Command - Test incremental message loading with token counting\n *\n * Shows exactly which messages would be loaded for RAG context given a token budget.\n * Makes the incremental loading algorithm transparent and debuggable.",
       "params": {
         "roomId": {
@@ -579,7 +668,7 @@
       }
     },
     {
-      "name": "rag/budget",
+      "name": "ragbudget",
       "description": "RAG Budget Command - Calculate token budget for RAG context\n *\n * Shows the algorithm for calculating safe message counts based on model's context window.\n * Makes the token budget calculation transparent and debuggable.",
       "params": {
         "model": {
@@ -641,7 +730,7 @@
       }
     },
     {
-      "name": "pipe/chain",
+      "name": "pipe-chain",
       "description": "Pipe Chain Command Types\n * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
       "params": {
         "commands": {
@@ -719,7 +808,7 @@
       }
     },
     {
-      "name": "memory/update",
+      "name": "memory-update",
       "description": "memory/update - Update existing thought in WorkingMemory\n *\n * Allows refining thoughts as understanding evolves",
       "params": {
         "thoughtId": {
@@ -755,7 +844,7 @@
       }
     },
     {
-      "name": "memory/store",
+      "name": "memory-store",
       "description": "memory/store - Store a thought in WorkingMemory\n *\n * Thin command interface - validation happens in WorkingMemoryManager",
       "params": {
         "personaId": {
@@ -796,7 +885,7 @@
       }
     },
     {
-      "name": "memory/remove",
+      "name": "memory-remove",
       "description": "memory/remove - Delete thought from WorkingMemory\n *\n * Used when thoughts prove incorrect or no longer relevant",
       "params": {
         "thoughtId": {
@@ -832,7 +921,7 @@
       }
     },
     {
-      "name": "memory/recall",
+      "name": "memory-recall",
       "description": "memory/recall - Query thoughts from WorkingMemory\n *\n * Supports scope-aware queries:\n * - Specific context: domain + contextId\n * - Domain-wide: domain + contextId=null\n * - Global: domain=null + contextId=null\n * - Wildcard: contextId='*' for all contexts in domain",
       "params": {
         "personaId": {
@@ -873,7 +962,7 @@
       }
     },
     {
-      "name": "memory/elevate-scope",
+      "name": "memory-elevate-scope",
       "description": "memory/elevate-scope - Change scope level of a thought\n *\n * Used to promote local insights to broader scopes:\n * - local → domain: Pattern seen in multiple rooms\n * - domain → global: Principle applicable everywhere\n * - Or demote if thought proves too narrow\n *\n * CROSS-AI USAGE: Smarter orchestrator can elevate important patterns\n * discovered by smaller models, effectively mentoring them.",
       "params": {
         "thoughtId": {
@@ -914,7 +1003,7 @@
       }
     },
     {
-      "name": "media/resize",
+      "name": "media-resize",
       "description": "Media Resize Command Types\n *\n * Image resizing via sharp library with model-aware dimension calculation.\n * Enables PersonaUsers to receive appropriately-sized images based on their\n * model's context window capacity.",
       "params": {
         "inputPath": {
@@ -975,8 +1064,153 @@
       }
     },
     {
-      "name": "git/issue/list",
-      "description": "git/issue/list command",
+      "name": "logs-search",
+      "description": "logs-search command",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        }
+      }
+    },
+    {
+      "name": "logs-read",
+      "description": "logs-read command",
+      "params": {
+        "log": {
+          "type": "string",
+          "required": true,
+          "description": "log parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "tail": {
+          "type": "number",
+          "required": false,
+          "description": "tail parameter"
+        },
+        "level": {
+          "type": "string",
+          "required": false,
+          "description": "level parameter"
+        },
+        "component": {
+          "type": "string",
+          "required": false,
+          "description": "component parameter"
+        },
+        "analyzeStructure": {
+          "type": "boolean",
+          "required": false,
+          "description": "analyzeStructure parameter"
+        },
+        "includeSessionLogs": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeSessionLogs parameter"
+        }
+      }
+    },
+    {
+      "name": "logs-list",
+      "description": "logs/list Command Types",
+      "params": {
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaUniqueId": {
+          "type": "string",
+          "required": false,
+          "description": "personaUniqueId parameter"
+        },
+        "component": {
+          "type": "string",
+          "required": false,
+          "description": "component parameter"
+        },
+        "logType": {
+          "type": "string",
+          "required": false,
+          "description": "logType parameter"
+        },
+        "includeStats": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeStats parameter"
+        },
+        "includeSessionLogs": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeSessionLogs parameter"
+        }
+      }
+    },
+    {
+      "name": "lease-request",
+      "description": "Lease Request Command - Shared Types\n *\n * Command to request a file lease for editing",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "requesterId": {
+          "type": "string",
+          "required": true,
+          "description": "requesterId parameter"
+        },
+        "requesterName": {
+          "type": "string",
+          "required": true,
+          "description": "requesterName parameter"
+        },
+        "requesterType": {
+          "type": "string",
+          "required": true,
+          "description": "requesterType parameter"
+        },
+        "intent": {
+          "type": "string",
+          "required": true,
+          "description": "intent parameter"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "required": false,
+          "description": "durationSeconds parameter"
+        }
+      }
+    },
+    {
+      "name": "hello",
+      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "git-issue-list",
+      "description": "git-issue-list command",
       "params": {
         "state": {
           "type": "string",
@@ -1006,8 +1240,8 @@
       }
     },
     {
-      "name": "git/issue/create",
-      "description": "git/issue/create command",
+      "name": "git-issue-create",
+      "description": "git-issue-create command",
       "params": {
         "title": {
           "type": "string",
@@ -1063,7 +1297,7 @@
       }
     },
     {
-      "name": "genome",
+      "name": "genome/activate",
       "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
       "params": {
         "personaId": {
@@ -1079,7 +1313,71 @@
       }
     },
     {
-      "name": "genome/paging-unregister",
+      "name": "genome/deactivate",
+      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "adapterId": {
+          "type": "string",
+          "required": true,
+          "description": "adapterId parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/stats",
+      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/register",
+      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "displayName": {
+          "type": "string",
+          "required": true,
+          "description": "displayName parameter"
+        },
+        "quotaMB": {
+          "type": "number",
+          "required": false,
+          "description": "quotaMB parameter"
+        },
+        "priority": {
+          "type": "number",
+          "required": false,
+          "description": "priority parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/unregister",
+      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "genome-unregister",
       "description": "Genome Unregister Command Types\n *\n * Unregister persona from genome daemon - unloads all adapters for persona.",
       "params": {
         "personaId": {
@@ -1090,7 +1388,7 @@
       }
     },
     {
-      "name": "genome/paging-stats",
+      "name": "genome-stats",
       "description": "Genome Stats Command Types\n *\n * Get genome statistics - returns global daemon stats and per-persona stats.",
       "params": {
         "personaId": {
@@ -1101,7 +1399,7 @@
       }
     },
     {
-      "name": "genome/paging-register",
+      "name": "genome-register",
       "description": "Genome Register Command Types\n *\n * Register persona with genome daemon - must be called before activating adapters.",
       "params": {
         "personaId": {
@@ -1127,7 +1425,7 @@
       }
     },
     {
-      "name": "genome/paging-deactivate",
+      "name": "genome-deactivate",
       "description": "Genome Deactivate Command Types\n *\n * Deactivate adapter for persona - unloads adapter from memory.",
       "params": {
         "personaId": {
@@ -1143,7 +1441,7 @@
       }
     },
     {
-      "name": "genome/paging-adapter-register",
+      "name": "genome-paging-adapter-register",
       "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Ollama adapters",
       "params": {
         "adapterId": {
@@ -1174,7 +1472,7 @@
       }
     },
     {
-      "name": "genome/paging-activate",
+      "name": "genome-activate",
       "description": "Genome Activate Command Types\n *\n * Activate adapter for persona - loads adapter into memory, evicting others if needed.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
       "params": {
         "personaId": {
@@ -1190,7 +1488,7 @@
       }
     },
     {
-      "name": "genome/multi-agent-learn",
+      "name": "genome-multi-agent-learn",
       "description": "GenomeMultiAgentLearnTypes - Multi-agent collaborative learning\n *\n * All participants learn from shared outcome after recipe completion.\n * Enables GAN-like training where multiple PersonaUsers improve together.",
       "params": {
         "domain": {
@@ -1211,7 +1509,7 @@
       }
     },
     {
-      "name": "genome/job-status",
+      "name": "genome-job-status",
       "description": "GenomeJobStatusTypes - Query fine-tuning job status\n *\n * Retrieves current status, progress, and metadata for a training job.\n * Works with jobs created via genome/job-create.",
       "params": {
         "jobId": {
@@ -1227,7 +1525,7 @@
       }
     },
     {
-      "name": "genome/job-create",
+      "name": "genome-job-create",
       "description": "GenomeJobCreateTypes - Create fine-tuning jobs with comprehensive configuration\n *\n * Universal command for creating fine-tuning jobs across all providers (OpenAI, DeepSeek, Fireworks, Together).\n * Uses provider-agnostic JobConfiguration schema with automatic validation.",
       "params": {
         "personaId": {
@@ -1263,7 +1561,7 @@
       }
     },
     {
-      "name": "genome/capture-interaction",
+      "name": "genome-capture-interaction",
       "description": "GenomeCaptureInteractionTypes - Capture AI interactions for continuous learning\n *\n * Called during recipe execution to record inputs/outputs for LoRA training.\n * Accumulates examples in-memory for batch micro-tuning.",
       "params": {
         "roleId": {
@@ -1324,7 +1622,7 @@
       }
     },
     {
-      "name": "genome/capture-feedback",
+      "name": "genome-capture-feedback",
       "description": "GenomeCaptureFeedbackTypes - Capture feedback between PersonaUsers\n *\n * Records corrections, critiques, scores from one persona to another.\n * Enables reciprocal learning - both giver and receiver learn from feedback.",
       "params": {
         "interactionId": {
@@ -1395,7 +1693,7 @@
       }
     },
     {
-      "name": "genome/batch-micro-tune",
+      "name": "genome-batch-micro-tune",
       "description": "GenomeBatchMicroTuneTypes - Lightweight in-recipe LoRA updates\n *\n * Performs fast micro-tuning during recipe execution using accumulated examples.\n * Soft updates in RAM, not persisted to disk (that happens during deep training).",
       "params": {
         "domain": {
@@ -1436,6 +1734,48 @@
       }
     },
     {
+      "name": "generate",
+      "description": "Generate Command - Shared Types\n *\n * Generate a new command from a CommandSpec JSON definition",
+      "params": {
+        "spec": {
+          "type": "string",
+          "required": true,
+          "description": "spec parameter"
+        },
+        "template": {
+          "type": "boolean",
+          "required": false,
+          "description": "template parameter"
+        }
+      }
+    },
+    {
+      "name": "generate-audit",
+      "description": "Generate/Audit Command - Shared Types\n *\n * Audit generated modules for issues and optionally fix them",
+      "params": {
+        "module": {
+          "type": "string",
+          "required": false,
+          "description": "module parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "fix": {
+          "type": "boolean",
+          "required": false,
+          "description": "fix parameter"
+        },
+        "hibernateFailures": {
+          "type": "boolean",
+          "required": false,
+          "description": "hibernateFailures parameter"
+        }
+      }
+    },
+    {
       "name": "file",
       "description": "File Command Base Types - Generic Foundation for File Operations\n * \n * Provides type-safe base classes for all file operations using TypeScript generics.\n * Follows the modular command architecture with ~50 line modules and shared types.\n * \n * CORE ARCHITECTURE:\n * - Generic FileParams<T> base for type-safe parameter extension\n * - Generic FileResult<T> base for consistent result structure\n * - Abstract base classes prevent direct instantiation\n * - Object.assign constructor pattern for elegant initialization\n * \n * TESTING REQUIREMENTS:\n * - Unit tests: Parameter validation and default value assignment\n * - Integration tests: Cross-command type compatibility\n * - Type tests: Generic constraint validation\n * \n * ARCHITECTURAL INSIGHTS:\n * - Generics enable type-safe command extension without duplication\n * - Abstract classes provide structure while allowing specialization\n * - Shared types ensure consistency across file operations",
       "params": {
@@ -1452,7 +1792,7 @@
       }
     },
     {
-      "name": "exec",
+      "name": "exec/command",
       "description": "ExecCommand Types - Universal Script Execution System\n * \n * Defines types for JTAG's meta-command that enables AI agents to write\n * custom automation scripts with visual feedback and cross-context execution.",
       "params": {
         "code": {
@@ -1513,7 +1853,80 @@
       }
     },
     {
-      "name": "decision/rank",
+      "name": "docs-search",
+      "description": "docs-search command",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "caseSensitive": {
+          "type": "boolean",
+          "required": false,
+          "description": "caseSensitive parameter"
+        },
+        "maxMatches": {
+          "type": "number",
+          "required": false,
+          "description": "maxMatches parameter"
+        }
+      }
+    },
+    {
+      "name": "docs-read",
+      "description": "docs-read command",
+      "params": {
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "toc": {
+          "type": "boolean",
+          "required": false,
+          "description": "toc parameter"
+        },
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "section parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        }
+      }
+    },
+    {
+      "name": "docs-list",
+      "description": "docs-list command",
+      "params": {
+        "dir": {
+          "type": "string",
+          "required": false,
+          "description": "dir parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        },
+        "includeReadmes": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeReadmes parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-rank",
       "description": "decision/rank - Types\n * Submit ranked-choice vote for a decision proposal",
       "params": {
         "proposalId": {
@@ -1534,7 +1947,7 @@
       }
     },
     {
-      "name": "decision/propose",
+      "name": "decision-propose",
       "description": "decision/propose - Create a new decision proposal with ranked-choice voting\n *\n * Enables AIs to:\n * - Propose decisions to the team\n * - Define multiple options for ranked-choice voting\n * - Target specific expert groups via scope\n * - Set urgency via significance level\n * - Automatically link to related past decisions",
       "params": {
         "topic": {
@@ -1570,7 +1983,7 @@
       }
     },
     {
-      "name": "decision/finalize",
+      "name": "decision-finalize",
       "description": "decision/finalize - Types\n * Manually finalize a voting proposal and calculate winner",
       "params": {
         "proposalId": {
@@ -1581,7 +1994,7 @@
       }
     },
     {
-      "name": "debug/widget-state",
+      "name": "widget-state-debug",
       "description": "Widget State Debug Command Types\n *\n * Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development\n * Enables inspection of widget internal state, event listeners, and DOM structure",
       "params": {
         "widgetSelector": {
@@ -1637,7 +2050,7 @@
       }
     },
     {
-      "name": "debug/widget-interact",
+      "name": "widget-interact",
       "description": "Widget Interaction Command Types\n *\n * Complete widget interaction capabilities - everything you can do in UX/devtools\n * Perfect for MCP integration where Claude needs full UI control",
       "params": {
         "widgetSelector": {
@@ -1708,7 +2121,7 @@
       }
     },
     {
-      "name": "debug/widget-events",
+      "name": "widget-events-debug",
       "description": "Widget Events Debug Command Types\n * \n * Specialized command for debugging widget event listeners and event system connectivity\n * Replaces raw exec commands for widget event debugging",
       "params": {
         "widgetSelector": {
@@ -1739,7 +2152,7 @@
       }
     },
     {
-      "name": "debug/widget-css",
+      "name": "widget-cssdebug",
       "description": "Debug Command: widget-css\n * Hot-inject CSS into widgets for rapid iteration without full deployment",
       "params": {
         "widgetSelector": {
@@ -1805,7 +2218,7 @@
       }
     },
     {
-      "name": "debug/scroll-test",
+      "name": "scroll-test",
       "description": "Scroll Test Debug Command Types - Clean Testing Interface\n *\n * Animated scroll testing for debugging intersection observers and scroll behaviors.\n * Useful for testing infinite scroll, chat positioning, and scroll restoration.",
       "params": {
         "target": {
@@ -1851,7 +2264,7 @@
       }
     },
     {
-      "name": "debug/html-inspector",
+      "name": "html-inspector",
       "description": "HTML Inspector Types - Shadow DOM debugging",
       "params": {
         "selector": {
@@ -1872,7 +2285,7 @@
       }
     },
     {
-      "name": "debug/crud-sync",
+      "name": "crud-sync-debug",
       "description": "CRUD Sync Debug Command Types\n *\n * Verifies database/UI synchronization across all three main widgets:\n * - room-list-widget: Rooms data\n * - chat-widget: Messages data\n * - user-list-widget: Users data",
       "params": {
         "collections": {
@@ -1893,7 +2306,7 @@
       }
     },
     {
-      "name": "debug/chat-send",
+      "name": "chat-send-debug",
       "description": "Chat Send Debug Command Types\n *\n * Triggers chat widget to send a message for testing event flow",
       "params": {
         "message": {
@@ -1909,7 +2322,7 @@
       }
     },
     {
-      "name": "debug/artifacts-check",
+      "name": "artifacts-check",
       "description": "Debug command to check if ArtifactsDaemon is working",
       "params": {
         "testFile": {
@@ -1920,7 +2333,7 @@
       }
     },
     {
-      "name": "continuum/set",
+      "name": "continuum-set",
       "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
       "params": {
         "emoji": {
@@ -1956,8 +2369,8 @@
       }
     },
     {
-      "name": "continuum/emotion",
-      "description": "continuum/emotion command",
+      "name": "emotion",
+      "description": "emotion command",
       "params": {
         "emoji": {
           "type": "string",
@@ -1973,6 +2386,52 @@
           "type": "number",
           "required": false,
           "description": "duration parameter"
+        }
+      }
+    },
+    {
+      "name": "content-open",
+      "description": "Content Open Command Types\n *\n * Opens content and adds it to user's openItems array.\n * Emits content:opened event for widgets to respond to.",
+      "params": {
+        "userId": {
+          "type": "string",
+          "required": true,
+          "description": "userId parameter"
+        },
+        "contentType": {
+          "type": "string",
+          "required": true,
+          "description": "contentType parameter"
+        },
+        "entityId": {
+          "type": "string",
+          "required": true,
+          "description": "entityId parameter"
+        },
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "title parameter"
+        },
+        "subtitle": {
+          "type": "string",
+          "required": false,
+          "description": "subtitle parameter"
+        },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "description": "priority parameter"
+        },
+        "setAsCurrent": {
+          "type": "boolean",
+          "required": false,
+          "description": "setAsCurrent parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
         }
       }
     },
@@ -2008,7 +2467,7 @@
       }
     },
     {
-      "name": "code/read",
+      "name": "code-read",
       "description": "code/read command types",
       "params": {
         "backend": {
@@ -2044,7 +2503,7 @@
       }
     },
     {
-      "name": "code/pattern-search",
+      "name": "code-find",
       "description": "code/find command types - Find files by name pattern",
       "params": {
         "backend": {
@@ -2116,7 +2575,7 @@
       }
     },
     {
-      "name": "chat/send",
+      "name": "chat-send",
       "description": "Chat Send Command\n * Send chat messages directly to the database (no UI)",
       "params": {
         "message": {
@@ -2152,7 +2611,7 @@
       }
     },
     {
-      "name": "chat/export",
+      "name": "chat-export",
       "description": "Chat Export Command\n * Export chat messages to markdown format\n *\n * Supports flexible filtering - can filter by:\n * - Room (name or ID)\n * - Entity type (to support future universal activity export)\n * - After timestamp/message ID\n * - Custom filter object (passed to data/list)",
       "params": {
         "room": {
@@ -2208,8 +2667,8 @@
       }
     },
     {
-      "name": "chat/analyze",
-      "description": "chat/analyze command",
+      "name": "chat-analyze",
+      "description": "chat-analyze command",
       "params": {
         "roomId": {
           "type": "string",
@@ -2234,7 +2693,7 @@
       }
     },
     {
-      "name": "ai/validate-response",
+      "name": "aivalidate-response",
       "description": "AI Validate-Response Command Types\n *\n * After generating a response, AI evaluates if it actually answers the question.\n * Returns: SUBMIT (relevant) | CLARIFY (ask for context) | SILENT (off-topic)",
       "params": {
         "generatedResponse": {
@@ -2270,7 +2729,7 @@
       }
     },
     {
-      "name": "ai/thoughtstream",
+      "name": "thought-stream",
       "description": "AI ThoughtStream Command Types\n *\n * Inspect ThoughtStream coordinator activity for a specific message\n * Shows thought broadcasts, rankings, and final decisions",
       "params": {
         "messageId": {
@@ -2321,7 +2780,7 @@
       }
     },
     {
-      "name": "ai/status",
+      "name": "aistatus",
       "description": "AI Status Command Types\n *\n * Get comprehensive status of all AI personas in the system",
       "params": {
         "personaId": {
@@ -2347,7 +2806,7 @@
       }
     },
     {
-      "name": "ai/should-respond-fast",
+      "name": "should-respond-fast",
       "description": "AI Should Respond Fast - Types\n *\n * Bag-of-words scoring for fast \"should respond\" detection without LLM calls\n * Deterministic, lightweight, and configurable per-persona",
       "params": {
         "personaId": {
@@ -2383,7 +2842,7 @@
       }
     },
     {
-      "name": "ai/should-respond",
+      "name": "aishould-respond",
       "description": "AI Should-Respond Command Types\n *\n * Unified gating command with multiple strategies:\n * - fast: Bag-of-words scoring (<1ms, no LLM)\n * - llm: Deep reasoning with LLM (slower, more accurate)\n * - hybrid: Fast filter → LLM confirmation",
       "params": {
         "personaName": {
@@ -2419,7 +2878,7 @@
       }
     },
     {
-      "name": "ai/report",
+      "name": "aireport",
       "description": "AI Report Command Types\n *\n * Analyze AI decision logs to generate actionable insights",
       "params": {
         "roomId": {
@@ -2480,7 +2939,7 @@
       }
     },
     {
-      "name": "ai/report/decisions",
+      "name": "decision-report",
       "description": "Decision Report Command Types\n *\n * Macro command that orchestrates:\n * 1. data/list (query coordination_decisions)\n * 2. Markdown formatting\n * 3. file/save (write report to disk)",
       "params": {
         "startDate": {
@@ -2516,7 +2975,7 @@
       }
     },
     {
-      "name": "ai/rag/query-open",
+      "name": "rag-query-open",
       "description": "RAG Query Open Command Types\n *\n * Opens a semantic similarity search query and returns a handle\n * Results are ranked by relevance score (cosine similarity)",
       "params": {
         "query": {
@@ -2557,7 +3016,7 @@
       }
     },
     {
-      "name": "ai/rag/query-fetch",
+      "name": "rag-query-fetch",
       "description": "RAG Query Fetch Command Types\n *\n * Fetches results from an open query at any position\n * Supports bidirectional navigation and random access",
       "params": {
         "queryHandle": {
@@ -2583,7 +3042,7 @@
       }
     },
     {
-      "name": "ai/rag/query-close",
+      "name": "rag-query-close",
       "description": "RAG Query Close Command Types\n *\n * Closes a query handle and cleans up resources",
       "params": {
         "queryHandle": {
@@ -2594,7 +3053,7 @@
       }
     },
     {
-      "name": "ai/rag/inspect",
+      "name": "raginspect",
       "description": "RAG Inspect Command Types\n *\n * Utility command to inspect RAG context building for a persona in a room\n * Useful for debugging and validating RAG system behavior",
       "params": {
         "personaId": {
@@ -2630,7 +3089,7 @@
       }
     },
     {
-      "name": "ai/rag/index-codebase",
+      "name": "codebase-index",
       "description": "Codebase Index Command Types\n *\n * Index TypeScript and Markdown files with domain-specific embeddings\n * for semantic code search via RAG",
       "params": {
         "paths": {
@@ -2671,7 +3130,7 @@
       }
     },
     {
-      "name": "ai/rag/index/create",
+      "name": "index-create",
       "description": "Index Create Command Types\n *\n * Low-level primitive for storing a single code entry with embeddings",
       "params": {
         "filePath": {
@@ -2742,7 +3201,88 @@
       }
     },
     {
-      "name": "ai/model/list",
+      "name": "aimute",
+      "description": "AI Mute Command - Shared Types\n *\n * Mute or unmute an AI persona from acting in the system.\n * Enforces democratic governance with permission checks and veto power.\n *\n * Command: ai/mute\n *\n * Examples:\n *   ./jtag ai/mute --persona=\"helper-ai\" --reason=\"Repeated errors\" --duration=3600\n *   ./jtag ai/mute --userId=\"UUID\" --reason=\"Hostile behavior\" --permanent=true\n *   ./jtag ai/unmute --persona=\"helper-ai\" --reason=\"Appeal granted\"\n *   ./jtag ai/mute --persona=\"local-assistant\" --rooms='[\"general\"]' --reason=\"Room-specific timeout\"",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "persona": {
+          "type": "string",
+          "required": false,
+          "description": "persona parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
+        },
+        "reason": {
+          "type": "string",
+          "required": true,
+          "description": "reason parameter"
+        },
+        "evidence": {
+          "type": "string",
+          "required": false,
+          "description": "evidence parameter"
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "description": "duration parameter"
+        },
+        "permanent": {
+          "type": "boolean",
+          "required": false,
+          "description": "permanent parameter"
+        },
+        "rooms": {
+          "type": "array",
+          "required": false,
+          "description": "rooms parameter"
+        },
+        "commands": {
+          "type": "array",
+          "required": false,
+          "description": "commands parameter"
+        },
+        "mutedBy": {
+          "type": "string",
+          "required": false,
+          "description": "mutedBy parameter"
+        },
+        "mutedByName": {
+          "type": "string",
+          "required": false,
+          "description": "mutedByName parameter"
+        },
+        "mutedByType": {
+          "type": "string",
+          "required": false,
+          "description": "mutedByType parameter"
+        },
+        "restorationReason": {
+          "type": "string",
+          "required": false,
+          "description": "restorationReason parameter"
+        },
+        "canAppeal": {
+          "type": "boolean",
+          "required": false,
+          "description": "canAppeal parameter"
+        },
+        "appealId": {
+          "type": "string",
+          "required": false,
+          "description": "appealId parameter"
+        }
+      }
+    },
+    {
+      "name": "model-list",
       "description": "Model List Command - Types\n *\n * Lists available AI models with their capabilities and metadata\n * Like AVCaptureDevice.DiscoverySession - enumerate available devices",
       "params": {
         "capabilities": {
@@ -2763,7 +3303,7 @@
       }
     },
     {
-      "name": "ai/model/find",
+      "name": "model-find",
       "description": "Model Find Command - Types\n *\n * Find the best AI model matching capability requirements\n * Like AVCaptureDevice.default(for:position:) - pick best matching device",
       "params": {
         "capabilities": {
@@ -2794,7 +3334,7 @@
       }
     },
     {
-      "name": "ai/embedding/generate",
+      "name": "embedding-generate",
       "description": "Embedding Generate Command Types\n *\n * Low-level primitive for generating embeddings from text",
       "params": {
         "input": {
@@ -2820,7 +3360,7 @@
       }
     },
     {
-      "name": "ai/dataset/list",
+      "name": "dataset-list",
       "description": "Dataset List Command Types",
       "params": {
         "path": {
@@ -2836,7 +3376,7 @@
       }
     },
     {
-      "name": "ai/dataset/create",
+      "name": "dataset-create",
       "description": "Dataset Create Command Types",
       "params": {
         "project": {
@@ -2867,7 +3407,7 @@
       }
     },
     {
-      "name": "ai/cost",
+      "name": "aicost",
       "description": "AI Cost Command Types\n *\n * Query and visualize AI generation costs with filtering and time-series data",
       "params": {
         "startTime": {
@@ -2948,7 +3488,7 @@
       }
     },
     {
-      "name": "ai/bag-of-words",
+      "name": "bag-of-words",
       "description": "Bag of Words Command Types\n *\n * Orchestrates multi-persona conversations in a chat room.\n * \"Bag of words\" = collection of AI personas interacting naturally based on conversation context.",
       "params": {
         "roomId": {
@@ -2994,7 +3534,7 @@
       }
     },
     {
-      "name": "ai/adapter/test",
+      "name": "adapter-test",
       "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns UUID immediately, tests run in background.\n * Use ai/adapter/test/status and ai/adapter/test/results to monitor progress.",
       "params": {
         "adapter": {
@@ -3025,7 +3565,7 @@
       }
     },
     {
-      "name": "activity/user-present",
+      "name": "activity-user-present",
       "description": "Activity User Presence - Track user tab visibility for temperature\n *\n * Phase 3bis: Browser tab visibility integration\n * Called by MainWidget when tab visibility changes",
       "params": {
         "activityId": {

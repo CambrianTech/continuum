@@ -318,7 +318,7 @@ export class ArtifactsDaemonServer extends ArtifactsDaemon {
           process.env[key] = value;
           variables[key] = value;
           loaded++;
-          console.log(`🔑 Loaded env var: ${key}`);
+          this.log.info(`🔑 Loaded env var: ${key}`);
         }
       }
 

@@ -43,7 +43,7 @@ export class WebSocketResponseRouter {
     if (connection) {
       this.correlationToClient.set(correlationId, connection);
       connection.lastActivity = Date.now();
-      console.log(`🔗 WebSocketResponseRouter: Mapped ${correlationId} → ${clientId}`);
+      // console.log(`🔗 WebSocketResponseRouter: Mapped ${correlationId} → ${clientId}`);
     } else {
       console.warn(`⚠️ WebSocketResponseRouter: Client ${clientId} not found for correlation ${correlationId}`);
     }
@@ -75,9 +75,9 @@ export class WebSocketResponseRouter {
         const messageData = JSON.stringify(message);
         connection.socket.send(messageData);
         connection.lastActivity = Date.now();
-        
-        console.log(`📤 WebSocketResponseRouter: Sent response ${correlationId} → ${connection.clientId}`);
-        
+
+        // console.log(`📤 WebSocketResponseRouter: Sent response ${correlationId} → ${connection.clientId}`);
+
         // Clean up correlation after successful delivery
         this.correlationToClient.delete(correlationId);
         return true;

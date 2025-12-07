@@ -24,6 +24,7 @@ import type {
 import type { ChatMessage } from '../../../shared/PromptFormatters';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { truncateMessages } from '../../../shared/PromptFormatters';
+import { SystemDaemon } from '../../../../system-daemon/shared/SystemDaemon';
 
 // Helper function for token estimation
 function estimateTokenCount(text: string): number {
@@ -78,70 +79,70 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
     super();
 
     // Get port from environment or use default
-    this.serverPort = process.env.SENTINEL_PORT || '11435';
+    this.serverPort = process.env.SENTINEL_PORT ?? '11435';
     this.apiEndpoint = `http://127.0.0.1:${this.serverPort}`;
 
-    console.log('🧬 Sentinel Adapter initialized (HTTP mode)');
-    console.log(`   Endpoint: ${this.apiEndpoint}`);
+    this.log(null, 'info', '🧬 Sentinel Adapter initialized (HTTP mode)');
+    this.log(null, 'info', `   Endpoint: ${this.apiEndpoint}`);
   }
 
   /**
    * Initialize Sentinel server (auto-start if needed)
+   *
+   * Event-driven: doesn't block on server startup
+   * Health monitoring (AdapterHealthMonitor) will detect when server is ready
    */
   protected async initializeProvider(): Promise<void> {
-    console.log('🧬 Sentinel: Initializing provider...');
+    this.log(null, 'info', '🧬 Sentinel: Initializing provider...');
 
-    // Check if server is already running
+    // Check if server is already running (non-blocking)
     const health = await this.healthCheck();
 
     if (health.status === 'healthy') {
-      console.log('✅ Sentinel: Server already running');
+      this.log(null, 'info', '✅ Sentinel: Server already running');
       return;
     }
 
-    // Try to auto-start the server
-    console.log('🚀 Sentinel: Server not found, attempting auto-start...');
+    // Try to auto-start the server (non-blocking)
+    this.log(null, 'info', '🚀 Sentinel: Server not found, attempting auto-start...');
     try {
       await this.startServer();
 
-      // Wait for server to be ready
-      const maxWaitTime = 30000; // 30 seconds
-      const startTime = Date.now();
+      // Don't wait for startup - AdapterHealthMonitor will detect when ready
+      const systemDaemon = SystemDaemon.sharedInstance();
+      const startupTimeout = systemDaemon.getSetting('system/adapters/sentinel/startup-timeout') as number ?? 30000;
 
-      while (Date.now() - startTime < maxWaitTime) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        const checkHealth = await this.healthCheck();
-        if (checkHealth.status === 'healthy') {
-          console.log('✅ Sentinel: Server started and ready');
-          return;
-        }
-      }
-
-      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
-      console.warn(
-        `⚠️  Sentinel: Server failed to start after 30s. Start manually: cd ${sentinelPath} && ./server/start_server.sh`
-      );
+      this.log(null, 'info', `🧬 Sentinel: Server process spawned, health monitoring will verify readiness (timeout: ${startupTimeout}ms)`);
     } catch (error) {
-      console.warn(`⚠️  Sentinel: Auto-start failed: ${error instanceof Error ? error.message : String(error)}`);
-      console.warn('   Sentinel AI will be unavailable until manually started');
+      this.log(null, 'warn', `⚠️  Sentinel: Auto-start failed: ${error instanceof Error ? error.message : String(error)}`);
+      const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
+      this.log(null, 'warn', `   Start manually: cd ${sentinelPath} && ./server/start_server.sh`);
+      this.log(null, 'warn', '   Sentinel AI will be unavailable until started');
     }
   }
 
   /**
    * Restart Sentinel server
+   *
+   * Event-driven: doesn't block on process termination
+   * Health monitoring will verify when server is back up
    */
   protected async restartProvider(): Promise<void> {
-    console.log('🔄 Sentinel: Restarting server...');
+    this.log(null, 'info', '🔄 Sentinel: Restarting server...');
 
-    // Kill existing process if we have one
+    // Kill existing process if we have one (non-blocking)
     if (this.serverProcess && !this.serverProcess.killed) {
       this.serverProcess.kill();
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      this.log(null, 'info', '🔄 Sentinel: Killed existing process, starting fresh');
     }
 
-    // Start fresh
+    // Start fresh (non-blocking)
     await this.startServer();
+
+    // Don't wait - AdapterHealthMonitor will detect when healthy again
+    const systemDaemon = SystemDaemon.sharedInstance();
+    const stabilizationDelay = systemDaemon.getSetting('system/adapters/sentinel/restart-stabilization-delay') as number ?? 3000;
+    this.log(null, 'info', `🔄 Sentinel: Restart initiated, health monitoring will verify recovery (stabilization: ${stabilizationDelay}ms)`);
   }
 
   /**
@@ -149,7 +150,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
    */
   private async startServer(): Promise<void> {
     if (this.serverStarting) {
-      console.log('⏳ Sentinel: Server already starting, waiting...');
+      this.log(null, 'info', '⏳ Sentinel: Server already starting, waiting...');
       return;
     }
 
@@ -160,7 +161,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       const sentinelPath = process.env.SENTINEL_PATH || './sentinel-ai';
       const startScript = path.join(sentinelPath, 'server', 'start_server.sh');
 
-      console.log(`🧬 Sentinel: Starting server from ${sentinelPath}...`);
+      this.log(null, 'info', `🧬 Sentinel: Starting server from ${sentinelPath}...`);
 
       // Start server in background
       this.serverProcess = spawn('/bin/bash', [startScript], {
@@ -175,27 +176,27 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
       // Handle spawn errors (e.g., bash not found, script doesn't exist)
       this.serverProcess.on('error', (error) => {
-        console.error(`❌ Sentinel: Failed to spawn server process: ${error.message}`);
+        this.log(null, 'error', `❌ Sentinel: Failed to spawn server process: ${error.message}`);
         this.serverProcess = null;
       });
 
       // Allow process to run independently
       this.serverProcess.unref();
 
-      console.log(`🧬 Sentinel: Server process spawned (PID: ${this.serverProcess.pid})`);
+      this.log(null, 'info', `🧬 Sentinel: Server process spawned (PID: ${this.serverProcess.pid})`);
     } catch (error) {
-      console.error(`❌ Sentinel: Failed to start server: ${error}`);
+      this.log(null, 'error', `❌ Sentinel: Failed to start server: ${error}`);
       throw error;
     } finally {
       this.serverStarting = false;
     }
   }
 
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     const requestId = `sentinel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
 
-    console.log(`🧬 Sentinel: Generating text (model: ${request.model ?? 'gpt2'})`);
+    this.log(request, 'info', `🧬 Sentinel: Generating text (model: ${request.model ?? 'gpt2'})`);
 
     try {
       // Get model context window (GPT-2 = 1024 tokens)
@@ -261,8 +262,8 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         }
       }
 
-      console.log(`🧬 Sentinel: Prompt preview (first 200 chars): ${prompt.substring(0, 200)}...`);
-      console.log(`🧬 Sentinel: System prompt: ${systemPrompt || request.systemPrompt || 'none'}`);
+      this.log(request, 'debug', `🧬 Sentinel: Prompt preview (first 200 chars): ${prompt.substring(0, 200)}...`);
+      this.log(request, 'debug', `🧬 Sentinel: System prompt: ${systemPrompt || request.systemPrompt || 'none'}`);
 
       // Build request
       const sentinelRequest: SentinelGenerateRequest = {
@@ -293,7 +294,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       const inputTokens = estimateTokenCount(prompt + (systemPrompt || ''));
       const outputTokens = estimateTokenCount(result.response);
 
-      console.log(`✅ Sentinel: Generated ${result.response.length} chars in ${responseTime}ms`);
+      this.log(request, 'info', `✅ Sentinel: Generated ${result.response.length} chars in ${responseTime}ms`);
 
       return {
         text: result.response,
@@ -311,8 +312,8 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(`❌ Sentinel: Generation failed after ${duration}ms`);
-      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(request, 'error', `❌ Sentinel: Generation failed after ${duration}ms`);
+      this.log(request, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
@@ -323,7 +324,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       return this.healthCache.status;
     }
 
-    console.log(`🔍 Sentinel Health: Running check...`);
+    this.log(null, 'info', `🔍 Sentinel Health: Running check...`);
     const startTime = Date.now();
 
     try {
@@ -357,7 +358,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       };
 
       this.healthCache = { status, timestamp: Date.now() };
-      console.log(`✅ Sentinel Health: healthy (${responseTime}ms)`);
+      this.log(null, 'info', `✅ Sentinel Health: healthy (${responseTime}ms)`);
 
       return status;
     } catch (error) {
@@ -372,7 +373,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       };
 
       this.healthCache = { status, timestamp: Date.now() };
-      console.log(`❌ Sentinel Health: unhealthy`);
+      this.log(null, 'error', `❌ Sentinel Health: unhealthy`);
 
       return status;
     }
@@ -386,7 +387,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       });
 
       if (!response.ok) {
-        console.warn(`Failed to fetch Sentinel models: ${response.status}`);
+        this.log(null, 'warn', `Failed to fetch Sentinel models: ${response.status}`);
         return this.getDefaultModels();
       }
 
@@ -404,7 +405,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         supportsFunctions: false,
       }));
     } catch (error) {
-      console.warn(`Failed to fetch Sentinel models: ${error}`);
+      this.log(null, 'warn', `Failed to fetch Sentinel models: ${error}`);
       return this.getDefaultModels();
     }
   }

@@ -770,7 +770,7 @@ export class DataDaemon {
       await Events.emit(DataDaemon.jtagContext, eventName, entity);
     }
 
-    console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
+    // console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
 
     return entity;
   }
@@ -982,6 +982,29 @@ export class DataDaemon {
     }
 
     return DataDaemon.sharedInstance.getActiveQueries();
+  }
+
+  /**
+   * Get description field for a collection - CLEAN INTERFACE
+   *
+   * Returns the field name marked as description in entity metadata,
+   * or null if no description field is defined.
+   *
+   * @example
+   * const descField = DataDaemon.getDescriptionFieldForCollection('users');
+   * // Returns 'displayName' if UserEntity has @TextField({description: true})
+   */
+  static getDescriptionFieldForCollection(collection: string): string | null {
+    // Import locally to avoid circular dependencies
+    const { getRegisteredEntity } = require('../server/SqliteStorageAdapter');
+    const { getDescriptionField } = require('../../../system/data/decorators/FieldDecorators');
+
+    const EntityClass = getRegisteredEntity(collection);
+    if (!EntityClass) {
+      return null; // No entity registered for this collection
+    }
+
+    return getDescriptionField(EntityClass);
   }
 
   // =============================================

@@ -16,6 +16,7 @@
  * - Meta-learning (companion AI suggestions → training data)
  */
 
+import * as path from 'path';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Commands } from '../../core/shared/Commands';
 import type { DataCreateParams } from '../../../commands/data/create/shared/DataCreateTypes';
@@ -34,6 +35,8 @@ import type {
 } from '../../data/entities/CoordinationDecisionEntity';
 import { getChatCoordinator } from './ChatCoordinationStream';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
+import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * Parameters for logging a decision
@@ -73,6 +76,11 @@ export interface LogDecisionParams {
  */
 export class CoordinationDecisionLogger {
   private static sequenceCounters = new Map<UUID, number>();
+  private static logger: ComponentLogger = Logger.createWithFile(
+    'CoordinationDecisionLogger',
+    path.join(SystemPaths.logs.system, 'coordination-decisions.log'),
+    FileMode.CLEAN
+  );
 
   /**
    * Log a coordination decision to the database
@@ -182,9 +190,9 @@ export class CoordinationDecisionLogger {
         sessionId: DataDaemon.jtagContext!.uuid
       });
 
-      console.log(`📊 CoordinationDecisionLogger: Logged ${params.action} decision (seq=${sequenceNumber}, conf=${params.confidence.toFixed(2)}, temp=${ambientState.temperature.toFixed(2)})`);
+      this.logger.info(`📊 CoordinationDecisionLogger: Logged ${params.action} decision (seq=${sequenceNumber}, conf=${params.confidence.toFixed(2)}, temp=${ambientState.temperature.toFixed(2)})`);
     } catch (error) {
-      console.error(`❌ CoordinationDecisionLogger: Failed to log decision:`, error);
+      this.logger.error(`❌ CoordinationDecisionLogger: Failed to log decision:`, error);
       // Don't throw - logging failures shouldn't break persona functionality
     }
   }

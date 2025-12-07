@@ -23,8 +23,8 @@ continuum.claude.md
 continuum.gpt.md
 examples/CLAUDE.md
 
-# Logs
-logs
+# Logs (runtime log directories and files, but NOT commands/logs source code)
+/logs
 !verification/logs/
 *.log
 !verification/logs/*.log

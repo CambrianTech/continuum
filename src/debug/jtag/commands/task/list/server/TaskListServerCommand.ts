@@ -74,8 +74,14 @@ export class TaskListServerCommand extends CommandBase<TaskListParams, TaskListR
         });
       }
 
+      // Filter out completed tasks by default (unless explicitly included)
+      let filteredData = queryResult.data;
+      if (!listParams.includeCompleted) {
+        filteredData = queryResult.data.filter(record => record.data.status !== 'completed');
+      }
+
       // Convert DataRecord<TaskEntity>[] to TaskSummary[]
-      const tasks: TaskSummary[] = queryResult.data.map(record => {
+      const tasks: TaskSummary[] = filteredData.map(record => {
         const task = record.data;
 
         // Helper to convert Date or ISO string to ISO string

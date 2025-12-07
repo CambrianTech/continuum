@@ -285,7 +285,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Subscribe to AI decision events for real-time thinking/responding indicators
     // Note: We subscribe globally and filter by room ID in handlers
-    console.log(`🤖 ChatWidget: Subscribing to AI decision events`);
+    //console.log(`🤖 ChatWidget: Subscribing to AI decision events`);
 
     Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: any) => {
       if (data.roomId === this.currentRoomId) {

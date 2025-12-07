@@ -130,8 +130,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`📊 CognitionLogger: Logged state snapshot (seq=${sequenceNumber}, load=${selfState.cognitiveLoad.toFixed(2)}, memories=${workingMemory.length})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log state snapshot:`, error);
       // Don't throw - logging failures shouldn't break persona functionality
@@ -226,8 +224,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`📋 CognitionLogger: Logged plan formulation (seq=${sequenceNumber}, planId=${plan.id}, steps=${plan.steps.length})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan formulation:`, error);
     }
@@ -296,8 +292,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`✅ CognitionLogger: Logged plan completion (planId=${planId}, status=${status}, duration=${totalDuration}ms)`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan completion:`, error);
     }
@@ -360,8 +354,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`🔄 CognitionLogger: Logged plan adjustment (planId=${planId}, action=${adjustment.action})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan adjustment:`, error);
     }
@@ -438,8 +430,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`🔧 CognitionLogger: Logged tool execution (seq=${sequenceNumber}, tool=${toolName}, status=${executionStatus}, duration=${durationMs}ms)`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log tool execution:`, error);
     }
@@ -505,8 +495,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`🎯 CognitionLogger: Logged adapter decision (seq=${sequenceNumber}, adapter=${adapterName}, decision=${decision}, confidence=${confidence.toFixed(2)})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log adapter decision:`, error);
     }
@@ -591,8 +579,6 @@ export class CognitionLogger {
         context: DataDaemon.jtagContext!,
         sessionId: DataDaemon.jtagContext!.uuid
       });
-
-      console.log(`🤖 CognitionLogger: Logged response generation (seq=${sequenceNumber}, provider=${provider}, model=${model}, tokens=${totalTokens}, cost=$${estimatedCost.toFixed(4)})`);
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log response generation:`, error);
     }
@@ -651,7 +637,7 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid
       });
 
-      console.log(`🪜 CognitionLogger: Logged plan step execution (seq=${sequenceNumber}, planId=${planId}, step=${stepNumber}, status=${status})`);
+      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan step execution:`, error);
     }
@@ -704,7 +690,7 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid
       });
 
-      console.log(`🔄 CognitionLogger: Logged self-state update (seq=${sequenceNumber}, type=${updateType})`);
+      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log self-state update:`, error);
     }
@@ -761,7 +747,7 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid
       });
 
-      console.log(`🧠 CognitionLogger: Logged memory operation (seq=${sequenceNumber}, op=${operation}, memoryId=${memoryId})`);
+      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log memory operation:`, error);
     }
@@ -816,7 +802,7 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid
       });
 
-      console.log(`🤔 CognitionLogger: Logged adapter reasoning (seq=${sequenceNumber}, adapter=${adapterName}, confidence=${confidence.toFixed(2)})`);
+      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log adapter reasoning:`, error);
     }
@@ -879,7 +865,7 @@ export class CognitionLogger {
         sessionId: DataDaemon.jtagContext!.uuid
       });
 
-      console.log(`🔄 CognitionLogger: Logged plan replan (seq=${sequenceNumber}, oldPlanId=${oldPlanId}, newPlanId=${newPlan.id})`);
+      // Success log removed - data already persisted
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan replan:`, error);
     }

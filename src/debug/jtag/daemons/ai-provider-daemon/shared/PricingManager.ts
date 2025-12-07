@@ -31,6 +31,7 @@ export class PricingManager {
   private cache: PricingCache = {};
   private staticPricing: any = null;
   private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+  private log: (message: string) => void = () => {}; // No-op by default
 
   private constructor() {
     // Load static pricing from JSON on initialization
@@ -42,6 +43,13 @@ export class PricingManager {
       PricingManager.instance = new PricingManager();
     }
     return PricingManager.instance;
+  }
+
+  /**
+   * Set logger for pricing warnings (called by AIProviderDaemon)
+   */
+  setLogger(logger: (message: string) => void): void {
+    this.log = logger;
   }
 
   /**
@@ -117,7 +125,7 @@ export class PricingManager {
     }
 
     // No pricing found
-    console.warn(`⚠️ PricingManager: No pricing for ${provider}/${model}`);
+    this.log(`⚠️ PricingManager: No pricing for ${provider}/${model}`);
     return null;
   }
 
@@ -132,7 +140,7 @@ export class PricingManager {
       fetchedAt: Date.now(),
       source: 'adapter'
     };
-    console.log(`✅ PricingManager: Cached adapter pricing for ${provider}/${model}`);
+    //console.log(`✅ PricingManager: Cached adapter pricing for ${provider}/${model}`);
   }
 
   /**

@@ -40,12 +40,12 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    */
   protected async initialize(): Promise<void> {
     // Initialize SecretManager FIRST (adapters depend on it)
-    console.log('🔐 AIProviderDaemonServer: Initializing SecretManager...');
+    this.log.info('🔐 AIProviderDaemonServer: Initializing SecretManager...');
     await initializeSecrets();
-    console.log('✅ AIProviderDaemonServer: SecretManager initialized');
+    this.log.info('✅ AIProviderDaemonServer: SecretManager initialized');
 
     // Register adapters dynamically (server-only code)
-    console.log('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
+    this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
 
     // Register Ollama adapter (local, free, private)
     // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
@@ -57,12 +57,17 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
 
     // Register Sentinel adapter (local, free, private, pre-trained models)
     // Provides TinyLlama, Phi-2, CodeLlama, DistilGPT2 for PersonaUsers
-    const { SentinelAdapter } = await import('../adapters/sentinel/shared/SentinelAdapter');
-    await this.registerAdapter(new SentinelAdapter(), {
-      priority: 95, // High priority - local and free, but slower than Ollama
-      enabled: true,
-    });
-    console.log('✅ AIProviderDaemonServer: Sentinel adapter registered');
+
+    const sentinelPath = await getSecret('SENTINEL_PATH'); //Enabled if SENTINEL_PATH is set
+    
+    if (sentinelPath) {
+      const { SentinelAdapter } = await import('../adapters/sentinel/shared/SentinelAdapter');
+      await this.registerAdapter(new SentinelAdapter(), {
+        priority: 95, // High priority - local and free, but slower than Ollama
+        enabled: true,
+      });
+      this.log.info('✅ AIProviderDaemonServer: Sentinel adapter registered');
+    }
 
     // Register cloud adapters if API keys are available
     // Priority order: Ollama (100) > DeepSeek (90) > Groq (85) > OpenAI/Anthropic (80) > Together/Fireworks (70)
@@ -75,7 +80,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 90,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: DeepSeek adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: DeepSeek adapter registered');
     }
 
     // Groq: Fastest inference (LPU hardware, <100ms latency)
@@ -86,7 +91,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 85,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Groq adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Groq adapter registered');
     }
 
     // X.AI: Grok models with advanced reasoning
@@ -97,7 +102,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 83,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
     }
 
     // OpenAI: Premium quality (GPT-4, expensive)
@@ -108,7 +113,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 80,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: OpenAI adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: OpenAI adapter registered');
     }
 
     // Anthropic: Best reasoning (Claude 3)
@@ -119,7 +124,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 80,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Anthropic adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Anthropic adapter registered');
     }
 
     // Together.ai: Cheap + diverse models
@@ -130,7 +135,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 70,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Together.ai adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Together.ai adapter registered');
     }
 
     // Fireworks: Fast inference + coding models
@@ -141,7 +146,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         priority: 70,
         enabled: true,
       });
-      console.log('✅ AIProviderDaemonServer: Fireworks adapter registered');
+      this.log.info('✅ AIProviderDaemonServer: Fireworks adapter registered');
     }
 
     // Call base initialization
@@ -150,24 +155,62 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // DISABLED: ProcessPool adds 40s overhead - direct Ollama adapter is 132x faster
     // ProcessPool with HTTP workers → 41s per request
     // Direct Ollama adapter → 310ms per request
-    console.log('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
+    this.log.info('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
 
-    // Initialize static AIProviderDaemon interface for commands to use (like DataDaemon.query)
+    // Initialize static AIProviderDaemon interface FIRST (critical for PersonaUsers)
+    // This must happen before health monitoring to prevent race conditions where
+    // PersonaUsers try to call AIProviderDaemon.generateText() before sharedInstance is set
     AIProviderDaemon.initialize(this);
+    this.log.info('✅ AIProviderDaemonServer: Static daemon interface initialized');
 
-    console.log(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
+    // Initialize adapter health monitoring
+    this.log.info('💓 AIProviderDaemonServer: Initializing adapter health monitoring...');
+    const { AdapterHealthMonitor } = await import('./AdapterHealthMonitor');
+    const { SystemHealthTicker } = await import('../../system-daemon/server/SystemHealthTicker');
+
+    // Register all adapters with health monitor
+    const healthMonitor = AdapterHealthMonitor.getInstance();
+    for (const [providerId, registration] of this.adapters) {
+      healthMonitor.registerAdapter(registration.adapter);
+      this.log.info(`💚 Registered ${providerId} with health monitor`);
+    }
+
+    // Initialize health monitor (subscribes to system:health-check:tick events)
+    await healthMonitor.initialize();
+
+    // Start health ticker (emits system:health-check:tick events)
+    const healthTicker = SystemHealthTicker.getInstance();
+    await healthTicker.start();
+
+    this.log.info('✅ AIProviderDaemonServer: Adapter health monitoring active');
+
+    this.log.info(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
   }
 
   /**
    * Server-specific shutdown
-   * Shuts down ProcessPool gracefully, then delegates to base class
+   * Shuts down health monitoring, ProcessPool, then delegates to base class
    */
   async shutdown(): Promise<void> {
-    console.log('🔄 AIProviderDaemonServer: Shutting down ProcessPool...');
+    this.log.info('🔄 AIProviderDaemonServer: Shutting down health monitoring...');
+
+    // Stop health ticker
+    const { SystemHealthTicker } = await import('../../system-daemon/server/SystemHealthTicker');
+    const healthTicker = SystemHealthTicker.getInstance();
+    await healthTicker.stop();
+
+    // Shutdown health monitor
+    const { AdapterHealthMonitor } = await import('./AdapterHealthMonitor');
+    const healthMonitor = AdapterHealthMonitor.getInstance();
+    await healthMonitor.shutdown();
+
+    this.log.info('✅ AIProviderDaemonServer: Health monitoring shutdown complete');
+
+    this.log.info('🔄 AIProviderDaemonServer: Shutting down ProcessPool...');
 
     if (this.processPool) {
       await this.processPool.shutdown();
-      console.log('✅ AIProviderDaemonServer: ProcessPool shutdown complete');
+      this.log.info('✅ AIProviderDaemonServer: ProcessPool shutdown complete');
     }
 
     await super.shutdown();

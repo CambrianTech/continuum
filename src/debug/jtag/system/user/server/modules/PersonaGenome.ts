@@ -86,7 +86,11 @@ export class PersonaGenome {
   /** Whether fine-tuning is currently active */
   private learningMode: boolean = false;
 
-  constructor(config: PersonaGenomeConfig) {
+  /** Logger function */
+  private log: (message: string) => void;
+
+  constructor(config: PersonaGenomeConfig, logger?: (message: string) => void) {
+    this.log = logger || console.log.bind(console);
     this.config = config;
 
     // Register initial adapters (but don't load them yet)
@@ -96,7 +100,7 @@ export class PersonaGenome {
       }
     }
 
-    console.log(`🧬 PersonaGenome: Initialized with base model ${config.baseModel}, memory budget ${config.memoryBudgetMB}MB`);
+    this.log(`🧬 PersonaGenome: Initialized with base model ${config.baseModel}, memory budget ${config.memoryBudgetMB}MB`);
   }
 
   /**
@@ -115,12 +119,13 @@ export class PersonaGenome {
       domain: config.domain,
       path: config.path,
       sizeMB: config.sizeMB,
-      priority: config.priority
+      priority: config.priority,
+      logger: this.log
     });
 
     this.availableAdapters.set(config.name, adapter);
 
-    console.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB)`);
+    this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB)`);
   }
 
   /**
@@ -137,18 +142,18 @@ export class PersonaGenome {
       const adapter = this.activeAdapters.get(skillName)!;
       adapter.markUsed();
       this.currentAdapter = adapter;
-      console.log(`🧬 PersonaGenome: Skill ${skillName} already active (cache hit)`);
+      // this.log(`🧬 PersonaGenome: Skill ${skillName} already active (cache hit)`);
       return;
     }
 
     // Check if adapter is registered
     const adapter = this.availableAdapters.get(skillName);
     if (!adapter) {
-      console.warn(`⚠️ PersonaGenome: Skill ${skillName} not registered - cannot activate`);
+      // this.log(`⚠️ PersonaGenome: Skill ${skillName} not registered - cannot activate`);
       return;
     }
 
-    console.log(`🧬 PersonaGenome: Activating skill ${skillName} (cache miss - paging in)...`);
+    // this.log(`🧬 PersonaGenome: Activating skill ${skillName} (cache miss - paging in)...`);
 
     // Check if we need to evict adapters to make space
     const adapterSize = adapter.getSize();
@@ -164,7 +169,7 @@ export class PersonaGenome {
     this.memoryUsedMB += adapterSize;
     this.currentAdapter = adapter;
 
-    console.log(`✅ PersonaGenome: Skill ${skillName} activated (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
+    // this.log(`✅ PersonaGenome: Skill ${skillName} activated (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }
 
   /**
@@ -177,7 +182,7 @@ export class PersonaGenome {
    */
   async evictLRU(): Promise<void> {
     if (this.activeAdapters.size === 0) {
-      console.warn(`⚠️ PersonaGenome: No adapters to evict`);
+      this.log(`⚠️ PersonaGenome: No adapters to evict`);
       return;
     }
 
@@ -196,11 +201,11 @@ export class PersonaGenome {
     }
 
     if (!victim || !victimName) {
-      console.warn(`⚠️ PersonaGenome: No evictable adapters found`);
+      this.log(`⚠️ PersonaGenome: No evictable adapters found`);
       return;
     }
 
-    console.log(`📤 PersonaGenome: Evicting ${victimName} (score=${maxScore.toFixed(2)}) to free ${victim.getSize()}MB...`);
+    this.log(`📤 PersonaGenome: Evicting ${victimName} (score=${maxScore.toFixed(2)}) to free ${victim.getSize()}MB...`);
 
     // Unload adapter
     await victim.unload();
@@ -209,7 +214,7 @@ export class PersonaGenome {
     this.activeAdapters.delete(victimName);
     this.memoryUsedMB -= victim.getSize();
 
-    console.log(`✅ PersonaGenome: Evicted ${victimName} (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
+    this.log(`✅ PersonaGenome: Evicted ${victimName} (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }
 
   /**
@@ -228,7 +233,7 @@ export class PersonaGenome {
 
     this.learningMode = true;
 
-    console.log(`🧬 PersonaGenome: Learning mode enabled for ${skillName}`);
+    this.log(`🧬 PersonaGenome: Learning mode enabled for ${skillName}`);
   }
 
   /**
@@ -247,7 +252,7 @@ export class PersonaGenome {
 
     this.learningMode = false;
 
-    console.log(`🧬 PersonaGenome: Learning mode disabled for ${skillName}`);
+    this.log(`🧬 PersonaGenome: Learning mode disabled for ${skillName}`);
   }
 
   /**
@@ -331,7 +336,7 @@ export class PersonaGenome {
    * Unload all adapters (cleanup on shutdown)
    */
   async shutdown(): Promise<void> {
-    console.log(`🧬 PersonaGenome: Shutting down - unloading ${this.activeAdapters.size} adapters...`);
+    this.log(`🧬 PersonaGenome: Shutting down - unloading ${this.activeAdapters.size} adapters...`);
 
     for (const adapter of this.activeAdapters.values()) {
       await adapter.unload();
@@ -341,6 +346,6 @@ export class PersonaGenome {
     this.memoryUsedMB = 0;
     this.currentAdapter = null;
 
-    console.log(`✅ PersonaGenome: Shutdown complete`);
+    this.log(`✅ PersonaGenome: Shutdown complete`);
   }
 }

@@ -23,6 +23,7 @@ import type {
   TrainingStatus
 } from './FineTuningTypes';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { Logger } from '../../../core/logging/Logger';
 
 /**
  * LoRA Trainer Interface
@@ -99,6 +100,15 @@ export abstract class BaseLoRATrainer implements LoRATrainer {
    * Used for logging and metrics only, NOT for if/else chains
    */
   abstract readonly providerId: string;
+
+  /**
+   * Helper to log fine-tuning operations
+   * Writes to genome log file
+   */
+  protected log(level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: any[]): void {
+    const logger = Logger.create('FineTuningAdapter', 'genome');
+    logger[level](message, ...args);
+  }
 
   /**
    * Check if this provider supports fine-tuning

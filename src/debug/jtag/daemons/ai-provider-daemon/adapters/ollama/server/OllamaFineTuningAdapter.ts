@@ -183,19 +183,19 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
     // Validate request first
     this.validateRequest(request);
 
-    console.log('🚀 Ollama/llama.cpp: Starting local LoRA training...');
+    this.log('info', '🚀 Ollama/llama.cpp: Starting local LoRA training...');
     const startTime = Date.now();
 
     try {
       // 1. Export dataset to training file (plain text format for llama.cpp)
-      console.log('   Exporting dataset...');
+      this.log('info', '   Exporting dataset...');
       const datasetPath = await this.exportDatasetForLlamaCpp(request.dataset);
-      console.log(`   Dataset exported: ${datasetPath}`);
+      this.log('debug', `   Dataset exported: ${datasetPath}`);
 
       // 2. Get model path from Ollama
-      console.log('   Locating model...');
+      this.log('info', '   Locating model...');
       const modelPath = await this.getOllamaModelPath(request.baseModel ?? 'llama3.2:3b');
-      console.log(`   Model path: ${modelPath}`);
+      this.log('debug', `   Model path: ${modelPath}`);
 
       // 3. Create output directory
       const outputDir = path.join(os.tmpdir(), `ollama-training-${Date.now()}`);
@@ -204,16 +204,16 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
       // 4. Build finetune command
       const adapterPath = path.join(outputDir, 'adapter.bin');
       const command = this.buildFinetuneCommand(request, modelPath, datasetPath, adapterPath);
-      console.log(`   Command: ${command.join(' ')}`);
+      this.log('debug', `   Command: ${command.join(' ')}`);
 
       // 5. Execute training
-      console.log('   Training...');
+      this.log('info', '   Training...');
       const metrics = await this.executeFinetuneCommand(command);
-      console.log('   Training complete!');
+      this.log('info', '   Training complete!');
 
       // 6. Save adapter
       const savedPath = await this.saveAdapter(request, outputDir);
-      console.log(`   Adapter saved: ${savedPath}`);
+      this.log('debug', `   Adapter saved: ${savedPath}`);
 
       // 7. Clean up temp files
       await this.cleanupTempFiles(datasetPath);
@@ -232,7 +232,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
       };
 
     } catch (error) {
-      console.error('❌ Ollama training failed:', error);
+      this.log('error', `❌ Ollama training failed: ${error instanceof Error ? error.message : String(error)}`);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
@@ -347,7 +347,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
             const manifestPath = path.join(ollamaDir, modelName.replace(':', '/'));
 
             // For now, return model name and let finetune try to resolve
-            console.warn(`   Could not parse model path from ollama show, using model name: ${modelName}`);
+            this.log('warn', `   Could not parse model path from ollama show, using model name: ${modelName}`);
             resolve(modelName);
           }
         } else {
@@ -357,7 +357,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
 
       proc.on('error', (error: Error) => {
         // If ollama command fails, return model name as fallback
-        console.warn(`   Ollama not available, using model name: ${modelName}`);
+        this.log('warn', `   Ollama not available, using model name: ${modelName}`);
         resolve(modelName);
       });
     });
@@ -458,7 +458,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
     try {
       await fs.promises.unlink(datasetPath);
     } catch (error) {
-      console.warn(`   Failed to clean up temp file: ${datasetPath}`, error);
+      this.log('warn', `   Failed to clean up temp file: ${datasetPath} - ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -626,7 +626,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
     try {
       await fs.promises.unlink(datasetPath);
     } catch (error) {
-      console.warn(`Failed to clean up temp file: ${datasetPath}`, error);
+      this.log('warn', `Failed to clean up temp file: ${datasetPath}`, error);
     }
   }
   */

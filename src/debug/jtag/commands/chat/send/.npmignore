@@ -1,0 +1,17 @@
+# Source files
+*.ts
+!*.d.ts
+
+# Tests
+test/
+*.test.js
+*.spec.js
+
+# Development
+.vscode/
+.idea/
+*.log
+
+# Git
+.git/
+.gitignore

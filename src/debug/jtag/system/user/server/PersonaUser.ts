@@ -271,7 +271,7 @@ export class PersonaUser extends AIUser {
       ? { ...DEFAULT_MEDIA_CONFIG, ...entity.mediaConfig }
       : DEFAULT_MEDIA_CONFIG;
 
-    console.log(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}, autoLoadMedia=${this.mediaConfig.autoLoadMedia}`);
+    this.log.info(`🤖 ${this.displayName}: Configured with provider=${this.modelConfig.provider}, model=${this.modelConfig.model}, autoLoadMedia=${this.mediaConfig.autoLoadMedia}`);
 
     // Initialize rate limiter (TODO: Replace with AI-based coordination)
     this.rateLimiter = new RateLimiter({
@@ -285,6 +285,18 @@ export class PersonaUser extends AIUser {
       maxSize: 100,
       enableLogging: true
     });
+    // Inject logger for cognition.log
+    this.inbox.setLogger((message: string) => {
+      this.logger.enqueueLog('cognition.log', message);
+    });
+    // Inject queue stats provider for load-aware deduplication (feedback loop)
+    this.inbox.setQueueStatsProvider(() => {
+      const adapter = AIProviderDaemon.getAdapter('ollama');
+      if (adapter && adapter.getQueueStats) {
+        return adapter.getQueueStats();
+      }
+      return { queueSize: 0, activeRequests: 0, maxConcurrent: 1, load: 0.0 };
+    });
 
     // PHASE 5: Self-task generation for autonomous work creation
     this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {
@@ -293,6 +305,9 @@ export class PersonaUser extends AIUser {
       skillAuditInterval: 21600000,       // 6 hours
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
+
+    // Initialize logger FIRST - other subsystems need it
+    this.logger = new PersonaLogger(this);
 
     // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
     // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters
@@ -311,15 +326,20 @@ export class PersonaUser extends AIUser {
       client,
       mediaConfig: this.mediaConfig,
       getSessionId: () => this.sessionId,
-      homeDirectory: this.homeDirectory
+      homeDirectory: this.homeDirectory,
+      logger: this.logger
     });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
-    this.decisionChain = new DecisionAdapterChain();
-    console.log(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
+    // Pass logger for cognition.log
+    const cognitionLogger = (message: string, ...args: any[]) => {
+      this.logger.enqueueLog('cognition.log', message);
+    };
+    this.decisionChain = new DecisionAdapterChain(cognitionLogger);
+    this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // Task execution module (delegated for modularity, uses this.memory getter)
-    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState);
+    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState, cognitionLogger);
 
     // CNS: Central Nervous System orchestrator (capability-based)
     // Note: mind/soul/body are non-null at this point (initialized above)
@@ -329,13 +349,9 @@ export class PersonaUser extends AIUser {
     this.messageEvaluator = new PersonaMessageEvaluator(this);
 
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
-    this.autonomousLoop = new PersonaAutonomousLoop(this);
+    this.autonomousLoop = new PersonaAutonomousLoop(this, cognitionLogger);
 
-    // RTOS subprocesses (Logger only - hippocampus now in soul)
-    // Logger MUST be first - other subprocesses need it for logging
-    this.logger = new PersonaLogger(this);
-
-    console.log(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
+    this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -410,7 +426,7 @@ export class PersonaUser extends AIUser {
     // STEP 1.2: Generate sessionId for tool execution attribution (don't register with SessionDaemon yet to avoid init timeout)
     if (!this.sessionId) {
       this.sessionId = generateUUID();
-      console.log(`🔐 ${this.displayName}: SessionId generated for tool attribution (${this.sessionId})`);
+      this.log.debug(`🔐 ${this.displayName}: SessionId generated for tool attribution (${this.sessionId})`);
     }
 
     // STEP 1.3: Enrich context with callerType='persona' and modelConfig for caller-adaptive command output
@@ -419,28 +435,28 @@ export class PersonaUser extends AIUser {
     if (this.client && this.client.context) {
       this.client.context.callerType = 'persona';
       this.client.context.modelConfig = this.modelConfig;
-      console.log(`🎯 ${this.displayName}: Context enriched with callerType='persona' and modelConfig for vision-capable tool output`);
+      this.log.debug(`🎯 ${this.displayName}: Context enriched with callerType='persona' and modelConfig for vision-capable tool output`);
     }
 
     // STEP 1.5: Start worker thread for message evaluation
     if (this.worker) {
       await this.worker.start();
-      console.log(`🧵 ${this.displayName}: Worker thread started`);
+      this.log.info(`🧵 ${this.displayName}: Worker thread started`);
     }
 
     // STEP 1.6: Register with ResourceManager for holistic resource allocation
     try {
       const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
       getResourceManager().registerAdapter(this.id, this.displayName);
-      console.log(`🔧 ${this.displayName}: Registered with ResourceManager`);
+      this.log.info(`🔧 ${this.displayName}: Registered with ResourceManager`);
     } catch (error) {
-      console.warn(`⚠️  ${this.displayName}: Could not register with ResourceManager:`, error);
+      this.log.warn(`⚠️  ${this.displayName}: Could not register with ResourceManager:`, error);
       // Non-fatal: isAvailable() will default to simple worker ready check
     }
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
-      console.log(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
+      this.log.debug(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
 
       // Subscribe to ALL chat events once (not per-room)
       // subscribeToChatEvents() filters by this.myRoomIds internally
@@ -455,9 +471,9 @@ export class PersonaUser extends AIUser {
       }, undefined, this.id);
 
       this.eventsSubscribed = true;
-      console.log(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
+      this.log.info(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
     } else {
-      console.log(`⏭️ ${this.displayName}: Skipping subscriptions (already subscribed or no client), eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client}`);
+      this.log.info(`⏭️ ${this.displayName}: Skipping subscriptions (already subscribed or no client), eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client}`);
     }
 
     this.isInitialized = true;
@@ -468,7 +484,7 @@ export class PersonaUser extends AIUser {
     // Start RTOS subprocesses
     // Logger MUST start first - other subprocesses depend on it for logging
     await this.logger.start();
-    console.log(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
+    this.log.info(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
 
     // Start soul memory consolidation (Hippocampus subprocess via soul interface)
     await this.soul!.startMemoryConsolidation();
@@ -485,7 +501,7 @@ export class PersonaUser extends AIUser {
    */
   private async autoJoinGeneralRoom(): Promise<void> {
     if (!this.client) {
-      console.warn(`⚠️ ${this.displayName}: Cannot auto-join general room - no client available`);
+      this.log.warn(`⚠️ ${this.displayName}: Cannot auto-join general room - no client available`);
       return;
     }
 
@@ -497,7 +513,7 @@ export class PersonaUser extends AIUser {
       });
 
       if (!queryResult.success || !queryResult.data?.length) {
-        console.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
+        this.log.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
         return;
       }
 
@@ -511,7 +527,7 @@ export class PersonaUser extends AIUser {
       // Check if already a member
       const isMember = generalRoom.members?.some((m: { userId: UUID }) => m.userId === this.id);
       if (isMember) {
-        console.log(`✅ ${this.displayName}: Already member of general room`);
+        this.log.debug(`✅ ${this.displayName}: Already member of general room`);
         return;
       }
 
@@ -532,11 +548,11 @@ export class PersonaUser extends AIUser {
         { members: updatedMembers }
       );
 
-      console.log(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
+      this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
       // Reload my rooms to pick up the change
       await this.loadMyRooms();
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Error auto-joining general room:`, error);
+      this.log.error(`❌ ${this.displayName}: Error auto-joining general room:`, error);
     }
   }
 
@@ -561,7 +577,7 @@ export class PersonaUser extends AIUser {
 
     // STEP 3: Skip resolved messages (moderator marked as no longer needing responses)
     if (messageEntity.metadata?.resolved) {
-      console.log(`⏭️ ${this.displayName}: Skipping resolved message from ${messageEntity.senderName}`);
+      this.log.debug(`⏭️ ${this.displayName}: Skipping resolved message from ${messageEntity.senderName}`);
       return;
     }
 
@@ -600,7 +616,7 @@ export class PersonaUser extends AIUser {
     // Update inbox load in state (for mood calculation)
     this.personaState.updateInboxLoad(this.inbox.getSize());
 
-    console.log(`📨 ${this.displayName}: Enqueued message (priority=${priority.toFixed(2)}, inbox size=${this.inbox.getSize()}, mood=${this.personaState.getState().mood})`);
+    this.log.info(`📨 ${this.displayName}: Enqueued message (priority=${priority.toFixed(2)}, inbox size=${this.inbox.getSize()}, mood=${this.personaState.getState().mood})`);
 
     // PHASE 3: Autonomous polling loop will service inbox at adaptive cadence
     // (No immediate processing - messages wait in inbox until loop polls)
@@ -749,7 +765,12 @@ export class PersonaUser extends AIUser {
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
-        intelligenceLevel: this.entity.intelligenceLevel
+        intelligenceLevel: this.entity.intelligenceLevel,
+        personaContext: {
+          uniqueId: this.entity.uniqueId,
+          displayName: this.displayName,
+          logDir: SystemPaths.personas.dir(this.entity.uniqueId)
+        }
       };
 
       // Use same 180s timeout as chat responses
@@ -765,7 +786,7 @@ export class PersonaUser extends AIUser {
 
       return response.text;
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Text generation failed (context=${request.context || 'unknown'}): ${error}`);
+      this.log.error(`❌ ${this.displayName}: Text generation failed (context=${request.context || 'unknown'}): ${error}`);
       throw error;
     }
   }
@@ -831,7 +852,7 @@ export class PersonaUser extends AIUser {
     // Rule 0: If persona requires explicit mention, only respond when mentioned
     const requiresExplicitMention = this.entity?.modelConfig?.requiresExplicitMention ?? false;
     if (requiresExplicitMention && !isMentioned) {
-      console.log(`🔇 ${this.displayName}: Requires explicit mention but wasn't mentioned - staying silent`);
+      this.log.debug(`🔇 ${this.displayName}: Requires explicit mention but wasn't mentioned - staying silent`);
       return false;
     }
 
@@ -881,12 +902,12 @@ export class PersonaUser extends AIUser {
       const threshold = (this.entity?.personaConfig?.responseThreshold ?? 50) / 100; // Convert 50 → 0.50
       const shouldRespond = adjustedConfidence >= threshold;
 
-      console.log(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - rawConfidence=${result.confidence.toFixed(2)}, agePenalty=${agePenalty.toFixed(2)} (${messageAgeMinutes.toFixed(1)}min old), adjustedConfidence=${adjustedConfidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
+      this.log.debug(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - rawConfidence=${result.confidence.toFixed(2)}, agePenalty=${agePenalty.toFixed(2)} (${messageAgeMinutes.toFixed(1)}min old), adjustedConfidence=${adjustedConfidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
 
       return shouldRespond;
 
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Fast gating failed, falling back to heuristics:`, error);
+      this.log.error(`❌ ${this.displayName}: Fast gating failed, falling back to heuristics:`, error);
 
       // Fallback to simple heuristics if command fails
       const heuristics = await this.calculateResponseHeuristics(messageEntity);
@@ -1002,7 +1023,7 @@ export class PersonaUser extends AIUser {
    */
   private async isSenderHuman(senderId: UUID): Promise<boolean> {
     if (!this.client) {
-      console.warn(`⚠️  PersonaUser ${this.displayName}: Cannot check sender type - no client, BLOCKING response`);
+      this.log.warn(`⚠️  PersonaUser ${this.displayName}: Cannot check sender type - no client, BLOCKING response`);
       return false; // Fail CLOSED - don't respond if we can't verify (prevents startup loops)
     }
 
@@ -1017,7 +1038,7 @@ export class PersonaUser extends AIUser {
       });
 
       if (!result.success || !result.found || !result.data) {
-        console.warn(`⚠️  PersonaUser ${this.displayName}: Could not read sender ${senderId}, BLOCKING response`);
+        this.log.warn(`⚠️  PersonaUser ${this.displayName}: Could not read sender ${senderId}, BLOCKING response`);
         return false; // Fail CLOSED - don't respond if database fails (prevents loops)
       }
 
@@ -1025,7 +1046,7 @@ export class PersonaUser extends AIUser {
       return senderType === 'human';
 
     } catch (error) {
-      console.error(`❌ PersonaUser ${this.displayName}: Error checking sender type, BLOCKING response:`, error);
+      this.log.error(`❌ PersonaUser ${this.displayName}: Error checking sender type, BLOCKING response:`, error);
       return false; // Fail CLOSED on error (prevents loops)
     }
   }
@@ -1231,7 +1252,7 @@ export class PersonaUser extends AIUser {
 
     // Stop logger last (ensure all logs written)
     await this.logger.stop();
-    console.log(`📝 ${this.displayName}: PersonaLogger stopped (all logs flushed)`);
+    this.log.info(`📝 ${this.displayName}: PersonaLogger stopped (all logs flushed)`);
 
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();
@@ -1241,7 +1262,7 @@ export class PersonaUser extends AIUser {
 
     if (this.worker) {
       await this.worker.shutdown();
-      console.log(`🧵 ${this.displayName}: Worker thread shut down`);
+      this.log.info(`🧵 ${this.displayName}: Worker thread shut down`);
       this.worker = null;
     }
   }

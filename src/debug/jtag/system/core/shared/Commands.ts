@@ -67,14 +67,51 @@ export class Commands {
     // Client-side or fallback: Use JTAGClient
     const jtagClient = await JTAGClient.sharedInstance;
 
-    // Auto-inject context and sessionId
+    // Auto-inject context, sessionId, and userId
     const finalParams: T = {
       context: jtagClient.context,
       sessionId: jtagClient.sessionId,
+      userId: jtagClient.userId, // Auto-inject userId from session
       ...(params || {})
     } as T;
 
     // Execute and get typed result (unwrapped by daemons.commands.execute)
     return await jtagClient.daemons.commands.execute<T, U>(command, finalParams);
+  }
+
+  /**
+   * Execute command and extract rich content (markdown, images, audio)
+   *
+   * Automatically unwraps common content fields from command results.
+   * Perfect for PersonaUsers who want clean content without parsing structures.
+   *
+   * @example
+   * // Get markdown directly
+   * const markdown = await Commands.content('wall/read', { room: 'general', doc: 'foo.md' });
+   *
+   * // Get image data directly
+   * const imageData = await Commands.content('screenshot', { querySelector: 'body' });
+   *
+   * // Get audio buffer directly
+   * const audioBuffer = await Commands.content('audio/record', { duration: 5000 });
+   */
+  static async content<T extends CommandParams = CommandParams>(
+    command: string,
+    params?: Partial<T>
+  ): Promise<string | Buffer | Uint8Array> {
+    const result = await Commands.execute<T, CommandResult>(command, params);
+
+    // Try common content field names in priority order
+    if ('content' in result && result.content) return result.content as string;
+    if ('markdown' in result && result.markdown) return result.markdown as string;
+    if ('text' in result && result.text) return result.text as string;
+    if ('data' in result && result.data) return result.data as Buffer | Uint8Array;
+    if ('buffer' in result && result.buffer) return result.buffer as Buffer | Uint8Array;
+    if ('audio' in result && result.audio) return result.audio as Buffer | Uint8Array;
+    if ('image' in result && result.image) return result.image as Buffer | Uint8Array;
+    if ('media' in result && (result.media as any)?.data) return (result.media as any).data as Buffer | Uint8Array;
+
+    // Fallback: JSON stringify the result
+    return JSON.stringify(result, null, 2);
   }
 }

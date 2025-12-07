@@ -77,7 +77,11 @@ export class PersonaSoul {
     this.logger.info('Soul subsystem initializing...');
 
     // Initialize memory systems
-    // PersonaMemory(personaId, displayName, genomeConfig, client?)
+    // PersonaMemory(personaId, displayName, genomeConfig, client?, genomeLogger?)
+    const genomeLogger = (message: string) => {
+      this.logger.enqueueLog('genome.log', message);
+    };
+
     this.memory = new PersonaMemory(
       personaUser.id,
       personaUser.displayName,
@@ -109,7 +113,8 @@ export class PersonaSoul {
           }
         ]
       },
-      personaUser.client
+      personaUser.client,
+      genomeLogger
     );
 
     // PersonaGenomeManager(personaId, displayName, entityGetter, clientGetter)
@@ -120,8 +125,11 @@ export class PersonaSoul {
       () => personaUser.client
     );
 
-    // TrainingDataAccumulator(personaId, displayName)
-    this.trainingAccumulator = new TrainingDataAccumulator(personaUser.id, personaUser.displayName);
+    // TrainingDataAccumulator(personaId, displayName, trainingLogger?)
+    const trainingLogger = (message: string) => {
+      this.logger.enqueueLog('training.log', message);
+    };
+    this.trainingAccumulator = new TrainingDataAccumulator(personaUser.id, personaUser.displayName, trainingLogger);
 
     // PersonaTrainingManager(personaId, displayName, trainingAccumulator, stateGetter, saveStateCallback)
     this.trainingManager = new PersonaTrainingManager(

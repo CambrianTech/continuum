@@ -31,7 +31,6 @@ import type {
   EmbeddingRequest,
   EmbeddingResponse,
   HealthStatus,
-  UsageMetrics,
 } from '../AIProviderTypesV2';
 import { AIProviderError } from '../AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
@@ -67,10 +66,13 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     this.providerId = config.providerId;
     this.providerName = config.providerName;
     this.supportedCapabilities = config.supportedCapabilities;
+
+    // Inject logger into PricingManager singleton (first adapter wins)
+    PricingManager.getInstance().setLogger((msg: string) => this.log(null, 'warn', msg));
   }
 
   protected async initializeProvider(): Promise<void> {
-    console.log(`🔌 ${this.providerName}: Initializing...`);
+    this.log(null, 'info', `🔌 ${this.providerName}: Initializing...`);
 
     // Verify API key is set
     if (!this.config.apiKey) {
@@ -87,11 +89,11 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     // Health check to verify connectivity
     const health = await this.healthCheck();
     if (health.status === 'unhealthy') {
-      console.warn(`⚠️  ${this.providerName}: Health check failed, but continuing (may work later)`);
+      this.log(null, 'warn', `⚠️  ${this.providerName}: Health check failed, but continuing (may work later)`);
     }
 
     this.isInitialized = true;
-    console.log(`✅ ${this.providerName}: Initialized successfully`);
+    this.log(null, 'info', `✅ ${this.providerName}: Initialized successfully`);
   }
 
   /**
@@ -100,7 +102,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
    */
   protected async fetchAndCachePricing(): Promise<void> {
     try {
-      console.log(`💰 ${this.providerName}: Fetching live pricing...`);
+      this.log(null, 'info', `💰 ${this.providerName}: Fetching live pricing...`);
 
       // Try OpenRouter first (aggregates many providers)
       const openRouterPricing = await PricingFetcher.fetchFromOpenRouter();
@@ -118,19 +120,20 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       }
 
       if (pricingCached > 0) {
-        console.log(`✅ ${this.providerName}: Cached live pricing for ${pricingCached} models from OpenRouter`);
+        this.log(null, 'info', `✅ ${this.providerName}: Cached live pricing for ${pricingCached} models from OpenRouter`);
       } else {
-        console.log(`⚠️  ${this.providerName}: No live pricing found, falling back to static pricing`);
+        this.log(null, 'info', `⚠️  ${this.providerName}: No live pricing found, falling back to static pricing`);
       }
     } catch (error) {
-      console.warn(`⚠️  ${this.providerName}: Failed to fetch live pricing, using static fallback:`, error);
+      this.log(null, 'warn', `⚠️  ${this.providerName}: Failed to fetch live pricing, using static fallback:`, error);
     }
   }
 
   /**
    * Text generation using OpenAI chat completions API
+   * NOTE: This implements generateTextImpl (not generateText) - base class wraps with timeout/circuit breaker
    */
-  async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+  protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     if (!this.isInitialized) {
       throw new AIProviderError('Adapter not initialized', 'adapter', 'NOT_INITIALIZED');
     }
@@ -191,7 +194,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       let adjustedMaxTokens = request.maxTokens;
       if (availableOutputTokens < (request.maxTokens || 0)) {
         adjustedMaxTokens = Math.max(100, availableOutputTokens); // Minimum 100 tokens output
-        console.warn(`⚠️  ${this.providerName} (${model}): Requested ${request.maxTokens} output tokens, but only ${availableOutputTokens} available (context: ${contextWindow}, input: ${estimatedInputTokens}). Capping to ${adjustedMaxTokens}.`);
+        this.log(request, 'warn', `⚠️  ${this.providerName} (${model}): Requested ${request.maxTokens} output tokens, but only ${availableOutputTokens} available (context: ${contextWindow}, input: ${estimatedInputTokens}). Capping to ${adjustedMaxTokens}.`);
       }
 
       // Make API request
@@ -378,7 +381,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
       return response.data.map((model: any) => this.parseModelInfo(model));
     } catch (error) {
-      console.warn(`⚠️  ${this.providerName}: Failed to fetch models:`, error);
+      this.log(null, 'warn', `⚠️  ${this.providerName}: Failed to fetch models:`, error);
       return [];
     }
   }
@@ -421,7 +424,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
   }
 
   protected async shutdownProvider(): Promise<void> {
-    console.log(`🔄 ${this.providerName}: Shutting down (API adapter, no cleanup needed)`);
+    this.log(null, 'info', `🔄 ${this.providerName}: Shutting down (API adapter, no cleanup needed)`);
     this.isInitialized = false;
   }
 
@@ -429,7 +432,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
    * Restart API connection (default: clear state and reconnect)
    */
   protected async restartProvider(): Promise<void> {
-    console.log(`🔄 ${this.providerName}: Restarting API connection...`);
+    this.log(null, 'info', `🔄 ${this.providerName}: Restarting API connection...`);
     this.isInitialized = false;
     await new Promise(resolve => setTimeout(resolve, 2000));
     await this.initializeProvider();
@@ -452,7 +455,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     const pricing = pricingManager.getModelPricing(this.providerId, model);
 
     if (!pricing) {
-      console.warn(`⚠️  ${this.providerName}: No pricing found for model ${model}, cost = $0`);
+      this.log(null, 'warn', `⚠️  ${this.providerName}: No pricing found for model ${model}, cost = $0`);
       return 0;
     }
 

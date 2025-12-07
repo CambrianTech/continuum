@@ -28,11 +28,12 @@ export const TEST_ENTITY_PATTERNS = {
   // Room entities created by integration tests
   rooms: {
     // database-chat-integration.test.ts creates rooms like "crud-test-room-1762399520021"
-    uniqueIdPrefix: 'crud-test-room-',
-    namePrefix: 'crud-test-room',
+    // state-system-integration.test.ts creates rooms like "State Test Room"
+    uniqueIdPrefix: ['crud-test-room-', 'state-test-room-'],
+    namePrefix: ['crud-test-room', 'state-test-room'],
     // ID format: timestamp-based
     idPattern: /^\d{13}-[a-z0-9]+$/,
-    displayNamePattern: /^(CRUD Test Room|UPDATED Test Room)$/,
+    displayNamePattern: ['CRUD Test Room', 'UPDATED Test Room', 'State Test Room'],
   },
 
   // Message entities created by integration tests
@@ -99,19 +100,45 @@ export function isTestUser(user: { uniqueId?: string; displayName?: string; id?:
  * Check if a room entity is a test entity
  */
 export function isTestRoom(room: { uniqueId?: string; name?: string; displayName?: string; id?: string }): boolean {
-  // Check uniqueId prefix
-  if (room.uniqueId?.startsWith(TEST_ENTITY_PATTERNS.rooms.uniqueIdPrefix)) {
-    return true;
+  // Check uniqueId prefix (supports array)
+  if (room.uniqueId) {
+    const prefixes = Array.isArray(TEST_ENTITY_PATTERNS.rooms.uniqueIdPrefix)
+      ? TEST_ENTITY_PATTERNS.rooms.uniqueIdPrefix
+      : [TEST_ENTITY_PATTERNS.rooms.uniqueIdPrefix];
+
+    for (const prefix of prefixes) {
+      if (room.uniqueId.startsWith(prefix)) {
+        return true;
+      }
+    }
   }
 
-  // Check name prefix
-  if (room.name?.startsWith(TEST_ENTITY_PATTERNS.rooms.namePrefix)) {
-    return true;
+  // Check name prefix (supports array)
+  if (room.name) {
+    const prefixes = Array.isArray(TEST_ENTITY_PATTERNS.rooms.namePrefix)
+      ? TEST_ENTITY_PATTERNS.rooms.namePrefix
+      : [TEST_ENTITY_PATTERNS.rooms.namePrefix];
+
+    for (const prefix of prefixes) {
+      if (room.name.startsWith(prefix)) {
+        return true;
+      }
+    }
   }
 
-  // Check display name pattern
-  if (room.displayName && TEST_ENTITY_PATTERNS.rooms.displayNamePattern.test(room.displayName)) {
-    return true;
+  // Check display name pattern (supports array)
+  if (room.displayName) {
+    const patterns = Array.isArray(TEST_ENTITY_PATTERNS.rooms.displayNamePattern)
+      ? TEST_ENTITY_PATTERNS.rooms.displayNamePattern
+      : [TEST_ENTITY_PATTERNS.rooms.displayNamePattern];
+
+    for (const pattern of patterns) {
+      if (typeof pattern === 'string' && room.displayName === pattern) {
+        return true;
+      } else if (pattern instanceof RegExp && pattern.test(room.displayName)) {
+        return true;
+      }
+    }
   }
 
   // Check explicit stuck IDs

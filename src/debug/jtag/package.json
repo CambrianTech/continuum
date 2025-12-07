@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.5656",
+  "version": "1.0.5861",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -126,11 +126,12 @@
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; find .continuum/sessions -mindepth 1 -maxdepth 1 -type d \\! -name 'validation' -exec rm -rf {} + 2>/dev/null || true; rm -rf examples/*/.continuum/jtag/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
+    "clean:logs": "find .continuum/jtag/system/logs -name '*.log' -type f -delete 2>/dev/null || true; find .continuum/personas -name '*.log' -type f -delete 2>/dev/null || true; echo '✅ Cleaned all log files'",
     "prebuild": "npm run version:bump && npm run clean:all && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts",
     "build:ts": "npx tsx generator/generate-version.ts && npx tsx scripts/build-with-loud-failure.ts",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
-    "build": "npm run prebuild && npm run build:ts",
+    "build": "npm run build:ts",
     "postbuild": "npx tsx scripts/create-import-map.ts && npx tsx scripts/convert-imports-to-relative.ts",
     "version:bump": "npm version patch --no-git-tag-version",
     "prepack": "npx tsx scripts/create-import-map.ts",
@@ -286,6 +287,7 @@
     "data:clear": "npm run data:backup && npx tsx scripts/data-clear.ts",
     "data:seed": "npx tsx scripts/seed-continuum.ts",
     "data:reseed": "npm run data:clear && npm run data:seed",
+    "data:cleanup": "npx tsx scripts/cleanup-test-entities.ts",
     "data:clean-files": "echo '🧹 Cleaning database files directly...' && find . -name '*.db' -type f -delete 2>/dev/null || true && find . -name '*.sqlite' -type f -delete 2>/dev/null || true && find . -name '*.sqlite3' -type f -delete 2>/dev/null || true && echo '✅ Database files cleaned'",
     "python:ensure": "npx tsx scripts/ensure-python-env.ts"
   },

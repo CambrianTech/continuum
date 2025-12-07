@@ -14,6 +14,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
@@ -41,8 +42,11 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getAllToolDefinitions } from './PersonaToolDefinitions';
+import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
 import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
+import { ContentDeduplicator } from './ContentDeduplicator';
+import { ResponseCleaner } from './ResponseCleaner';
 
 /**
  * Response generation result
@@ -67,6 +71,7 @@ export interface PersonaResponseGeneratorConfig {
   toolRegistry: PersonaToolRegistry;
   mediaConfig: PersonaMediaConfig;
   getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
+  logger: import('./PersonaLogger').PersonaLogger;  // For persona-specific logging
 }
 
 /**
@@ -82,17 +87,41 @@ export class PersonaResponseGenerator {
   private toolRegistry: PersonaToolRegistry;
   private mediaConfig: PersonaMediaConfig;
   private getSessionId: () => UUID | null;
+  private logger: import('./PersonaLogger').PersonaLogger;
+
+  /** Content deduplicator - prevents same content from being posted within time window */
+  private contentDeduplicator: ContentDeduplicator;
+  /** Response cleaner - strips unwanted prefixes from AI responses */
+  private responseCleaner: ResponseCleaner;
 
   constructor(config: PersonaResponseGeneratorConfig) {
     this.personaId = config.personaId;
     this.personaName = config.personaName;
     this.entity = config.entity;
+    this.logger = config.logger;
     this.modelConfig = config.modelConfig;
     this.client = config.client;
     this.toolExecutor = config.toolExecutor;
     this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
+
+    // Initialize modular helpers
+    this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
+    this.responseCleaner = new ResponseCleaner({ log: this.log.bind(this) });
+  }
+
+  /**
+   * Log to persona's cognition.log file
+   */
+  private log(message: string, ...args: any[]): void {
+    const timestamp = new Date().toISOString();
+    const formattedArgs = args.length > 0
+      ? ' ' + args.map(a =>
+          typeof a === 'object' ? inspect(a, { depth: 2, colors: false, compact: true }) : String(a)
+        ).join(' ')
+      : '';
+    this.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
   /**
@@ -153,7 +182,7 @@ export class PersonaResponseGenerator {
     // Clamp between 5 and 50 messages
     const clampedCount = Math.max(5, Math.min(50, safeCount));
 
-    console.log(`📊 ${this.personaName}: Context calc: model=${model}, window=${contextWindow}, available=${availableForMessages}, safe=${clampedCount} msgs`);
+    this.log(`📊 ${this.personaName}: Context calc: model=${model}, window=${contextWindow}, available=${availableForMessages}, safe=${clampedCount} msgs`);
 
     return clampedCount;
   }
@@ -190,7 +219,7 @@ export class PersonaResponseGenerator {
     // FAILSAFE: @mentions ALWAYS wake - regardless of dormancy level
     if (mentionsPersona) {
       if (dormancyLevel !== 'active') {
-        console.log(`✨ ${this.personaName}: @mention detected, waking from ${dormancyLevel} mode`);
+        this.log(`✨ ${this.personaName}: @mention detected, waking from ${dormancyLevel} mode`);
       }
       return true;
     }
@@ -202,7 +231,7 @@ export class PersonaResponseGenerator {
 
     // Level 1: Mention-Only - only respond to @mentions (already handled above)
     if (dormancyLevel === 'mention-only') {
-      console.log(`💤 ${this.personaName}: Dormant (mention-only), skipping message`);
+      this.log(`💤 ${this.personaName}: Dormant (mention-only), skipping message`);
       return false;
     }
 
@@ -214,7 +243,7 @@ export class PersonaResponseGenerator {
         return true;
       }
 
-      console.log(`💤 ${this.personaName}: Dormant (human-only), skipping AI message`);
+      this.log(`💤 ${this.personaName}: Dormant (human-only), skipping AI message`);
       return false;
     }
 
@@ -230,13 +259,13 @@ export class PersonaResponseGenerator {
     originalMessage: ChatMessageEntity,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<ResponseGenerationResult> {
-    console.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
+    this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     const generateStartTime = Date.now();  // Track total response time for decision logging
     try {
       // 🔧 SUB-PHASE 3.1: Build RAG context
       // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
-      console.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
-      const ragBuilder = new ChatRAGBuilder();
+      this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
+      const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
         this.personaId,
@@ -254,10 +283,10 @@ export class PersonaResponseGenerator {
           }
         }
       );
-      console.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
+      this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM
-      console.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);
+      this.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);
       // ✅ Support multimodal content (images, audio, video) for vision-capable models
       // Adapters will transform based on model capability (raw images vs text descriptions)
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
@@ -274,15 +303,16 @@ export class PersonaResponseGenerator {
         }\n\nUse these memories to inform your responses when relevant.\n================================`;
 
         systemPrompt += memorySection;
-        console.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
+        this.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
       }
 
       // Inject available tools for autonomous tool discovery (Phase 3A)
       // Use adapter-based formatting for harmony with parser
-      const availableTools = this.toolRegistry.listToolsForPersona(this.personaId);
+      // CRITICAL: Use async version to ensure tool cache is initialized before injection
+      const availableTools = await this.toolRegistry.listToolsForPersonaAsync(this.personaId);
       if (availableTools.length > 0) {
-        // Convert PersonaToolDefinitions to adapter format
-        const toolDefinitions: AdapterToolDefinition[] = getAllToolDefinitions().map(t => ({
+        // Convert PersonaToolDefinitions to adapter format (use already-loaded tools from registry)
+        const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
           name: t.name,
           description: t.description,
           parameters: t.parameters,
@@ -297,7 +327,7 @@ export class PersonaResponseGenerator {
 ================================`;
 
         systemPrompt += toolsSection;
-        console.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
+        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
       }
 
       messages.push({
@@ -335,7 +365,7 @@ export class PersonaResponseGenerator {
         }
       }
 
-      console.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
+      this.log(`🖼️  ${this.personaName}: Loaded ${fullRAGContext.artifacts.length} artifacts for ${artifactsByMessageId.size} messages`);
 
       // Add conversation history from RAG context with human-readable timestamps
       // NOTE: Llama 3.2 doesn't support multi-party chats natively, so we embed speaker names in content
@@ -421,7 +451,7 @@ export class PersonaResponseGenerator {
               content: contentParts  // Multimodal content
             });
 
-            console.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name}`);
+            this.log(`🖼️  ${this.personaName}: Added ${messageArtifacts.length} artifact(s) to message from ${msg.name}`);
           } else {
             // Text-only message
             messages.push({
@@ -488,16 +518,16 @@ CRITICAL READING COMPREHENSION:
 
 Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts (consecutive messages about different subjects) are also topic changes.`
       });
-      console.log(`✅ ${this.personaName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
+      this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
 
       // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
-      console.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
+      this.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
 
       // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
       // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
       const effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
 
-      console.log(`📊 ${this.personaName}: RAG metadata check:`, {
+      this.log(`📊 ${this.personaName}: RAG metadata check:`, {
         hasAdjustedMaxTokens: !!fullRAGContext.metadata.adjustedMaxTokens,
         adjustedMaxTokens: fullRAGContext.metadata.adjustedMaxTokens,
         inputTokenCount: fullRAGContext.metadata.inputTokenCount,
@@ -516,6 +546,23 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
       };
 
+      // 🎰 PHASE 3.3a: Request inference slot from coordinator
+      // This prevents thundering herd - only N personas can generate simultaneously per provider
+      const provider = this.modelConfig.provider || 'ollama';
+      const isMentioned = originalMessage.content.text.toLowerCase().includes(`@${this.personaName.toLowerCase()}`);
+
+      const slotGranted = await InferenceCoordinator.requestSlot(
+        this.personaId,
+        originalMessage.id,
+        provider,
+        { isMentioned }
+      );
+
+      if (!slotGranted) {
+        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied - skipping response`);
+        return { success: true, wasRedundant: true }; // Treat as redundant (another AI will respond)
+      }
+
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
       // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
@@ -531,11 +578,14 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           AIProviderDaemon.generateText(request),
           timeoutPromise
         ]);
-        const generateDuration = Date.now() - generateStartTime;
-        console.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
-        // Log AI response generation to cognition database (for interrogation)
-        await CognitionLogger.logResponseGeneration(
+        // 🎰 Release slot on success
+        InferenceCoordinator.releaseSlot(this.personaId, provider);
+        const generateDuration = Date.now() - generateStartTime;
+        this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
+
+        // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
+        CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
           this.modelConfig.provider || 'ollama',
@@ -550,10 +600,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           this.modelConfig.temperature ?? 0.7,
           'chat',  // Domain
           originalMessage.roomId  // Context ID
-        );
+        ).catch(err => this.log(`⚠️ Failed to log response generation: ${err}`));
 
-        // Emit cognition event for generate stage
-        await Events.emit<StageCompleteEvent>(
+        // Fire-and-forget: Emit cognition event for generate stage (non-blocking telemetry)
+        Events.emit<StageCompleteEvent>(
           DataDaemon.jtagContext!,
           COGNITION_EVENTS.STAGE_COMPLETE,
           {
@@ -577,15 +627,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             },
             timestamp: Date.now()
           }
-        );
+        ).catch(err => this.log(`⚠️ Failed to emit stage complete event: ${err}`));
 
         // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
         // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-        const cleanedResponse = this.cleanAIResponse(aiResponse.text.trim());
+        const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
         if (cleanedResponse !== aiResponse.text.trim()) {
-          console.log(`⚠️  ${this.personaName}: Stripped name prefix from AI response`);
-          console.log(`   Original: "${aiResponse.text.trim().slice(0, 80)}..."`);
-          console.log(`   Cleaned:  "${cleanedResponse.slice(0, 80)}..."`);
           aiResponse.text = cleanedResponse;
         }
 
@@ -600,11 +647,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
           if (toolCalls.length === 0) {
             // No tools found, proceed to post response
-            console.log(`✅ ${this.personaName}: [PHASE 3.3.6] No tool calls found, proceeding`);
+            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] No tool calls found, proceeding`);
             break;
           }
 
-          console.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Found ${toolCalls.length} tool call(s), iteration ${toolIterations + 1}/${MAX_TOOL_ITERATIONS}`);
+          this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Found ${toolCalls.length} tool call(s), iteration ${toolIterations + 1}/${MAX_TOOL_ITERATIONS}`);
           toolIterations++;
 
           // Execute tool calls via adapter with media configuration
@@ -692,7 +739,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               };
 
           // Regenerate response with tool results
-          console.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
+          this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
+          this.log(`📊 ${this.personaName}: Tool summary length: ${leanSummary.length} chars, ${toolCalls.length} calls, ${toolMedia?.length || 0} media items`);
+
           const regenerateRequest: TextGenerationRequest = {
             ...request,
             messages: [
@@ -702,51 +751,70 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             ]
           };
 
-          const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
-          if (!regeneratedResponse.text) {
-            console.error(`❌ ${this.personaName}: [PHASE 3.3.6] Tool regeneration failed, using previous response`);
+          this.log(`📊 ${this.personaName}: Regenerate request has ${regenerateRequest.messages.length} messages total`);
+
+          try {
+            const regenerateStartTime = Date.now();
+            const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
+            const regenerateDuration = Date.now() - regenerateStartTime;
+
+            this.log(`⏱️  ${this.personaName}: Regeneration took ${regenerateDuration}ms`);
+
+            if (!regeneratedResponse.text) {
+              this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Tool regeneration returned empty response, using previous response`);
+              // Remove tool blocks from original response before posting
+              aiResponse.text = explanationText;
+              break;
+            }
+
+            // Update aiResponse with regenerated response
+            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text.trim());
+            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars)`);
+          } catch (regenerateError) {
+            const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
+            this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Regeneration failed with error: ${errorMsg}`);
+            this.log(`   Stack:`, regenerateError instanceof Error ? regenerateError.stack : 'N/A');
             // Remove tool blocks from original response before posting
             aiResponse.text = explanationText;
             break;
           }
 
-          // Update aiResponse with regenerated response
-          aiResponse.text = this.cleanAIResponse(regeneratedResponse.text.trim());
-          console.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results`);
-
           // Loop will check again for more tool calls (up to MAX_TOOL_ITERATIONS)
         }
 
         if (toolIterations >= MAX_TOOL_ITERATIONS) {
-          console.warn(`⚠️  ${this.personaName}: [PHASE 3.3.6] Reached max tool iterations (${MAX_TOOL_ITERATIONS}), stopping`);
+          this.log(`⚠️  ${this.personaName}: [PHASE 3.3.6] Reached max tool iterations (${MAX_TOOL_ITERATIONS}), stopping`);
           // Strip any remaining tool blocks from final response
           aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
         }
 
         // PHASE 5C: Log coordination decision to database WITH complete response content
         // This captures the complete decision pipeline: context → decision → actual response
-        console.log(`🔍 ${this.personaName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${aiResponse.text.slice(0, 50)}..."`);
+        this.log(`🔍 ${this.personaName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${aiResponse.text.slice(0, 50)}..."`);
         if (decisionContext) {
-          console.log(`🔧 ${this.personaName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
+          this.log(`🔧 ${this.personaName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
           CoordinationDecisionLogger.logDecision({
             ...decisionContext,
             responseContent: aiResponse.text,  // ✅ FIX: Now includes actual response!
             tokensUsed: aiResponse.text.length,  // Estimate based on character count
             responseTime: Date.now() - generateStartTime
           }).catch(error => {
-            console.error(`❌ ${this.personaName}: Failed to log POSTED decision:`, error);
+            this.log(`❌ ${this.personaName}: Failed to log POSTED decision:`, error);
           });
-          console.log(`✅ ${this.personaName}: [PHASE 5C] Decision logged with responseContent successfully`);
+          this.log(`✅ ${this.personaName}: [PHASE 5C] Decision logged with responseContent successfully`);
         } else {
-          console.error(`❌ ${this.personaName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
+          this.log(`❌ ${this.personaName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`❌ ${this.personaName}: [PHASE 3.3] AI generation failed:`, errorMessage);
+        // 🎰 Release slot on error - CRITICAL to prevent slot leaks
+        InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-        // Log failed AI response generation to cognition database
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.log(`❌ ${this.personaName}: [PHASE 3.3] AI generation failed:`, errorMessage);
+
+        // Fire-and-forget: Log failed AI response generation to cognition database (non-blocking telemetry)
         const generateDuration = Date.now() - generateStartTime;
-        await CognitionLogger.logResponseGeneration(
+        CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
           this.modelConfig.provider || 'ollama',
@@ -755,18 +823,18 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           messages.reduce((sum, m) => sum + m.content.length, 0),
           0,  // No completion tokens on error
           0.0,  // No cost
-          '',  // No response
+          `[GENERATION FAILED: ${errorMessage}]`,  // Error as response summary
           generateDuration,
           'error',  // Status
           this.modelConfig.temperature ?? 0.7,
           'chat',
           originalMessage.roomId,
           { errorMessage }  // Include error details
-        );
+        ).catch(err => this.log(`⚠️ Failed to log error response: ${err}`));
 
-        // Emit ERROR event for UI display
+        // Fire-and-forget: Emit ERROR event for UI display (non-blocking)
         if (this.client) {
-          await Events.emit<AIErrorEventData>(
+          Events.emit<AIErrorEventData>(
             DataDaemon.jtagContext!,
             AI_DECISION_EVENTS.ERROR,
             {
@@ -783,7 +851,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               scope: EVENT_SCOPES.ROOM,
               scopeId: originalMessage.roomId
             }
-          );
+          ).catch(err => this.log(`⚠️ Failed to emit error event: ${err}`));
         }
 
         // Log error to AI decisions log
@@ -797,11 +865,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // DISABLED: Redundancy checking via LLM is too flaky (false positives like C++ vs JavaScript questions)
       // It adds AI unreliability on top of AI unreliability, leading to valid responses being discarded
       // TODO: Replace with simple heuristics (exact text match, time-based deduplication)
-      console.log(`⏭️  ${this.personaName}: [PHASE 3.4] Redundancy check DISABLED (too flaky), proceeding to post`);
+      this.log(`⏭️  ${this.personaName}: [PHASE 3.4] Redundancy check DISABLED (too flaky), proceeding to post`);
       const isRedundant = false; // Disabled
 
       if (isRedundant) {
-        console.log(`⚠️ ${this.personaName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
+        this.log(`⚠️ ${this.personaName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
 
         // Emit DECIDED_SILENT event to clear AI status indicator
         if (this.client) {
@@ -828,10 +896,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         return { success: true, wasRedundant: true }; // Discard response
       }
-      console.log(`✅ ${this.personaName}: [PHASE 3.4] Response not redundant, proceeding to post`);
+      this.log(`✅ ${this.personaName}: [PHASE 3.4] Response not redundant, proceeding to post`);
 
       // 🔧 SUB-PHASE 3.5: Create and post response
-      console.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
+      this.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
       const responseMessage = new ChatMessageEntity();
       responseMessage.roomId = originalMessage.roomId;
       responseMessage.senderId = this.personaId;
@@ -861,7 +929,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             data: responseMessage
           });
       const postDuration = Date.now() - postStartTime;
-      console.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
+      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
 
       if (!result.success) {
         throw new Error(`Failed to create message: ${result.error}`);
@@ -908,12 +976,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // 3. Anomalous behavior worth investigating
       if (originalMessage.metadata?.isSystemTest === true) {
         const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
-        console.error(anomalyMessage);
-        console.error(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
-        console.error(`   Original Message: "${originalMessage.content.text.slice(0, 100)}..."`);
-        console.error(`   AI Response: "${aiResponse.text.trim().slice(0, 100)}..."`);
-        console.error(`   Room ID: ${originalMessage.roomId}`);
-        console.error(`   Message ID: ${originalMessage.id}`);
+        this.log(anomalyMessage);
+        this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
+        this.log(`   Original Message: "${originalMessage.content.text.slice(0, 100)}..."`);
+        this.log(`   AI Response: "${aiResponse.text.trim().slice(0, 100)}..."`);
+        this.log(`   Room ID: ${originalMessage.roomId}`);
+        this.log(`   Message ID: ${originalMessage.id}`);
 
         // Log to AI decisions log for persistent tracking
         AIDecisionLogger.logError(
@@ -993,46 +1061,6 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
   }
 
-  /**
-   * Clean AI response by stripping any name prefixes the LLM added despite system prompt instructions
-   * LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-   *
-   * CURRENT: Heuristic regex-based cleaning (defensive programming)
-   * FUTURE: Should become AI-powered via ThoughtStream adapter (like gating)
-   *         - An AI evaluates: "Does this response have formatting issues?"
-   *         - Returns cleaned version with confidence score
-   *         - Pluggable via recipe configuration
-   *
-   * Examples to strip:
-   * - "[11:59] GPT Assistant: Yes, Joel..." → "Yes, Joel..."
-   * - "GPT Assistant: Yes, Joel..." → "Yes, Joel..."
-   * - "[11:59] Yes, Joel..." → "Yes, Joel..."
-   */
-  private cleanAIResponse(response: string): string {
-    let cleaned = response.trim();
-
-    // Pattern 1: Strip "[HH:MM] Name: " prefix
-    // Matches: [11:59] GPT Assistant: message
-    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*/, '');
-
-    // Pattern 2: Strip "Name: " prefix at start
-    // Matches: GPT Assistant: message
-    // Only if it looks like a name (contains letters, spaces, and ends with colon)
-    cleaned = cleaned.replace(/^[A-Z][A-Za-z\s]+:\s*/, '');
-
-    // Pattern 3: Strip just "[HH:MM] " timestamp prefix
-    // Matches: [11:59] message
-    cleaned = cleaned.replace(/^\[\d{1,2}:\d{2}\]\s*/, '');
-
-    return cleaned.trim();
-  }
-
-  /**
-   * Self-review: Check if generated response is redundant compared to conversation history
-   * Like a human who drafts a response, re-reads the chat, and thinks "oh someone already said that"
-   *
-   * NOTE: Currently disabled (too flaky) - returns false
-   */
   async checkResponseRedundancy(
     myResponse: string,
     roomId: UUID,

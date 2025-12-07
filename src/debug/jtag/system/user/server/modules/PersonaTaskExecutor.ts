@@ -23,12 +23,17 @@ import type { PersonaMemory } from './cognitive/memory/PersonaMemory';
  * - fine-tune-lora: Trains LoRA adapters
  */
 export class PersonaTaskExecutor {
+  private log: (message: string) => void;
+
   constructor(
     private readonly personaId: UUID,
     private readonly displayName: string,
     private readonly memory: PersonaMemory,
-    private readonly personaState: PersonaStateManager
-  ) {}
+    private readonly personaState: PersonaStateManager,
+    logger?: (message: string) => void
+  ) {
+    this.log = logger || console.log.bind(console);
+  }
 
   /**
    * Execute a task from the inbox
@@ -37,7 +42,7 @@ export class PersonaTaskExecutor {
    * updates database with completion status
    */
   async executeTask(task: InboxTask): Promise<void> {
-    console.log(`🎯 ${this.displayName}: Executing task: ${task.taskType} - ${task.description}`);
+    this.log(`🎯 ${this.displayName}: Executing task: ${task.taskType} - ${task.description}`);
 
     const startTime = Date.now();
     let outcome = '';
@@ -64,14 +69,14 @@ export class PersonaTaskExecutor {
         default:
           outcome = `Unknown task type: ${task.taskType}`;
           status = 'failed';
-          console.warn(`⚠️  ${this.displayName}: ${outcome}`);
+          this.log(`⚠️  ${this.displayName}: ${outcome}`);
       }
 
-      console.log(`✅ ${this.displayName}: Task completed: ${task.taskType} - ${outcome}`);
+      this.log(`✅ ${this.displayName}: Task completed: ${task.taskType} - ${outcome}`);
     } catch (error) {
       status = 'failed';
       outcome = `Error executing task: ${error}`;
-      console.error(`❌ ${this.displayName}: ${outcome}`);
+      this.log(`❌ ${this.displayName}: ${outcome}`);
     }
 
     // Update task in database with completion status
@@ -105,7 +110,7 @@ export class PersonaTaskExecutor {
   private async executeMemoryConsolidation(_task: InboxTask): Promise<string> {
     // TODO: Implement memory consolidation logic
     // For now, just log and return success
-    console.log(`🧠 ${this.displayName}: Consolidating memories...`);
+    this.log(`🧠 ${this.displayName}: Consolidating memories...`);
 
     // Query recent messages from rooms this persona is in
     const recentMessages = await DataDaemon.query({
@@ -127,7 +132,7 @@ export class PersonaTaskExecutor {
    */
   private async executeSkillAudit(_task: InboxTask): Promise<string> {
     // TODO: Implement skill audit logic
-    console.log(`🔍 ${this.displayName}: Auditing skills...`);
+    this.log(`🔍 ${this.displayName}: Auditing skills...`);
 
     // Query recent tasks to evaluate performance by domain
     const recentTasks = await DataDaemon.query<TaskEntity>({
@@ -163,7 +168,7 @@ export class PersonaTaskExecutor {
    * Continues work on a previously started task that became stale
    */
   private async executeResumeWork(_task: InboxTask): Promise<string> {
-    console.log(`♻️  ${this.displayName}: Resuming unfinished work...`);
+    this.log(`♻️  ${this.displayName}: Resuming unfinished work...`);
 
     // TODO: Implement resume logic - query for stale in_progress tasks and re-enqueue them
     // For now, just acknowledge the task
@@ -175,7 +180,7 @@ export class PersonaTaskExecutor {
    * Trains a LoRA adapter on recent failure examples to improve performance
    */
   private async executeFineTuneLora(task: InboxTask): Promise<string> {
-    console.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
+    this.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
 
     // Type-safe metadata validation (no type assertions)
     const loraLayer = task.metadata?.loraLayer;
@@ -186,7 +191,7 @@ export class PersonaTaskExecutor {
     // PHASE 6: Enable learning mode on the genome
     try {
       await this.memory.genome.enableLearningMode(loraLayer);
-      console.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
+      this.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
 
       // TODO (Phase 7): Implement actual fine-tuning logic
       // - Collect training examples from recent failures
@@ -199,11 +204,11 @@ export class PersonaTaskExecutor {
 
       // Disable learning mode after training
       await this.memory.genome.disableLearningMode(loraLayer);
-      console.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
+      this.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
 
       return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
+      this.log(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
       return `Fine-tuning failed: ${error}`;
     }
   }

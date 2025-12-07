@@ -133,7 +133,8 @@ export class ToolRegistry {
     context: JTAGContext
   ): Promise<{ content?: string; media?: MediaItem[] }> {
     // Execute command directly - toolName IS the command name
-    const result = await Commands.execute(toolName, params);
+    // CRITICAL: Pass context so commands can adapt output (e.g., screenshot returns media for personas)
+    const result = await Commands.execute(toolName, { ...params, context });
 
     // Generic result formatting
     // Commands return whatever format they want - we extract useful data
@@ -141,8 +142,16 @@ export class ToolRegistry {
       // Check for media (screenshots, images, etc.)
       const media: MediaItem[] = [];
 
-      // If result has base64 image data, extract it as media
-      if ('base64' in result && typeof result.base64 === 'string') {
+      // PRIORITY 1: If result already has a media field (from adaptResultForCaller)
+      // This is the proper way commands return media (e.g., ScreenshotServerCommand)
+      if ('media' in result && result.media) {
+        const mediaItem = result.media as MediaItem;
+        if (mediaItem.type && mediaItem.base64) {
+          media.push(mediaItem);
+        }
+      }
+      // PRIORITY 2: If result has base64 at top level (legacy/fallback)
+      else if ('base64' in result && typeof result.base64 === 'string') {
         media.push({
           type: 'image',
           base64: result.base64,

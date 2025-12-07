@@ -127,23 +127,23 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
   protected async _startTraining(
     request: LoRATrainingRequest
   ): Promise<TrainingHandle> {
-    console.log('🚀 Mistral: Starting fine-tuning job...');
+    this.log('info', '🚀 Mistral: Starting fine-tuning job...');
 
     // 1. Export dataset to JSONL
-    console.log('   Exporting dataset...');
+    this.log('info', '   Exporting dataset...');
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-    console.log(`   Dataset exported: ${datasetPath}`);
+    this.log('debug', `   Dataset exported: ${datasetPath}`);
 
     // 2. Upload dataset to Mistral
-    console.log('   Uploading to Mistral...');
+    this.log('info', '   Uploading to Mistral...');
     const fileId = await this.uploadDataset(datasetPath);
-    console.log(`   File ID: ${fileId}`);
+    this.log('debug', `   File ID: ${fileId}`);
 
     // 3. Create fine-tuning job (auto_start: true to avoid timing issues)
-    console.log('   Creating training job...');
+    this.log('info', '   Creating training job...');
     const jobId = await this.createFineTuningJob(request, fileId);
-    console.log(`   Job ID: ${jobId}`);
-    console.log('   Job will auto-start after validation');
+    this.log('debug', `   Job ID: ${jobId}`);
+    this.log('info', '   Job will auto-start after validation');
 
     // 5. Clean up temp file immediately
     await this.cleanupTempFiles(datasetPath);
@@ -179,7 +179,7 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
     _metadata: Record<string, unknown>
   ): Promise<TrainingStatus> {
   /* eslint-enable @typescript-eslint/naming-convention */
-    console.log(`🔍 Mistral: Querying job status: ${providerJobId}`);
+    this.log('debug', `🔍 Mistral: Querying job status: ${providerJobId}`);
 
     const apiKey = getSecret('MISTRAL_API_KEY', 'MistralLoRAAdapter');
     if (!apiKey) {
@@ -226,7 +226,7 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
         }
       };
     } catch (error) {
-      console.error(`❌ Mistral: Failed to query status:`, error);
+      this.log('error', `❌ Mistral: Failed to query status: ${error instanceof Error ? error.message : String(error)}`);
       return {
         status: 'failed',
         error: error instanceof Error ? error.message : 'Unknown error'
@@ -259,7 +259,7 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
       case 'CANCELLED':
         return 'cancelled';
       default:
-        console.warn(`Unknown Mistral status: ${mistralStatus}, treating as running`);
+        this.log('warn', `Unknown Mistral status: ${mistralStatus}, treating as running`);
         return 'running';
     }
   }
@@ -443,10 +443,10 @@ export class MistralLoRAAdapter extends BaseLoRATrainerServer {
     try {
       if (fs.existsSync(datasetPath)) {
         fs.unlinkSync(datasetPath);
-        console.log(`   Cleaned up temp file: ${datasetPath}`);
+        this.log('debug', `   Cleaned up temp file: ${datasetPath}`);
       }
     } catch (error) {
-      console.warn(`   Failed to clean up temp file: ${error}`);
+      this.log('warn', `   Failed to clean up temp file: ${error}`);
     }
   }
 }

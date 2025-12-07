@@ -23,6 +23,7 @@ import type { DataCreateParams, DataCreateResult } from '../../../../commands/da
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
 import { Logger, FileMode } from '../../../core/logging/Logger';
 import { SystemPaths } from '../../../core/config/SystemPaths';
+import { RoomResolver } from '../../../core/server/RoomResolver';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -144,22 +145,25 @@ export class PersonaToolExecutor {
     this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
     PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
-    const results: string[] = [];
-    const allMedia: MediaItem[] = [];
-    const storedResultIds: UUID[] = [];  // Phase 3B: Collect UUIDs for working memory
-
-    for (const toolCall of toolCalls) {
+    // PARALLELIZED: Execute all tools concurrently instead of sequentially
+    // This reduces tool execution time from O(sum of all tool times) to O(max tool time)
+    // Example: 3 tools × 500ms each = 1500ms sequential → 500ms parallel (3x speedup)
+    const toolExecutionPromises = toolCalls.map(async (toolCall) => {
       const startTime = Date.now();
 
-      this.log.info(`Calling ${toolCall.toolName} with params:`, toolCall.parameters);
-      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(toolCall.parameters)}`);
+      // Resolve "current" room parameter to actual room name
+      // This handles wall/*, chat/*, and any other room-scoped commands
+      const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
+
+      this.log.info(`Calling ${toolCall.toolName} with params:`, resolvedParams);
+      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(resolvedParams)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
       // NO try-catch - let exceptions bubble to PersonaResponseGenerator
       // ToolRegistry returns {success: false, error} for expected failures
       const registryResult = await this.toolRegistry.executeTool(
         toolCall.toolName,
-        toolCall.parameters,
+        resolvedParams,
         context.sessionId,  // Pass AI's sessionId for proper attribution
         context.contextId,
         context.context  // Pass PersonaUser's enriched context (with callerType='persona')
@@ -188,6 +192,7 @@ export class PersonaToolExecutor {
       PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.persona.displayName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
+      // Fire-and-forget pattern: storage is non-critical, don't block on it
       this.log.debugIf(() => [`${toolCall.toolName} returned media:`, result.media ? `${result.media.length} items` : 'NONE']);
       if (result.media && result.media.length > 0) {
         this.log.debugIf(() => ['Media details:', result.media!.map(m => ({
@@ -199,6 +204,7 @@ export class PersonaToolExecutor {
         }))]);
       }
 
+      // Store tool result (awaited to get UUID, but could be fire-and-forget if needed)
       const resultId = await this.storeToolResult(
         toolCall.toolName,
         toolCall.parameters,
@@ -210,26 +216,34 @@ export class PersonaToolExecutor {
         },
         context.contextId  // Use contextId (room) for storage
       );
-      storedResultIds.push(resultId);
       this.log.debug(`Stored tool result #${resultId.slice(0, 8)} with ${result.media?.length || 0} media`);
 
+      // Collect media for this tool
+      const collectedMedia: MediaItem[] = [];
+
       // Check if THIS persona wants media
-      if (result.media && context.personaConfig.autoLoadMedia) {
-        // Filter by supported types
+      // IMPORTANT: If AI explicitly called screenshot tool, they want the image!
+      // So we pass through media for screenshot regardless of autoLoadMedia config
+      const isScreenshotTool = toolCall.toolName === 'screenshot';
+      const shouldLoadMedia = context.personaConfig.autoLoadMedia || isScreenshotTool;
+
+      if (result.media && shouldLoadMedia) {
+        // Filter by supported types (unless it's screenshot - then pass through images)
         const supportedMedia = result.media.filter(m =>
-          context.personaConfig.supportedMediaTypes.includes(m.type)
+          isScreenshotTool || context.personaConfig.supportedMediaTypes.includes(m.type)
         );
 
         if (supportedMedia.length > 0) {
-          this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})`);
-          allMedia.push(...supportedMedia);
+          this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})${isScreenshotTool ? ' [screenshot override]' : ''}`);
+          collectedMedia.push(...supportedMedia);
         }
       } else if (result.media && result.media.length > 0) {
         this.log.debug(`Skipping ${result.media.length} media (autoLoadMedia=false)`);
       }
 
-      // Log tool execution to cognition database (for interrogation)
-      await CognitionLogger.logToolExecution(
+      // Fire-and-forget: Log tool execution to cognition database (non-blocking)
+      // This is telemetry - don't block the response pipeline for it
+      CognitionLogger.logToolExecution(
         this.persona.id,
         this.persona.displayName,
         toolCall.toolName,
@@ -243,13 +257,31 @@ export class PersonaToolExecutor {
           errorMessage: result.error,
           storedResultId: resultId  // Phase 3B: Link to stored result
         }
-      );
+      ).catch(err => this.log.error('Failed to log tool execution:', err));
 
-      // Always include text description (for non-vision AIs or logging)
-      results.push(this.formatToolResult(result));
+      return {
+        result,
+        resultId,
+        media: collectedMedia,
+        formattedResult: this.formatToolResult(result)
+      };
+    });
+
+    // Wait for all tool executions to complete in parallel
+    const toolResults = await Promise.all(toolExecutionPromises);
+
+    // Aggregate results maintaining original order
+    const results: string[] = [];
+    const allMedia: MediaItem[] = [];
+    const storedResultIds: UUID[] = [];
+
+    for (const { result, resultId, media, formattedResult } of toolResults) {
+      results.push(formattedResult);
+      storedResultIds.push(resultId);
+      allMedia.push(...media);
     }
 
-    const successCount = results.filter(r => r.includes('<status>success</status>')).length;
+    const successCount = toolResults.filter(r => r.result.success).length;
     this.log.info(`Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media loaded, ${storedResultIds.length} stored`);
 
     return {
@@ -283,6 +315,34 @@ ${result.error || 'Unknown error'}
 </error>
 </tool_result>`;
     }
+  }
+
+  /**
+   * Resolve "current" room parameters to actual room names
+   * Handles any parameter named "room" that has value "current"
+   *
+   * @param params - Tool parameters from AI
+   * @param contextId - The contextId (roomId) from execution context
+   * @returns Parameters with resolved room values
+   */
+  private async resolveRoomParameters(
+    params: Record<string, string>,
+    contextId: UUID
+  ): Promise<Record<string, string>> {
+    const resolved = { ...params };
+
+    // Check if there's a room parameter that needs resolution
+    if (resolved.room === 'current') {
+      const roomName = await RoomResolver.resolveCurrentParam('current', contextId);
+      if (roomName) {
+        this.log.info(`Resolved room="current" to "${roomName}"`);
+        resolved.room = roomName;
+      } else {
+        this.log.warn(`Could not resolve room="current" from contextId ${contextId}`);
+      }
+    }
+
+    return resolved;
   }
 
   /**

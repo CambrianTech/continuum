@@ -14,8 +14,6 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
-import type { StorageQuery, RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
-
 // Rust-style config defaults for generic data access
 const DEFAULT_CONFIG = {
   database: {
@@ -36,7 +34,6 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
 
   async execute(params: DataListParams<T>): Promise<DataListResult<T>> {
     const collection = params.collection;
-    console.debug(`🗄️ DATA SERVER: Listing ${collection} entities via elegant type extraction`);
 
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
@@ -48,7 +45,6 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       };
       const countResult = await DataDaemon.query<BaseEntity>(countQuery);
       const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
-      console.debug(`📊 DATA SERVER: Total count for ${collection}: ${totalCount}`);
 
       // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {
@@ -61,7 +57,7 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         cursor: params.cursor,
         limit
       };
-      console.debug(`🔧 CURSOR-DEBUG: Received cursor from client: ${params.cursor ? JSON.stringify(params.cursor) : 'NONE'}`);
+      //console.debug(`🔧 CURSOR-DEBUG: Received cursor from client: ${params.cursor ? JSON.stringify(params.cursor) : 'NONE'}`);
 
       const result = await DataDaemon.query<BaseEntity>(storageQuery);
 
@@ -77,13 +73,41 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         });
       }
 
-      console.debug(`✅ DATA SERVER: Listed ${result.data?.length || 0} items from ${collection} via DataDaemon`);
-
       // Extract data from DataRecord array and merge database ID into entity data
-      const items: T[] = result.data ? result.data.map(record => ({
-        ...record.data as T,
-        id: record.id  // Merge database-generated UUID into entity
-      })) : [];
+      const items: T[] = result.data ? result.data.map(record => {
+        const fullEntity = {
+          ...record.data as T,
+          id: record.id  // Merge database-generated UUID into entity
+        };
+
+        // Determine which fields to return based on params
+        let fieldsToProject: string[] | undefined;
+
+        if (params.fields && params.fields.length > 0) {
+          // Explicit fields specified - use those
+          fieldsToProject = [...params.fields];
+        } else if (params.verbose === false) {
+          // Lean mode - return only id + description field
+          const descriptionField = DataDaemon.getDescriptionFieldForCollection(collection);
+          if (descriptionField) {
+            fieldsToProject = [descriptionField];
+          }
+          // If no description field, fall through to return all fields
+        }
+
+        // Apply field projection if we determined fields to project
+        if (fieldsToProject && fieldsToProject.length > 0) {
+          const projected: Partial<T> = { id: record.id } as Partial<T>;
+          for (const field of fieldsToProject) {
+            if (field in fullEntity) {
+              (projected as any)[field] = (fullEntity as any)[field];
+            }
+          }
+          return projected as T;
+        }
+
+        return fullEntity;
+      }) : [];
 
       return createDataListResultFromParams(params, {
         success: true,

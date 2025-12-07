@@ -1,0 +1,25 @@
+# Source files (only ship compiled JS)
+*.ts
+!*.d.ts
+
+# Tests
+test/
+*.test.js
+*.spec.js
+
+# Development
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+
+# Git
+.git/
+.gitignore
+
+# Documentation source (keep README.md)
+docs/
+
+# Build artifacts
+dist/
+build/

@@ -98,7 +98,7 @@ export abstract class CommandDaemon extends DaemonBase {
    * Handle incoming messages (from MessageSubscriber interface)
    */
   async handleMessage(message: JTAGMessage): Promise<CommandResponse> {
-    console.log(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
+    // console.log(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
     
     // Extract command name from endpoint
     const commandName = this.extractCommand(message.endpoint);

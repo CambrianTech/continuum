@@ -99,33 +99,12 @@ export class ChatExportServerCommand extends ChatExportCommand {
       }
     );
 
-    console.log('🔧 fetchMessages QUERY RESULT', {
-      success: result.success,
-      hasItems: !!result.items,
-      recordCount: result.items?.length || 0
-    });
-
     if (!result.success || !result.items) {
       return [];
     }
 
     // data/list returns entities directly (not wrapped in DataRecord)
-    const messagesWithIds = result.items.map(entity => {
-      console.log('🔧 fetchMessages ENTITY', {
-        entityId: entity.id,
-        hasId: !!entity.id,
-        senderName: entity.senderName
-      });
-      return entity;
-    });
-
-    console.log('🔧 fetchMessages FINAL', {
-      count: messagesWithIds.length,
-      firstId: messagesWithIds[0]?.id,
-      firstSender: messagesWithIds[0]?.senderName
-    });
-
-    return messagesWithIds;
+    return [...result.items];
   }
 
   /**
@@ -223,7 +202,6 @@ export class ChatExportServerCommand extends ChatExportCommand {
 
     // Messages
     for (const msg of messages) {
-      console.log('🔧 generateMarkdown msg:', { hasId: !!msg.id, id: msg.id, senderName: msg.senderName });
       const shortId = msg.id?.slice(-6) || 'no-id';
       const timestamp = new Date(msg.timestamp).toLocaleString();
 

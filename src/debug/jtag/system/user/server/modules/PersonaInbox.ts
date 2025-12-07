@@ -47,6 +47,10 @@ export class PersonaInbox {
   private readonly personaName: string;
   private readonly signal: EventEmitter;
 
+  // Load-aware deduplication (feedback-driven)
+  private queueStatsProvider: (() => { queueSize: number; activeRequests: number; maxConcurrent: number; load: number }) | null = null;
+  private readonly DEDUP_WINDOW_MS = 3000; // Look back 3s for duplicates
+
   constructor(personaId: UUID, personaName: string, config: Partial<InboxConfig> = {}) {
     this.personaId = personaId;
     this.personaName = personaName;
@@ -57,12 +61,34 @@ export class PersonaInbox {
   }
 
   /**
+   * Set queue stats provider for load-aware deduplication
+   * Called by PersonaUser during initialization
+   */
+  setQueueStatsProvider(provider: () => { queueSize: number; activeRequests: number; maxConcurrent: number; load: number }): void {
+    this.queueStatsProvider = provider;
+  }
+
+  /**
    * Add item to inbox (non-blocking)
    * Accepts both messages and tasks
    * Traffic management: Drop lowest priority when full
+   * Load-aware deduplication: Skip redundant room messages under high load
    * SIGNAL-BASED: Instantly wakes waiting serviceInbox (no polling delay)
    */
   async enqueue(item: QueueItem): Promise<boolean> {
+    // CRITICAL: Always enqueue to queue so PersonaUser can see it
+    // (Previous bug: held messages in separate map, breaking autonomous loop)
+
+    // Smart deduplication for messages: skip if recent message from same room already queued
+    // BUT ONLY under high load (feedback-driven optimization)
+    if (isInboxMessage(item)) {
+      const shouldDeduplicate = this.shouldDeduplicateMessage(item);
+      if (shouldDeduplicate) {
+        this.log(`🔄 Skipped duplicate: room=${item.roomId?.slice(0, 8)} (recent message already queued)`);
+        return true; // Silently skip, don't add to queue
+      }
+    }
+
     // Check if over capacity
     if (this.queue.length >= this.config.maxSize) {
       // Sort by priority (highest first)
@@ -90,6 +116,41 @@ export class PersonaInbox {
     this.signal.emit('work-available');
 
     return true;
+  }
+
+  /**
+   * Smart deduplication: Skip message if recent message from same room already queued
+   * ONLY active under high adapter load (feedback-driven)
+   *
+   * Philosophy: When adapter queue is backed up, consolidate inbox events.
+   * PersonaUser will still see ALL messages via RAG (fetches from DB).
+   * This just prevents redundant "new message in room X" work items.
+   */
+  private shouldDeduplicateMessage(message: InboxMessage): boolean {
+    // Only deduplicate under high load (>60% adapter queue saturation)
+    if (this.queueStatsProvider) {
+      const stats = this.queueStatsProvider();
+      if (stats.load < 0.6) {
+        return false; // Low load - process everything normally
+      }
+    } else {
+      return false; // No stats provider - don't deduplicate
+    }
+
+    // Check for recent message from same room in queue
+    const now = Date.now();
+    const cutoff = now - this.DEDUP_WINDOW_MS;
+
+    for (const item of this.queue) {
+      if (isInboxMessage(item) &&
+          item.roomId === message.roomId &&
+          item.timestamp >= cutoff) {
+        // Found recent message from same room - this is a duplicate
+        return true;
+      }
+    }
+
+    return false; // No recent room message found - not a duplicate
   }
 
   /**
@@ -227,10 +288,27 @@ export class PersonaInbox {
 
   /**
    * Logging helper
+   * Can be overridden by injecting a logger function
    */
+  private logFn: ((message: string) => void) | null = null;
+
+  /**
+   * Set custom logger (optional dependency injection)
+   */
+  setLogger(logger: (message: string) => void): void {
+    this.logFn = logger;
+  }
+
   private log(message: string): void {
     if (!this.config.enableLogging) return;
-    console.log(`[${this.personaName}:Inbox] ${message}`);
+    const formattedMessage = `[${this.personaName}:Inbox] ${message}`;
+
+    if (this.logFn) {
+      this.logFn(formattedMessage);
+    } else {
+      // Fallback to console if no logger injected
+      console.log(formattedMessage);
+    }
   }
 }
 

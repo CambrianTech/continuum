@@ -31,8 +31,6 @@ export class DataCreateServerCommand extends DataCreateCommand {
     const collection = params.collection;
     const dbHandle = params.dbHandle;
 
-    console.debug(`🗄️ DATA SERVER: Creating ${collection} entity${dbHandle ? ` (handle: ${dbHandle})` : ''}`);
-
     let entity: BaseEntity;
 
     if (dbHandle) {
@@ -66,8 +64,6 @@ export class DataCreateServerCommand extends DataCreateCommand {
       // Events are emitted by DataDaemon.store() via universal Events system
       entity = await DataDaemon.store(collection, params.data);
     }
-
-    console.debug(`✅ DATA SERVER: Created ${collection}/${entity.id}`);
 
     return createDataCreateResultFromParams(params, {
       success: true,

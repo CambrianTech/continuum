@@ -298,15 +298,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Handle transport messages - route responses to correlation system
    */
   async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
-    console.log(`📥 JTAGClient: Transport message received (type: ${message.messageType})`);
-    
+    // console.log(`📥 JTAGClient: Transport message received (type: ${message.messageType})`);
+
     // Handle correlated responses - complete pending requests
     if (isJTAGResponseMessage(message)) {
-      console.log(`🔗 JTAGClient: Processing response for correlation ${message.correlationId}`);
-      
+      // console.log(`🔗 JTAGClient: Processing response for correlation ${message.correlationId}`);
+
       const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
       if (resolved) {
-        console.log(`✅ JTAGClient: Completed correlation ${message.correlationId}`);
+        // console.log(`✅ JTAGClient: Completed correlation ${message.correlationId}`);
       } else {
         console.warn(`⚠️ JTAGClient: No pending request for correlation ${message.correlationId}`);
       }
@@ -335,7 +335,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     }
 
     // Handle other transport protocol messages (health checks, etc.)
-    console.log(`📋 JTAGClient: Non-response message type '${message.messageType}' - acknowledging`);
+    // console.log(`📋 JTAGClient: Non-response message type '${message.messageType}' - acknowledging`);
     const response: BaseResponsePayload = {
       success: true,
       timestamp: new Date().toISOString(),
@@ -736,7 +736,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     console.log('🔄 JTAGClient: Discovering available commands...');
     const listResult = await client.commands.list();
     
-    console.log(`✅ JTAGClient: ${JTAG_BOOTSTRAP_MESSAGES.BOOTSTRAP_COMPLETE_PREFIX} ${listResult.totalCount} commands`);
+    // console.log(`✅ JTAGClient: ${JTAG_BOOTSTRAP_MESSAGES.BOOTSTRAP_COMPLETE_PREFIX} ${listResult.totalCount} commands`);
     
     return {
       client,
@@ -810,7 +810,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    */
   static registerClient(key: string, client: JTAGClient): void {
     this.clientRegistry.set(key, client);
-    console.log(`📝 JTAGClient: Registered '${key}' (${client.context.environment})`);
+    // console.log(`📝 JTAGClient: Registered '${key}' (${client.context.environment})`);
   }
 
   /**

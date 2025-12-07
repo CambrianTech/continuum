@@ -8,6 +8,7 @@
 import { BaseWidget } from '../shared/BaseWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
 import { Commands } from '../../system/core/shared/Commands';
+import { Events } from '../../system/core/shared/Events';
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
@@ -37,6 +38,9 @@ export class MainWidget extends BaseWidget {
 
     // Listen to header controls events
     this.setupHeaderControlsListeners();
+
+    // Listen for content:opened events to refresh tabs
+    this.subscribeToContentEvents();
 
     // PHASE 3BIS: Track tab visibility for temperature
     this.setupVisibilityTracking();
@@ -347,6 +351,26 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
+   * Subscribe to content events (opened, closed, switched)
+   */
+  private subscribeToContentEvents(): void {
+    // Listen for content:opened events from content/open command
+    Events.subscribe('content:opened', async () => {
+      console.log('📋 MainPanel: Received content:opened event, refreshing tabs');
+
+      // Reload userState from database to get fresh openItems
+      await this.loadUserContext();
+
+      // Refresh tabs display with new data
+      await this.updateContentTabs();
+
+      console.log('✅ MainPanel: Tabs refreshed after content opened');
+    });
+
+    console.log('🔗 MainPanel: Subscribed to content events');
+  }
+
+  /**
    * Load content information for current path
    */
   private async loadCurrentContent(): Promise<void> {
@@ -369,39 +393,51 @@ export class MainWidget extends BaseWidget {
       return;
     }
 
-    // Ensure current content is loaded
-    if (!this.currentContent) {
-      await this.loadCurrentContent();
-    }
-
-    // Build tabs array based on current content
+    // Read tabs from userState.contentState.openItems
     const tabs = [];
 
-    if (this.currentContent) {
-      const displayName = this.currentContent.displayName || this.currentContent.name;
-      tabs.push({
-        id: this.currentContent.id,
-        label: displayName,
-        active: true,
-        closeable: false  // Main content tab shouldn't be closeable
-      });
+    if (this.userState?.contentState?.openItems) {
+      // Map content items to tab format
+      for (const item of this.userState.contentState.openItems) {
+        tabs.push({
+          id: item.id,
+          label: item.title,
+          active: item.id === this.userState.contentState.currentItemId,
+          closeable: true
+        });
+      }
     } else {
-      // Fallback for loading states
-      const [, pathType, roomId] = this.currentPath.split('/');
-      const fallbackName = roomId ? roomId.charAt(0).toUpperCase() + roomId.slice(1) : 'Chat';
+      // Fallback: show current room as single tab if userState not loaded yet
+      if (!this.currentContent) {
+        await this.loadCurrentContent();
+      }
 
-      tabs.push({
-        id: roomId || 'default',
-        label: fallbackName,
-        active: true,
-        closeable: false
-      });
+      if (this.currentContent) {
+        const displayName = this.currentContent.displayName || this.currentContent.name;
+        tabs.push({
+          id: this.currentContent.id,
+          label: displayName,
+          active: true,
+          closeable: false
+        });
+      } else {
+        // Final fallback for loading states
+        const [, pathType, roomId] = this.currentPath.split('/');
+        const fallbackName = roomId ? roomId.charAt(0).toUpperCase() + roomId.slice(1) : 'Chat';
+
+        tabs.push({
+          id: roomId || 'default',
+          label: fallbackName,
+          active: true,
+          closeable: false
+        });
+      }
     }
 
     // Call updateTabs method on the widget
     (tabsWidget as any).updateTabs(tabs);
 
-    console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs');
+    console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs from', this.userState?.contentState ? 'userState' : 'fallback');
   }
 
   /**

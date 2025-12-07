@@ -13,6 +13,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
@@ -59,6 +60,19 @@ export class PersonaMessageEvaluator {
   constructor(private readonly personaUser: PersonaUser) {}
 
   /**
+   * Log to persona's cognition.log file
+   */
+  private log(message: string, ...args: any[]): void {
+    const timestamp = new Date().toISOString();
+    const formattedArgs = args.length > 0
+      ? ' ' + args.map(a =>
+          typeof a === 'object' ? inspect(a, { depth: 2, colors: false, compact: true }) : String(a)
+        ).join(' ')
+      : '';
+    this.personaUser.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
+  }
+
+  /**
    * Evaluate message with full cognition system (planning, focus, working memory)
    *
    * PHASE 4: Cognition wrapper around evaluateAndPossiblyRespond
@@ -93,12 +107,12 @@ export class PersonaMessageEvaluator {
       createdAt: Date.now()
     };
 
-    console.log(`🧠 ${this.personaUser.displayName}: COGNITION - Created task for message from ${messageEntity.senderName}`);
+    this.log(`🧠 ${this.personaUser.displayName}: COGNITION - Created task for message from ${messageEntity.senderName}`);
 
     // STEP 2: Generate Plan
     const plan = await this.personaUser.planFormulator.formulatePlan(task);
-    console.log(`📋 ${this.personaUser.displayName}: COGNITION - Plan: ${plan.goal}`);
-    console.log(`   Steps: ${plan.steps.map((s: any) => s.action).join(' → ')}`);
+    this.log(`📋 ${this.personaUser.displayName}: COGNITION - Plan: ${plan.goal}`);
+    this.log(`   Steps: ${plan.steps.map((s: any) => s.action).join(' → ')}`);
 
     // LOG: Plan formulation
     await CognitionLogger.logPlanFormulation(
@@ -184,7 +198,7 @@ export class PersonaMessageEvaluator {
         shareable: false
       });
 
-      console.log(`✅ ${this.personaUser.displayName}: COGNITION - Plan completed successfully`);
+      this.log(`✅ ${this.personaUser.displayName}: COGNITION - Plan completed successfully`);
 
       // LOG: Plan completion
       await CognitionLogger.logPlanCompletion(
@@ -200,7 +214,7 @@ export class PersonaMessageEvaluator {
         }))
       );
     } catch (error: any) {
-      console.error(`❌ ${this.personaUser.displayName}: COGNITION - Plan execution failed:`, error);
+      this.log(`❌ ${this.personaUser.displayName}: COGNITION - Plan execution failed:`, error);
 
       // Store error in WorkingMemory
       await this.personaUser.workingMemory.store({
@@ -232,7 +246,7 @@ export class PersonaMessageEvaluator {
       await this.personaUser.selfState.updateLoad(-0.2); // Remove the load we added
 
       const duration = Date.now() - taskStartTime;
-      console.log(`🧠 ${this.personaUser.displayName}: COGNITION - Task complete (${duration}ms)`);
+      this.log(`🧠 ${this.personaUser.displayName}: COGNITION - Task complete (${duration}ms)`);
     }
   }
 
@@ -298,19 +312,19 @@ export class PersonaMessageEvaluator {
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
 
     // FULL TRANSPARENCY LOGGING
-    console.log(`\n${'='.repeat(80)}`);
-    console.log(`🧠 ${this.personaUser.displayName}: GATING DECISION for message "${messageText.slice(0, 60)}..."`);
-    console.log(`${'='.repeat(80)}`);
-    console.log(`📊 Context: ${gatingResult.ragContextSummary?.filteredMessages ?? 0} messages in ${gatingResult.ragContextSummary?.timeWindowMinutes ?? 0}min window`);
-    console.log(`💬 Conversation history seen by AI:`);
+    this.log(`\n${'='.repeat(80)}`);
+    this.log(`🧠 ${this.personaUser.displayName}: GATING DECISION for message "${messageText.slice(0, 60)}..."`);
+    this.log(`${'='.repeat(80)}`);
+    this.log(`📊 Context: ${gatingResult.ragContextSummary?.filteredMessages ?? 0} messages in ${gatingResult.ragContextSummary?.timeWindowMinutes ?? 0}min window`);
+    this.log(`💬 Conversation history seen by AI:`);
     gatingResult.conversationHistory?.slice(-5).forEach((msg, i) => {
-      console.log(`   ${i + 1}. [${msg.name}] ${msg.content.slice(0, 80)}...`);
+      this.log(`   ${i + 1}. [${msg.name}] ${msg.content.slice(0, 80)}...`);
     });
-    console.log(`\n🎯 Decision: ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'}`);
-    console.log(`   Confidence: ${(gatingResult.confidence * 100).toFixed(0)}%`);
-    console.log(`   Reason: ${gatingResult.reason}`);
-    console.log(`   Model: ${gatingResult.model}`);
-    console.log(`${'='.repeat(80)}\n`);
+    this.log(`\n🎯 Decision: ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'}`);
+    this.log(`   Confidence: ${(gatingResult.confidence * 100).toFixed(0)}%`);
+    this.log(`   Reason: ${gatingResult.reason}`);
+    this.log(`   Model: ${gatingResult.model}`);
+    this.log(`${'='.repeat(80)}\n`);
 
     if (!gatingResult.shouldRespond) {
       // PHASE 5C: Log coordination decision to database (fire-and-forget)
@@ -338,7 +352,7 @@ export class PersonaMessageEvaluator {
           contextId: messageEntity.roomId,
           tags: [senderIsHuman ? 'human-sender' : 'ai-sender', 'gating-silent']
         }).catch(error => {
-          console.error(`❌ ${this.personaUser.displayName}: Failed to log SILENT decision:`, error);
+          this.log(`❌ ${this.personaUser.displayName}: Failed to log SILENT decision:`, error);
         });
       }
 
@@ -440,8 +454,8 @@ export class PersonaMessageEvaluator {
 
     // === AUTONOMOUS DECISION: AI decides via RAG-based recipes ===
     // No centralized coordinator - each AI uses recipes to decide if they should contribute
-    console.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
-    console.log(`🔧 TRACE-POINT-A: About to check for new messages (timestamp=${Date.now()})`);
+    this.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
+    this.log(`🔧 TRACE-POINT-A: About to check for new messages (timestamp=${Date.now()})`);
 
     // 🔧 POST-INFERENCE VALIDATION: Check if chat context changed during inference
     // During the 3-5 seconds of inference, other AIs may have already posted responses
@@ -457,20 +471,20 @@ export class PersonaMessageEvaluator {
 
     const newMessages = newMessagesQuery.data || [];
     if (newMessages.length > 0) {
-      console.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
+      this.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
 
       // TODO: Ask AI if they still want to respond given the new messages
       // For now, just log and proceed (future: implement smart rejection)
-      console.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${m.data.content.text.slice(0, 50)}`).join(', ')}`);
+      this.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${m.data.content.text.slice(0, 50)}`).join(', ')}`);
     }
 
     // 🔧 PHASE: Update RAG context
-    console.log(`🔧 ${this.personaUser.displayName}: [PHASE 1/3] Updating RAG context...`);
+    this.log(`🔧 ${this.personaUser.displayName}: [PHASE 1/3] Updating RAG context...`);
     await this.personaUser.memory.updateRAGContext(messageEntity.roomId, messageEntity);
-    console.log(`✅ ${this.personaUser.displayName}: [PHASE 1/3] RAG context updated`);
+    this.log(`✅ ${this.personaUser.displayName}: [PHASE 1/3] RAG context updated`);
 
     // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
-    console.log(`🔧 ${this.personaUser.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
+    this.log(`🔧 ${this.personaUser.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
     if (this.personaUser.client) {
       await Events.emit<AIGeneratingEventData>(
         DataDaemon.jtagContext!,
@@ -490,14 +504,14 @@ export class PersonaMessageEvaluator {
         }
       );
     }
-    console.log(`✅ ${this.personaUser.displayName}: [PHASE 2/3] GENERATING event emitted`);
+    this.log(`✅ ${this.personaUser.displayName}: [PHASE 2/3] GENERATING event emitted`);
 
     // 🔧 PHASE: Generate and post response
-    console.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
-    console.log(`🔧 ${this.personaUser.displayName}: [PHASE 3/3] Calling respondToMessage...`);
+    this.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
+    this.log(`🔧 ${this.personaUser.displayName}: [PHASE 3/3] Calling respondToMessage...`);
     await this.personaUser.respondToMessage(messageEntity, decisionContext);
-    console.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
-    console.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
+    this.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
+    this.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
 
     // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
     getChatCoordinator().onMessageServiced(messageEntity.roomId, this.personaUser.id);
@@ -523,7 +537,7 @@ export class PersonaMessageEvaluator {
     const estimatedDurationMs = 3000; // Average AI response time (3 seconds)
     await this.personaUser.personaState.recordActivity(estimatedDurationMs, messageComplexity);
 
-    console.log(`🧠 ${this.personaUser.displayName}: State updated (energy=${this.personaUser.personaState.getState().energy.toFixed(2)}, mood=${this.personaUser.personaState.getState().mood})`);
+    this.log(`🧠 ${this.personaUser.displayName}: State updated (energy=${this.personaUser.personaState.getState().energy.toFixed(2)}, mood=${this.personaUser.personaState.getState().mood})`);
   }
 
   /**
@@ -690,7 +704,7 @@ export class PersonaMessageEvaluator {
    */
   private async isSenderHuman(senderId: UUID): Promise<boolean> {
     if (!this.personaUser.client) {
-      console.warn(`⚠️  PersonaUser ${this.personaUser.displayName}: Cannot check sender type - no client, BLOCKING response`);
+      this.log(`⚠️  PersonaUser ${this.personaUser.displayName}: Cannot check sender type - no client, BLOCKING response`);
       return false; // Fail CLOSED - don't respond if we can't verify (prevents startup loops)
     }
 
@@ -699,7 +713,7 @@ export class PersonaMessageEvaluator {
       const result = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, senderId);
 
       if (!result.success || !result.data) {
-        console.warn(`⚠️  PersonaUser ${this.personaUser.displayName}: Could not read sender ${senderId}, BLOCKING response`);
+        this.log(`⚠️  PersonaUser ${this.personaUser.displayName}: Could not read sender ${senderId}, BLOCKING response`);
         return false; // Fail CLOSED - don't respond if database fails (prevents loops)
       }
 
@@ -707,7 +721,7 @@ export class PersonaMessageEvaluator {
       return senderType === 'human';
 
     } catch (error: any) {
-      console.error(`❌ PersonaUser ${this.personaUser.displayName}: Error checking sender type, BLOCKING response:`, error);
+      this.log(`❌ PersonaUser ${this.personaUser.displayName}: Error checking sender type, BLOCKING response:`, error);
       return false; // Fail CLOSED on error (prevents loops)
     }
   }
@@ -757,10 +771,10 @@ export class PersonaMessageEvaluator {
 
       const decision = await this.personaUser.decisionChain.processDecision(context);
 
-      console.log(`🔗 ${this.personaUser.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
+      this.log(`🔗 ${this.personaUser.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
 
       // Build RAG context for decision logging (all adapters need this)
-      const ragBuilder = new ChatRAGBuilder();
+      const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,
@@ -793,7 +807,7 @@ export class PersonaMessageEvaluator {
 
 
     } catch (error: any) {
-      console.error(`❌ ${this.personaUser.displayName}: Should-respond evaluation failed:`, error);
+      this.log(`❌ ${this.personaUser.displayName}: Should-respond evaluation failed:`, error);
 
       const durationMs = Date.now() - startTime;
 

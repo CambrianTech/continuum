@@ -119,26 +119,30 @@ export class UserIdentityResolver {
   private static generateUniqueId(agentInfo: AgentInfo): string {
     switch (agentInfo.type) {
       case 'ai':
+        // Match seed script uniqueId format: generateUniqueId('Claude') → 'claude'
+        // Strip common suffixes like "Code", "CLI", "Assistant" for cleaner IDs
         if (agentInfo.name === 'Claude Code') {
-          return 'claude-code';
+          return 'claude'; // Matches seed: generateUniqueId('Claude')
         }
         if (agentInfo.name === 'ChatGPT CLI') {
-          return 'chatgpt-cli';
+          return 'chatgpt'; // Matches seed: generateUniqueId('ChatGPT')
         }
         if (agentInfo.name === 'GitHub Copilot') {
-          return 'github-copilot';
+          return 'copilot'; // Matches seed: generateUniqueId('Copilot')
         }
-        // Generic AI agents get unique ID
-        return `ai-${this.sanitizeForId(agentInfo.name)}`;
+        // Generic AI agents: extract first word before space/dash
+        // "Claude Code" → "claude", "GPT-4" → "gpt", "Gemini Pro" → "gemini"
+        const firstWord = agentInfo.name.split(/[\s-]/)[0];
+        return this.sanitizeForId(firstWord);
 
       case 'human': {
         // Use environment username if available
         const username = process.env.USER ?? process.env.USERNAME;
         if (username) {
-          return `human-${this.sanitizeForId(username)}`;
+          return this.sanitizeForId(username); // Matches seed: generateUniqueId('Joel')
         }
         // Fallback to primary human
-        return 'primary-human';
+        return 'joel'; // Matches seed: generateUniqueId('Joel')
       }
 
       case 'ci':

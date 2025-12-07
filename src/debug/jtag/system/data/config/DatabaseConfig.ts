@@ -66,6 +66,9 @@ export const COLLECTIONS = {
   PINNED_ITEMS: 'pinned_items',
   COORDINATION_DECISIONS: 'coordination_decisions',
 
+  // Room Wall System
+  WALL_DOCUMENTS: 'wall_documents',
+
   // Cognition Observability
   COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
   COGNITION_PLAN_RECORDS: 'cognition_plan_records',

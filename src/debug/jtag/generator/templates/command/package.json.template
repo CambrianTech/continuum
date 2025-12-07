@@ -1,0 +1,34 @@
+{
+  "name": "@jtag-commands/{{COMMAND_PATH}}",
+  "version": "1.0.0",
+  "description": "{{DESCRIPTION}}",
+  "main": "server/{{CLASS_NAME}}ServerCommand.ts",
+  "types": "shared/{{CLASS_NAME}}Types.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/{{CLASS_NAME}}Integration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "{{COMMAND_PATH}}"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

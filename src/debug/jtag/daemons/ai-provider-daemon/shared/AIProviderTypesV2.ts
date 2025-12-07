@@ -121,6 +121,14 @@ export interface TextGenerationRequest {
   userId?: UUID;
   roomId?: UUID;
   purpose?: string;  // 'chat', 'should-respond', 'rag', 'embedding', etc.
+
+  // Persona context for logging (optional)
+  // When provided, adapters can log to persona-specific log files
+  personaContext?: {
+    logDir: string;      // e.g., '.continuum/personas/helper-ai-12345678/logs'
+    displayName: string; // e.g., 'Helper AI'
+    uniqueId: string;    // e.g., 'helper-ai-12345678'
+  };
 }
 
 export interface AudioGenerationRequest {
@@ -299,6 +307,18 @@ export interface AIProviderAdapter {
   // Metadata
   getAvailableModels(): Promise<ModelInfo[]>;
   healthCheck(): Promise<HealthStatus>;
+
+  // Queue monitoring (for load-aware PersonaInbox consolidation)
+  // Returns current queue state for feedback-driven load management
+  getQueueStats?(): {
+    queueSize: number;      // Number of requests waiting
+    activeRequests: number; // Number currently being processed
+    maxConcurrent: number;  // Maximum allowed concurrent requests
+    load: number;           // Queue pressure (0.0-1.0, calculated as (queueSize + activeRequests) / maxConcurrent)
+  };
+
+  // Health monitoring (called by AdapterHealthMonitor when adapter is unhealthy)
+  handleRestartRequest?(): Promise<void>;
 
   // Semantic Model Tier Resolution (NEW)
   // Bidirectional mapping: tier ↔ model ID
