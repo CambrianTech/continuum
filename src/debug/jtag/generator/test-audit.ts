@@ -4,6 +4,7 @@
 
 import { ModuleAuditor } from './audit/ModuleAuditor';
 import { LintCheck } from './audit/checks/LintCheck';
+import { MissingFileCheck } from './audit/checks/MissingFileCheck';
 
 async function main(): Promise<void> {
   console.log('🧪 Testing Audit System\n');
@@ -11,6 +12,7 @@ async function main(): Promise<void> {
   // Create auditor and register checks
   const auditor = new ModuleAuditor();
   auditor.registerCheck(new LintCheck());
+  auditor.registerCheck(new MissingFileCheck());
 
   // Test with hello command
   console.log('Testing with hello command...\n');
