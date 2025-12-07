@@ -1,170 +1,162 @@
 /**
- * DaemonGenerator - Generate daemon files from declarative specs
+ * Daemon Generator
  *
- * Phase 4 Task 3: Extend ModuleGenerator for daemon generation
- * Uses DAEMON-PATTERNS.md knowledge to create properly structured daemons
+ * Generates daemon implementations from DaemonSpec.
+ * Follows the three-layer pattern: shared/browser/server
+ *
+ * Features:
+ * - Concurrency helpers (RateLimiter, AsyncQueue, Semaphore)
+ * - Type-safe job methods
+ * - Event emission support
+ * - Lifecycle hooks (onStart, onStop)
+ * - Metrics collection
  */
 
-import { ModuleGenerator, type GenerateOptions } from './ModuleGenerator';
-import type { DaemonSpec } from './DaemonTypes';
+import * as fs from 'fs';
 import * as path from 'path';
+import type { DaemonSpec, DaemonJob, DaemonEvent } from './DaemonTypes';
 
-export class DaemonGenerator extends ModuleGenerator<DaemonSpec> {
-  private currentSpec?: DaemonSpec; // Temporary storage for writeFiles
+interface GenerateOptions {
+  force?: boolean; // Overwrite existing files
+}
 
-  /**
-   * Get module type (for logging)
-   */
-  protected getModuleType(): string {
-    return 'daemon';
+export class DaemonGenerator {
+  private readonly rootPath: string;
+
+  constructor(rootPath: string) {
+    this.rootPath = rootPath;
   }
 
   /**
-   * Get module name from spec (for logging)
+   * Generate daemon from spec
    */
-  protected getModuleName(spec: DaemonSpec): string {
-    return spec.name;
+  generate(spec: DaemonSpec, outputDir: string, options: GenerateOptions = {}): void {
+    console.log(`\n🏗️  Generating daemon: ${spec.name}`);
+    console.log(`   Output: ${outputDir}`);
+
+    // Create directory structure
+    this.createDirectoryStructure(outputDir);
+
+    // Generate files
+    this.generateSharedFile(spec, outputDir, options);
+    this.generateBrowserFile(spec, outputDir, options);
+    this.generateServerFile(spec, outputDir, options);
+
+    console.log(`✅ Daemon generated successfully\n`);
   }
 
-  /**
-   * Get output directory for this daemon
-   */
-  protected getOutputDir(spec: DaemonSpec): string {
-    return path.join(this.rootPath, 'daemons', spec.name);
+  private createDirectoryStructure(outputDir: string): void {
+    const dirs = [
+      outputDir,
+      path.join(outputDir, 'shared'),
+      path.join(outputDir, 'browser'),
+      path.join(outputDir, 'server')
+    ];
+
+    for (const dir of dirs) {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    }
   }
 
-  /**
-   * Render all templates for this daemon
-   * Returns rendered content for each file
-   *
-   * TODO (Task 2): Create daemon templates and implement rendering
-   */
-  protected renderTemplates(spec: DaemonSpec): Record<string, string> {
-    this.currentSpec = spec; // Store for writeFiles
+  private generateSharedFile(spec: DaemonSpec, outputDir: string, options: GenerateOptions): void {
+    const className = this.pascalCase(spec.name);
+    const filePath = path.join(outputDir, 'shared', `${className}.ts`);
 
-    // TODO: Implement template rendering in Task 2
-    // For now, generate placeholder content based on DAEMON-PATTERNS.md structure
-    const className = this.specNameToClassName(spec.name);
-
-    return {
-      sharedTypes: this.generateSharedTypes(spec, className),
-      sharedDaemon: this.generateSharedDaemon(spec, className),
-      browser: this.generateBrowser(spec, className),
-      server: this.generateServer(spec, className),
-      readme: this.generateReadme(spec, className)
-    };
-  }
-
-  /**
-   * Write rendered templates to disk
-   */
-  protected writeFiles(baseDir: string, rendered: Record<string, string>): void {
-    if (!this.currentSpec) {
-      throw new Error('currentSpec not set - renderTemplates must be called first');
+    if (fs.existsSync(filePath) && !options.force) {
+      console.log(`   ⏭️  Skipping ${className}.ts (already exists)`);
+      return;
     }
 
-    const className = this.specNameToClassName(this.currentSpec.name);
-
-    // Write shared types file
-    const sharedTypesPath = path.join(baseDir, 'shared', `${className}Types.ts`);
-    this.writeFile(sharedTypesPath, rendered.sharedTypes);
-
-    // Write shared daemon implementation
-    const sharedDaemonPath = path.join(baseDir, 'shared', `${className}.ts`);
-    this.writeFile(sharedDaemonPath, rendered.sharedDaemon);
-
-    // Write browser forwarding layer
-    const browserPath = path.join(baseDir, 'browser', `${className}Browser.ts`);
-    this.writeFile(browserPath, rendered.browser);
-
-    // Write server implementation
-    const serverPath = path.join(baseDir, 'server', `${className}Server.ts`);
-    this.writeFile(serverPath, rendered.server);
-
-    // Write README
-    const readmePath = path.join(baseDir, 'README.md');
-    this.writeFile(readmePath, rendered.readme);
-
-    // Print next steps
-    console.log(`\n📋 Next steps:`);
-    console.log(`   1. Implement daemon logic in ${sharedDaemonPath}`);
-    console.log(`   2. Add business logic for each operation`);
-    console.log(`   3. Test daemon integration`);
-    console.log(`\n💡 Daemon follows 85/15 split pattern:`);
-    console.log(`   - 80-90% logic in shared/`);
-    console.log(`   - 5-10% browser forwarding in browser/`);
-    console.log(`   - 5-10% server initialization in server/`);
-
-    // Clean up
-    this.currentSpec = undefined;
+    const content = this.generateSharedContent(spec);
+    fs.writeFileSync(filePath, content);
+    console.log(`   ✅ Generated shared/${className}.ts`);
   }
 
-  // ==================== Helper Methods ====================
+  private generateBrowserFile(spec: DaemonSpec, outputDir: string, options: GenerateOptions): void {
+    const className = this.pascalCase(spec.name);
+    const filePath = path.join(outputDir, 'browser', `${className}Browser.ts`);
 
-  /**
-   * Convert spec name (kebab-case) to PascalCase class name
-   * Examples: 'lora-manager' → 'LoRAManager', 'training-pipeline' → 'TrainingPipeline'
-   */
-  private specNameToClassName(name: string): string {
-    return name.split('-').map(part =>
-      part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
-    ).join('');
+    if (fs.existsSync(filePath) && !options.force) {
+      console.log(`   ⏭️  Skipping ${className}Browser.ts (already exists)`);
+      return;
+    }
+
+    const content = this.generateBrowserContent(spec);
+    fs.writeFileSync(filePath, content);
+    console.log(`   ✅ Generated browser/${className}Browser.ts`);
   }
 
-  // ==================== Placeholder Template Methods (TODO: Replace with real templates in Task 2) ====================
+  private generateServerFile(spec: DaemonSpec, outputDir: string, options: GenerateOptions): void {
+    const className = this.pascalCase(spec.name);
+    const filePath = path.join(outputDir, 'server', `${className}Server.ts`);
 
-  private generateSharedTypes(spec: DaemonSpec, className: string): string {
-    // Placeholder - will be replaced with template in Task 2
-    return `/**
- * ${className}Types - Type definitions for ${spec.name} daemon
- * Generated by DaemonGenerator
- */
+    if (fs.existsSync(filePath) && !options.force) {
+      console.log(`   ⏭️  Skipping ${className}Server.ts (already exists)`);
+      return;
+    }
 
-import type { JTAGPayload } from '../../../system/core/shared/JTAGPayload';
-import type { BaseResponsePayload } from '../../../system/core/shared/BaseResponsePayload';
-
-// TODO: Add operation-specific payload interfaces
-// TODO: Add result type interfaces
-// TODO: Add state interfaces (if needed)
-
-export interface ${className}Payload extends JTAGPayload {
-  readonly operation: string;
-  // TODO: Add operation-specific fields
-}
-
-export interface ${className}Result extends BaseResponsePayload {
-  // TODO: Add result fields
-}
-`;
+    const content = this.generateServerContent(spec);
+    fs.writeFileSync(filePath, content);
+    console.log(`   ✅ Generated server/${className}Server.ts`);
   }
 
-  private generateSharedDaemon(spec: DaemonSpec, className: string): string {
-    // Placeholder - will be replaced with template in Task 2
+  private generateSharedContent(spec: DaemonSpec): string {
+    const className = this.pascalCase(spec.name);
+    const jobMethods = spec.jobs.map(job => this.generateJobMethod(job)).join('\n\n');
+    const jobHandlers = spec.jobs.map(job => this.generateJobHandler(job)).join('\n      ');
+
     return `/**
  * ${className} - ${spec.description}
- * Generated by DaemonGenerator
  *
- * Following DAEMON-PATTERNS.md: 85/15 split architecture
+ * GENERATED FILE - DO NOT EDIT MANUALLY
+ * Generated from DaemonSpec by DaemonGenerator
  */
 
-import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
-import type { JTAGMessage } from '../../../system/core/shared/JTAGMessage';
-import type { BaseResponsePayload } from '../../../system/core/shared/BaseResponsePayload';
-import type { ${className}Payload, ${className}Result } from './${className}Types';
+import { DaemonBase } from '../../../daemons/command-daemon/shared/DaemonBase';
+import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import { createPayload } from '../../../system/core/types/JTAGTypes';
+import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { createSuccessResponse, createErrorResponse, type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
+import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
 
+/**
+ * ${className} Payload
+ */
+export interface ${className}Payload extends JTAGPayload {
+  readonly type: '${spec.jobs.map(j => j.name).join("' | '")}';
+  readonly params?: Record<string, unknown>;
+}
+
+/**
+ * ${className} - Shared base class
+ */
 export abstract class ${className} extends DaemonBase {
-  protected static sharedInstance: ${className} | undefined;
+  public readonly subpath: string = '${this.kebabCase(spec.name)}';
 
-  constructor() {
-    super('${spec.name}');
+  // Concurrency helpers
+  protected readonly rateLimiter: RateLimiter;
+  protected readonly requestQueue: AsyncQueue<BaseResponsePayload>;
+  protected readonly semaphore: Semaphore;
+  protected readonly metrics: DaemonMetrics;
+
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super('${this.kebabCase(spec.name)}', context, router);
+
+    // Initialize concurrency helpers with sensible defaults
+    this.rateLimiter = new RateLimiter(100, 10); // 100 tokens, refill 10/sec
+    this.requestQueue = new AsyncQueue<BaseResponsePayload>();
+    this.semaphore = new Semaphore(10); // Max 10 concurrent operations
+    this.metrics = new DaemonMetrics();
   }
 
   /**
    * Initialize daemon
    */
   protected async initialize(): Promise<void> {
-    // TODO: Implement initialization logic
-    ${spec.lifecycle?.onStart ? `// ${spec.lifecycle.onStart}` : ''}
+    console.log(\`💾 \${this.toString()}: ${className} initialized\`);
+    ${spec.lifecycle?.onStart ? `await this.onStart();` : ''}
   }
 
   /**
@@ -173,151 +165,181 @@ export abstract class ${className} extends DaemonBase {
   async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const payload = message.payload as ${className}Payload;
 
-    try {
-      switch (payload.operation) {
-        // TODO: Add operation cases
-        default:
-          return this.errorResponse('Unknown operation: ' + payload.operation);
-      }
-    } catch (error) {
-      return this.errorResponse((error as Error).message);
+    // Rate limiting
+    if (!this.rateLimiter.tryConsume()) {
+      this.metrics.recordRateLimited();
+      return createErrorResponse(
+        'Rate limit exceeded',
+        payload.context,
+        payload.sessionId
+      );
     }
+
+    // Queue request for serialization
+    return this.requestQueue.enqueue(async () => {
+      const startTime = Date.now();
+      this.metrics.recordRequest();
+
+      try {
+        // Acquire semaphore permit
+        await this.semaphore.acquire();
+
+        let result: BaseResponsePayload;
+
+        switch (payload.type) {
+${jobHandlers}
+          default:
+            result = createErrorResponse(
+              \`Unknown job type: \${payload.type}\`,
+              payload.context,
+              payload.sessionId
+            );
+        }
+
+        this.metrics.recordSuccess(Date.now() - startTime);
+        return result;
+      } catch (error: unknown) {
+        this.metrics.recordFailure();
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        return createErrorResponse(errorMessage, payload.context, payload.sessionId);
+      } finally {
+        // Release semaphore permit
+        this.semaphore.release();
+      }
+    });
   }
 
   /**
-   * Shutdown daemon
+   * Job methods (implement in subclass or override)
+   */
+${jobMethods}
+
+  ${spec.lifecycle?.onStart ? `
+  /**
+   * Lifecycle: Start
+   * ${spec.lifecycle.onStart}
+   */
+  protected async onStart(): Promise<void> {
+    // TODO: Implement onStart logic
+  }
+  ` : ''}
+
+  ${spec.lifecycle?.onStop ? `
+  /**
+   * Lifecycle: Stop
+   * ${spec.lifecycle.onStop}
    */
   async shutdown(): Promise<void> {
-    // TODO: Implement shutdown logic
-    ${spec.lifecycle?.onStop ? `// ${spec.lifecycle.onStop}` : ''}
+    await super.shutdown();
+    await this.onStop();
   }
 
-  // ==================== Static Clean Interface ====================
-
-  static initialize(instance: ${className}): void {
-    ${className}.sharedInstance = instance;
+  protected async onStop(): Promise<void> {
+    // TODO: Implement onStop logic
   }
-
-  // TODO: Add static methods for each operation
-}
-`;
-  }
-
-  private generateBrowser(spec: DaemonSpec, className: string): string {
-    // Placeholder - will be replaced with template in Task 2
-    return `/**
- * ${className}Browser - Browser forwarding layer for ${spec.name} daemon
- * Generated by DaemonGenerator
- */
-
-import { ${className} } from '../shared/${className}';
-
-export class ${className}Browser extends ${className} {
-  // Browser-specific initialization (if any)
-  // Typically just forwards to server via router
-}
-`;
-  }
-
-  private generateServer(spec: DaemonSpec, className: string): string {
-    // Placeholder - will be replaced with template in Task 2
-    return `/**
- * ${className}Server - Server implementation for ${spec.name} daemon
- * Generated by DaemonGenerator
- */
-
-import { ${className} } from '../shared/${className}';
-
-export class ${className}Server extends ${className} {
-  // Server-specific initialization
-  // Database access, adapter registration, etc.
-}
-`;
-  }
-
-  private generateReadme(spec: DaemonSpec, className: string): string {
-    const jobsList = spec.jobs.map(j => `- **${j.name}**: ${j.description || 'TODO'}`).join('\n');
-    const eventsList = spec.events?.map(e => `- **${e.name}**: ${e.description || 'TODO'}`).join('\n') || '(None)';
-
-    return `# ${className} Daemon
-
-${spec.description}
-
-## Operations
-
-${jobsList || '(None defined yet)'}
-
-## Events Emitted
-
-${eventsList}
-
-## Lifecycle
-
-- **onStart**: ${spec.lifecycle?.onStart || 'TODO'}
-- **onStop**: ${spec.lifecycle?.onStop || 'TODO'}
-
-## Architecture
-
-This daemon follows the **85/15 split pattern**:
-- **shared/${className}.ts**: Core business logic (80-90%)
-- **browser/${className}Browser.ts**: Browser forwarding layer (5-10%)
-- **server/${className}Server.ts**: Server-specific initialization (5-10%)
-
-## Usage
-
-\`\`\`typescript
-// TODO: Add usage examples
-\`\`\`
-
----
-
-*Generated by DaemonGenerator*
-`;
-  }
+  ` : ''}
 
   /**
-   * Generate from a JSON file containing DaemonSpec
+   * Get metrics snapshot
    */
-  generateFromFile(specFilePath: string, outputDir?: string, options?: GenerateOptions): void {
-    const fs = require('fs');
-    const specJson = fs.readFileSync(specFilePath, 'utf-8');
-    const spec: DaemonSpec = JSON.parse(specJson);
-    this.generate(spec, outputDir, options);
+  getMetrics() {
+    return this.metrics.getSnapshot(
+      this.requestQueue.size,
+      this.semaphore.maxPermits - this.semaphore.available
+    );
   }
 }
-
-// CLI execution
-if (require.main === module) {
-  const args = process.argv.slice(2);
-
-  if (args.length === 0) {
-    console.error('Usage: npx tsx DaemonGenerator.ts <spec-file.json> [output-dir] [--force] [--backup]');
-    console.error('\nFlags:');
-    console.error('  --force   Overwrite existing daemon');
-    console.error('  --backup  Create backup before overwriting (requires --force)');
-    process.exit(1);
+`;
   }
 
-  const rootPath = path.join(__dirname, '..');
-  const generator = new DaemonGenerator(rootPath);
+  private generateJobMethod(job: DaemonJob): string {
+    const params = job.params.map(p => `${p.name}: ${p.type}`).join(', ');
+    const returnType = job.async ? `Promise<${job.returns}>` : job.returns;
 
-  const specFile = args[0];
-  const flagArgs = args.filter(a => a.startsWith('--'));
-  const nonFlagArgs = args.filter(a => !a.startsWith('--'));
-
-  const options = {
-    force: flagArgs.includes('--force'),
-    backup: flagArgs.includes('--backup')
-  };
-
-  const outputDir = nonFlagArgs[1]; // Second non-flag arg is output dir
-
-  if (options.backup && !options.force) {
-    console.error('❌ ERROR: --backup requires --force');
-    process.exit(1);
+    return `  /**
+   * ${job.description || `Job: ${job.name}`}
+   */
+  protected ${job.async ? 'async ' : ''}${job.name}(${params}): ${returnType} {
+    // TODO: Implement ${job.name}
+    throw new Error('${job.name} not implemented');
+  }`;
   }
 
-  generator.generateFromFile(specFile, outputDir, options);
+  private generateJobHandler(job: DaemonJob): string {
+    const paramExtraction = job.params
+      .map(p => `            const ${p.name} = payload.params?.${p.name} as ${p.type};`)
+      .join('\n');
+
+    const paramList = job.params.map(p => p.name).join(', ');
+
+    return `          case '${job.name}':
+${paramExtraction}
+            result = createSuccessResponse(
+              await this.${job.name}(${paramList}),
+              payload.context,
+              payload.sessionId
+            );
+            break;`;
+  }
+
+  private generateBrowserContent(spec: DaemonSpec): string {
+    const className = this.pascalCase(spec.name);
+
+    return `/**
+ * ${className} Browser - Browser-specific implementation
+ *
+ * GENERATED FILE - DO NOT EDIT MANUALLY
+ */
+
+import { ${className} } from '../shared/${className}';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+
+export class ${className}Browser extends ${className} {
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super(context, router);
+  }
+
+  // Browser-specific overrides go here
 }
+`;
+  }
 
-export { DaemonSpec };
+  private generateServerContent(spec: DaemonSpec): string {
+    const className = this.pascalCase(spec.name);
+
+    return `/**
+ * ${className} Server - Server-specific implementation
+ *
+ * GENERATED FILE - DO NOT EDIT MANUALLY
+ */
+
+import { ${className} } from '../shared/${className}';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { Logger } from '../../../system/core/server/Logger';
+
+export class ${className}Server extends ${className} {
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super(context, router);
+
+    // Override with file-based logger
+    (this as any).log = Logger.create('${className}Server');
+  }
+
+  // Server-specific overrides go here
+}
+`;
+  }
+
+  private pascalCase(str: string): string {
+    return str
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join('');
+  }
+
+  private kebabCase(str: string): string {
+    return str.toLowerCase().replace(/\s+/g, '-');
+  }
+}
