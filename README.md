@@ -114,14 +114,14 @@ await Commands.execute('recipe/load', { activity: 'learn-rust' }); // Generated 
 **Real-World Recipe Examples**:
 
 ```bash
-# Replace IVR system for a business
-./jtag recipe/load --activity="customer-support-acme-corp"
+# Build customer support AI for your business
+./jtag recipe/load --activity="customer-support"
 # → Specialized persona with:
 #    - Audio plugins (speech-to-text, text-to-speech)
-#    - Business-specific LoRA training (Acme Corp products, policies, FAQs)
-#    - Access to customer database, order history
+#    - Custom LoRA training (your products, policies, FAQs)
+#    - Access to your customer database, order history
 #    - Escalation protocols to human agents
-#    - Any user of Continuum can install and use this recipe
+#    - Shareable recipe: package once, others can install and customize
 
 # Pair programming with multiple AI specialists
 ./jtag recipe/load --activity="build-auth-system"
