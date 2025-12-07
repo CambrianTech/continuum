@@ -70,14 +70,40 @@ export class ReadmeCheck implements IAuditCheck {
    * Fix README issues
    */
   async fix(modulePath: string, issues: Issue[]): Promise<void> {
-    console.log(`\n⚠️  README fixes require manual editing in ${modulePath}:`);
-    for (const issue of issues) {
-      if (issue.category === this.category) {
-        console.log(`   - ${issue.message}`);
-        console.log(`     Suggestion: ${issue.suggestedFix}`);
+    const absolutePath = path.resolve(modulePath);
+    const readmePath = path.join(absolutePath, 'README.md');
+
+    // Check if README is completely missing
+    const isMissing = issues.some((i) =>
+      i.message.includes('README.md is missing')
+    );
+
+    if (isMissing) {
+      // Generate complete README from scratch
+      const { ReadmeGenerator } = await import('../utils/ReadmeGenerator');
+      const content = ReadmeGenerator.generate(modulePath, 'command');
+      fs.writeFileSync(readmePath, content, 'utf-8');
+      console.log(`✅ Generated README.md for ${modulePath}`);
+    } else {
+      // README exists but has missing sections - append them
+      let content = fs.readFileSync(readmePath, 'utf-8');
+      const missingSections = issues
+        .filter((i) => i.message.includes('missing recommended section'))
+        .map((i) => {
+          const match = i.message.match(/section: (\w+)/);
+          return match ? match[1] : null;
+        })
+        .filter((s): s is string => s !== null);
+
+      for (const section of missingSections) {
+        if (!content.includes(`## ${section}`)) {
+          content += `\n\n## ${section}\n\nTODO: Add ${section.toLowerCase()} documentation\n`;
+        }
       }
+
+      fs.writeFileSync(readmePath, content, 'utf-8');
+      console.log(`✅ Added missing sections to README.md in ${modulePath}`);
     }
-    console.log('\n⚠️  Add missing sections or regenerate from template\n');
   }
 
   /**

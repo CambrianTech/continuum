@@ -73,15 +73,69 @@ export class MissingFileCheck implements IAuditCheck {
    * Fix missing files by generating them from templates
    */
   async fix(modulePath: string, issues: Issue[]): Promise<void> {
-    // TODO: Implement file generation from templates
-    // For now, just log what would be generated
-    console.log(`\n📝 Would generate missing files in ${modulePath}:`);
+    const absolutePath = path.resolve(modulePath);
+    const moduleName = path.basename(modulePath);
+
     for (const issue of issues) {
-      if (issue.category === this.category && issue.filePath) {
-        console.log(`   - ${issue.filePath}`);
+      if (issue.category !== this.category || !issue.filePath) continue;
+
+      const filePath = path.join(absolutePath, issue.filePath);
+
+      // Generate based on file type
+      if (issue.filePath === 'README.md') {
+        const { ReadmeGenerator } = await import('../utils/ReadmeGenerator');
+        const content = ReadmeGenerator.generate(modulePath, 'command');
+        fs.writeFileSync(filePath, content, 'utf-8');
+        console.log(`✅ Generated ${issue.filePath}`);
+      } else if (issue.filePath === 'package.json') {
+        const packageJson = {
+          name: `@jtag-commands/${moduleName}`,
+          version: '1.0.0',
+          description: `${moduleName} command for JTAG system`,
+          main: 'server/index.js',
+          types: 'shared/Types.d.ts',
+          scripts: {
+            test: 'npx vitest test/',
+            'test:unit': 'npx vitest test/unit/',
+            'test:integration': 'npx vitest test/integration/',
+            lint: 'npx eslint . --ext .ts',
+          },
+          keywords: ['jtag', 'command', moduleName],
+          author: '',
+          license: 'MIT',
+          peerDependencies: {
+            '@jtag/core': '*',
+          },
+        };
+        fs.writeFileSync(filePath, JSON.stringify(packageJson, null, 2), 'utf-8');
+        console.log(`✅ Generated ${issue.filePath}`);
+      } else if (issue.filePath === '.npmignore') {
+        const content = `# Source files
+*.ts
+!*.d.ts
+
+# Tests
+test/
+*.test.js
+*.spec.js
+
+# Development
+.vscode/
+.idea/
+*.log
+
+# Git
+.git/
+.gitignore
+`;
+        fs.writeFileSync(filePath, content, 'utf-8');
+        console.log(`✅ Generated ${issue.filePath}`);
+      } else if (issue.filePath.includes('test/')) {
+        // Create test directories
+        fs.mkdirSync(filePath, { recursive: true });
+        console.log(`✅ Created directory ${issue.filePath}`);
       }
     }
-    console.log('\n⚠️  File generation not yet implemented (Phase 2 TODO)\n');
   }
 
   /**
