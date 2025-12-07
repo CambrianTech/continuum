@@ -10,6 +10,11 @@ import type { GenerateAuditParams, GenerateAuditResult } from '../shared/Generat
 import { createGenerateAuditResultFromParams } from '../shared/GenerateAuditTypes';
 import { ModuleAuditor } from '../../../../generator/audit/ModuleAuditor';
 import { LintCheck } from '../../../../generator/audit/checks/LintCheck';
+import { MissingFileCheck } from '../../../../generator/audit/checks/MissingFileCheck';
+import { OutdatedPatternCheck } from '../../../../generator/audit/checks/OutdatedPatternCheck';
+import { PackageJsonCheck } from '../../../../generator/audit/checks/PackageJsonCheck';
+import { ReadmeCheck } from '../../../../generator/audit/checks/ReadmeCheck';
+import { TestCoverageCheck } from '../../../../generator/audit/checks/TestCoverageCheck';
 import type { AuditReport, ModuleType } from '../../../../generator/audit/AuditTypes';
 
 export class GenerateAuditServerCommand {
@@ -29,6 +34,11 @@ export class GenerateAuditServerCommand {
       // Create auditor and register checks
       const auditor = new ModuleAuditor();
       auditor.registerCheck(new LintCheck());
+      auditor.registerCheck(new MissingFileCheck());
+      auditor.registerCheck(new OutdatedPatternCheck());
+      auditor.registerCheck(new PackageJsonCheck());
+      auditor.registerCheck(new ReadmeCheck());
+      auditor.registerCheck(new TestCoverageCheck());
 
       const reports: AuditReport[] = [];
 

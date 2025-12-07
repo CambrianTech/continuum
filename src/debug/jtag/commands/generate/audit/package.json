@@ -1,0 +1,25 @@
+{
+  "name": "@jtag-commands/generate-audit",
+  "version": "1.0.0",
+  "description": "Audit command modules for health checks and quality validation",
+  "main": "server/GenerateAuditServerCommand.js",
+  "types": "shared/GenerateAuditTypes.d.ts",
+  "scripts": {
+    "test": "npx vitest test/",
+    "test:unit": "npx vitest test/unit/",
+    "test:integration": "npx vitest test/integration/",
+    "lint": "npx eslint . --ext .ts"
+  },
+  "keywords": [
+    "jtag",
+    "command",
+    "audit",
+    "quality",
+    "validation"
+  ],
+  "author": "Joel",
+  "license": "MIT",
+  "peerDependencies": {
+    "@jtag/core": "*"
+  }
+}

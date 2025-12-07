@@ -1,5 +1,5 @@
 /**
- * Quick test script for the audit system
+ * Test script to audit the audit command itself (dogfooding!)
  */
 
 import { ModuleAuditor } from './audit/ModuleAuditor';
@@ -11,7 +11,7 @@ import { ReadmeCheck } from './audit/checks/ReadmeCheck';
 import { TestCoverageCheck } from './audit/checks/TestCoverageCheck';
 
 async function main(): Promise<void> {
-  console.log('🧪 Testing Audit System\n');
+  console.log('🧪 Dogfooding: Auditing the audit command itself!\n');
 
   // Create auditor and register checks
   const auditor = new ModuleAuditor();
@@ -22,22 +22,20 @@ async function main(): Promise<void> {
   auditor.registerCheck(new ReadmeCheck());
   auditor.registerCheck(new TestCoverageCheck());
 
-  // Test with generate/audit command (dogfooding!)
-  console.log('Testing with generate/audit command (dogfooding!)...\n');
-  const report = await auditor.audit('commands/generate/audit', 'command', {
-    fix: true,
-  });
+  // Audit the audit command!
+  console.log('Testing with generate/audit command...\n');
+  const report = await auditor.audit('commands/generate/audit', 'command');
 
   // Display report
   console.log(auditor.formatReport(report));
 
-  // Exit with error if there are remaining errors
+  // Exit with error if there are errors
   if (report.summary.errors > 0) {
-    console.error('\n❌ Audit command still has errors after fix!');
+    console.error('\n❌ Audit command has errors! Fix before using.');
     process.exit(1);
   }
 
-  console.log('\n✅ Audit command passes all checks! 🎉\n');
+  console.log('\n✅ Audit command passes its own checks! 🎉\n');
 }
 
 main().catch((error) => {
