@@ -146,9 +146,11 @@ class LoggerClass {
       return this.fileStreams.get(logFile)!;
     }
 
-    // Create log directory if it doesn't exist
-    if (!fs.existsSync(this.logDir)) {
-      fs.mkdirSync(this.logDir, { recursive: true, mode: 0o755 });
+    // Create log file directory (including any subdirectories in category)
+    // E.g., category='daemons/AIProviderDaemonServer' creates .../logs/daemons/ directory
+    const logFileDir = path.dirname(logFile);
+    if (!fs.existsSync(logFileDir)) {
+      fs.mkdirSync(logFileDir, { recursive: true, mode: 0o755 });
     }
 
     // Use configured file mode (from LOG_FILE_MODE env var)

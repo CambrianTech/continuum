@@ -35,9 +35,10 @@ export abstract class ServerDaemonBase extends DaemonBase {
     super(name, context, router);
 
     // Automatically set up file-based logging for all server daemons
-    // Logs go to .continuum/.../logs/{name}.log
-    // Pass name as category to actually create log file (not just console)
-    this.log = Logger.create(name, name);
+    // Use actual class name (e.g., 'AIProviderDaemonServer') for clarity
+    // Logs go to .continuum/.../logs/daemons/{ClassName}.log
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**

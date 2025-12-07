@@ -42,8 +42,13 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
 
-    // ServerDaemonBase features: Automatic file-based logging
-    (this as any).log = Logger.create('AIProviderDaemonServer', 'ai-provider-daemon');
+    // DEBUG: Verify constructor runs
+    console.log('🚀🚀🚀 AIProviderDaemonServer CONSTRUCTOR CALLED 🚀🚀🚀');
+
+    // Set up file-based logging using class name automatically
+    // Logs go to .continuum/.../logs/daemons/{ClassName}.log
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
 
     // Opt-in to aggressive concurrency control for external API calls
     // Rate limit: 50 requests/sec, max 20 concurrent (handles multiple AI personas + external APIs)
@@ -73,6 +78,8 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    * Initializes base daemon, dynamically loads adapters, and sets up static interface
    */
   protected async initialize(): Promise<void> {
+    console.log('🚀🚀🚀 AIProviderDaemonServer INITIALIZE CALLED 🚀🚀🚀');
+
     // Enable health monitoring with timing metrics (for performance optimization)
     // Heartbeat every 30 seconds checks for stuck operations
     this.heartbeatTimer = setInterval(() => {
