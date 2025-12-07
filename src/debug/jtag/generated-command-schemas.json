@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-07T00:39:18.899Z",
+  "generated": "2025-12-07T01:09:30.489Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1200,11 +1200,6 @@
     {
       "name": "hello",
       "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
-      "params": {}
-    },
-    {
-      "name": "hello",
-      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
       "params": {
         "_noParams": {
           "type": "string",
@@ -1751,6 +1746,32 @@
           "type": "boolean",
           "required": false,
           "description": "template parameter"
+        }
+      }
+    },
+    {
+      "name": "generate-audit",
+      "description": "Generate/Audit Command - Shared Types\n *\n * Audit generated modules for issues and optionally fix them",
+      "params": {
+        "module": {
+          "type": "string",
+          "required": false,
+          "description": "module parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "fix": {
+          "type": "boolean",
+          "required": false,
+          "description": "fix parameter"
+        },
+        "hibernateFailures": {
+          "type": "boolean",
+          "required": false,
+          "description": "hibernateFailures parameter"
         }
       }
     },
