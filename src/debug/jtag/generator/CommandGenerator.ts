@@ -1,112 +1,98 @@
 /**
  * CommandGenerator - Generate command files using template system
  *
- * Phase 1 of generator refactoring: Integrate TemplateLoader for command generation
- * without touching the existing generate-structure.ts
+ * Phase 2 of generator refactoring: Extend ModuleGenerator base class
+ * to eliminate duplicate code and enable daemon/widget generation
  */
 
+import { ModuleGenerator, type GenerateOptions } from './ModuleGenerator';
 import { TemplateLoader } from './TemplateLoader';
 import type { CommandSpec } from './CommandNaming';
 import * as path from 'path';
 
-export class CommandGenerator {
-  private rootPath: string;
+export class CommandGenerator extends ModuleGenerator<CommandSpec> {
+  private currentSpec?: CommandSpec; // Temporary storage for writeFiles
 
-  constructor(rootPath: string) {
-    this.rootPath = rootPath;
+  /**
+   * Get module type (for logging)
+   */
+  protected getModuleType(): string {
+    return 'command';
   }
 
   /**
-   * Generate command files from a CommandSpec
+   * Get module name from spec (for logging)
    */
-  generate(spec: CommandSpec, outputDir?: string, options?: { force?: boolean, backup?: boolean }): void {
-    console.log(`📝 Generating files for command: ${spec.name}`);
+  protected getModuleName(spec: CommandSpec): string {
+    return spec.name;
+  }
 
-    // Determine output directory
-    const baseDir = outputDir ?? path.join(this.rootPath, 'commands', spec.name);
+  /**
+   * Get output directory for this command
+   */
+  protected getOutputDir(spec: CommandSpec): string {
+    return path.join(this.rootPath, 'commands', spec.name);
+  }
 
-    // Check if command already exists
-    const fs = require('fs');
-    if (fs.existsSync(baseDir)) {
-      if (options?.force) {
-        console.log(`⚠️  Command already exists at: ${baseDir}`);
-
-        if (options?.backup) {
-          // Create backup before overwriting
-          const backupDir = `${baseDir}.backup.${Date.now()}`;
-          console.log(`📦 Creating backup: ${backupDir}`);
-          fs.cpSync(baseDir, backupDir, { recursive: true });
-        }
-
-        console.log(`🔄 Overwriting existing command (--force)`);
-      } else {
-        console.error(`\n❌ ERROR: Command already exists at: ${baseDir}`);
-        console.error(`\nOptions:`);
-        console.error(`  1. Use --force to overwrite existing command`);
-        console.error(`  2. Use --force --backup to backup before overwriting`);
-        console.error(`  3. Specify different output directory:`);
-        console.error(`     npx tsx generator/CommandGenerator.ts spec.json /tmp/output`);
-        console.error(`  4. Delete existing command first:`);
-        console.error(`     rm -rf ${baseDir}`);
-        process.exit(1);
-      }
-    }
-
-    // Render templates
+  /**
+   * Render all templates for this command
+   * Returns rendered content for each file
+   */
+  protected renderTemplates(spec: CommandSpec): Record<string, string> {
+    this.currentSpec = spec; // Store for writeFiles
     const rendered = TemplateLoader.renderCommand(spec);
 
+    // Remove tokens property - we don't need it in the base class return type
+    const { tokens, ...templates } = rendered;
+    return templates;
+  }
+
+  /**
+   * Write rendered templates to disk
+   */
+  protected writeFiles(baseDir: string, rendered: Record<string, string>): void {
+    if (!this.currentSpec) {
+      throw new Error('currentSpec not set - renderTemplates must be called first');
+    }
+
     // Compute className once
-    const className = spec.name.split('/').map(part =>
+    const className = this.currentSpec.name.split('/').map(part =>
       part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()
     ).join('');
 
     // Write shared types file
-    const sharedDir = path.join(baseDir, 'shared');
-    const sharedTypesPath = path.join(sharedDir, `${className}Types.ts`);
-    TemplateLoader.writeToFile(sharedTypesPath, rendered.sharedTypes);
-    console.log(`✅ Created: ${sharedTypesPath}`);
+    const sharedTypesPath = path.join(baseDir, 'shared', `${className}Types.ts`);
+    this.writeFile(sharedTypesPath, rendered.sharedTypes);
 
     // Write browser implementation file
-    const browserDir = path.join(baseDir, 'browser');
-    const browserPath = path.join(browserDir, `${className}BrowserCommand.ts`);
-    TemplateLoader.writeToFile(browserPath, rendered.browser);
-    console.log(`✅ Created: ${browserPath}`);
+    const browserPath = path.join(baseDir, 'browser', `${className}BrowserCommand.ts`);
+    this.writeFile(browserPath, rendered.browser);
 
     // Write server implementation file
-    const serverDir = path.join(baseDir, 'server');
-    const serverPath = path.join(serverDir, `${className}ServerCommand.ts`);
-    TemplateLoader.writeToFile(serverPath, rendered.server);
-    console.log(`✅ Created: ${serverPath}`);
+    const serverPath = path.join(baseDir, 'server', `${className}ServerCommand.ts`);
+    this.writeFile(serverPath, rendered.server);
 
     // Write README file
     const readmePath = path.join(baseDir, 'README.md');
-    TemplateLoader.writeToFile(readmePath, rendered.readme);
-    console.log(`✅ Created: ${readmePath}`);
+    this.writeFile(readmePath, rendered.readme);
 
     // Write unit test file
-    const unitTestDir = path.join(baseDir, 'test', 'unit');
-    const unitTestPath = path.join(unitTestDir, `${className}Command.test.ts`);
-    TemplateLoader.writeToFile(unitTestPath, rendered.unitTest);
-    console.log(`✅ Created: ${unitTestPath}`);
+    const unitTestPath = path.join(baseDir, 'test', 'unit', `${className}Command.test.ts`);
+    this.writeFile(unitTestPath, rendered.unitTest);
 
     // Write integration test file
-    const integrationTestDir = path.join(baseDir, 'test', 'integration');
-    const integrationTestPath = path.join(integrationTestDir, `${className}Integration.test.ts`);
-    TemplateLoader.writeToFile(integrationTestPath, rendered.integrationTest);
-    console.log(`✅ Created: ${integrationTestPath}`);
+    const integrationTestPath = path.join(baseDir, 'test', 'integration', `${className}Integration.test.ts`);
+    this.writeFile(integrationTestPath, rendered.integrationTest);
 
     // Write package.json file
     const packageJsonPath = path.join(baseDir, 'package.json');
-    TemplateLoader.writeToFile(packageJsonPath, rendered.packageJson);
-    console.log(`✅ Created: ${packageJsonPath}`);
+    this.writeFile(packageJsonPath, rendered.packageJson);
 
     // Write .npmignore file
     const npmignorePath = path.join(baseDir, '.npmignore');
-    TemplateLoader.writeToFile(npmignorePath, rendered.npmignore);
-    console.log(`✅ Created: ${npmignorePath}`);
+    this.writeFile(npmignorePath, rendered.npmignore);
 
-    console.log(`\n🎉 Command generation complete!`);
-    console.log(`📂 Files created in: ${baseDir}`);
+    // Print next steps
     console.log(`\n📋 Next steps:`);
     console.log(`   1. Fill in unit tests (TDD): ${unitTestPath}`);
     console.log(`   2. Run tests: npx tsx ${unitTestPath}`);
@@ -115,6 +101,9 @@ export class CommandGenerator {
     console.log(`\n📦 Package commands:`);
     console.log(`   - cd ${baseDir} && npm test    (run all tests)`);
     console.log(`   - cd ${baseDir} && npm pack    (create .tgz package)`);
+
+    // Clean up
+    this.currentSpec = undefined;
   }
 
   /**
