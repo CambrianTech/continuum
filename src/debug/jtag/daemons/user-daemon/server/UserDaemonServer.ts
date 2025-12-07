@@ -42,8 +42,8 @@ export class UserDaemonServer extends UserDaemon {
     // Store singleton instance
     UserDaemonServer.instance = this;
 
-    // Initialize AI decision logger for persona decision-making
-    AIDecisionLogger.initialize('00000000-0000-0000-0000-000000000000'); // System session ID
+    // Initialize AI decision logger for persona decision-making (system-wide)
+    AIDecisionLogger.initialize();
 
     this.setupEventSubscriptions().catch((error: Error) => {
       console.error('❌ UserDaemon: Failed to setup event subscriptions:', error);

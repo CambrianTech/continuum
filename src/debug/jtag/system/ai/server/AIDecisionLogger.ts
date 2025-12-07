@@ -2,24 +2,21 @@
  * AI Decision Logger - Separate log file for AI gating decisions
  *
  * Writes AI decision-making logs to dedicated file to avoid polluting server.log
- * Location: .continuum/jtag/sessions/system/{systemSessionId}/logs/ai-decisions.log
+ * Location: .continuum/jtag/logs/system/ai-decisions.log
  */
 
-import * as path from 'path';
 import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
-import { SystemPaths } from '../../core/config/SystemPaths';
 
 export class AIDecisionLogger {
   private static logger: ComponentLogger | null = null;
 
   /**
-   * Initialize logger with session-specific log path
+   * Initialize logger (system-wide, not session-specific)
    */
-  static initialize(sessionId: string): void {
-    const logPath = path.join(SystemPaths.logs.system, `ai-decisions-${sessionId}.log`);
-
-    // Create logger using Logger.ts (handles directory creation, async writes, CLEAN mode)
-    this.logger = Logger.createWithFile('AIDecisionLogger', logPath, FileMode.CLEAN);
+  static initialize(): void {
+    // System-wide AI decision log (not session-specific)
+    // Logs go to .continuum/jtag/logs/system/ai-decisions.log
+    this.logger = Logger.create('AIDecisionLogger', 'ai-decisions');
 
     // Write header on initialization
     this.logger.info('='.repeat(80));
