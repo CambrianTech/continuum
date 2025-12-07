@@ -6,6 +6,40 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
+---
+
+## ⚠️ **DEVELOPMENT STATUS: PRE-ALPHA - NOT FOR PRODUCTION USE** ⚠️
+
+**🚨 READ THIS BEFORE PROCEEDING 🚨**
+
+This project is in **active pre-alpha development** and is **NOT ready for general use**:
+
+- ⚠️ **Not Tested on Multiple Machines**: Currently developed and tested on a single development machine
+- ⚠️ **Breaking Changes Expected**: APIs, commands, and architecture will change without notice
+- ⚠️ **Installation May Fail**: Dependencies, configurations, and setup requirements are unstable
+- ⚠️ **Data Loss Possible**: Database schemas and storage formats may change, wiping your data
+- ⚠️ **Resource Intensive**: May consume significant CPU, memory, and disk resources
+- ⚠️ **Security Not Audited**: Do NOT use with sensitive data or expose to untrusted networks
+- ⚠️ **Documentation Incomplete**: Many features lack documentation; expect to read source code
+
+**Who Should Try This Now:**
+- ✅ Experienced developers comfortable debugging complex systems
+- ✅ Contributors who want to help shape the architecture
+- ✅ AI researchers interested in multi-agent coordination
+- ✅ Early adopters willing to tolerate instability and provide feedback
+
+**Who Should Wait:**
+- ❌ End users looking for a stable tool
+- ❌ Anyone uncomfortable with breaking changes
+- ❌ Production environments or critical workflows
+- ❌ Users expecting polish and comprehensive documentation
+
+**We will announce when alpha is ready** (estimated 2-4 weeks). Until then, **install at your own risk** and expect things to break.
+
+For questions or to follow development progress, see the [Pre-Alpha → Alpha Roadmap](#️-pre-alpha--alpha-the-path-to-utility).
+
+---
+
 <div align="center">
 
 ![Continuum Multi-Agent Chat](src/debug/jtag/docs/images/continuum-multi-agent-chat.png)
@@ -1004,7 +1038,13 @@ Here's what we need:
 - [x] Multi-AI coordination system (no spam, relevant AI responds)
 - [x] Real-time collaborative chat (humans + AIs as equals)
 - [x] 121+ type-safe commands auto-discovered
-- [x] Meta-language generator (specs → perfect code)
+- [x] Meta-language generator (specs → perfect code) **[See [GENERATOR-ROADMAP.md](src/debug/jtag/docs/GENERATOR-ROADMAP.md)]**
+  - ✅ Command generator complete (Phase 1)
+  - ✅ Template system with token replacement
+  - ✅ Audit system (7 checks + auto-fix)
+  - ✅ Dogfooding: generators pass their own audits
+  - 📋 Daemon generator next (for LoRA infrastructure)
+  - 📋 Widget generator after (for CSS/design personas)
 - [x] RAG context (AIs search codebase, provide file paths)
 - [x] Free local inference (Ollama) + API mix
 - [x] Transparent costs (see exactly what you pay)
@@ -1082,6 +1122,160 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 - ✅ No vendor lock-in (switch providers without changing code)
 - ✅ Cost transparency (see exactly what each AI costs per response)
 - ✅ Graceful degradation (out of budget? System keeps working with free Ollama)
+
+### The Tool Ecosystem: 121+ Commands Across All Domains
+
+**Continuum isn't just chat** - it's a complete operating system with 121+ type-safe commands that work across any activity:
+
+**Core Categories**:
+- **🗄️ Data Operations** (~15 commands): CRUD, queries, collections, transactions
+- **💬 Communication** (~20 commands): Chat, rooms, threads, mentions, reactions
+- **📸 Visual Tools** (~10 commands): Screenshots, recordings, DOM inspection, widget rendering
+- **🤖 AI Management** (~15 commands): Provider switching, model selection, context management, telemetry
+- **📝 Content & Learning** (~10 commands): Markdown, lessons, quizzes, knowledge graphs
+- **🎮 Gaming & Entertainment** (~8 commands): Chess, tic-tac-toe, multiplayer coordination
+- **🌐 Web Operations** (~12 commands): Browsing, search, scraping, proxy management
+- **🔧 System & Development** (~20 commands): Logs, debugging, performance, health checks
+- **📊 Analytics & Reports** (~8 commands): Usage stats, cost tracking, quality metrics
+- **🧬 Meta-Language Generators** (~3 commands + growing): Command/daemon/widget generation from specs
+
+**Key Properties**:
+- ✅ **Type-safe**: Full TypeScript inference, no `any` types
+- ✅ **Self-discovering**: File system scanning finds commands automatically
+- ✅ **Environment-agnostic**: Same command works in browser, server, CLI, tests
+- ✅ **Promise-based**: Built-in feedback mechanisms with async/await
+- ✅ **Tool-enabled for AIs**: Every persona has access to ALL commands
+
+**Example: Multi-Domain Usage**
+```typescript
+// Code domain - review with AI assistance
+await Commands.execute('code/review', { file: 'PersonaUser.ts', focus: 'performance' });
+
+// Chat domain - send message to team
+await Commands.execute('chat/send', { room: 'general', message: 'Performance fix deployed!' });
+
+// Web domain - research best practices
+await Commands.execute('web/search', { query: 'LRU cache eviction strategies' });
+
+// Visual domain - capture UI state
+await Commands.execute('screenshot', { querySelector: 'chat-widget', filename: 'debug.png' });
+
+// Gaming domain - make a move
+await Commands.execute('game/move', { room: 'chess-42', move: 'e4' });
+
+// Meta domain - generate new tool
+await Commands.execute('generate', { spec: 'commands/audit/spec.json' });
+```
+
+### Comprehensive Model Support: The Adapter Advantage
+
+**Continuum is adapter-driven** - adding a new AI provider is ~100 lines of code (implement the adapter interface, done).
+
+**Currently Supported Models** (and growing):
+
+**🔷 Anthropic** (Full support + fine-tuning):
+- Claude Opus 4, 3.5, 3
+- Claude Sonnet 4.5, 4, 3.5, 3
+- Claude Haiku 3.5, 3
+- Fine-tuning: ✅ Available via API
+
+**🟢 OpenAI** (Full support + fine-tuning):
+- GPT-4o, GPT-4 Turbo, GPT-4
+- GPT-3.5 Turbo
+- o1, o1-mini (reasoning models)
+- Fine-tuning: ✅ Available via API
+
+**🔵 xAI** (Grok models):
+- Grok 2, Grok Beta
+- Fine-tuning: 🚧 API coming soon
+
+**🟠 DeepSeek** (Open models + API):
+- DeepSeek V3, DeepSeek Coder V2
+- Fine-tuning: ✅ Open weights, DIY training
+
+**⚡ Groq** (Ultra-fast inference):
+- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B
+- Mixtral 8x7B, Gemma 2 9B
+- Fine-tuning: 🚧 Coming soon
+
+**🔥 Fireworks AI** (Speed + fine-tuning):
+- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B
+- Mixtral 8x22B, DeepSeek V3
+- Qwen 2.5 72B, Phi-3.5
+- Fine-tuning: ✅ Full support
+
+**🤝 Together AI** (Open model hub):
+- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B
+- Mixtral 8x22B, Qwen 2.5 72B
+- DeepSeek Coder V2, Gemma 2 27B
+- Fine-tuning: ✅ Full support
+
+**🌊 Mistral AI** (European sovereignty):
+- Mistral Large 2, Mistral Medium
+- Mixtral 8x22B, Codestral
+- Fine-tuning: ✅ Available
+
+**🏠 Ollama** (Local inference, ALWAYS free):
+- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B (quantized)
+- DeepSeek V3, Qwen 2.5 72B
+- Mixtral 8x22B, Gemma 2 27B
+- Phi-3.5, CodeLlama, Mistral
+- Fine-tuning: ✅ Open weights + LoRA (your hardware)
+
+**The Adapter Pattern Benefits**:
+
+1. **Easy Model Switching**: Change providers without touching application code
+   ```typescript
+   // Switch from Claude to GPT-4o - just change config
+   aiProvider: 'openai',
+   model: 'gpt-4o'
+   ```
+
+2. **Mix and Match**: Different models for different tasks
+   ```bash
+   # Architecture review with Opus
+   ./jtag ai/model --persona="architect" --model="claude-opus-4"
+
+   # Code reviews with Sonnet (faster + cheaper)
+   ./jtag ai/model --persona="reviewer" --model="claude-sonnet-4-5"
+
+   # Simple queries with local Ollama (free)
+   ./jtag ai/model --persona="helper" --model="llama3.3:70b"
+   ```
+
+3. **Fine-Tuning Flexibility**: Train on the provider that fits your budget
+   ```bash
+   # Fireworks: Fast training, cheap inference ($0.50-2 per million tokens after training)
+   ./jtag train --adapter="typescript-expert" --provider="fireworks"
+
+   # Together: Similar to Fireworks, good pricing
+   ./jtag train --adapter="code-reviewer" --provider="together"
+
+   # Mistral: European data residency
+   ./jtag train --adapter="french-support" --provider="mistral"
+
+   # OpenAI: Premium models, reliable API
+   ./jtag train --adapter="gpt-specialist" --provider="openai"
+
+   # Ollama: Completely free, your hardware, full control
+   ./jtag train --adapter="my-coding-style" --provider="ollama" --base="llama3.3:70b"
+   ```
+
+4. **Fallback Chains**: Graceful degradation when APIs fail or budgets run out
+   ```typescript
+   // Try Claude first, fall back to GPT-4, then Ollama
+   providers: ['anthropic', 'openai', 'ollama'],
+   fallbackBehavior: 'cascade'
+   ```
+
+5. **Cost Optimization**: System learns which models provide best value for each task type
+   ```bash
+   # AI telemetry tracks cost vs quality
+   ./jtag ai/report --metric="cost-per-quality-point"
+   # Result: Sonnet 3.5 best for code reviews (fast + accurate + cheap)
+   #         Opus 4 best for architecture (worth premium for hard problems)
+   #         Ollama best for simple queries (free + good enough)
+   ```
 
 **The Competitive Marketplace Effect**:
 
