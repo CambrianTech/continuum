@@ -95,6 +95,16 @@ export class CommandGenerator {
     TemplateLoader.writeToFile(integrationTestPath, rendered.integrationTest);
     console.log(`✅ Created: ${integrationTestPath}`);
 
+    // Write package.json file
+    const packageJsonPath = path.join(baseDir, 'package.json');
+    TemplateLoader.writeToFile(packageJsonPath, rendered.packageJson);
+    console.log(`✅ Created: ${packageJsonPath}`);
+
+    // Write .npmignore file
+    const npmignorePath = path.join(baseDir, '.npmignore');
+    TemplateLoader.writeToFile(npmignorePath, rendered.npmignore);
+    console.log(`✅ Created: ${npmignorePath}`);
+
     console.log(`\n🎉 Command generation complete!`);
     console.log(`📂 Files created in: ${baseDir}`);
     console.log(`\n📋 Next steps:`);
@@ -102,6 +112,9 @@ export class CommandGenerator {
     console.log(`   2. Run tests: npx tsx ${unitTestPath}`);
     console.log(`   3. Implement command logic to pass tests`);
     console.log(`   4. Run integration tests after npm start`);
+    console.log(`\n📦 Package commands:`);
+    console.log(`   - cd ${baseDir} && npm test    (run all tests)`);
+    console.log(`   - cd ${baseDir} && npm pack    (create .tgz package)`);
   }
 
   /**

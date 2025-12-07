@@ -46,6 +46,8 @@ export class TokenReplacer {
    * @param tokens - Object mapping token names to replacement values
    * @returns Array of missing token names, empty if all present
    *
+   * Note: Empty strings are considered valid tokens (e.g., FACTORY_DEFAULTS can be empty when no optional params)
+   *
    * @example
    * ```typescript
    * const template = "Hello {{NAME}}, welcome to {{PLACE}}!";
@@ -60,9 +62,10 @@ export class TokenReplacer {
     const requiredTokens = new Set(matches.map(m => m[1]));
 
     // Check which required tokens are missing
+    // Note: Empty strings are valid (e.g., FACTORY_DEFAULTS can be empty)
     const missing: string[] = [];
     for (const token of requiredTokens) {
-      if (!(token in tokens) || tokens[token] === undefined || tokens[token] === '') {
+      if (!(token in tokens) || tokens[token] === undefined) {
         missing.push(token);
       }
     }

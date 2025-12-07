@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-06T23:43:20.932Z",
+  "generated": "2025-12-07T00:39:18.899Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1199,17 +1199,17 @@
     },
     {
       "name": "hello",
-      "description": "Hello Command - Shared Types\n *\n * A simple greeting command for testing the generator",
+      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
+      "params": {}
+    },
+    {
+      "name": "hello",
+      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
       "params": {
-        "name": {
+        "_noParams": {
           "type": "string",
-          "required": true,
-          "description": "name parameter"
-        },
-        "emoji": {
-          "type": "boolean",
           "required": false,
-          "description": "emoji parameter"
+          "description": "_noParams parameter"
         }
       }
     },

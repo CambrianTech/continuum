@@ -61,12 +61,12 @@ async function testCommandExecution(client: Awaited<ReturnType<typeof jtag.conne
 /**
  * Test 3: Validate required parameters
  */
-async function testRequiredParameters(client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
+async function testRequiredParameters(_client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
   console.log('\n🚨 Test 3: Testing required parameter validation');
 
   // TODO: Uncomment and test missing required parameters
   // try {
-  //   await client.commands['{{COMMAND_NAME}}']({
+  //   await _client.commands['{{COMMAND_NAME}}']({
   //     // Missing required param
   //   });
   //   assert(false, 'Should have thrown validation error');
@@ -81,7 +81,7 @@ async function testRequiredParameters(client: Awaited<ReturnType<typeof jtag.con
 /**
  * Test 4: Test optional parameters
  */
-async function testOptionalParameters(client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
+async function testOptionalParameters(_client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
   console.log('\n🔧 Test 4: Testing optional parameters');
 
   // TODO: Uncomment to test with and without optional parameters
@@ -103,7 +103,7 @@ async function testOptionalParameters(client: Awaited<ReturnType<typeof jtag.con
 /**
  * Test 5: Performance test
  */
-async function testPerformance(client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
+async function testPerformance(_client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
   console.log('\n⚡ Test 5: Performance under load');
 
   // TODO: Uncomment to test command performance
@@ -112,7 +112,7 @@ async function testPerformance(client: Awaited<ReturnType<typeof jtag.connect>>)
   //
   // for (let i = 0; i < iterations; i++) {
   //   const start = Date.now();
-  //   await client.commands['{{COMMAND_NAME}}']({ /* params */ });
+  //   await _client.commands['{{COMMAND_NAME}}']({ /* params */ });
   //   times.push(Date.now() - start);
   // }
   //
@@ -131,7 +131,7 @@ async function testPerformance(client: Awaited<ReturnType<typeof jtag.connect>>)
 /**
  * Test 6: Widget/Event integration (if applicable)
  */
-async function testWidgetIntegration(client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
+async function testWidgetIntegration(_client: Awaited<ReturnType<typeof jtag.connect>>): Promise<void> {
   console.log('\n🎨 Test 6: Widget/Event integration');
 
   // TODO: Uncomment if your command emits events or updates widgets

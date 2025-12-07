@@ -49,7 +49,8 @@ export class TokenBuilder {
    */
   static buildParamFields(params: ParamSpec[]): string {
     if (params.length === 0) {
-      return '  // No additional parameters';
+      // Use a marker property to avoid empty interface lint error
+      return '  _noParams?: never; // Marker to avoid empty interface';
     }
 
     return params
@@ -174,7 +175,7 @@ export class TokenBuilder {
    */
   static buildFactoryDataType(params: ParamSpec[]): string {
     if (params.length === 0) {
-      return '{}';
+      return 'Record<string, never>';
     }
 
     const fields = params

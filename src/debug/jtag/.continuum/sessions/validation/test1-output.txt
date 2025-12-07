@@ -9,7 +9,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (7a7b233d-ce61-4932-bd6e-02c056885a26) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (d4cbc04e-39ea-4014-aeaa-bec1a88a524e) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -23,128 +23,128 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1765064855430_s8t560tn
-🏷️ JTAGClientServer: Session updated to: c3f3c991-e5ac-4df0-9882-cdee261d4d8c (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1765067521925_nf2ocdiv
+🏷️ JTAGClientServer: Session updated to: 17e7c4a6-a00e-4e16-9144-dff20a0e1e7e (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765064855434_3ab6h44i
+📤 RemoteConnection: Sending command 'list' with correlation client_1765067521929_eb6nmrbt
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765064855436_tdkmansw
-✅ Server: JTAGClient connected with 135 commands
+📤 RemoteConnection: Sending command 'list' with correlation client_1765067521931_gyil5lwa
+✅ Server: JTAGClient connected with 134 commands
 ✅ Connected
 ⏳ Waiting for widgets to initialize...
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064858438_wzr90hak
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067524933_eku9gxt9
 ✅ Widget user-list-widget initialized
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064858442_mxdeznr8
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067524937_ayae7h9i
 ✅ Widget room-list-widget initialized
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064858445_hn0tgzwx
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067524941_mrhjkrpg
 ✅ Widget chat-widget initialized
 
 🧪 CRUD TEST: users → user-list-widget
 
 📋 VERIFY after BEFORE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064860449_jr1t85n4
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067526945_tydur0lh
   🎨 Widget: ✅ Widget working (16 entities)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064860453_31fqy2i1
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067526951_epk4w6mm
   📸 Screenshot: user-before.png
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1765064861641_4h3kl69b
-✅ CREATE: 1765064861642-46fi76mxu
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1765067528150_9xf6ne05
+✅ CREATE: 1765067528150-enr8hsf7s
 
 📋 VERIFY after CREATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765064863652_rib2pv5r
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765067530163_ivba3pi1
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064863653_jao73714
-  🎨 Widget: ✅ Entity 1765064861642-46fi76mxu found in widget (17 total)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064863656_p0fb6930
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067530165_9j3wu1cs
+  🎨 Widget: ✅ Entity 1765067528150-enr8hsf7s found in widget (17 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067530168_h6ai4hap
   📸 Screenshot: user-create.png
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1765064864756_x9rv6pj0
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1765067531290_k2fpck07
 ✅ UPDATE: Modified
 
 📋 VERIFY after UPDATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765064866768_xka1ikzu
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765067533301_jl6eh7yp
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064866770_qa2o1pxn
-  🎨 Widget: ✅ Entity 1765064861642-46fi76mxu found in widget (17 total)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064866778_n6e28nlx
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067533303_ddwtalvd
+  🎨 Widget: ✅ Entity 1765067528150-enr8hsf7s found in widget (17 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067533307_ahoila68
   📸 Screenshot: user-update.png
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765064867889_avas1e4o
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765067534402_kd72mzdp
 ✅ DELETE: Removed
 
 📋 VERIFY after DELETE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064869907_dwxd4lob
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064869915_at8vg7jm
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067536412_2dajflcq
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067536416_6m7lqix3
   📸 Screenshot: user-delete.png
 
 🧪 CRUD TEST: rooms → room-list-widget
 
 📋 VERIFY after BEFORE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064873054_5ph7raxf
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067539513_8s8zvf3y
   🎨 Widget: ✅ Widget working (4 entities)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064874063_x8ot52iu
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067539517_2wv4vzgv
   📸 Screenshot: room-before.png
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1765064875888_irbxsw8x
-✅ CREATE: 1765064875888-givexvxlj
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1765067540601_eo35rtr9
+✅ CREATE: 1765067540601-rf6op0ajn
 
 📋 VERIFY after CREATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765064877900_alqg0ot9
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765067542610_ddp6ji45
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064878262_jx878tov
-  🎨 Widget: ✅ Entity 1765064875888-givexvxlj found in widget (5 total)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064878276_yg70gtgi
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067542611_dmg463xj
+  🎨 Widget: ✅ Entity 1765067540601-rf6op0ajn found in widget (5 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067542614_z1lwvuki
   📸 Screenshot: room-create.png
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1765064880397_gg0lktd7
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1765067543707_doskq3c5
 ✅ UPDATE: Modified
 
 📋 VERIFY after UPDATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765064882701_50i4kp7i
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765067545717_wcacrqge
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064882703_jrd2lag4
-  🎨 Widget: ✅ Entity 1765064875888-givexvxlj found in widget (5 total)
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064882706_a0o9zm5f
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067545719_i8auql2s
+  🎨 Widget: ✅ Entity 1765067540601-rf6op0ajn found in widget (5 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067545722_yfzcmod3
   📸 Screenshot: room-update.png
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765064883986_5rerjz37
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765067546802_e36hz20g
 ✅ DELETE: Removed
 
 📋 VERIFY after DELETE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064885996_oaoqi9iw
-📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765064886003_allajmg1
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067548816_qi0fjhkm
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765067548832_vgpe43df
   📸 Screenshot: room-delete.png
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765064887318_isc3hv95
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765067549916_fonusjqt
 
 🧪 CRUD TEST: chat_messages → chat-widget
 
 📋 VERIFY after BEFORE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064889323_0ckfxhzz
-  🎨 Widget: ✅ Widget working (35 entities)
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067551925_ajyw7hsr
+  🎨 Widget: ✅ Widget working (30 entities)
   📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
-📤 RemoteConnection: Sending command 'data/create' with correlation client_1765064889416_ehz5d2zy
-✅ CREATE: 1765064889416-j1hmckicm
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1765067551938_rbctdo0s
+✅ CREATE: 1765067551940-ctliihl8o
 
 📋 VERIFY after CREATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765064891580_ppb1415x
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765067553981_i1brqw66
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064891854_ziudk2pg
-  🎨 Widget: ✅ Entity 1765064889416-j1hmckicm found in widget (37 total)
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067557092_us02im7o
+  🎨 Widget: ✅ Entity 1765067551940-ctliihl8o found in widget (31 total)
   📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
-📤 RemoteConnection: Sending command 'data/update' with correlation client_1765064892536_7wod0c5p
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1765067557204_udtm691k
 ✅ UPDATE: Modified
 
 📋 VERIFY after UPDATE:
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765064896368_p09tugy2
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765067562430_f6r5aj4f
   📊 DB: ✅ Found
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064896501_ydj5mtmz
-  🎨 Widget: ✅ Entity 1765064889416-j1hmckicm found in widget (37 total)
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067562440_3xvtxe0x
+  🎨 Widget: ✅ Entity 1765067551940-ctliihl8o found in widget (31 total)
   📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765064896548_n6v3iq5p
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765067562444_jeuo4kpo
 ✅ DELETE: Removed
 
 📋 VERIFY after DELETE:
-📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765064899131_7wi6y8xf
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765067564462_p8644kg2
   📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
 
 🎉 ALL CRUD TESTS PASSED (3 entities × 4 operations = 12 screenshots)
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session c3f3c991-e5ac-4df0-9882-cdee261d4d8c on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session 17e7c4a6-a00e-4e16-9144-dff20a0e1e7e on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

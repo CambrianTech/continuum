@@ -1,6 +1,6 @@
 # Hello Command
 
-A simple greeting command for testing the generator
+Simple hello world command for testing
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@ A simple greeting command for testing the generator
 From the command line using the jtag CLI:
 
 ```bash
-./jtag hello --name=<value>
+./jtag hello 
 ```
 
 ### Tool Usage
@@ -41,36 +41,20 @@ const result = await Commands.execute('hello', {
 
 ## Parameters
 
-- **name** (required): `string` - The name to greet
-- **emoji** (optional): `boolean` - Add emoji to the greeting
+No parameters required.
 
 ## Result
 
 Returns `HelloResult` with:
 
 Returns CommandResult with:
-- **greeting**: `string` - The generated greeting message
-- **timestamp**: `number` - When the greeting was generated
+- **message**: `string` - Hello world message
 
 ## Examples
 
-### Basic greeting
-
 ```bash
-./jtag hello --name="World"
+./jtag command-name
 ```
-
-**Expected result:**
-{ greeting: "Hello, World!", timestamp: 1733520000000 }
-
-### Greeting with emoji
-
-```bash
-./jtag hello --name="Claude" --emoji=true
-```
-
-**Expected result:**
-{ greeting: "Hello, Claude! 👋", timestamp: 1733520000000 }
 
 ## Getting Help
 

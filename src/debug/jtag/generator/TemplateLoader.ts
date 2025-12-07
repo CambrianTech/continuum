@@ -61,6 +61,8 @@ export class TemplateLoader {
     readme: string;
     unitTest: string;
     integrationTest: string;
+    packageJson: string;
+    npmignore: string;
     tokens: Record<string, string>;
   } {
     const tokens = TokenBuilder.buildAllTokens(spec);
@@ -72,6 +74,8 @@ export class TemplateLoader {
       readme: this.renderTemplate('command/README.template.md', tokens),
       unitTest: this.renderTemplate('command/unit-test.template.ts', tokens),
       integrationTest: this.renderTemplate('command/integration-test.template.ts', tokens),
+      packageJson: this.renderTemplate('command/package.json.template', tokens),
+      npmignore: this.renderTemplate('command/.npmignore.template', tokens),
       tokens // Return tokens for debugging
     };
   }
@@ -93,7 +97,7 @@ export class TemplateLoader {
 
         if (stat.isDirectory()) {
           walkDir(fullPath, path.join(prefix, file));
-        } else if (file.endsWith('.template.ts') || file.endsWith('.template.md')) {
+        } else if (file.includes('.template')) {
           templates.push(path.join(prefix, file));
         }
       }

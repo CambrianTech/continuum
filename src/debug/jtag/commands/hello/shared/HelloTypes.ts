@@ -1,7 +1,7 @@
 /**
  * Hello Command - Shared Types
  *
- * A simple greeting command for testing the generator
+ * Simple hello world command for testing
  */
 
 import type { CommandParams, CommandResult, JTAGContext } from '../../../system/core/types/JTAGTypes';
@@ -13,10 +13,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
  * Hello Command Parameters
  */
 export interface HelloParams extends CommandParams {
-  // The name to greet
-  name: string;
-  // Add emoji to the greeting
-  emoji?: boolean;
+  _noParams?: never; // Marker to avoid empty interface
 }
 
 /**
@@ -25,14 +22,9 @@ export interface HelloParams extends CommandParams {
 export const createHelloParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: {
-    // The name to greet
-    name: string;
-    // Add emoji to the greeting
-    emoji?: boolean;
-  }
+  data: Record<string, never>
 ): HelloParams => createPayload(context, sessionId, {
-  emoji: data.emoji ?? false,
+
   ...data
 });
 
@@ -41,10 +33,8 @@ export const createHelloParams = (
  */
 export interface HelloResult extends CommandResult {
   success: boolean;
-  // The generated greeting message
-  greeting: string;
-  // When the greeting was generated
-  timestamp: number;
+  // Hello world message
+  message: string;
   error?: JTAGError;
 }
 
@@ -56,15 +46,12 @@ export const createHelloResult = (
   sessionId: UUID,
   data: {
     success: boolean;
-    // The generated greeting message
-    greeting?: string;
-    // When the greeting was generated
-    timestamp?: number;
+    // Hello world message
+    message?: string;
     error?: JTAGError;
   }
 ): HelloResult => createPayload(context, sessionId, {
-  greeting: data.greeting ?? '',
-  timestamp: data.timestamp ?? 0,
+  message: data.message ?? '',
   ...data
 });
 

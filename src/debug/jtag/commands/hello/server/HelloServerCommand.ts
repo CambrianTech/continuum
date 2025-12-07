@@ -1,7 +1,7 @@
 /**
  * Hello Command - Server Implementation
  *
- * A simple greeting command for testing the generator
+ * Simple hello world command for testing
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
@@ -43,8 +43,7 @@ export class HelloServerCommand extends CommandBase<HelloParams, HelloResult> {
     // NOTE: createResultFromParams requires ALL result fields (context/sessionId inherited from params)
     return createHelloResultFromParams(params, {
       success: true,
-      greeting: 'TODO: The generated greeting message', // The generated greeting message
-      timestamp: Date.now(), // When the greeting was generated
+      message: 'TODO: Hello world message', // Hello world message
     });
   }
 }

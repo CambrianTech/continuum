@@ -1,7 +1,7 @@
 /**
  * Hello Command - Browser Implementation
  *
- * A simple greeting command for testing the generator
+ * Simple hello world command for testing
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
