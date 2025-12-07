@@ -121,7 +121,7 @@ export class GenerateAuditServerCommand {
   }
 
   /**
-   * Find all modules of a given type
+   * Find all modules of a given type (recursively)
    */
   private static findModulesOfType(type: ModuleType): string[] {
     const baseDir = type === 'command' ? 'commands' : type === 'widget' ? 'widgets' : 'daemons';
@@ -131,7 +131,16 @@ export class GenerateAuditServerCommand {
       return modules;
     }
 
-    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    this.findModulesRecursive(baseDir, modules);
+
+    return modules;
+  }
+
+  /**
+   * Recursively find modules with shared/ directory
+   */
+  private static findModulesRecursive(dir: string, modules: string[]): void {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
@@ -139,14 +148,15 @@ export class GenerateAuditServerCommand {
       // Skip backup directories (hibernation pollution check would catch these)
       if (entry.name.includes('.backup.')) continue;
 
-      const modulePath = path.join(baseDir, entry.name);
+      const fullPath = path.join(dir, entry.name);
 
-      // Verify it's a valid module (has shared/ directory)
-      if (fs.existsSync(path.join(modulePath, 'shared'))) {
-        modules.push(modulePath);
+      // If this directory has shared/, it's a module
+      if (fs.existsSync(path.join(fullPath, 'shared'))) {
+        modules.push(fullPath);
+      } else {
+        // Otherwise, recurse into it to find nested modules
+        this.findModulesRecursive(fullPath, modules);
       }
     }
-
-    return modules;
   }
 }

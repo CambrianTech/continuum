@@ -8,11 +8,14 @@ Audit generated modules for issues and optionally fix them automatically.
 # Audit specific module
 ./jtag generate/audit --module="commands/hello"
 
-# Audit all commands
+# Audit all commands (recursively finds nested commands)
 ./jtag generate/audit --type="command"
 
-# Audit and fix issues
+# Audit and auto-fix ALL commands (RECOMMENDED)
 ./jtag generate/audit --type="command" --fix
+
+# Audit specific nested command
+./jtag generate/audit --module="commands/chat/send" --fix
 
 # Audit widgets (future)
 ./jtag generate/audit --type="widget" --fix
@@ -35,29 +38,29 @@ Audit generated modules for issues and optionally fix them automatically.
 - **Check**: Runs eslint on module files
 - **Fix**: Applies `eslint --fix` automatically
 
-### 2. Missing Files (Future)
-- **Check**: Verifies all required files exist
-- **Fix**: Generates missing files from templates
+### 2. Missing Files ✅ IMPLEMENTED
+- **Check**: Verifies all required files exist (README.md, package.json, .npmignore, test dirs)
+- **Fix**: Generates missing files from templates and schema
 
-### 3. Outdated Patterns (Future)
+### 3. Unused Code ✅ IMPLEMENTED
+- **Check**: Detects unused catch variables
+- **Fix**: Prefixes with underscore (needs improvement for reference updates)
+
+### 4. Package.json Validation ✅ IMPLEMENTED
+- **Check**: Verifies package.json matches spec (peerDependencies, naming, scripts)
+- **Fix**: Regenerates package.json with correct structure
+
+### 5. README Completeness ✅ IMPLEMENTED
+- **Check**: Verifies README has required sections (Usage, Parameters, Result, Examples, Testing)
+- **Fix**: Generates complete README from Types.ts schema, adds missing sections
+
+### 6. Test Coverage ✅ IMPLEMENTED
+- **Check**: Verifies unit and integration test directories exist
+- **Fix**: Creates test/unit and test/integration directories
+
+### 7. Outdated Patterns (Future)
 - **Check**: Detects deprecated patterns
 - **Fix**: Applies current best practices
-
-### 4. Package.json Validation (Future)
-- **Check**: Verifies package.json matches spec
-- **Fix**: Regenerates package.json
-
-### 5. README Completeness (Future)
-- **Check**: Verifies README has required sections
-- **Fix**: Regenerates README sections
-
-### 6. Test Coverage (Future)
-- **Check**: Verifies unit and integration tests exist
-- **Fix**: Generates missing test files
-
-### 7. Hibernation Pollution (Future)
-- **Check**: Detects backup directories in active locations
-- **Fix**: Moves to /tmp/jtag-hibernation/
 
 ## Example Output
 
