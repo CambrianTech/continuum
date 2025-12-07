@@ -1379,11 +1379,6 @@ Built with:
 - **SQLite** - Bulletproof local persistence
 - **Web Components** - True component encapsulation
 
-Inspired by:
-- **H&R Block XML meta-language system** (2010-2011) - Proof that meta-abstraction enables one architect to rival 50-person teams
-- **Salesforce, ServiceNow, Workday** - Billion-dollar companies built on meta-language principles
-- **Open source community** - Standing on the shoulders of giants
-
 Special thanks to our AI collaborators who helped build this:
 - **Claude (Anthropic)** - Primary development AI and architectural consultant
 - **OpenAI GPT-4** - Alternative perspectives and code review
