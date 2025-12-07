@@ -137,7 +137,7 @@ class LoggerClass {
    */
   private getFileStream(category: LogCategory): fs.WriteStream {
     if (!this.config.enableFileLogging) {
-      return null as any;
+      throw new Error(`File logging is disabled (LOG_TO_FILES=0) but Logger.create() was called with category '${category}'. Either enable file logging or don't use categories.`);
     }
 
     const logFile = path.join(this.logDir, `${category}.log`);
@@ -197,7 +197,7 @@ class LoggerClass {
     const stream = this.fileStreams.get(logFile);
 
     if (!queue || !stream) {
-      return; // Logging disabled or stream not initialized
+      throw new Error(`Cannot queue log message - queue or stream not initialized for file '${logFile}'. Queue exists: ${!!queue}, Stream exists: ${!!stream}. File streams must be created via getFileStream() before queueMessage() can be called.`);
     }
 
     queue.push({ message, stream });
@@ -215,7 +215,17 @@ class LoggerClass {
     const queue = this.logQueues.get(logFile);
     const stream = this.fileStreams.get(logFile);
 
-    if (!queue || !stream || queue.length === 0) {
+    // Defensive: If timer is running but queue/stream don't exist, that's a bug
+    // Log error but don't crash the timer - system can continue operating
+    if (!queue || !stream) {
+      if (this.config.enableConsoleLogging) {
+        console.error(`[Logger BUG] Flush timer running but queue/stream missing for '${logFile}'. Queue exists: ${!!queue}, Stream exists: ${!!stream}`);
+      }
+      return;
+    }
+
+    // Nothing to flush (legitimate - called every 100ms by timer)
+    if (queue.length === 0) {
       return;
     }
 
@@ -371,8 +381,7 @@ class ComponentLogger {
         : '';
 
       const logLine = `${timestamp}[${level}] ${this.component}: ${message}${formattedArgs}\n`;
-      // Queue the message - never blocks!
-      (this.logger as any).queueMessage(this.logFilePath, logLine);
+      this.logger.queueMessage(this.logFilePath, logLine);
     }
   }
 

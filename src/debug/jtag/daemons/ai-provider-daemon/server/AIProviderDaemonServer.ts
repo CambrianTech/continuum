@@ -43,7 +43,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     super(context, router);
 
     // ServerDaemonBase features: Automatic file-based logging
-    (this as any).log = Logger.create('ai-provider-daemon');
+    (this as any).log = Logger.create('AIProviderDaemonServer', 'ai-provider-daemon');
 
     // Opt-in to aggressive concurrency control for external API calls
     // Rate limit: 50 requests/sec, max 20 concurrent (handles multiple AI personas + external APIs)

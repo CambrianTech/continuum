@@ -36,7 +36,8 @@ export abstract class ServerDaemonBase extends DaemonBase {
 
     // Automatically set up file-based logging for all server daemons
     // Logs go to .continuum/.../logs/{name}.log
-    (this as any).log = Logger.create(name);
+    // Pass name as category to actually create log file (not just console)
+    this.log = Logger.create(name, name);
   }
 
   /**
