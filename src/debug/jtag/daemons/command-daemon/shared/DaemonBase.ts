@@ -34,7 +34,7 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   public readonly router: JTAGRouter;
   public abstract readonly subpath: string;
   public readonly uuid: string;
-  protected readonly log: DaemonLogger;
+  protected log: DaemonLogger;
 
   constructor(name: string, context: JTAGContext, router: JTAGRouter) {
     super(name, context);
