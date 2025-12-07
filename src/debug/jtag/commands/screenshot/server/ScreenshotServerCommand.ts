@@ -76,7 +76,7 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
           // Delegate to media/resize with model-aware sizing
           const resizeParams: MediaResizeParams = {
             ...screenshotParams,
-            inputPath: tempSaveResult.filepath!,
+            inputPath: tempSaveResult.filepath,
             modelName: screenshotParams.context.modelConfig.model,
             targetPercentage: 0.25, // Use 25% of context window for screenshots (important visual data)
             returnBase64: true,
@@ -95,9 +95,9 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
             // Clean up temp file
             try {
               const sessionPath = path.resolve(process.cwd(), '.continuum/sessions/user/shared/shared');
-              fs.unlinkSync(path.join(sessionPath, tempSaveResult.filepath!));
-            } catch (err) {
-              console.warn(`⚠️  RESIZE: Could not delete temp file: ${err}`);
+              fs.unlinkSync(path.join(sessionPath, tempSaveResult.filepath));
+            } catch (_err) {
+              console.warn(`⚠️  RESIZE: Could not delete temp file: ${_err}`);
             }
           } else {
             console.error(`❌ RESIZE: Failed to resize image - using original`);

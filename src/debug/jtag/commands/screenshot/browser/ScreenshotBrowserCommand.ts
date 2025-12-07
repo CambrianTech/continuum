@@ -262,7 +262,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         scaledCanvas.width = targetWidth;
         scaledCanvas.height = targetHeight;
         
-        scaledCtx.drawImage(finalCanvas as HTMLCanvasElement, 0, 0, targetWidth, targetHeight);
+        scaledCtx.drawImage(finalCanvas, 0, 0, targetWidth, targetHeight);
         finalCanvas = scaledCanvas;
         
         // console.debug(`🔄 BROWSER: Scaled to ${targetWidth}x${targetHeight}`);

@@ -292,8 +292,8 @@ export function smartQuerySelector(selector: string): Element | null {
     console.log(`🎯 ElementUtils: Found ${displayName}${inShadowDOM ? ' (in shadow DOM)' : ''} - bounds: ${bounds.width}x${bounds.height}${bounds.hasOverflow ? ' (has overflow)' : ''}`);
     
     return element;
-  } catch (error) {
-    console.warn(`❌ ElementUtils: Failed to query selector "${selector}":`, error);
+  } catch (_error) {
+    console.warn(`❌ ElementUtils: Failed to query selector "${selector}":`, _error);
     return null;
   }
 }

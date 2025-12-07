@@ -1,0 +1,23 @@
+{
+  "name": "@jtag-commands/list",
+  "version": "1.0.0",
+  "description": "list command for JTAG system",
+  "main": "server/index.js",
+  "types": "shared/Types.d.ts",
+  "scripts": {
+    "test": "npx vitest test/",
+    "test:unit": "npx vitest test/unit/",
+    "test:integration": "npx vitest test/integration/",
+    "lint": "npx eslint . --ext .ts"
+  },
+  "keywords": [
+    "jtag",
+    "command",
+    "list"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@jtag/core": "*"
+  }
+}

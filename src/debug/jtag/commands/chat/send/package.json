@@ -1,0 +1,23 @@
+{
+  "name": "@jtag-commands/send",
+  "version": "1.0.0",
+  "description": "send command for JTAG system",
+  "main": "server/index.js",
+  "types": "shared/Types.d.ts",
+  "scripts": {
+    "test": "npx vitest test/",
+    "test:unit": "npx vitest test/unit/",
+    "test:integration": "npx vitest test/integration/",
+    "lint": "npx eslint . --ext .ts"
+  },
+  "keywords": [
+    "jtag",
+    "command",
+    "send"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "@jtag/core": "*"
+  }
+}

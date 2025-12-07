@@ -50,7 +50,7 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
             };
           }
         }
-      } catch (error) {
+      } catch (_error) {
         // AI status check failed or timed out - include empty summary
         aiStatus = {
           total: 0,
