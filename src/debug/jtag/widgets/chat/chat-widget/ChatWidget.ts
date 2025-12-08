@@ -39,6 +39,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private headerUpdateTimeout?: number; // Debounce timeout for header updates
   private errorsHidden: boolean = true; // Toggle state for error notifications
   private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
+  private isSending: boolean = false; // Guard against duplicate sends
 
   constructor() {
     super({
@@ -684,9 +685,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Send message with text and any pending attachments
    */
   private async sendMessage(): Promise<void> {
+    // Guard against concurrent sends
+    if (this.isSending) {
+      console.log('🔧 SEND-ALREADY-IN-PROGRESS - ignoring duplicate call');
+      return;
+    }
+
+    this.isSending = true;
     console.log('🔧 SEND-MESSAGE-CALLED-' + Date.now());
 
-    if (!this.messageInput) return;
+    if (!this.messageInput) {
+      this.isSending = false;
+      return;
+    }
 
     const text = this.messageInput.value.trim();
     console.log('🔧 MESSAGE-TEXT-LENGTH-' + text.length);
@@ -753,6 +764,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
     } catch (error) {
       console.error('❌ Failed to send message:', error);
+    } finally {
+      // Always reset flag, even on error
+      this.isSending = false;
     }
   }
 
