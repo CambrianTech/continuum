@@ -1,6 +1,6 @@
 /**
  * Proxy Daemon - Server Implementation
- * 
+ *
  * Server-side HTTP proxy that enables cross-origin access for widgets.
  * Handles URL rewriting, header forwarding, and content processing.
  */
@@ -9,12 +9,17 @@ import fetch from 'node-fetch';
 import { ProxyDaemon, type ProxyRequest, type ProxyResponse } from '../shared/ProxyDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 export class ProxyDaemonServer extends ProxyDaemon {
   private userAgent = 'Continuum-ProxyDaemon/1.0 (Training Bot)';
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**

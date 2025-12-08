@@ -18,6 +18,7 @@ import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
 import type { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 /**
  * Smart routing rules (foundation for future persona-based management)
@@ -63,6 +64,10 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   async initialize(): Promise<void> {
