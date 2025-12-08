@@ -37,7 +37,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
   private aiStatusContainer?: HTMLElement; // Container for AI status indicators
   private headerUpdateTimeout?: number; // Debounce timeout for header updates
-  private errorsHidden: boolean = false; // Toggle state for error notifications
+  private errorsHidden: boolean = true; // Toggle state for error notifications
   private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
 
   constructor() {
@@ -435,6 +435,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.aiStatusContainer = this.shadowRoot?.getElementById('aiStatusContainer') as HTMLElement;
     if (this.aiStatusContainer) {
       this.aiStatusIndicator.setContainer(this.aiStatusContainer);
+      // Set initial display state based on errorsHidden flag
+      this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
       console.log(`✅ ChatWidget: AI status container ready`);
     }
 
@@ -530,11 +532,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         <div class="header-top">
           <span class="header-title">${headerText}</span>
           <button
-            class="error-toggle ${this.errorsHidden ? 'pressed' : ''}"
+            class="error-toggle ${!this.errorsHidden ? 'pressed' : ''}"
             id="errorToggle"
             title="${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}"
           >
-            Errors${errorCount > 0 ? ` (${errorCount})` : ''}
+            Errors 🗑️${errorCount > 0 ? ` (${errorCount})` : ''}
           </button>
           <span class="list-count">${this.getEntityCount()}</span>
         </div>
@@ -624,10 +626,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Update button visual state
       if (this.errorsHidden) {
-        toggleButton.classList.add('pressed');
+        toggleButton.classList.remove('pressed');
         toggleButton.setAttribute('title', `Show errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
       } else {
-        toggleButton.classList.remove('pressed');
+        toggleButton.classList.add('pressed');
         toggleButton.setAttribute('title', `Hide errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
       }
     });
