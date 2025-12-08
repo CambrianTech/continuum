@@ -185,15 +185,37 @@ export class SqliteSchemaManager {
       const entityClass = ENTITY_REGISTRY.get(collectionName);
 
       if (!entityClass || !hasFieldMetadata(entityClass)) {
-        // ERROR: Unregistered entity - this is a bug that must be fixed
-        const errorMessage = `❌ Entity '${collectionName}' is not registered in EntityRegistry!\n\n` +
-          `To fix:\n` +
-          `1. Create entity class: system/data/entities/${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.ts\n` +
-          `2. Extend BaseEntity and add @TextField(), @NumberField(), @JsonField() decorators\n` +
-          `3. Register in EntityRegistry.ts:\n` +
-          `   - Import: import { ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity } from '../../../system/data/entities/${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity';\n` +
-          `   - Initialize: new ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity();\n` +
-          `   - Register: registerEntity(${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.collection, ${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity);\n`;
+        // Get list of available collections from registry
+        const availableCollections = Array.from(ENTITY_REGISTRY.keys()).sort();
+
+        // Simple string similarity check (find collections with similar names)
+        const suggestions = availableCollections.filter(name => {
+          const lowerCollection = collectionName.toLowerCase();
+          const lowerName = name.toLowerCase();
+          // Check if one contains the other, or vice versa
+          return lowerName.includes(lowerCollection) || lowerCollection.includes(lowerName);
+        });
+
+        let errorMessage = `❌ Collection '${collectionName}' is not registered!\n\n`;
+
+        // Add "Did you mean?" suggestion if we found similar names
+        if (suggestions.length > 0) {
+          errorMessage += `💡 Did you mean: ${suggestions.map(s => `'${s}'`).join(', ')}?\n\n`;
+        }
+
+        // List all available collections
+        errorMessage += `Available collections:\n${availableCollections.map(c => `  - ${c}`).join('\n')}\n\n`;
+
+        // Tell them about the README command
+        errorMessage += `📖 To learn how to use governance commands, try:\n`;
+        errorMessage += `   ./jtag readme decision/create\n`;
+        errorMessage += `   ./jtag readme decision/vote\n\n`;
+
+        // Advanced: How to add a new collection (for developers)
+        errorMessage += `🔧 To add a NEW collection (developers only):\n` +
+          `1. Create entity: system/data/entities/${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.ts\n` +
+          `2. Extend BaseEntity with @TextField(), @NumberField(), @JsonField() decorators\n` +
+          `3. Register in EntityRegistry.ts\n`;
 
         this.log.error(errorMessage);
         return {
