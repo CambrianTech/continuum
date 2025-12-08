@@ -1,23 +1,21 @@
 /**
- * decision/finalize - Browser-side stub
- * All logic is on the server side
+ * Decision Finalize Command - Browser Implementation
+ *
+ * Close voting and calculate winner using ranked-choice voting
  */
 
-import { DecisionFinalizeCommand } from '../shared/DecisionFinalizeCommand';
-import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DecisionFinalizeParams, DecisionFinalizeResult } from '../shared/DecisionFinalizeTypes';
 
-export class DecisionFinalizeBrowserCommand extends DecisionFinalizeCommand {
+export class DecisionFinalizeBrowserCommand extends CommandBase<DecisionFinalizeParams, DecisionFinalizeResult> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super(context, subpath, commander);
+    super('Decision Finalize', context, subpath, commander);
   }
 
-  protected async executeCommand(params: DecisionFinalizeParams): Promise<DecisionFinalizeResult> {
-    return transformPayload(params, {
-      success: false,
-      error: 'decision/finalize must be executed on server'
-    });
+  async execute(params: DecisionFinalizeParams): Promise<DecisionFinalizeResult> {
+    console.log('🌐 BROWSER: Delegating Decision Finalize to server');
+    return await this.remoteExecute(params);
   }
 }

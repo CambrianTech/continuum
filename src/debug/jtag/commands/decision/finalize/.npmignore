@@ -1,0 +1,25 @@
+# Test files
+test/
+*.test.ts
+*.spec.ts
+
+# Development files
+.eslintrc*
+tsconfig*.json
+vitest.config.ts
+
+# Build artifacts
+*.js.map
+*.d.ts.map
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db

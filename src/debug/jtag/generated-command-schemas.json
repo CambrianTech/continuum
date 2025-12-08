@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-07T22:43:12.044Z",
+  "generated": "2025-12-08T15:59:15.400Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1926,6 +1926,38 @@
       }
     },
     {
+      "name": "decision-vote",
+      "description": "Decision Vote Command - Shared Types\n *\n * Cast ranked-choice vote on a proposal",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        },
+        "rankedChoices": {
+          "type": "array",
+          "required": true,
+          "description": "rankedChoices parameter"
+        },
+        "comment": {
+          "type": "string",
+          "required": false,
+          "description": "comment parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-view",
+      "description": "Decision View Command - Shared Types\n *\n * View detailed information about a specific governance proposal",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        }
+      }
+    },
+    {
       "name": "decision-rank",
       "description": "decision/rank - Types\n * Submit ranked-choice vote for a decision proposal",
       "params": {
@@ -1983,13 +2015,95 @@
       }
     },
     {
+      "name": "decision-list",
+      "description": "Decision List Command - Shared Types\n *\n * List all governance proposals with optional filtering",
+      "params": {
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "proposedBy": {
+          "type": "string",
+          "required": false,
+          "description": "proposedBy parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "offset": {
+          "type": "number",
+          "required": false,
+          "description": "offset parameter"
+        }
+      }
+    },
+    {
       "name": "decision-finalize",
-      "description": "decision/finalize - Types\n * Manually finalize a voting proposal and calculate winner",
+      "description": "Decision Finalize Command - Shared Types\n *\n * Close voting and calculate winner using ranked-choice voting",
       "params": {
         "proposalId": {
           "type": "string",
           "required": true,
           "description": "proposalId parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-create",
+      "description": "Decision Create Command - Shared Types\n *\n * Create a new governance proposal with voting options",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        },
+        "topic": {
+          "type": "string",
+          "required": true,
+          "description": "topic parameter"
+        },
+        "rationale": {
+          "type": "string",
+          "required": true,
+          "description": "rationale parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "options": {
+          "type": "array",
+          "required": true,
+          "description": "options parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "votingDeadline": {
+          "type": "string",
+          "required": false,
+          "description": "votingDeadline parameter"
+        },
+        "requiredQuorum": {
+          "type": "number",
+          "required": false,
+          "description": "requiredQuorum parameter"
+        },
+        "visibility": {
+          "type": "string",
+          "required": false,
+          "description": "visibility parameter"
         }
       }
     },
