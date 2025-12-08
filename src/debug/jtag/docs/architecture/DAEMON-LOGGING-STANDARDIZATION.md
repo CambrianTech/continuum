@@ -59,9 +59,9 @@ class AresSystemOptimizer {
 | DataDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | HIGH |
 | UserDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | HIGH |
 | CommandDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | MEDIUM |
-| EventsDaemonServer | ❓ Unknown | TBD | MEDIUM |
-| SessionDaemonServer | ❓ Unknown | TBD | MEDIUM |
-| WidgetDaemonServer | ❓ Unknown | TBD | MEDIUM |
+| EventsDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | MEDIUM |
+| SessionDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | MEDIUM |
+| WidgetDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | MEDIUM |
 | HealthDaemonServer | ❓ Unknown | TBD | LOW |
 | ProxyDaemonServer | ❓ Unknown | TBD | LOW |
 | RoomMembershipDaemonServer | ❓ Unknown | TBD | LOW |
@@ -167,6 +167,9 @@ class DaemonServer {
 - [x] DataDaemonServer (HIGH priority)
 - [x] UserDaemonServer (HIGH priority)
 - [x] CommandDaemonServer (MEDIUM priority)
-- [ ] 11 remaining daemons
+- [x] EventsDaemonServer (MEDIUM priority)
+- [x] SessionDaemonServer (MEDIUM priority)
+- [x] WidgetDaemonServer (MEDIUM priority)
+- [ ] 9 remaining daemons
 
 **Updated**: 2025-12-07

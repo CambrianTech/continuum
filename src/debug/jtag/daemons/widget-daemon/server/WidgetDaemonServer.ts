@@ -8,18 +8,23 @@
 import { WidgetDaemon } from '../shared/WidgetDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 export class WidgetDaemonServer extends WidgetDaemon {
-  
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**
    * Initialize server widget daemon
    */
   protected async initialize(): Promise<void> {
-    console.log('✅ WidgetDaemonServer: Initialized');
+    this.log.info('✅ WidgetDaemonServer: Initialized');
   }
 
   /**
@@ -28,8 +33,8 @@ export class WidgetDaemonServer extends WidgetDaemon {
   protected async routeCommandThroughJTAG(command: string, params: any): Promise<any> {
     // Server-side widgets would route through server JTAG system
     // For now, return success since widgets primarily run in browser
-    console.log(`📋 WidgetDaemonServer: Received command ${command}`, params);
-    
+    this.log.info(`📋 WidgetDaemonServer: Received command ${command}`, params);
+
     return {
       success: true,
       message: `Server acknowledged widget command: ${command}`,
