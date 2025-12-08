@@ -373,20 +373,72 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   /**
    * Restart frozen Ollama service
    *
-   * Non-blocking: Kills and restarts Ollama, returns immediately
-   * Health monitoring will detect when it's back online
+   * Improved with proper sequencing and verification:
+   * 1. Kill existing processes and wait for termination
+   * 2. Give OS time to release port 11434
+   * 3. Start new Ollama server
+   * 4. Verify server is responding
    */
   protected async restartProvider(): Promise<void> {
     this.log(null, 'info', '🔄 Ollama: Restarting service...');
 
-    // Kill existing Ollama processes (non-blocking)
-    spawn('killall', ['ollama']);
+    try {
+      const { execSync } = await import('child_process');
 
-    // Start fresh Ollama server (non-blocking, detached from parent)
-    // Health monitoring (AdapterHealthMonitor) will detect when server is ready
-    spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' }).unref();
+      // Step 1: Kill existing Ollama processes synchronously
+      // Using execSync ensures we wait for the kill to complete
+      try {
+        execSync('killall ollama', { stdio: 'ignore', timeout: 5000 });
+        this.log(null, 'info', '🔄 Ollama: Killed existing processes');
+      } catch (error) {
+        // killall returns non-zero if no processes found (which is fine)
+        this.log(null, 'debug', '🔄 Ollama: No existing processes to kill (or already dead)');
+      }
 
-    this.log(null, 'info', '🔄 Ollama: Restart initiated, health monitoring will verify recovery');
+      // Step 2: Wait 2 seconds for port 11434 to be released by OS
+      // This prevents "address already in use" errors
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      this.log(null, 'debug', '🔄 Ollama: Waited for port release');
+
+      // Step 3: Start fresh Ollama server (detached from parent)
+      // Use detached: true and unref() so it doesn't block Node.js exit
+      const proc = spawn('ollama', ['serve'], {
+        detached: true,
+        stdio: 'ignore' // Suppress output (daemon mode)
+      });
+      proc.unref(); // Allow parent process to exit independently
+      this.log(null, 'info', `🔄 Ollama: Started new server process (PID: ${proc.pid})`);
+
+      // Step 4: Verify server is responding (up to 10 seconds)
+      // Wait for ollama to actually start accepting connections
+      for (let i = 0; i < 10; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        try {
+          const response = await fetch(`${this.config.apiEndpoint}/api/tags`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(2000)
+          });
+
+          if (response.ok) {
+            this.log(null, 'info', `✅ Ollama: Server responding after ${i + 1}s`);
+            // Invalidate health cache so next health check runs fresh
+            this.healthCache = null;
+            return;
+          }
+        } catch (error) {
+          // Server not ready yet, continue waiting
+          this.log(null, 'debug', `🔄 Ollama: Waiting for server to respond (${i + 1}/10)...`);
+        }
+      }
+
+      // Server didn't respond after 10 seconds
+      this.log(null, 'warn', '⚠️  Ollama: Server restart initiated but not responding yet (may take longer)');
+
+    } catch (error) {
+      this.log(null, 'error', `❌ Ollama: Restart failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
 
   /**
