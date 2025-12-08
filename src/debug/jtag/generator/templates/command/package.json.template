@@ -18,6 +18,7 @@
     "shared/**/*.ts",
     "browser/**/*.ts",
     "server/**/*.ts",
+    "test/**/*.ts",
     "README.md"
   ],
   "keywords": [
