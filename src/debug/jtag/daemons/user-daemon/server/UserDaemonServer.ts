@@ -199,7 +199,14 @@ export class UserDaemonServer extends UserDaemon {
       }
 
     } catch (error) {
-      this.log.error('❌ UserDaemon: Failed to ensure persona clients:', error);
+      // During initialization, DataDaemon might not be ready yet - this is expected
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('DataDaemon not initialized')) {
+        this.log.warn('⚠️  UserDaemon: Deferring persona client initialization (DataDaemon not ready yet)');
+      } else {
+        // Unexpected error - log as ERROR
+        this.log.error('❌ UserDaemon: Failed to ensure persona clients:', error);
+      }
     }
   }
 
