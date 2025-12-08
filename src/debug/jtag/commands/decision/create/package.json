@@ -1,0 +1,34 @@
+{
+  "name": "@jtag-commands/decision/create",
+  "version": "1.0.0",
+  "description": "Create a new governance proposal with voting options",
+  "main": "server/DecisionCreateServerCommand.ts",
+  "types": "shared/DecisionCreateTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/DecisionCreateIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "decision/create"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
