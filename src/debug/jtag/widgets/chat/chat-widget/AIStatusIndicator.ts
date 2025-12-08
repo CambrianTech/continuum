@@ -44,7 +44,6 @@ export class AIStatusIndicator {
   private activeStatuses = new Map<UUID, AIStatusState>(); // personaId -> status
   private container?: HTMLElement;
   private removeTimeout = 2000; // Auto-remove after 2 seconds
-  private dismissAllButton?: HTMLElement;
   private dismissedErrors = new Map<string, number>(); // errorKey -> dismissTimestamp
   private dismissDuration = 5 * 60 * 1000; // Don't show same error for 5 minutes after dismissal
 
@@ -57,7 +56,6 @@ export class AIStatusIndicator {
    */
   setContainer(container: HTMLElement): void {
     this.container = container;
-    this.updateDismissAllButton(); // Create button if needed
   }
 
   /**
@@ -207,9 +205,6 @@ export class AIStatusIndicator {
         this.container.appendChild(element);
       }
     }
-
-    // Update dismiss all button after status changes
-    this.updateDismissAllButton();
   }
 
   /**
@@ -241,9 +236,6 @@ export class AIStatusIndicator {
     }
 
     this.activeStatuses.delete(personaId);
-
-    // Update dismiss all button after removing status
-    this.updateDismissAllButton();
   }
 
   /**
@@ -326,7 +318,6 @@ export class AIStatusIndicator {
     for (const [personaId] of this.activeStatuses) {
       this.removeStatus(personaId);
     }
-    // Note: updateDismissAllButton() called by removeStatus() for each removal
   }
 
   /**
@@ -337,7 +328,7 @@ export class AIStatusIndicator {
   }
 
   /**
-   * Get count of error statuses specifically (for dismiss all button)
+   * Get count of error statuses (for header button display)
    */
   getErrorCount(): number {
     let count = 0;
@@ -347,40 +338,6 @@ export class AIStatusIndicator {
       }
     }
     return count;
-  }
-
-  /**
-   * Update or remove dismiss all button based on error count
-   */
-  private updateDismissAllButton(): void {
-    const errorCount = this.getErrorCount();
-
-    if (errorCount === 0) {
-      // Remove button if no errors
-      if (this.dismissAllButton) {
-        this.dismissAllButton.remove();
-        this.dismissAllButton = undefined;
-      }
-      return;
-    }
-
-    if (!this.container) return;
-
-    // Create or update button
-    if (!this.dismissAllButton) {
-      this.dismissAllButton = document.createElement('button');
-      this.dismissAllButton.className = 'ai-status-dismiss-all';
-      this.container.appendChild(this.dismissAllButton);
-
-      // Add click handler
-      this.dismissAllButton.addEventListener('click', () => {
-        this.clearAll();
-      });
-    }
-
-    // Update button text with count
-    this.dismissAllButton.textContent = `Clear All (${errorCount})`;
-    this.dismissAllButton.title = `Dismiss all ${errorCount} error notification${errorCount === 1 ? '' : 's'}`;
   }
 
   /**
