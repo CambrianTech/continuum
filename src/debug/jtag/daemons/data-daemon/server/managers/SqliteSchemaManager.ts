@@ -185,6 +185,16 @@ export class SqliteSchemaManager {
       const entityClass = ENTITY_REGISTRY.get(collectionName);
 
       if (!entityClass || !hasFieldMetadata(entityClass)) {
+        // Collection descriptions (what each collection is used for)
+        const collectionDescriptions: Record<string, string> = {
+          'chat_messages': 'Chat history and conversation messages',
+          'decisions': 'Governance proposals for democratic voting',
+          'rooms': 'Chat channels/rooms for organizing discussions',
+          'users': 'User profiles and identity information',
+          'tasks': 'Task tracking and management',
+          'user_state': 'User session state and preferences'
+        };
+
         // Get list of available collections from registry
         const availableCollections = Array.from(ENTITY_REGISTRY.keys()).sort();
 
@@ -203,8 +213,13 @@ export class SqliteSchemaManager {
           errorMessage += `💡 Did you mean: ${suggestions.map(s => `'${s}'`).join(', ')}?\n\n`;
         }
 
-        // List all available collections
-        errorMessage += `Available collections:\n${availableCollections.map(c => `  - ${c}`).join('\n')}\n\n`;
+        // List all available collections WITH DESCRIPTIONS
+        errorMessage += `Available collections:\n`;
+        for (const collection of availableCollections) {
+          const description = collectionDescriptions[collection] || 'No description available';
+          errorMessage += `  - ${collection} (${description})\n`;
+        }
+        errorMessage += '\n';
 
         // Tell them about the README command
         errorMessage += `📖 To learn how to use governance commands, try:\n`;
