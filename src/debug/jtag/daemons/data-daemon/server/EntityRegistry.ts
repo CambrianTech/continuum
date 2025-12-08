@@ -72,6 +72,7 @@ import { FileVoteProposalEntity } from '../../../system/data/entities/FileVotePr
 import { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
 import { MemoryEntity } from '../../../system/data/entities/MemoryEntity';
 import { WallDocumentEntity } from '../../../system/data/entities/WallDocumentEntity';
+import { DecisionEntity } from '../../../system/data/entities/DecisionEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -117,6 +118,7 @@ export function initializeEntityRegistry(): void {
   new DecisionProposalEntity();
   new MemoryEntity();
   new WallDocumentEntity();
+  new DecisionEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -154,6 +156,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(DecisionProposalEntity.collection, DecisionProposalEntity);
   registerEntity(MemoryEntity.collection, MemoryEntity);
   registerEntity(WallDocumentEntity.collection, WallDocumentEntity);
+  registerEntity(DecisionEntity.collection, DecisionEntity);
 
   log.info('All entities registered');
 }
