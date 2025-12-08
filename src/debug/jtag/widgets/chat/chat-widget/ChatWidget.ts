@@ -37,6 +37,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
   private aiStatusContainer?: HTMLElement; // Container for AI status indicators
   private headerUpdateTimeout?: number; // Debounce timeout for header updates
+  private errorsHidden: boolean = false; // Toggle state for error notifications
   private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
 
   constructor() {
@@ -437,6 +438,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       console.log(`✅ ChatWidget: AI status container ready`);
     }
 
+    // Setup error toggle handler
+    this.setupErrorToggleHandler();
+
     // Cache input element after DOM is rendered
     this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLTextAreaElement;
     this.setupMessageInputHandlers();
@@ -518,10 +522,20 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       || this.currentRoom?.description
       || this.currentRoomName;
 
+    // Error count for toggle button indicator
+    const errorCount = this.aiStatusIndicator.getErrorCount();
+
     return `
       <div class="entity-list-header">
         <div class="header-top">
           <span class="header-title">${headerText}</span>
+          <button
+            class="error-toggle ${this.errorsHidden ? 'pressed' : ''}"
+            id="errorToggle"
+            title="${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}"
+          >
+            Errors${errorCount > 0 ? ` (${errorCount})` : ''}
+          </button>
           <span class="list-count">${this.getEntityCount()}</span>
         </div>
         <div class="header-members">
@@ -586,9 +600,37 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const headerElement = this.shadowRoot.querySelector('.entity-list-header');
       if (headerElement) {
         headerElement.innerHTML = this.renderHeader();
+        // Reattach error toggle handler after header update
+        this.setupErrorToggleHandler();
       }
       this.headerUpdateTimeout = undefined;
     }, 0) as unknown as number;
+  }
+
+  /**
+   * Setup click handler for error toggle button
+   */
+  private setupErrorToggleHandler(): void {
+    const toggleButton = this.shadowRoot?.getElementById('errorToggle');
+    if (!toggleButton) return;
+
+    toggleButton.addEventListener('click', () => {
+      this.errorsHidden = !this.errorsHidden;
+
+      // Update container visibility
+      if (this.aiStatusContainer) {
+        this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
+      }
+
+      // Update button visual state
+      if (this.errorsHidden) {
+        toggleButton.classList.add('pressed');
+        toggleButton.setAttribute('title', `Show errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
+      } else {
+        toggleButton.classList.remove('pressed');
+        toggleButton.setAttribute('title', `Hide errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
+      }
+    });
   }
 
   /**
