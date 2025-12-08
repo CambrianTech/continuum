@@ -56,9 +56,9 @@ class AresSystemOptimizer {
 | Daemon | Current Logging | Status | Priority |
 |--------|----------------|--------|----------|
 | AIProviderDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | Reference |
-| UserDaemonServer | ❌ None visible | MISSING | HIGH |
-| DataDaemonServer | ❌ `const log = Logger.create('DataDaemonServer', 'sql')` | WRONG CATEGORY | HIGH |
-| CommandDaemonServer | ❓ Unknown | TBD | MEDIUM |
+| DataDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | HIGH |
+| UserDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | HIGH |
+| CommandDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | MEDIUM |
 | EventsDaemonServer | ❓ Unknown | TBD | MEDIUM |
 | SessionDaemonServer | ❓ Unknown | TBD | MEDIUM |
 | WidgetDaemonServer | ❓ Unknown | TBD | MEDIUM |
@@ -164,8 +164,9 @@ class DaemonServer {
 
 - [x] Pattern defined
 - [x] AIProviderDaemonServer (reference implementation)
-- [ ] DataDaemonServer (HIGH priority - next)
-- [ ] UserDaemonServer (HIGH priority)
-- [ ] 12 remaining daemons
+- [x] DataDaemonServer (HIGH priority)
+- [x] UserDaemonServer (HIGH priority)
+- [x] CommandDaemonServer (MEDIUM priority)
+- [ ] 11 remaining daemons
 
 **Updated**: 2025-12-07
