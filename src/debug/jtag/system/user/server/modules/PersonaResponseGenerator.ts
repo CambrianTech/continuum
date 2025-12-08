@@ -56,6 +56,7 @@ export interface ResponseGenerationResult {
   messageId?: UUID;
   error?: string;
   wasRedundant?: boolean;
+  storedToolResultIds: UUID[];  // IDs of tool result messages that were processed (always present, may be empty)
 }
 
 /**
@@ -261,6 +262,7 @@ export class PersonaResponseGenerator {
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     const generateStartTime = Date.now();  // Track total response time for decision logging
+    const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
       // 🔧 SUB-PHASE 3.1: Build RAG context
       // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
@@ -560,7 +562,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       if (!slotGranted) {
         this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied - skipping response`);
-        return { success: true, wasRedundant: true }; // Treat as redundant (another AI will respond)
+        return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Treat as redundant (another AI will respond)
       }
 
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
@@ -673,6 +675,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             toolCalls,
             toolExecutionContext
           );
+
+          // Collect tool result message IDs for task tracking (prevent infinite loops)
+          allStoredResultIds.push(...storedResultIds);
 
           // Strip tool blocks from response to get explanation text
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
@@ -894,7 +899,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           );
         }
 
-        return { success: true, wasRedundant: true }; // Discard response
+        return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Discard response
       }
       this.log(`✅ ${this.personaName}: [PHASE 3.4] Response not redundant, proceeding to post`);
 
@@ -1013,7 +1018,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         );
       }
 
-      return { success: true, messageId: result.data?.id };
+      return {
+        success: true,
+        messageId: result.data?.id,
+        storedToolResultIds: allStoredResultIds  // Always return array, even if empty
+      };
     } catch (error) {
       // Fail silently - real people don't send canned error messages, they just stay quiet
       AIDecisionLogger.logError(
@@ -1046,7 +1055,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        storedToolResultIds: []
       };
     }
   }
