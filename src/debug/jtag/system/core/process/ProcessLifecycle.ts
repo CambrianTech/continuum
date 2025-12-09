@@ -5,13 +5,13 @@
  * Used by LoggerDaemon, cognition layer (persona/tools), and other multiprocess components.
  */
 
-import type { IPCMessage, IPCResponse } from './IPCProtocol';
+import type { IPCMessage, IPCResponse } from './IPCProtocol.js';
 import {
   isIPCMessage,
   isIPCResponse,
   createSuccessResponse,
   createErrorResponse
-} from './IPCProtocol';
+} from './IPCProtocol.js';
 
 /**
  * Lifecycle state for a child process

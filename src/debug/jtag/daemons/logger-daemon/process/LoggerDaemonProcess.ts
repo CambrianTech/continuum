@@ -16,27 +16,27 @@
  * ```
  */
 
-import { LifecycleManager } from '../../../system/core/process/ProcessLifecycle';
-import type { IPCMessage, IPCResponse } from '../../../system/core/process/IPCProtocol';
-import { createSuccessResponse, createErrorResponse } from '../../../system/core/process/IPCProtocol';
-import { LoggerDaemonServer } from '../server/LoggerDaemonServer';
+import { LifecycleManager } from '../../../system/core/process/ProcessLifecycle.js';
+import type { IPCMessage, IPCResponse } from '../../../system/core/process/IPCProtocol.js';
+import { createSuccessResponse, createErrorResponse } from '../../../system/core/process/IPCProtocol.js';
+import { LoggerDaemonCore } from '../server/LoggerDaemonCore.js';
 import type {
   LogMessage,
   ConfigureLoggerMessage,
   LogStatsMessage,
   FlushMessage
-} from '../shared/LoggerDaemonTypes';
+} from '../shared/LoggerDaemonTypes.js';
 import {
   isLogMessage,
   isConfigureLoggerMessage,
   isLogStatsMessage,
   isFlushMessage
-} from '../shared/LoggerDaemonTypes';
+} from '../shared/LoggerDaemonTypes.js';
 
 /**
  * Logger daemon state
  */
-let server: LoggerDaemonServer | undefined;
+let server: LoggerDaemonCore | undefined;
 
 /**
  * Initialize the daemon
@@ -44,8 +44,8 @@ let server: LoggerDaemonServer | undefined;
 async function onInitialize(): Promise<void> {
   console.log('[LoggerDaemonProcess] Initializing...');
 
-  // Create logger server
-  server = new LoggerDaemonServer();
+  // Create logger core
+  server = new LoggerDaemonCore();
   await server.initialize();
 
   console.log('[LoggerDaemonProcess] Initialized');

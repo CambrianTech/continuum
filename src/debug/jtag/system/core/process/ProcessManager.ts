@@ -17,6 +17,9 @@ export interface ProcessConfig {
   /** Unique identifier for this process instance */
   readonly processId: string;
 
+  /** Command to execute (default: 'node', use 'npx' for tsx) */
+  readonly command?: string;
+
   /** Script path to execute (relative to project root) */
   readonly scriptPath: string;
 
@@ -102,7 +105,12 @@ export class ManagedProcess extends EventEmitter {
 
     try {
       // Spawn the process
-      this._process = spawn('node', [this.config.scriptPath, ...(this.config.args || [])], {
+      const command = this.config.command || 'node';
+      const args = command === 'node'
+        ? [this.config.scriptPath, ...(this.config.args || [])]
+        : [...(this.config.args || []), this.config.scriptPath];
+
+      this._process = spawn(command, args, {
         cwd: this.config.cwd || process.cwd(),
         env: { ...process.env, ...this.config.env },
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'] // stdin, stdout, stderr, ipc
