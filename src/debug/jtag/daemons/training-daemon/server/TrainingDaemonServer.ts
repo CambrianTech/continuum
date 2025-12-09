@@ -52,7 +52,6 @@ interface TrainingConfig {
 
 export class TrainingDaemonServer extends TrainingDaemon {
   protected log: ComponentLogger;
-  private unsubscribeFunctions: (() => void)[] = [];
 
   /** Training configuration */
   private readonly config: TrainingConfig = {
@@ -124,7 +123,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
       }
     );
 
-    this.unsubscribeFunctions.push(unsubCreated);
+    this.registerSubscription(unsubCreated);
     this.log.info('🧠 TrainingDaemonServer: Subscription complete');
   }
 
@@ -320,12 +319,9 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
   /**
    * Cleanup on shutdown
+   * Base class handles subscription cleanup automatically
    */
-  async cleanup(): Promise<void> {
-    this.log.info('🧠 TrainingDaemon: Cleaning up subscriptions...');
-    for (const unsub of this.unsubscribeFunctions) {
-      unsub();
-    }
-    this.unsubscribeFunctions = [];
+  protected async cleanup(): Promise<void> {
+    this.log.info('🧠 TrainingDaemon: Cleanup complete');
   }
 }

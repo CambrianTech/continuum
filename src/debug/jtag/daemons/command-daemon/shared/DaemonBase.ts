@@ -36,6 +36,10 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   public readonly uuid: string;
   protected log: DaemonLogger;
 
+  // Resource management (Phase 1: Daemon lifecycle consistency)
+  private unsubscribeFunctions: (() => void)[] = [];
+  private intervals: Map<string, ReturnType<typeof setInterval>> = new Map();
+
   constructor(name: string, context: JTAGContext, router: JTAGRouter) {
     super(name, context);
     this.router = router;
@@ -106,10 +110,189 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   }
 
   /**
+   * Register an event subscription for automatic cleanup
+   * Use this when subscribing to events to ensure cleanup happens
+   *
+   * @example
+   * const unsub = Events.subscribe('data:users:created', handler);
+   * this.registerSubscription(unsub);
+   */
+  protected registerSubscription(unsubscribe: () => void): void {
+    this.unsubscribeFunctions.push(unsubscribe);
+  }
+
+  /**
+   * Unsubscribe from all registered events
+   * Called automatically during shutdown
+   */
+  protected cleanupSubscriptions(): void {
+    if (this.unsubscribeFunctions.length === 0) {
+      return;
+    }
+
+    this.log.debug(`Cleaning up ${this.unsubscribeFunctions.length} event subscription(s)`);
+    for (const unsub of this.unsubscribeFunctions) {
+      try {
+        unsub();
+      } catch (error) {
+        this.log.error(`Failed to unsubscribe:`, error);
+      }
+    }
+    this.unsubscribeFunctions = [];
+  }
+
+  /**
+   * Register a named interval for automatic cleanup
+   * Automatically handles async errors in callback
+   *
+   * @example
+   * this.registerInterval('monitoring', async () => {
+   *   await this.monitorHealth();
+   * }, 5000);
+   */
+  protected registerInterval(
+    name: string,
+    callback: () => void | Promise<void>,
+    intervalMs: number
+  ): void {
+    // Clear existing interval with same name
+    this.clearInterval(name);
+
+    const interval = setInterval(() => {
+      const result = callback();
+      if (result instanceof Promise) {
+        result.catch((error: Error) => {
+          this.log.error(`Interval '${name}' error:`, error);
+        });
+      }
+    }, intervalMs);
+
+    this.intervals.set(name, interval);
+    this.log.debug(`Registered interval '${name}' (${intervalMs}ms)`);
+  }
+
+  /**
+   * Clear a specific named interval
+   * Returns true if interval existed and was cleared
+   */
+  protected clearInterval(name: string): boolean {
+    const interval = this.intervals.get(name);
+    if (interval) {
+      clearInterval(interval);
+      this.intervals.delete(name);
+      this.log.debug(`Cleared interval '${name}'`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Clear all registered intervals
+   * Called automatically during shutdown
+   */
+  protected cleanupIntervals(): void {
+    if (this.intervals.size === 0) {
+      return;
+    }
+
+    this.log.debug(`Cleaning up ${this.intervals.size} interval(s)`);
+    for (const [name, interval] of this.intervals) {
+      clearInterval(interval);
+      this.log.debug(`Cleared interval '${name}'`);
+    }
+    this.intervals.clear();
+  }
+
+  /**
+   * Wait for another daemon to be ready before executing callback
+   * Useful for initialization dependencies (e.g., wait for DataDaemon)
+   *
+   * @example
+   * this.onDaemonReady('data', async () => {
+   *   await this.loadInitialData();
+   * });
+   */
+  protected onDaemonReady(
+    daemonName: string,
+    callback: () => Promise<void>
+  ): void {
+    // Dynamic import Events to avoid circular dependency
+    // In browser environment, this is no-op
+    if (typeof window !== 'undefined') {
+      return;
+    }
+
+    try {
+      // Use require to avoid top-level import (DaemonBase is shared code)
+      const { Events } = require('../../../system/core/shared/Events');
+
+      const unsub = Events.subscribe('system:ready', async (payload: any) => {
+        if (payload?.daemon === daemonName) {
+          this.log.info(`📡 ${this.toString()}: ${daemonName} is ready`);
+          try {
+            await callback();
+          } catch (error) {
+            this.log.error(`Failed to handle ${daemonName} ready:`, error);
+          }
+        }
+      });
+      this.registerSubscription(unsub);
+    } catch (error) {
+      this.log.error(`Failed to setup onDaemonReady for ${daemonName}:`, error);
+    }
+  }
+
+  /**
+   * Defer execution until after initialization completes
+   * Alternative to setTimeout with better logging and error handling
+   *
+   * @example
+   * this.deferInitialization(async () => {
+   *   await this.catchUpOnMissedEvents();
+   * }, 2000);
+   */
+  protected deferInitialization(
+    callback: () => Promise<void>,
+    delayMs: number = 2000
+  ): void {
+    setTimeout(async () => {
+      try {
+        await callback();
+      } catch (error) {
+        this.log.error('Deferred initialization failed:', error);
+      }
+    }, delayMs);
+  }
+
+  /**
+   * Override in subclasses for custom cleanup logic
+   * Called before automatic cleanup in shutdown()
+   *
+   * @example
+   * protected async cleanup(): Promise<void> {
+   *   // Shutdown persona clients
+   *   for (const client of this.clients.values()) {
+   *     await client.shutdown();
+   *   }
+   * }
+   */
+  protected async cleanup(): Promise<void> {
+    // Default: no-op (override in subclasses if needed)
+  }
+
+  /**
    * Cleanup resources when daemon shuts down
-   * Override in subclasses if cleanup is needed
+   * Automatically calls cleanupSubscriptions() and cleanupIntervals()
+   * Override cleanup() for daemon-specific logic
    */
   async shutdown(): Promise<void> {
     this.log.info(`🔄 ${this.toString()}: Shutting down...`);
+
+    // Call subclass cleanup first
+    await this.cleanup();
+
+    // Then automatic cleanup
+    this.cleanupSubscriptions();
+    this.cleanupIntervals();
   }
 }

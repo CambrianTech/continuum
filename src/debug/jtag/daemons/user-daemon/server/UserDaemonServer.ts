@@ -27,10 +27,6 @@ export class UserDaemonServer extends UserDaemon {
   private static instance: UserDaemonServer | null = null;
   protected log: ComponentLogger;
 
-  private monitoringInterval?: ReturnType<typeof setInterval>;
-  private reconciliationInterval?: ReturnType<typeof setInterval>;
-  private unsubscribeFunctions: (() => void)[] = [];
-
   /**
    * Get singleton instance (for genome commands to access PersonaUsers)
    */
@@ -73,7 +69,7 @@ export class UserDaemonServer extends UserDaemon {
         });
       }
     });
-    this.unsubscribeFunctions.push(unsubReady);
+    this.registerSubscription(unsubReady);
 
     // Initialize ToolRegistry immediately in constructor (not async event-based)
     // This prevents race conditions where personas need tools before system:ready fires
@@ -105,19 +101,19 @@ export class UserDaemonServer extends UserDaemon {
     const unsubCreated = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.CREATED, async (userData: UserEntity) => {
       await this.handleUserCreated(userData);
     });
-    this.unsubscribeFunctions.push(unsubCreated);
+    this.registerSubscription(unsubCreated);
 
     // Listen for user updates using EventConstants
     const unsubUpdated = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.UPDATED, async (userData: UserEntity) => {
       await this.handleUserUpdated(userData);
     });
-    this.unsubscribeFunctions.push(unsubUpdated);
+    this.registerSubscription(unsubUpdated);
 
     // Listen for user deletion using EventConstants
     const unsubDeleted = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.DELETED, async (userData: UserEntity) => {
       await this.handleUserDeleted(userData);
     });
-    this.unsubscribeFunctions.push(unsubDeleted);
+    this.registerSubscription(unsubDeleted);
 
   }
 
@@ -335,23 +331,27 @@ export class UserDaemonServer extends UserDaemon {
 
 
   /**
-   * Start continuous monitoring loops
+   * Start continuous monitoring loops (using base class interval management)
    */
   protected startMonitoringLoops(): boolean {
     // User monitoring loop - every 5 seconds
-    this.monitoringInterval = setInterval(() => {
-      this.runUserMonitoringLoop().catch((error: Error) => {
-        this.log.error('❌ UserDaemon: Monitoring loop error:', error);
-      });
+    this.registerInterval('user-monitoring', async () => {
+      await this.runUserMonitoringLoop();
     }, 5000);
 
     // State reconciliation loop - every 30 seconds
-    this.reconciliationInterval = setInterval(() => {
-      this.runStateReconciliationLoop().catch((error: Error) => {
-        this.log.error('❌ UserDaemon: Reconciliation loop error:', error);
-      });
+    this.registerInterval('state-reconciliation', async () => {
+      await this.runStateReconciliationLoop();
     }, 30000);
 
+    return true;
+  }
+
+  /**
+   * Stop monitoring loops (now handled by base class cleanupIntervals)
+   */
+  protected stopMonitoringLoops(): boolean {
+    // No-op: Base class cleanupIntervals() handles this automatically in shutdown()
     return true;
   }
 
@@ -430,43 +430,14 @@ export class UserDaemonServer extends UserDaemon {
   }
 
   /**
-   * Stop continuous monitoring loops
-   */
-  protected stopMonitoringLoops(): boolean {
-    let stopped = false;
-
-    if (this.monitoringInterval) {
-      clearInterval(this.monitoringInterval);
-      this.monitoringInterval = undefined;
-      stopped = true;
-    }
-
-    if (this.reconciliationInterval) {
-      clearInterval(this.reconciliationInterval);
-      this.reconciliationInterval = undefined;
-      stopped = true;
-    }
-
-    return stopped;
-  }
-
-  /**
    * Cleanup on shutdown
+   * Base class handles interval and subscription cleanup automatically
    */
-  async shutdown(): Promise<void> {
-    await super.shutdown();
-
-    // Unsubscribe from all events
-    for (const unsubscribe of this.unsubscribeFunctions) {
-      unsubscribe();
-    }
-    this.unsubscribeFunctions = [];
-
+  protected async cleanup(): Promise<void> {
     // Shutdown all persona clients
     for (const userId of this.personaClients.keys()) {
       // TODO: Add shutdown method to PersonaUser
     }
-
     this.personaClients.clear();
   }
 }
