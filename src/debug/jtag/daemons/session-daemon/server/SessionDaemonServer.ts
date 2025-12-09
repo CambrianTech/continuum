@@ -63,7 +63,6 @@ export class SessionDaemonServer extends SessionDaemon {
   private sessions: SessionMetadata[] = []; // In-memory active sessions for server
   private readonly SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes for ephemeral sessions
   private readonly BROWSER_SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours for browser sessions
-  private cleanupInterval?: ReturnType<typeof setInterval>;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -159,7 +158,7 @@ export class SessionDaemonServer extends SessionDaemon {
     await this.loadSessionsFromFile();
     
     // Start session cleanup interval - check every 5 minutes
-    this.cleanupInterval = setInterval(() => {
+    this.registerInterval('session-cleanup', () => {
       this.cleanupExpiredSessions().catch(error => {
         this.log.error('Cleanup interval error:', error);
       });
@@ -231,14 +230,9 @@ export class SessionDaemonServer extends SessionDaemon {
 
   /**
    * Cleanup method for graceful shutdown
+   * Base class handles interval cleanup automatically
    */
-  public async cleanup(): Promise<void> {
-    // Clear cleanup interval
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = undefined;
-    }
-
+  protected async cleanup(): Promise<void> {
     // Save current session state
     await this.saveSessionsToFile();
   }

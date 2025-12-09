@@ -37,7 +37,6 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     lastSuccessTime: number;
     lastHeartbeat: number;
   };
-  private heartbeatTimer?: NodeJS.Timeout;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -82,7 +81,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
 
     // Enable health monitoring with timing metrics (for performance optimization)
     // Heartbeat every 30 seconds checks for stuck operations
-    this.heartbeatTimer = setInterval(() => {
+    this.registerInterval('health-monitoring', () => {
       this.healthState.lastHeartbeat = Date.now();
 
       // Check if daemon is stuck (no successful operations in 60s)
