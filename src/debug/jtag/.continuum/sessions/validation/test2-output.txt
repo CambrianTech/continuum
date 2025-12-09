@@ -9,90 +9,110 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (daa79c19-8130-408f-abe8-5446a69352fa) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (7f625914-4b70-41ff-b4a5-6d067d9e499e) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
 🔗 websocket-server-client: Connecting to ws://localhost:9002
-✅ websocket-server-client: Connected
-✅ websocket-server-client: Handler compliance enforced by TypeScript
-🚀 Server Factory: Adapter WebSocketTransportClientServer connected successfully
-✅ Server Transport Factory (Registry-Based): web-socket-transport-client-server transport created successfully
-✅ JTAGClient: created_new connection established on port 9002
-🏷️ JTAGClient: Requesting session from SessionDaemon...
-🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
-🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
-🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1765249640977_o2armqgy
-🏷️ JTAGClientServer: Session updated to: 04eb1478-2b09-4d19-88d4-55468a1c0ca6 (managed by base class)
-📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765249640988_b4pnl4k5
-✅ JTAGClient: Connection established
-🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765249641005_bhrwyvyx
-✅ Server: JTAGClient connected with 140 commands
-✅ Connected
-👤 1. Testing state/create for user with context injection...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1765249641047_jtwputjm
-👤 Created state user with ID: 1765249641084-fvfg48iqo
-✅ State user created successfully
-🏠 2. Testing state/create for room with user context...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1765249647924_ncn839ki
-🏠 Created state room with ID: 1765249648019-lbxytev6e
-✅ State room created successfully
-💬 3. Testing state/create for chat message with context...
-📤 RemoteConnection: Sending command 'state/create' with correlation client_1765249655216_unos2wtz
-💬 Created state message with ID: 1765249659554-jq4mt8zwi
-✅ State message created successfully
-👤 4. Testing state/get for user retrieval with context...
-📤 RemoteConnection: Sending command 'state/get' with correlation client_1765249659948_ntzai192
-👤 Retrieved state user: State Test User
-✅ State user retrieved successfully
-🔧 5. Testing state/update with context enhancement...
-📤 RemoteConnection: Sending command 'state/update' with correlation client_1765249686151_xk8vuo4x
-🔧 Updated state user version: undefined
-✅ State user updated successfully
-👤 6. Verifying update via state/get...
-📤 RemoteConnection: Sending command 'state/get' with correlation client_1765249702328_kq1pons5
-👤 Verified updated user: Updated State Test User (busy)
-✅ State update verification successful
-🏠 7. Testing cross-entity state operations (room update)...
-📤 RemoteConnection: Sending command 'state/update' with correlation client_1765249706061_4m8d24rl
-🏠 Updated state room version: undefined
-✅ Cross-entity state update successful
-🔍 8. Verifying state delegation to data layer...
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765249713120_g1086f89
-🔍 Verified data layer contains: Updated State Test User
-✅ State→Data delegation verified
-
-🎉 STATE SYSTEM INTEGRATION TEST PASSED
-✅ All state commands working correctly:
-  - state/create: ✅ User context injection
-  - state/update: ✅ Context enhancement & delegation
-  - state/get: ✅ Type-safe retrieval with context
-  - Cross-entity: ✅ Works with User, Room, ChatMessage
-  - Data layer: ✅ Proper delegation and persistence
-🧹 Cleaning up test data...
-🗑️ Deleting message 1765249659554-jq4mt8zwi...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765249713295_0ftllb3d
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765249727314_dm1vjc8a
-✅ Deleted message 1765249659554-jq4mt8zwi
-🗑️ Deleting room 1765249648019-lbxytev6e...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765249730878_5g3oi32b
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765249732787_192bxm9a
-✅ Deleted room 1765249648019-lbxytev6e
-🗑️ Deleting user 1765249641084-fvfg48iqo...
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765249739423_l1kux76x
-📤 RemoteConnection: Sending command 'data/read' with correlation client_1765249746961_gnijwufk
-✅ Deleted user 1765249641084-fvfg48iqo
-✅ Test data cleanup verified
-🔌 Disconnecting...
-🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session 04eb1478-2b09-4d19-88d4-55468a1c0ca6 on disconnect (shared: true)
-🔌 websocket-server-client: Disconnecting
-✅ JTAGClient: Transport disconnected
-🛑 ConnectionBroker: Shutting down...
-✅ ConnectionBroker: Shutdown complete
-✅ JTAGClient: Connection Broker shut down
-✅ Disconnected cleanly
-✅ State system integration test completed successfully
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+⏳ ConnectionBroker: Retrying in 1000ms (attempt 1/3)
+🔗 ConnectionBroker: Creating client connection to existing server
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+⏳ ConnectionBroker: Retrying in 2000ms (attempt 2/3)
+🔗 ConnectionBroker: Creating client connection to existing server
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+⏳ ConnectionBroker: Retrying in 4000ms (attempt 3/3)
+🔗 ConnectionBroker: Creating client connection to existing server
+🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
+🔍 Server Factory: Looking for websocket transport (role: client) in registry
+✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
+🔗 websocket-server-client: Connecting to ws://localhost:9002
+❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
+❌ State system test failed: Error: WebSocket connection error: Connection failed
+    at handleError (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:303:18)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+❌ Error details: {
+  message: 'WebSocket connection error: Connection failed',
+  stack: 'Error: WebSocket connection error: Connection failed\n' +
+    '    at handleError (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:303:18)\n' +
+    '    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)\n' +
+    '    at WebSocket.emit (node:events:525:35)\n' +
+    '    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)\n' +
+    '    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)\n' +
+    '    at ClientRequest.emit (node:events:513:28)\n' +
+    '    at emitErrorEvent (node:_http_client:104:11)\n' +
+    '    at Socket.socketErrorListener (node:_http_client:512:5)\n' +
+    '    at Socket.emit (node:events:513:28)\n' +
+    '    at emitErrorNT (node:internal/streams/destroy:170:8)'
+}
+🚨 State system integration test failed: Error: WebSocket connection error: Connection failed
+    at handleError (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:303:18)
+    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
+    at WebSocket.emit (node:events:525:35)
+    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
+    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
+    at ClientRequest.emit (node:events:513:28)
+    at emitErrorEvent (node:_http_client:104:11)
+    at Socket.socketErrorListener (node:_http_client:512:5)
+    at Socket.emit (node:events:513:28)
+    at emitErrorNT (node:internal/streams/destroy:170:8)
