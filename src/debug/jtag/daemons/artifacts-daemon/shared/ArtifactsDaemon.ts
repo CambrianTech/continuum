@@ -111,7 +111,7 @@ export abstract class ArtifactsDaemon extends DaemonBase {
    * Initialize artifacts daemon
    */
   protected async initialize(): Promise<void> {
-    console.log(`📁 ${this.toString()}: Artifacts daemon initialized`);
+    this.log.info(`📁 ${this.toString()}: Artifacts daemon initialized`);
   }
 
   /**
@@ -164,9 +164,9 @@ export abstract class ArtifactsDaemon extends DaemonBase {
       }
       
       return createArtifactsResponse(artifactsPayload.operation, result, artifactsPayload.context, artifactsPayload.sessionId || 'system');
-      
+
     } catch (error: any) {
-      console.error(`❌ ${this.toString()}: Operation failed:`, error.message);
+      this.log.error(`❌ ${this.toString()}: Operation failed:`, error.message);
       return createArtifactsErrorResponse(artifactsPayload.operation, error.message, artifactsPayload.context, artifactsPayload.sessionId || 'system');
     }
   }

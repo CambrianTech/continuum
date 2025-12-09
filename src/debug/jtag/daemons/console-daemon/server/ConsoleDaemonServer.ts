@@ -8,6 +8,9 @@ import { ConsoleDaemon } from '../shared/ConsoleDaemon';
 import type { ConsolePayload } from '../shared/ConsoleDaemon';
 import { SYSTEM_SCOPES, shouldDualScope } from '../../../system/core/types/SystemScopes';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -16,6 +19,16 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
   private currentUserSymlinkWarningShown = false;
   private lastCurrentUserTarget = '';
   private currentUserUpdateInProgress = false;
+
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super(context, router);
+
+    // Set up file-based logging using class name automatically
+    // Logs go to .continuum/jtag/logs/system/daemons/{ClassName}.log
+    // NOTE: Future LoggerDaemon will run in separate process(es) for log aggregation
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
+  }
   
   
   // setupConsoleInterception() is now handled by the base class
@@ -51,9 +64,9 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       
       await this.ensureSystemSymlink(continuumPath);
       await this.writeLogFiles(logDir, consolePayload);
-      
+
     } catch (error) {
-      this.originalConsole.error('ConsoleDaemon: Failed to write system logs:', error);
+      this.log.error('ConsoleDaemon: Failed to write system logs:', error);
     }
   }
 
@@ -66,9 +79,9 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       
       await this.ensureCurrentUserSymlink(continuumPath, category, consolePayload.sessionId);
       await this.writeLogFiles(logDir, consolePayload);
-      
+
     } catch (error) {
-      this.originalConsole.error('ConsoleDaemon: Failed to write session logs:', error);
+      this.log.error('ConsoleDaemon: Failed to write session logs:', error);
     }
   }
 
@@ -88,23 +101,23 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
           }
           // Symlink exists but points to wrong target - remove it
           await fs.unlink(symlinkPath);
-          this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated system symlink (was: ${linkTarget})`);
+          this.log.info(`🔗 ${this.toString()}: Removed outdated system symlink (was: ${linkTarget})`);
         } else {
           // Path exists but is not a symlink - remove it
           await fs.rm(symlinkPath, { recursive: true, force: true });
-          this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at system path`);
+          this.log.info(`🔗 ${this.toString()}: Removed non-symlink at system path`);
         }
       } catch (checkError: unknown) {
         // Path doesn't exist or other error - that's fine, we'll create it
         const errorCode = (checkError as { code?: string })?.code;
         if (checkError instanceof Error && errorCode && errorCode !== 'ENOENT') {
-          this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
+          this.log.info(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
         }
       }
-      
+
       // Create the symlink (path should be clear now)
       await fs.symlink(targetPath, symlinkPath);
-      this.originalConsole.log(`🔗 ${this.toString()}: Created system symlink: ${symlinkPath} -> ${targetPath}`);
+      this.log.info(`🔗 ${this.toString()}: Created system symlink: ${symlinkPath} -> ${targetPath}`);
       
     } catch (error: unknown) {
       // Don't fail the whole operation if symlink creation fails - this is non-critical
@@ -117,7 +130,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       // Only warn once for other errors to avoid log spam
       if (!this.symlinkWarningShown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        this.originalConsole.warn(`ConsoleDaemon: Symlink creation failed (non-critical):`, errorMessage);
+        this.log.warn(`ConsoleDaemon: Symlink creation failed (non-critical):`, errorMessage);
         this.symlinkWarningShown = true;
       }
     }
@@ -144,7 +157,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
         // Path doesn't exist - that's fine, we'll create it below
         const errorCode = (checkError as { code?: string })?.code;
         if (checkError instanceof Error && errorCode !== 'ENOENT') {
-          this.originalConsole.log(`🔗 ${this.toString()}: Symlink check warning: ${checkError.message}`);
+          this.log.info(`🔗 ${this.toString()}: Symlink check warning: ${checkError.message}`);
         }
       }
       
@@ -163,24 +176,24 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
             const linkTarget = await fs.readlink(symlinkPath);
             // Remove existing symlink (we know it's wrong from check above)
             await fs.unlink(symlinkPath);
-            this.originalConsole.log(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
+            this.log.info(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
           } else {
             // Path exists but is not a symlink - remove it
             await fs.rm(symlinkPath, { recursive: true, force: true });
-            this.originalConsole.log(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
+            this.log.info(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
           }
         } catch (removeError: unknown) {
           // Path doesn't exist - that's fine
           const errorCode = (removeError as { code?: string })?.code;
           if (removeError instanceof Error && errorCode !== 'ENOENT') {
-            this.originalConsole.log(`🔗 ${this.toString()}: Symlink removal warning: ${removeError.message}`);
+            this.log.info(`🔗 ${this.toString()}: Symlink removal warning: ${removeError.message}`);
           }
         }
-        
+
         // Create the symlink
         await fs.symlink(targetPath, symlinkPath);
         this.lastCurrentUserTarget = targetPath;
-        this.originalConsole.log(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
+        this.log.info(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
         
       } finally {
         this.currentUserUpdateInProgress = false;
@@ -198,7 +211,7 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
       // Only warn once for other errors to avoid log spam
       if (!this.currentUserSymlinkWarningShown) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        this.originalConsole.warn(`ConsoleDaemon: CurrentUser symlink creation failed (non-critical):`, errorMessage);
+        this.log.warn(`ConsoleDaemon: CurrentUser symlink creation failed (non-critical):`, errorMessage);
         this.currentUserSymlinkWarningShown = true;
       }
     }
@@ -220,7 +233,8 @@ export class ConsoleDaemonServer extends ConsoleDaemon {
   }
 
   private async notifyErrorMonitoring(consolePayload: ConsolePayload): Promise<void> {
-    // Send errors to monitoring systems - use original console to avoid recursion
-    this.originalConsole.log(`🚨 Error monitoring notification:`, consolePayload.message);
+    // Send errors to monitoring systems
+    // NOTE: Future LoggerDaemon will handle log aggregation in separate process(es)
+    this.log.info(`🚨 Error monitoring notification:`, consolePayload.message);
   }
 }
