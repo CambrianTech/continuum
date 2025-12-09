@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTy
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
-import { Logger } from '../../../system/core/logging/Logger';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import type {
   ILeaseDaemon,
   LeaseRequestResult,
@@ -40,7 +40,8 @@ export class LeaseDaemonServer extends DaemonBase implements ILeaseDaemon {
     super('LeaseDaemon', context, router);
 
     // Override with proper logger (server-side)
-    (this as any).log = Logger.create('LeaseDaemonServer', 'data');
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**

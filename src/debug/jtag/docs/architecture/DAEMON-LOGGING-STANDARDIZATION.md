@@ -65,11 +65,11 @@ class AresSystemOptimizer {
 | HealthDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | LOW |
 | ProxyDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | LOW |
 | RoomMembershipDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | LOW |
+| LeaseDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | LOW |
+| TrainingDaemonServer | ✅ `this.log = Logger.create(className, 'daemons/${className}')` | CORRECT | LOW |
+| CodeDaemonServer | ✅ Function-level `Logger.create('CodeDaemonServer', 'daemons/CodeDaemonServer')` | CORRECT | LOW |
+| ConsoleDaemonServer | ⚠️ Uses `this.originalConsole` (special case) | SPECIAL | LOW |
 | ArtifactsDaemonServer | ❓ Unknown | TBD | LOW |
-| ConsoleDaemonServer | ❓ Unknown | TBD | LOW |
-| TrainingDaemonServer | ❓ Unknown | TBD | LOW |
-| CodeDaemonServer | ❓ Unknown | TBD | LOW |
-| LeaseDaemonServer | ❓ Unknown | TBD | LOW |
 
 ## Migration Checklist (Per Daemon)
 
@@ -173,8 +173,13 @@ class DaemonServer {
 - [x] HealthDaemonServer (LOW priority)
 - [x] ProxyDaemonServer (LOW priority)
 - [x] RoomMembershipDaemonServer (LOW priority)
-- [ ] 6 remaining daemons
+- [x] LeaseDaemonServer (LOW priority)
+- [x] TrainingDaemonServer (LOW priority)
+- [x] CodeDaemonServer (LOW priority - function-level logger acceptable)
+- [ ] ConsoleDaemonServer (SPECIAL - uses this.originalConsole)
+- [ ] ArtifactsDaemonServer (TBD)
 
-**Progress**: 9/15 daemons standardized (60% complete)
+**Progress**: 12/15 daemons standardized (80% complete)
+**Remaining**: ConsoleDaemonServer (special case), ArtifactsDaemonServer (TBD)
 
 **Updated**: 2025-12-08

@@ -28,6 +28,7 @@ import { TrainingDaemon } from '../shared/TrainingDaemon';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
@@ -50,6 +51,7 @@ interface TrainingConfig {
 }
 
 export class TrainingDaemonServer extends TrainingDaemon {
+  protected log: ComponentLogger;
   private unsubscribeFunctions: (() => void)[] = [];
 
   /** Training configuration */
@@ -65,10 +67,14 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize logger with standard pattern
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   async initialize(): Promise<void> {
-    console.log('🧠 TrainingDaemonServer: INITIALIZE CALLED - Starting setup');
+    this.log.info('TrainingDaemonServer: INITIALIZE CALLED - Starting setup');
 
     // Load training-enabled room IDs
     await this.loadTrainingRooms();
@@ -76,14 +82,14 @@ export class TrainingDaemonServer extends TrainingDaemon {
     // Subscribe to chat message creation events
     await this.setupEventSubscriptions();
 
-    console.log(`🧠 TrainingDaemonServer: Initialized, monitoring ${this.trainingRoomIds.size} room(s) for training data`);
+    this.log.info(`🧠 TrainingDaemonServer: Initialized, monitoring ${this.trainingRoomIds.size} room(s) for training data`);
   }
 
   /**
    * Load room IDs for training-enabled rooms
    */
   private async loadTrainingRooms(): Promise<void> {
-    console.log('🔄 TrainingDaemon: Loading training-enabled rooms...');
+    this.log.info('🔄 TrainingDaemon: Loading training-enabled rooms...');
 
     for (const roomUniqueId of this.config.enabledRooms) {
       try {
@@ -95,12 +101,12 @@ export class TrainingDaemonServer extends TrainingDaemon {
         if (queryResult.success && queryResult.data && queryResult.data.length > 0) {
           const roomId = queryResult.data[0].data.id;
           this.trainingRoomIds.add(roomId);
-          console.log(`🧠 TrainingDaemon: Monitoring room "${roomUniqueId}" (${roomId}) for training data`);
+          this.log.info(`🧠 TrainingDaemon: Monitoring room "${roomUniqueId}" (${roomId}) for training data`);
         } else {
-          console.warn(`⚠️  TrainingDaemon: Training room "${roomUniqueId}" not found`);
+          this.log.warn(`⚠️  TrainingDaemon: Training room "${roomUniqueId}" not found`);
         }
       } catch (error) {
-        console.error(`❌ TrainingDaemon: Failed to load room "${roomUniqueId}":`, error);
+        this.log.error(`❌ TrainingDaemon: Failed to load room "${roomUniqueId}":`, error);
       }
     }
   }
@@ -119,7 +125,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
     );
 
     this.unsubscribeFunctions.push(unsubCreated);
-    console.log('🧠 TrainingDaemonServer: Subscription complete');
+    this.log.info('🧠 TrainingDaemonServer: Subscription complete');
   }
 
   /**
@@ -134,7 +140,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
       // Filter 2: Skip system test messages (precommit hooks, integration tests)
       if (messageEntity.metadata?.isSystemTest) {
-        console.log(`🧠 TrainingDaemon: Skipping system test message (testType: ${messageEntity.metadata.testType})`);
+        this.log.info(`🧠 TrainingDaemon: Skipping system test message (testType: ${messageEntity.metadata.testType})`);
         return;
       }
 
@@ -143,7 +149,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
         return;
       }
 
-      console.log(`🧠 TrainingDaemon: Processing message in training room (sender: ${messageEntity.senderId})`);
+      this.log.info(`🧠 TrainingDaemon: Processing message in training room (sender: ${messageEntity.senderId})`);
 
       // Fetch conversation context (recent messages in room)
       const contextMessages = await this.fetchConversationContext(
@@ -154,7 +160,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
       // Need minimum messages to form meaningful training example
       if (contextMessages.length < this.config.minMessages) {
-        console.log(`🧠 TrainingDaemon: Insufficient context (${contextMessages.length} < ${this.config.minMessages}), skipping`);
+        this.log.info(`🧠 TrainingDaemon: Insufficient context (${contextMessages.length} < ${this.config.minMessages}), skipping`);
         return;
       }
 
@@ -181,7 +187,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
       // Validate before storing
       const validation = trainingExample.validate();
       if (!validation.success) {
-        console.error(`❌ TrainingDaemon: Validation failed: ${validation.error}`);
+        this.log.error(`❌ TrainingDaemon: Validation failed: ${validation.error}`);
         return;
       }
 
@@ -191,12 +197,12 @@ export class TrainingDaemonServer extends TrainingDaemon {
         trainingExample
       );
 
-      console.log(`✅ TrainingDaemon: Created training example (${messageCount} messages, ~${totalTokens} tokens)`);
+      this.log.info(`✅ TrainingDaemon: Created training example (${messageCount} messages, ~${totalTokens} tokens)`);
 
       // Check if we should trigger auto fine-tuning
       await this.checkAutoFineTuneThreshold();
     } catch (error) {
-      console.error('❌ TrainingDaemon: Error processing message:', error);
+      this.log.error('❌ TrainingDaemon: Error processing message:', error);
     }
   }
 
@@ -228,7 +234,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
       return messages;
     } catch (error) {
-      console.error('❌ TrainingDaemon: Failed to fetch context:', error);
+      this.log.error('❌ TrainingDaemon: Failed to fetch context:', error);
       return [];
     }
   }
@@ -243,7 +249,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
       // Fetch sender to determine role
       const sender = await this.fetchUser(msg.senderId);
       if (!sender) {
-        console.warn(`⚠️  TrainingDaemon: Could not fetch sender ${msg.senderId}, skipping message`);
+        this.log.warn(`⚠️  TrainingDaemon: Could not fetch sender ${msg.senderId}, skipping message`);
         continue;
       }
 
@@ -274,7 +280,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
       const result = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
       return result.success && result.data ? result.data.data : null;
     } catch (error) {
-      console.error(`❌ TrainingDaemon: Failed to fetch user ${userId}:`, error);
+      this.log.error(`❌ TrainingDaemon: Failed to fetch user ${userId}:`, error);
       return null;
     }
   }
@@ -302,13 +308,13 @@ export class TrainingDaemonServer extends TrainingDaemon {
         const count = queryResult.metadata.totalCount;
 
         if (count >= this.config.autoFineTuneThreshold && count % this.config.autoFineTuneThreshold === 0) {
-          console.log(`🚀 TrainingDaemon: Auto fine-tune threshold reached (${count} examples)`);
-          console.log('🚀 TrainingDaemon: TODO: Trigger fine-tuning (Phase 2 implementation)');
+          this.log.info(`🚀 TrainingDaemon: Auto fine-tune threshold reached (${count} examples)`);
+          this.log.info('🚀 TrainingDaemon: TODO: Trigger fine-tuning (Phase 2 implementation)');
           // Future: Trigger genome/batch-micro-tune command
         }
       }
     } catch (error) {
-      console.error('❌ TrainingDaemon: Failed to check auto fine-tune threshold:', error);
+      this.log.error('❌ TrainingDaemon: Failed to check auto fine-tune threshold:', error);
     }
   }
 
@@ -316,7 +322,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
    * Cleanup on shutdown
    */
   async cleanup(): Promise<void> {
-    console.log('🧠 TrainingDaemon: Cleaning up subscriptions...');
+    this.log.info('🧠 TrainingDaemon: Cleaning up subscriptions...');
     for (const unsub of this.unsubscribeFunctions) {
       unsub();
     }
