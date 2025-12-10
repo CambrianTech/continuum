@@ -171,8 +171,8 @@ class LoggerClass {
    * Runs in background, falls back to TypeScript logging if connection fails.
    */
   private initializeWorkerClient(): void {
-    // Use project-relative socket path (production-safe)
-    const socketPath = path.join(process.cwd(), '.continuum', 'jtag', 'workers', 'logger.sock');
+    // Use /tmp for socket (filesystem limitation: APFS external drives don't support sockets in project dirs)
+    const socketPath = '/tmp/jtag-logger-worker.sock';
 
     // Start the Rust worker process first
     const workerStarted = this.startWorkerProcess(socketPath);
@@ -213,8 +213,8 @@ class LoggerClass {
    * Returns true if successfully started, false otherwise.
    */
   private startWorkerProcess(socketPath: string): boolean {
-    // Path to Rust binary (relative to Logger.ts location)
-    const workerBinary = path.join(__dirname, '../../../workers/logger/target/release/logger-worker');
+    // Path to Rust binary (relative to project root, not compiled JS location)
+    const workerBinary = path.join(process.cwd(), 'workers/logger/target/release/logger-worker');
 
     // Check if binary exists
     if (!fs.existsSync(workerBinary)) {
