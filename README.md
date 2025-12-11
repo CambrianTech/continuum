@@ -691,7 +691,7 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 **Infrastructure:**
 - **Ollama** - Free local AI inference democratizing access
 - **Unsloth** - Fast, memory-efficient LoRA fine-tuning
-- **TypeScript** - Type safety that rivals Rust
+- **TypeScript** - Robust static type checking for JavaScript development
 - **SQLite** - Bulletproof local persistence
 - **Web Components** - True component encapsulation
 
