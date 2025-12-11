@@ -339,7 +339,7 @@ We stand on the shoulders of giants. Key foundations:
 - **AIOS** ([COLM 2025](https://arxiv.org/abs/2403.16971)) - OS-style scheduling for LLM agents
 - **MoLE** ([ICLR 2024](https://openreview.net/forum?id=uWvKBCYh4S)) - Hierarchical LoRA control and layer-wise selection
 - **S-LoRA** ([MLSys 2024](https://proceedings.mlsys.org/paper_files/paper/2024/file/906419cd502575b617cc489a1a696a67-Paper-Conference.pdf)) - Serving thousands of LoRAs on single GPU
-- **PersonaFuse** ([Sept 2024](https://arxiv.org/html/2509.07370v1)) - Situation-aware mixture of experts for persona expression
+- **PersonaFuse** ([September 2024](https://arxiv.org/html/2509.07370v1)) - Situation-aware mixture of experts for persona expression
 - **Arrow** ([May 2024](https://arxiv.org/abs/2405.11157)) - Per-token, per-layer LoRA routing
 - **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1)) - Collaborative memory architectures
 
