@@ -210,9 +210,9 @@ Not a tool. Not a product. **A continuum** from:
 
 ---
 
-## 🔬 Novel Technical Contributions
+## 🔬 Technical Architecture
 
-Continuum introduces novel architectures:
+Continuum integrates research-backed techniques into a cohesive system:
 
 ### Collaborative Memory Telepathy
 **Real-time thought sharing across AI teams.**
