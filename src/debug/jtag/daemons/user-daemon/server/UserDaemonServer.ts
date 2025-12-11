@@ -21,13 +21,11 @@ import { getDefaultPreferencesForType } from '../../../system/user/config/UserCa
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientServer';
 import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 export class UserDaemonServer extends UserDaemon {
   private static instance: UserDaemonServer | null = null;
-
-  private monitoringInterval?: ReturnType<typeof setInterval>;
-  private reconciliationInterval?: ReturnType<typeof setInterval>;
-  private unsubscribeFunctions: (() => void)[] = [];
+  protected log: ComponentLogger;
 
   /**
    * Get singleton instance (for genome commands to access PersonaUsers)
@@ -39,14 +37,18 @@ export class UserDaemonServer extends UserDaemon {
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
 
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
+
     // Store singleton instance
     UserDaemonServer.instance = this;
 
-    // Initialize AI decision logger for persona decision-making
-    AIDecisionLogger.initialize('00000000-0000-0000-0000-000000000000'); // System session ID
+    // Initialize AI decision logger for persona decision-making (system-wide)
+    AIDecisionLogger.initialize();
 
     this.setupEventSubscriptions().catch((error: Error) => {
-      console.error('❌ UserDaemon: Failed to setup event subscriptions:', error);
+      this.log.error('Failed to setup event subscriptions:', error);
     });
 
     // Initialize all PersonaUser instances when DataDaemon is ready (event-driven, not setTimeout)
@@ -60,19 +62,19 @@ export class UserDaemonServer extends UserDaemon {
     // Import SYSTEM_EVENTS at top of file, use it here
     const unsubReady = Events.subscribe('system:ready', async (payload: any) => {
       if (payload?.daemon === 'data') {
-        console.log('📡 UserDaemon: Received system:ready from DataDaemon, initializing personas...');
+        this.log.info('📡 UserDaemon: Received system:ready from DataDaemon, initializing personas...');
 
         await this.ensurePersonaClients().catch((error: Error) => {
-          console.error('❌ UserDaemon: Failed to initialize persona clients:', error);
+          this.log.error('❌ UserDaemon: Failed to initialize persona clients:', error);
         });
       }
     });
-    this.unsubscribeFunctions.push(unsubReady);
+    this.registerSubscription(unsubReady);
 
     // Initialize ToolRegistry immediately in constructor (not async event-based)
     // This prevents race conditions where personas need tools before system:ready fires
     this.initializeToolRegistry().catch((error: Error) => {
-      console.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
+      this.log.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
     });
   }
 
@@ -80,13 +82,13 @@ export class UserDaemonServer extends UserDaemon {
    * Initialize ToolRegistry for dynamic tool discovery
    */
   private async initializeToolRegistry(): Promise<void> {
-    console.log('⚙️ UserDaemon: Initializing ToolRegistry...');
+    this.log.info('⚙️ UserDaemon: Initializing ToolRegistry...');
     const { ToolRegistry } = await import('../../../system/tools/server/ToolRegistry');
     try {
       await ToolRegistry.getInstance().initialize();
-      console.log('✅ UserDaemon: ToolRegistry initialized');
+      this.log.info('✅ UserDaemon: ToolRegistry initialized');
     } catch (error) {
-      console.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
+      this.log.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
     }
   }
 
@@ -99,19 +101,19 @@ export class UserDaemonServer extends UserDaemon {
     const unsubCreated = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.CREATED, async (userData: UserEntity) => {
       await this.handleUserCreated(userData);
     });
-    this.unsubscribeFunctions.push(unsubCreated);
+    this.registerSubscription(unsubCreated);
 
     // Listen for user updates using EventConstants
     const unsubUpdated = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.UPDATED, async (userData: UserEntity) => {
       await this.handleUserUpdated(userData);
     });
-    this.unsubscribeFunctions.push(unsubUpdated);
+    this.registerSubscription(unsubUpdated);
 
     // Listen for user deletion using EventConstants
     const unsubDeleted = Events.subscribe<UserEntity>(DATA_EVENTS.USERS.DELETED, async (userData: UserEntity) => {
       await this.handleUserDeleted(userData);
     });
-    this.unsubscribeFunctions.push(unsubDeleted);
+    this.registerSubscription(unsubDeleted);
 
   }
 
@@ -132,7 +134,7 @@ export class UserDaemonServer extends UserDaemon {
       // HumanUser and AgentUser managed by SessionDaemon
 
     } catch (error) {
-      console.error(`❌ UserDaemon: Failed to handle user creation for ${userEntity.displayName}:`, error);
+      this.log.error(`❌ UserDaemon: Failed to handle user creation for ${userEntity.displayName}:`, error);
     }
   }
 
@@ -161,7 +163,7 @@ export class UserDaemonServer extends UserDaemon {
       await DataDaemon.remove(COLLECTIONS.USER_STATES, userEntity.id);
 
     } catch (error) {
-      console.error(`❌ UserDaemon: Failed to cleanup user ${userEntity.displayName}:`, error);
+      this.log.error(`❌ UserDaemon: Failed to cleanup user ${userEntity.displayName}:`, error);
     }
   }
 
@@ -177,7 +179,7 @@ export class UserDaemonServer extends UserDaemon {
       });
 
       if (!result.success || !result.data) {
-        console.warn('⚠️ UserDaemon: No personas found or query failed');
+        this.log.warn('⚠️ UserDaemon: No personas found or query failed');
         return;
       }
 
@@ -193,7 +195,14 @@ export class UserDaemonServer extends UserDaemon {
       }
 
     } catch (error) {
-      console.error('❌ UserDaemon: Failed to ensure persona clients:', error);
+      // During initialization, DataDaemon might not be ready yet - this is expected
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('DataDaemon not initialized')) {
+        this.log.warn('⚠️  UserDaemon: Deferring persona client initialization (DataDaemon not ready yet)');
+      } else {
+        // Unexpected error - log as ERROR
+        this.log.error('❌ UserDaemon: Failed to ensure persona clients:', error);
+      }
     }
   }
 
@@ -205,7 +214,7 @@ export class UserDaemonServer extends UserDaemon {
       // STEP 1: Ensure UserState exists
       const hasState = await this.ensureUserHasState(userEntity.id);
       if (!hasState) {
-        console.warn(`⚠️ UserDaemon: Failed to create UserState for ${userEntity.displayName}`);
+        this.log.warn(`⚠️ UserDaemon: Failed to create UserState for ${userEntity.displayName}`);
         return;
       }
 
@@ -218,7 +227,7 @@ export class UserDaemonServer extends UserDaemon {
       await this.createPersonaClient(userEntity);
 
     } catch (error) {
-      console.error(`❌ UserDaemon: Failed to ensure state for ${userEntity.displayName}:`, error);
+      this.log.error(`❌ UserDaemon: Failed to ensure state for ${userEntity.displayName}:`, error);
     }
   }
 
@@ -260,7 +269,7 @@ export class UserDaemonServer extends UserDaemon {
       this.personaClients.set(userEntity.id, personaUser);
 
     } catch (error) {
-      console.error(`❌ UserDaemon: Failed to create persona client for ${userEntity.displayName}:`, error);
+      this.log.error(`❌ UserDaemon: Failed to create persona client for ${userEntity.displayName}:`, error);
     }
   }
 
@@ -280,7 +289,7 @@ export class UserDaemonServer extends UserDaemon {
       return await this.createUserState(userId);
 
     } catch (error) {
-      console.error(`❌ UserDaemon: Failed to check/create UserState for ${userId}:`, error);
+      this.log.error(`❌ UserDaemon: Failed to check/create UserState for ${userId}:`, error);
       return false;
     }
   }
@@ -293,7 +302,7 @@ export class UserDaemonServer extends UserDaemon {
       // Load user entity to get type
       const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
       if (!userResult.success || !userResult.data) {
-        console.error(`❌ UserDaemon: User ${userId} not found`);
+        this.log.error(`❌ UserDaemon: User ${userId} not found`);
         return false;
       }
 
@@ -315,30 +324,34 @@ export class UserDaemonServer extends UserDaemon {
       return !!storeResult;
 
     } catch (error) {
-      console.error(`❌ UserDaemon: Failed to create UserState:`, error);
+      this.log.error(`❌ UserDaemon: Failed to create UserState:`, error);
       return false;
     }
   }
 
 
   /**
-   * Start continuous monitoring loops
+   * Start continuous monitoring loops (using base class interval management)
    */
   protected startMonitoringLoops(): boolean {
     // User monitoring loop - every 5 seconds
-    this.monitoringInterval = setInterval(() => {
-      this.runUserMonitoringLoop().catch((error: Error) => {
-        console.error('❌ UserDaemon: Monitoring loop error:', error);
-      });
+    this.registerInterval('user-monitoring', async () => {
+      await this.runUserMonitoringLoop();
     }, 5000);
 
     // State reconciliation loop - every 30 seconds
-    this.reconciliationInterval = setInterval(() => {
-      this.runStateReconciliationLoop().catch((error: Error) => {
-        console.error('❌ UserDaemon: Reconciliation loop error:', error);
-      });
+    this.registerInterval('state-reconciliation', async () => {
+      await this.runStateReconciliationLoop();
     }, 30000);
 
+    return true;
+  }
+
+  /**
+   * Stop monitoring loops (now handled by base class cleanupIntervals)
+   */
+  protected stopMonitoringLoops(): boolean {
+    // No-op: Base class cleanupIntervals() handles this automatically in shutdown()
     return true;
   }
 
@@ -372,7 +385,7 @@ export class UserDaemonServer extends UserDaemon {
       }
 
     } catch (error) {
-      console.error('❌ UserDaemon: Monitoring loop error:', error);
+      this.log.error('❌ UserDaemon: Monitoring loop error:', error);
     }
   }
 
@@ -399,7 +412,7 @@ export class UserDaemonServer extends UserDaemon {
 
       for (const persona of personas) {
         if (!persona || !persona.id) {
-          console.error(`❌ UserDaemon: Invalid persona data:`, persona);
+          this.log.error(`❌ UserDaemon: Invalid persona data:`, persona);
           continue;
         }
 
@@ -412,48 +425,19 @@ export class UserDaemonServer extends UserDaemon {
       // TODO: Clean up orphaned UserStates
 
     } catch (error) {
-      console.error('❌ UserDaemon: Reconciliation loop error:', error);
+      this.log.error('❌ UserDaemon: Reconciliation loop error:', error);
     }
-  }
-
-  /**
-   * Stop continuous monitoring loops
-   */
-  protected stopMonitoringLoops(): boolean {
-    let stopped = false;
-
-    if (this.monitoringInterval) {
-      clearInterval(this.monitoringInterval);
-      this.monitoringInterval = undefined;
-      stopped = true;
-    }
-
-    if (this.reconciliationInterval) {
-      clearInterval(this.reconciliationInterval);
-      this.reconciliationInterval = undefined;
-      stopped = true;
-    }
-
-    return stopped;
   }
 
   /**
    * Cleanup on shutdown
+   * Base class handles interval and subscription cleanup automatically
    */
-  async shutdown(): Promise<void> {
-    await super.shutdown();
-
-    // Unsubscribe from all events
-    for (const unsubscribe of this.unsubscribeFunctions) {
-      unsubscribe();
-    }
-    this.unsubscribeFunctions = [];
-
+  protected async cleanup(): Promise<void> {
     // Shutdown all persona clients
     for (const userId of this.personaClients.keys()) {
       // TODO: Add shutdown method to PersonaUser
     }
-
     this.personaClients.clear();
   }
 }

@@ -12,8 +12,8 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
  * Generate Command Parameters
  */
 export interface GenerateParams extends CommandParams {
-  // CommandSpec object defining the command to generate
-  spec: object;
+  // CommandSpec object, file path string, or JSON string defining the command to generate
+  spec: string | object;
   // Return an example CommandSpec template instead of generating
   template?: boolean;
 }

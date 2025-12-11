@@ -44,6 +44,8 @@ export class AIStatusIndicator {
   private activeStatuses = new Map<UUID, AIStatusState>(); // personaId -> status
   private container?: HTMLElement;
   private removeTimeout = 2000; // Auto-remove after 2 seconds
+  private dismissedErrors = new Map<string, number>(); // errorKey -> dismissTimestamp
+  private dismissDuration = 5 * 60 * 1000; // Don't show same error for 5 minutes after dismissal
 
   constructor(container?: HTMLElement) {
     this.container = container;
@@ -142,6 +144,16 @@ export class AIStatusIndicator {
    * Errors stay visible until user dismisses them manually
    */
   onError(data: AIErrorEventData): void {
+    // Create a key to track this specific error
+    const errorKey = `${data.personaId}:${data.error}`;
+
+    // Check if this error was recently dismissed
+    const dismissedTime = this.dismissedErrors.get(errorKey);
+    if (dismissedTime && (Date.now() - dismissedTime) < this.dismissDuration) {
+      // Error was recently dismissed, don't show it again
+      return;
+    }
+
     // Show error status with message - no auto-remove, user must dismiss
     this.updateStatus(data.personaId, {
       personaId: data.personaId,
@@ -202,6 +214,20 @@ export class AIStatusIndicator {
     const status = this.activeStatuses.get(personaId);
 
     if (status?.element) {
+      // If this is an error, track it as dismissed
+      if (status.currentPhase === 'error' && status.errorMessage) {
+        const errorKey = `${personaId}:${status.errorMessage}`;
+        this.dismissedErrors.set(errorKey, Date.now());
+
+        // Clean up old dismissed errors (older than dismissDuration)
+        const now = Date.now();
+        for (const [key, time] of this.dismissedErrors.entries()) {
+          if ((now - time) > this.dismissDuration) {
+            this.dismissedErrors.delete(key);
+          }
+        }
+      }
+
       // Fade out animation
       status.element.style.opacity = '0';
       setTimeout(() => {
@@ -299,6 +325,19 @@ export class AIStatusIndicator {
    */
   getActiveCount(): number {
     return this.activeStatuses.size;
+  }
+
+  /**
+   * Get count of error statuses (for header button display)
+   */
+  getErrorCount(): number {
+    let count = 0;
+    for (const status of this.activeStatuses.values()) {
+      if (status.currentPhase === 'error') {
+        count++;
+      }
+    }
+    return count;
   }
 
   /**

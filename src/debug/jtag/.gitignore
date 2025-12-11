@@ -21,3 +21,26 @@ __pycache__/
 # Micromamba package cache
 .continuum/genome/python/pkgs/
 system/genome/python/venv/
+
+# Rust build artifacts
+# Compiled files
+*.o
+*.so
+*.rlib
+*.dll
+*.dylib
+*.a
+
+# Executables
+*.exe
+
+# Cargo build outputs
+**/target/
+Cargo.lock
+
+# Rust debug symbols
+*.dSYM/
+
+# Rust backup files
+**/*.rs.bk
+**/*.rs.bk.*

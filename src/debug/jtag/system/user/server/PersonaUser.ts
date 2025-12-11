@@ -98,6 +98,7 @@ import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
+import { PersonaTaskTracker } from './modules/PersonaTaskTracker';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
@@ -157,6 +158,9 @@ export class PersonaUser extends AIUser {
 
   // PHASE 5: Self-task generation (autonomous work creation)
   readonly taskGenerator: SelfTaskGenerator;
+
+  // Tool result tracking (prevents infinite loops from re-processing tool results)
+  readonly taskTracker: PersonaTaskTracker;
 
   // BEING ARCHITECTURE: Soul system (memory, learning, identity)
   private soul: PersonaSoul | null = null;
@@ -305,6 +309,9 @@ export class PersonaUser extends AIUser {
       skillAuditInterval: 21600000,       // 6 hours
       unfinishedWorkThreshold: 1800000    // 30 minutes
     });
+
+    // Tool result tracking (prevents infinite response loops)
+    this.taskTracker = new PersonaTaskTracker();
 
     // Initialize logger FIRST - other subsystems need it
     this.logger = new PersonaLogger(this);
@@ -723,7 +730,12 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
+    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
+
+    // Mark tool results as processed to prevent infinite loops
+    if (result.success && result.storedToolResultIds.length > 0) {
+      this.taskTracker.markMultipleProcessed(result.storedToolResultIds);
+    }
   }
 
   /**

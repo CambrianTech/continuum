@@ -774,6 +774,7 @@ export class PersonaMessageEvaluator {
       this.log(`🔗 ${this.personaUser.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
 
       // Build RAG context for decision logging (all adapters need this)
+      // IMPORTANT: Exclude processed tool results to prevent infinite loops
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
@@ -783,6 +784,7 @@ export class PersonaMessageEvaluator {
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
+          excludeMessageIds: this.personaUser.taskTracker.getProcessedToolResults(),  // Filter out processed tool results
           currentMessage: {
             role: 'user',
             content: message.content.text,

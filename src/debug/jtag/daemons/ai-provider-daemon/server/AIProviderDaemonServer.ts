@@ -18,13 +18,51 @@ import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { AIProviderAdapter } from '../shared/AIProviderTypesV2';
 import { ProcessPool } from '../../../system/genome/server/ProcessPool';
 import { initializeSecrets, getSecret } from '../../../system/secrets/SecretManager';
+import { Logger } from '../../../system/core/logging/Logger';
+import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
+import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import * as path from 'path';
 
 export class AIProviderDaemonServer extends AIProviderDaemon {
   private processPool?: ProcessPool;
 
+  // ServerDaemonBase features: Concurrency primitives for metrics + performance
+  private rateLimiter: RateLimiter;
+  private requestQueue: AsyncQueue<BaseResponsePayload>;
+  private semaphore: Semaphore;
+  private metrics: DaemonMetrics;
+  private healthState: {
+    isHealthy: boolean;
+    consecutiveFailures: number;
+    lastSuccessTime: number;
+    lastHeartbeat: number;
+  };
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // DEBUG: Verify constructor runs
+    console.log('🚀🚀🚀 AIProviderDaemonServer CONSTRUCTOR CALLED 🚀🚀🚀');
+
+    // Set up file-based logging using class name automatically
+    // Logs go to .continuum/.../logs/daemons/{ClassName}.log
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
+
+    // Opt-in to aggressive concurrency control for external API calls
+    // Rate limit: 50 requests/sec, max 20 concurrent (handles multiple AI personas + external APIs)
+    this.rateLimiter = new RateLimiter(50, 50);
+    this.requestQueue = new AsyncQueue<BaseResponsePayload>();
+    this.semaphore = new Semaphore(20);
+    this.metrics = new DaemonMetrics();
+
+    // Initialize health state
+    this.healthState = {
+      isHealthy: true,
+      consecutiveFailures: 0,
+      lastSuccessTime: Date.now(),
+      lastHeartbeat: Date.now()
+    };
   }
 
   /**
@@ -39,6 +77,22 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
    * Initializes base daemon, dynamically loads adapters, and sets up static interface
    */
   protected async initialize(): Promise<void> {
+    console.log('🚀🚀🚀 AIProviderDaemonServer INITIALIZE CALLED 🚀🚀🚀');
+
+    // Enable health monitoring with timing metrics (for performance optimization)
+    // Heartbeat every 30 seconds checks for stuck operations
+    this.registerInterval('health-monitoring', () => {
+      this.healthState.lastHeartbeat = Date.now();
+
+      // Check if daemon is stuck (no successful operations in 60s)
+      const timeSinceSuccess = Date.now() - this.healthState.lastSuccessTime;
+      if (timeSinceSuccess > 60000) {
+        this.log.warn(`⚠️  AIProviderDaemon: Appears stuck (${Math.round(timeSinceSuccess / 1000)}s since last success)`);
+        this.healthState.isHealthy = false;
+      }
+    }, 30000);
+    this.log.info('📊 AIProviderDaemonServer: Health monitoring + metrics enabled');
+
     // Initialize SecretManager FIRST (adapters depend on it)
     this.log.info('🔐 AIProviderDaemonServer: Initializing SecretManager...');
     await initializeSecrets();

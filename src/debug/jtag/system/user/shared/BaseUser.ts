@@ -59,13 +59,15 @@ export abstract class BaseUser {
         const { Logger, FileMode } = require('../../core/logging/Logger');
         const path = require('path');
 
-        const logDir = path.join(this.homeDirectory, 'logs');
-        const logFile = path.join(logDir, 'user.log');
+        // Convert homeDirectory to category (like daemon logs)
+        // homeDirectory can be absolute or relative: extract just 'personas/{uniqueId}'
+        const category = this.homeDirectory
+          .replace(/^.*\.continuum\//, '')  // Strip everything up to .continuum/
+          + '/logs/user';
 
-        this._log = Logger.createWithFile(
+        this._log = Logger.create(
           `${this.constructor.name}:${this.displayName}`,
-          logFile,
-          FileMode.CLEAN
+          category
         );
       } catch (error) {
         // Browser environment - no-op logger

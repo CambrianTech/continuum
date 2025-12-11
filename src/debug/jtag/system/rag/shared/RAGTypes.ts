@@ -168,6 +168,9 @@ export interface RAGBuildOptions {
   // Current message being responded to (if not yet persisted to database)
   currentMessage?: LLMMessage;  // Include this message even if not in database yet
 
+  // NEW: Task completion tracking - prevent infinite loops
+  excludeMessageIds?: UUID[];  // Message IDs to exclude from RAG context (e.g., processed tool results)
+
   // NEW: Model-aware context budgeting (Bug #5 fix)
   modelId?: string;  // Target model ID for calculating safe message count based on context window
   maxTokens?: number;  // Max completion tokens (default: 3000)

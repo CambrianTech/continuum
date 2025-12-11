@@ -1,107 +1,52 @@
 /**
- * decision/finalize - Server-side implementation
+ * Decision Finalize Command - Server Implementation
  *
- * Manually finalizes a voting proposal:
- * 1. Validates proposal exists and is in voting state
- * 2. Calculates Condorcet winner from current votes
- * 3. Updates proposal status to complete
- * 4. Announces winner in chat
+ * Close voting and calculate winner using ranked-choice voting
  */
 
+import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
-import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import { Commands } from '../../../../system/core/shared/Commands';
-import { COLLECTIONS } from '../../../../system/shared/Constants';
-import { DecisionFinalizeCommand } from '../shared/DecisionFinalizeCommand';
+// import { ValidationError } from '../../../../system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { DecisionFinalizeParams, DecisionFinalizeResult } from '../shared/DecisionFinalizeTypes';
-import type { DecisionProposalEntity } from '../../../../system/data/entities/DecisionProposalEntity';
-import type { ChatSendParams, ChatSendResult } from '../../../../commands/chat/send/shared/ChatSendTypes';
-import type { DataReadParams, DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
-import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
-import { calculateCondorcetWinner } from '../../../../system/shared/CondorcetUtils';
+import { createDecisionFinalizeResultFromParams } from '../shared/DecisionFinalizeTypes';
 
-/**
- * DecisionFinalizeServerCommand - Server implementation
- */
-export class DecisionFinalizeServerCommand extends DecisionFinalizeCommand {
+export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeParams, DecisionFinalizeResult> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super(context, subpath, commander);
+    super('Decision Finalize', context, subpath, commander);
   }
 
-  protected async executeCommand(params: DecisionFinalizeParams): Promise<DecisionFinalizeResult> {
-    try {
-      // Validation
-      if (!params.proposalId) {
-        return transformPayload(params, { success: false, error: 'Proposal ID is required' });
-      }
+  async execute(params: DecisionFinalizeParams): Promise<DecisionFinalizeResult> {
+    console.log('🔧 SERVER: Executing Decision Finalize', params);
 
-      // Get proposal
-      const proposalResult = await Commands.execute<DataReadParams, DataReadResult<DecisionProposalEntity>>('data/read', {
-        collection: COLLECTIONS.DECISION_PROPOSALS,
-        id: params.proposalId
-      });
+    // Validate required parameters
+    // NOTE: Commands should THROW errors when validation fails, not catch and return success:false
+    // This demonstrates BEST PRACTICE error handling for command templates
+    //
+    // Example validation for a required parameter:
+    // if (!params.yourRequiredParam || params.yourRequiredParam.trim() === '') {
+    //   throw new ValidationError(
+    //     'yourRequiredParam',
+    //     `Missing required parameter 'yourRequiredParam'. ` +
+    //     `Use the help tool with 'Decision Finalize' or see the Decision Finalize README for usage information.`
+    //   );
+    // }
 
-      if (!proposalResult.success || !proposalResult.data) {
-        return transformPayload(params, { success: false, error: 'Proposal not found' });
-      }
+    // TODO: Implement your command logic here
+    // Add validation for each required parameter following the pattern above
+    // The error message should:
+    // 1. Reference the help tool generically (works for both jtag CLI and Persona tools)
+    // 2. Reference the command README using the command name
+    // 3. Be clear about what's missing or invalid
 
-      const proposal: DecisionProposalEntity = proposalResult.data;
-
-      // Check proposal status
-      if (proposal.status !== 'voting') {
-        return transformPayload(params, {
-          success: false,
-          error: `Proposal cannot be finalized (status: ${proposal.status})`
-        });
-      }
-
-      // Check if there are votes
-      if (proposal.votes.length === 0) {
-        return transformPayload(params, {
-          success: false,
-          error: 'Cannot finalize proposal with zero votes'
-        });
-      }
-
-      // Calculate Condorcet winner
-      const winner = calculateCondorcetWinner(proposal.votes, proposal.options);
-
-      if (!winner) {
-        return transformPayload(params, {
-          success: false,
-          error: 'Could not determine winner'
-        });
-      }
-
-      // Update proposal status
-      await Commands.execute<DataUpdateParams, DataUpdateResult>('data/update', {
-        collection: COLLECTIONS.DECISION_PROPOSALS,
-        id: params.proposalId,
-        data: { status: 'complete' }
-      });
-
-      // Announce winner in chat
-      const announcementMessage = `🏆 **Decision Complete: ${proposal.topic}**\n\n**Winner:** ${winner.label} (${winner.wins} pairwise wins)\n\nTotal votes: ${proposal.votes.length}\nProposal ID: ${params.proposalId}`;
-
-      await Commands.execute<ChatSendParams, ChatSendResult>('chat/send', {
-        message: announcementMessage,
-        room: 'general'
-      });
-
-      return transformPayload(params, {
-        success: true,
-        proposalStatus: 'complete',
-        winner,
-        voteCount: proposal.votes.length
-      });
-
-    } catch (error: unknown) {
-      console.error('Error in decision/finalize:', error);
-      return transformPayload(params, {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
+    // Return successful result with all required fields
+    // NOTE: createResultFromParams requires ALL result fields (context/sessionId inherited from params)
+    return createDecisionFinalizeResultFromParams(params, {
+      success: true, // Whether finalization succeeded
+      winner: null, // The winning option ID (or null if no winner) - TODO: Calculate from RankedChoiceVoting
+      rounds: [], // Elimination rounds from ranked-choice voting - TODO: Get from RankedChoiceVoting.calculateWinner()
+      participation: { totalEligible: 0, totalVoted: 0, percentage: 0 }, // Voter turnout statistics - TODO: Calculate from proposal.votes
+      finalTallies: {}, // Final vote counts for each option - TODO: Get from RankedChoiceVoting results
+    });
   }
 }

@@ -76,10 +76,9 @@ export interface LogDecisionParams {
  */
 export class CoordinationDecisionLogger {
   private static sequenceCounters = new Map<UUID, number>();
-  private static logger: ComponentLogger = Logger.createWithFile(
+  private static logger: ComponentLogger = Logger.create(
     'CoordinationDecisionLogger',
-    path.join(SystemPaths.logs.system, 'coordination-decisions.log'),
-    FileMode.CLEAN
+    'coordination-decisions'
   );
 
   /**

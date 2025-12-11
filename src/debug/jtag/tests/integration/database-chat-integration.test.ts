@@ -17,6 +17,93 @@ import { RoomEntity } from '../../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../../system/data/entities/ChatMessageEntity';
 
 /**
+ * cleanupOrphanedTestData - Delete leftover test data from previous failed test runs
+ * CRITICAL: Run BEFORE tests to ensure clean slate
+ */
+async function cleanupOrphanedTestData(client: any): Promise<void> {
+  console.log('\n🧹 Cleaning up orphaned test data from previous runs...');
+
+  try {
+    // Clean up test users (displayName contains "Test User")
+    const usersResult = await client.commands['data/list']({
+      collection: UserEntity.collection,
+      filter: {}
+    });
+
+    if (usersResult.success && usersResult.items) {
+      const testUsers = usersResult.items.filter((user: any) =>
+        user.displayName?.includes('Test User') || user.uniqueId?.includes('crud-test-user')
+      );
+
+      for (const user of testUsers) {
+        await client.commands['data/delete']({
+          collection: UserEntity.collection,
+          id: user.id
+        });
+        console.log(`  ✅ Deleted orphaned test user: ${user.displayName} (${user.id})`);
+      }
+
+      if (testUsers.length === 0) {
+        console.log('  ✅ No orphaned test users found');
+      }
+    }
+
+    // Clean up test rooms (displayName contains "Test Room")
+    const roomsResult = await client.commands['data/list']({
+      collection: RoomEntity.collection,
+      filter: {}
+    });
+
+    if (roomsResult.success && roomsResult.items) {
+      const testRooms = roomsResult.items.filter((room: any) =>
+        room.displayName?.includes('Test Room') || room.uniqueId?.includes('crud-test-room')
+      );
+
+      for (const room of testRooms) {
+        await client.commands['data/delete']({
+          collection: RoomEntity.collection,
+          id: room.id
+        });
+        console.log(`  ✅ Deleted orphaned test room: ${room.displayName} (${room.id})`);
+      }
+
+      if (testRooms.length === 0) {
+        console.log('  ✅ No orphaned test rooms found');
+      }
+    }
+
+    // Clean up test messages (senderName is "CRUD Test")
+    const messagesResult = await client.commands['data/list']({
+      collection: ChatMessageEntity.collection,
+      filter: {}
+    });
+
+    if (messagesResult.success && messagesResult.items) {
+      const testMessages = messagesResult.items.filter((msg: any) =>
+        msg.senderName === 'CRUD Test' || msg.content?.text?.includes('CRUD test message')
+      );
+
+      for (const message of testMessages) {
+        await client.commands['data/delete']({
+          collection: ChatMessageEntity.collection,
+          id: message.id
+        });
+        console.log(`  ✅ Deleted orphaned test message: ${message.id}`);
+      }
+
+      if (testMessages.length === 0) {
+        console.log('  ✅ No orphaned test messages found');
+      }
+    }
+
+    console.log('✅ Cleanup complete\n');
+  } catch (error) {
+    console.error('⚠️  Cleanup failed (non-fatal):', error);
+    // Don't throw - cleanup failures shouldn't block tests
+  }
+}
+
+/**
  * waitForWidgetInitialization - Wait for widgets to initialize and subscribe to events
  * CRITICAL: Widgets must be initialized BEFORE CRUD operations or events will be missed
  */
@@ -182,6 +269,9 @@ async function testDatabaseChatIntegration(): Promise<void> {
     console.log('🔗 Connecting to JTAG system...');
     client = await jtag.connect();
     console.log('✅ Connected');
+
+    // CRITICAL: Clean up orphaned test data from previous failed runs FIRST
+    await cleanupOrphanedTestData(client);
 
     // CRITICAL: Wait for widgets to initialize BEFORE running CRUD operations
     // Widgets must subscribe to events BEFORE entities are created, or events will be missed

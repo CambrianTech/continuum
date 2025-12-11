@@ -943,3 +943,4 @@ Commands.execute() and Events.subscribe()/emit() - the two primitives everything
 - for getters in typescript we do not prefix methods with get, we use get or set like good properties and often this is backed by _theProperty type private var
 - never commit code until you validate it works. deploy and validate first, make sure it compiles, npm run build:ts before that
 - if we have manually checked that ai persona can respond and use their tools, especially if they themselves have QA'd for us, we can use --no-verify in our commit to avoid the precommit hook, which tests this.
+- do not commit without my approval, especially if running out of context.

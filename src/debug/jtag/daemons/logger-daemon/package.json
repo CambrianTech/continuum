@@ -1,0 +1,17 @@
+{
+  "name": "@continuum/logger-daemon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Logger daemon with Rust worker",
+  "scripts": {
+    "build": "cd ../../workers/logger && cargo build --release",
+    "kill": "pkill -f logger-worker || true",
+    "clean": "npm run kill && rm -f /tmp/jtag-logger-worker.sock /tmp/rust-worker-debug.log /tmp/worker-client-debug.log",
+    "start": "../../workers/logger/target/release/logger-worker /tmp/jtag-logger-worker.sock > ../../.continuum/jtag/logs/system/rust-worker.log 2>&1 &",
+    "restart": "npm run clean && npm run build && npm run start && sleep 2 && npm run status",
+    "status": "pgrep -fl logger-worker || echo 'Worker not running'",
+    "logs": "tail -f ../../.continuum/jtag/logs/system/rust-worker.log",
+    "logs:debug": "tail -f /tmp/rust-worker-debug.log",
+    "logs:client": "tail -f /tmp/worker-client-debug.log"
+  }
+}

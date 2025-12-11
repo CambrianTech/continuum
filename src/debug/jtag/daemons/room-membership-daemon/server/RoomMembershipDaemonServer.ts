@@ -18,6 +18,7 @@ import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
 import type { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 /**
  * Smart routing rules (foundation for future persona-based management)
@@ -30,8 +31,6 @@ interface SmartRoutingRule {
 }
 
 export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
-  private unsubscribeFunctions: (() => void)[] = [];
-
   /**
    * Smart routing rules - extensible for future persona management
    * TODO: Move to database, make configurable by "org chart manager" persona
@@ -63,6 +62,10 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   async initialize(): Promise<void> {
@@ -71,12 +74,10 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     // Subscribe to future user creation events immediately
     await this.setupEventSubscriptions();
 
-    // Defer catch-up logic until after DataDaemon is ready (runs after all daemons initialize)
-    setTimeout(() => {
-      this.ensureAllUsersInRooms().catch(error => {
-        this.log.error('❌ RoomMembershipDaemon: Deferred catch-up failed:', error);
-      });
-    }, 2000); // 2 second delay to ensure DataDaemon is initialized
+    // Defer catch-up logic until after DataDaemon is ready (uses base class helper)
+    this.deferInitialization(async () => {
+      await this.ensureAllUsersInRooms();
+    }, 2000);
 
     this.log.info('🏠 RoomMembershipDaemonServer: Initialized with smart routing (catch-up deferred)');
   }
@@ -127,8 +128,8 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         await this.handleUserCreated(userData);
       }
     );
-    this.unsubscribeFunctions.push(unsubCreated);
-    this.log.info(`🏠 RoomMembershipDaemonServer: Subscription complete, unsubscribe function stored`);
+    this.registerSubscription(unsubCreated);
+    this.log.info(`🏠 RoomMembershipDaemonServer: Subscription complete, unsubscribe function registered`);
   }
 
   /**
@@ -245,12 +246,5 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         this.log.error(`❌ RoomMembershipDaemon: Failed to join ${displayName} to ${roomUniqueId}:`, error);
       }
     }
-  }
-
-  async shutdown(): Promise<void> {
-    // Unsubscribe from events
-    this.unsubscribeFunctions.forEach(unsub => unsub());
-    this.unsubscribeFunctions = [];
-    await super.shutdown();
   }
 }

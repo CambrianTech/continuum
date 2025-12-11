@@ -10,14 +10,20 @@ import * as path from 'path';
 import { ArtifactsDaemon, type ArtifactsPayload, type ArtifactsResult } from '../shared/ArtifactsDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 /**
  * Server Artifacts Daemon - Real filesystem operations
  */
 export class ArtifactsDaemonServer extends ArtifactsDaemon {
-  
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Set up file-based logging using class name automatically
+    // Logs go to .continuum/jtag/logs/system/daemons/{ClassName}.log
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**

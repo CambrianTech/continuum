@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.5861",
+  "version": "1.0.5977",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -117,6 +117,10 @@
     }
   },
   "scripts": {
+    "worker:build": "cd workers/logger && cargo build --release",
+    "worker:start": "npm run worker:build && mkdir -p .continuum/jtag/logs/system && pkill -f logger-worker || true && rm -f /tmp/jtag-logger-worker.sock && workers/logger/target/release/logger-worker /tmp/jtag-logger-worker.sock > .continuum/jtag/logs/system/rust-worker.log 2>&1 &",
+    "worker:kill": "pkill -f logger-worker || true && rm -f /tmp/jtag-logger-worker.sock",
+    "worker:status": "pgrep -fl logger-worker || echo 'Rust worker not running'",
     "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
     "start": "npm run system:start",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run restart:quick",
@@ -127,7 +131,7 @@
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; find .continuum/sessions -mindepth 1 -maxdepth 1 -type d \\! -name 'validation' -exec rm -rf {} + 2>/dev/null || true; rm -rf examples/*/.continuum/jtag/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "clean:logs": "find .continuum/jtag/system/logs -name '*.log' -type f -delete 2>/dev/null || true; find .continuum/personas -name '*.log' -type f -delete 2>/dev/null || true; echo '✅ Cleaned all log files'",
-    "prebuild": "npm run version:bump && npm run clean:all && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts",
+    "prebuild": "npm run version:bump && npm run clean:all && npm run worker:build && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts",
     "build:ts": "npx tsx generator/generate-version.ts && npx tsx scripts/build-with-loud-failure.ts",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
@@ -139,7 +143,7 @@
     "system:run": "npx tsx scripts/launch-active-example.ts",
     "start-continuum-with-browser": "npx tsx scripts/launch-active-example.ts",
     "system:deploy": "npx tsx scripts/smart-deploy.ts",
-    "system:start": "npm run system:stop && npm run build && tsx scripts/launch-and-capture.ts --verbose; npm run data:seed",
+    "system:start": "npm run worker:start && sleep 2 && npm run system:stop && npm run build && tsx scripts/launch-and-capture.ts --verbose; npm run data:seed",
     "system:start:quiet": "tsx scripts/launch-and-capture.ts",
     "system:start:test": "tsx scripts/launch-and-capture.ts --test --no-check",
     "restart": "npm run smart-build && npm run system:deploy && npm run system:run",

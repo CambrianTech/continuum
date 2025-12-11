@@ -39,8 +39,30 @@ export class GenerateServerCommand extends CommandBase<GenerateParams, GenerateR
         throw new Error('spec parameter is required when template=false');
       }
 
-      // Cast spec to CommandSpec (it's passed as object from CLI)
-      const commandSpec = params.spec as CommandSpec;
+      // Parse spec parameter - can be a file path, "-" for stdin, or a JSON string
+      let commandSpec: CommandSpec;
+
+      if (typeof params.spec === 'string') {
+        // It's a file path or JSON string
+        if (params.spec === '-') {
+          // Read from stdin
+          const stdin = fs.readFileSync(0, 'utf-8');
+          commandSpec = JSON.parse(stdin);
+        } else if (params.spec.startsWith('{')) {
+          // It's inline JSON
+          commandSpec = JSON.parse(params.spec);
+        } else {
+          // It's a file path
+          if (!fs.existsSync(params.spec)) {
+            throw new Error(`Spec file not found: ${params.spec}`);
+          }
+          const fileContent = fs.readFileSync(params.spec, 'utf-8');
+          commandSpec = JSON.parse(fileContent);
+        }
+      } else {
+        // It's already an object (passed from TypeScript code)
+        commandSpec = params.spec as CommandSpec;
+      }
 
       // Validate required fields
       if (!commandSpec.name) {

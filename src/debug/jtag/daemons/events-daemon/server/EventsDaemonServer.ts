@@ -11,6 +11,7 @@ import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { EventManager } from '../../../system/events/shared/JTAGEventSystem';
 import { EventSubscriptionManager } from '../../../system/events/shared/EventSubscriptionManager';
 import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
+import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 export class EventsDaemonServer extends EventsDaemon implements IEventSubscriptionProvider {
   protected eventManager = new EventManager();
@@ -22,6 +23,10 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**

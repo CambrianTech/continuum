@@ -59,20 +59,21 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
    */
   protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: any[]): void {
     if (request?.personaContext) {
-      // Get or create logger for this persona's adapters.log
+      // Get or create logger for this persona's adapters.log (works like daemon logs)
       const logDir = request.personaContext.logDir;
-      const logFile = path.join(logDir, 'logs', 'adapters.log');
+      // Convert path to category: strip everything up to .continuum/
+      const category = logDir.replace(/^.*\.continuum\//, '') + '/logs/adapters';
 
-      if (!this.personaLoggers.has(logFile)) {
+      if (!this.personaLoggers.has(category)) {
         const componentName = `${this.providerName}:${request.personaContext.displayName}`;
         this.personaLoggers.set(
-          logFile,
-          Logger.createWithFile(componentName, logFile, FileMode.CLEAN)
+          category,
+          Logger.create(componentName, category)
         );
       }
 
-      // Use Logger.ts (handles queuing, async writes, and CLEAN mode)
-      const logger = this.personaLoggers.get(logFile)!;
+      // Use Logger.ts (handles queuing, async writes)
+      const logger = this.personaLoggers.get(category)!;
       logger[level](message, ...args);
     } else {
       // No persona context - write to shared adapter log

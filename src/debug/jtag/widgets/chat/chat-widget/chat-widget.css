@@ -45,6 +45,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   width: 100%;
 }
 
@@ -84,6 +85,45 @@
   white-space: nowrap;
 }
 
+/* Error toggle button */
+.error-toggle {
+  flex-shrink: 0;
+  min-width: 80px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xxs, 4px);
+  padding: 6px 12px;
+  background: var(--surface-tertiary, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: var(--radius-sm, 12px);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.8));
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.error-toggle:hover {
+  background: var(--surface-tertiary-hover, rgba(255, 255, 255, 0.12));
+  border-color: var(--border-subtle-hover, rgba(255, 255, 255, 0.25));
+  color: var(--text-primary, rgba(255, 255, 255, 0.95));
+}
+
+/* Pressed state - errors are hidden */
+.error-toggle.pressed {
+  background: var(--surface-tertiary-hover, rgba(255, 255, 255, 0.15));
+  border: 2px solid rgba(255, 80, 80, 0.8);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.6));
+}
+
+.error-toggle.pressed:hover {
+  background: var(--surface-tertiary-hover, rgba(255, 255, 255, 0.18));
+  border: 2px solid rgba(255, 100, 100, 1);
+  color: var(--text-secondary, rgba(255, 255, 255, 0.8));
+}
+
 .no-members {
   font-size: var(--font-xs, 0.6875rem);
   color: var(--text-tertiary, rgba(255, 255, 255, 0.5));
@@ -91,6 +131,8 @@
 }
 
 .header-title {
+  flex: 1;
+  min-width: 0;
   color: var(--content-primary, var(--text-primary, rgba(255, 255, 255, 0.95)));
   font-weight: 600;
   font-size: 0.85em;
@@ -98,6 +140,7 @@
 }
 
 .list-count {
+  flex-shrink: 0;
   background: var(--badge-background, var(--accent-color, #00d4ff));
   color: var(--badge-text, var(--bg-primary, #000));
   padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
@@ -373,12 +416,15 @@
  */
 
 .ai-status-container {
-  position: sticky;
-  top: 0;
+  /* Normal flow positioning - stays at top naturally */
+  position: relative;
   z-index: 10;
   padding: 0.5rem 1rem;
   background: var(--bg-secondary, #f5f5f5);
   border-bottom: 1px solid var(--border-color, #ddd);
+  pointer-events: auto; /* Allow clicks on error banners */
+  max-height: 40vh; /* Limit height if many errors */
+  overflow-y: auto;
 }
 
 .ai-status-indicator {
@@ -392,6 +438,7 @@
   opacity: 1;
   transition: opacity 0.3s ease;
   animation: slideIn 0.3s ease;
+  pointer-events: auto; /* Re-enable clicks on error banners */
 }
 
 @keyframes slideIn {
@@ -528,6 +575,34 @@
 /* Error-specific close button styling */
 .ai-status-error .ai-status-close {
   color: #dc3545;
+}
+
+/* Dismiss All Button - appears below all errors */
+.ai-status-dismiss-all {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--primary-color, #007bff);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.ai-status-dismiss-all:hover {
+  background: var(--primary-hover, #0056b3);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+.ai-status-dismiss-all:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .ai-status-error .ai-status-close:hover {

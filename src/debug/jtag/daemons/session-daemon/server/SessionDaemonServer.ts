@@ -60,14 +60,16 @@ const createSessionErrorResponse = (
 };
 
 export class SessionDaemonServer extends SessionDaemon {
-  protected log = Logger.create('SessionDaemon', 'system');
   private sessions: SessionMetadata[] = []; // In-memory active sessions for server
   private readonly SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes for ephemeral sessions
   private readonly BROWSER_SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours for browser sessions
-  private cleanupInterval?: ReturnType<typeof setInterval>;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
+
+    // Initialize standardized logging (daemons/ subdirectory)
+    const className = this.constructor.name;
+    this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**
@@ -156,7 +158,7 @@ export class SessionDaemonServer extends SessionDaemon {
     await this.loadSessionsFromFile();
     
     // Start session cleanup interval - check every 5 minutes
-    this.cleanupInterval = setInterval(() => {
+    this.registerInterval('session-cleanup', () => {
       this.cleanupExpiredSessions().catch(error => {
         this.log.error('Cleanup interval error:', error);
       });
@@ -228,14 +230,9 @@ export class SessionDaemonServer extends SessionDaemon {
 
   /**
    * Cleanup method for graceful shutdown
+   * Base class handles interval cleanup automatically
    */
-  public async cleanup(): Promise<void> {
-    // Clear cleanup interval
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = undefined;
-    }
-
+  protected async cleanup(): Promise<void> {
     // Save current session state
     await this.saveSessionsToFile();
   }
@@ -394,7 +391,7 @@ export class SessionDaemonServer extends SessionDaemon {
       // - Loads initial state
       const user: BaseUser = await UserFactory.create(createParams, this.context, this.router);
 
-      console.log(`✅ SessionDaemon: Created ${resolvedIdentity.type} user: ${user.entity.displayName} (${user.entity.id.slice(0, 8)}...)`);
+      this.log.info(`✅ SessionDaemon: Created ${resolvedIdentity.type} user: ${user.entity.displayName} (${user.entity.id.slice(0, 8)}...)`);
 
       return user;
     }
@@ -404,7 +401,7 @@ export class SessionDaemonServer extends SessionDaemon {
           // Check for existing shared session
           const existingSession = this.sessions.find(s => s.isShared && s.isActive);
           if (existingSession) {
-            console.log(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
+            this.log.info(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
             return createPayload(params.context, existingSession.sessionId, {
               success: true,
               timestamp: new Date().toISOString(),
@@ -412,7 +409,7 @@ export class SessionDaemonServer extends SessionDaemon {
               session: existingSession
             });
           }
-          console.log(`🆕 SessionDaemon: No existing valid shared session found, creating new one`);
+          this.log.info(`🆕 SessionDaemon: No existing valid shared session found, creating new one`);
         }
         return await this.createSession(params);
     }
@@ -462,7 +459,7 @@ export class SessionDaemonServer extends SessionDaemon {
           break;
         default:
           // Unknown types default to script (safest fallback) - KEEP THIS WARNING
-          console.warn(`SessionDaemon: Unknown user type '${user.entity.type}', defaulting callerType to 'script'`);
+          this.log.warn(`SessionDaemon: Unknown user type '${user.entity.type}', defaulting callerType to 'script'`);
           enrichedContext.callerType = 'script';
       }
 

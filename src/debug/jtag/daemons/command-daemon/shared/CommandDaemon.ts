@@ -46,10 +46,10 @@ export abstract class CommandDaemon extends DaemonBase {
           this.register(commandEntry.name, command);
         }
       } catch (error: unknown) {
-        console.error(`❌ Failed to create browser command ${commandEntry.name}:`, error);
+        this.log.error(`❌ Failed to create browser command ${commandEntry.name}:`, error);
       }
     }
-    
+
   }
 
   protected abstract get commandEntries(): CommandEntry[];
@@ -72,11 +72,11 @@ export abstract class CommandDaemon extends DaemonBase {
       
       // Execute command through the global JTAG system - gets wrapped response
       const wrappedResult = await jtagClient.commands[command](params);
-      
+
       // Extract the actual command result from the wrapped response
       return wrappedResult.commandResult as T;
     } catch (error) {
-      console.error(`❌ ${this.toString()}: JTAG operation ${command} failed:`, error);
+      this.log.error(`❌ ${this.toString()}: JTAG operation ${command} failed:`, error);
       throw error;
     }
   }
@@ -158,7 +158,7 @@ export abstract class CommandDaemon extends DaemonBase {
 
     const fullParams = command.withDefaults(params ?? {}, sessionId, this.context);
 
-    console.log(`⚡ ${this.toString()}: Executing ${commandName} directly`, fullParams);
+    this.log.info(`⚡ ${this.toString()}: Executing ${commandName} directly`, fullParams);
 
     return await command.execute(fullParams);
   }

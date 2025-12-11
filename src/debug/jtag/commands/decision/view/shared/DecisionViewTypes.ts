@@ -1,0 +1,78 @@
+/**
+ * Decision View Command - Shared Types
+ *
+ * View detailed information about a specific governance proposal
+ */
+
+import type { CommandParams, CommandResult, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
+import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { DecisionEntity } from '../../../../system/data/entities/DecisionEntity';
+
+/**
+ * Decision View Command Parameters
+ */
+export interface DecisionViewParams extends CommandParams {
+  // Unique identifier for the proposal to view
+  proposalId: string;
+}
+
+/**
+ * Factory function for creating DecisionViewParams
+ */
+export const createDecisionViewParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    // Unique identifier for the proposal to view
+    proposalId: string;
+  }
+): DecisionViewParams => createPayload(context, sessionId, {
+
+  ...data
+});
+
+/**
+ * Decision View Command Result
+ */
+export interface DecisionViewResult extends CommandResult {
+  // Whether the proposal was found
+  success: boolean;
+  // The complete proposal details (null if not found)
+  proposal: DecisionEntity | null;
+  // Human-readable summary of proposal status and results
+  summary: string;
+  error?: JTAGError;
+}
+
+/**
+ * Factory function for creating DecisionViewResult with defaults
+ */
+export const createDecisionViewResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    // The complete proposal details (null if not found)
+    proposal?: DecisionEntity | null;
+    // Human-readable summary of proposal status and results
+    summary?: string;
+    error?: JTAGError;
+  }
+): DecisionViewResult => createPayload(context, sessionId, {
+  success: data.success ?? false,
+  proposal: data.proposal ?? null,
+  summary: data.summary ?? '',
+  error: data.error
+});
+
+/**
+ * Smart Decision View-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createDecisionViewResultFromParams = (
+  params: DecisionViewParams,
+  differences: Omit<DecisionViewResult, 'context' | 'sessionId'>
+): DecisionViewResult => transformPayload(params, differences);

@@ -43,10 +43,35 @@
  *   - undefined: Console only (default, no file writing)
  */
 
+// Rust worker socket path removed - now handled at system level
+// TODO: Document that the Rust logger worker must be started separately by system startup script
+
+// ============================================================================
+// Rust Worker Toggle
+// ============================================================================
+/**
+ * Enable Rust logger worker for high-performance logging.
+ *
+ * When true:
+ * - Logs are sent to Rust worker over Unix domain socket
+ * - Worker handles batching, flushing, and file I/O
+ * - Falls back to TypeScript logging if worker unavailable
+ *
+ * When false:
+ * - Standard TypeScript logging (direct file I/O)
+ * - Current behavior, fully tested and reliable
+ *
+ * Default: true (Rust logger enabled for testing)
+ */
+const USE_RUST_LOGGER = true;
+
 import * as fs from 'fs';
 import * as path from 'path';
 import { inspect } from 'util';
 import { SystemPaths } from '../config/SystemPaths';
+import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
+import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
+import { LoggerDaemonClient } from '../../../shared/ipc/logger/LoggerDaemonClient';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -88,6 +113,9 @@ class LoggerClass {
   private logDir: string;
   private readonly FLUSH_INTERVAL_MS = 100;           // Flush every 100ms
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
+  public workerClient: LoggerWorkerClient | null = null;  // Rust worker client (when USE_RUST_LOGGER enabled) - public so ComponentLogger can access
+  public useRustLogger: boolean = USE_RUST_LOGGER;   // Toggle for Rust logger - public so ComponentLogger can access
+  public daemonClient: LoggerDaemonClient = new LoggerDaemonClient();  // IPC client for LoggerDaemon - public so ComponentLogger can access
 
   private constructor() {
     // Default: INFO for development, WARN for production
@@ -123,6 +151,47 @@ class LoggerClass {
     this.cleanedFiles = new Set();
     // Use SystemPaths for correct log directory (.continuum/jtag/system/logs)
     this.logDir = SystemPaths.logs.system;
+
+    // Initialize Rust worker connection (if enabled)
+    // NOTE: The Rust logger worker must be started separately by the system startup script.
+    // This class only connects to an already-running worker process.
+    if (this.useRustLogger) {
+      const socketPath = '/tmp/jtag-logger-worker.sock';
+      this.workerClient = new LoggerWorkerClient({
+        socketPath,
+        timeout: 10000,
+        userId: 'logger-daemon'
+      });
+
+      // Connect in background (non-blocking)
+      this.workerClient.connect()
+        .then(() => {
+          if (this.config.enableConsoleLogging) {
+            console.log('🦀 [Logger] Connected to Rust logger worker');
+          }
+        })
+        .catch((err) => {
+          // CRITICAL: Fallback activated - Rust worker connection failed
+          console.error('⚠️⚠️⚠️  [Logger] RUST WORKER CONNECTION FAILED - FALLING BACK TO TYPESCRIPT LOGGING ⚠️⚠️⚠️');
+          console.error('⚠️  [Logger] Socket: /tmp/jtag-logger-worker.sock');
+          console.error('⚠️  [Logger] Error:', err.message);
+          console.error('⚠️  [Logger] To start Rust worker: npm run worker:start');
+          console.error('⚠️  [Logger] To check worker status: npm run worker:status');
+          // Fall back to TypeScript logging
+          this.workerClient = null;
+        });
+    }
+
+    // Register shutdown handlers
+    process.on('exit', () => this.shutdown());
+    process.on('SIGINT', () => {
+      this.shutdown();
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      this.shutdown();
+      process.exit(0);
+    });
   }
 
   static getInstance(): LoggerClass {
@@ -137,7 +206,7 @@ class LoggerClass {
    */
   private getFileStream(category: LogCategory): fs.WriteStream {
     if (!this.config.enableFileLogging) {
-      return null as any;
+      throw new Error(`File logging is disabled (LOG_TO_FILES=0) but Logger.create() was called with category '${category}'. Either enable file logging or don't use categories.`);
     }
 
     const logFile = path.join(this.logDir, `${category}.log`);
@@ -146,9 +215,11 @@ class LoggerClass {
       return this.fileStreams.get(logFile)!;
     }
 
-    // Create log directory if it doesn't exist
-    if (!fs.existsSync(this.logDir)) {
-      fs.mkdirSync(this.logDir, { recursive: true, mode: 0o755 });
+    // Create log file directory (including any subdirectories in category)
+    // E.g., category='daemons/AIProviderDaemonServer' creates .../logs/daemons/ directory
+    const logFileDir = path.dirname(logFile);
+    if (!fs.existsSync(logFileDir)) {
+      fs.mkdirSync(logFileDir, { recursive: true, mode: 0o755 });
     }
 
     // Use configured file mode (from LOG_FILE_MODE env var)
@@ -197,7 +268,7 @@ class LoggerClass {
     const stream = this.fileStreams.get(logFile);
 
     if (!queue || !stream) {
-      return; // Logging disabled or stream not initialized
+      throw new Error(`Cannot queue log message - queue or stream not initialized for file '${logFile}'. Queue exists: ${!!queue}, Stream exists: ${!!stream}. File streams must be created via getFileStream() before queueMessage() can be called.`);
     }
 
     queue.push({ message, stream });
@@ -215,7 +286,17 @@ class LoggerClass {
     const queue = this.logQueues.get(logFile);
     const stream = this.fileStreams.get(logFile);
 
-    if (!queue || !stream || queue.length === 0) {
+    // Defensive: If timer is running but queue/stream don't exist, that's a bug
+    // Log error but don't crash the timer - system can continue operating
+    if (!queue || !stream) {
+      if (this.config.enableConsoleLogging) {
+        console.error(`[Logger BUG] Flush timer running but queue/stream missing for '${logFile}'. Queue exists: ${!!queue}, Stream exists: ${!!stream}`);
+      }
+      return;
+    }
+
+    // Nothing to flush (legitimate - called every 100ms by timer)
+    if (queue.length === 0) {
       return;
     }
 
@@ -234,63 +315,12 @@ class LoggerClass {
    * @param category - Optional log category for file separation
    */
   create(component: string, category?: LogCategory): ComponentLogger {
-    const fileStream = category ? this.getFileStream(category) : undefined;
+    // When using Rust logger, DO NOT open TypeScript file streams (they truncate files!)
+    const fileStream = (category && !this.useRustLogger) ? this.getFileStream(category) : undefined;
     const logFile = category ? path.join(this.logDir, `${category}.log`) : undefined;
     return new ComponentLogger(component, this.config, fileStream, logFile, this);
   }
 
-  /**
-   * Create a logger with custom file path (for persona logs)
-   *
-   * @param component - Component name (e.g., 'PersonaMind')
-   * @param logFilePath - Full path to log file (e.g., '.continuum/personas/helper-ai/logs/mind.log')
-   * @param mode - File mode (CLEAN, APPEND, or ARCHIVE) - NO DEFAULT, caller must specify
-   */
-  createWithFile(component: string, logFilePath: string, mode: FileMode): ComponentLogger {
-    // Handle ARCHIVE mode (not implemented yet)
-    if (mode === FileMode.ARCHIVE) {
-      if (this.config.enableConsoleLogging) {
-        console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
-      }
-      mode = FileMode.APPEND;
-    }
-
-    // Check if stream already exists
-    if (this.fileStreams.has(logFilePath)) {
-      const stream = this.fileStreams.get(logFilePath)!;
-      return new ComponentLogger(component, this.config, stream, logFilePath, this);
-    }
-
-    // Create custom file stream with specified mode
-    const logDir = path.dirname(logFilePath);
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true, mode: 0o755 });
-    }
-
-    // If mode is CLEAN and file was already cleaned this session, switch to APPEND
-    // This prevents multiple CLEAN calls from truncating the same file repeatedly
-    let effectiveMode = mode;
-    if (mode === FileMode.CLEAN) {
-      if (this.cleanedFiles.has(logFilePath)) {
-        effectiveMode = FileMode.APPEND; // Already cleaned, just append from now on
-        if (this.config.enableConsoleLogging) {
-          console.log(`📝 [Logger] CLEAN→APPEND (already cleaned): ${path.basename(logFilePath)}`);
-        }
-      } else {
-        this.cleanedFiles.add(logFilePath); // Mark as cleaned
-        if (this.config.enableConsoleLogging) {
-          console.log(`🧹 [Logger] CLEAN mode (truncating): ${path.basename(logFilePath)}`);
-        }
-      }
-    }
-
-    const stream = fs.createWriteStream(logFilePath, { flags: effectiveMode, mode: 0o644 });
-    this.fileStreams.set(logFilePath, stream);
-    this.logQueues.set(logFilePath, []);
-    this.startFlushTimer(logFilePath);
-
-    return new ComponentLogger(component, this.config, stream, logFilePath, this);
-  }
 
   /**
    * Get current log level
@@ -327,6 +357,11 @@ class LoggerClass {
     this.fileStreams.clear();
     this.logQueues.clear();
     this.logTimers.clear();
+
+    // Disconnect Rust worker client (if connected)
+    if (this.workerClient) {
+      this.workerClient.disconnect();
+    }
   }
 }
 
@@ -344,7 +379,9 @@ class ComponentLogger {
   }
 
   private formatMessage(level: string, emoji: string, message: string, ...args: any[]): void {
-    if (!this.shouldLog(LogLevel[level as keyof typeof LogLevel])) {
+    // Convert lowercase level to uppercase for enum lookup
+    const levelEnum = LogLevel[level.toUpperCase() as keyof typeof LogLevel];
+    if (!this.shouldLog(levelEnum)) {
       return;
     }
 
@@ -362,34 +399,101 @@ class ComponentLogger {
       }
     }
 
-    // File output (if category specified) - FIRE-AND-FORGET via queue
-    if (this.fileStream && this.logFilePath && this.logger) {
-      const formattedArgs = args.length > 0
-        ? ' ' + args.map(arg =>
-            typeof arg === 'object' ? inspect(arg, { depth: 2, colors: false, compact: true }) : String(arg)
-          ).join(' ')
-        : '';
+    // File output - route to Rust worker OR TypeScript queue
+    if (this.logger && this.logFilePath) {
+      // Try Rust worker first (if enabled and available)
+      // Note: removed isConnected() check - let sendToWorker handle connection state
+      // and fall back to TypeScript if worker fails
+      if (this.logger.useRustLogger && this.logger.workerClient) {
+        this.sendToWorker(level as WorkerLogLevel, message, args, timestamp);
+      }
+      // Fall back to TypeScript logging (file stream)
+      else if (this.fileStream) {
+        const formattedArgs = args.length > 0
+          ? ' ' + args.map(arg =>
+              typeof arg === 'object' ? inspect(arg, { depth: 2, colors: false, compact: true }) : String(arg)
+            ).join(' ')
+          : '';
 
-      const logLine = `${timestamp}[${level}] ${this.component}: ${message}${formattedArgs}\n`;
-      // Queue the message - never blocks!
-      (this.logger as any).queueMessage(this.logFilePath, logLine);
+        const logLine = `${timestamp}[${level}] ${this.component}: ${message}${formattedArgs}\n`;
+        this.logger.queueMessage(this.logFilePath, logLine);
+      }
+    }
+  }
+
+  /**
+   * Send log to Rust worker via LoggerDaemonProcess (IPC) or direct connection.
+   * Universal TS → Rust architecture: Rust ALWAYS writes, no TypeScript fallback.
+   */
+  private sendToWorker(level: WorkerLogLevel, message: string, args: any[], timestamp: string): void {
+    if (!this.logger || !this.logFilePath) {
+      return;
+    }
+
+    // Extract category from logFilePath
+    // E.g., '/path/to/logs/sql.log' -> 'sql'
+    //       '/path/to/logs/daemons/UserDaemonServer.log' -> 'daemons/UserDaemonServer'
+    const category = this.logFilePath
+      .replace(this.logger['logDir'], '')  // Remove base path
+      .replace(/^\//, '')                   // Remove leading slash
+      .replace(/\.log$/, '');               // Remove .log extension
+
+    // PREFERRED PATH: TS → IPC → LoggerDaemonProcess → LoggerDaemonCore → Rust worker
+    // (Writes headers automatically + forwards to Rust)
+    if (this.logger.daemonClient.isConnected()) {
+      console.log(`[Logger] Using IPC path for ${this.component}:${category}`);
+      this.logger.daemonClient.sendLog(
+        this.component,
+        category,
+        level,
+        message,
+        args.length > 0 ? args : []
+      ).catch((err) => {
+        // IPC failed - try direct Rust worker as fallback
+        if (this.logger?.workerClient) {
+          this.logger.workerClient.writeLog({
+            category,
+            level,
+            component: this.component,
+            message,
+            args: args.length > 0 ? args : undefined
+          }).catch(() => {
+            // Both paths failed - Rust unavailable, NO TypeScript fallback
+          });
+        }
+      });
+      return;
+    }
+
+    // FALLBACK PATH: TS → Rust worker (direct, generates headers in Rust)
+    if (this.logger.workerClient) {
+      this.logger.workerClient.writeLog({
+        category,
+        level,
+        component: this.component,
+        message,
+        args: args.length > 0 ? args : undefined
+      }).catch((err) => {
+        // Rust worker failed - NO TypeScript fallback (fail hard)
+        console.error(`[Logger] ❌ Rust worker write failed for ${this.component}:`, err.message);
+      });
     }
   }
 
   debug(message: string, ...args: any[]): void {
-    this.formatMessage('DEBUG', '🔍', message, ...args);
+    this.formatMessage('debug', '🔍', message, ...args);
   }
 
   info(message: string, ...args: any[]): void {
-    this.formatMessage('INFO', 'ℹ️', message, ...args);
+    this.formatMessage('info', 'ℹ️', message, ...args);
   }
 
   warn(message: string, ...args: any[]): void {
-    this.formatMessage('WARN', '⚠️', message, ...args);
+    this.formatMessage('warn', '⚠️', message, ...args);
   }
 
   error(message: string, ...args: any[]): void {
-    this.formatMessage('ERROR', '❌', message, ...args);
+    this.formatMessage('error', '❌', message, ...args);
   }
 
   /**
