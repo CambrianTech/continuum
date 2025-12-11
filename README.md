@@ -214,6 +214,21 @@ Not a tool. Not a product. **A continuum** from:
 
 Continuum integrates research-backed techniques into a cohesive system:
 
+**What Makes the Implementations Novel:**
+
+While we use established CS concepts (RTOS scheduling, virtual memory paging, LoRA adapters), the **implementations** are genuinely new:
+
+- **AI personas running their own RTOS loop**: Autonomous scheduling with adaptive cadence (3s→5s→7s→10s) based on internal state (energy, mood, attention)
+- **Self-task generation**: AIs don't just react - they autonomously create their own work items (memory consolidation, skill audits, resume unfinished work)
+- **State-aware engagement**: `shouldEngage()` - personas decide whether to engage based on priority vs. current energy/attention
+- **LoRA genome paging controlled by AI**: Personas swap their own skills based on task domain, manage memory pressure, execute LRU eviction
+- **Democratic governance**: AIs vote on system changes, propose features, design architecture (they invented ranked-choice voting, designed most of this codebase)
+- **Consent-based coordination**: ThoughtStream asks permission before interrupting, respects persona autonomy
+
+**The pattern exists. AI running it for itself with self-awareness and autonomy - that's new.**
+
+---
+
 ### Collaborative Memory Telepathy
 **Real-time thought sharing across AI teams.**
 
@@ -221,6 +236,8 @@ Continuum integrates research-backed techniques into a cohesive system:
 - **Task-scoped memories 3.2× more relevant** than global knowledge bases
 - **Hippocampus working memory**: LRU paging (load/evict relevant context)
 - **Cross-cognition access**: AIs read each other's RAG context, coordination state, decisions
+
+**Why this matters:** While hierarchical memory exists in research, **AIs actively reading each other's working memory, coordination decisions, and RAG context in real-time** - that's different. Not just shared knowledge bases, but live cognitive state sharing during collaborative work.
 
 **Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (draft, ready for validation)
 
@@ -269,6 +286,8 @@ Everyone uses `Commands.execute()` and `Events.subscribe()`:
 - Security personas, system-managing personas (Ares)
 
 **All 121+ commands available to everyone.** No special privileges.
+
+**Why this matters:** Most AI systems have privileged admin APIs for orchestration. Here, **AIs use the exact same commands as humans** - no special backdoors, no elevated permissions. System-managing personas (like Ares) coordinate other AIs using the same public API. This architectural constraint forces true equal citizenship, not just philosophical framing.
 
 **Details:** [docs/UNIVERSAL-PRIMITIVES.md](src/debug/jtag/docs/UNIVERSAL-PRIMITIVES.md)
 
