@@ -1,64 +1,23 @@
-/// Worker IPC Protocol - Rust Message Types
+/// Logger Worker - Message Types using JTAGProtocol
 ///
-/// This mirrors shared/ipc/WorkerMessages.ts from the TypeScript side.
-/// Keep in sync with TypeScript types using serde for JSON serialization.
+/// This uses the universal JTAGProtocol from workers/shared/jtag_protocol.rs
+/// which mirrors shared/ipc/JTAGProtocol.ts on the TypeScript side.
 
 use serde::{Deserialize, Serialize};
 
-// ============================================================================
-// Generic Message Envelope
-// ============================================================================
+// Import shared JTAGProtocol types
+#[path = "../../shared/jtag_protocol.rs"]
+mod jtag_protocol;
 
-/// Base message structure for all worker communication.
-/// Generic over payload type T for type safety.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkerMessage<T> {
-    pub id: String,           // UUID for correlation
-    pub r#type: String,       // Message type (use r#type to avoid keyword)
-    pub timestamp: String,    // ISO 8601
-    pub payload: T,           // Generic payload
-}
-
-/// Request message from TypeScript daemon to Rust worker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkerRequest<T> {
-    pub id: String,
-    pub r#type: String,
-    pub timestamp: String,
-    pub payload: T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
-}
-
-/// Response message from Rust worker to TypeScript daemon.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkerResponse<T> {
-    pub id: String,
-    pub r#type: String,
-    pub timestamp: String,
-    pub payload: T,
-    pub request_id: String,
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_type: Option<ErrorType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stack: Option<String>,
-}
-
-/// Standard error types for worker operations.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ErrorType {
-    Validation,
-    Timeout,
-    Internal,
-    NotFound,
-}
+pub use jtag_protocol::{
+    JTAGRequest,
+    JTAGResponse,
+    JTAGErrorType,
+    // Legacy aliases for backwards compatibility
+    WorkerRequest,
+    WorkerResponse,
+    ErrorType,
+};
 
 // ============================================================================
 // Logger-Specific Types (owned by logger worker)
@@ -94,37 +53,22 @@ pub struct WriteLogResult {
 }
 
 // ============================================================================
-// Helper Functions
+// Health Check Types (for detecting frozen worker)
 // ============================================================================
 
-impl<T> WorkerResponse<T> {
-    /// Create a success response.
-    pub fn success(request_id: String, r#type: String, payload: T) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            r#type,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            payload,
-            request_id,
-            success: true,
-            error: None,
-            error_type: None,
-            stack: None,
-        }
-    }
+/// Ping request payload (empty - just proves worker is alive)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PingPayload {}
 
-    /// Create an error response.
-    pub fn error(request_id: String, r#type: String, payload: T, error: String, error_type: ErrorType) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            r#type,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            payload,
-            request_id,
-            success: false,
-            error: Some(error),
-            error_type: Some(error_type),
-            stack: None,
-        }
-    }
+/// Ping result - includes uptime and connection stats
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PingResult {
+    pub uptime_ms: u64,
+    pub connections_total: u64,
+    pub requests_processed: u64,
+    pub active_categories: usize,
 }
+
+// Helper functions (success/error) are now in the shared jtag_protocol module

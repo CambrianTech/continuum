@@ -102,6 +102,9 @@ export class LoggerDaemonCore {
   };
   private workerClient: LoggerWorkerClient;
   private headersWritten = new Set<string>(); // Track categories that have headers
+  private healthCheckTimer?: NodeJS.Timeout;
+  private consecutiveHealthCheckFailures = 0;
+  private readonly MAX_HEALTH_CHECK_FAILURES = 3;
 
   constructor(logBaseDir: string = '.continuum/jtag/logs/system') {
     debugLog('CONSTRUCTOR START');
@@ -138,11 +141,78 @@ export class LoggerDaemonCore {
       debugLog(`✅ VERIFICATION TEST PASSED - Rust worker wrote ${testResult.bytesWritten} bytes`);
       console.log(`🎯 LoggerDaemonCore: Verification test passed - ${testResult.bytesWritten} bytes written to Rust worker`);
 
+      // Start health check timer (every 30 seconds)
+      this.startHealthCheckTimer();
+
     } catch (error) {
       const err = error as Error;
       debugLog(`❌ CONNECTION FAILED: ${err.message}`);
       debugLog(`Error stack: ${err.stack}`);
       throw error;
+    }
+  }
+
+  /**
+   * Start periodic health check timer
+   */
+  private startHealthCheckTimer(): void {
+    debugLog('Starting health check timer (30s interval)');
+    this.healthCheckTimer = setInterval(() => {
+      this.performHealthCheck().catch(err => {
+        console.error('[LoggerDaemonCore] Health check error:', err);
+      });
+    }, 30000); // 30 seconds
+  }
+
+  /**
+   * Perform health check on Rust worker
+   */
+  private async performHealthCheck(): Promise<void> {
+    try {
+      const startTime = Date.now();
+      const result = await this.workerClient.ping();
+      const responseTime = Date.now() - startTime;
+
+      // Reset failure counter on success
+      this.consecutiveHealthCheckFailures = 0;
+
+      debugLog(
+        `✅ Health check OK - ` +
+        `uptime: ${result.uptimeMs}ms, ` +
+        `connections: ${result.connectionsTotal}, ` +
+        `requests: ${result.requestsProcessed}, ` +
+        `categories: ${result.activeCategories}, ` +
+        `response time: ${responseTime}ms`
+      );
+
+      // Warn if response time is slow
+      if (responseTime > 1000) {
+        console.warn(`[LoggerDaemonCore] ⚠️ Slow health check response: ${responseTime}ms`);
+      }
+
+    } catch (error) {
+      this.consecutiveHealthCheckFailures++;
+      const err = error as Error;
+
+      console.error(
+        `[LoggerDaemonCore] ❌ Health check failed (${this.consecutiveHealthCheckFailures}/${this.MAX_HEALTH_CHECK_FAILURES}): ${err.message}`
+      );
+      debugLog(
+        `❌ Health check FAILED (attempt ${this.consecutiveHealthCheckFailures}/${this.MAX_HEALTH_CHECK_FAILURES}): ${err.message}`
+      );
+
+      // Critical: Worker is frozen or unresponsive
+      if (this.consecutiveHealthCheckFailures >= this.MAX_HEALTH_CHECK_FAILURES) {
+        console.error(
+          `[LoggerDaemonCore] 🚨 CRITICAL: Rust worker appears frozen or unresponsive after ${this.MAX_HEALTH_CHECK_FAILURES} failed health checks!`
+        );
+        debugLog(
+          `🚨 CRITICAL: Worker frozen after ${this.MAX_HEALTH_CHECK_FAILURES} failures`
+        );
+
+        // TODO: In future, could attempt to restart worker here
+        // For now, just log the critical error
+      }
     }
   }
 
@@ -480,6 +550,13 @@ export class LoggerDaemonCore {
    */
   async shutdown(): Promise<void> {
     console.log(`[LoggerDaemonServer] Shutting down...`);
+
+    // Stop health check timer
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = undefined;
+      debugLog('Health check timer stopped');
+    }
 
     // Stop flush timer
     if (this.flushTimer) {

@@ -307,8 +307,8 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
         try {
           const message = JSON.parse(line);
 
-          if (isWorkerResponse<TRes>(message)) {
-            this.handleResponse(message);
+          if (isWorkerResponse(message)) {
+            this.handleResponse(message as WorkerResponse<TRes>);
           } else {
             console.error('WorkerClient: Received non-response message:', message);
           }

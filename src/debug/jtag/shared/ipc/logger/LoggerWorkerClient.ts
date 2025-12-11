@@ -32,6 +32,8 @@ import {
   WriteLogResult,
   FlushLogsPayload,
   FlushLogsResult,
+  PingPayload,
+  PingResult,
   LogLevel
 } from './LoggerMessageTypes.js';
 
@@ -43,8 +45,8 @@ import {
  * Type-safe client for Logger Rust worker.
  */
 export class LoggerWorkerClient extends WorkerClient<
-  WriteLogPayload | FlushLogsPayload,
-  WriteLogResult | FlushLogsResult
+  WriteLogPayload | FlushLogsPayload | PingPayload,
+  WriteLogResult | FlushLogsResult | PingResult
 > {
   constructor(config: WorkerClientConfig | string) {
     // Allow simple socket path string or full config
@@ -174,6 +176,24 @@ export class LoggerWorkerClient extends WorkerClient<
    */
   async flushAll(): Promise<FlushLogsResult> {
     return this.flushLogs();
+  }
+
+  // ============================================================================
+  // Health Check Operations
+  // ============================================================================
+
+  /**
+   * Ping the worker to check if it's alive and responsive.
+   *
+   * This sends a lightweight health check request to the worker and returns
+   * statistics about uptime, connections, requests processed, and active categories.
+   *
+   * @returns Promise resolving to ping result with worker health stats
+   * @throws {WorkerError} if worker is frozen or unresponsive
+   */
+  async ping(): Promise<PingResult> {
+    const response = await this.send('ping', {});
+    return response.payload as PingResult;
   }
 
   // ============================================================================

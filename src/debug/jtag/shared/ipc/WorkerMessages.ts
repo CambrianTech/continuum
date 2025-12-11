@@ -1,74 +1,68 @@
 /**
- * Worker IPC Protocol - Generic Message Transport
+ * Worker IPC Protocol - Legacy Re-exports
  *
- * This is the SOURCE OF TRUTH for IPC message format between TypeScript daemons
- * and Rust workers. Keep in sync with workers/shared/src/messages.rs
+ * @deprecated This file is maintained for backwards compatibility only.
+ * New code should import from JTAGProtocol.ts instead.
  *
- * CRITICAL: Any changes here must be reflected in Rust types using serde
+ * The universal JTAGProtocol is now the SOURCE OF TRUTH for all IPC:
+ * - Commands (Commands.execute)
+ * - Events (Events.emit/subscribe)
+ * - Worker IPC (Rust ↔ TypeScript)
+ * - Daemon communication
  *
- * DESIGN PRINCIPLE: This is a GENERIC transport layer (like JTAGPayload).
- * It does NOT know about specific worker message types (logging, cognition, LoRA).
- * Workers own their own message schemas - this layer just transports them.
+ * MIGRATION PATH:
+ * - WorkerRequest → JTAGRequest
+ * - WorkerResponse → JTAGResponse
+ * - ErrorType → JTAGErrorType
  */
 
+import {
+  JTAGRequest,
+  JTAGResponse,
+  JTAGErrorType,
+  isJTAGRequest,
+  isJTAGResponse,
+} from './JTAGProtocol.js';
+
 // ============================================================================
-// Generic Message Envelope
+// Legacy Aliases (for backwards compatibility)
 // ============================================================================
 
 /**
- * Base message structure for all worker communication.
- * Generic over payload type T for type safety.
+ * @deprecated Use JTAGRequest instead
  */
 export interface WorkerMessage<T = unknown> {
-  id: string;              // UUID for correlation and deduplication
-  type: string;            // Message type (opaque to transport layer)
-  timestamp: string;       // ISO 8601 timestamp
-  payload: T;              // Generic payload (worker-specific data)
+  id: string;
+  type: string;
+  timestamp: string;
+  payload: T;
 }
 
 /**
- * Request message from TypeScript daemon to Rust worker.
- * Optionally includes userId for context/auth.
+ * @deprecated Use JTAGRequest instead
  */
-export interface WorkerRequest<T = unknown> extends WorkerMessage<T> {
-  userId?: string;         // Optional user context
-}
+export type WorkerRequest<T = unknown> = JTAGRequest<T>;
 
 /**
- * Response message from Rust worker to TypeScript daemon.
- * Includes success/error state and correlation ID.
+ * @deprecated Use JTAGResponse instead
  */
-export interface WorkerResponse<T = unknown> extends WorkerMessage<T> {
-  requestId: string;       // Original request ID (correlation)
-  success: boolean;        // Whether operation succeeded
-  error?: string;          // Error message if failed
-  errorType?: ErrorType;   // Categorized error type
-  stack?: string;          // Optional stack trace for debugging
-}
+export type WorkerResponse<T = unknown> = JTAGResponse<T>;
 
 /**
- * Standard error types for worker operations.
+ * @deprecated Use JTAGErrorType instead
  */
-export type ErrorType = 'validation' | 'timeout' | 'internal' | 'not_found';
+export type ErrorType = JTAGErrorType;
 
 // ============================================================================
-// Type Guards
+// Type Guards (legacy)
 // ============================================================================
 
 /**
- * Type guard to check if message is a request.
+ * @deprecated Use isJTAGRequest instead
  */
-export function isWorkerRequest<T = unknown>(
-  msg: WorkerMessage<T>
-): msg is WorkerRequest<T> {
-  return 'userId' in msg || !('requestId' in msg);
-}
+export const isWorkerRequest = isJTAGRequest;
 
 /**
- * Type guard to check if message is a response.
+ * @deprecated Use isJTAGResponse instead
  */
-export function isWorkerResponse<T = unknown>(
-  msg: WorkerMessage<T>
-): msg is WorkerResponse<T> {
-  return 'requestId' in msg && 'success' in msg;
-}
+export const isWorkerResponse = isJTAGResponse;

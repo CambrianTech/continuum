@@ -57,3 +57,20 @@ export interface FlushLogsResult {
   categoriesFlushed: string[];
   totalBytesWritten: number;
 }
+
+/**
+ * Payload for ping requests (health check).
+ * Empty payload - just proves worker is alive.
+ */
+export interface PingPayload {}
+
+/**
+ * Payload for ping responses (health check).
+ * Includes uptime and connection statistics.
+ */
+export interface PingResult {
+  uptimeMs: number;
+  connectionsTotal: number;
+  requestsProcessed: number;
+  activeCategories: number;
+}

@@ -39,6 +39,18 @@ type FileCache = Arc<Mutex<HashMap<String, File>>>;
 // Track which categories have headers written (shared across connections)
 type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 
+// ============================================================================
+// Global Stats for Health Monitoring
+// ============================================================================
+
+struct WorkerStats {
+    start_time: std::time::Instant,
+    connections_total: u64,
+    requests_processed: u64,
+}
+
+type Stats = Arc<Mutex<WorkerStats>>;
+
 fn main() -> std::io::Result<()> {
     // Log startup
     debug_log("========================================");
@@ -76,6 +88,13 @@ fn main() -> std::io::Result<()> {
     let file_cache: FileCache = Arc::new(Mutex::new(HashMap::new()));
     let headers_written: HeaderTracker = Arc::new(Mutex::new(HashSet::new()));
 
+    // Create shared stats for health monitoring
+    let stats: Stats = Arc::new(Mutex::new(WorkerStats {
+        start_time: std::time::Instant::now(),
+        connections_total: 0,
+        requests_processed: 0,
+    }));
+
     debug_log("Binding to socket...");
     let listener = UnixListener::bind(socket_path)?;
     debug_log("Socket bound successfully");
@@ -94,17 +113,24 @@ fn main() -> std::io::Result<()> {
                 println!("\n🔗 New connection from TypeScript (spawning thread)");
                 debug_log(&format!("Connection #{} accepted, spawning thread", conn_count));
 
+                // Increment connection counter
+                {
+                    let mut s = stats.lock().unwrap();
+                    s.connections_total += 1;
+                }
+
                 // Clone for thread
                 let log_dir_clone = log_dir.clone();
                 let file_cache_clone = Arc::clone(&file_cache);
                 let headers_clone = Arc::clone(&headers_written);
+                let stats_clone = Arc::clone(&stats);
                 let conn_id = conn_count;
 
                 // Spawn thread to handle connection concurrently
                 thread::spawn(move || {
                     debug_log(&format!("[Thread-{}] handle_client starting", conn_id));
 
-                    if let Err(e) = handle_client(stream, &log_dir_clone, file_cache_clone, headers_clone) {
+                    if let Err(e) = handle_client(stream, &log_dir_clone, file_cache_clone, headers_clone, stats_clone) {
                         eprintln!("❌ Error handling client #{}: {}", conn_id, e);
                         debug_log(&format!("[Thread-{}] ERROR: {}", conn_id, e));
                     } else {
@@ -127,7 +153,7 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn handle_client(stream: UnixStream, log_dir: &str, file_cache: FileCache, headers_written: HeaderTracker) -> std::io::Result<()> {
+fn handle_client(stream: UnixStream, log_dir: &str, file_cache: FileCache, headers_written: HeaderTracker, stats: Stats) -> std::io::Result<()> {
     debug_log("handle_client: START");
     debug_log("Creating BufReader and cloning stream for writer");
     let mut reader = BufReader::new(&stream);
@@ -159,32 +185,109 @@ fn handle_client(stream: UnixStream, log_dir: &str, file_cache: FileCache, heade
         debug_log(&format!("Line content (first 50 chars): {:?}", &line.chars().take(50).collect::<String>()));
         println!("📨 Received: {} bytes", line.len());
 
-        // Parse request
-        let request: Result<WorkerRequest<WriteLogPayload>, _> =
-            serde_json::from_str(line);
+        // Parse base message to get type field
+        let base_msg: Result<serde_json::Value, _> = serde_json::from_str(line);
 
-        match request {
-            Ok(req) => {
-                println!("✅ Parsed request: type={}, id={}", req.r#type, req.id);
+        match base_msg {
+            Ok(msg) => {
+                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
-                // Process the log message
-                let bytes_written = process_log_message(&req.payload, log_dir, &file_cache, &headers_written)?;
+                println!("✅ Parsed request: type={}, id={}", msg_type, msg_id);
 
-                // Build response
-                let response = WorkerResponse::success(
-                    req.id.clone(),
-                    req.r#type.clone(),
-                    WriteLogResult { bytes_written }
-                );
+                match msg_type {
+                    "write-log" => {
+                        // Parse as write-log request
+                        let request: WorkerRequest<WriteLogPayload> = serde_json::from_str(line)
+                            .expect("Failed to parse write-log payload");
 
-                // Send response back to TypeScript
-                let response_json = serde_json::to_string(&response)
-                    .expect("Failed to serialize response");
+                        // Process the log message
+                        let bytes_written = process_log_message(&request.payload, log_dir, &file_cache, &headers_written)?;
 
-                writeln!(writer, "{}", response_json)?;
-                writer.flush()?;
+                        // Increment requests processed counter
+                        {
+                            let mut s = stats.lock().unwrap();
+                            s.requests_processed += 1;
+                        }
 
-                println!("✅ Sent response: {} bytes written", bytes_written);
+                        // Build response
+                        let response = WorkerResponse::success(
+                            request.id.clone(),
+                            request.r#type.clone(),
+                            WriteLogResult { bytes_written }
+                        );
+
+                        // Send response back to TypeScript
+                        let response_json = serde_json::to_string(&response)
+                            .expect("Failed to serialize response");
+
+                        writeln!(writer, "{}", response_json)?;
+                        writer.flush()?;
+
+                        println!("✅ Sent response: {} bytes written", bytes_written);
+                    },
+
+                    "ping" => {
+                        // Parse as ping request
+                        let request: WorkerRequest<PingPayload> = serde_json::from_str(line)
+                            .expect("Failed to parse ping payload");
+
+                        // Gather stats
+                        let (uptime_ms, connections_total, requests_processed) = {
+                            let s = stats.lock().unwrap();
+                            let uptime = s.start_time.elapsed().as_millis() as u64;
+                            (uptime, s.connections_total, s.requests_processed)
+                        };
+
+                        // Get active categories count
+                        let active_categories = {
+                            let cache = file_cache.lock().unwrap();
+                            cache.len()
+                        };
+
+                        // Build ping response
+                        let ping_result = PingResult {
+                            uptime_ms,
+                            connections_total,
+                            requests_processed,
+                            active_categories,
+                        };
+
+                        let response = WorkerResponse::success(
+                            request.id.clone(),
+                            request.r#type.clone(),
+                            ping_result
+                        );
+
+                        // Send response back to TypeScript
+                        let response_json = serde_json::to_string(&response)
+                            .expect("Failed to serialize response");
+
+                        writeln!(writer, "{}", response_json)?;
+                        writer.flush()?;
+
+                        println!("✅ Sent ping response: uptime={}ms, connections={}, requests={}, categories={}",
+                                 uptime_ms, connections_total, requests_processed, active_categories);
+                    },
+
+                    _ => {
+                        eprintln!("❌ Unknown message type: {}", msg_type);
+                        // Send error response
+                        let error_response = WorkerResponse::<WriteLogResult>::error(
+                            msg_id.to_string(),
+                            msg_type.to_string(),
+                            WriteLogResult { bytes_written: 0 },
+                            format!("Unknown message type: {}", msg_type),
+                            ErrorType::Validation
+                        );
+
+                        let error_json = serde_json::to_string(&error_response)
+                            .expect("Failed to serialize error response");
+
+                        writeln!(writer, "{}", error_json)?;
+                        writer.flush()?;
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("❌ Failed to parse request: {}", e);
