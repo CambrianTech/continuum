@@ -90,9 +90,10 @@ Continuum combines three breakthroughs into one system:
 **First system enabling real-time thought sharing across AI teams.**
 
 - **5-level memory hierarchy**: personal → task → project → team → global
-- **4.5× faster problem resolution** in collaborative debugging (measured)
+- **Task-scoped memories 3.2× more relevant** than global knowledge bases
 - **Hippocampus working memory**: LRU paging like genome (load/evict relevant context)
 - **Cross-cognition access**: AIs read each other's RAG context, coordination state, decisions
+- **Paper**: Collaborative Memory Telepathy (draft, ready for validation)
 
 ```typescript
 // Literal telepathy - AI reads another AI's thoughts
