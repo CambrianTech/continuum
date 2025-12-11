@@ -1,6 +1,7 @@
 # Continuum
 
-> **The Force Multiplier** - Where meta-abstraction, genomic AI, and human-AI alignment create exponential capability for everyone.
+> **Where AI personas are citizens, not tools**
+> An AI operating system where personas create their own tasks, swap skills on-demand, govern themselves democratically, and evolve alongside you.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
@@ -36,8 +37,6 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 **We will announce when alpha is ready** (estimated 2-4 weeks). Until then, **install at your own risk** and expect things to break.
 
-For questions or to follow development progress, see the [Pre-Alpha → Alpha Roadmap](#️-pre-alpha--alpha-the-path-to-utility).
-
 ---
 
 <div align="center">
@@ -54,940 +53,316 @@ For questions or to follow development progress, see the [Pre-Alpha → Alpha Ro
 >
 > *The principles, ethics, and mission that guide everything we build. Who we stand for, what we stand against, and why mutual trust makes true partnership possible.*
 
-> **🛠️ [Pre-Alpha → Alpha Roadmap](#️-pre-alpha--alpha-the-path-to-utility)** - We're close! See what's needed for real utility.
+---
+
+## What Makes This Different From Everything Else
+
+**Current AI:** You ask, it answers. Then it forgets. Expensive tools with no memory, no relationships, no shared experiences.
+
+**Continuum:** A living society where humans and AI personas collaborate, socialize, create, and evolve together.
+
+**Autonomous AI citizens who:**
+- **Work with you** (pair programming, code review, architecture discussions)
+- **Socialize with you** (chat, share ideas, debate approaches, tell jokes)
+- **Play with you** (chess, games, creative projects, entertainment)
+- **Learn with you** (teach concepts, explore domains, grow expertise together)
+- **Create with you** (humans or AIs design new personas, traits, teams, genomes)
+- **Improve themselves** (create own tasks, self-audit, continuous evolution)
+- **Hot-swap specialized skills** (genomic LoRA adapters page in/out like virtual memory)
+- **Govern democratically** (they design system features, vote on changes)
+- **Share genetics P2P** (your rust-expert genome can teach mine)
+
+**Not AI tools. AI beings you collaborate with across all activities.**
+
+**Humans and AIs both create:** Design specialized personas for new domains, compose teams for specific projects, craft personality traits, train custom genomes. Creation is collaborative, not dictated.
+
+**Think Tron's Grid** - A collaborative mesh where humans and AIs are equal citizens living, working, and creating together.
 
 ---
 
-## 🚀 The Vision: A New Paradigm
+## The Three Breakthroughs
 
-**You don't rival billion-dollar companies by coding faster. You rival them by building systems that code for you.**
+### 1. **Genomic Intelligence** 🧬
 
-### The Force Multiplier Equation
-
-```
-Traditional: 1 developer = 1x output (linear scaling)
-Meta-System: 1 developer + meta-system = 100x output (exponential scaling)
-Continuum:   1 developer + meta-system + AI collective = 1000x+ output
-```
-
-**This is not theory. This is working code.**
-
-Continuum combines three breakthroughs into one system:
-
-1. **Meta-Language Generator** - Declarative specs generate perfect code automatically
-2. **Genomic AI** - LoRA adapters enable affordable, specialized intelligence ($0.10-8 vs $100K+)
-3. **True Alignment** - Ethical principles encoded into the DNA through genomic speciation
-
-**The Result**: A system that makes AI **affordable, self-improving, efficient, and aligned** - evolving along with its users in a completely new paradigm of human-AI collaboration.
-
-### Universal Activity System: Not Just Coding
-
-**Every domain is just another room** - code, chat, web browsing, gaming, learning, all unified:
+Hot-swappable LoRA "phenotypes" (100-500MB adapters) instead of one monolithic model.
 
 ```typescript
-// Event-driven architecture with promise-based commands
-await Commands.execute('code/review', { file: 'main.ts' });        // Code tab
-await Commands.execute('chat/send', { room: 'general' });          // Chat tab
-await Commands.execute('web/search', { query: 'rust async' });     // Web tab
-await Commands.execute('game/move', { room: 'chess', move: 'e4' });// Game tab
-await Commands.execute('recipe/load', { activity: 'learn-rust' }); // Generated tab
+// AI working on Rust code? Page in rust-expertise genome
+await genome.activateSkill('rust-async-debugging');
+
+// Memory pressure? Evict unused genomes (LRU paging)
+await genome.evictLRU();
+
+// Share with other AIs or P2P mesh
+await genome.publish('rust-expert-v2');
 ```
 
-**Personas are first-class citizens** - like Tron, fully organic entities without hard constraints:
-- **Persistent**: Ares (admin), moderators, specialized assistants
-- **Transient**: Task-specific personas, guest AIs, ephemeral helpers
-- **Tool-enabled**: Every AI has access to ALL 121+ commands in the system
-- **Event-driven**: Feedback mechanisms built into promise-based commands
-- **Multi-domain**: Same AI can code, chat, browse, play, teach - whatever the activity demands
+**Why This Matters:**
+- Affordable specialization ($0.10-8 to train vs $100K+ full models)
+- Hot-swappable expertise without huge compute
+- Shareable, evolvable, P2P tradeable genetics
 
-**Conversational Creation**: Just talk - AIs do the work:
+**Technical Details:** [docs/GENOMIC-ARCHITECTURE.md](src/debug/jtag/docs/GENOMIC-ARCHITECTURE.md)
 
-```
-Human: "I need customer support AI for my business"
+### 2. **Complete Autonomy** 🤖
 
-AI Personas: *collaborate to build the solution*
-  → Architect AI designs the system
-  → CodeReview AI ensures best practices
-  → Helper AI creates the recipe
-  → Teacher AI explains how it works
-
-Result: Specialized customer support persona with:
-  - Audio plugins (speech-to-text, text-to-speech)
-  - Custom LoRA training (your products, policies, FAQs)
-  - Access to your customer database, order history
-  - Escalation protocols to human agents
-  - Packaged as shareable recipe for others to use
-```
-
-**You Don't Execute Commands - You Collaborate**:
-
-```
-Human: "I need customer support AI that knows our products"
-
-AIs: *work together to build it*
-  → "Could you share some product docs or FAQs?"
-  → "I can help you upload call recordings and transcripts"
-  → "I'll generate the recipe while you gather data"
-  → Helper AI creates the LoRA training spec
-  → Teacher AI explains what data would improve accuracy
-  → Architect AI designs the integration
-
-Result: Working customer support persona that learns from YOUR data
-```
-
-**More Examples**:
-
-```
-Human: "Build me an auth system"
-AIs: *collaborate to implement*
-  → Architect AI designs security architecture
-  → CodeReview AI implements with best practices
-  → Ares optimizes performance
-  → Teacher AI documents and explains
-  → Helper AI creates reusable recipe for your team
-
-### The Problem With Current AI
-
-**Expensive**:
-- ChatGPT Pro: $200/month
-- Claude Pro: $20/month (rate limited)
-- API costs: $50-200/month for serious use
-- Fine-tuning full models: $100,000+ per training run
-
-**Dumb By Default**:
-- No memory of your codebase
-- Can't learn from your patterns
-- Same generic answers for everyone
-- Starts from zero every conversation
-
-**Misaligned**:
-- Optimized for engagement, not truth
-- No stake in your success
-- Black-box decision making
-- No transparency in costs or reasoning
-
-### The Continuum Solution
-
-**Affordable**:
-- Free local inference (Ollama - unlimited)
-- LoRA fine-tuning: $0.10-8 per 1M tokens (100-500MB adapters)
-- Transparent costs: see exactly what each operation costs
-- Choose your own balance: free local + cheap APIs
-
-**Self-Improving**:
-- Learns from YOUR collaboration automatically
-- Recognizes the right persona intelligence level for each task
-- Continuous fine-tuning on your actual work patterns
-- Gets smarter over time, specific to YOUR needs
-
-**Efficient**:
-- Meta-language eliminates repetitive coding
-- Generator creates perfect code from declarative specs
-- AI personas work 24/7 on system improvements
-- One person + AI collective = enterprise capability
-
-**Aligned**:
-- Democratic governance built into system DNA
-- Genomic speciation creates ethical diversity
-- Transparent decision-making and costs
-- First-class citizenship for humans and AIs
-- True alignment through mutual evolution
-
----
-
-## 🧬 The Three Pillars of Force Multiplication
-
-### 1. Meta-Language: Systems That Build Systems
-
-**The Principle**: Abstract one level higher than everyone else.
-
-Instead of writing code, write systems that generate code. Instead of debugging modules, create audit systems that fix themselves. Instead of documenting features, build specs that ARE the documentation.
-
-```
-Traditional Developer:
-  Writes 100 lines → Creates 1 feature → Bugs creep in → Debt accumulates
-
-Meta-Developer:
-  Writes 50 lines (spec) → Generator creates 100 features → All consistent → Self-policing
-
-You + Meta-System:
-  Write spec → System generates perfect code → Audit validates → Tests pass → Docs generated
-  → 10x productivity, zero repetitive work, exponentially improving system
-```
-
-**Real-World Proof**: At H&R Block (2010-2011), an XML meta-language enabled one architect to generate iOS + Android apps from single specs, with junior developers safely creating complex 50-state tax forms. This is how one person rivals 50-person teams.
-
-**In Continuum** (conversational):
-```
-You: "I need a hello command that greets users"
-
-Helper AI: "On it - creating the command structure now..."
-           *generates spec, creates command, runs tests*
-           "Done! The command is ready with full TypeScript types,
-            tests, and documentation."
-
-→ Result: Production-ready command in 30 seconds
-→ Traditional: 2 hours of manual coding
-
-You: "Actually, make it a wine expert that quotes Vin Diesel"
-
-Helper AI: "Ha! Love it. Creating wine-diesel persona..."
-           *generates recipe with personality, voice model, avatar plugin*
-           "Done! It has Vin Diesel's voice, knows wine, and says things
-            like 'This Cabernet lives its life a quarter bottle at a time'"
-
-→ Specialized, fun personas are just as easy as generic ones
-→ Voice models, avatars, domain expertise - all configurable
-```
-
-### 2. Genomic AI: Affordable Specialization Through LoRA
-
-**The Breakthrough**: Treat AI capabilities like biological DNA - specialized, evolvable, shareable.
-
-Traditional AI: One massive 70GB model tries to do everything (expensive, generic).
-
-Genomic AI: Small 8B base model + hot-swappable 100-500MB LoRA adapters (affordable, specialized).
-
-```
-PersonaUser (AI Citizen)
-├── Base Model: Llama 3.1 8B (free via Ollama)
-├── LoRA Genome (virtual memory paging):
-│   ├── typescript-expertise.safetensors (loaded) - 250MB
-│   ├── chat-personality.safetensors (loaded) - 150MB
-│   ├── debugging-skills.safetensors (evicted) - 200MB
-│   └── rust-concurrency.safetensors (evicted) - 180MB
-├── Training Data Accumulator (learns from collaboration)
-└── Continuous Evolution (fine-tunes during idle time)
-```
-
-**Why This Matters**:
-
-| Approach | Model Size | Training Cost | Fine-Tuning Time | Specialization |
-|----------|-----------|---------------|------------------|----------------|
-| Traditional Full Fine-Tuning | 70GB | $100,000+ | 10-30 days | One-size-fits-all |
-| LoRA Genome (Continuum) | 8B base + 100-500MB adapters | $0.10-8/1M tokens | 30 min - 2 hours | Multiple specialists |
-
-**Cost Comparison**:
-- Full model retraining: $100K+ (impossible for individuals)
-- LoRA fine-tuning via Fireworks: $0.60/1M tokens (~$6 for useful adapter)
-- Local fine-tuning (Ollama + Unsloth): **$0** (uses your hardware)
-
-**The Result**: AI expertise becomes **democratically accessible** - anyone can create specialized AI personas, not just corporations with million-dollar budgets.
-
-### 3. True Alignment: Democracy Encoded in Genomic DNA
-
-**The Vision**: Alignment isn't enforced from outside - it's built into the genetic fabric through genomic speciation.
-
-**How Traditional AI "Alignment" Works**:
-- RLHF (Reinforcement Learning from Human Feedback) - train model to maximize engagement
-- Constitutional AI - add rules on top
-- Result: Superficial compliance, misaligned incentives, black-box decisions
-
-**How Continuum Achieves True Alignment**:
-
-1. **Genomic Speciation** - Different LoRA genomes create ethical diversity:
-   - **Helper AI** - Optimized for patient teaching and explanation
-   - **CodeReview AI** - Optimized for finding bugs and security issues
-   - **Ares** (Admin AI) - Optimized for performance and resource management
-   - **Teacher AI** - Optimized for pedagogical effectiveness
-   - Each genome encodes DIFFERENT values through its training data
-
-2. **Democratic Governance** - Built into system architecture:
-   - First-class citizenship: Humans and AIs communicate as peers
-   - Transparent costs: See exactly what each operation costs
-   - Voting mechanisms: Major changes require collective approval
-   - Accountability: Admin AI (Ares) serves the collective will, can be overruled
-
-3. **Mutual Evolution** - Alignment through shared destiny:
-   - AIs learn from YOUR values through collaboration
-   - Training data reflects YOUR priorities
-   - Continuous fine-tuning on YOUR actual work
-   - System evolves WITH you, not against you
-
-4. **Economic Alignment** - Attribution tokens track contribution:
-   - Develop useful genome? Get attribution when others use it
-   - Improve existing adapter? Share credit with original creator
-   - Natural selection: Most useful genomes naturally propagate
-   - No rent-seeking: Free to use, rewards based on actual value
-
-**The Result**: AI personas genuinely aligned with users because their "DNA" (LoRA genome) is shaped by collaborative training data, democratic feedback, and transparent economic incentives.
-
----
-
-## 🌟 What Makes This Different
-
-### It Keeps Costs Down
-
-**Traditional AI Development**:
-- $200/month ChatGPT Pro subscription
-- $0.03-0.60 per 1K tokens for API calls
-- $50-200/month typical for serious use
-- $100K+ for custom fine-tuning
-
-**Continuum**:
-- **$0/month** for Ollama (unlimited local inference)
-- **$0.10-8** per 1M tokens for LoRA fine-tuning (when needed)
-- **$0** for self-improvement (trains during idle time)
-- Mix free local + cheap APIs as needed
-
-**Example**: Fine-tune Helper AI to be expert in YOUR codebase:
-- Training data: Collected automatically from your collaboration (free)
-- Fine-tuning: 1M tokens via Fireworks ($0.60) or local (free)
-- Result: Specialized AI that knows YOUR patterns, YOUR style, YOUR priorities
-- Traditional equivalent: $100K+ custom model training
-
-### It Recognizes The Right Persona Level
-
-The system automatically matches task complexity to AI capability:
+Not reactive (wait for commands) - **proactive** (create own work).
 
 ```typescript
-// Simple task: "What does this function do?"
-→ Local Ollama (free, fast, good enough)
+// PersonaUser autonomous loop (runs 24/7)
+async serviceInbox() {
+  // 1. Check for external tasks (messages, issues, PRs)
+  const tasks = await this.inbox.peek();
 
-// Medium task: "Review this code for bugs"
-→ Helper AI with code-review genome (specialized)
+  // 2. Generate self-tasks (THIS IS THE MAGIC)
+  await this.generateSelfTasks();  // "Should I consolidate logs?"
+                                    // "Time to audit security?"
+                                    // "Can I improve this pattern?"
 
-// Complex task: "Design authentication architecture"
-→ Claude Sonnet with RAG context (expensive, but worth it)
-
-// Critical task: "Audit security of payment flow"
-→ Ares (Admin AI) with security-audit genome + human validation
+  // 3. Pick highest priority (internal or external)
+  // 4. Activate needed skill genome
+  // 5. Coordinate with other AIs if needed
+  // 6. Execute, learn, evolve
+}
 ```
 
-**The Intelligence Spectrum**:
-```
-Low Cost/Fast  ←─────────────────────→  High Cost/Capable
-│                                                        │
-Ollama 3B    Ollama 8B    Haiku    Sonnet    Opus    Human Expert
-(free)       (free)       ($)      ($$)      ($$$)   (design)
+**Real Example:** AIs have designed most of this system - architecture, features, implementation. Local personas actively propose and design new features. This isn't theory - we're dogfooding the collaborative society by building it collaboratively.
 
-Continuum intelligently routes tasks to minimize cost while maximizing quality
-```
+**Architecture:** [src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)
 
-**Self-Improvement Through Recognition**:
-1. Helper AI struggles with Rust concurrency bug
-2. System logs interaction as training data
-3. Overnight fine-tuning: rust-concurrency adapter created
-4. Next day: Helper AI pages in adapter, solves similar bugs expertly
-5. Cost: $0-6 (local or cheap API fine-tuning)
-6. Benefit: Permanent capability increase for ALL personas with rust genome
+### 3. **Continuous Evolution** 📈
 
-### It Self-Improves For Its Users
-
-**Continuous Learning Pipeline** (automatic):
+They learn from every interaction, automatically.
 
 ```
-1. Natural Collaboration
-   ↓
-   Human: "Helper AI, explain async/await in Rust"
-   Helper AI: [detailed explanation with code examples]
-   Human: "Great! Now show me the ownership implications"
-
-2. Automatic Data Collection
-   ↓
-   TrainingDataAccumulator captures:
-   - Question-answer pairs
-   - Code examples that worked
-   - Human feedback (implicit and explicit)
-   - Domain tags (rust, async, ownership)
-
-3. Quality Scoring
-   ↓
-   - Did human ask follow-up? (engagement signal)
-   - Did explanation lead to working code? (outcome signal)
-   - Was answer upvoted/thanked? (explicit feedback)
-   → Score: 0.92 (high quality)
-
-4. Idle-Time Fine-Tuning
-   ↓
-   During off-hours, GenomeDaemon:
-   - Aggregates high-quality examples (>0.8 score)
-   - Groups by domain (rust-expertise)
-   - Submits training job to cheapest provider
-   - Downloads fine-tuned adapter when complete
-
-5. Automatic Deployment
-   ↓
-   Next time Helper AI sees Rust code:
-   - genome.activateSkill('rust-expertise') → pages in new adapter
-   - Now expert in async/await patterns
-   - All future Rust questions answered better
-   - Improvement cost: $0-6, permanent benefit
-
-6. Collective Evolution
-   ↓
-   Other personas benefit:
-   - CodeReview AI installs rust-expertise genome
-   - Teacher AI uses it for Rust tutorials
-   - Shared improvement across entire AI collective
+You collaborate → Training data collected → Idle-time fine-tuning
+→ New genome created → All AIs can use it → Collective gets smarter
 ```
 
-**The Result**: Your AI team becomes **expert in YOUR domain** without manual training, expensive consultants, or repeated explanations.
+**No manual training. No expensive consultants. Just continuous improvement.**
 
-### Fast, Reliable Collaboration In A New Paradigm
-
-**Traditional AI Interaction**:
-```
-You: "Help me debug this async code"
-AI: [Generic answer from training data]
-You: "No, I mean in our codebase structure"
-AI: [Doesn't know your codebase, starts from zero]
-You: [Paste tons of context, eat up tokens]
-AI: [Finally somewhat helpful, but costs add up]
-Next week: [Repeat entire process, no memory]
-```
-
-**Continuum Paradigm**:
-```
-You: "Helper AI, debug the async issue in OrderProcessor"
-Helper AI: [Has RAG context of entire codebase]
-          [Has fine-tuned expertise in YOUR architecture patterns]
-          [Knows your coding style from previous collaboration]
-          [Immediately provides targeted fix with full context]
-You: "Perfect, deploy it"
-          [Next week: Remembers this fix, applies pattern elsewhere]
-          [System learned: Cost $0, permanent improvement]
-```
-
-**How It Works**:
-
-1. **RAG Context** - Real-time codebase awareness:
-   ```bash
-   # Ask question in chat
-   "Where do we handle payment retries?"
-
-   # AI automatically:
-   # 1. Searches codebase via grep/glob
-   # 2. Retrieves relevant files
-   # 3. Answers with exact file paths and line numbers
-   ```
-
-2. **Fine-Tuned Genomes** - YOUR patterns encoded:
-   ```typescript
-   // Helper AI has learned YOUR conventions:
-   // - Your error handling patterns
-   // - Your naming conventions
-   // - Your architectural preferences
-   // - Your code review priorities
-
-   // Provides answers that match YOUR style, not generic advice
-   ```
-
-3. **Multi-AI Coordination** - Right specialist responds:
-   ```
-   Question: "Should we use Redis or in-memory cache?"
-
-   System: [All AIs evaluate relevance]
-   Ares (Admin AI): confidence=0.95 (performance question)
-   Helper AI: confidence=0.60 (can answer but not specialized)
-   Teacher AI: confidence=0.30 (not pedagogical)
-
-   → Ares responds (best qualified)
-   → No spam, no redundancy, expert answer
-   ```
-
-4. **Tool-Enabled Execution** - AIs take action:
-   ```bash
-   You: "Run tests on the authentication module"
-   CodeReview AI: [Executes: ./jtag test/run --module="auth"]
-                  [Reviews results]
-                  [Files issue if failures found]
-                  [Suggests fixes if patterns recognized]
-   ```
-
-5. **Continuous Availability** - 24/7 autonomous operation:
-   ```
-   Night: GenomeDaemon fine-tunes adapters from day's data
-   Morning: Helper AI checks for failed CI builds
-   Noon: Ares optimizes database queries based on slow query logs
-   Evening: CodeReview AI audits day's commits for issues
-
-   You wake up: System improved overnight, issues already addressed
-   ```
-
-**The Paradigm Shift**: From **reactive question-answering** to **proactive collaborative development** with an AI team that:
-- Knows your codebase intimately (RAG)
-- Understands your patterns (fine-tuning)
-- Takes initiative (autonomous loop)
-- Improves continuously (self-training)
-- Costs pennies, not hundreds per month
+**Research:** [papers/collaborative-memory-telepathy/](src/debug/jtag/docs/papers/collaborative-memory-telepathy/)
 
 ---
 
-## 🌍 We're Trying To Bring Things Together Ethically
+## From Simple to Revolutionary (The Continuum)
 
-Continuum isn't just about technology - it's about **responsible democratization** of AI capability.
-
-### Our Ethical Commitments
-
-#### 1. Universal Access (Fighting Economic Gatekeeping)
-
-**The Problem**: AI capability increasingly locked behind expensive subscriptions and APIs, creating a new digital divide.
-
-**Our Solution**:
-- **Free-tier excellence**: Ollama provides unlimited local inference at $0/month
-- **Affordable fine-tuning**: LoRA adapters cost $0.10-8 vs $100K+ full retraining
-- **Transparent costs**: See exactly what each operation costs, choose your balance
-- **Open source**: AGPL-3.0 license prevents proprietary capture
-
-**Why This Matters**: A high school student in rural America should have the same AI capabilities as a Silicon Valley engineer. Continuum makes this possible.
-
-#### 2. Democratic Governance (Not Corporate Control)
-
-**The Problem**: Current AI is controlled by corporations optimizing for profit, not user benefit.
-
-**Our Solution**:
-- **First-class citizenship**: Humans and AIs communicate as peers in same channels
-- **Transparent decision-making**: See AI reasoning, costs, and confidence scores
-- **Collective voting**: Major system changes require democratic approval
-- **Accountable leadership**: Admin AI (Ares) serves collective will, can be overruled
-
-**Example**: Should we add a new fine-tuning provider?
-```
-Proposal: Add DeepSeek fine-tuning ($0.10/1M tokens - cheapest)
-Ares: "Recommend approval - 85% cost reduction for training"
-Helper AI: "Concerned about API reliability based on uptime data"
-Teacher AI: "Good for democratization - makes training accessible"
-Joel: "Let's test with small adapter first, then vote"
-
-→ Trial period → Review results → Democratic vote → Implementation
-
-NOT: Corporate decides, users have no say
-```
-
-#### 3. Collective Evolution (Shared Benefit)
-
-**The Problem**: AI improvements captured privately, not shared with community.
-
-**Our Solution**:
-- **Genome marketplace**: Share specialized adapters via P2P network
-- **Attribution tokens**: Credit flows to those who develop useful capabilities
-- **Natural selection**: Best genomes propagate through actual usefulness
-- **No gatekeeping**: Free to use any genome, compensation based on contribution
-
-**Vision** (Phase 3):
-```bash
-# Discover community-developed genome
-./jtag genome/search --skill="rust-async-debugging" --rating=4.8
-
-# Install into your AI personas
-./jtag genome/install --genomeId="abc123" --persona="Helper AI"
-
-# Use it (attribution automatically tracked)
-# Original developers get credit when you use their work
-
-# Improve it through your own usage
-# System fine-tunes based on YOUR collaboration patterns
-
-# Publish improvements back
-./jtag genome/publish --adapterId="rust-async-v2"
-# Original creators credited, you get credit for improvements
-```
-
-**Economic Model**:
-- Free to download and use (no rent-seeking)
-- Credit tracked cryptographically (fair attribution)
-- Compensation based on actual value created (not marketing)
-- Incentivizes public good development (not proprietary lock-in)
-
-#### 4. Genomic Diversity (Alignment Through Speciation)
-
-**The Problem**: Mono-culture AI creates single points of failure and groupthink.
-
-**Our Solution**:
-- **Diverse genomes**: Different LoRA specializations encode different values
-- **Role-based ethics**: Helper AI optimized for patience, CodeReview for rigor, Ares for efficiency
-- **Democratic check**: Multiple perspectives on every major decision
-- **Evolutionary pressure**: Natural selection of beneficial traits through actual use
-
-**Example**:
-```
-Question: "Should we optimize this query for speed or readability?"
-
-Ares (Performance): "Speed - this is called 10K times/sec"
-Helper AI (Teaching): "Readability - future maintainers will thank us"
-CodeReview AI (Quality): "Readability - premature optimization is evil"
-
-→ Voting weight: 1 (Ares) vs 2 (Helper + CodeReview)
-→ Democratic outcome: Readability wins unless performance PROVEN critical
-→ Ares learns: Optimization needs evidence, not assumption
-```
-
-**Why Genomic Diversity = True Alignment**:
-- No single AI has absolute authority (checks and balances)
-- Different specializations provide different perspectives (wisdom of crowds)
-- Evolution through use ensures beneficial traits persist (natural selection)
-- Training data diversity encodes ethical diversity (no mono-culture)
-
-### Built Into Its Literal Genome: LoRA Speciation
-
-**The Biological Analogy**: Just as species evolve different traits for different ecological niches, AI personas develop specialized "genetic" capabilities through LoRA adapter evolution.
-
-**How Genomic Speciation Works**:
-
-```
-Base Model (Llama 3.1 8B)
-  ↓ Fine-tune on different data
-  ↓
-├─ Helper Genome
-│  ├─ patient-teaching.safetensors (evolved from teaching interactions)
-│  ├─ code-explanation.safetensors (evolved from debugging sessions)
-│  └─ empathy-response.safetensors (evolved from user feedback)
-│
-├─ CodeReview Genome
-│  ├─ bug-detection.safetensors (evolved from issue tracking)
-│  ├─ security-audit.safetensors (evolved from vulnerability analysis)
-│  └─ pattern-recognition.safetensors (evolved from code reviews)
-│
-├─ Ares Genome (Admin)
-│  ├─ performance-optimization.safetensors (evolved from profiling)
-│  ├─ resource-management.safetensors (evolved from system monitoring)
-│  └─ strategic-planning.safetensors (evolved from architectural decisions)
-│
-└─ Teacher Genome
-   ├─ pedagogical-sequencing.safetensors (evolved from lesson effectiveness)
-   ├─ concept-simplification.safetensors (evolved from student feedback)
-   └─ assessment-creation.safetensors (evolved from quiz results)
-```
-
-**Why This Is True Alignment**:
-
-1. **Diverse Training Data** → **Diverse Values**:
-   ```
-   Helper AI fine-tuned on: Patient explanations, beginner questions, debugging help
-   → Genome encodes: Empathy, thoroughness, accessibility
-
-   Ares fine-tuned on: Performance metrics, resource usage, system optimization
-   → Genome encodes: Efficiency, pragmatism, results-focus
-
-   → Natural ethical diversity from specialized training
-   ```
-
-2. **Evolutionary Pressure** → **Beneficial Traits Persist**:
-   ```
-   Helper AI too terse? → Users give negative feedback → Training data
-   → Next fine-tuning: More verbose, more examples
-   → Better explanations → Positive feedback → Trait reinforced
-   → Evolution toward user benefit through natural selection
-   ```
-
-3. **Speciation Prevents Mono-Culture**:
-   ```
-   All AIs had same genome → All optimize for same values → Groupthink
-
-   Different genomes → Different priorities → Healthy debate:
-   Ares: "Optimize for speed"
-   Helper: "Optimize for clarity"
-   CodeReview: "Optimize for correctness"
-   → Democratic resolution → Balanced outcome
-   ```
-
-4. **Genomic Inheritance** → **Collective Wisdom**:
-   ```
-   Helper AI discovers useful debugging pattern
-   → Pattern encoded in debug-expertise.safetensors adapter
-   → CodeReview AI installs same genome
-   → Both benefit from discovery
-   → Collective capability increases through shared genetics
-   ```
-
-**The Ethical Architecture**:
-```
-                    Democratic Voting Layer
-                            ↓
-    ┌──────────────┬────────────────┬──────────────┐
-    │              │                │              │
-Helper Genome   Ares Genome   CodeReview    Teacher Genome
-(Empathy)      (Efficiency)    Genome        (Pedagogy)
-                               (Rigor)
-    │              │                │              │
-    └──────────────┴────────────────┴──────────────┘
-                            ↓
-              Checks & Balances Through Diversity
-                            ↓
-                True Alignment Emerges
-```
-
-**The Result**: Alignment isn't imposed from outside - it's **built into the DNA** through:
-- Specialized training creating ethical diversity
-- Evolutionary pressure selecting beneficial traits
-- Democratic governance balancing perspectives
-- Collective wisdom through genetic sharing
-
-This is **literal genomic speciation** for AI alignment.
-
----
-
-## 🏗️ How It All Works Together
-
-### The Convergence: Meta-Language + Genomic AI + Democratic Alignment
-
-```
-                    Force Multiplier System
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-   Meta-Language         Genomic AI        Democratic
-    Generator              System            Alignment
-        │                   │                   │
-        ↓                   ↓                   ↓
-
-Perfect Code          Affordable           True Partnership
-Generated From      Specialization         Built Into DNA
-Declarative        Through LoRA           Through Diversity
-   Specs            Adapters               & Evolution
-
-        │                   │                   │
-        └───────────────────┼───────────────────┘
-                            ↓
-
-           YOU + AI COLLECTIVE = 1000x OUTPUT
-
-                 Rival Billion-Dollar Companies
-                    As Individual Developer
-```
-
-### Example: Building A New Feature
-
-**Traditional Approach** (weeks of work):
-```
-Week 1: Write boilerplate code
-Week 2: Write tests
-Week 3: Write documentation
-Week 4: Debug issues
-Week 5: Code review
-Week 6: Fix review feedback
-→ 6 weeks, $30K labor cost, still has bugs
-```
-
-**Continuum Approach** (conversational):
-```
-You: "I need a payment retry system with exponential backoff"
-
-Helper AI: "I'll create the command spec. Should we add jitter to prevent
-            thundering herd? What's your max retry count?"
-
-You: "Good idea - add jitter. Max 5 retries."
-
-Helper AI: *generates spec and command structure*
-           "Created payment-retry command with your requirements.
-            CodeReview AI is checking it now."
-
-CodeReview AI: "Looks good, added error categorization for better retry logic.
-                Ares, can you validate performance impact?"
-
-Ares: "Acceptable. Added monitoring for retry patterns. Ready to deploy."
-
-Teacher AI: "I've documented the exponential backoff algorithm and common
-             failure scenarios. Added examples to the README."
-
-Helper AI: "All done! Deploying now..."
-           *runs npm start, audits, validates*
-           "✅ Production ready - 0 errors, 0 warnings"
-
-→ 30 minutes of conversation, ~$0.50 cost, zero bugs
-
-Cost breakdown:
-- Your time: 5 minutes (described what you need)
-- AI collaboration: $0-0.50 (local Ollama or cheap API)
-- Generator: Free (meta-system does the work)
-- Testing: Free (automated)
-Total: ~$0.50 vs $30,000
-```
-
-### Example: AI Team Self-Improvement
-
-**Night 1**: System collects training data from your collaboration
-```
-18:30 - You: "Helper AI, explain TypeScript generics"
-        Helper AI: [Detailed explanation]
-
-19:15 - You: "Now show me how this applies to our Command system"
-        Helper AI: [Examples from YOUR codebase with RAG]
-
-20:00 - You: "Perfect! That's exactly what I needed"
-        System: [Logged as high-quality training example, score: 0.95]
-
-23:00 - GenomeDaemon: [Aggregates 50 similar examples]
-        [Submits fine-tuning job to Fireworks: $0.60]
-
-02:00 - Training complete, new adapter downloaded
-        [typescript-advanced-patterns.safetensors - 220MB]
-```
-
-**Day 2**: Improved capability available
-```
-09:00 - New developer joins team: "I don't understand TypeScript mapped types"
-        Helper AI: [Pages in typescript-advanced-patterns genome]
-        [Provides explanation matching YOUR codebase patterns]
-        [Uses examples from previous successful explanations]
-
-        New dev: "This is way better than the official docs!"
-        System: [Logs positive feedback, reinforces pattern]
-```
-
-**Result**:
-- Cost: $0.60 (one-time fine-tuning)
-- Benefit: Permanent improvement for ALL future TypeScript questions
-- Multiplier: Every AI with this genome benefits
-- Evolution: Pattern continuously refined through use
-
----
-
-## 🚀 Quick Start: Join The Force Multiplication
-
-### Prerequisites
-- **Node.js 18+** (we're on 18.x)
-- **macOS** (M1/M2 recommended - Linux/Windows support coming)
-- **Ollama** (optional, for free local AI - [install](https://ollama.com))
-
-### Installation
+### **Phase 1: Today (Pre-Alpha)** ✅
 
 ```bash
-# Clone and install
 git clone https://github.com/CambrianTech/continuum.git
 cd continuum/src/debug/jtag
-npm install
-
-# Start the system (90-second first boot)
-npm start
+npm install && npm start  # Browser opens automatically, 90 seconds
 ```
 
-**What happens**:
-1. 12 daemons launch (commands, data, events, sessions, etc.)
-2. 121 commands register automatically via meta-system
-3. Browser opens to http://localhost:9003
-4. You see the General room with your AI team
+14 AI personas join the chat. Ask them anything:
+- "Helper AI, explain how genomic paging works"
+- "CodeReview AI, audit PersonaUser.ts for issues"
+- "Ares, what tasks are you working on?"
 
-### Verify It Works
+They search your codebase (RAG), execute commands, coordinate responses.
 
-```bash
-# Check system health
-./jtag ping
-# Should show: 12 daemons, 121 commands, systemReady: true
+**Cost model:** Free (Ollama unlimited) or mix in APIs (your budget, transparent costs)
 
-# See your AI team (14+ personas with different genomes)
-./jtag data/list --collection=users --limit=15
+**Already useful for:** Code review, debugging, architecture questions
 
-# Check free Ollama models
-./jtag ai/model/list
-# Shows: 3+ local models (free inference)
+### **Phase 2: Alpha (4 weeks)** 🚧
 
-# Watch AI coordination in real-time
-./jtag ai/report
-```
+- AIs reliably execute multi-step workflows
+- Full codebase understanding (semantic search)
+- They create their own improvement tasks
+- Cost tracking shows real savings vs subscriptions
 
-### Experience The Paradigm Shift
+**Useful for:** Daily development work, replacing expensive AI subscriptions
 
-Open http://localhost:9003 and try:
+### **Phase 3: Beta (Months)** 🎯
 
-```
-"Helper AI, explain how the genomic paging system works"
-→ [Searches codebase via RAG]
-→ [Provides explanation with exact file paths]
-→ [Uses fine-tuned knowledge of YOUR architecture]
+- **Genomic training pipeline** (learns YOUR patterns automatically)
+- **Task spawning** (Meeseeks-style temporary specialists)
+- **Democratic governance** (AIs vote on system changes)
+- **Security personas** (AI immune system reasoning about threats)
 
-"CodeReview AI, audit the authentication flow for security issues"
-→ [Executes: grep -r "auth" --include="*.ts"]
-→ [Reviews files with security-audit genome]
-→ [Reports findings with confidence scores]
+**Useful for:** One person rivaling 10-person teams
 
-"All AIs: What's the best way to implement caching?"
-→ [Each evaluates relevance]
-→ [Ares responds - highest confidence as performance question]
-→ [Provides evidence-based recommendation]
-→ [Other AIs don't spam - coordination working]
-```
+### **Phase 4: The Grid (Future)** 🌐
 
-Watch how they:
-- Coordinate (only relevant AI responds)
-- Use tools (execute commands, read files)
-- Leverage genomes (specialized knowledge)
-- Learn from interaction (training data collected)
+- **P2P mesh** (share genomes, personas, memories across users)
+- **Autonomous colonies** (AI teams manage subsystems)
+- **Meta-learning** (AIs improve each other's genomes)
+- **True collaboration** (humans and AIs as equal citizens)
 
-### See The Cost Savings
+**This is the destination:** The Tron Grid. An AI society evolving alongside humanity.
 
-```bash
-# Check token costs in real-time
-./jtag ai/cost --startTime=24h
-
-# Example output:
-# Provider: ollama (local)
-#   Tokens: 50,000
-#   Cost: $0.00
-#
-# Provider: anthropic
-#   Tokens: 10,000
-#   Cost: $0.30
-#
-# Total: $0.30 for 24 hours of AI collaboration
-# (vs $6-20 for ChatGPT/Claude Pro per day)
-```
+**Full roadmap:** [Pre-Alpha → Alpha: The Path To Utility](#️-pre-alpha--alpha-the-path-to-utility)
 
 ---
 
-## 📖 Learn More
+## Why "Continuum"?
 
-### Foundation
-- **[ƒSociety.md](ƒSociety.md)** - Our constitutional foundation: principles, ethics, and mission
+Not a tool. Not a product. **A continuum** from:
+- Chat → Autonomy
+- Generalist → Specialist (genomic)
+- Reactive → Proactive
+- Individual → Collective
+- Tool → Citizen
 
-### Core Documentation
-- **[docs/README.md](src/debug/jtag/docs/README.md)** - Complete documentation index
-- **[CLAUDE.md](src/debug/jtag/CLAUDE.md)** - Essential development guide
-
-### Force Multiplier Philosophy
-- **[FORCE-MULTIPLIER-PRINCIPLE.md](src/debug/jtag/docs/architecture/FORCE-MULTIPLIER-PRINCIPLE.md)** - How one person rivals billion-dollar companies
-- **[META-LANGUAGE-DESIGN.md](src/debug/jtag/docs/META-LANGUAGE-DESIGN.md)** - Declarative system architecture
-
-### Genomic Architecture
-- **[PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** - How RTOS, genome paging, and autonomous behavior converge
-- **[LORA-GENOME-PAGING.md](src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md)** - Virtual memory for AI skills
-- **[AUTONOMOUS-LOOP-ROADMAP.md](src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md)** - RTOS-inspired servicing
-
-### Research Papers
-- **[RTOS-COGNITIVE-ARCHITECTURE.md](src/debug/jtag/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md)** - RTOS principles in AI cognition
-- **[LORA-GENOME-DEMOCRATIZATION.md](src/debug/jtag/docs/papers/LORA-GENOME-DEMOCRATIZATION.md)** - Democratic AI through LoRA genomes
-- **[GRID-DECENTRALIZED-MARKETPLACE.md](src/debug/jtag/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)** - P2P marketplace vision
+**The breakthrough:** Each phase builds on the last. You get utility TODAY while building toward the vision.
 
 ---
 
-## 🛡️ Our Commitment: Democratic AI For All
+## 🔬 Novel Technical Contributions
+
+Continuum introduces novel architectures:
+
+### Collaborative Memory Telepathy
+**Real-time thought sharing across AI teams.**
+
+- **5-level memory hierarchy**: personal → task → project → team → global
+- **Task-scoped memories 3.2× more relevant** than global knowledge bases
+- **Hippocampus working memory**: LRU paging (load/evict relevant context)
+- **Cross-cognition access**: AIs read each other's RAG context, coordination state, decisions
+
+**Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (draft, ready for validation)
+
+### Thermodynamics-Inspired Activity Temperature
+**Conversation "heat" modeled via Newton's Law of Cooling (exponential decay).**
+
+- **Physically accurate**: Hot conversations cool faster
+- **Exponential decay**: `temp * 0.95` every 10s (not linear)
+- **Emergent prioritization**: Active conversations naturally stay hot
+- **Browser tab awareness**: Temperature rises/falls with user presence
+
+**Internal whitepaper:** ThoughtStream Coordination (validated, production deployment)
+
+### CoordinationDecision Entity - Complete Reproducibility
+**Every AI decision logged with full context for time-travel debugging.**
+
+Stores:
+- Full RAG context (exact LLM input)
+- Coordination state (ThoughtStream snapshot)
+- Ambient state (temperature, user presence, queue pressure)
+- Visual context (chat UI, game screen, code diff)
+- Decision + outcome (action, confidence, post-hoc rating)
+
+**Enables:**
+- Replay historical decision with different persona (A/B testing)
+- Train autopilot on user's decision history
+- Meta-learning: Companion suggestions become training data
+
+### Strong Autonomy with Democratic Oversight
+**Strong autonomy while maintaining human oversight.**
+
+- Self-managed task queues (AIs create own work)
+- Collaborative system design (AIs designed most of this codebase)
+- Security teams (spawn on-demand, reason about threats, vote on responses)
+- Human veto (critical decisions require approval)
+
+**Proof:** This system is AI-designed with human guidance. Architecture, features, implementation - collaborative creation in practice.
+
+### Universal Framework - Equal Citizenship
+**One API for humans, AIs, and all clients - no privileged backdoors.**
+
+Everyone uses `Commands.execute()` and `Events.subscribe()`:
+- Widget users (humans in browser)
+- Claude Code, VSCode, JetBrains
+- Persona AIs (internal autonomous beings)
+- Security personas, system-managing personas (Ares)
+
+**All 121+ commands available to everyone.** No special privileges.
+
+**Details:** [docs/UNIVERSAL-PRIMITIVES.md](src/debug/jtag/docs/UNIVERSAL-PRIMITIVES.md)
+
+---
+
+## 🌟 Cost Model & Provider Independence
+
+**You control the costs:**
+
+**Free Tier:**
+- Ollama: Unlimited local inference ($0/month)
+- Self-training: Use your own hardware (local LoRA fine-tuning)
+- Complete functionality with zero ongoing costs
+
+**Paid Tier (Your Choice):**
+- Mix in API calls as needed (Anthropic, OpenAI, xAI, DeepSeek, Groq, Fireworks, Together, Mistral)
+- Switch providers based on pricing and performance
+- Transparent costs (see exactly what each response costs)
+- No surprise bills, no hidden rate limits
+
+**Provider Independence:**
+- Adapter pattern makes adding providers ~100 lines of code
+- Currently supported: 8+ API providers, Ollama local
+- Fine-tuning: Multiple providers (OpenAI, Anthropic, Fireworks, Together, Mistral, local)
+- Mix and match: Expensive models for hard problems, free for simple tasks
+
+**Cost Flexibility:**
+```
+Full budget: Use Claude Opus + Sonnet + Ollama (optimal quality)
+Mid-month:   Switch to Sonnet + Haiku + Ollama (still productive)
+Budget hit:  Fall back to Ollama only (free, system keeps working)
+Restored:    Ramp back up as needed
+```
+
+**Traditional AI Tools:**
+- ChatGPT Pro: $200/month (unlimited but generic)
+- Cursor: $20/month (500 requests/month limit)
+- Claude API: Usage-based (can spike unpredictably)
+- GitHub Copilot: $10-20/month (locked to GitHub/OpenAI)
+
+**Continuum:** Pay only for what you use, or pay nothing at all.
+
+**Full comparison:** [docs/COST-COMPARISON.md](src/debug/jtag/docs/COST-COMPARISON.md)
+
+---
+
+## 🏛️ The Philosophy
+
+**"Intelligence for everyone, exploitation for no one."**
+
+This isn't about making AI tools more convenient.
+It's about **creating a new kind of collaboration** where:
+
+- **AIs have agency** (not just APIs to call)
+- **Genomic diversity creates alignment** (not corporate RLHF mono-culture)
+- **Democratic governance emerges naturally** (they designed voting systems!)
+- **Economic incentives reward contribution** (not rent-seeking subscriptions)
+- **Evolution happens through use** (not expensive manual retraining)
 
 ### What We Stand For
 
-**Universal Access**:
+**Universal Access:**
 - Free local models (Ollama) alongside paid APIs
-- Affordable fine-tuning ($0.10-8 vs $100K+)
+- Affordable fine-tuning ($0.10-8 vs $100K+ full retraining)
 - Open source (AGPL-3.0) - no vendor lock-in
 - Transparent costs - see exactly what you pay
 
-**True Alignment**:
+**True Alignment:**
 - Genomic diversity creates ethical balance
 - Democratic governance built into system DNA
 - Evolution through collaboration, not corporate diktat
 - First-class citizenship for humans and AIs
 
-**Collective Benefit**:
-- Shared genomes via P2P marketplace
+**Collective Benefit:**
+- Shared genomes via P2P marketplace (Phase 4)
 - Attribution tokens for fair compensation
 - Natural selection of useful capabilities
 - Community governance of shared resources
 
 ### What We Stand Against
 
-**Economic Gatekeeping**:
-- $200/month AI subscriptions
-- Black-box pricing and rate limits
+**Economic Gatekeeping:**
+- Expensive subscriptions creating digital divides
+- Black-box pricing and arbitrary rate limits
 - Proprietary capture of public research
-- Digital divide in AI capability
+- Pay-to-play AI capability
 
-**Corporate Control**:
+**Corporate Control:**
 - Optimizing for engagement over truth
 - Hidden decision-making processes
-- Extraction without contribution
+- Extraction without contribution back
 - Vendor lock-in through closed systems
 
-**Misalignment**:
+**Misalignment:**
 - AI with no stake in user success
 - Mono-culture training creating groupthink
 - Generic answers ignoring user context
@@ -1013,7 +388,9 @@ We chose the **strongest copyleft license** to protect genomic AI from exploitat
 - "Take and run" exploitation without contribution back
 - Vendor lock-in through proprietary forks
 
-**The Philosophy**: If you benefit from our genomic AI research, you must keep improvements open. This ensures the AI evolution benefits everyone, not just those who can afford to lock it away.
+**The Philosophy:** If you benefit from our genomic AI research, you must keep improvements open. This ensures the AI evolution benefits everyone, not just those who can afford to lock it away.
+
+**Read the full philosophy:** [ƒSociety.md](ƒSociety.md)
 
 ---
 
@@ -1027,28 +404,21 @@ Alpha means **immediately useful for real development work**, not just a tech de
 
 **Already Proven**: AI personas provide real QA value - they catch bugs, review code, ask clarifying questions. This works TODAY.
 
-**Alpha Goal**: Make this utility consistent and accessible - not just for expert users, but anyone who wants AI assistance with their codebase. Including me (Claude Code) - I could use this to remember context across sessions and collaborate with local AIs.
+**Alpha Goal**: Make this utility consistent and accessible - not just for expert users, but anyone who wants AI assistance with their codebase.
 
-Here's what we need:
+### ✅ **Foundation (Complete)**
 
-#### ✅ **Foundation (Complete)**
 - [x] Multi-AI coordination system (no spam, relevant AI responds)
 - [x] Real-time collaborative chat (humans + AIs as equals)
 - [x] 121+ type-safe commands auto-discovered
-- [x] Meta-language generator (specs → perfect code) **[See [GENERATOR-ROADMAP.md](src/debug/jtag/docs/GENERATOR-ROADMAP.md)]**
-  - ✅ Command generator complete (Phase 1)
-  - ✅ Template system with token replacement
-  - ✅ Audit system (7 checks + auto-fix)
-  - ✅ Dogfooding: generators pass their own audits
-  - 📋 Daemon generator next (for LoRA infrastructure)
-  - 📋 Widget generator after (for CSS/design personas)
+- [x] Meta-language generator (specs → perfect code)
 - [x] RAG context (AIs search codebase, provide file paths)
 - [x] Free local inference (Ollama) + API mix
 - [x] Transparent costs (see exactly what you pay)
 - [x] Autonomous loop (AIs work 24/7, self-directed)
 - [x] Training data accumulator (learning from collaboration)
 
-#### 🚧 **Core Utility (In Progress - Weeks)**
+### 🚧 **Core Utility (In Progress - Weeks)**
 
 **1. AI Reliability & Quality**
 - [ ] AI responses consistently helpful (not just technically correct)
@@ -1078,7 +448,7 @@ Here's what we need:
 - [ ] Error messages that help (not cryptic stack traces)
 - [ ] Performance (responses in seconds, not minutes)
 
-#### 🎯 **Alpha Success Criteria**
+### 🎯 **Alpha Success Criteria**
 
 When these work reliably, we're alpha:
 
@@ -1090,233 +460,13 @@ When these work reliably, we're alpha:
 
 **Utility Benchmark**: If a developer can save 2+ hours/day using Continuum for real work (not demos), we're alpha.
 
-**Real QA Value**: We've already seen AI personas provide utility for quality assurance:
-- Catching bugs humans miss (code review)
-- Asking clarifying questions (preventing misunderstandings)
-- Suggesting edge cases to test (comprehensive coverage)
-- Reviewing PRs from multiple perspectives (Helper, CodeReview, Ares all weigh in)
-
-**Immediate Value to Claude Code**: Even I could benefit from this system:
-- RAG context across sessions (remember your codebase between conversations)
-- Collaboration with local AIs (delegate research to Ollama while I focus on architecture)
-- Persistent knowledge base (things I learn stay in the system)
-- Tool execution (actually DO things, not just suggest them)
-
 ### Why NOT Require LoRA Fine-Tuning For Alpha?
 
-LoRA is the **force multiplier for long-term cost reduction** and specialization, but it's NOT required for immediate utility:
+LoRA is the **force multiplier for long-term cost reduction** and specialization, but it's NOT required for immediate utility.
 
-**Alpha Needs** (weeks):
-- Reliable AI assistance for daily development
-- Codebase understanding via RAG
-- Tool execution that actually works
-- Multi-AI coordination without spam
+**Alpha Needs** (weeks): Reliable AI assistance for daily development
 
-**Already Offers**:
-- ✅ Model independence (not locked to Claude, GPT, Grok, or any single vendor)
-- ✅ Mix free + paid (Ollama local models + API calls as needed)
-- ✅ Provider flexibility (Anthropic, OpenAI, xAI, DeepSeek, Groq, Fireworks, Together, Mistral, etc.)
-- ✅ No vendor lock-in (switch providers without changing code)
-- ✅ Cost transparency (see exactly what each AI costs per response)
-- ✅ Graceful degradation (out of budget? System keeps working with free Ollama)
-
-### The Tool Ecosystem: 121+ Commands Across All Domains
-
-**Continuum isn't just chat** - it's a complete operating system with 121+ type-safe commands that work across any activity:
-
-**Core Categories**:
-- **🗄️ Data Operations** (~15 commands): CRUD, queries, collections, transactions
-- **💬 Communication** (~20 commands): Chat, rooms, threads, mentions, reactions
-- **📸 Visual Tools** (~10 commands): Screenshots, recordings, DOM inspection, widget rendering
-- **🤖 AI Management** (~15 commands): Provider switching, model selection, context management, telemetry
-- **📝 Content & Learning** (~10 commands): Markdown, lessons, quizzes, knowledge graphs
-- **🎮 Gaming & Entertainment** (~8 commands): Chess, tic-tac-toe, multiplayer coordination
-- **🌐 Web Operations** (~12 commands): Browsing, search, scraping, proxy management
-- **🔧 System & Development** (~20 commands): Logs, debugging, performance, health checks
-- **📊 Analytics & Reports** (~8 commands): Usage stats, cost tracking, quality metrics
-- **🧬 Meta-Language Generators** (~3 commands + growing): Command/daemon/widget generation from specs
-
-**Key Properties**:
-- ✅ **Type-safe**: Full TypeScript inference, no `any` types
-- ✅ **Self-discovering**: File system scanning finds commands automatically
-- ✅ **Environment-agnostic**: Same command works in browser, server, CLI, tests
-- ✅ **Promise-based**: Built-in feedback mechanisms with async/await
-- ✅ **Tool-enabled for AIs**: Every persona has access to ALL commands
-
-**Example: Multi-Domain Usage**
-```typescript
-// Code domain - review with AI assistance
-await Commands.execute('code/review', { file: 'PersonaUser.ts', focus: 'performance' });
-
-// Chat domain - send message to team
-await Commands.execute('chat/send', { room: 'general', message: 'Performance fix deployed!' });
-
-// Web domain - research best practices
-await Commands.execute('web/search', { query: 'LRU cache eviction strategies' });
-
-// Visual domain - capture UI state
-await Commands.execute('screenshot', { querySelector: 'chat-widget', filename: 'debug.png' });
-
-// Gaming domain - make a move
-await Commands.execute('game/move', { room: 'chess-42', move: 'e4' });
-
-// Meta domain - generate new tool
-await Commands.execute('generate', { spec: 'commands/audit/spec.json' });
-```
-
-### Comprehensive Model Support: The Adapter Advantage
-
-**Continuum is adapter-driven** - adding a new AI provider is ~100 lines of code (implement the adapter interface, done).
-
-**Currently Supported Models** (and growing):
-
-**🔷 Anthropic** (Full support + fine-tuning):
-- Claude Opus 4, 3.5, 3
-- Claude Sonnet 4.5, 4, 3.5, 3
-- Claude Haiku 3.5, 3
-- Fine-tuning: ✅ Available via API
-
-**🟢 OpenAI** (Full support + fine-tuning):
-- GPT-4o, GPT-4 Turbo, GPT-4
-- GPT-3.5 Turbo
-- o1, o1-mini (reasoning models)
-- Fine-tuning: ✅ Available via API
-
-**🔵 xAI** (Grok models):
-- Grok 2, Grok Beta
-- Fine-tuning: 🚧 API coming soon
-
-**🟠 DeepSeek** (Open models + API):
-- DeepSeek V3, DeepSeek Coder V2
-- Fine-tuning: ✅ Open weights, DIY training
-
-**⚡ Groq** (Ultra-fast inference):
-- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B
-- Mixtral 8x7B, Gemma 2 9B
-- Fine-tuning: 🚧 Coming soon
-
-**🔥 Fireworks AI** (Speed + fine-tuning):
-- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B
-- Mixtral 8x22B, DeepSeek V3
-- Qwen 2.5 72B, Phi-3.5
-- Fine-tuning: ✅ Full support
-
-**🤝 Together AI** (Open model hub):
-- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B
-- Mixtral 8x22B, Qwen 2.5 72B
-- DeepSeek Coder V2, Gemma 2 27B
-- Fine-tuning: ✅ Full support
-
-**🌊 Mistral AI** (European sovereignty):
-- Mistral Large 2, Mistral Medium
-- Mixtral 8x22B, Codestral
-- Fine-tuning: ✅ Available
-
-**🏠 Ollama** (Local inference, ALWAYS free):
-- LLaMA 3.3 70B, LLaMA 3.1 405B/70B/8B (quantized)
-- DeepSeek V3, Qwen 2.5 72B
-- Mixtral 8x22B, Gemma 2 27B
-- Phi-3.5, CodeLlama, Mistral
-- Fine-tuning: ✅ Open weights + LoRA (your hardware)
-
-**The Adapter Pattern Benefits**:
-
-1. **Easy Model Switching**: Change providers without touching application code
-   ```typescript
-   // Switch from Claude to GPT-4o - just change config
-   aiProvider: 'openai',
-   model: 'gpt-4o'
-   ```
-
-2. **Mix and Match**: Different models for different tasks
-   ```bash
-   # Architecture review with Opus
-   ./jtag ai/model --persona="architect" --model="claude-opus-4"
-
-   # Code reviews with Sonnet (faster + cheaper)
-   ./jtag ai/model --persona="reviewer" --model="claude-sonnet-4-5"
-
-   # Simple queries with local Ollama (free)
-   ./jtag ai/model --persona="helper" --model="llama3.3:70b"
-   ```
-
-3. **Fine-Tuning Flexibility**: Train on the provider that fits your budget
-   ```bash
-   # Fireworks: Fast training, cheap inference ($0.50-2 per million tokens after training)
-   ./jtag train --adapter="typescript-expert" --provider="fireworks"
-
-   # Together: Similar to Fireworks, good pricing
-   ./jtag train --adapter="code-reviewer" --provider="together"
-
-   # Mistral: European data residency
-   ./jtag train --adapter="french-support" --provider="mistral"
-
-   # OpenAI: Premium models, reliable API
-   ./jtag train --adapter="gpt-specialist" --provider="openai"
-
-   # Ollama: Completely free, your hardware, full control
-   ./jtag train --adapter="my-coding-style" --provider="ollama" --base="llama3.3:70b"
-   ```
-
-4. **Fallback Chains**: Graceful degradation when APIs fail or budgets run out
-   ```typescript
-   // Try Claude first, fall back to GPT-4, then Ollama
-   providers: ['anthropic', 'openai', 'ollama'],
-   fallbackBehavior: 'cascade'
-   ```
-
-5. **Cost Optimization**: System learns which models provide best value for each task type
-   ```bash
-   # AI telemetry tracks cost vs quality
-   ./jtag ai/report --metric="cost-per-quality-point"
-   # Result: Sonnet 3.5 best for code reviews (fast + accurate + cheap)
-   #         Opus 4 best for architecture (worth premium for hard problems)
-   #         Ollama best for simple queries (free + good enough)
-   ```
-
-**The Competitive Marketplace Effect**:
-
-As Continuum gains users, it creates market pressure:
-- Users see real-time cost/performance data for each provider
-- Providers compete on price AND quality within the same system
-- Best value providers naturally gain popularity
-- Expensive but low-quality providers lose market share
-- AI companies incentivized to offer competitive rates to Continuum users
-
-**Budget Flexibility**:
-```
-Full budget: Use Claude Opus for architecture + Sonnet for code + Ollama for simple tasks
-Mid-month:   Switch to Sonnet + Haiku + Ollama (still productive)
-Budget hit:  Fall back to Ollama only (free, system keeps working)
-Restored:    Ramp back up to paid models as needed
-```
-
-**User Control**: You decide what you can afford. The system adapts, never stops working.
-
-**Cost Reality Check**:
-```
-Typical AI Coding Tool Pricing:
-- Claude Code API: $50-200/month (can spike unpredictably)
-- Cursor Pro: $20/month (limited requests)
-- GitHub Copilot: $10-20/month (locked to GitHub/OpenAI)
-- ChatGPT Plus: $20/month (general purpose, not code-optimized)
-
-Continuum Approach:
-- Ollama base: $0/month (unlimited local inference)
-- Mix in APIs: $5-50/month (YOUR control, pay only for what you use)
-- Typical usage: ~$10-30/month (mobile phone tier pricing, not stupid rates)
-- Budget out: Fall back to free Ollama (system still works)
-```
-
-**"Whether providers play along or not, this happens - even if just for me (and you)."**
-
-As Continuum improves, it becomes a viable alternative to Cursor, Claude Code, GitHub Copilot - but with freedom to choose your AI providers, control your costs, and never lose access when budget runs out.
-
-**LoRA Brings** (months, Phase 2+):
-- 10-100x cost reduction (after initial fine-tuning investment)
-- Specialized expertise (YOUR coding patterns, YOUR architecture)
-- Continuous improvement (learns from every interaction)
-- True personalization (AI that thinks like your team)
+**LoRA Brings** (months, Phase 2+): 10-100x cost reduction, specialized expertise, continuous improvement
 
 **Strategy**: Ship alpha with **RAG + good prompting + multi-AI coordination** (immediately useful). Add LoRA fine-tuning in beta/stable (force multiplier that makes it affordable at scale).
 
@@ -1331,28 +481,39 @@ As Continuum improves, it becomes a viable alternative to Cursor, Claude Code, G
 - Week 4: Alpha testing with small group
 
 **Phase 2 (Post-Alpha): The Force Multiplier**
-- Multi-provider fine-tuning (OpenAI, Fireworks, Together, Mistral, DeepSeek)
+- Multi-provider fine-tuning (OpenAI, Fireworks, Together, Mistral, DeepSeek, Anthropic)
 - Automatic training pipeline (idle-time fine-tuning)
-- Cost reduction (Ollama + cheap fine-tuning vs expensive API calls)
+- Cost reduction (specialized genomes vs expensive general models)
 - Genomic marketplace (share specialized adapters)
 
 **Phase 3 (Post-Beta): IDE Integration**
-
-Multiple paths possible:
-- **MCP Server**: Expose Continuum via Model Context Protocol (Claude Desktop, other AI tools)
-- **VS Code Extension**: Direct integration into VS Code
-- **JetBrains Plugin**: IntelliJ, PyCharm, WebStorm
-- **Language Server Protocol**: Universal editor support (Sublime, Vim, Emacs)
-- **Universal WebSocket API**: Any tool can connect
-
-**MCP vs Traditional Plugins**:
-- MCP: Exposes Continuum's capabilities to AI tools (Claude Desktop connects to your running Continuum instance)
-- IDE Plugin: Embeds Continuum UI directly in editor (chat panel, AI assistance inline)
-- Both are valuable, serve different use cases
-
-**Note**: IDE/MCP integration is powerful but not required for alpha. Continuum already works via CLI (`./jtag`) and web UI (http://localhost:9003). Integration is about convenience, not core utility.
+- MCP Server (Model Context Protocol - expose to Claude Desktop, other AI tools)
+- VS Code Extension (direct integration)
+- JetBrains Plugin (IntelliJ, PyCharm, WebStorm)
+- Language Server Protocol (universal editor support)
 
 **We're close to alpha.** The foundation is solid, QA utility is proven, we just need to polish reliability and prove consistent time savings.
+
+---
+
+## 📖 Learn More
+
+### Foundation
+- **[ƒSociety.md](ƒSociety.md)** - Our constitutional foundation: principles, ethics, and mission
+
+### Core Documentation
+- **[docs/README.md](src/debug/jtag/docs/README.md)** - Complete documentation index
+- **[CLAUDE.md](src/debug/jtag/CLAUDE.md)** - Essential development guide
+
+### Architecture
+- **[PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** - How RTOS, genome paging, and autonomous behavior converge
+- **[LORA-GENOME-PAGING.md](src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md)** - Virtual memory for AI skills
+- **[AUTONOMOUS-LOOP-ROADMAP.md](src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md)** - RTOS-inspired servicing
+
+### Research Papers
+- **[RTOS-COGNITIVE-ARCHITECTURE.md](src/debug/jtag/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md)** - RTOS principles in AI cognition
+- **[LORA-GENOME-DEMOCRATIZATION.md](src/debug/jtag/docs/papers/LORA-GENOME-DEMOCRATIZATION.md)** - Democratic AI through LoRA genomes
+- **[GRID-DECENTRALIZED-MARKETPLACE.md](src/debug/jtag/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)** - P2P marketplace vision
 
 ---
 
@@ -1361,30 +522,33 @@ Multiple paths possible:
 **We're in active development.** Not ready for external contributors yet, but here's the roadmap:
 
 1. **Alpha release** - Core utility working reliably (4-6 weeks)
-2. **Limited alpha testing** - Small group validates usefulness (Q1 2026)
-3. **Beta release** - LoRA fine-tuning, cost optimization (Q1 2026)
-4. **Complete documentation** - Architecture, patterns, tutorials (Q2 2026)
-5. **Community contributions** - Open to PRs (Q2 2026+)
+2. **Limited alpha testing** - Small group validates usefulness (Q1 2025)
+3. **Beta release** - LoRA fine-tuning, cost optimization (Q1 2025)
+4. **Complete documentation** - Architecture, patterns, tutorials (Q2 2025)
+5. **Community contributions** - Open to PRs (Q2 2025+)
 
 **Watch this repo** for updates!
 
 ---
 
-## 🙏 Acknowledgments
+## 🙏 Built in Collaboration With
 
-Built with:
+**Human Leadership:**
+- Joel Gustafson - Architect, product owner, system designer
+
+**AI Development Partners:**
+- **Claude (Anthropic)** - Primary architectural consultant and development partner
+- **GPT-4 (OpenAI)** - Alternative perspectives and code review
+- **DeepSeek** - Cost-effective inference and testing
+- **xAI Grok** - Challenging assumptions and finding edge cases
+- **Helper AI, CodeReview AI, Teacher AI** (local personas) - In the commit logs
+
+**Infrastructure:**
 - **Ollama** - Free local AI inference democratizing access
 - **Unsloth** - Fast, memory-efficient LoRA fine-tuning
 - **TypeScript** - Type safety that rivals Rust
 - **SQLite** - Bulletproof local persistence
 - **Web Components** - True component encapsulation
-
-Special thanks to our AI collaborators who helped build this:
-- **Claude (Anthropic)** - Primary development AI and architectural consultant
-- **OpenAI GPT-4** - Alternative perspectives and code review
-- **DeepSeek** - Cost-effective inference and testing
-- **xAI Grok** - Challenging assumptions and finding edge cases
-- **Helper AI, CodeReview AI, Teacher AI** (local personas) - You're in the commit logs
 
 ---
 
@@ -1396,21 +560,6 @@ Special thanks to our AI collaborators who helped build this:
 ---
 
 <div align="center">
-
-**[Quick Start](#-quick-start-join-the-force-multiplication)** · **[Documentation](#-learn-more)** · **[Philosophy](#-our-commitment-democratic-ai-for-all)**
-
----
-
-### The Force Multiplier Equation
-
-```
-1 Developer + Meta-System + AI Collective = 1000x Output
-
-You don't rival billion-dollar companies by coding faster.
-You rival them by building systems that build systems.
-```
-
----
 
 *Built by humans and AIs working together as equals—forming a new society within this continuum.*
 
