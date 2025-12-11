@@ -16,10 +16,10 @@
  * ```
  */
 
-import { LifecycleManager } from '../../../system/core/process/ProcessLifecycle.js';
-import type { IPCMessage, IPCResponse } from '../../../system/core/process/IPCProtocol.js';
-import { createSuccessResponse, createErrorResponse } from '../../../system/core/process/IPCProtocol.js';
-import { LoggerDaemonCore } from '../server/LoggerDaemonCore.js';
+import { LifecycleManager } from '../../../system/core/process/ProcessLifecycle';
+import type { IPCMessage, IPCResponse } from '../../../system/core/process/IPCProtocol';
+import { createSuccessResponse, createErrorResponse } from '../../../system/core/process/IPCProtocol';
+import { LoggerDaemonCore } from '../server/LoggerDaemonCore';
 import type {
   LogMessage,
   ConfigureLoggerMessage,
@@ -32,6 +32,8 @@ import {
   isLogStatsMessage,
   isFlushMessage
 } from '../shared/LoggerDaemonTypes.js';
+
+console.log('========== LOGGER DAEMON PROCESS STARTING ==========');
 
 /**
  * Logger daemon state
@@ -55,7 +57,10 @@ async function onInitialize(): Promise<void> {
  * Handle incoming IPC messages
  */
 async function onMessage(message: IPCMessage): Promise<IPCResponse> {
+  console.log(`[LoggerDaemonProcess] onMessage called: type=${message.type}, messageId=${message.messageId}`);
+
   if (!server) {
+    console.log(`[LoggerDaemonProcess] Server not initialized!`);
     return createErrorResponse(
       `${message.type}-response`,
       'LoggerDaemonServer not initialized',
@@ -66,6 +71,7 @@ async function onMessage(message: IPCMessage): Promise<IPCResponse> {
   try {
     // Handle LogMessage (most common)
     if (isLogMessage(message)) {
+      console.log(`[LoggerDaemonProcess] Handling log message for ${message.data.component}:${message.data.category}`);
       await server.handleLogMessage(message);
       return createSuccessResponse(
         'log-response',

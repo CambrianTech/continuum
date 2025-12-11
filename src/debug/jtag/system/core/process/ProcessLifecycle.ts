@@ -204,8 +204,14 @@ export class LifecycleManager {
    * Set up IPC message handlers
    */
   private setupIPCHandlers(): void {
+    console.log('[LifecycleManager] Setting up IPC handlers - process.on("message")');
+    console.log(`[LifecycleManager] process.send exists: ${typeof process.send !== 'undefined'}`);
+    console.log(`[LifecycleManager] process.channel exists: ${typeof (process as any).channel !== 'undefined'}`);
+
     // Handle IPC messages from parent
     process.on('message', async (rawMessage: unknown) => {
+      console.log(`[LifecycleManager] Received message!`, rawMessage);
+
       // Validate message structure
       if (!isIPCMessage(rawMessage)) {
         console.error(`[LifecycleManager] Invalid IPC message:`, rawMessage);
@@ -213,6 +219,7 @@ export class LifecycleManager {
       }
 
       const message = rawMessage as IPCMessage;
+      console.log(`[LifecycleManager] Valid IPC message: type=${message.type}, messageId=${message.messageId}`);
       this._messagesReceived++;
       this._lastMessageTime = new Date().toISOString();
 

@@ -43,6 +43,9 @@
  *   - undefined: Console only (default, no file writing)
  */
 
+// Rust worker socket path removed - now handled at system level
+// TODO: Document that the Rust logger worker must be started separately by system startup script
+
 // ============================================================================
 // Rust Worker Toggle
 // ============================================================================
@@ -65,10 +68,10 @@ const USE_RUST_LOGGER = true;
 import * as fs from 'fs';
 import * as path from 'path';
 import { inspect } from 'util';
-import { spawn, ChildProcess } from 'child_process';
 import { SystemPaths } from '../config/SystemPaths';
-import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient.js';
-import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes.js';
+import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
+import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
+import { LoggerDaemonClient } from '../../../shared/ipc/logger/LoggerDaemonClient';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -110,9 +113,9 @@ class LoggerClass {
   private logDir: string;
   private readonly FLUSH_INTERVAL_MS = 100;           // Flush every 100ms
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
-  private workerProcess: ChildProcess | null = null;  // Rust worker process (when USE_RUST_LOGGER enabled)
   public workerClient: LoggerWorkerClient | null = null;  // Rust worker client (when USE_RUST_LOGGER enabled) - public so ComponentLogger can access
   public useRustLogger: boolean = USE_RUST_LOGGER;   // Toggle for Rust logger - public so ComponentLogger can access
+  public daemonClient: LoggerDaemonClient = new LoggerDaemonClient();  // IPC client for LoggerDaemon - public so ComponentLogger can access
 
   private constructor() {
     // Default: INFO for development, WARN for production
@@ -149,42 +152,11 @@ class LoggerClass {
     // Use SystemPaths for correct log directory (.continuum/jtag/system/logs)
     this.logDir = SystemPaths.logs.system;
 
-    // Initialize Rust worker client (if enabled)
+    // Initialize Rust worker connection (if enabled)
+    // NOTE: The Rust logger worker must be started separately by the system startup script.
+    // This class only connects to an already-running worker process.
     if (this.useRustLogger) {
-      this.initializeWorkerClient();
-    }
-
-    // Register shutdown handlers
-    process.on('exit', () => this.shutdown());
-    process.on('SIGINT', () => {
-      this.shutdown();
-      process.exit(0);
-    });
-    process.on('SIGTERM', () => {
-      this.shutdown();
-      process.exit(0);
-    });
-  }
-
-  /**
-   * Initialize Rust logger worker client asynchronously.
-   * Runs in background, falls back to TypeScript logging if connection fails.
-   */
-  private initializeWorkerClient(): void {
-    // Use /tmp for socket (filesystem limitation: APFS external drives don't support sockets in project dirs)
-    const socketPath = '/tmp/jtag-logger-worker.sock';
-
-    // Start the Rust worker process first
-    const workerStarted = this.startWorkerProcess(socketPath);
-    if (!workerStarted) {
-      if (this.config.enableConsoleLogging) {
-        console.warn('⚠️  [Logger] Failed to start Rust worker, using TypeScript logging');
-      }
-      return;
-    }
-
-    // Give worker time to start listening on socket (non-blocking)
-    setTimeout(() => {
+      const socketPath = '/tmp/jtag-logger-worker.sock';
       this.workerClient = new LoggerWorkerClient({
         socketPath,
         timeout: 10000,
@@ -199,93 +171,27 @@ class LoggerClass {
           }
         })
         .catch((err) => {
-          if (this.config.enableConsoleLogging) {
-            console.warn('⚠️  [Logger] Failed to connect to Rust worker, using TypeScript logging:', err.message);
-          }
+          // CRITICAL: Fallback activated - Rust worker connection failed
+          console.error('⚠️⚠️⚠️  [Logger] RUST WORKER CONNECTION FAILED - FALLING BACK TO TYPESCRIPT LOGGING ⚠️⚠️⚠️');
+          console.error('⚠️  [Logger] Socket: /tmp/jtag-logger-worker.sock');
+          console.error('⚠️  [Logger] Error:', err.message);
+          console.error('⚠️  [Logger] To start Rust worker: npm run worker:start');
+          console.error('⚠️  [Logger] To check worker status: npm run worker:status');
           // Fall back to TypeScript logging
           this.workerClient = null;
         });
-    }, 1000);  // Wait 1 second for worker to start
-  }
-
-  /**
-   * Start the Rust logger worker process.
-   * Returns true if successfully started, false otherwise.
-   */
-  private startWorkerProcess(socketPath: string): boolean {
-    // Path to Rust binary (relative to project root, not compiled JS location)
-    const workerBinary = path.join(process.cwd(), 'workers/logger/target/release/logger-worker');
-
-    // Check if binary exists
-    if (!fs.existsSync(workerBinary)) {
-      if (this.config.enableConsoleLogging) {
-        console.error('❌ [Logger] Rust worker binary not found at:', workerBinary);
-        console.error('   Build it with: cd workers/logger && cargo build --release');
-      }
-      return false;
     }
 
-    // Ensure workers directory exists
-    const workersDir = path.dirname(socketPath);
-    if (!fs.existsSync(workersDir)) {
-      try {
-        fs.mkdirSync(workersDir, { recursive: true });
-      } catch (err) {
-        if (this.config.enableConsoleLogging) {
-          console.error('❌ [Logger] Failed to create workers directory:', err);
-        }
-        return false;
-      }
-    }
-
-    // Remove old socket if it exists
-    if (fs.existsSync(socketPath)) {
-      try {
-        fs.unlinkSync(socketPath);
-      } catch (err) {
-        if (this.config.enableConsoleLogging) {
-          console.warn('⚠️  [Logger] Failed to remove old socket file:', err);
-        }
-      }
-    }
-
-    // Spawn the worker process
-    try {
-      this.workerProcess = spawn(workerBinary, [socketPath], {
-        detached: false,  // Keep attached so it dies with parent
-        stdio: 'ignore'   // Don't pipe stdout/stderr
-      });
-
-      // Monitor for crashes
-      this.workerProcess.on('exit', (code, signal) => {
-        if (code !== null && code !== 0) {
-          if (this.config.enableConsoleLogging) {
-            console.error(`❌ [Logger] Rust worker exited with code ${code}`);
-          }
-        }
-        this.workerProcess = null;
-        this.workerClient = null;
-      });
-
-      this.workerProcess.on('error', (err) => {
-        if (this.config.enableConsoleLogging) {
-          console.error('❌ [Logger] Rust worker error:', err);
-        }
-        this.workerProcess = null;
-        this.workerClient = null;
-      });
-
-      if (this.config.enableConsoleLogging) {
-        console.log('🦀 [Logger] Started Rust worker process, PID:', this.workerProcess.pid);
-      }
-
-      return true;
-    } catch (error) {
-      if (this.config.enableConsoleLogging) {
-        console.error('❌ [Logger] Failed to spawn Rust worker:', error);
-      }
-      return false;
-    }
+    // Register shutdown handlers
+    process.on('exit', () => this.shutdown());
+    process.on('SIGINT', () => {
+      this.shutdown();
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      this.shutdown();
+      process.exit(0);
+    });
   }
 
   static getInstance(): LoggerClass {
@@ -294,83 +200,6 @@ class LoggerClass {
     }
     return LoggerClass.instance;
   }
-
-  /**
-   * Stop the Rust logger worker process gracefully.
-   * Sends SIGTERM, waits, then SIGKILL if needed.
-   */
-  private stopWorkerProcess(): void {
-    if (!this.workerProcess) {
-      return;
-    }
-
-    const pid = this.workerProcess.pid;
-    if (!pid) {
-      return;
-    }
-
-    try {
-      // Try graceful shutdown first (SIGTERM)
-      this.workerProcess.kill('SIGTERM');
-
-      // Wait up to 5 seconds for graceful shutdown
-      const startTime = Date.now();
-      const maxWait = 5000;
-
-      while (Date.now() - startTime < maxWait) {
-        try {
-          // Check if process still exists (throws if dead)
-          process.kill(pid, 0);
-          // Still alive, wait a bit more
-          const waitMs = 100;
-          const start = Date.now();
-          while (Date.now() - start < waitMs) { /* busy wait */ }
-        } catch {
-          // Process is dead, cleanup successful
-          if (this.config.enableConsoleLogging) {
-            console.log('🦀 [Logger] Rust worker shut down gracefully');
-          }
-          this.workerProcess = null;
-          this.workerClient = null;
-          return;
-        }
-      }
-
-      // Still alive after 5 seconds, force kill
-      this.workerProcess.kill('SIGKILL');
-      if (this.config.enableConsoleLogging) {
-        console.warn('⚠️  [Logger] Rust worker required SIGKILL');
-      }
-    } catch (err) {
-      if (this.config.enableConsoleLogging) {
-        console.error('❌ [Logger] Error stopping Rust worker:', err);
-      }
-    } finally {
-      this.workerProcess = null;
-      this.workerClient = null;
-    }
-  }
-
-  /**
-   * Restart the Rust logger worker process.
-   * Useful when worker crashes or becomes unresponsive.
-   */
-  restartWorkerProcess(): void {
-    if (this.config.enableConsoleLogging) {
-      console.log('🔄 [Logger] Restarting Rust worker...');
-    }
-
-    this.stopWorkerProcess();
-
-    const socketPath = '/tmp/logger-worker.sock';
-    const started = this.startWorkerProcess(socketPath);
-
-    if (started && this.workerClient) {
-      // Reconnect the client
-      this.initializeWorkerClient();
-    }
-  }
-
 
   /**
    * Get or create file stream for a log category
@@ -486,7 +315,8 @@ class LoggerClass {
    * @param category - Optional log category for file separation
    */
   create(component: string, category?: LogCategory): ComponentLogger {
-    const fileStream = category ? this.getFileStream(category) : undefined;
+    // When using Rust logger, DO NOT open TypeScript file streams (they truncate files!)
+    const fileStream = (category && !this.useRustLogger) ? this.getFileStream(category) : undefined;
     const logFile = category ? path.join(this.logDir, `${category}.log`) : undefined;
     return new ComponentLogger(component, this.config, fileStream, logFile, this);
   }
@@ -580,9 +410,10 @@ class LoggerClass {
     this.logQueues.clear();
     this.logTimers.clear();
 
-    // Stop Rust worker process (if running) using graceful shutdown
-    // stopWorkerProcess() handles: SIGTERM → wait → SIGKILL fallback + client cleanup
-    this.stopWorkerProcess();
+    // Disconnect Rust worker client (if connected)
+    if (this.workerClient) {
+      this.workerClient.disconnect();
+    }
   }
 }
 
@@ -600,7 +431,9 @@ class ComponentLogger {
   }
 
   private formatMessage(level: string, emoji: string, message: string, ...args: any[]): void {
-    if (!this.shouldLog(LogLevel[level as keyof typeof LogLevel])) {
+    // Convert lowercase level to uppercase for enum lookup
+    const levelEnum = LogLevel[level.toUpperCase() as keyof typeof LogLevel];
+    if (!this.shouldLog(levelEnum)) {
       return;
     }
 
@@ -620,9 +453,11 @@ class ComponentLogger {
 
     // File output - route to Rust worker OR TypeScript queue
     if (this.logger && this.logFilePath) {
-      // Try Rust worker first (if enabled and connected)
-      if (this.logger.useRustLogger && this.logger.workerClient?.isConnected()) {
-        this.sendToWorker(level as WorkerLogLevel, message, args);
+      // Try Rust worker first (if enabled and available)
+      // Note: removed isConnected() check - let sendToWorker handle connection state
+      // and fall back to TypeScript if worker fails
+      if (this.logger.useRustLogger && this.logger.workerClient) {
+        this.sendToWorker(level as WorkerLogLevel, message, args, timestamp);
       }
       // Fall back to TypeScript logging (file stream)
       else if (this.fileStream) {
@@ -639,11 +474,11 @@ class ComponentLogger {
   }
 
   /**
-   * Send log message to Rust worker (fire-and-forget).
-   * Errors are silently ignored - logging must never block or throw.
+   * Send log to Rust worker via LoggerDaemonProcess (IPC) or direct connection.
+   * Universal TS → Rust architecture: Rust ALWAYS writes, no TypeScript fallback.
    */
-  private sendToWorker(level: WorkerLogLevel, message: string, args: any[]): void {
-    if (!this.logger || !this.logger.workerClient || !this.logFilePath) {
+  private sendToWorker(level: WorkerLogLevel, message: string, args: any[], timestamp: string): void {
+    if (!this.logger || !this.logFilePath) {
       return;
     }
 
@@ -655,33 +490,62 @@ class ComponentLogger {
       .replace(/^\//, '')                   // Remove leading slash
       .replace(/\.log$/, '');               // Remove .log extension
 
-    // Fire-and-forget (don't await, don't catch errors)
-    this.logger.workerClient.writeLog({
-      category,
-      level,
-      component: this.component,
-      message,
-      args: args.length > 0 ? args : undefined
-    }).catch(() => {
-      // Silently fall back to TypeScript logging on worker error
-      // Don't log the error - would cause infinite recursion
-    });
+    // PREFERRED PATH: TS → IPC → LoggerDaemonProcess → LoggerDaemonCore → Rust worker
+    // (Writes headers automatically + forwards to Rust)
+    if (this.logger.daemonClient.isConnected()) {
+      console.log(`[Logger] Using IPC path for ${this.component}:${category}`);
+      this.logger.daemonClient.sendLog(
+        this.component,
+        category,
+        level,
+        message,
+        args.length > 0 ? args : []
+      ).catch((err) => {
+        // IPC failed - try direct Rust worker as fallback
+        if (this.logger?.workerClient) {
+          this.logger.workerClient.writeLog({
+            category,
+            level,
+            component: this.component,
+            message,
+            args: args.length > 0 ? args : undefined
+          }).catch(() => {
+            // Both paths failed - Rust unavailable, NO TypeScript fallback
+          });
+        }
+      });
+      return;
+    }
+
+    // FALLBACK PATH: TS → Rust worker (direct, generates headers in Rust)
+    if (this.logger.workerClient) {
+      this.logger.workerClient.writeLog({
+        category,
+        level,
+        component: this.component,
+        message,
+        args: args.length > 0 ? args : undefined
+      }).catch((err) => {
+        // Rust worker failed - NO TypeScript fallback (fail hard)
+        console.error(`[Logger] ❌ Rust worker write failed for ${this.component}:`, err.message);
+      });
+    }
   }
 
   debug(message: string, ...args: any[]): void {
-    this.formatMessage('DEBUG', '🔍', message, ...args);
+    this.formatMessage('debug', '🔍', message, ...args);
   }
 
   info(message: string, ...args: any[]): void {
-    this.formatMessage('INFO', 'ℹ️', message, ...args);
+    this.formatMessage('info', 'ℹ️', message, ...args);
   }
 
   warn(message: string, ...args: any[]): void {
-    this.formatMessage('WARN', '⚠️', message, ...args);
+    this.formatMessage('warn', '⚠️', message, ...args);
   }
 
   error(message: string, ...args: any[]): void {
-    this.formatMessage('ERROR', '❌', message, ...args);
+    this.formatMessage('error', '❌', message, ...args);
   }
 
   /**

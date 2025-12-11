@@ -24,6 +24,14 @@ import type {
   FileMode
 } from '../shared/LoggerDaemonTypes';
 import { DEFAULT_LOGGER_SETTINGS } from '../shared/LoggerDaemonTypes';
+import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
+
+// DEBUG LOG FILE - ALWAYS FINDABLE
+const DEBUG_LOG = '/tmp/logger-daemon-debug.log';
+function debugLog(msg: string): void {
+  const timestamp = new Date().toISOString();
+  fs.appendFileSync(DEBUG_LOG, `[${timestamp}] ${msg}\n`);
+}
 
 /**
  * Log entry in write queue
@@ -92,85 +100,124 @@ export class LoggerDaemonCore {
     warn: 0,
     error: 0
   };
+  private workerClient: LoggerWorkerClient;
+  private headersWritten = new Set<string>(); // Track categories that have headers
 
   constructor(logBaseDir: string = '.continuum/jtag/logs/system') {
+    debugLog('CONSTRUCTOR START');
     this.logBaseDir = logBaseDir;
     this.ensureLogDirectory();
+
+    // Create Rust worker client
+    const socketPath = '/tmp/jtag-logger-worker.sock';
+    debugLog(`Creating worker client for ${socketPath}`);
+    this.workerClient = new LoggerWorkerClient(socketPath);
+    debugLog('CONSTRUCTOR END');
   }
 
   /**
    * Initialize the daemon
    */
   async initialize(): Promise<void> {
-    console.log(`[LoggerDaemonServer] Initializing (logDir: ${this.logBaseDir})`);
+    debugLog('INITIALIZE START');
 
-    // Start periodic flush timer (every 1 second)
-    this.flushTimer = setInterval(() => {
-      this.flushQueue();
-    }, 1000);
+    try {
+      debugLog('Calling workerClient.connect()...');
+      await this.workerClient.connect();
+      debugLog('✅ CONNECTED to Rust worker successfully');
 
-    console.log(`[LoggerDaemonServer] Ready`);
+      // VERIFICATION TEST: Send test log to verify Rust worker receives it
+      debugLog('Sending verification test log to Rust worker...');
+      const testResult = await this.workerClient.writeLog({
+        category: 'daemon-verification',
+        level: 'info',
+        component: 'LoggerDaemonCore',
+        message: `Daemon initialized successfully at ${new Date().toISOString()}`,
+        args: ['PID:' + process.pid, 'Socket:/tmp/jtag-logger-worker.sock']
+      });
+      debugLog(`✅ VERIFICATION TEST PASSED - Rust worker wrote ${testResult.bytesWritten} bytes`);
+      console.log(`🎯 LoggerDaemonCore: Verification test passed - ${testResult.bytesWritten} bytes written to Rust worker`);
+
+    } catch (error) {
+      const err = error as Error;
+      debugLog(`❌ CONNECTION FAILED: ${err.message}`);
+      debugLog(`Error stack: ${err.stack}`);
+      throw error;
+    }
   }
 
   /**
-   * Handle incoming log message
+   * Write header to log file if this is the first message for this category
+   * Header is generated dynamically from the component name
+   */
+  private async writeHeaderIfNeeded(category: string, component: string): Promise<void> {
+    // Skip if header already written for this category
+    if (this.headersWritten.has(category)) {
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const sessionId = `session-${Date.now()}`;
+
+    const header = [
+      '================================================================================',
+      `COMPONENT: ${component}`,
+      `CATEGORY: ${category}`,
+      `SESSION: ${sessionId}`,
+      `STARTED: ${timestamp}`,
+      `PID: ${process.pid}`,
+      '================================================================================',
+      '',
+      'LOG FORMAT:',
+      '  [RUST] [timestamp] [LEVEL] Component: message [args]',
+      '',
+      'LOG LEVELS:',
+      '  DEBUG - Detailed diagnostic information',
+      '  INFO  - General informational messages',
+      '  WARN  - Warning messages (potential issues)',
+      '  ERROR - Error messages (failures)',
+      '',
+      '================================================================================',
+      'LOG ENTRIES BEGIN BELOW',
+      '================================================================================',
+      ''
+    ].join('\n');
+
+    await this.workerClient.writeLog({
+      category,
+      level: 'info',
+      component,
+      message: header,
+      args: []
+    });
+
+    this.headersWritten.add(category);
+    debugLog(`📋 Wrote header for category: ${category} (component: ${component})`);
+  }
+
+  /**
+   * Handle incoming log message - forward to Rust worker
+   * Writes header automatically on first message for each category
    */
   async handleLogMessage(message: LogMessage): Promise<void> {
+    debugLog(`HANDLE LOG: ${message.data.component}:${message.data.category}`);
     this.totalLogsReceived++;
     this.logsByLevel[message.data.level]++;
 
-    // Get or create logger instance
-    const instance = this.getOrCreateInstance(
-      message.data.component,
-      message.data.category,
-      message.data.settings
-    );
+    // Write header if this is the first message for this category
+    await this.writeHeaderIfNeeded(message.data.category, message.data.component);
 
-    // Check if log level should be written
-    if (!this.shouldLog(message.data.level, instance.settings.level)) {
-      return;
-    }
-
-    // Check global queue size
-    if (this.writeQueue.length >= this.maxGlobalQueueSize) {
-      instance.logsDropped++;
-      this.totalLogsDropped++;
-      console.warn(
-        `[LoggerDaemonServer] Queue full (${this.writeQueue.length}), dropping log from ${message.data.component}`
-      );
-      return;
-    }
-
-    // Format message
-    const formattedMessage = this.formatLogMessage(
-      message.data.level,
-      message.data.component,
-      message.data.message,
-      message.data.args,
-      message.data.timestamp
-    );
-
-    // Add to queue
-    const queuedLog: QueuedLog = {
-      filePath: instance.filePath,
-      formattedMessage,
-      timestamp: message.data.timestamp,
+    // Send to Rust worker - NO FALLBACK, THROW ON ERROR
+    debugLog('Sending to Rust worker...');
+    await this.workerClient.writeLog({
+      category: message.data.category,
       level: message.data.level,
       component: message.data.component,
-      category: message.data.category
-    };
-
-    this.writeQueue.push(queuedLog);
-
-    // Update peak queue size
-    if (this.writeQueue.length > this.peakQueueSize) {
-      this.peakQueueSize = this.writeQueue.length;
-    }
-
-    // Flush immediately if queue is large
-    if (this.writeQueue.length >= 100) {
-      await this.flushQueue();
-    }
+      message: message.data.message,
+      args: [...message.data.args]
+    });
+    debugLog('✅ Sent successfully');
+    this.totalLogsWritten++;
   }
 
   /**
@@ -432,7 +479,7 @@ export class LoggerDaemonCore {
    * Graceful shutdown
    */
   async shutdown(): Promise<void> {
-    console.log(`[LoggerDaemonServer] Shutting down (flushing ${this.writeQueue.length} queued logs)...`);
+    console.log(`[LoggerDaemonServer] Shutting down...`);
 
     // Stop flush timer
     if (this.flushTimer) {
@@ -440,15 +487,12 @@ export class LoggerDaemonCore {
       this.flushTimer = undefined;
     }
 
-    // Flush remaining queue
-    const flushed = await this.flushQueue();
-    console.log(`[LoggerDaemonServer] Flushed ${flushed} logs`);
-
-    // Close all write streams
-    for (const instance of this.instances.values()) {
-      if (instance.writeStream) {
-        instance.writeStream.end();
-      }
+    // Disconnect from Rust worker
+    try {
+      await this.workerClient.disconnect();
+      console.log(`[LoggerDaemonServer] Disconnected from Rust worker`);
+    } catch (error) {
+      console.error(`[LoggerDaemonServer] Error disconnecting from Rust worker:`, error);
     }
 
     console.log(`[LoggerDaemonServer] Shutdown complete`);

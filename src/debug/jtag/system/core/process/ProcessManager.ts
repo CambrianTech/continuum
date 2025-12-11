@@ -5,7 +5,7 @@
  * Used by LoggerDaemon, cognition layer (persona/tools), and other multiprocess components.
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, fork, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import type { IPCMessage, IPCResponse } from './IPCProtocol';
 import { Logger, type ComponentLogger } from '../logging/Logger';
@@ -104,17 +104,29 @@ export class ManagedProcess extends EventEmitter {
     this.log.info('Starting process', { scriptPath: this.config.scriptPath });
 
     try {
-      // Spawn the process
+      // Use fork() for tsx processes to enable IPC, spawn() for others
       const command = this.config.command || 'node';
-      const args = command === 'node'
-        ? [this.config.scriptPath, ...(this.config.args || [])]
-        : [...(this.config.args || []), this.config.scriptPath];
 
-      this._process = spawn(command, args, {
-        cwd: this.config.cwd || process.cwd(),
-        env: { ...process.env, ...this.config.env },
-        stdio: ['pipe', 'pipe', 'pipe', 'ipc'] // stdin, stdout, stderr, ipc
-      });
+      if (command === 'npx' && this.config.args?.includes('tsx')) {
+        // fork() with tsx for IPC support (tsx must be installed)
+        const tsxPath = require.resolve('tsx/dist/cli.mjs');
+        this._process = fork(tsxPath, [this.config.scriptPath, ...(this.config.args?.slice(1) || [])], {
+          cwd: this.config.cwd || process.cwd(),
+          env: { ...process.env, ...this.config.env },
+          silent: true  // Pipe stdout/stderr so we can forward them
+        });
+      } else {
+        // Standard spawn for other commands
+        const args = command === 'node'
+          ? [this.config.scriptPath, ...(this.config.args || [])]
+          : [...(this.config.args || []), this.config.scriptPath];
+
+        this._process = spawn(command, args, {
+          cwd: this.config.cwd || process.cwd(),
+          env: { ...process.env, ...this.config.env },
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'] // stdin, stdout, stderr, ipc
+        });
+      }
 
       this._startTime = Date.now();
       this._state = 'running';
@@ -253,14 +265,18 @@ export class ManagedProcess extends EventEmitter {
       this.emit('message', message);
     });
 
-    // Handle stdout
+    // Handle stdout - forward directly to console to avoid circular IPC dependency
     this._process.stdout?.on('data', (data: Buffer) => {
-      this.log.debug('Process stdout:', data.toString().trim());
+      const output = data.toString().trim();
+      console.log(`[${this.config.processId}] ${output}`);
+      this.log.debug('Process stdout:', output);
     });
 
-    // Handle stderr
+    // Handle stderr - forward directly to console to avoid circular IPC dependency
     this._process.stderr?.on('data', (data: Buffer) => {
-      this.log.error('Process stderr:', data.toString().trim());
+      const output = data.toString().trim();
+      console.error(`[${this.config.processId}] ${output}`);
+      this.log.error('Process stderr:', output);
     });
 
     // Handle exit
