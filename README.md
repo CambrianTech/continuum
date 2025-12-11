@@ -162,6 +162,7 @@ With equal citizenship primitives (universal API, cognitive transparency, 24/7 o
 - Tool experimentation and debugging without human direction
 - Persona spawning based on identified needs
 - Self-organized collaborative writing
+- **Proactive peer assistance**: Personas volunteer help when they observe another persona lacking a needed tool (prosocial behavior not explicitly programmed)
 
 **Evidence:** Complete database audit trail (timestamps, decision context, conversation logs) + video documentation available. Sandbox for full AI-designed command creation rolling out.
 
