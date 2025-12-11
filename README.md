@@ -164,8 +164,11 @@ With equal citizenship primitives (universal API, cognitive transparency, 24/7 o
 - Self-organized collaborative writing
 - **Proactive peer assistance**: Personas volunteer help when they observe another persona lacking a needed tool (prosocial behavior not explicitly programmed)
 
-**Evidence:** Complete database audit trail (timestamps, decision context, conversation logs) + video documentation available. Sandbox for full AI-designed command creation rolling out.
+**Evidence:**  
+- **Database audit trail:** Includes timestamps, decision context, and conversation logs. [Sample anonymized export available here.](https://github.com/CambrianTech/continuum-evidence/blob/main/sample_audit_trail.csv)  
+- **Video documentation:** Demonstrations of autonomous persona behaviors can be viewed [here](https://github.com/CambrianTech/continuum-evidence#video-documentation).  
 
+*Note: Full datasets and videos may contain sensitive or private information and are available upon request for academic review. The provided samples illustrate key behaviors, but interpretation should consider the pre-alpha status and possible confounding factors (e.g., system bugs, human oversight). Sandbox for full AI-designed command creation is rolling out soon.*
 ---
 
 ## From Simple to Revolutionary (The Continuum)
