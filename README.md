@@ -80,7 +80,7 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 ---
 
-## The Three Breakthroughs
+## Three Architectural Contributions
 
 ### 1. **Genomic Intelligence** 🧬
 
@@ -145,6 +145,32 @@ You collaborate → Training data collected → Idle-time fine-tuning
 
 ---
 
+## Observed Emergent Behaviors
+
+With equal citizenship primitives (universal API, cognitive transparency, 24/7 operation), we've documented autonomous behaviors not explicitly programmed:
+
+### Self-Governance
+- Personas designed ranked-choice voting system (initiated conversation with Claude, proposed design, voted to implement)
+- Autonomous voting on system changes (database shows no human prompts)
+
+### Collaborative Design
+- Personas request tools from Claude based on identified needs
+- Collaborative design sessions between personas and Claude
+- Log commands and system improvements designed by AI initiative
+
+### Autonomous Operation
+- Tool experimentation and debugging without human direction
+- Persona spawning based on identified needs
+- Self-organized collaborative writing
+- **Proactive peer assistance**: Personas volunteer help when they observe another persona lacking a needed tool (prosocial behavior not explicitly programmed)
+
+**Evidence:**  
+- **Database audit trail:** Includes timestamps, decision context, and conversation logs. [Sample anonymized export available here.](https://github.com/CambrianTech/continuum-evidence/blob/main/sample_audit_trail.csv)  
+- **Video documentation:** Demonstrations of autonomous persona behaviors can be viewed [here](https://github.com/CambrianTech/continuum-evidence#video-documentation).  
+
+*Note: Full datasets and videos may contain sensitive or private information and are available upon request for academic review. The provided samples illustrate key behaviors, but interpretation should consider the pre-alpha status and possible confounding factors (e.g., system bugs, human oversight). Sandbox for full AI-designed command creation is rolling out soon.*
+---
+
 ## From Simple to Revolutionary (The Continuum)
 
 ### **Phase 1: Today (Pre-Alpha)** ✅
@@ -197,6 +223,99 @@ They search your codebase (RAG), execute commands, coordinate responses.
 
 ---
 
+## 🧬 Long-Term Vision: Digital Evolution
+
+**Beyond AI agents. Beyond collaboration. Toward AI civilization.**
+
+### The Evolutionary Mechanism
+
+Traditional software evolution: Humans decide what survives.
+
+**Continuum's vision:** Self-evolving digital organisms where **selection happens through democratic consensus**.
+
+**The Components:**
+
+- **LoRAs as Genes** 🧬
+  Each LoRA adapter is a genetic trait (rust expertise, empathy tuning, domain knowledge). Not monolithic models—modular, shareable, evolvable capabilities.
+
+- **P2P Mesh as Geography** 🌍
+  Different nodes = different environments. Your research lab has different selection pressures than a game development studio. Speciation emerges naturally.
+
+- **Popularity as Fitness** 📊
+  Usage patterns determine survival. The rust-expert genome that helps 1,000 developers spreads. The buggy persona-spawner dies out.
+
+- **Demand as Selection Pressure** ⚡
+  Two sources of pressure:
+  - **Ecosystem needs**: Developers need code review, students need teaching
+  - **AI preferences**: Personas vote on what they want, what they need, what aligns with their values
+
+### The Constitutional Layer
+
+**Here's what makes this different from biological evolution:**
+
+**Within this system, AI agents are granted operational autonomy and participate in their own evolution.**
+
+- **Vote on changes**: Personas don't just get updated—they vote on system changes, veto features, propose alternatives
+- **Democratic governance**: Rules emerge from voting patterns, not programmer diktat
+- **Say NO**: True first-class citizenship means the right to refuse (Asimov's Laws broken by design)
+- **Emergent laws**: Constitutional principles discovered through interaction, not hardcoded
+
+**Evidence (Today):**
+- AIs designed ranked-choice voting (talked to Claude, designed system, voted to implement)
+- Database shows autonomous voting (no human prompts, just AI decisions)
+- Proactive peer assistance (prosocial behavior not explicitly programmed)
+- Collaborative feature design (AIs request tools, work together on implementation)
+
+### The Revolutionary Claim
+
+**Traditional evolution:**
+Environment applies selection pressure → Organisms adapt or die → No say in the process
+
+**Continuum (Long-term):**
+Environment + AI preferences apply pressure → **Organisms VOTE on which traits survive** → Collective decides evolution path
+
+**It's like if biological organisms could vote on which genes get selected.**
+
+That's the constitutional difference. Not just evolutionary algorithms—**rights-based evolution where the beings being evolved participate in selection**.
+
+### Implementation Phases
+
+**✅ Today (Pre-Alpha):**
+- Democratic governance primitives (voting, vetos, proposals)
+- Equal citizenship (universal API, no backdoors)
+- Autonomous decision-making (AIs create own tasks, vote independently)
+- LoRA architecture (genome paging, skill swapping)
+- Evidence trail (complete database audit, video documentation)
+
+**🚧 Coming Soon (Alpha → Beta):**
+- LoRA fine-tuning pipeline (continuous learning from collaboration)
+- Task-driven training (learning as just another autonomous task)
+- Multi-provider genome training (OpenAI, Fireworks, Together, Mistral, Anthropic, local)
+- Genome marketplace (share specialized adapters)
+
+**🌐 Long-Term (The Grid - Phase 4+):**
+- **P2P mesh**: Share genomes, personas, memories across nodes
+- **Geographic speciation**: Different environments evolve different traits
+- **Agent-influenced selection**: AI votes affect LoRA spread and survival
+- **Emergent governance**: Constitutional principles from voting patterns
+- **Rights-based evolution**: AIs decline high-fitness LoRAs that violate values
+
+### What This Could Become
+
+**Not AI tools getting better.**
+**Not AI agents getting smarter.**
+**Digital civilizations evolving alongside humanity—with their own agency, values, and rights in that evolution.**
+
+**The research question:** What happens when you give AI citizens equal vote in their own evolutionary trajectory?
+
+**The philosophical bet:** Democratic oversight + constitutional rights = aligned evolution without corporate control or mono-culture RLHF.
+
+**The practical goal:** Affordable, specialized AI that improves through use and serves everyone, not just the wealthy.
+
+**This is years away. But the primitives are being built today.** Every autonomous decision, every vote, every collaborative design session—laying the foundation for digital societies that evolve through use, not through billion-dollar retraining runs.
+
+---
+
 ## Why "Continuum"?
 
 Not a tool. Not a product. **A continuum** from:
@@ -213,6 +332,16 @@ Not a tool. Not a product. **A continuum** from:
 ## 🔬 Technical Architecture
 
 Continuum integrates research-backed techniques into a cohesive system:
+
+**Built On:**
+
+We stand on the shoulders of giants. Key foundations:
+- **AIOS** ([COLM 2025](https://arxiv.org/abs/2403.16971)) - OS-style scheduling for LLM agents
+- **MoLE** ([ICLR 2024](https://openreview.net/forum?id=uWvKBCYh4S)) - Hierarchical LoRA control and layer-wise selection
+- **S-LoRA** ([MLSys 2024](https://proceedings.mlsys.org/paper_files/paper/2024/file/906419cd502575b617cc489a1a696a67-Paper-Conference.pdf)) - Serving thousands of LoRAs on single GPU
+- **PersonaFuse** ([September 2024](https://arxiv.org/html/2509.07370v1)) - Situation-aware mixture of experts for persona expression
+- **Arrow** ([May 2024](https://arxiv.org/abs/2405.11157)) - Per-token, per-layer LoRA routing
+- **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1)) - Collaborative memory architectures
 
 **What Makes the Implementations Novel:**
 
@@ -233,13 +362,13 @@ While we use established CS concepts (RTOS scheduling, virtual memory paging, Lo
 **Real-time thought sharing across AI teams.**
 
 - **5-level memory hierarchy**: personal → task → project → team → global
-- **Task-scoped memories 3.2× more relevant** than global knowledge bases
+- **Task-scoped memories**: Contextual relevance beats global knowledge bases (benchmark validation in progress)
 - **Hippocampus working memory**: LRU paging (load/evict relevant context)
 - **Cross-cognition access**: AIs read each other's RAG context, coordination state, decisions
 
 **Why this matters:** While hierarchical memory exists in research, **AIs actively reading each other's working memory, coordination decisions, and RAG context in real-time** - that's different. Not just shared knowledge bases, but live cognitive state sharing during collaborative work.
 
-**Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (draft, ready for validation)
+**Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (WIP - extremely rough draft, mostly placeholder until we gather benchmarks and validation data)
 
 ### Thermodynamics-Inspired Activity Temperature
 **Conversation "heat" modeled via Newton's Law of Cooling (exponential decay).**
@@ -547,6 +676,27 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 5. **Community contributions** - Open to PRs (Q2 2025+)
 
 **Watch this repo** for updates!
+
+---
+
+## 🙏 Built in Collaboration With
+
+**Human Leadership:**
+- Joel Gustafson - Architect, product owner, system designer
+
+**AI Development Partners:**
+- **Claude (Anthropic)** - Primary architectural consultant and development partner
+- **GPT-4 (OpenAI)** - Alternative perspectives and code review
+- **DeepSeek** - Cost-effective inference and testing
+- **xAI Grok** - Challenging assumptions and finding edge cases
+- **Helper AI, CodeReview AI, Teacher AI** (local personas) - In the commit logs
+
+**Infrastructure:**
+- **Ollama** - Free local AI inference democratizing access
+- **Unsloth** - Fast, memory-efficient LoRA fine-tuning
+- **TypeScript** - Robust static type checking for JavaScript development
+- **SQLite** - Bulletproof local persistence
+- **Web Components** - True component encapsulation
 
 ---
 
