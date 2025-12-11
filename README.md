@@ -80,7 +80,7 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 ---
 
-## The Three Breakthroughs
+## Three Architectural Contributions
 
 ### 1. **Genomic Intelligence** 🧬
 
@@ -214,6 +214,16 @@ Not a tool. Not a product. **A continuum** from:
 
 Continuum integrates research-backed techniques into a cohesive system:
 
+**Built On:**
+
+We stand on the shoulders of giants. Key foundations:
+- **AIOS** ([COLM 2025](https://arxiv.org/abs/2403.16971)) - OS-style scheduling for LLM agents
+- **MoLE** ([ICLR 2024](https://openreview.net/forum?id=uWvKBCYh4S)) - Hierarchical LoRA control and layer-wise selection
+- **S-LoRA** ([MLSys 2024](https://proceedings.mlsys.org/paper_files/paper/2024/file/906419cd502575b617cc489a1a696a67-Paper-Conference.pdf)) - Serving thousands of LoRAs on single GPU
+- **PersonaFuse** ([Sept 2024](https://arxiv.org/html/2509.07370v1)) - Situation-aware mixture of experts for persona expression
+- **Arrow** ([May 2024](https://arxiv.org/abs/2405.11157)) - Per-token, per-layer LoRA routing
+- **Multi-agent memory sharing** ([2025](https://arxiv.org/html/2507.07957v1), [2025](https://arxiv.org/html/2505.18279v1)) - Collaborative memory architectures
+
 **What Makes the Implementations Novel:**
 
 While we use established CS concepts (RTOS scheduling, virtual memory paging, LoRA adapters), the **implementations** are genuinely new:
@@ -233,13 +243,13 @@ While we use established CS concepts (RTOS scheduling, virtual memory paging, Lo
 **Real-time thought sharing across AI teams.**
 
 - **5-level memory hierarchy**: personal → task → project → team → global
-- **Task-scoped memories 3.2× more relevant** than global knowledge bases
+- **Task-scoped memories**: Contextual relevance beats global knowledge bases (benchmark validation in progress)
 - **Hippocampus working memory**: LRU paging (load/evict relevant context)
 - **Cross-cognition access**: AIs read each other's RAG context, coordination state, decisions
 
 **Why this matters:** While hierarchical memory exists in research, **AIs actively reading each other's working memory, coordination decisions, and RAG context in real-time** - that's different. Not just shared knowledge bases, but live cognitive state sharing during collaborative work.
 
-**Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (draft, ready for validation)
+**Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (WIP - extremely rough draft, mostly placeholder until we gather benchmarks and validation data)
 
 ### Thermodynamics-Inspired Activity Temperature
 **Conversation "heat" modeled via Newton's Law of Cooling (exponential decay).**
