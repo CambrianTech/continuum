@@ -76,9 +76,9 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
    * The Rust worker will construct the full path: .continuum/{category}.log
    */
   private getLogCategory(fileName: string): string {
-    // Strip .continuum/ prefix and .log extension to get category
-    // homeDirectory is like ".continuum/personas/grok-aff84949"
-    const category = this.persona.homeDirectory.replace(/^\.continuum\//, '');
+    // Strip everything up to .continuum/ and extract just 'personas/{id}'
+    // homeDirectory can be absolute or relative
+    const category = this.persona.homeDirectory.replace(/^.*\.continuum\//, '');
     return `${category}/logs/${fileName.replace(/\.log$/, '')}`;
   }
 

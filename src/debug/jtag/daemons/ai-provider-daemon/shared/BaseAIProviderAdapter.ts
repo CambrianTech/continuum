@@ -61,8 +61,8 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
     if (request?.personaContext) {
       // Get or create logger for this persona's adapters.log (works like daemon logs)
       const logDir = request.personaContext.logDir;
-      // Convert path to category: logDir is '.continuum/personas/{uniqueId}'
-      const category = logDir.replace(/^\.continuum\//, '') + '/logs/adapters';
+      // Convert path to category: strip everything up to .continuum/
+      const category = logDir.replace(/^.*\.continuum\//, '') + '/logs/adapters';
 
       if (!this.personaLoggers.has(category)) {
         const componentName = `${this.providerName}:${request.personaContext.displayName}`;

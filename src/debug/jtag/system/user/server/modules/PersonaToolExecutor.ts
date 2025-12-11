@@ -86,7 +86,7 @@ export class PersonaToolExecutor {
     this.formatAdapters = getToolFormatAdapters();
 
     // Per-persona tools.log in their own directory (works like daemon logs)
-    const category = `personas/${this.persona.entity.uniqueId}/tools`;
+    const category = `personas/${this.persona.entity.uniqueId}/logs/tools`;
     this.log = Logger.create(`PersonaToolExecutor:${this.persona.displayName}`, category);
   }
 

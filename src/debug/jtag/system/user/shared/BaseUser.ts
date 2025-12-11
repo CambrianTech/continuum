@@ -60,8 +60,10 @@ export abstract class BaseUser {
         const path = require('path');
 
         // Convert homeDirectory to category (like daemon logs)
-        // homeDirectory is '.continuum/personas/{uniqueId}'
-        const category = this.homeDirectory.replace(/^\.continuum\//, '') + '/logs/user';
+        // homeDirectory can be absolute or relative: extract just 'personas/{uniqueId}'
+        const category = this.homeDirectory
+          .replace(/^.*\.continuum\//, '')  // Strip everything up to .continuum/
+          + '/logs/user';
 
         this._log = Logger.create(
           `${this.constructor.name}:${this.displayName}`,

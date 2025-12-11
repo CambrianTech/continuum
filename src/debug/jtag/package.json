@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.5969",
+  "version": "1.0.5971",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -118,7 +118,7 @@
   },
   "scripts": {
     "worker:build": "cd workers/logger && cargo build --release",
-    "worker:start": "npm run worker:build && pkill -f logger-worker || true && rm -f /tmp/jtag-logger-worker.sock && workers/logger/target/release/logger-worker /tmp/jtag-logger-worker.sock > .continuum/jtag/logs/system/rust-worker.log 2>&1 &",
+    "worker:start": "npm run worker:build && mkdir -p .continuum/jtag/logs/system && pkill -f logger-worker || true && rm -f /tmp/jtag-logger-worker.sock && workers/logger/target/release/logger-worker /tmp/jtag-logger-worker.sock > .continuum/jtag/logs/system/rust-worker.log 2>&1 &",
     "worker:kill": "pkill -f logger-worker || true && rm -f /tmp/jtag-logger-worker.sock",
     "worker:status": "pgrep -fl logger-worker || echo 'Rust worker not running'",
     "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",

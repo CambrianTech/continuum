@@ -147,11 +147,16 @@ fn handle_client(stream: UnixStream, log_dir: &str, file_cache: FileCache, heade
             break;
         }
 
+        debug_log("About to trim line");
         let line = line.trim();
+        debug_log(&format!("Trimmed line length: {}", line.len()));
+
         if line.is_empty() {
+            debug_log("Line is empty, continuing loop");
             continue;
         }
 
+        debug_log(&format!("Line content (first 50 chars): {:?}", &line.chars().take(50).collect::<String>()));
         println!("📨 Received: {} bytes", line.len());
 
         // Parse request
@@ -228,15 +233,24 @@ fn process_log_message(
         PathBuf::from(log_dir).join(format!("{}.log", payload.category))
     };
 
-    // Check if we need to write header for this category
-    let mut headers = headers_written.lock().unwrap();
-    let needs_header = !headers.contains(&payload.category);
-
     // Format timestamp
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
-    // Get or create file handle from cache
+    // Get or create file handle from cache (with auto-recovery if file was deleted)
     let mut cache = file_cache.lock().unwrap();
+
+    // Check if cached file was deleted/moved - if so, remove from cache to force reopen
+    if let Some(existing_file) = cache.get(&payload.category) {
+        if existing_file.metadata().is_err() {
+            // File was deleted or moved - remove from cache
+            cache.remove(&payload.category);
+            // Also clear header flag so we write header again
+            let mut headers = headers_written.lock().unwrap();
+            headers.remove(&payload.category);
+            drop(headers);
+        }
+    }
+
     let file = cache.entry(payload.category.clone()).or_insert_with(|| {
         // Ensure directory exists
         if let Some(parent) = log_file_path.parent() {
@@ -251,6 +265,10 @@ fn process_log_message(
             .open(&log_file_path)
             .expect(&format!("Failed to open log file: {:?}", log_file_path))
     });
+
+    // Re-check needs_header after potential cache clear
+    let mut headers = headers_written.lock().unwrap();
+    let needs_header = !headers.contains(&payload.category);
 
     let mut total_bytes = 0;
 

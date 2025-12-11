@@ -72,8 +72,8 @@ export class SubsystemLogger {
     this.uniqueId = uniqueId;
 
     // Determine log category (like daemon logs: 'daemons/UserDaemonServer')
-    // Persona logs use: 'personas/{uniqueId}/{subsystem}'
-    const category = `personas/${uniqueId}/${subsystem}`;
+    // Persona logs use: 'personas/{uniqueId}/logs/{subsystem}'
+    const category = `personas/${uniqueId}/logs/${subsystem}`;
 
     // Create logger using core Logger system (works like daemon logs)
     const componentName = `${uniqueId}:${subsystem}`;
@@ -129,7 +129,7 @@ export class SubsystemLogger {
    */
   enqueueLog(fileName: string, message: string): void {
     // Convert filename to category (like daemon logs)
-    const category = `personas/${this.uniqueId}/${fileName.replace(/\.log$/, '')}`;
+    const category = `personas/${this.uniqueId}/logs/${fileName.replace(/\.log$/, '')}`;
 
     // Create a ComponentLogger for this file and write the raw message
     const fileLogger = Logger.create(
