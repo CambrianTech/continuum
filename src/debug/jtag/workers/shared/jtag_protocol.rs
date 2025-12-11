@@ -12,7 +12,6 @@
 ///
 /// MIRRORED IN TYPESCRIPT: shared/ipc/JTAGProtocol.ts
 /// Keep these two files in sync!
-
 use serde::{Deserialize, Serialize};
 
 // ============================================================================

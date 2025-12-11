@@ -1,27 +1,36 @@
-/// Simple Logger Worker - Rust IPC Demo
+/// Logger Worker - Production Rust IPC Service
 ///
-/// This is a minimal proof-of-concept that:
-/// 1. Listens on a Unix domain socket
-/// 2. Receives JSON messages from TypeScript
-/// 3. Writes log entries to files
-/// 4. Sends JSON responses back to TypeScript
+/// This worker provides high-performance log file management for the JTAG system.
+/// It handles:
+/// - Multi-threaded concurrent connections
+/// - File handle caching for performance
+/// - Auto-recovery if log files deleted
+/// - Health monitoring via ping messages
 ///
-/// Run: cargo run -- /tmp/logger-worker.sock
-
+/// Architecture:
+/// - main.rs: Orchestration and connection acceptance
+/// - connection_handler: Message parsing and routing
+/// - file_manager: File operations and caching
+/// - health: Statistics tracking
+/// - messages: Protocol types (shared with TypeScript)
+///
+/// Usage: cargo run --release -- /tmp/logger-worker.sock
+mod connection_handler;
+mod file_manager;
+mod health;
 mod messages;
 
-use messages::*;
-use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::net::UnixListener;
+use std::path::Path;
 use std::thread;
 
-// DEBUG LOGGING TO FILE
+// ============================================================================
+// Debug Logging (Temporary)
+// ============================================================================
+
 fn debug_log(msg: &str) {
-    use std::io::Write;
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let log_msg = format!("[{}] {}\n", timestamp, msg);
     if let Ok(mut file) = OpenOptions::new()
@@ -34,30 +43,21 @@ fn debug_log(msg: &str) {
     }
 }
 
-// Global file handle cache (shared across connections)
-type FileCache = Arc<Mutex<HashMap<String, File>>>;
-// Track which categories have headers written (shared across connections)
-type HeaderTracker = Arc<Mutex<HashSet<String>>>;
-
 // ============================================================================
-// Global Stats for Health Monitoring
+// Main Entry Point
 // ============================================================================
-
-struct WorkerStats {
-    start_time: std::time::Instant,
-    connections_total: u64,
-    requests_processed: u64,
-}
-
-type Stats = Arc<Mutex<WorkerStats>>;
 
 fn main() -> std::io::Result<()> {
     // Log startup
     debug_log("========================================");
-    debug_log(&format!("RUST WORKER STARTING - PID: {}", std::process::id()));
+    debug_log(&format!(
+        "RUST WORKER STARTING - PID: {}",
+        std::process::id()
+    ));
     debug_log(&format!("Start time: {}", chrono::Utc::now().to_rfc3339()));
     debug_log("========================================");
 
+    // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         debug_log("ERROR: Missing socket path argument");
@@ -69,32 +69,27 @@ fn main() -> std::io::Result<()> {
     let socket_path = &args[1];
     debug_log(&format!("Socket path: {}", socket_path));
 
+    // Get log directory from environment or use default
+    let log_dir =
+        std::env::var("JTAG_LOG_DIR").unwrap_or_else(|_| ".continuum/jtag/logs/system".to_string());
+    debug_log(&format!("Log directory: {}", log_dir));
+
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
         debug_log("Removing existing socket file");
         std::fs::remove_file(socket_path)?;
     }
 
-    // Get log directory from environment or use default
-    let log_dir = std::env::var("JTAG_LOG_DIR")
-        .unwrap_or_else(|_| ".continuum/jtag/logs/system".to_string());
-    debug_log(&format!("Log directory: {}", log_dir));
-
     println!("🦀 Rust Logger Worker starting...");
     println!("📡 Listening on: {}", socket_path);
     println!("📁 Log directory: {}", log_dir);
 
-    // Create shared file cache and header tracker
-    let file_cache: FileCache = Arc::new(Mutex::new(HashMap::new()));
-    let headers_written: HeaderTracker = Arc::new(Mutex::new(HashSet::new()));
+    // Create shared state (file cache, headers, stats)
+    let file_cache = file_manager::create_file_cache();
+    let headers_written = file_manager::create_header_tracker();
+    let stats = health::create_stats();
 
-    // Create shared stats for health monitoring
-    let stats: Stats = Arc::new(Mutex::new(WorkerStats {
-        start_time: std::time::Instant::now(),
-        connections_total: 0,
-        requests_processed: 0,
-    }));
-
+    // Bind socket
     debug_log("Binding to socket...");
     let listener = UnixListener::bind(socket_path)?;
     debug_log("Socket bound successfully");
@@ -111,26 +106,35 @@ fn main() -> std::io::Result<()> {
         match stream {
             Ok(stream) => {
                 println!("\n🔗 New connection from TypeScript (spawning thread)");
-                debug_log(&format!("Connection #{} accepted, spawning thread", conn_count));
+                debug_log(&format!(
+                    "Connection #{} accepted, spawning thread",
+                    conn_count
+                ));
 
                 // Increment connection counter
                 {
                     let mut s = stats.lock().unwrap();
-                    s.connections_total += 1;
+                    s.record_connection();
                 }
 
-                // Clone for thread
+                // Clone shared state for thread
                 let log_dir_clone = log_dir.clone();
-                let file_cache_clone = Arc::clone(&file_cache);
-                let headers_clone = Arc::clone(&headers_written);
-                let stats_clone = Arc::clone(&stats);
+                let file_cache_clone = file_cache.clone();
+                let headers_clone = headers_written.clone();
+                let stats_clone = stats.clone();
                 let conn_id = conn_count;
 
                 // Spawn thread to handle connection concurrently
                 thread::spawn(move || {
-                    debug_log(&format!("[Thread-{}] handle_client starting", conn_id));
+                    debug_log(&format!("[Thread-{}] Starting connection handler", conn_id));
 
-                    if let Err(e) = handle_client(stream, &log_dir_clone, file_cache_clone, headers_clone, stats_clone) {
+                    if let Err(e) = connection_handler::handle_client(
+                        stream,
+                        &log_dir_clone,
+                        file_cache_clone,
+                        headers_clone,
+                        stats_clone,
+                    ) {
                         eprintln!("❌ Error handling client #{}: {}", conn_id, e);
                         debug_log(&format!("[Thread-{}] ERROR: {}", conn_id, e));
                     } else {
@@ -151,309 +155,4 @@ fn main() -> std::io::Result<()> {
 
     debug_log("Accept loop ended (should never happen)");
     Ok(())
-}
-
-fn handle_client(stream: UnixStream, log_dir: &str, file_cache: FileCache, headers_written: HeaderTracker, stats: Stats) -> std::io::Result<()> {
-    debug_log("handle_client: START");
-    debug_log("Creating BufReader and cloning stream for writer");
-    let mut reader = BufReader::new(&stream);
-    let mut writer = stream.try_clone()?;
-    debug_log("Reader/writer created successfully");
-
-    // Read JSON messages line by line
-    loop {
-        debug_log("Loop iteration: Calling read_line()...");
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line)?;
-        debug_log(&format!("read_line() returned {} bytes", bytes_read));
-
-        if bytes_read == 0 {
-            debug_log("bytes_read == 0, client disconnected (EOF)");
-            println!("📪 Client disconnected (EOF)");
-            break;
-        }
-
-        debug_log("About to trim line");
-        let line = line.trim();
-        debug_log(&format!("Trimmed line length: {}", line.len()));
-
-        if line.is_empty() {
-            debug_log("Line is empty, continuing loop");
-            continue;
-        }
-
-        debug_log(&format!("Line content (first 50 chars): {:?}", &line.chars().take(50).collect::<String>()));
-        println!("📨 Received: {} bytes", line.len());
-
-        // Parse base message to get type field
-        let base_msg: Result<serde_json::Value, _> = serde_json::from_str(line);
-
-        match base_msg {
-            Ok(msg) => {
-                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
-
-                println!("✅ Parsed request: type={}, id={}", msg_type, msg_id);
-
-                match msg_type {
-                    "write-log" => {
-                        // Parse as write-log request
-                        let request: WorkerRequest<WriteLogPayload> = serde_json::from_str(line)
-                            .expect("Failed to parse write-log payload");
-
-                        // Process the log message
-                        let bytes_written = process_log_message(&request.payload, log_dir, &file_cache, &headers_written)?;
-
-                        // Increment requests processed counter
-                        {
-                            let mut s = stats.lock().unwrap();
-                            s.requests_processed += 1;
-                        }
-
-                        // Build response
-                        let response = WorkerResponse::success(
-                            request.id.clone(),
-                            request.r#type.clone(),
-                            WriteLogResult { bytes_written }
-                        );
-
-                        // Send response back to TypeScript
-                        let response_json = serde_json::to_string(&response)
-                            .expect("Failed to serialize response");
-
-                        writeln!(writer, "{}", response_json)?;
-                        writer.flush()?;
-
-                        println!("✅ Sent response: {} bytes written", bytes_written);
-                    },
-
-                    "ping" => {
-                        // Parse as ping request
-                        let request: WorkerRequest<PingPayload> = serde_json::from_str(line)
-                            .expect("Failed to parse ping payload");
-
-                        // Gather stats
-                        let (uptime_ms, connections_total, requests_processed) = {
-                            let s = stats.lock().unwrap();
-                            let uptime = s.start_time.elapsed().as_millis() as u64;
-                            (uptime, s.connections_total, s.requests_processed)
-                        };
-
-                        // Get active categories count
-                        let active_categories = {
-                            let cache = file_cache.lock().unwrap();
-                            cache.len()
-                        };
-
-                        // Build ping response
-                        let ping_result = PingResult {
-                            uptime_ms,
-                            connections_total,
-                            requests_processed,
-                            active_categories,
-                        };
-
-                        let response = WorkerResponse::success(
-                            request.id.clone(),
-                            request.r#type.clone(),
-                            ping_result
-                        );
-
-                        // Send response back to TypeScript
-                        let response_json = serde_json::to_string(&response)
-                            .expect("Failed to serialize response");
-
-                        writeln!(writer, "{}", response_json)?;
-                        writer.flush()?;
-
-                        println!("✅ Sent ping response: uptime={}ms, connections={}, requests={}, categories={}",
-                                 uptime_ms, connections_total, requests_processed, active_categories);
-                    },
-
-                    _ => {
-                        eprintln!("❌ Unknown message type: {}", msg_type);
-                        // Send error response
-                        let error_response = WorkerResponse::<WriteLogResult>::error(
-                            msg_id.to_string(),
-                            msg_type.to_string(),
-                            WriteLogResult { bytes_written: 0 },
-                            format!("Unknown message type: {}", msg_type),
-                            ErrorType::Validation
-                        );
-
-                        let error_json = serde_json::to_string(&error_response)
-                            .expect("Failed to serialize error response");
-
-                        writeln!(writer, "{}", error_json)?;
-                        writer.flush()?;
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("❌ Failed to parse request: {}", e);
-                eprintln!("   Raw message: {}", line);
-
-                // Try to extract request ID for error response
-                if let Ok(base_msg) = serde_json::from_str::<serde_json::Value>(line) {
-                    if let Some(id) = base_msg.get("id").and_then(|v| v.as_str()) {
-                        let error_response = WorkerResponse::<WriteLogResult>::error(
-                            id.to_string(),
-                            "write-log".to_string(),
-                            WriteLogResult { bytes_written: 0 },
-                            format!("Parse error: {}", e),
-                            ErrorType::Validation
-                        );
-
-                        let error_json = serde_json::to_string(&error_response)
-                            .expect("Failed to serialize error response");
-
-                        writeln!(writer, "{}", error_json)?;
-                        writer.flush()?;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn process_log_message(
-    payload: &WriteLogPayload,
-    log_dir: &str,
-    file_cache: &FileCache,
-    headers_written: &HeaderTracker
-) -> std::io::Result<usize> {
-    // Build log file path from category (all logs use categories now, works like daemon logs)
-    // - Daemon logs: 'daemons/UserDaemonServer' → {log_dir}/daemons/UserDaemonServer.log
-    // - System logs: 'coordination' → {log_dir}/coordination.log
-    // - Persona logs: 'personas/{id}/logs/genome' → .continuum/personas/{id}/logs/genome.log
-    let log_file_path = if payload.category.starts_with("personas/") {
-        // Persona logs go to .continuum/personas/... (not under log_dir)
-        PathBuf::from(format!(".continuum/{}.log", payload.category))
-    } else {
-        // Daemon and system logs go under log_dir
-        PathBuf::from(log_dir).join(format!("{}.log", payload.category))
-    };
-
-    // Format timestamp
-    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-    // Get or create file handle from cache (with auto-recovery if file was deleted)
-    let mut cache = file_cache.lock().unwrap();
-
-    // Check if cached file was deleted/moved - if so, remove from cache to force reopen
-    if let Some(existing_file) = cache.get(&payload.category) {
-        if existing_file.metadata().is_err() {
-            // File was deleted or moved - remove from cache
-            cache.remove(&payload.category);
-            // Also clear header flag so we write header again
-            let mut headers = headers_written.lock().unwrap();
-            headers.remove(&payload.category);
-            drop(headers);
-        }
-    }
-
-    let file = cache.entry(payload.category.clone()).or_insert_with(|| {
-        // Ensure directory exists
-        if let Some(parent) = log_file_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
-        // Open file in append mode, create if doesn't exist
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(true)
-            .open(&log_file_path)
-            .expect(&format!("Failed to open log file: {:?}", log_file_path))
-    });
-
-    // Re-check needs_header after potential cache clear
-    let mut headers = headers_written.lock().unwrap();
-    let needs_header = !headers.contains(&payload.category);
-
-    let mut total_bytes = 0;
-
-    // Write header if this is the first log for this category
-    if needs_header {
-        let header = generate_header(&payload.component, &payload.category, &timestamp);
-        file.write_all(header.as_bytes())?;
-        file.flush()?;
-        total_bytes += header.len();
-        headers.insert(payload.category.clone());
-        println!("📋 Wrote header for: {} ({})", payload.component, payload.category);
-    }
-
-    // Drop locks before writing log entry (avoid deadlock)
-    drop(headers);
-    drop(cache);
-
-    // Format log entry (with [RUST] marker)
-    let log_entry = format!(
-        "[RUST] [{}] [{}] {}: {}",
-        timestamp,
-        payload.level.to_string().to_uppercase(),
-        payload.component,
-        payload.message
-    );
-
-    // Append args if present
-    let full_log_entry = if let Some(args) = &payload.args {
-        format!("{} {}\n", log_entry, args)
-    } else {
-        format!("{}\n", log_entry)
-    };
-
-    // Re-acquire cache lock to write log entry
-    let mut cache = file_cache.lock().unwrap();
-    let file = cache.get_mut(&payload.category).unwrap();
-    file.write_all(full_log_entry.as_bytes())?;
-    file.flush()?;
-    total_bytes += full_log_entry.len();
-
-    println!("📝 LOG: {} → {:?}", log_entry.trim(), log_file_path);
-
-    Ok(total_bytes)
-}
-
-fn generate_header(component: &str, category: &str, timestamp: &str) -> String {
-    format!(
-        "================================================================================\n\
-         COMPONENT: {}\n\
-         CATEGORY: {}\n\
-         SESSION: session-{}\n\
-         STARTED: {}\n\
-         PID: {}\n\
-         ================================================================================\n\
-         \n\
-         LOG FORMAT:\n\
-           [RUST] [timestamp] [LEVEL] Component: message [args]\n\
-         \n\
-         LOG LEVELS:\n\
-           DEBUG - Detailed diagnostic information\n\
-           INFO  - General informational messages\n\
-           WARN  - Warning messages\n\
-           ERROR - Error messages\n\
-         \n\
-         LOG ENTRIES BEGIN BELOW:\n\
-         ================================================================================\n\
-         \n",
-        component,
-        category,
-        chrono::Utc::now().timestamp_millis(),
-        timestamp,
-        std::process::id()
-    )
-}
-
-impl std::fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LogLevel::Debug => write!(f, "debug"),
-            LogLevel::Info => write!(f, "info"),
-            LogLevel::Warn => write!(f, "warn"),
-            LogLevel::Error => write!(f, "error"),
-        }
-    }
 }

@@ -2,21 +2,22 @@
 ///
 /// This uses the universal JTAGProtocol from workers/shared/jtag_protocol.rs
 /// which mirrors shared/ipc/JTAGProtocol.ts on the TypeScript side.
-
 use serde::{Deserialize, Serialize};
 
 // Import shared JTAGProtocol types
 #[path = "../../shared/jtag_protocol.rs"]
 mod jtag_protocol;
 
+// Re-export JTAG protocol types for library users
+#[allow(unused_imports)]
 pub use jtag_protocol::{
+    ErrorType,
+    JTAGErrorType,
     JTAGRequest,
     JTAGResponse,
-    JTAGErrorType,
     // Legacy aliases for backwards compatibility
     WorkerRequest,
     WorkerResponse,
-    ErrorType,
 };
 
 // ============================================================================
