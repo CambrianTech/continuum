@@ -216,8 +216,17 @@ fn process_log_message(
     file_cache: &FileCache,
     headers_written: &HeaderTracker
 ) -> std::io::Result<usize> {
-    // Build log file path from category
-    let log_file_path = PathBuf::from(log_dir).join(format!("{}.log", payload.category));
+    // Build log file path from category (all logs use categories now, works like daemon logs)
+    // - Daemon logs: 'daemons/UserDaemonServer' → {log_dir}/daemons/UserDaemonServer.log
+    // - System logs: 'coordination' → {log_dir}/coordination.log
+    // - Persona logs: 'personas/{id}/logs/genome' → .continuum/personas/{id}/logs/genome.log
+    let log_file_path = if payload.category.starts_with("personas/") {
+        // Persona logs go to .continuum/personas/... (not under log_dir)
+        PathBuf::from(format!(".continuum/{}.log", payload.category))
+    } else {
+        // Daemon and system logs go under log_dir
+        PathBuf::from(log_dir).join(format!("{}.log", payload.category))
+    };
 
     // Check if we need to write header for this category
     let mut headers = headers_written.lock().unwrap();

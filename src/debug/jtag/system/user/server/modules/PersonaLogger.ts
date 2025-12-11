@@ -50,9 +50,9 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   enqueueLog(fileName: string, message: string): void {
     // Get or create logger for this file
     if (!this.loggers[fileName]) {
-      const filePath = this.getLogFilePath(fileName);
+      const category = this.getLogCategory(fileName);
       const componentName = `${this.persona.displayName}:${fileName.replace('.log', '')}`;
-      this.loggers[fileName] = Logger.createWithFile(componentName, filePath, FileMode.CLEAN);
+      this.loggers[fileName] = Logger.create(componentName, category);
     }
 
     // Write directly (Logger.ts handles queuing and async writes)
@@ -68,16 +68,18 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
   }
 
   /**
-   * Get full log file path for a given file name
+   * Get log category for a given file name (works like daemon logs)
    *
-   * Format: .continuum/personas/{name}-{id}/logs/{subprocess}.log
-   * Example: .continuum/personas/grok-aff84949/logs/hippocampus.log
+   * Format: personas/{name}-{id}/logs/{subprocess}
+   * Example: personas/grok-aff84949/logs/hippocampus
    *
-   * Uses persona.homeDirectory as the single source of truth
+   * The Rust worker will construct the full path: .continuum/{category}.log
    */
-  private getLogFilePath(fileName: string): string {
-    // Use persona's homeDirectory (already absolute path from SystemPaths)
-    return `${this.persona.homeDirectory}/logs/${fileName}`;
+  private getLogCategory(fileName: string): string {
+    // Strip .continuum/ prefix and .log extension to get category
+    // homeDirectory is like ".continuum/personas/grok-aff84949"
+    const category = this.persona.homeDirectory.replace(/^\.continuum\//, '');
+    return `${category}/logs/${fileName.replace(/\.log$/, '')}`;
   }
 
   /**

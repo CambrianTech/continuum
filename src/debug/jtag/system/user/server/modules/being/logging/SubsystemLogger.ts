@@ -71,19 +71,13 @@ export class SubsystemLogger {
     this.personaId = personaId;
     this.uniqueId = uniqueId;
 
-    // Determine log file path
-    const logDir = config.logDir
-      ? (path.isAbsolute(config.logDir) ? config.logDir : path.join(SystemPaths.root, config.logDir))
-      : SystemPaths.logs.personas(uniqueId);
+    // Determine log category (like daemon logs: 'daemons/UserDaemonServer')
+    // Persona logs use: 'personas/{uniqueId}/{subsystem}'
+    const category = `personas/${uniqueId}/${subsystem}`;
 
-    const logFilePath = path.join(logDir, `${subsystem}.log`);
-    // Persona logs default to CLEAN (start fresh per session)
-    // Caller can override by passing mode in config
-    const mode = config.mode ?? FileMode.CLEAN;
-
-    // Create logger using core Logger system
+    // Create logger using core Logger system (works like daemon logs)
     const componentName = `${uniqueId}:${subsystem}`;
-    this.logger = Logger.createWithFile(componentName, logFilePath, mode);
+    this.logger = Logger.create(componentName, category);
   }
 
   // Delegate all logging methods to ComponentLogger
@@ -134,15 +128,13 @@ export class SubsystemLogger {
    * @param message - Log message to write
    */
   enqueueLog(fileName: string, message: string): void {
-    // Determine full path for the log file
-    const logDir = SystemPaths.logs.personas(this.uniqueId);
-    const logFilePath = path.join(logDir, fileName);
+    // Convert filename to category (like daemon logs)
+    const category = `personas/${this.uniqueId}/${fileName.replace(/\.log$/, '')}`;
 
     // Create a ComponentLogger for this file and write the raw message
-    const fileLogger = Logger.createWithFile(
+    const fileLogger = Logger.create(
       `${this.uniqueId}:${fileName.replace('.log', '')}`,
-      logFilePath,
-      FileMode.CLEAN
+      category
     );
     fileLogger.writeRaw(message + '\n');
   }

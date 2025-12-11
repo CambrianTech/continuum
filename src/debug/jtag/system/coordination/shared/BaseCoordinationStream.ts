@@ -113,9 +113,8 @@ export abstract class BaseCoordinationStream<
     super();
     this.config = { ...DEFAULT_COORDINATION_CONFIG, ...config };
 
-    // Initialize logger for coordination (logs to coordination.log)
-    const logPath = path.join(SystemPaths.logs.system, 'coordination.log');
-    this.logger = Logger.createWithFile('CoordinationStream', logPath, FileMode.CLEAN);
+    // Initialize logger for coordination (logs to coordination.log, works like daemon logs)
+    this.logger = Logger.create('CoordinationStream', 'coordination');
 
     // Cleanup old streams periodically
     this.cleanupInterval = setInterval(() => {

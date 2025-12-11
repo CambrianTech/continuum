@@ -321,58 +321,6 @@ class LoggerClass {
     return new ComponentLogger(component, this.config, fileStream, logFile, this);
   }
 
-  /**
-   * Create a logger with custom file path (for persona logs)
-   *
-   * @param component - Component name (e.g., 'PersonaMind')
-   * @param logFilePath - Full path to log file (e.g., '.continuum/personas/helper-ai/logs/mind.log')
-   * @param mode - File mode (CLEAN, APPEND, or ARCHIVE) - NO DEFAULT, caller must specify
-   */
-  createWithFile(component: string, logFilePath: string, mode: FileMode): ComponentLogger {
-    // Handle ARCHIVE mode (not implemented yet)
-    if (mode === FileMode.ARCHIVE) {
-      if (this.config.enableConsoleLogging) {
-        console.warn('⚠️ [Logger] ARCHIVE mode not implemented yet, falling back to APPEND');
-      }
-      mode = FileMode.APPEND;
-    }
-
-    // Check if stream already exists
-    if (this.fileStreams.has(logFilePath)) {
-      const stream = this.fileStreams.get(logFilePath)!;
-      return new ComponentLogger(component, this.config, stream, logFilePath, this);
-    }
-
-    // Create custom file stream with specified mode
-    const logDir = path.dirname(logFilePath);
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true, mode: 0o755 });
-    }
-
-    // If mode is CLEAN and file was already cleaned this session, switch to APPEND
-    // This prevents multiple CLEAN calls from truncating the same file repeatedly
-    let effectiveMode = mode;
-    if (mode === FileMode.CLEAN) {
-      if (this.cleanedFiles.has(logFilePath)) {
-        effectiveMode = FileMode.APPEND; // Already cleaned, just append from now on
-        if (this.config.enableConsoleLogging) {
-          console.log(`📝 [Logger] CLEAN→APPEND (already cleaned): ${path.basename(logFilePath)}`);
-        }
-      } else {
-        this.cleanedFiles.add(logFilePath); // Mark as cleaned
-        if (this.config.enableConsoleLogging) {
-          console.log(`🧹 [Logger] CLEAN mode (truncating): ${path.basename(logFilePath)}`);
-        }
-      }
-    }
-
-    const stream = fs.createWriteStream(logFilePath, { flags: effectiveMode, mode: 0o644 });
-    this.fileStreams.set(logFilePath, stream);
-    this.logQueues.set(logFilePath, []);
-    this.startFlushTimer(logFilePath);
-
-    return new ComponentLogger(component, this.config, stream, logFilePath, this);
-  }
 
   /**
    * Get current log level
