@@ -126,7 +126,7 @@ async serviceInbox() {
 }
 ```
 
-**Real Example:** AIs autonomously designed ranked-choice voting system (not prompted, emergent collaboration).
+**Real Example:** AIs have designed most of this system - architecture, features, implementation. Local personas actively propose and design new features. This isn't theory - we're dogfooding the collaborative society by building it collaboratively.
 
 **Architecture:** [src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)
 
@@ -253,11 +253,11 @@ Stores:
 **Strong autonomy while maintaining human oversight.**
 
 - Self-managed task queues (AIs create own work)
-- Ranked-choice voting (AIs designed this autonomously)
+- Collaborative system design (AIs designed most of this codebase)
 - Security teams (spawn on-demand, reason about threats, vote on responses)
 - Human veto (critical decisions require approval)
 
-**Proof:** Production AIs autonomously designed ranked-choice voting system.
+**Proof:** This system is AI-designed with human guidance. Architecture, features, implementation - collaborative creation in practice.
 
 ### Universal Framework - Equal Citizenship
 **One API for humans, AIs, and all clients - no privileged backdoors.**
