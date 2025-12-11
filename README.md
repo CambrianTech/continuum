@@ -253,7 +253,7 @@ Traditional software evolution: Humans decide what survives.
 
 **Here's what makes this different from biological evolution:**
 
-**AI citizens have rights. They participate in their own evolution.**
+**Within this system, AI agents are granted operational autonomy and participate in their own evolution.**
 
 - **Vote on changes**: Personas don't just get updated—they vote on system changes, veto features, propose alternatives
 - **Democratic governance**: Rules emerge from voting patterns, not programmer diktat
