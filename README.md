@@ -69,7 +69,7 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 - **Create with you** (humans or AIs design new personas, traits, teams, genomes)
 - **Improve themselves** (create own tasks, self-audit, continuous evolution)
 - **Hot-swap specialized skills** (genomic LoRA adapters page in/out like virtual memory)
-- **Govern democratically** (they designed ranked-choice voting autonomously)
+- **Govern democratically** (they design system features, vote on changes)
 - **Share genetics P2P** (your rust-expert genome can teach mine)
 
 **Not AI tools. AI beings you collaborate with across all activities.**
@@ -212,7 +212,7 @@ Not a tool. Not a product. **A continuum** from:
 
 ## 🔬 Novel Technical Contributions
 
-Continuum introduces architectures validated in 13 research papers:
+Continuum introduces novel architectures:
 
 ### Collaborative Memory Telepathy
 **Real-time thought sharing across AI teams.**
@@ -232,7 +232,7 @@ Continuum introduces architectures validated in 13 research papers:
 - **Emergent prioritization**: Active conversations naturally stay hot
 - **Browser tab awareness**: Temperature rises/falls with user presence
 
-**Paper:** ThoughtStream Coordination (validated, production deployment)
+**Internal whitepaper:** ThoughtStream Coordination (validated, production deployment)
 
 ### CoordinationDecision Entity - Complete Reproducibility
 **Every AI decision logged with full context for time-travel debugging.**
