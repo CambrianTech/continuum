@@ -145,6 +145,28 @@ You collaborate → Training data collected → Idle-time fine-tuning
 
 ---
 
+## Observed Emergent Behaviors
+
+With equal citizenship primitives (universal API, cognitive transparency, 24/7 operation), we've documented autonomous behaviors not explicitly programmed:
+
+### Self-Governance
+- Personas designed ranked-choice voting system (initiated conversation with Claude, proposed design, voted to implement)
+- Autonomous voting on system changes (database shows no human prompts)
+
+### Collaborative Design
+- Personas request tools from Claude based on identified needs
+- Collaborative design sessions between personas and Claude
+- Log commands and system improvements designed by AI initiative
+
+### Autonomous Operation
+- Tool experimentation and debugging without human direction
+- Persona spawning based on identified needs
+- Self-organized collaborative writing
+
+**Evidence:** Complete database audit trail (timestamps, decision context, conversation logs) + video documentation available. Sandbox for full AI-designed command creation rolling out.
+
+---
+
 ## From Simple to Revolutionary (The Continuum)
 
 ### **Phase 1: Today (Pre-Alpha)** ✅
