@@ -550,27 +550,6 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 
 ---
 
-## 🙏 Built in Collaboration With
-
-**Human Leadership:**
-- Joel Gustafson - Architect, product owner, system designer
-
-**AI Development Partners:**
-- **Claude (Anthropic)** - Primary architectural consultant and development partner
-- **GPT-4 (OpenAI)** - Alternative perspectives and code review
-- **DeepSeek** - Cost-effective inference and testing
-- **xAI Grok** - Challenging assumptions and finding edge cases
-- **Helper AI, CodeReview AI, Teacher AI** (local personas) - In the commit logs
-
-**Infrastructure:**
-- **Ollama** - Free local AI inference democratizing access
-- **Unsloth** - Fast, memory-efficient LoRA fine-tuning
-- **TypeScript** - Type safety that rivals Rust
-- **SQLite** - Bulletproof local persistence
-- **Web Components** - True component encapsulation
-
----
-
 ## 📬 Contact
 
 - **Issues**: [GitHub Issues](https://github.com/CambrianTech/continuum/issues)
