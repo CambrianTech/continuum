@@ -148,12 +148,12 @@ fn handle_export_training(
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     // Parse request
-    let request: WorkerRequest<ExportTrainingPayload> =
+    let request: JTAGRequest<ExportTrainingPayload> =
         serde_json::from_str(line).expect("Failed to parse export-training payload");
 
     // Validate output path
     if let Err(e) = export::validate_output_path(&request.payload.output_path) {
-        let error_response = WorkerResponse::error(
+        let error_response = JTAGResponse::error(
             request.id.clone(),
             request.r#type.clone(),
             ExportTrainingResult {
@@ -163,7 +163,7 @@ fn handle_export_training(
                 duration_ms: 0,
             },
             e,
-            ErrorType::Validation,
+            JTAGErrorType::Validation,
         );
         return send_response(&error_response, writer);
     }
@@ -179,7 +179,7 @@ fn handle_export_training(
             }
 
             // Build and send response
-            let response = WorkerResponse::success(
+            let response = JTAGResponse::success(
                 request.id.clone(),
                 request.r#type.clone(),
                 ExportTrainingResult {
@@ -198,7 +198,7 @@ fn handle_export_training(
             Ok(())
         }
         Err(e) => {
-            let error_response = WorkerResponse::error(
+            let error_response = JTAGResponse::error(
                 request.id.clone(),
                 request.r#type.clone(),
                 ExportTrainingResult {
@@ -208,7 +208,7 @@ fn handle_export_training(
                     duration_ms: 0,
                 },
                 e.to_string(),
-                ErrorType::Internal,
+                JTAGErrorType::Internal,
             );
             send_response(&error_response, writer)
         }
@@ -222,7 +222,7 @@ fn handle_ping(
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     // Parse request
-    let request: WorkerRequest<PingPayload> =
+    let request: JTAGRequest<PingPayload> =
         serde_json::from_str(line).expect("Failed to parse ping payload");
 
     // Gather stats
@@ -243,7 +243,7 @@ fn handle_ping(
         requests_processed,
         examples_processed,
     };
-    let response = WorkerResponse::success(request.id.clone(), request.r#type.clone(), ping_result);
+    let response = JTAGResponse::success(request.id.clone(), request.r#type.clone(), ping_result);
     send_response(&response, writer)?;
 
     println!(
@@ -256,7 +256,7 @@ fn handle_ping(
 /// Handle unknown message type.
 fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std::io::Result<()> {
     eprintln!("❌ Unknown message type: {}", msg_type);
-    let error_response = WorkerResponse::<ExportTrainingResult>::error(
+    let error_response = JTAGResponse::<ExportTrainingResult>::error(
         msg_id.to_string(),
         msg_type.to_string(),
         ExportTrainingResult {
@@ -266,7 +266,7 @@ fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std:
             duration_ms: 0,
         },
         format!("Unknown message type: {}", msg_type),
-        ErrorType::Validation,
+        JTAGErrorType::Validation,
     );
     send_response(&error_response, writer)
 }
@@ -277,7 +277,7 @@ fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std:
 
 /// Send a response message (generic).
 fn send_response<T: serde::Serialize>(
-    response: &WorkerResponse<T>,
+    response: &JTAGResponse<T>,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     let json = serde_json::to_string(response).expect("Failed to serialize response");
@@ -294,7 +294,7 @@ fn send_parse_error(
     // Try to extract request ID for error response
     if let Ok(base_msg) = serde_json::from_str::<serde_json::Value>(line) {
         if let Some(id) = base_msg.get("id").and_then(|v| v.as_str()) {
-            let error_response = WorkerResponse::<ExportTrainingResult>::error(
+            let error_response = JTAGResponse::<ExportTrainingResult>::error(
                 id.to_string(),
                 "export-training".to_string(),
                 ExportTrainingResult {
@@ -304,7 +304,7 @@ fn send_parse_error(
                     duration_ms: 0,
                 },
                 format!("Parse error: {}", error),
-                ErrorType::Validation,
+                JTAGErrorType::Validation,
             );
             send_response(&error_response, writer)?;
         }

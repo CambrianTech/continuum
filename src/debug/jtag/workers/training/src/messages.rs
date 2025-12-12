@@ -9,16 +9,7 @@ use serde::{Deserialize, Serialize};
 mod jtag_protocol;
 
 // Re-export JTAG protocol types for library users
-#[allow(unused_imports)]
-pub use jtag_protocol::{
-    ErrorType,
-    JTAGErrorType,
-    JTAGRequest,
-    JTAGResponse,
-    // Legacy aliases for backwards compatibility
-    WorkerRequest,
-    WorkerResponse,
-};
+pub use jtag_protocol::{JTAGErrorType, JTAGRequest, JTAGResponse};
 
 // ============================================================================
 // Training-Specific Types (owned by training worker)

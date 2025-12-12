@@ -22,7 +22,7 @@ use std::os::unix::net::UnixStream;
 // Import shared JTAG protocol
 #[path = "jtag_protocol.rs"]
 mod jtag_protocol;
-use jtag_protocol::{JTAGRequest, JTAGResponse};
+use jtag_protocol::JTAGRequest;
 
 // ============================================================================
 // Logger-Specific Types (minimal subset for logging)
@@ -91,11 +91,6 @@ impl LoggerClient {
         self
     }
 
-    /// Log a debug message.
-    pub fn debug(&mut self, message: &str) {
-        self.log_internal(LogLevel::Debug, message);
-    }
-
     /// Log an info message.
     pub fn info(&mut self, message: &str) {
         self.log_internal(LogLevel::Info, message);
@@ -150,38 +145,5 @@ impl LoggerClient {
                 let _ = stream.flush();
             }
         }
-    }
-}
-
-// ============================================================================
-// Global Logger (Optional Convenience)
-// ============================================================================
-
-use std::sync::Mutex;
-
-static GLOBAL_LOGGER: Mutex<Option<LoggerClient>> = Mutex::new(None);
-
-/// Initialize global logger (call once at worker startup).
-pub fn init_global_logger(socket_path: &str, component: &str) {
-    let logger = LoggerClient::connect(socket_path, component);
-    *GLOBAL_LOGGER.lock().unwrap() = Some(logger);
-}
-
-/// Log to global logger (convenience functions).
-pub fn log_info(message: &str) {
-    if let Some(ref mut logger) = *GLOBAL_LOGGER.lock().unwrap() {
-        logger.info(message);
-    }
-}
-
-pub fn log_warn(message: &str) {
-    if let Some(ref mut logger) = *GLOBAL_LOGGER.lock().unwrap() {
-        logger.warn(message);
-    }
-}
-
-pub fn log_error(message: &str) {
-    if let Some(ref mut logger) = *GLOBAL_LOGGER.lock().unwrap() {
-        logger.error(message);
     }
 }
