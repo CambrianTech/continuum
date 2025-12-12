@@ -7,7 +7,7 @@
  *
  * USAGE:
  * ```typescript
- * const trainer = new TrainingWorkerClient('/tmp/training-worker.sock');
+ * const trainer = new TrainingWorkerClient('/tmp/jtag-training-worker.sock');
  * await trainer.connect();
  *
  * // Export training data to JSONL (type-safe)

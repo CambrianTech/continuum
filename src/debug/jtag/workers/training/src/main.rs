@@ -13,7 +13,7 @@
 /// - health: Statistics tracking
 /// - messages: Protocol types (shared with TypeScript)
 ///
-/// Usage: cargo run --release -- /tmp/training-worker.sock
+/// Usage: cargo run --release -- /tmp/jtag-training-worker.sock
 mod connection_handler;
 mod export;
 mod health;
@@ -50,7 +50,7 @@ fn main() -> std::io::Result<()> {
     if args.len() < 2 {
         logger.error("Missing socket path argument");
         eprintln!("Usage: {} <socket-path>", args[0]);
-        eprintln!("Example: {} /tmp/training-worker.sock", args[0]);
+        eprintln!("Example: {} /tmp/jtag-training-worker.sock", args[0]);
         std::process::exit(1);
     }
 

@@ -9,7 +9,7 @@ import { TrainingWorkerClient } from './ipc/training/TrainingWorkerClient.js';
 async function testTrainingWorker() {
     console.log('📡 Connecting to TrainingWorker...');
 
-    const client = new TrainingWorkerClient('/tmp/training-worker.sock');
+    const client = new TrainingWorkerClient('/tmp/jtag-training-worker.sock');
 
     try {
         await client.connect();
