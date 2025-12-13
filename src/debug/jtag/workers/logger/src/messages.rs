@@ -3,6 +3,7 @@
 /// This uses the universal JTAGProtocol from workers/shared/jtag_protocol.rs
 /// which mirrors shared/ipc/JTAGProtocol.ts on the TypeScript side.
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 // Import shared JTAGProtocol types
 #[path = "../../shared/jtag_protocol.rs"]
@@ -16,7 +17,8 @@ pub use jtag_protocol::{JTAGErrorType, JTAGRequest, JTAGResponse};
 // ============================================================================
 
 /// Log levels matching TypeScript LogLevel type.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Debug,
@@ -26,7 +28,8 @@ pub enum LogLevel {
 }
 
 /// Payload for write-log requests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogPayload {
     pub category: String,
@@ -34,6 +37,7 @@ pub struct WriteLogPayload {
     pub component: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "any", optional)]
     pub args: Option<serde_json::Value>,
 }
 
@@ -64,3 +68,15 @@ pub struct PingResult {
 }
 
 // Helper functions (success/error) are now in the shared jtag_protocol module
+
+#[cfg(test)]
+mod export_typescript {
+    use super::*;
+
+    #[test]
+    fn export_bindings() {
+        LogLevel::export().expect("Failed to export LogLevel");
+        WriteLogPayload::export().expect("Failed to export WriteLogPayload");
+        println!("✅ TypeScript bindings exported to shared/ipc/logger/generated/");
+    }
+}
