@@ -38,20 +38,35 @@ AIProviderDaemonServer.ts (1000+ lines)
 └── Direct fetch() to APIs (no streaming)
 ```
 
-### Target State (Rust + TypeScript Thin Layer)
+### Target State (Rust + TypeScript Daemon Pattern)
+
+**TypeScript Daemon** (Source of Truth - Portability Layer):
 ```
-AIProviderWorker (Rust)
+AIProviderDaemon (extends DaemonBase)
+├── Owns AIProviderWorkerClient (direct socket connection)
+├── Defines protocol types (source of truth)
+├── Lifecycle management (start/stop/health)
+├── Feature flag (Rust or fallback)
+├── Discoverable via system/daemons
+└── Graceful fallback to legacy
+```
+
+**Rust Worker** (Implementation - Efficiency Layer):
+```
+AIProviderWorker (Rust binary)
+├── Generated types from TypeScript (codegen)
 ├── Native async with tokio
 ├── Real streaming (tokio-stream)
 ├── All provider implementations
 ├── Process isolation
-└── IPC via JTAG protocol
-
-AIProviderDaemon (TypeScript - thin routing)
-├── Feature flag (Rust or fallback)
-├── AIProviderWorkerClient (IPC)
-└── Graceful fallback to legacy
+└── Unix socket listener
 ```
+
+**Pattern Reference**: See LoggerDaemon (working implementation)
+- No child process spawning (daemon owns connection)
+- TypeScript defines protocol (portability)
+- Rust implements efficiently (systems level)
+- Modular, independently testable
 
 ---
 
@@ -61,26 +76,28 @@ AIProviderDaemon (TypeScript - thin routing)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     TypeScript Layer                         │
+│              TypeScript Layer (Portability)                  │
 │  ┌──────────────────┐      ┌──────────────────┐            │
 │  │  PersonaUser     │      │ AIProviderDaemon │            │
-│  │  (autonomous)    │──────│  (thin router)   │            │
-│  └──────────────────┘      └────────┬─────────┘            │
-│                                      │                       │
-│                            ┌─────────▼──────────┐           │
-│                            │ AIProviderWorkerClient          │
-│                            │  (TypeScript IPC)  │           │
-│                            └─────────┬──────────┘           │
+│  │  (autonomous)    │──────│  (DaemonBase)    │            │
+│  └──────────────────┘      │                  │            │
+│                            │  owns            │            │
+│                            │  AIProviderWorkerClient        │
+│                            │  (direct socket) │            │
+│                            └────────┬─────────┘            │
 └──────────────────────────────────────┼──────────────────────┘
                                        │ Unix Socket
-                                       │ (JTAG Protocol)
+                                       │ /tmp/jtag-ai-provider-worker.sock
+                                       │ (Protocol: TypeScript → Codegen → Rust)
 ┌──────────────────────────────────────▼──────────────────────┐
-│                      Rust Layer                              │
+│              Rust Layer (Efficiency + Systems)               │
 │  ┌────────────────────────────────────────────────────┐     │
 │  │              AIProviderWorker                      │     │
+│  │         (Started by start-workers.sh)              │     │
 │  │  ┌──────────────────────────────────────────────┐ │     │
 │  │  │          connection_handler.rs               │ │     │
 │  │  │  (Routes JTAG messages)                      │ │     │
+│  │  │  Types: Generated from TypeScript            │ │     │
 │  │  └──────────────────┬───────────────────────────┘ │     │
 │  │                     │                              │     │
 │  │  ┌──────────────────▼───────────────────────────┐ │     │
@@ -117,6 +134,13 @@ AIProviderDaemon (TypeScript - thin routing)
          │  └── XAI (api.x.ai)          │
          └──────────────────────────────┘
 ```
+
+**Key Pattern** (LoggerDaemon Reference):
+- Daemon owns WorkerClient connection (no child process spawning)
+- TypeScript defines protocol types (source of truth via codegen)
+- Rust worker started independently by start-workers.sh
+- Simple architecture: daemon connects, worker listens
+- Each side does what it's best at (orchestration vs computation)
 
 ### Module Structure
 
@@ -222,16 +246,61 @@ Phase 4: Full Cutover (Week 4)
 └── AIProviderDaemon becomes pure routing layer
 ```
 
-### TypeScript Thin Layer (Post-Migration)
+### TypeScript Daemon Layer (Pattern from LoggerDaemon)
 
 ```typescript
+/**
+ * AIProviderDaemon - DaemonBase wrapper that owns WorkerClient
+ *
+ * Pattern: LoggerDaemon reference implementation
+ * - Daemon owns AIProviderWorkerClient (direct socket connection)
+ * - No child process spawning (worker started by start-workers.sh)
+ * - TypeScript defines protocol (source of truth)
+ * - Rust implements efficiently (systems level)
+ */
 export class AIProviderDaemon extends DaemonBase {
-  private workerClient: AIProviderWorkerClient;
+  public readonly subpath = 'ai-provider';
+  protected log: ComponentLogger;
+
+  private workerClient: AIProviderWorkerClient | null = null;
   private useRustWorker = process.env.USE_RUST_AI_PROVIDER !== 'false';
 
+  constructor(context: JTAGContext, router: JTAGRouter) {
+    super('AIProviderDaemon', context, router);
+    this.log = Logger.create('AIProviderDaemon', 'daemons/AIProviderDaemon');
+  }
+
+  /**
+   * Initialize daemon - create direct socket connection
+   * (No child process spawning!)
+   */
+  protected async initialize(): Promise<void> {
+    this.log.info('Initializing AIProviderDaemon with Rust worker');
+
+    // Create direct socket connection to Rust worker
+    this.workerClient = new AIProviderWorkerClient({
+      socketPath: '/tmp/jtag-ai-provider-worker.sock',
+      timeout: 30000,
+      userId: 'ai-provider-daemon'
+    });
+
+    // Connect to Rust worker (non-blocking)
+    this.workerClient.connect()
+      .then(() => this.log.info('Connected to Rust AIProviderWorker'))
+      .catch((err) => {
+        this.log.warn('Rust worker connection failed, will use fallback', err);
+        this.workerClient = null;
+      });
+
+    this.log.info('AIProviderDaemon initialized');
+  }
+
+  /**
+   * Generate text - route to Rust or fallback
+   */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     // Try Rust worker first
-    if (this.useRustWorker && this.workerClient.isConnected()) {
+    if (this.useRustWorker && this.workerClient) {
       try {
         return await this.workerClient.generate({
           provider: request.preferredProvider,
@@ -249,8 +318,11 @@ export class AIProviderDaemon extends DaemonBase {
     return await this.legacyGenerateText(request);
   }
 
+  /**
+   * Stream text - real-time token streaming via Rust
+   */
   async *streamText(request: TextGenerationRequest): AsyncIterableIterator<string> {
-    if (this.useRustWorker && this.workerClient.isConnected()) {
+    if (this.useRustWorker && this.workerClient) {
       try {
         yield* this.workerClient.generateStream({
           provider: request.preferredProvider,
@@ -267,8 +339,149 @@ export class AIProviderDaemon extends DaemonBase {
     const response = await this.legacyGenerateText(request);
     yield response.text;
   }
+
+  /**
+   * Cleanup daemon - close socket connection
+   */
+  async cleanup(): Promise<void> {
+    this.log.info('Shutting down AIProviderDaemon');
+
+    if (this.workerClient) {
+      await this.workerClient.disconnect();
+      this.workerClient = null;
+    }
+
+    this.log.info('AIProviderDaemon shutdown complete');
+  }
 }
 ```
+
+**Key Benefits**:
+- Simple: Daemon owns connection, no child process complexity
+- Lifecycle: DaemonBase provides start/stop/restart/health
+- Discoverable: Registered in system/daemons
+- Fallback: Graceful degradation if worker unavailable
+- Pattern: Proven with LoggerDaemon (working implementation)
+
+---
+
+## Protocol-First Design (TypeScript → Rust Codegen)
+
+### Philosophy
+
+**TypeScript = Source of Truth (Portability Layer)**
+- Defines API contracts and protocol types
+- Orchestration, state management, business logic
+- Natural companion for web standards
+
+**Rust = Implementation (Efficiency Layer)**
+- Generated types from TypeScript (absolute cohesion)
+- Performance-critical computation
+- Systems-level operations
+- Natural companion for low-level work
+
+### Codegen Strategy
+
+Similar to cbindgen for FFI, but TypeScript → Rust for socket protocols:
+
+```
+TypeScript Types (Source of Truth)
+  ↓ ts-rs or custom codegen
+Rust Types (Generated)
+  ↓ Used in implementation
+Absolute Type Cohesion
+```
+
+**Example Protocol Definition** (TypeScript):
+```typescript
+// shared/ipc/ai-provider/AIProviderProtocol.ts
+
+/** @rust-export */
+export interface GenerateRequest {
+  provider: string;
+  model: string;
+  messages: Message[];
+  stream: boolean;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+/** @rust-export */
+export interface GenerateResponse {
+  text: string;
+  model: string;
+  tokens: number;
+  finishReason: string;
+}
+
+/** @rust-export */
+export interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+```
+
+**Generated Rust Types** (Auto-generated):
+```rust
+// workers/ai-provider/src/protocol.rs (GENERATED - DO NOT EDIT)
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GenerateRequest {
+    pub provider: String,
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub stream: bool,
+    pub max_tokens: Option<i32>,
+    pub temperature: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GenerateResponse {
+    pub text: String,
+    pub model: String,
+    pub tokens: i32,
+    pub finish_reason: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Message {
+    pub role: String, // "user" | "assistant" | "system"
+    pub content: String,
+}
+```
+
+**Codegen Tooling Options**:
+1. **ts-rs**: TypeScript → Rust with decorators
+2. **typeshare**: Type sharing across languages
+3. **Custom script**: Parse TS AST → Generate Rust
+
+**Benefits**:
+- Single source of truth (TypeScript)
+- Impossible for types to drift
+- Compile-time safety on both sides
+- Natural division of labor (portability vs efficiency)
+
+### Implementation Pattern
+
+**TypeScript defines, Rust implements**:
+```typescript
+// TypeScript: Define protocol
+export interface GenerateRequest { ... }
+
+// TypeScript: Client uses protocol
+await workerClient.generate(request);
+```
+
+```rust
+// Rust: Use generated types
+use crate::protocol::GenerateRequest;
+
+pub async fn generate(request: GenerateRequest) -> Result<GenerateResponse> {
+  // Implementation uses exact same types
+}
+```
+
+**No manual type translation, no drift, absolute cohesion.**
 
 ---
 

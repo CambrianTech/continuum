@@ -1,5 +1,17 @@
 # AIProviderWorker Testing Strategy - Test Every Level
 
+## Architecture Pattern: Daemon Owns Connection
+
+**Pattern Reference**: LoggerDaemon (working implementation)
+
+This worker uses the **daemon-owns-connection** pattern:
+- AIProviderDaemon (TypeScript) owns AIProviderWorkerClient (direct socket connection)
+- No child process spawning (worker started independently by start-workers.sh)
+- TypeScript defines protocol (source of truth → codegen → Rust)
+- Rust implements efficiently (systems level)
+
+**Key Testing Implication**: Tests focus on socket communication, not process lifecycle management.
+
 ## Philosophy: Test in Isolation, Then Integrate
 
 Each component is testable independently BEFORE integrating with the next layer.
@@ -372,6 +384,12 @@ npx vitest tests/integration/ai-provider-worker-ipc.test.ts
 
 Test through the full system with AIProviderDaemon routing.
 
+**Key Pattern Test**: Daemon owns WorkerClient connection (LoggerDaemon pattern)
+- Daemon connects to worker socket (no ProcessManager spawning)
+- Daemon provides lifecycle management (start/stop/health)
+- Daemon handles fallback to TypeScript adapters
+- Worker runs independently (started by start-workers.sh)
+
 ### System Integration Test
 ```typescript
 // tests/integration/ai-provider-system.test.ts
@@ -395,6 +413,14 @@ describe('AIProviderDaemon with Rust Worker', () => {
 
     expect(result.success).toBe(true);
     expect(result.text).toBeTruthy();
+  });
+
+  it('should test daemon owns connection pattern', async () => {
+    // Verify daemon is connected to worker (not spawning child process)
+    const health = await Commands.execute('ai/ping', {});
+
+    expect(health.success).toBe(true);
+    expect(health.connectionType).toBe('socket'); // Not 'child-process'
   });
 
   it('should fallback to TypeScript on worker failure', async () => {

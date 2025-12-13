@@ -1,8 +1,18 @@
 # OllamaWorker Architecture
 
+## Architecture Pattern: Daemon Owns Connection
+
+**Pattern Reference**: LoggerDaemon (working implementation)
+
+OllamaWorker is part of AIProviderWorker, implementing the **daemon-owns-connection** pattern:
+- AIProviderDaemon (TypeScript) owns AIProviderWorkerClient (direct socket connection)
+- No child process spawning (worker started independently by start-workers.sh)
+- TypeScript defines protocol (source of truth → codegen → Rust)
+- Rust implements efficiently (systems level)
+
 ## Vision
 
-OllamaWorker is a high-performance Rust worker that handles all Ollama API communication for the JTAG system. It provides streaming inference, function calling, embeddings, and model management through a clean IPC interface.
+OllamaWorker is a high-performance Rust module within AIProviderWorker that handles all Ollama API communication for the JTAG system. It provides streaming inference, function calling, embeddings, and model management through a clean IPC interface.
 
 ## Core Requirements
 
@@ -17,45 +27,38 @@ OllamaWorker is a high-performance Rust worker that handles all Ollama API commu
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     TypeScript Layer                         │
+│              TypeScript Layer (Portability)                  │
 │  ┌──────────────────┐      ┌──────────────────┐            │
 │  │  PersonaUser     │      │ AIProviderDaemon │            │
-│  │  (autonomous)    │──────│  (orchestration) │            │
-│  └──────────────────┘      └────────┬─────────┘            │
-│                                      │                       │
-│                            ┌─────────▼──────────┐           │
-│                            │ OllamaWorkerClient │           │
-│                            │  (TypeScript IPC)  │           │
-│                            └─────────┬──────────┘           │
+│  │  (autonomous)    │──────│  (DaemonBase)    │            │
+│  └──────────────────┘      │                  │            │
+│                            │  owns            │            │
+│                            │  AIProviderWorkerClient        │
+│                            │  (direct socket) │            │
+│                            └────────┬─────────┘            │
 └──────────────────────────────────────┼──────────────────────┘
                                        │ Unix Socket
-                                       │ (JTAG Protocol)
+                                       │ /tmp/jtag-ai-provider-worker.sock
+                                       │ (Protocol: TypeScript → Codegen → Rust)
 ┌──────────────────────────────────────▼──────────────────────┐
-│                      Rust Layer                              │
+│              Rust Layer (Efficiency + Systems)               │
 │  ┌────────────────────────────────────────────────────┐     │
-│  │              OllamaWorker                          │     │
+│  │              AIProviderWorker                      │     │
+│  │         (Started by start-workers.sh)              │     │
 │  │  ┌──────────────────────────────────────────────┐ │     │
 │  │  │          connection_handler.rs               │ │     │
-│  │  │  (Routes JTAG messages to handlers)          │ │     │
+│  │  │  (Routes JTAG messages to providers)         │ │     │
+│  │  │  Types: Generated from TypeScript            │ │     │
 │  │  └──────────────────┬───────────────────────────┘ │     │
 │  │                     │                              │     │
 │  │  ┌──────────────────▼───────────────────────────┐ │     │
-│  │  │   inference.rs (ollama-rs streaming)         │ │     │
+│  │  │   providers/ollama.rs (ollama-rs streaming)  │ │     │
 │  │  │   - generate_stream()                        │ │     │
 │  │  │   - chat_stream()                            │ │     │
 │  │  │   - chat_with_tools()                        │ │     │
-│  │  └──────────────────────────────────────────────┘ │     │
-│  │                                                    │     │
-│  │  ┌──────────────────────────────────────────────┐ │     │
-│  │  │   models.rs (model management)               │ │     │
+│  │  │   - embeddings()                             │ │     │
 │  │  │   - list_models()                            │ │     │
 │  │  │   - pull_model()                             │ │     │
-│  │  │   - show_model()                             │ │     │
-│  │  └──────────────────────────────────────────────┘ │     │
-│  │                                                    │     │
-│  │  ┌──────────────────────────────────────────────┐ │     │
-│  │  │   embeddings.rs (RAG support)                │ │     │
-│  │  │   - generate_embeddings()                    │ │     │
 │  │  └──────────────────────────────────────────────┘ │     │
 │  │                                                    │     │
 │  │  ┌──────────────────────────────────────────────┐ │     │
@@ -79,6 +82,13 @@ OllamaWorker is a high-performance Rust worker that handles all Ollama API commu
               │ (localhost:11434)
               └────────────────┘
 ```
+
+**Key Pattern**:
+- Daemon owns connection (no ProcessManager spawning)
+- TypeScript defines protocol types (source of truth via codegen)
+- Rust worker started independently by start-workers.sh
+- Simple architecture: daemon connects, worker listens
+- Ollama provider is one module within AIProviderWorker
 
 ## Message Protocol (JTAG)
 
