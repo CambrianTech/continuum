@@ -24,7 +24,12 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
+
+// ============================================================================
+// Queue Message Type
+// ============================================================================
 
 // ============================================================================
 // Debug Logging (Temporary)
@@ -97,6 +102,42 @@ fn main() -> std::io::Result<()> {
     println!("✅ Ready to accept connections");
     debug_log("Entering accept loop (multi-threaded)");
 
+    // Create log queue channel (unbounded for max throughput)
+    let (log_tx, log_rx) = mpsc::channel::<messages::WriteLogPayload>();
+    debug_log("Created log queue channel");
+
+    // Spawn dedicated writer thread (drains queue and writes to files)
+    let writer_file_cache = file_cache.clone();
+    let writer_headers = headers_written.clone();
+    let writer_log_dir = log_dir.clone();
+    thread::spawn(move || {
+        debug_log("[Writer Thread] Started - draining log queue");
+        println!("🔥 Background log writer thread started");
+
+        let mut processed = 0;
+        for payload in log_rx.iter() {
+            processed += 1;
+            if let Err(e) = file_manager::write_log_message(
+                &payload,
+                &writer_log_dir,
+                &writer_file_cache,
+                &writer_headers,
+            ) {
+                eprintln!("❌ Writer thread error: {}", e);
+                debug_log(&format!("[Writer Thread] Error writing log: {}", e));
+            }
+
+            // Log throughput every 100 messages
+            if processed % 100 == 0 {
+                debug_log(&format!("[Writer Thread] Processed {} logs", processed));
+            }
+        }
+
+        debug_log("[Writer Thread] Channel closed, exiting");
+    });
+
+    println!("⚡ Queue-based architecture active (non-blocking log writes)");
+
     // Accept connections and spawn threads for concurrent handling
     let mut conn_count = 0;
     for stream in listener.incoming() {
@@ -122,6 +163,7 @@ fn main() -> std::io::Result<()> {
                 let file_cache_clone = file_cache.clone();
                 let headers_clone = headers_written.clone();
                 let stats_clone = stats.clone();
+                let log_tx_clone = log_tx.clone();
                 let conn_id = conn_count;
 
                 // Spawn thread to handle connection concurrently
@@ -134,6 +176,7 @@ fn main() -> std::io::Result<()> {
                         file_cache_clone,
                         headers_clone,
                         stats_clone,
+                        log_tx_clone,
                     ) {
                         eprintln!("❌ Error handling client #{}: {}", conn_id, e);
                         debug_log(&format!("[Thread-{}] ERROR: {}", conn_id, e));
