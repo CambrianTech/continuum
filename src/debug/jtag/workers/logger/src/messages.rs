@@ -42,7 +42,8 @@ pub struct WriteLogPayload {
 }
 
 /// Payload for write-log responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteLogResult {
     pub bytes_written: usize,
@@ -53,12 +54,14 @@ pub struct WriteLogResult {
 // ============================================================================
 
 /// Ping request payload (empty - just proves worker is alive)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PingPayload {}
 
 /// Ping result - includes uptime and connection stats
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PingResult {
     pub uptime_ms: u64,
@@ -77,6 +80,9 @@ mod export_typescript {
     fn export_bindings() {
         LogLevel::export().expect("Failed to export LogLevel");
         WriteLogPayload::export().expect("Failed to export WriteLogPayload");
-        println!("✅ TypeScript bindings exported to shared/ipc/logger/generated/");
+        WriteLogResult::export().expect("Failed to export WriteLogResult");
+        PingPayload::export().expect("Failed to export PingPayload");
+        PingResult::export().expect("Failed to export PingResult");
+        println!("✅ TypeScript bindings exported to bindings/");
     }
 }
