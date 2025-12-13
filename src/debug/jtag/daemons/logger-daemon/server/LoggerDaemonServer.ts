@@ -66,8 +66,8 @@ export class LoggerDaemonServer extends DaemonBase {
     // Start the process
     await this.process.start();
 
-    // Register daemon client with Logger so all logs go through IPC → LoggerDaemonCore → Rust
-    Logger.daemonClient.setProcess(this.process);
+    // REMOVED: IPC path no longer used (Logger.ts now uses direct socket connection)
+    // Logger.daemonClient.setProcess(this.process);
 
     this.log.info('LoggerDaemon child process started with tsx');
   }
