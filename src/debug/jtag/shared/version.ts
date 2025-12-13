@@ -1,8 +1,8 @@
 /**
  * Version Constants - Auto-generated from package.json
- * Generated on 2025-12-13T21:00:02.294Z
+ * Generated on 2025-12-13T21:29:19.425Z
  * DO NOT EDIT MANUALLY
  */
 
-export const VERSION = '1.0.6003';
+export const VERSION = '1.0.6005';
 export const PACKAGE_NAME = '@continuum/jtag';

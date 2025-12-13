@@ -19,34 +19,58 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
   async execute(params: DecisionListParams): Promise<DecisionListResult> {
     console.log('🔧 SERVER: Executing Decision List', params);
 
-    // Validate required parameters
-    // NOTE: Commands should THROW errors when validation fails, not catch and return success:false
-    // This demonstrates BEST PRACTICE error handling for command templates
-    //
-    // Example validation for a required parameter:
-    // if (!params.yourRequiredParam || params.yourRequiredParam.trim() === '') {
-    //   throw new ValidationError(
-    //     'yourRequiredParam',
-    //     `Missing required parameter 'yourRequiredParam'. ` +
-    //     `Use the help tool with 'Decision List' or see the Decision List README for usage information.`
-    //   );
-    // }
+    try {
+      // Query proposals from database using Commands pattern
+      const { Commands } = await import('../../../../system/core/shared/Commands');
+      const { COLLECTIONS } = await import('../../../../system/shared/Constants');
 
-    // TODO: Implement your command logic here
-    // Add validation for each required parameter following the pattern above
-    // The error message should:
-    // 1. Reference the help tool generically (works for both jtag CLI and Persona tools)
-    // 2. Reference the command README using the command name
-    // 3. Be clear about what's missing or invalid
+      const limit = params.limit ?? 50;
+      const offset = params.offset ?? 0;
 
-    // Return successful result with all required fields
-    // NOTE: createResultFromParams requires ALL result fields (context/sessionId inherited from params)
-    return createDecisionListResultFromParams(params, {
-      success: true, // Whether the query succeeded
-      proposals: [], // Array of matching proposals - TODO: Query from data/list
-      total: 0, // Total number of matching proposals (before pagination) - TODO: Calculate from query
-      limit: params.limit ?? 50, // The limit that was applied
-      offset: params.offset ?? 0, // The offset that was applied
-    });
+      // Build filter based on optional status parameter
+      const filter: any = {};
+      if (params.status) {
+        filter.status = params.status;
+      }
+
+      const listResult = await Commands.execute<any, any>('data/list', {
+        collection: COLLECTIONS.DECISION_PROPOSALS,
+        filter,
+        limit,
+        offset,
+        orderBy: [{ field: 'sequenceNumber', direction: 'desc' }]  // Newest first
+      });
+
+      if (!listResult.success) {
+        return createDecisionListResultFromParams(params, {
+          success: false,
+          proposals: [],
+          total: 0,
+          limit,
+          offset
+        });
+      }
+
+      const proposals = listResult.items || [];
+      const total = listResult.total || proposals.length;
+
+      return createDecisionListResultFromParams(params, {
+        success: true,
+        proposals: proposals as any,  // Type mismatch between DecisionEntity and DecisionProposalEntity
+        total,
+        limit,
+        offset
+      });
+
+    } catch (error: any) {
+      console.error('Error in decision/list:', error);
+      return createDecisionListResultFromParams(params, {
+        success: false,
+        proposals: [],
+        total: 0,
+        limit: params.limit ?? 50,
+        offset: params.offset ?? 0
+      });
+    }
   }
 }

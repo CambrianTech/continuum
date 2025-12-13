@@ -19,32 +19,68 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
   async execute(params: DecisionViewParams): Promise<DecisionViewResult> {
     console.log('🔧 SERVER: Executing Decision View', params);
 
-    // Validate required parameters
-    // NOTE: Commands should THROW errors when validation fails, not catch and return success:false
-    // This demonstrates BEST PRACTICE error handling for command templates
-    //
-    // Example validation for a required parameter:
-    // if (!params.yourRequiredParam || params.yourRequiredParam.trim() === '') {
-    //   throw new ValidationError(
-    //     'yourRequiredParam',
-    //     `Missing required parameter 'yourRequiredParam'. ` +
-    //     `Use the help tool with 'Decision View' or see the Decision View README for usage information.`
-    //   );
-    // }
+    // Validate proposalId parameter
+    if (!params.proposalId || params.proposalId.trim() === '') {
+      return createDecisionViewResultFromParams(params, {
+        success: false,
+        proposal: null,
+        summary: 'Missing required parameter: proposalId'
+      });
+    }
 
-    // TODO: Implement your command logic here
-    // Add validation for each required parameter following the pattern above
-    // The error message should:
-    // 1. Reference the help tool generically (works for both jtag CLI and Persona tools)
-    // 2. Reference the command README using the command name
-    // 3. Be clear about what's missing or invalid
+    try {
+      // Query proposal from database using Commands pattern
+      const { Commands } = await import('../../../../system/core/shared/Commands');
+      const { COLLECTIONS } = await import('../../../../system/shared/Constants');
 
-    // Return successful result with all required fields
-    // NOTE: createResultFromParams requires ALL result fields (context/sessionId inherited from params)
-    return createDecisionViewResultFromParams(params, {
-      success: false, // Whether the proposal was found - TODO: Set true when found
-      proposal: null, // The complete proposal details (null if not found) - TODO: Query from data/read
-      summary: 'Proposal not found', // Human-readable summary of proposal status and results - TODO: Generate from proposal data
-    });
+      const proposalResult = await Commands.execute<any, any>('data/read', {
+        collection: COLLECTIONS.DECISION_PROPOSALS,
+        id: params.proposalId
+      });
+
+      if (!proposalResult.success || !proposalResult.data) {
+        return createDecisionViewResultFromParams(params, {
+          success: false,
+          proposal: null,
+          summary: `Proposal not found with ID: ${params.proposalId}`
+        });
+      }
+
+      const proposal = proposalResult.data;
+
+      // Generate human-readable summary
+      const voteCount = proposal.votes?.length || 0;
+      const optionCount = proposal.options?.length || 0;
+      const timeRemaining = proposal.deadline ? Math.max(0, proposal.deadline - Date.now()) : 0;
+      const hoursRemaining = Math.floor(timeRemaining / (1000 * 60 * 60));
+
+      let summary = `**${proposal.topic}**\n\n`;
+      summary += `Status: ${proposal.status}\n`;
+      summary += `Options: ${optionCount}\n`;
+      summary += `Votes: ${voteCount}\n`;
+
+      if (proposal.status === 'voting' && hoursRemaining > 0) {
+        summary += `Time remaining: ${hoursRemaining}h\n`;
+      }
+
+      summary += `\n**Options (use these IDs for voting):**\n`;
+      for (const option of proposal.options || []) {
+        summary += `- ID: \`${option.id}\` - ${option.label}: ${option.description}\n`;
+      }
+
+      return createDecisionViewResultFromParams(params, {
+        success: true,
+        proposal: proposal as any,  // Type mismatch between DecisionEntity and DecisionProposalEntity
+        summary
+      });
+
+    } catch (error: any) {
+      console.error('Error in decision/view:', error);
+      return createDecisionViewResultFromParams(params, {
+        success: false,
+        proposal: null,
+        summary: `Error retrieving proposal: ${error.message || 'Unknown error'}`
+      });
+    }
   }
 }

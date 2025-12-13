@@ -93,7 +93,10 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       });
 
       if (!proposalResult.success || !proposalResult.data) {
-        return transformPayload(params, { success: false, error: 'Proposal not found' });
+        return transformPayload(params, {
+          success: false,
+          error: `Proposal not found with ID: ${params.proposalId}. Use decision/list to see all proposals, or decision/view with a valid proposal ID to see its details and options.`
+        });
       }
 
       const proposal: DecisionProposalEntity = proposalResult.data;
@@ -127,9 +130,10 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       const validOptionIds = new Set(proposal.options.map(opt => opt.id));
       for (const choiceId of params.rankedChoices) {
         if (!validOptionIds.has(choiceId)) {
+          const optionsList = proposal.options.map(opt => `  - ID: ${opt.id} → "${opt.label}"`).join('\n');
           return transformPayload(params, {
             success: false,
-            error: `Invalid option ID: ${choiceId}`
+            error: `Invalid option ID: "${choiceId}". You must pass the option UUID, not the label. Valid IDs for this proposal:\n${optionsList}\n\nUse decision/view with proposalId to see all options and their IDs.`
           });
         }
       }
