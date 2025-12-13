@@ -19,6 +19,11 @@ cd workers/training
 cargo build --release
 cd ../..
 
+# Build DataWorker
+cd workers/data
+cargo build --release
+cd ../..
+
 echo -e "${GREEN}✅ Build complete${NC}"
 
 # Setup log directory
@@ -28,6 +33,7 @@ mkdir -p .continuum/jtag/logs/system
 echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"
 pkill -f logger-worker || true
 pkill -f training-worker || true
+pkill -f data-worker || true
 
 # Give processes time to die
 sleep 0.5
@@ -35,6 +41,7 @@ sleep 0.5
 # Remove old sockets
 rm -f /tmp/jtag-logger-worker.sock
 rm -f /tmp/training-worker.sock
+rm -f /tmp/data-worker.sock
 
 # Start LoggerWorker
 echo -e "${YELLOW}🚀 Starting LoggerWorker...${NC}"
@@ -74,14 +81,34 @@ for i in {1..10}; do
   sleep 0.5
 done
 
-# Verify both workers are running
+# Start DataWorker
+echo -e "${YELLOW}🚀 Starting DataWorker...${NC}"
+workers/data/target/release/data-worker /tmp/data-worker.sock \
+  >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+DATA_PID=$!
+
+# Wait for DataWorker socket to be created
+for i in {1..10}; do
+  if [ -S /tmp/data-worker.sock ]; then
+    echo -e "${GREEN}✅ DataWorker started (PID: $DATA_PID)${NC}"
+    break
+  fi
+  if [ $i -eq 10 ]; then
+    echo -e "${RED}❌ DataWorker failed to start${NC}"
+    exit 1
+  fi
+  sleep 0.5
+done
+
+# Verify all workers are running
 sleep 0.5
-if pgrep -f logger-worker > /dev/null && pgrep -f training-worker > /dev/null; then
-  echo -e "${GREEN}✅ Both workers running successfully${NC}"
+if pgrep -f logger-worker > /dev/null && pgrep -f training-worker > /dev/null && pgrep -f data-worker > /dev/null; then
+  echo -e "${GREEN}✅ All workers running successfully${NC}"
   echo -e "   LoggerWorker:   PID $LOGGER_PID (/tmp/jtag-logger-worker.sock)"
   echo -e "   TrainingWorker: PID $TRAINING_PID (/tmp/training-worker.sock)"
+  echo -e "   DataWorker:     PID $DATA_PID (/tmp/data-worker.sock)"
   exit 0
 else
-  echo -e "${RED}❌ One or both workers failed to start${NC}"
+  echo -e "${RED}❌ One or more workers failed to start${NC}"
   exit 1
 fi
