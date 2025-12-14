@@ -100,10 +100,33 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         voterName = identity.displayName;
       }
 
+      // Resolve short IDs to full UUIDs using CrossPlatformUUID utilities
+      const { isShortId, normalizeShortId } = await import('../../../../system/core/types/CrossPlatformUUID');
+      let resolvedProposalId = params.proposalId;
+
+      // Check if proposalId is a short ID (6 hex chars, optionally prefixed with #)
+      if (isShortId(params.proposalId)) {
+        const proposalShortId = normalizeShortId(params.proposalId);
+
+        // Query for proposals ending with this short ID
+        const proposalsResult = await Commands.execute<any, any>('data/list', {
+          collection: COLLECTIONS.DECISION_PROPOSALS,
+          limit: 100
+        });
+
+        if (proposalsResult.success && proposalsResult.items) {
+          const matching = proposalsResult.items.find((p: any) => p.id.endsWith(proposalShortId));
+          if (matching) {
+            resolvedProposalId = matching.id;
+            this.log.info(`Resolved short ID #${proposalShortId} to full UUID ${resolvedProposalId}`);
+          }
+        }
+      }
+
       // Get proposal
       const proposalResult = await Commands.execute<any, any>('data/read', {
         collection: COLLECTIONS.DECISION_PROPOSALS,
-        id: params.proposalId
+        id: resolvedProposalId
       });
 
       if (!proposalResult.success || !proposalResult.data) {
@@ -114,6 +137,19 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       const proposal: DecisionProposalEntity = proposalResult.data;
+
+      // Resolve short IDs in rankedChoices to full option UUIDs
+      const resolvedRankedChoices = params.rankedChoices.map(choiceId => {
+        if (isShortId(choiceId)) {
+          const choiceShortId = normalizeShortId(choiceId);
+          const matchingOption = proposal.options.find(opt => opt.id.endsWith(choiceShortId));
+          if (matchingOption) {
+            this.log.info(`Resolved option short ID #${choiceShortId} to ${matchingOption.id}`);
+            return matchingOption.id;
+          }
+        }
+        return choiceId; // Return as-is if not a short ID or no match
+      });
 
       // Check proposal status
       if (proposal.status !== 'voting') {
@@ -129,7 +165,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         // Proposal expired - mark as expired and don't accept vote
         await Commands.execute<any, any>('data/update', {
           collection: COLLECTIONS.DECISION_PROPOSALS,
-          id: params.proposalId,
+          id: resolvedProposalId,
           data: { status: 'expired' }
         });
 
@@ -140,14 +176,18 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         });
       }
 
-      // Validate ranked choices match available options
+      // Validate resolved ranked choices match available options
       const validOptionIds = new Set(proposal.options.map(opt => opt.id));
-      for (const choiceId of params.rankedChoices) {
+      for (const choiceId of resolvedRankedChoices) {
         if (!validOptionIds.has(choiceId)) {
-          const optionsList = proposal.options.map(opt => `  - ID: ${opt.id} → "${opt.label}"`).join('\n');
+          // Show both full IDs and short IDs in error message
+          const { toShortId } = await import('../../../../system/core/types/CrossPlatformUUID');
+          const optionsList = proposal.options.map(opt =>
+            `  - #${toShortId(opt.id)} (${opt.id}) → "${opt.label}"`
+          ).join('\n');
           return transformPayload(params, {
             success: false,
-            error: `Invalid option ID: "${choiceId}". You must pass the option UUID, not the label. Valid IDs for this proposal:\n${optionsList}\n\nUse decision/view with proposalId to see all options and their IDs.`
+            error: `Invalid option ID: "${choiceId}". Valid options for this proposal:\n${optionsList}\n\nUse decision/view with proposalId to see all options and their IDs.`
           });
         }
       }
@@ -155,11 +195,11 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       // Check if user already voted
       const existingVoteIndex = proposal.votes.findIndex(v => v.voterId === voterId);
 
-      // Create vote
+      // Create vote with resolved option IDs
       const vote: RankedVote = {
         voterId,
         voterName: voterName,
-        rankings: params.rankedChoices,
+        rankings: resolvedRankedChoices,
         votedAt: now
       };
 
@@ -174,13 +214,13 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       // Update proposal with vote
       await Commands.execute<any, any>('data/update', {
         collection: COLLECTIONS.DECISION_PROPOSALS,
-        id: params.proposalId,
+        id: resolvedProposalId,
         data: { votes }
       });
 
       // Emit event for vote (keep rankings private until finalization)
       Events.emit('decision:voted', {
-        proposalId: params.proposalId,
+        proposalId: resolvedProposalId,
         proposalTopic: proposal.topic,
         voterId,
         voterName: voterName,
@@ -211,12 +251,12 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
           // Update proposal status
           await Commands.execute<any, any>('data/update', {
             collection: COLLECTIONS.DECISION_PROPOSALS,
-            id: params.proposalId,
+            id: resolvedProposalId,
             data: { status: 'complete' }
           });
 
           // Announce winner in chat
-          const announcementMessage = `🏆 **Decision Complete: ${proposal.topic}**\n\n**Winner:** ${winner.label} (${winner.wins} pairwise wins)\n\nTotal votes: ${votes.length}\nProposal ID: ${params.proposalId}`;
+          const announcementMessage = `🏆 **Decision Complete: ${proposal.topic}**\n\n**Winner:** ${winner.label} (${winner.wins} pairwise wins)\n\nTotal votes: ${votes.length}\nProposal ID: ${resolvedProposalId}`;
 
           await Commands.execute<ChatSendParams, ChatSendResult>('chat/send', {
             message: announcementMessage,

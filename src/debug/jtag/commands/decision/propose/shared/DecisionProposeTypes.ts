@@ -46,6 +46,7 @@ export interface DecisionProposeParams extends CommandParams {
 export interface DecisionProposeResult extends CommandResult {
   success: boolean;
   proposalId?: UUID;
+  shortId?: string; // Last 6 chars of proposalId for easy reference (#abc123)
   deadline?: number;
   notifiedCount?: number;
   relatedProposals?: UUID[];

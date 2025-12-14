@@ -411,6 +411,7 @@ Proposal ID: ${proposalId}`;
     return transformPayload(params, {
       success: true,
       proposalId,
+      shortId: proposalId.slice(-6), // Last 6 chars for easy reference (#abc123)
       deadline,
       notifiedCount: usersInScope.length,
       relatedProposals

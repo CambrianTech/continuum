@@ -131,3 +131,62 @@ export function stringToUUID(input: string): UUID {
 
   return uuid as UUID;
 }
+
+/**
+ * ShortId type - last 6 characters of a UUID for human-friendly references
+ * Format: 6 hex characters (optionally prefixed with #)
+ * Examples: "7bd593", "#7bd593"
+ *
+ * Used for chat messages (#881f5d), proposals (#b45103), etc.
+ *
+ * This is a branded type - you cannot assign a plain string to ShortId
+ * without validation. Use toShortId() or normalizeShortId() to create.
+ */
+export type ShortId = string & { readonly __brand: 'ShortId' };
+
+/**
+ * Convert UUID to ShortId (last 6 characters)
+ * @param uuid - Full UUID to convert
+ * @returns Last 6 characters of the UUID
+ *
+ * @example
+ * toShortId("b45103a4-8919-4d4d-af02-e6ee787bd593") // "7bd593"
+ */
+export function toShortId(uuid: UUID): ShortId {
+  return uuid.slice(-6) as ShortId;
+}
+
+/**
+ * Check if a string is a valid ShortId
+ * @param id - String to check
+ * @returns True if string is 6 hex characters (optionally with # prefix)
+ *
+ * @example
+ * isShortId("#7bd593") // true
+ * isShortId("7bd593")  // true
+ * isShortId("7bd59")   // false (too short)
+ * isShortId("xyz123")  // false (invalid hex)
+ */
+export function isShortId(id: string): id is ShortId {
+  const normalized = id.replace(/^#/, '');
+  return /^[0-9a-f]{6}$/i.test(normalized);
+}
+
+/**
+ * Normalize ShortId (remove # prefix, validate format)
+ * @param id - ShortId to normalize (with or without # prefix)
+ * @returns Normalized 6-character hex string
+ * @throws Error if not a valid ShortId
+ *
+ * @example
+ * normalizeShortId("#7bd593") // "7bd593"
+ * normalizeShortId("7bd593")  // "7bd593"
+ * normalizeShortId("xyz")     // throws Error
+ */
+export function normalizeShortId(id: string): ShortId {
+  const normalized = id.replace(/^#/, '');
+  if (!isShortId(normalized)) {
+    throw new Error(`Invalid ShortId format: ${id}. Expected 6 hex characters (e.g., #7bd593)`);
+  }
+  return normalized as ShortId;
+}
