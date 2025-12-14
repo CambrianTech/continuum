@@ -18,7 +18,9 @@
       "@shared/*": ["shared/*"],
       "@types/*": ["types/*"],
       "@browser/*": ["browser/*"],
-      "@server/*": ["server/*"]
+      "@server/*": ["server/*"],
+      "@generator/*": ["generator/*"],
+      "@commands-utilities/*": ["commands/utilities/*"]
     },
     "strict": true,
     "noImplicitAny": true,

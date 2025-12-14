@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-14T23:04:26.967Z",
+  "generated": "2025-12-14T23:27:49.145Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -165,6 +165,157 @@
           "type": "number",
           "required": false,
           "description": "interval parameter"
+        }
+      }
+    },
+    {
+      "name": "pipe-chain",
+      "description": "Pipe Chain Command Types\n * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
+      "params": {
+        "commands": {
+          "type": "string",
+          "required": true,
+          "description": "commands parameter"
+        },
+        "errorHandling": {
+          "type": "string",
+          "required": false,
+          "description": "errorHandling parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "showIntermediate": {
+          "type": "boolean",
+          "required": false,
+          "description": "showIntermediate parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        }
+      }
+    },
+    {
+      "name": "lease-request",
+      "description": "Lease Request Command - Shared Types\n *\n * Command to request a file lease for editing",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "requesterId": {
+          "type": "string",
+          "required": true,
+          "description": "requesterId parameter"
+        },
+        "requesterName": {
+          "type": "string",
+          "required": true,
+          "description": "requesterName parameter"
+        },
+        "requesterType": {
+          "type": "string",
+          "required": true,
+          "description": "requesterType parameter"
+        },
+        "intent": {
+          "type": "string",
+          "required": true,
+          "description": "intent parameter"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "required": false,
+          "description": "durationSeconds parameter"
+        }
+      }
+    },
+    {
+      "name": "hello",
+      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "docs-search",
+      "description": "docs-search command",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "caseSensitive": {
+          "type": "boolean",
+          "required": false,
+          "description": "caseSensitive parameter"
+        },
+        "maxMatches": {
+          "type": "number",
+          "required": false,
+          "description": "maxMatches parameter"
+        }
+      }
+    },
+    {
+      "name": "docs-read",
+      "description": "docs-read command",
+      "params": {
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "toc": {
+          "type": "boolean",
+          "required": false,
+          "description": "toc parameter"
+        },
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "section parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        }
+      }
+    },
+    {
+      "name": "docs-list",
+      "description": "docs-list command",
+      "params": {
+        "dir": {
+          "type": "string",
+          "required": false,
+          "description": "dir parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        },
+        "includeReadmes": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeReadmes parameter"
         }
       }
     },
@@ -689,37 +840,6 @@
       }
     },
     {
-      "name": "pipe-chain",
-      "description": "Pipe Chain Command Types\n * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
-      "params": {
-        "commands": {
-          "type": "string",
-          "required": true,
-          "description": "commands parameter"
-        },
-        "errorHandling": {
-          "type": "string",
-          "required": false,
-          "description": "errorHandling parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "showIntermediate": {
-          "type": "boolean",
-          "required": false,
-          "description": "showIntermediate parameter"
-        },
-        "format": {
-          "type": "string",
-          "required": false,
-          "description": "format parameter"
-        }
-      }
-    },
-    {
       "name": "ping",
       "description": "ping command",
       "params": {
@@ -1075,53 +1195,6 @@
           "type": "boolean",
           "required": false,
           "description": "includeSessionLogs parameter"
-        }
-      }
-    },
-    {
-      "name": "lease-request",
-      "description": "Lease Request Command - Shared Types\n *\n * Command to request a file lease for editing",
-      "params": {
-        "filePath": {
-          "type": "string",
-          "required": true,
-          "description": "filePath parameter"
-        },
-        "requesterId": {
-          "type": "string",
-          "required": true,
-          "description": "requesterId parameter"
-        },
-        "requesterName": {
-          "type": "string",
-          "required": true,
-          "description": "requesterName parameter"
-        },
-        "requesterType": {
-          "type": "string",
-          "required": true,
-          "description": "requesterType parameter"
-        },
-        "intent": {
-          "type": "string",
-          "required": true,
-          "description": "intent parameter"
-        },
-        "durationSeconds": {
-          "type": "number",
-          "required": false,
-          "description": "durationSeconds parameter"
-        }
-      }
-    },
-    {
-      "name": "hello",
-      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
         }
       }
     },
@@ -1620,79 +1693,6 @@
           "type": "string",
           "required": false,
           "description": "executedIn parameter"
-        }
-      }
-    },
-    {
-      "name": "docs-search",
-      "description": "docs-search command",
-      "params": {
-        "pattern": {
-          "type": "string",
-          "required": true,
-          "description": "pattern parameter"
-        },
-        "caseSensitive": {
-          "type": "boolean",
-          "required": false,
-          "description": "caseSensitive parameter"
-        },
-        "maxMatches": {
-          "type": "number",
-          "required": false,
-          "description": "maxMatches parameter"
-        }
-      }
-    },
-    {
-      "name": "docs-read",
-      "description": "docs-read command",
-      "params": {
-        "doc": {
-          "type": "string",
-          "required": true,
-          "description": "doc parameter"
-        },
-        "toc": {
-          "type": "boolean",
-          "required": false,
-          "description": "toc parameter"
-        },
-        "section": {
-          "type": "string",
-          "required": false,
-          "description": "section parameter"
-        },
-        "startLine": {
-          "type": "number",
-          "required": false,
-          "description": "startLine parameter"
-        },
-        "endLine": {
-          "type": "number",
-          "required": false,
-          "description": "endLine parameter"
-        }
-      }
-    },
-    {
-      "name": "docs-list",
-      "description": "docs-list command",
-      "params": {
-        "dir": {
-          "type": "string",
-          "required": false,
-          "description": "dir parameter"
-        },
-        "pattern": {
-          "type": "string",
-          "required": false,
-          "description": "pattern parameter"
-        },
-        "includeReadmes": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeReadmes parameter"
         }
       }
     },
