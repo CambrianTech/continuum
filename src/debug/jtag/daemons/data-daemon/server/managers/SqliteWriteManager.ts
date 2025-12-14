@@ -16,7 +16,7 @@ import type {
   StorageResult
 } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
-import { SqliteRawExecutor } from '../SqliteRawExecutor';
+import type { SqlExecutor } from '../SqlExecutor';
 import {
   getFieldMetadata,
   hasFieldMetadata
@@ -31,7 +31,7 @@ const log = Logger.create('SqliteWriteManager', 'sql');
  */
 export class SqliteWriteManager {
   constructor(
-    private executor: SqliteRawExecutor
+    private executor: SqlExecutor
   ) {}
 
   /**

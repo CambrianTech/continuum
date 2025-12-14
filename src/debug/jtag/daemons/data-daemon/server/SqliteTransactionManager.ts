@@ -5,12 +5,12 @@
  * Extracted from SqliteStorageAdapter for clean separation of concerns.
  */
 
-import { SqliteRawExecutor } from './SqliteRawExecutor';
+import type { SqlExecutor } from './SqlExecutor';
 
 export class SqliteTransactionManager {
   private inTransaction: boolean = false;
 
-  constructor(private executor: SqliteRawExecutor) {}
+  constructor(private executor: SqlExecutor) {}
 
   /**
    * Begin a database transaction

@@ -43,8 +43,54 @@ export interface FieldMetadata {
   };
 }
 
+/**
+ * Composite Index Definition
+ * Defines indexes on multiple columns for query optimization
+ */
+export interface CompositeIndexMetadata {
+  name: string;                 // Index name (e.g., 'idx_room_timestamp')
+  fields: string[];             // Column names in order
+  unique?: boolean;             // UNIQUE constraint
+  direction?: 'ASC' | 'DESC';   // Sort direction (applies to last field)
+}
+
 // Global field metadata storage
 const FIELD_METADATA = new Map<EntityConstructor, Map<string, FieldMetadata>>();
+
+// Global composite index metadata storage
+const COMPOSITE_INDEXES = new Map<EntityConstructor, CompositeIndexMetadata[]>();
+
+/**
+ * Get composite indexes for an entity class
+ */
+export function getCompositeIndexes(entityClass: EntityConstructor): CompositeIndexMetadata[] {
+  const indexes: CompositeIndexMetadata[] = [];
+
+  // Walk up the prototype chain to collect inherited indexes
+  let currentClass = entityClass;
+  while (currentClass) {
+    const classIndexes = COMPOSITE_INDEXES.get(currentClass);
+    if (classIndexes) {
+      indexes.push(...classIndexes);
+    }
+
+    // Move to parent class
+    const parent = Object.getPrototypeOf(currentClass);
+    currentClass = parent === Function.prototype ? null : parent;
+  }
+
+  return indexes;
+}
+
+/**
+ * Add composite index metadata for an entity class
+ */
+function addCompositeIndex(constructor: EntityConstructor, index: CompositeIndexMetadata) {
+  if (!COMPOSITE_INDEXES.has(constructor)) {
+    COMPOSITE_INDEXES.set(constructor, []);
+  }
+  COMPOSITE_INDEXES.get(constructor)!.push(index);
+}
 
 /**
  * Get field metadata for an entity class, including inherited fields
@@ -232,5 +278,39 @@ export function BooleanField(options?: { nullable?: boolean; default?: boolean }
         options: { nullable: false, ...options }
       });
     });
+  };
+}
+
+/**
+ * Composite Index Decorator (Class-level)
+ *
+ * Defines multi-column indexes for query optimization.
+ * Use when queries filter/sort on multiple columns together.
+ *
+ * @example
+ * ```typescript
+ * @CompositeIndex({
+ *   name: 'idx_room_timestamp',
+ *   fields: ['roomId', 'timestamp'],
+ *   direction: 'DESC'
+ * })
+ * export class ChatMessageEntity extends BaseEntity {
+ *   @TextField({ index: true })
+ *   roomId: UUID;
+ *
+ *   @DateField({ index: true })
+ *   timestamp: Date;
+ * }
+ * ```
+ *
+ * Generated SQL:
+ * CREATE INDEX IF NOT EXISTS idx_room_timestamp
+ * ON chat_messages(room_id, timestamp DESC);
+ */
+export function CompositeIndex(index: CompositeIndexMetadata) {
+  return function <T extends EntityConstructor>(target: T, _context: ClassDecoratorContext) {
+    // Add composite index metadata after class is fully constructed
+    addCompositeIndex(target, index);
+    return target;
   };
 }

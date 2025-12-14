@@ -18,7 +18,7 @@ const execAsync = promisify(exec);
 
 import type { StorageResult } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
-import { SqliteRawExecutor } from '../SqliteRawExecutor';
+import type { SqlExecutor } from '../SqlExecutor';
 import {
   getFieldMetadata,
   hasFieldMetadata,
@@ -50,8 +50,8 @@ export class SqliteSchemaManager {
   private schemaVerified: Set<string> = new Set(); // Cache: only check schema once per process
 
   constructor(
-    private db: sqlite3.Database,
-    private executor: SqliteRawExecutor,
+    private db: sqlite3.Database | null,
+    private executor: SqlExecutor,
     private generateCreateTableSql: (
       collectionName: string,
       entityClass: EntityConstructor,
@@ -107,8 +107,10 @@ export class SqliteSchemaManager {
    * Verify database integrity and write capability
    */
   async verifyIntegrity(): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
+    // For Rust adapter, db may be null (Rust manages connection)
+    // Verification proceeds via executor instead
+    if (!this.db && !this.executor) {
+      throw new Error('Neither database nor executor initialized');
     }
 
     this.log.info('Creating system_info table for version tracking...');
