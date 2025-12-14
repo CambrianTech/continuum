@@ -1,9 +1,10 @@
-/// Database Module - SQLite Connection Pool and Query Operations
+/// Database Module - Pure SQL Executor
 ///
-/// This module handles all SQLite database operations:
+/// This module provides a simple SQL execution layer:
 /// - Connection pooling (r2d2 with 10 connections)
-/// - Query building (dynamic filters and ordering)
-/// - CRUD operations (list, read, create, update)
+/// - SQL query execution (SELECT - returns rows)
+/// - SQL statement execution (INSERT/UPDATE/DELETE - returns changes)
+/// - Parameter binding (JSON values to SQL types)
 /// - Error handling with retries
 
 use r2d2::Pool;
@@ -13,11 +14,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::messages::{
-    DataListPayload, DataListResult, DataReadPayload, DataReadResult, DataCreatePayload,
-    DataCreateResult, DataUpdatePayload, DataUpdateResult, OrderDirection, DataRecord,
-    DataRecordMetadata,
-};
+use crate::messages::{SqlQueryPayload, SqlQueryResult, SqlExecutePayload, SqlExecuteResult};
 
 // ============================================================================
 // Connection Pool
@@ -29,10 +26,10 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 pub fn create_pool<P: AsRef<Path>>(db_path: P) -> Result<DbPool, r2d2::Error> {
     let manager = SqliteConnectionManager::file(db_path)
         .with_init(|conn| {
-            // Enable WAL mode for better concurrency
+            // Use DELETE mode (matches TypeScript implementation)
+            // Do NOT convert to WAL - keep database in original journal_mode
             conn.execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA busy_timeout=5000;
+                "PRAGMA busy_timeout=30000;
                  PRAGMA synchronous=NORMAL;",
             )
         });
@@ -44,244 +41,143 @@ pub fn create_pool<P: AsRef<Path>>(db_path: P) -> Result<DbPool, r2d2::Error> {
 }
 
 // ============================================================================
-// Query Builder Helpers
+// SQL Parameter Conversion
 // ============================================================================
 
-/// Build WHERE clause from JSON filter using json_extract
-fn build_where_clause(filter: &Option<Value>) -> (String, Vec<String>) {
-    let mut where_parts = Vec::new();
-    let mut values = Vec::new();
-
-    if let Some(Value::Object(obj)) = filter {
-        for (key, value) in obj {
-            // Use json_extract to query within JSON data column
-            where_parts.push(format!("json_extract(data, '$.{}') = ?", key));
-            // Convert value to string for SQL parameter
-            let value_str = match value {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                _ => serde_json::to_string(value).unwrap_or_default(),
-            };
-            values.push(value_str);
+/// Convert serde_json::Value to rusqlite-compatible parameter
+fn json_value_to_sql(value: &Value) -> Box<dyn ToSql> {
+    match value {
+        Value::Null => Box::new(None::<String>),
+        Value::Bool(b) => Box::new(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Box::new(i)
+            } else if let Some(f) = n.as_f64() {
+                Box::new(f)
+            } else {
+                Box::new(n.to_string())
+            }
         }
-    }
-
-    let where_clause = if where_parts.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", where_parts.join(" AND "))
-    };
-
-    (where_clause, values)
-}
-
-/// Build ORDER BY clause
-fn build_order_clause(order_by: &Option<Vec<crate::messages::OrderBy>>) -> String {
-    if let Some(orders) = order_by {
-        if orders.is_empty() {
-            return String::new();
+        Value::String(s) => Box::new(s.clone()),
+        Value::Array(_) | Value::Object(_) => {
+            // Serialize complex types as JSON strings
+            Box::new(serde_json::to_string(value).unwrap_or_default())
         }
-
-        let order_parts: Vec<String> = orders
-            .iter()
-            .map(|o| {
-                let direction = match o.direction {
-                    OrderDirection::Asc => "ASC",
-                    OrderDirection::Desc => "DESC",
-                };
-                format!("{} {}", o.field, direction)
-            })
-            .collect();
-
-        format!(" ORDER BY {}", order_parts.join(", "))
-    } else {
-        String::new()
     }
 }
 
 // ============================================================================
-// CRUD Operations
+// SQL Execution Operations
 // ============================================================================
 
-/// Execute data/list command
-pub fn execute_list(pool: &DbPool, payload: DataListPayload) -> Result<DataListResult, String> {
+/// Execute SQL query (SELECT) - returns rows as JSON
+pub fn execute_query(pool: &DbPool, payload: SqlQueryPayload) -> Result<SqlQueryResult, String> {
     let conn = pool
         .get()
         .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
 
-    let limit = payload.limit.unwrap_or(50);
-    let offset = payload.offset.unwrap_or(0);
-
-    // Build query
-    let (where_clause, filter_values) = build_where_clause(&payload.filter);
-    let order_clause = build_order_clause(&payload.order_by);
-
-    // Count query
-    let count_query = format!("SELECT COUNT(*) FROM {}{}", payload.collection, where_clause);
-
-    // Data query
-    let data_query = format!(
-        "SELECT data FROM {}{}{} LIMIT {} OFFSET {}",
-        payload.collection, where_clause, order_clause, limit, offset
-    );
-
-    // Convert Vec<String> to Vec<&dyn ToSql> for SQLite parameters
-    let params: Vec<&dyn rusqlite::ToSql> = filter_values
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
-
-    // Execute count
-    let total: usize = conn
-        .query_row(&count_query, params.as_slice(), |row| {
-            row.get(0)
-        })
-        .map_err(|e| format!("Count query failed: {}", e))?;
-
-    // Execute data query
+    // Prepare statement
     let mut stmt = conn
-        .prepare(&data_query)
+        .prepare(&payload.sql)
         .map_err(|e| format!("Prepare query failed: {}", e))?;
 
+    // Convert JSON params to SQLite params
+    let sql_params: Vec<Box<dyn ToSql>> = payload
+        .params
+        .iter()
+        .map(|v| json_value_to_sql(v))
+        .collect();
+
+    // Create slice of references for rusqlite
+    let params_refs: Vec<&dyn ToSql> = sql_params
+        .iter()
+        .map(|b| b.as_ref() as &dyn ToSql)
+        .collect();
+
+    // Get column names
+    let column_count = stmt.column_count();
+    let column_names: Vec<String> = (0..column_count)
+        .map(|i| stmt.column_name(i).unwrap_or("").to_string())
+        .collect();
+
+    // Execute query and collect rows
     let rows = stmt
-        .query_map(params.as_slice(), |row| {
-            let json_str: String = row.get(0)?;
-            Ok(json_str)
+        .query_map(params_refs.as_slice(), |row| {
+            let mut obj = serde_json::Map::new();
+
+            for (i, col_name) in column_names.iter().enumerate() {
+                // Try to get value as different types
+                let value = if let Ok(s) = row.get::<usize, String>(i) {
+                    Value::String(s)
+                } else if let Ok(i_val) = row.get::<usize, i64>(i) {
+                    Value::Number(i_val.into())
+                } else if let Ok(f) = row.get::<usize, f64>(i) {
+                    serde_json::Number::from_f64(f)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                } else if let Ok(b) = row.get::<usize, bool>(i) {
+                    Value::Bool(b)
+                } else {
+                    Value::Null
+                };
+
+                obj.insert(col_name.clone(), value);
+            }
+
+            Ok(Value::Object(obj))
         })
         .map_err(|e| format!("Query execution failed: {}", e))?;
 
-    let mut items = Vec::new();
+    // Collect all rows
+    let mut result_rows = Vec::new();
     for row_result in rows {
         match row_result {
-            Ok(json_str) => {
-                match serde_json::from_str::<Value>(&json_str) {
-                    Ok(value) => items.push(value),
-                    Err(e) => eprintln!("⚠️  Failed to parse JSON: {}", e),
-                }
-            }
+            Ok(row_obj) => result_rows.push(row_obj),
             Err(e) => eprintln!("⚠️  Row fetch error: {}", e),
         }
     }
 
-    // Return raw entity data (unwrap from any internal structure)
-    Ok(DataListResult {
-        items,
-        total,
-        limit,
-        offset,
+    Ok(SqlQueryResult { rows: result_rows })
+}
+
+/// Execute SQL statement (INSERT/UPDATE/DELETE) - returns changes count
+pub fn execute_statement(
+    pool: &DbPool,
+    payload: SqlExecutePayload,
+) -> Result<SqlExecuteResult, String> {
+    let conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
+
+    // Convert JSON params to SQLite params
+    let sql_params: Vec<Box<dyn ToSql>> = payload
+        .params
+        .iter()
+        .map(|v| json_value_to_sql(v))
+        .collect();
+
+    // Create slice of references for rusqlite
+    let params_refs: Vec<&dyn ToSql> = sql_params
+        .iter()
+        .map(|b| b.as_ref() as &dyn ToSql)
+        .collect();
+
+    // Execute statement
+    let changes = conn
+        .execute(&payload.sql, params_refs.as_slice())
+        .map_err(|e| format!("Execute failed: {}", e))?;
+
+    // Get last insert ID if applicable
+    let last_insert_id = if payload.sql.trim().to_uppercase().starts_with("INSERT") {
+        Some(conn.last_insert_rowid())
+    } else {
+        None
+    };
+
+    Ok(SqlExecuteResult {
+        changes,
+        last_insert_id,
     })
-}
-
-/// Execute data/read command
-pub fn execute_read(pool: &DbPool, payload: DataReadPayload) -> Result<DataReadResult, String> {
-    let conn = pool
-        .get()
-        .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
-
-    let query = format!("SELECT data FROM {} WHERE id = ?", payload.collection);
-
-    let result = conn.query_row(&query, [&payload.id], |row| {
-        let json_str: String = row.get(0)?;
-        Ok(json_str)
-    });
-
-    match result {
-        Ok(json_str) => {
-            let entity = serde_json::from_str::<Value>(&json_str)
-                .map_err(|e| format!("Failed to parse JSON: {}", e))?;
-            Ok(DataReadResult {
-                data: Some(entity),
-            })
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(DataReadResult { data: None }),
-        Err(e) => Err(format!("Query failed: {}", e)),
-    }
-}
-
-/// Execute data/create command
-pub fn execute_create(pool: &DbPool, payload: DataCreatePayload) -> Result<DataCreateResult, String> {
-    let conn = pool
-        .get()
-        .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
-
-    // Extract ID from document
-    let id = payload
-        .document
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Document must have an 'id' field".to_string())?
-        .to_string();
-
-    // Serialize document to JSON string
-    let json_str = serde_json::to_string(&payload.document)
-        .map_err(|e| format!("Failed to serialize document: {}", e))?;
-
-    // Insert query
-    let query = format!(
-        "INSERT INTO {} (id, data) VALUES (?, ?)",
-        payload.collection
-    );
-
-    conn.execute(&query, [&id, &json_str])
-        .map_err(|e| format!("Insert failed: {}", e))?;
-
-    // Return the created entity (same as input document)
-    Ok(DataCreateResult {
-        data: payload.document.clone(),
-    })
-}
-
-/// Execute data/update command
-pub fn execute_update(pool: &DbPool, payload: DataUpdatePayload) -> Result<DataUpdateResult, String> {
-    let conn = pool
-        .get()
-        .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
-
-    // Read existing document
-    let query = format!("SELECT data FROM {} WHERE id = ?", payload.collection);
-
-    let existing_json = conn
-        .query_row(&query, [&payload.id], |row| {
-            let json_str: String = row.get(0)?;
-            Ok(json_str)
-        })
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                format!("Document not found with id: {}", payload.id)
-            }
-            _ => format!("Query failed: {}", e),
-        })?;
-
-    // Parse existing document
-    let mut existing_doc = serde_json::from_str::<Value>(&existing_json)
-        .map_err(|e| format!("Failed to parse existing document: {}", e))?;
-
-    // Merge updates
-    if let Value::Object(ref mut existing_obj) = existing_doc {
-        if let Value::Object(updates_obj) = &payload.updates {
-            for (key, value) in updates_obj {
-                existing_obj.insert(key.clone(), value.clone());
-            }
-
-            // Serialize updated document
-            let updated_json = serde_json::to_string(&existing_doc)
-                .map_err(|e| format!("Failed to serialize updated document: {}", e))?;
-
-            // Update query
-            let update_query = format!("UPDATE {} SET data = ? WHERE id = ?", payload.collection);
-
-            conn.execute(&update_query, [&updated_json, &payload.id])
-                .map_err(|e| format!("Update failed: {}", e))?;
-
-            // Return the updated entity
-            return Ok(DataUpdateResult {
-                data: existing_doc,
-            });
-        }
-    }
-
-    Err("Document or updates are not valid JSON objects".to_string())
 }
 
 // ============================================================================

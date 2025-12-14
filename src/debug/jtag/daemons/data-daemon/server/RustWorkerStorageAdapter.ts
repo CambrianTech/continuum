@@ -90,7 +90,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     // Merge initialization config with constructor config
     this.config = {
       socketPath: this.config?.socketPath || '/tmp/data-worker.sock',
-      dbPath: (config.options as any)?.dbPath,
+      dbPath: (config.options as any)?.dbPath || '.continuum/jtag/data/database.sqlite',
       dbHandle: (config.options as any)?.dbHandle || 'default',
       timeout: this.config?.timeout || 30000
     };
@@ -185,7 +185,8 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       timestamp: new Date().toISOString(),
       payload: {
         ...payload,
-        dbHandle: this.config.dbHandle
+        dbHandle: this.config.dbHandle,
+        dbPath: this.config.dbPath
       }
     };
 

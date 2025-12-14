@@ -1,183 +1,211 @@
-/// Data Worker - Message Types using JTAGProtocol
+/// Messages for SQL Executor Worker
 ///
-/// This uses the universal JTAGProtocol from workers/shared/jtag_protocol.rs
-/// which mirrors shared/ipc/JTAGProtocol.ts on the TypeScript side.
+/// This worker is a PURE SQL EXECUTOR - it receives complete SQL strings
+/// from TypeScript and executes them. TypeScript owns all ORM logic:
+/// - Schema generation from decorators
+/// - Query building (universal filters → SQL)
+/// - Entity serialization/deserialization
+/// - Type conversions
+///
+/// The worker provides:
+/// - Fast rusqlite execution
+/// - Connection pooling
+/// - Concurrent query handling
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-// Import shared JTAGProtocol types
-#[path = "../../shared/jtag_protocol.rs"]
-mod jtag_protocol;
-
-// Re-export JTAG protocol types for library users
-pub use jtag_protocol::{JTAGErrorType, JTAGRequest, JTAGResponse};
-
 // ============================================================================
-// Core Data Types - Match TypeScript DataStorageAdapter.ts
+// Universal Protocol Messages
 // ============================================================================
 
-/// Database handle type - 'default' or UUID for multi-database operations
+/// Database handle (for multi-database support)
 pub type DbHandle = String;
 
-/// Data record metadata - versioning and timestamps
+/// Base request structure
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct DataRecordMetadata {
-    pub created_at: String,
-    pub updated_at: String,
-    pub version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl: Option<u64>,  // Time to live in seconds
-}
-
-/// Universal data record structure - wraps all data with metadata
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct DataRecord {
+pub struct JTAGRequest<T> {
     pub id: String,
-    pub collection: String,
-    #[ts(type = "any")]
-    pub data: serde_json::Value,
-    pub metadata: DataRecordMetadata,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub timestamp: String,
+    pub payload: T,
 }
 
-// ============================================================================
-// Data Command Types (owned by data worker)
-// ============================================================================
+/// Base response structure
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct JTAGResponse<T> {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub timestamp: String,
+    pub payload: T,
+    pub request_id: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<JTAGErrorType>,
+}
 
-/// Order direction for sorting
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
-pub enum OrderDirection {
-    Asc,
-    Desc,
+pub enum JTAGErrorType {
+    Validation,
+    Internal,
+    NotFound,
 }
 
-/// Order by clause for queries
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct OrderBy {
-    pub field: String,
-    pub direction: OrderDirection,
+impl<T> JTAGResponse<T> {
+    pub fn success(request_id: String, msg_type: String, payload: T) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            r#type: msg_type,
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            payload,
+            request_id,
+            success: true,
+            error: None,
+            error_type: None,
+        }
+    }
+
+    pub fn error(
+        request_id: String,
+        msg_type: String,
+        payload: T,
+        error: String,
+        error_type: JTAGErrorType,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            r#type: msg_type,
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            payload,
+            request_id,
+            success: false,
+            error: Some(error),
+            error_type: Some(error_type),
+        }
+    }
 }
 
 // ============================================================================
-// data/list - Query with filters and ordering
+// SQL Execution Messages - The ONLY data operations
 // ============================================================================
 
-/// Payload for data/list command
+/// Execute SQL query (SELECT) - returns rows
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct DataListPayload {
-    pub collection: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub db_handle: Option<DbHandle>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Record<string, any>", optional)]
-    pub filter: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order_by: Option<Vec<OrderBy>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offset: Option<u32>,
-}
-
-/// Result for data/list command - returns raw entities (matches TypeScript)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct DataListResult {
+pub struct SqlQueryPayload {
+    /// Complete SQL string (built by TypeScript ORM)
+    pub sql: String,
+    /// Bind parameters (already converted to SQL types by TypeScript)
     #[ts(type = "Array<any>")]
-    pub items: Vec<serde_json::Value>,
-    pub total: usize,
-    pub limit: u32,
-    pub offset: u32,
-}
-
-// ============================================================================
-// data/read - Single document by ID
-// ============================================================================
-
-/// Payload for data/read command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct DataReadPayload {
-    pub collection: String,
-    pub id: String,
+    pub params: Vec<serde_json::Value>,
+    /// Optional database path (default: .continuum/jtag/data/database.sqlite)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db_path: Option<String>,
+    /// Optional database handle (for multi-database routing)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub db_handle: Option<DbHandle>,
 }
 
-/// Result for data/read command - returns raw entity (matches TypeScript)
+/// Result from SQL query - raw rows as JSON
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct DataReadResult {
-    #[ts(type = "any | null")]
-    pub data: Option<serde_json::Value>,
+pub struct SqlQueryResult {
+    /// Rows as JSON objects (TypeScript will deserialize to entities)
+    #[ts(type = "Array<Record<string, any>>")]
+    pub rows: Vec<serde_json::Value>,
 }
 
-// ============================================================================
-// data/create - Insert new document
-// ============================================================================
-
-/// Payload for data/create command
+/// Execute SQL statement (INSERT/UPDATE/DELETE) - returns changes count
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct DataCreatePayload {
-    pub collection: String,
-    #[ts(type = "any")]
-    pub document: serde_json::Value,
+pub struct SqlExecutePayload {
+    /// Complete SQL string (built by TypeScript ORM)
+    pub sql: String,
+    /// Bind parameters (already converted to SQL types by TypeScript)
+    #[ts(type = "Array<any>")]
+    pub params: Vec<serde_json::Value>,
+    /// Optional database path (default: .continuum/jtag/data/database.sqlite)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db_path: Option<String>,
+    /// Optional database handle (for multi-database routing)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub db_handle: Option<DbHandle>,
 }
 
-/// Result for data/create command - returns raw entity (matches TypeScript)
+/// Result from SQL statement - rows affected
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct DataCreateResult {
-    #[ts(type = "any")]
-    pub data: serde_json::Value,
-}
-
-// ============================================================================
-// data/update - Modify existing document
-// ============================================================================
-
-/// Payload for data/update command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase")]
-pub struct DataUpdatePayload {
-    pub collection: String,
-    pub id: String,
-    #[ts(type = "Record<string, any>")]
-    pub updates: serde_json::Value,
+pub struct SqlExecuteResult {
+    /// Number of rows affected
+    pub changes: usize,
+    /// Last inserted row ID (if applicable)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub db_handle: Option<DbHandle>,
+    pub last_insert_id: Option<i64>,
 }
 
-/// Result for data/update command - returns raw entity (matches TypeScript)
+// ============================================================================
+// Health Check Messages
+// ============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct DataUpdateResult {
-    #[ts(type = "any")]
-    pub data: serde_json::Value,
+pub struct PingResult {
+    pub uptime_ms: u64,
+    pub queue_depth: usize,
+    pub processed_total: u64,
+    pub errors_total: u64,
+    pub memory_mb: f64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusPayload {
+    pub verbose: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusResult {
+    pub uptime_ms: u64,
+    pub requests_total: u64,
+    pub errors_total: u64,
+    pub connections_total: u64,
+    pub queue_depth: usize,
+    pub memory_mb: f64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ShutdownPayload {
+    pub graceful: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ShutdownResult {
+    pub queue_drained: usize,
+    pub shutdown_time_ms: u64,
 }
 
 // ============================================================================
@@ -190,18 +218,15 @@ mod export_typescript {
 
     #[test]
     fn export_bindings() {
-        DataRecordMetadata::export().expect("Failed to export DataRecordMetadata");
-        DataRecord::export().expect("Failed to export DataRecord");
-        OrderDirection::export().expect("Failed to export OrderDirection");
-        OrderBy::export().expect("Failed to export OrderBy");
-        DataListPayload::export().expect("Failed to export DataListPayload");
-        DataListResult::export().expect("Failed to export DataListResult");
-        DataReadPayload::export().expect("Failed to export DataReadPayload");
-        DataReadResult::export().expect("Failed to export DataReadResult");
-        DataCreatePayload::export().expect("Failed to export DataCreatePayload");
-        DataCreateResult::export().expect("Failed to export DataCreateResult");
-        DataUpdatePayload::export().expect("Failed to export DataUpdatePayload");
-        DataUpdateResult::export().expect("Failed to export DataUpdateResult");
+        SqlQueryPayload::export().expect("Failed to export SqlQueryPayload");
+        SqlQueryResult::export().expect("Failed to export SqlQueryResult");
+        SqlExecutePayload::export().expect("Failed to export SqlExecutePayload");
+        SqlExecuteResult::export().expect("Failed to export SqlExecuteResult");
+        PingResult::export().expect("Failed to export PingResult");
+        StatusPayload::export().expect("Failed to export StatusPayload");
+        StatusResult::export().expect("Failed to export StatusResult");
+        ShutdownPayload::export().expect("Failed to export ShutdownPayload");
+        ShutdownResult::export().expect("Failed to export ShutdownResult");
         println!("✅ TypeScript bindings exported to bindings/");
     }
 }

@@ -170,6 +170,6 @@ fn get_database_path() -> String {
         }
     }
 
-    // Fallback to working directory
-    "./continuum.db".to_string()
+    // Fallback to JTAG default database path
+    ".continuum/jtag/data/database.sqlite".to_string()
 }

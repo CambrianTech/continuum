@@ -1,13 +1,11 @@
-/// Connection Handler Module - Universal Protocol + Data Operations
+/// Connection Handler Module - Universal Protocol + SQL Operations
 ///
 /// Routes messages to appropriate handlers:
 /// - ping → health check (universal protocol)
 /// - shutdown → graceful shutdown (universal protocol)
 /// - status → diagnostics (universal protocol)
-/// - data/list → queue for background processing
-/// - data/read → queue for background processing
-/// - data/create → queue for background processing
-/// - data/update → queue for background processing
+/// - sql/query → queue for background SQL execution (SELECT)
+/// - sql/execute → queue for background SQL execution (INSERT/UPDATE/DELETE)
 
 use crate::health::{self, StatsHandle};
 use crate::messages::*;
@@ -135,10 +133,8 @@ fn handle_message(
         "ping" => handle_ping(line, stats, writer),
         "shutdown" => handle_shutdown(line, shutdown_signal, writer),
         "status" => handle_status(line, stats, writer),
-        "data/list" => handle_data_list(line, data_tx, stats, writer),
-        "data/read" => handle_data_read(line, data_tx, stats, writer),
-        "data/create" => handle_data_create(line, data_tx, stats, writer),
-        "data/update" => handle_data_update(line, data_tx, stats, writer),
+        "sql/query" => handle_sql_query(line, data_tx, stats, writer),
+        "sql/execute" => handle_sql_execute(line, data_tx, stats, writer),
         _ => handle_unknown(msg_type, msg_id, writer),
     }
 }
@@ -227,29 +223,29 @@ fn handle_status(
 }
 
 // ============================================================================
-// Data Operation Handlers
+// SQL Operation Handlers
 // ============================================================================
 
-/// Handle data/list request
-fn handle_data_list(
+/// Handle sql/query request (SELECT)
+fn handle_sql_query(
     line: &str,
     data_tx: &mpsc::Sender<QueuedDataOp>,
     stats: &StatsHandle,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
-    let request: JTAGRequest<DataListPayload> =
-        serde_json::from_str(line).expect("Failed to parse data/list");
+    let request: JTAGRequest<SqlQueryPayload> =
+        serde_json::from_str(line).expect("Failed to parse sql/query");
 
     // Create response channel
     let (response_tx, response_rx) = mpsc::channel();
 
     // Queue operation for background processing (non-blocking fast path)
-    if let Err(e) = data_tx.send(QueuedDataOp::List {
+    if let Err(e) = data_tx.send(QueuedDataOp::Query {
         request_id: request.id.clone(),
         payload: request.payload.clone(),
         response_tx,
     }) {
-        eprintln!("❌ Failed to queue data/list operation: {}", e);
+        eprintln!("❌ Failed to queue sql/query operation: {}", e);
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             format!("Queue send failed: {}", e),
@@ -271,18 +267,13 @@ fn handle_data_list(
                 result,
             );
             send_response(&response, writer)?;
-            println!("✅ data/list operation completed");
+            println!("✅ sql/query operation completed");
         }
         Ok((_req_id, Err(e))) => {
-            let response = JTAGResponse::<DataListResult>::error(
+            let response = JTAGResponse::<SqlQueryResult>::error(
                 request.id.clone(),
                 request.r#type.clone(),
-                DataListResult {
-                    items: vec![],
-                    total: 0,
-                    limit: 0,
-                    offset: 0,
-                },
+                SqlQueryResult { rows: vec![] },
                 e,
                 JTAGErrorType::Internal,
             );
@@ -296,24 +287,24 @@ fn handle_data_list(
     Ok(())
 }
 
-/// Handle data/read request
-fn handle_data_read(
+/// Handle sql/execute request (INSERT/UPDATE/DELETE)
+fn handle_sql_execute(
     line: &str,
     data_tx: &mpsc::Sender<QueuedDataOp>,
     stats: &StatsHandle,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
-    let request: JTAGRequest<DataReadPayload> =
-        serde_json::from_str(line).expect("Failed to parse data/read");
+    let request: JTAGRequest<SqlExecutePayload> =
+        serde_json::from_str(line).expect("Failed to parse sql/execute");
 
     let (response_tx, response_rx) = mpsc::channel();
 
-    if let Err(e) = data_tx.send(QueuedDataOp::Read {
+    if let Err(e) = data_tx.send(QueuedDataOp::Execute {
         request_id: request.id.clone(),
         payload: request.payload.clone(),
         response_tx,
     }) {
-        eprintln!("❌ Failed to queue data/read operation: {}", e);
+        eprintln!("❌ Failed to queue sql/execute operation: {}", e);
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             format!("Queue send failed: {}", e),
@@ -333,130 +324,15 @@ fn handle_data_read(
                 result,
             );
             send_response(&response, writer)?;
-            println!("✅ data/read operation completed");
+            println!("✅ sql/execute operation completed");
         }
         Ok((_req_id, Err(e))) => {
-            let response = JTAGResponse::<DataReadResult>::error(
+            let response = JTAGResponse::<SqlExecuteResult>::error(
                 request.id.clone(),
                 request.r#type.clone(),
-                DataReadResult { data: None },
-                e,
-                JTAGErrorType::Internal,
-            );
-            send_response(&response, writer)?;
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to receive result: {}", e);
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle data/create request
-fn handle_data_create(
-    line: &str,
-    data_tx: &mpsc::Sender<QueuedDataOp>,
-    stats: &StatsHandle,
-    writer: &mut UnixStream,
-) -> std::io::Result<()> {
-    let request: JTAGRequest<DataCreatePayload> =
-        serde_json::from_str(line).expect("Failed to parse data/create");
-
-    let (response_tx, response_rx) = mpsc::channel();
-
-    if let Err(e) = data_tx.send(QueuedDataOp::Create {
-        request_id: request.id.clone(),
-        payload: request.payload.clone(),
-        response_tx,
-    }) {
-        eprintln!("❌ Failed to queue data/create operation: {}", e);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Queue send failed: {}", e),
-        ));
-    }
-
-    {
-        let mut s = stats.lock().unwrap();
-        s.record_request();
-    }
-
-    match response_rx.recv() {
-        Ok((_req_id, Ok(result))) => {
-            let response = JTAGResponse::success(
-                request.id.clone(),
-                request.r#type.clone(),
-                result,
-            );
-            send_response(&response, writer)?;
-            println!("✅ data/create operation completed");
-        }
-        Ok((_req_id, Err(e))) => {
-            let response = JTAGResponse::<DataCreateResult>::error(
-                request.id.clone(),
-                request.r#type.clone(),
-                DataCreateResult {
-                    data: serde_json::Value::Null,
-                },
-                e,
-                JTAGErrorType::Internal,
-            );
-            send_response(&response, writer)?;
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to receive result: {}", e);
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle data/update request
-fn handle_data_update(
-    line: &str,
-    data_tx: &mpsc::Sender<QueuedDataOp>,
-    stats: &StatsHandle,
-    writer: &mut UnixStream,
-) -> std::io::Result<()> {
-    let request: JTAGRequest<DataUpdatePayload> =
-        serde_json::from_str(line).expect("Failed to parse data/update");
-
-    let (response_tx, response_rx) = mpsc::channel();
-
-    if let Err(e) = data_tx.send(QueuedDataOp::Update {
-        request_id: request.id.clone(),
-        payload: request.payload.clone(),
-        response_tx,
-    }) {
-        eprintln!("❌ Failed to queue data/update operation: {}", e);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Queue send failed: {}", e),
-        ));
-    }
-
-    {
-        let mut s = stats.lock().unwrap();
-        s.record_request();
-    }
-
-    match response_rx.recv() {
-        Ok((_req_id, Ok(result))) => {
-            let response = JTAGResponse::success(
-                request.id.clone(),
-                request.r#type.clone(),
-                result,
-            );
-            send_response(&response, writer)?;
-            println!("✅ data/update operation completed");
-        }
-        Ok((_req_id, Err(e))) => {
-            let response = JTAGResponse::<DataUpdateResult>::error(
-                request.id.clone(),
-                request.r#type.clone(),
-                DataUpdateResult {
-                    data: serde_json::Value::Null,
+                SqlExecuteResult {
+                    changes: 0,
+                    last_insert_id: None,
                 },
                 e,
                 JTAGErrorType::Internal,

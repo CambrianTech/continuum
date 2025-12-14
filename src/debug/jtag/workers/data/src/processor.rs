@@ -1,11 +1,9 @@
-/// Data Processor Module - Background Processing
+/// SQL Processor Module - Background Processing
 ///
 /// This module runs in a dedicated background thread and processes
-/// data operations asynchronously. All database operations happen here:
-/// - data/list (query with filters/ordering)
-/// - data/read (single document by ID)
-/// - data/create (insert new document)
-/// - data/update (modify existing document)
+/// SQL operations asynchronously. All database operations happen here:
+/// - sql/query (SELECT queries - returns rows)
+/// - sql/execute (INSERT/UPDATE/DELETE - returns changes)
 ///
 /// The main thread queues operations here and returns immediately,
 /// freeing the main thread from blocking database I/O.
@@ -23,27 +21,17 @@ use std::io::Write;
 // Queued Data Operation (internal type)
 // ============================================================================
 
-/// Data operation queued for processing
+/// SQL operation queued for processing
 pub enum QueuedDataOp {
-    List {
+    Query {
         request_id: String,
-        payload: DataListPayload,
-        response_tx: mpsc::Sender<(String, Result<DataListResult, String>)>,
+        payload: SqlQueryPayload,
+        response_tx: mpsc::Sender<(String, Result<SqlQueryResult, String>)>,
     },
-    Read {
+    Execute {
         request_id: String,
-        payload: DataReadPayload,
-        response_tx: mpsc::Sender<(String, Result<DataReadResult, String>)>,
-    },
-    Create {
-        request_id: String,
-        payload: DataCreatePayload,
-        response_tx: mpsc::Sender<(String, Result<DataCreateResult, String>)>,
-    },
-    Update {
-        request_id: String,
-        payload: DataUpdatePayload,
-        response_tx: mpsc::Sender<(String, Result<DataUpdateResult, String>)>,
+        payload: SqlExecutePayload,
+        response_tx: mpsc::Sender<(String, Result<SqlExecuteResult, String>)>,
     },
 }
 
@@ -99,43 +87,23 @@ pub fn process_data_queue(
 
         // Process the operation
         let result = match queued_op {
-            QueuedDataOp::List {
+            QueuedDataOp::Query {
                 request_id,
                 payload,
                 response_tx,
             } => {
-                debug_log(&format!("[Processor] Processing data/list for collection: {}", payload.collection));
-                let result = database::with_retry(|| database::execute_list(&db_pool, payload.clone()));
+                debug_log(&format!("[Processor] Processing SQL query: {}", payload.sql));
+                let result = database::with_retry(|| database::execute_query(&db_pool, payload.clone()));
                 let _ = response_tx.send((request_id, result.clone()));
                 result.map(|_| ()).map_err(|e| e)
             }
-            QueuedDataOp::Read {
+            QueuedDataOp::Execute {
                 request_id,
                 payload,
                 response_tx,
             } => {
-                debug_log(&format!("[Processor] Processing data/read for collection: {}, id: {}", payload.collection, payload.id));
-                let result = database::with_retry(|| database::execute_read(&db_pool, payload.clone()));
-                let _ = response_tx.send((request_id, result.clone()));
-                result.map(|_| ()).map_err(|e| e)
-            }
-            QueuedDataOp::Create {
-                request_id,
-                payload,
-                response_tx,
-            } => {
-                debug_log(&format!("[Processor] Processing data/create for collection: {}", payload.collection));
-                let result = database::with_retry(|| database::execute_create(&db_pool, payload.clone()));
-                let _ = response_tx.send((request_id, result.clone()));
-                result.map(|_| ()).map_err(|e| e)
-            }
-            QueuedDataOp::Update {
-                request_id,
-                payload,
-                response_tx,
-            } => {
-                debug_log(&format!("[Processor] Processing data/update for collection: {}, id: {}", payload.collection, payload.id));
-                let result = database::with_retry(|| database::execute_update(&db_pool, payload.clone()));
+                debug_log(&format!("[Processor] Processing SQL statement: {}", payload.sql));
+                let result = database::with_retry(|| database::execute_statement(&db_pool, payload.clone()));
                 let _ = response_tx.send((request_id, result.clone()));
                 result.map(|_| ()).map_err(|e| e)
             }

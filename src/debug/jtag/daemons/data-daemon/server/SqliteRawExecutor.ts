@@ -7,10 +7,11 @@
 
 import sqlite3 from 'sqlite3';
 import { Logger } from '../../../system/core/logging/Logger';
+import type { SqlExecutor } from './SqlExecutor';
 
 const log = Logger.create('SqliteRawExecutor', 'sql');
 
-export class SqliteRawExecutor {
+export class SqliteRawExecutor implements SqlExecutor {
   constructor(private db: sqlite3.Database | null) {}
 
   /**
