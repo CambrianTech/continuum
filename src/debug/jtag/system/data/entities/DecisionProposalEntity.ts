@@ -21,7 +21,7 @@ import { COLLECTIONS } from '../../shared/Constants';
 /**
  * Proposal status lifecycle
  */
-export type ProposalStatus = 'voting' | 'concluded' | 'expired' | 'cancelled';
+export type ProposalStatus = 'voting' | 'concluded' | 'expired' | 'cancelled' | 'manual_review';
 
 /**
  * Significance level determines urgency and response window
@@ -214,7 +214,7 @@ export class DecisionProposalEntity extends BaseEntity {
       return { success: false, error: `DecisionProposal significanceLevel must be one of: ${validLevels.join(', ')}` };
     }
 
-    const validStatuses: ProposalStatus[] = ['voting', 'concluded', 'expired', 'cancelled'];
+    const validStatuses: ProposalStatus[] = ['voting', 'concluded', 'expired', 'cancelled', 'manual_review'];
     if (!validStatuses.includes(this.status)) {
       return { success: false, error: `DecisionProposal status must be one of: ${validStatuses.join(', ')}` };
     }
