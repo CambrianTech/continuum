@@ -176,3 +176,4 @@ src/commands/**/*.d.ts
 !CLAUDE.md
 !test*output.txt
 _archive/
+src/debug/jtag/.continuum/sessions/validation/
