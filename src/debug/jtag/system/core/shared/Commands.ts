@@ -51,9 +51,14 @@ export class Commands {
       }
       const commandDaemon = globalWithJTAG.__JTAG_COMMAND_DAEMON__ as CommandDaemonWithCommands;
 
+      // IMPORTANT: userId should be provided by the caller (CLI, browser session, etc.)
+      // Commands.ts does NOT auto-inject userId - that's the infrastructure's job
+      // sessionId → userId lookup should happen BEFORE calling Commands.execute()
+
       const finalParams: CommandParams = {
         context: params?.context || globalWithJTAG.__JTAG_CONTEXT__ || 'unknown',
         sessionId: params?.sessionId || globalWithJTAG.__JTAG_SESSION_ID__ || 'unknown',
+        userId: params?.userId,  // Pass through from caller
         ...(params || {})
       } as T;
 

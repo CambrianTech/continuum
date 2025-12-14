@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-14T06:21:03.543Z",
+  "generated": "2025-12-14T18:48:37.215Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -973,69 +973,76 @@
       }
     },
     {
-      "name": "git-issue-list",
-      "description": "git-issue-list command",
+      "name": "git-workspace-init",
+      "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
+      "params": {}
+    },
+    {
+      "name": "git-workspace-clean",
+      "description": "Git Workspace Clean Command - Shared Types\n *\n * Clean up git workspace and remove worktree",
       "params": {
-        "state": {
+        "workspacePath": {
           "type": "string",
           "required": false,
-          "description": "state parameter"
+          "description": "workspacePath parameter"
         },
-        "label": {
-          "type": "string",
+        "force": {
+          "type": "boolean",
           "required": false,
-          "description": "label parameter"
+          "description": "force parameter"
         },
-        "assignee": {
-          "type": "string",
+        "deleteBranch": {
+          "type": "boolean",
           "required": false,
-          "description": "assignee parameter"
-        },
-        "limit": {
-          "type": "number",
-          "required": false,
-          "description": "limit parameter"
-        },
-        "repo": {
-          "type": "string",
-          "required": false,
-          "description": "repo parameter"
+          "description": "deleteBranch parameter"
         }
       }
     },
     {
-      "name": "git-issue-create",
-      "description": "git-issue-create command",
+      "name": "git-status",
+      "description": "Git Status Command - Shared Types\n *\n * Show git workspace status and changes",
       "params": {
-        "title": {
+        "workspacePath": {
+          "type": "string",
+          "required": false,
+          "description": "workspacePath parameter"
+        }
+      }
+    },
+    {
+      "name": "git-push",
+      "description": "Git Push Command - Shared Types\n *\n * Push workspace branch to remote repository",
+      "params": {
+        "workspacePath": {
+          "type": "string",
+          "required": false,
+          "description": "workspacePath parameter"
+        },
+        "remote": {
+          "type": "string",
+          "required": false,
+          "description": "remote parameter"
+        }
+      }
+    },
+    {
+      "name": "git-commit",
+      "description": "Git Commit Command - Shared Types\n *\n * Commit changes in git workspace with persona identity",
+      "params": {
+        "message": {
           "type": "string",
           "required": true,
-          "description": "title parameter"
+          "description": "message parameter"
         },
-        "body": {
+        "workspacePath": {
           "type": "string",
-          "required": true,
-          "description": "body parameter"
+          "required": false,
+          "description": "workspacePath parameter"
         },
-        "labels": {
+        "files": {
           "type": "array",
           "required": false,
-          "description": "labels parameter"
-        },
-        "assignee": {
-          "type": "string",
-          "required": false,
-          "description": "assignee parameter"
-        },
-        "milestone": {
-          "type": "number",
-          "required": false,
-          "description": "milestone parameter"
-        },
-        "repo": {
-          "type": "string",
-          "required": false,
-          "description": "repo parameter"
+          "description": "files parameter"
         }
       }
     },
