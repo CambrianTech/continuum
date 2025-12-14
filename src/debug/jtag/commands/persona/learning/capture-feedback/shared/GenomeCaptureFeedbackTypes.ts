@@ -5,8 +5,8 @@
  * Enables reciprocal learning - both giver and receiver learn from feedback.
  */
 
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
 
 /**
  * Type of feedback being provided
@@ -20,7 +20,7 @@ export type FeedbackType =
   | 'question';       // "Why did you choose X?"
 
 /**
- * Parameters for genome/capture-feedback command
+ * Parameters for persona/learning/capture-feedback command
  */
 export interface GenomeCaptureFeedbackParams extends CommandParams {
   /**
@@ -89,7 +89,7 @@ export interface GenomeCaptureFeedbackParams extends CommandParams {
 }
 
 /**
- * Result from genome/capture-feedback command
+ * Result from persona/learning/capture-feedback command
  */
 export interface GenomeCaptureFeedbackResult extends CommandResult {
   success: boolean;

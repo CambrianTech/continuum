@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-14T19:18:17.980Z",
+  "generated": "2025-12-14T19:58:34.924Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -741,6 +741,159 @@
       }
     },
     {
+      "name": "genome-multi-agent-learn",
+      "description": "GenomeMultiAgentLearnTypes - Multi-agent collaborative learning\n *\n * All participants learn from shared outcome after recipe completion.\n * Enables GAN-like training where multiple PersonaUsers improve together.",
+      "params": {
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "outcome": {
+          "type": "string",
+          "required": true,
+          "description": "outcome parameter"
+        },
+        "participants": {
+          "type": "object",
+          "required": true,
+          "description": "participants parameter"
+        }
+      }
+    },
+    {
+      "name": "genome-capture-interaction",
+      "description": "GenomeCaptureInteractionTypes - Capture AI interactions for continuous learning\n *\n * Called during recipe execution to record inputs/outputs for LoRA training.\n * Accumulates examples in-memory for batch micro-tuning.",
+      "params": {
+        "roleId": {
+          "type": "string",
+          "required": true,
+          "description": "roleId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "loraAdapter": {
+          "type": "string",
+          "required": false,
+          "description": "loraAdapter parameter"
+        },
+        "input": {
+          "type": "string",
+          "required": true,
+          "description": "input parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": true,
+          "description": "output parameter"
+        },
+        "thoughtStream": {
+          "type": "string",
+          "required": false,
+          "description": "thoughtStream parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        },
+        "messageId": {
+          "type": "string",
+          "required": false,
+          "description": "messageId parameter"
+        },
+        "recipeId": {
+          "type": "string",
+          "required": false,
+          "description": "recipeId parameter"
+        },
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "genome-capture-feedback",
+      "description": "GenomeCaptureFeedbackTypes - Capture feedback between PersonaUsers\n *\n * Records corrections, critiques, scores from one persona to another.\n * Enables reciprocal learning - both giver and receiver learn from feedback.",
+      "params": {
+        "interactionId": {
+          "type": "string",
+          "required": false,
+          "description": "interactionId parameter"
+        },
+        "targetRole": {
+          "type": "string",
+          "required": true,
+          "description": "targetRole parameter"
+        },
+        "targetPersonaId": {
+          "type": "string",
+          "required": false,
+          "description": "targetPersonaId parameter"
+        },
+        "feedbackRole": {
+          "type": "string",
+          "required": true,
+          "description": "feedbackRole parameter"
+        },
+        "feedbackPersonaId": {
+          "type": "string",
+          "required": false,
+          "description": "feedbackPersonaId parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "feedbackType": {
+          "type": "string",
+          "required": true,
+          "description": "feedbackType parameter"
+        },
+        "feedbackContent": {
+          "type": "string",
+          "required": true,
+          "description": "feedbackContent parameter"
+        },
+        "qualityScore": {
+          "type": "number",
+          "required": false,
+          "description": "qualityScore parameter"
+        },
+        "wasHelpful": {
+          "type": "boolean",
+          "required": false,
+          "description": "wasHelpful parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        },
+        "recipeId": {
+          "type": "string",
+          "required": false,
+          "description": "recipeId parameter"
+        },
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
       "name": "navigate",
       "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
       "params": {
@@ -1259,27 +1412,6 @@
       }
     },
     {
-      "name": "genome-multi-agent-learn",
-      "description": "GenomeMultiAgentLearnTypes - Multi-agent collaborative learning\n *\n * All participants learn from shared outcome after recipe completion.\n * Enables GAN-like training where multiple PersonaUsers improve together.",
-      "params": {
-        "domain": {
-          "type": "string",
-          "required": true,
-          "description": "domain parameter"
-        },
-        "outcome": {
-          "type": "string",
-          "required": true,
-          "description": "outcome parameter"
-        },
-        "participants": {
-          "type": "object",
-          "required": true,
-          "description": "participants parameter"
-        }
-      }
-    },
-    {
       "name": "genome-job-status",
       "description": "GenomeJobStatusTypes - Query fine-tuning job status\n *\n * Retrieves current status, progress, and metadata for a training job.\n * Works with jobs created via genome/job-create.",
       "params": {
@@ -1328,138 +1460,6 @@
           "type": "boolean",
           "required": false,
           "description": "skipValidation parameter"
-        }
-      }
-    },
-    {
-      "name": "genome-capture-interaction",
-      "description": "GenomeCaptureInteractionTypes - Capture AI interactions for continuous learning\n *\n * Called during recipe execution to record inputs/outputs for LoRA training.\n * Accumulates examples in-memory for batch micro-tuning.",
-      "params": {
-        "roleId": {
-          "type": "string",
-          "required": true,
-          "description": "roleId parameter"
-        },
-        "personaId": {
-          "type": "string",
-          "required": false,
-          "description": "personaId parameter"
-        },
-        "domain": {
-          "type": "string",
-          "required": true,
-          "description": "domain parameter"
-        },
-        "loraAdapter": {
-          "type": "string",
-          "required": false,
-          "description": "loraAdapter parameter"
-        },
-        "input": {
-          "type": "string",
-          "required": true,
-          "description": "input parameter"
-        },
-        "output": {
-          "type": "string",
-          "required": true,
-          "description": "output parameter"
-        },
-        "thoughtStream": {
-          "type": "string",
-          "required": false,
-          "description": "thoughtStream parameter"
-        },
-        "metadata": {
-          "type": "object",
-          "required": false,
-          "description": "metadata parameter"
-        },
-        "messageId": {
-          "type": "string",
-          "required": false,
-          "description": "messageId parameter"
-        },
-        "recipeId": {
-          "type": "string",
-          "required": false,
-          "description": "recipeId parameter"
-        },
-        "timestamp": {
-          "type": "string",
-          "required": false,
-          "description": "timestamp parameter"
-        }
-      }
-    },
-    {
-      "name": "genome-capture-feedback",
-      "description": "GenomeCaptureFeedbackTypes - Capture feedback between PersonaUsers\n *\n * Records corrections, critiques, scores from one persona to another.\n * Enables reciprocal learning - both giver and receiver learn from feedback.",
-      "params": {
-        "interactionId": {
-          "type": "string",
-          "required": false,
-          "description": "interactionId parameter"
-        },
-        "targetRole": {
-          "type": "string",
-          "required": true,
-          "description": "targetRole parameter"
-        },
-        "targetPersonaId": {
-          "type": "string",
-          "required": false,
-          "description": "targetPersonaId parameter"
-        },
-        "feedbackRole": {
-          "type": "string",
-          "required": true,
-          "description": "feedbackRole parameter"
-        },
-        "feedbackPersonaId": {
-          "type": "string",
-          "required": false,
-          "description": "feedbackPersonaId parameter"
-        },
-        "domain": {
-          "type": "string",
-          "required": true,
-          "description": "domain parameter"
-        },
-        "feedbackType": {
-          "type": "string",
-          "required": true,
-          "description": "feedbackType parameter"
-        },
-        "feedbackContent": {
-          "type": "string",
-          "required": true,
-          "description": "feedbackContent parameter"
-        },
-        "qualityScore": {
-          "type": "number",
-          "required": false,
-          "description": "qualityScore parameter"
-        },
-        "wasHelpful": {
-          "type": "boolean",
-          "required": false,
-          "description": "wasHelpful parameter"
-        },
-        "metadata": {
-          "type": "object",
-          "required": false,
-          "description": "metadata parameter"
-        },
-        "recipeId": {
-          "type": "string",
-          "required": false,
-          "description": "recipeId parameter"
-        },
-        "timestamp": {
-          "type": "string",
-          "required": false,
-          "description": "timestamp parameter"
         }
       }
     },

@@ -5,11 +5,11 @@
  * Accumulates examples in-memory for batch micro-tuning.
  */
 
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
 
 /**
- * Parameters for genome/capture-interaction command
+ * Parameters for persona/learning/capture-interaction command
  */
 export interface GenomeCaptureInteractionParams extends CommandParams {
   /**
@@ -61,7 +61,7 @@ export interface GenomeCaptureInteractionParams extends CommandParams {
 }
 
 /**
- * Result from genome/capture-interaction command
+ * Result from persona/learning/capture-interaction command
  */
 export interface GenomeCaptureInteractionResult extends CommandResult {
   success: boolean;

@@ -5,24 +5,24 @@
  * Stores in PersonaUser's TrainingDataAccumulator for batch micro-tuning.
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
-import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { CommandBase } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type {
   GenomeCaptureInteractionParams,
   GenomeCaptureInteractionResult
 } from '../shared/GenomeCaptureInteractionTypes';
-import { UserDaemonServer } from '../../../../daemons/user-daemon/server/UserDaemonServer';
-import { PersonaUser } from '../../../../system/user/server/PersonaUser';
-import type { InteractionCapture } from '../../../../system/user/server/modules/TrainingDataAccumulator';
+import { UserDaemonServer } from '@daemons/user-daemon/server/UserDaemonServer';
+import { PersonaUser } from '@system/user/server/PersonaUser';
+import type { InteractionCapture } from '@system/user/server/modules/TrainingDataAccumulator';
 
 export class GenomeCaptureInteractionServerCommand extends CommandBase<
   GenomeCaptureInteractionParams,
   GenomeCaptureInteractionResult
 > {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('genome-capture-interaction', context, subpath, commander);
+    super('persona/learning/capture-interaction', context, subpath, commander);
   }
 
   async execute(params: JTAGPayload): Promise<GenomeCaptureInteractionResult> {

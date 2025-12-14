@@ -5,24 +5,24 @@
  * Enables reciprocal learning - both feedback giver and receiver can improve.
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
-import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { CommandBase } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type {
   GenomeCaptureFeedbackParams,
   GenomeCaptureFeedbackResult
 } from '../shared/GenomeCaptureFeedbackTypes';
-import { UserDaemonServer } from '../../../../daemons/user-daemon/server/UserDaemonServer';
-import { PersonaUser } from '../../../../system/user/server/PersonaUser';
-import type { FeedbackCapture } from '../../../../system/user/server/modules/TrainingDataAccumulator';
+import { UserDaemonServer } from '@daemons/user-daemon/server/UserDaemonServer';
+import { PersonaUser } from '@system/user/server/PersonaUser';
+import type { FeedbackCapture } from '@system/user/server/modules/TrainingDataAccumulator';
 
 export class GenomeCaptureFeedbackServerCommand extends CommandBase<
   GenomeCaptureFeedbackParams,
   GenomeCaptureFeedbackResult
 > {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('genome-capture-feedback', context, subpath, commander);
+    super('persona/learning/capture-feedback', context, subpath, commander);
   }
 
   async execute(params: JTAGPayload): Promise<GenomeCaptureFeedbackResult> {

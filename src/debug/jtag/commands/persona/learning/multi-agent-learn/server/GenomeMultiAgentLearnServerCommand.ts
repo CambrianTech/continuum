@@ -5,10 +5,10 @@
  * Enables GAN-like training where multiple PersonaUsers improve together.
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
-import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { CommandBase } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type {
   GenomeMultiAgentLearnParams,
   GenomeMultiAgentLearnResult,
@@ -20,7 +20,7 @@ export class GenomeMultiAgentLearnServerCommand extends CommandBase<
   GenomeMultiAgentLearnResult
 > {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('genome-multi-agent-learn', context, subpath, commander);
+    super('persona/learning/multi-agent-learn', context, subpath, commander);
   }
 
   async execute(params: JTAGPayload): Promise<GenomeMultiAgentLearnResult> {

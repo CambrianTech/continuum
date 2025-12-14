@@ -4,10 +4,10 @@
  * All training data capture happens server-side.
  */
 
-import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
-import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { CommandBase } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type {
   GenomeCaptureInteractionParams,
   GenomeCaptureInteractionResult
@@ -18,7 +18,7 @@ export class GenomeCaptureInteractionBrowserCommand extends CommandBase<
   GenomeCaptureInteractionResult
 > {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('genome-capture-interaction', context, subpath, commander);
+    super('persona/learning/capture-interaction', context, subpath, commander);
   }
 
   async execute(params: JTAGPayload): Promise<GenomeCaptureInteractionResult> {

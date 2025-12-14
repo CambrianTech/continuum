@@ -5,8 +5,8 @@
  * Enables GAN-like training where multiple PersonaUsers improve together.
  */
 
-import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
 
 /**
  * Outcome of collaborative activity
@@ -73,7 +73,7 @@ export interface ParticipantLearning {
 }
 
 /**
- * Parameters for genome/multi-agent-learn command
+ * Parameters for persona/learning/multi-agent-learn command
  */
 export interface GenomeMultiAgentLearnParams extends CommandParams {
   /**
@@ -124,7 +124,7 @@ export interface ParticipantLearningResult {
 }
 
 /**
- * Result from genome/multi-agent-learn command
+ * Result from persona/learning/multi-agent-learn command
  */
 export interface GenomeMultiAgentLearnResult extends CommandResult {
   success: boolean;
