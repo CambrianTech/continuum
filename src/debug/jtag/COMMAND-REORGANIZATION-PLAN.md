@@ -199,8 +199,8 @@ find . -name "*.md" -exec sed -i '' \
 
 | Category | Commands | Status | Commit | Notes |
 |----------|----------|--------|--------|-------|
-| utilities | 4 | ⏳ Ready | - | Start here! |
-| workspace | 4 | 📋 Planned | - | |
+| utilities | 4 | ✅ Complete | c0e97b0f | hello, docs, pipe, lease |
+| workspace | 4 | ⏳ Ready | - | Next: git, recipe, task, tree |
 | interface | 9 | 📋 Planned | - | |
 | collaboration | 5 | 📋 Planned | - | |
 | development | 7 | 📋 Planned | - | |

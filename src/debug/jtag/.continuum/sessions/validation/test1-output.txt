@@ -9,96 +9,155 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (5bc92a06-0187-4347-ab0e-364b490e4947) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (03cb2919-eb3e-43f2-a423-a6bd0d57d89a) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
 🔗 websocket-server-client: Connecting to ws://localhost:9002
-❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
-    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
-    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
-    at WebSocket.emit (node:events:525:35)
-    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
-    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
-    at ClientRequest.emit (node:events:513:28)
-    at emitErrorEvent (node:_http_client:104:11)
-    at Socket.socketErrorListener (node:_http_client:512:5)
-    at Socket.emit (node:events:513:28)
-    at emitErrorNT (node:internal/streams/destroy:170:8)
-❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
-⏳ ConnectionBroker: Retrying in 1000ms (attempt 1/3)
-🔗 ConnectionBroker: Creating client connection to existing server
-🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
-🔍 Server Factory: Looking for websocket transport (role: client) in registry
-✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
-🔗 websocket-server-client: Connecting to ws://localhost:9002
-❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
-    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
-    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
-    at WebSocket.emit (node:events:525:35)
-    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
-    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
-    at ClientRequest.emit (node:events:513:28)
-    at emitErrorEvent (node:_http_client:104:11)
-    at Socket.socketErrorListener (node:_http_client:512:5)
-    at Socket.emit (node:events:513:28)
-    at emitErrorNT (node:internal/streams/destroy:170:8)
-❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
-⏳ ConnectionBroker: Retrying in 2000ms (attempt 2/3)
-🔗 ConnectionBroker: Creating client connection to existing server
-🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
-🔍 Server Factory: Looking for websocket transport (role: client) in registry
-✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
-🔗 websocket-server-client: Connecting to ws://localhost:9002
-❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
-    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
-    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
-    at WebSocket.emit (node:events:525:35)
-    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
-    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
-    at ClientRequest.emit (node:events:513:28)
-    at emitErrorEvent (node:_http_client:104:11)
-    at Socket.socketErrorListener (node:_http_client:512:5)
-    at Socket.emit (node:events:513:28)
-    at emitErrorNT (node:internal/streams/destroy:170:8)
-❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
-⏳ ConnectionBroker: Retrying in 4000ms (attempt 3/3)
-🔗 ConnectionBroker: Creating client connection to existing server
-🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
-🔍 Server Factory: Looking for websocket transport (role: client) in registry
-✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
-🔗 websocket-server-client: Connecting to ws://localhost:9002
-❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
-    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
-    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
-    at WebSocket.emit (node:events:525:35)
-    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
-    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
-    at ClientRequest.emit (node:events:513:28)
-    at emitErrorEvent (node:_http_client:104:11)
-    at Socket.socketErrorListener (node:_http_client:512:5)
-    at Socket.emit (node:events:513:28)
-    at emitErrorNT (node:internal/streams/destroy:170:8)
-❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
-❌ Test failed: Error: WebSocket connection error: Connection failed
-    at handleError (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:303:18)
-    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
-    at WebSocket.emit (node:events:525:35)
-    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
-    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
-    at ClientRequest.emit (node:events:513:28)
-    at emitErrorEvent (node:_http_client:104:11)
-    at Socket.socketErrorListener (node:_http_client:512:5)
-    at Socket.emit (node:events:513:28)
-    at emitErrorNT (node:internal/streams/destroy:170:8)
-🚨 Database chat integration test failed: Error: WebSocket connection error: Connection failed
-    at handleError (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:303:18)
-    at WebSocket.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/server/WebSocketAdapter.ts:86:11)
-    at WebSocket.emit (node:events:525:35)
-    at emitErrorAndClose (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:1041:13)
-    at ClientRequest.<anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/node_modules/ws/lib/websocket.js:881:5)
-    at ClientRequest.emit (node:events:513:28)
-    at emitErrorEvent (node:_http_client:104:11)
-    at Socket.socketErrorListener (node:_http_client:512:5)
-    at Socket.emit (node:events:513:28)
-    at emitErrorNT (node:internal/streams/destroy:170:8)
+✅ websocket-server-client: Connected
+✅ websocket-server-client: Handler compliance enforced by TypeScript
+🚀 Server Factory: Adapter WebSocketTransportClientServer connected successfully
+✅ Server Transport Factory (Registry-Based): web-socket-transport-client-server transport created successfully
+✅ JTAGClient: created_new connection established on port 9002
+🏷️ JTAGClient: Requesting session from SessionDaemon...
+🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
+🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
+🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1765756084738_guxw35c8
+🏷️ JTAGClientServer: Session updated to: b8e81836-cdcb-4454-a941-84087320bffb (managed by base class)
+📋 JTAGClient: Discovering available commands...
+📤 RemoteConnection: Sending command 'list' with correlation client_1765756084743_t3i52iyg
+✅ JTAGClient: Connection established
+🔄 JTAGClient: Discovering available commands...
+📤 RemoteConnection: Sending command 'list' with correlation client_1765756084744_jxmummax
+✅ Server: JTAGClient connected with 143 commands
+✅ Connected
+
+🧹 Cleaning up orphaned test data from previous runs...
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765756084746_63ttes7s
+  ✅ No orphaned test users found
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765756084750_llvdopis
+  ✅ No orphaned test rooms found
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765756084759_9vv6rr55
+  ✅ No orphaned test messages found
+✅ Cleanup complete
+
+⏳ Waiting for widgets to initialize...
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756092545_mz9j4t8u
+✅ Widget user-list-widget initialized
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756092550_w0krrcfu
+✅ Widget room-list-widget initialized
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756092553_cru2dhco
+✅ Widget chat-widget initialized
+
+🧪 CRUD TEST: users → user-list-widget
+
+📋 VERIFY after BEFORE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756094557_00b6zz8d
+  🎨 Widget: ✅ Widget working (16 entities)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756094560_1k91hk6e
+  📸 Screenshot: user-before.png
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1765756095811_vgy7tyik
+✅ CREATE: 1765756095811-l70sr0tf0
+
+📋 VERIFY after CREATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765756097827_r6br9jaa
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756097828_wy54lxms
+  🎨 Widget: ✅ Entity 1765756095811-l70sr0tf0 found in widget (17 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756097833_ns2nndgj
+  📸 Screenshot: user-create.png
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1765756098966_vhgzr0uy
+✅ UPDATE: Modified
+
+📋 VERIFY after UPDATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765756100978_2w0pbphl
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756100979_c05pmecg
+  🎨 Widget: ✅ Entity 1765756095811-l70sr0tf0 found in widget (17 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756100982_qhiwlccf
+  📸 Screenshot: user-update.png
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765756102159_ekdu7vt9
+✅ DELETE: Removed
+
+📋 VERIFY after DELETE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756104174_y27603mv
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756104178_5958f10y
+  📸 Screenshot: user-delete.png
+
+🧪 CRUD TEST: rooms → room-list-widget
+
+📋 VERIFY after BEFORE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756107336_dlh20rll
+  🎨 Widget: ✅ Widget working (4 entities)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756107342_ss1gptph
+  📸 Screenshot: room-before.png
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1765756108483_ojt73dgn
+✅ CREATE: 1765756108484-v10gjzwhf
+
+📋 VERIFY after CREATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765756110496_jy0x58y9
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756110497_b1q2909a
+  🎨 Widget: ✅ Entity 1765756108484-v10gjzwhf found in widget (5 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756110504_iy9ec1q9
+  📸 Screenshot: room-create.png
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1765756111666_zr5rbjef
+✅ UPDATE: Modified
+
+📋 VERIFY after UPDATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765756113677_rnhloj6c
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756113678_ypopgm4k
+  🎨 Widget: ✅ Entity 1765756108484-v10gjzwhf found in widget (5 total)
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756113681_r13q02t3
+  📸 Screenshot: room-update.png
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765756114849_oshz3het
+✅ DELETE: Removed
+
+📋 VERIFY after DELETE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756116858_hrzhhv7t
+📤 RemoteConnection: Sending command 'screenshot' with correlation client_1765756116870_nj3e3quk
+  📸 Screenshot: room-delete.png
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765756118029_xjguu11t
+
+🧪 CRUD TEST: chat_messages → chat-widget
+
+📋 VERIFY after BEFORE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756120037_zq8vab5x
+  🎨 Widget: ✅ Widget working (30 entities)
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+📤 RemoteConnection: Sending command 'data/create' with correlation client_1765756120047_njxizlq5
+✅ CREATE: 1765756120048-lf0j0offj
+
+📋 VERIFY after CREATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765756122108_tp3ln3w2
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756122110_6d04lzoh
+  🎨 Widget: ✅ Entity 1765756120048-lf0j0offj found in widget (31 total)
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+📤 RemoteConnection: Sending command 'data/update' with correlation client_1765756122117_68s94zv6
+✅ UPDATE: Modified
+
+📋 VERIFY after UPDATE:
+📤 RemoteConnection: Sending command 'data/read' with correlation client_1765756124129_dnh9a8v4
+  📊 DB: ✅ Found
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756126406_dl0ruosz
+  🎨 Widget: ✅ Entity 1765756120048-lf0j0offj found in widget (31 total)
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765756126587_97tx3hmp
+✅ DELETE: Removed
+
+📋 VERIFY after DELETE:
+📤 RemoteConnection: Sending command 'debug/widget-state' with correlation client_1765756137397_mefciwe7
+  📸 Screenshot: SKIPPED (chat-widget too heavy for precommit)
+
+🎉 ALL CRUD TESTS PASSED (3 entities × 4 operations = 12 screenshots)
+🔌 JTAGClient: Disconnecting...
+🔄 JTAGClient: Preserving shared session b8e81836-cdcb-4454-a941-84087320bffb on disconnect (shared: true)
+🔌 websocket-server-client: Disconnecting
+✅ JTAGClient: Transport disconnected
+🛑 ConnectionBroker: Shutting down...
+✅ ConnectionBroker: Shutdown complete
+✅ JTAGClient: Connection Broker shut down
+✅ Database chat integration test completed successfully

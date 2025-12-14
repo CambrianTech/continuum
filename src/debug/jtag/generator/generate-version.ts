@@ -11,11 +11,8 @@ const outputPath = join(process.cwd(), 'shared', 'version.ts');
 
 const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
 
-const timestamp = new Date().toISOString();
-
 const content = `/**
  * Version Constants - Auto-generated from package.json
- * Generated on ${timestamp}
  * DO NOT EDIT MANUALLY
  */
 
