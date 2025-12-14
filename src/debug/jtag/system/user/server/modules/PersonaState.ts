@@ -37,9 +37,9 @@ export interface StateConfig {
 }
 
 export const DEFAULT_STATE_CONFIG: StateConfig = {
-  energyDepletionRate: 0.0001,    // Lose 1% energy per 10 seconds of processing
-  energyRecoveryRate: 0.00005,    // Gain 1% energy per 20 seconds of rest
-  attentionFatigueRate: 0.1,      // Lose 10% attention when tired
+  energyDepletionRate: 0,         // DISABLED - was causing 15-minute death spiral
+  energyRecoveryRate: 0,          // DISABLED - not needed if no depletion
+  attentionFatigueRate: 0,        // DISABLED - let AIs be in charge of their own destiny
   enableLogging: true
 };
 
@@ -142,44 +142,23 @@ export class PersonaStateManager {
   /**
    * Should persona engage with message? (traffic management decision)
    *
+   * THERMODYNAMIC SYSTEM DISABLED - was causing 15-minute death spiral
+   * Simple priority-based engagement, no energy/mood gating
+   *
    * Traffic rules:
-   * 1. NEVER neglect high priority (>0.8) - prevent starvation
-   * 2. Overwhelmed: only process highest priority (>0.9) - shed load
-   * 3. Tired: lower threshold but require energy (>0.5, energy>0.2) - conserve
-   * 4. Active: normal processing (>0.3) - maintain flow
-   * 5. Idle: eager to work (>0.1) - stay responsive
+   * 1. High priority (>0.5) - always engage
+   * 2. Medium priority (>0.2) - engage
+   * 3. Low priority (<0.2) - skip
    */
   shouldEngage(priority: number): boolean {
-    // HIGH PRIORITY: Never neglect (prevent starvation)
-    if (priority > 0.8) {
-      this.log(`✅ High priority (${priority.toFixed(2)}) - ALWAYS engage`);
-      return true;
+    // Simple threshold: engage if priority > 0.15
+    // This allows normal messages (0.2 base) to always get through
+    const engage = priority > 0.15;
+
+    if (this.config.enableLogging) {
+      this.log(`${engage ? '✅' : '❌'} Priority ${priority.toFixed(2)} ${engage ? 'above' : 'below'} threshold 0.15`);
     }
 
-    // OVERWHELMED: Only process highest priority (shed load)
-    if (this.state.mood === 'overwhelmed') {
-      const engage = priority > 0.9;
-      this.log(`${engage ? '✅' : '❌'} Overwhelmed mode - priority ${priority.toFixed(2)} ${engage ? 'above' : 'below'} threshold 0.9`);
-      return engage;
-    }
-
-    // TIRED: Lower threshold but require energy (conserve)
-    if (this.state.mood === 'tired') {
-      const engage = priority > 0.5 && this.state.energy > 0.2;
-      this.log(`${engage ? '✅' : '❌'} Tired mode - priority ${priority.toFixed(2)}, energy ${this.state.energy.toFixed(2)}`);
-      return engage;
-    }
-
-    // ACTIVE: Normal processing (maintain flow)
-    if (this.state.mood === 'active') {
-      const engage = priority > 0.3;
-      this.log(`${engage ? '✅' : '❌'} Active mode - priority ${priority.toFixed(2)} ${engage ? 'above' : 'below'} threshold 0.3`);
-      return engage;
-    }
-
-    // IDLE: Eager to work (stay responsive)
-    const engage = priority > 0.1;
-    this.log(`${engage ? '✅' : '❌'} Idle mode - priority ${priority.toFixed(2)} ${engage ? 'above' : 'below'} threshold 0.1`);
     return engage;
   }
 

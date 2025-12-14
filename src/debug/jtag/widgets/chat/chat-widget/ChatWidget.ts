@@ -81,7 +81,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         : `<p>${message.content?.text || '(no content)'}</p>`;
 
       const messageElement = globalThis.document.createElement('div');
-      messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}`;
+      const postingClass = (message.metadata as any)?.posting ? ' posting' : '';
+      messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}${postingClass}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
       messageElement.setAttribute('message-id', message.id);
       messageElement.innerHTML = `
@@ -740,34 +741,40 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }));
     }
 
-    try {
-      const result = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-        collection: ChatMessageEntity.collection,
-        data: messageEntity,
-        backend: 'server'
-      });
+    // 🚀 OPTIMISTIC UPDATE: Clear input immediately for instant feedback
+    this.messageInput.value = '';
+    const attachmentCount = this.pendingAttachments.length;
+    this.pendingAttachments = [];
+    this.messageInput.placeholder = 'Type a message... (or drag & drop files)';
 
+    // Reset textarea height to single row
+    this.autoGrowTextarea();
+
+    // Send in background without awaiting (non-blocking)
+    // Entity events will update UI when server responds
+    Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+      collection: ChatMessageEntity.collection,
+      data: messageEntity,
+      backend: 'server'
+    }).then(result => {
       console.log('🔧 COMMAND-RESULT-' + JSON.stringify(result).substring(0, 200));
-      console.log(`✅ Message sent${this.pendingAttachments.length > 0 ? ` with ${this.pendingAttachments.length} attachment(s)` : ''}`);
+      console.log(`✅ Message sent${attachmentCount > 0 ? ` with ${attachmentCount} attachment(s)` : ''}`);
 
-      // Clear input and pending attachments
-      this.messageInput.value = '';
-      this.pendingAttachments = [];
-      this.messageInput.placeholder = 'Type a message... (or drag & drop files)';
-
-      // Reset textarea height to single row
-      this.autoGrowTextarea();
-
-      // Scroll to bottom after sending OWN message
+      // Scroll to bottom after message added by event system
       if (this.scroller) {
         this.scroller.scrollToEnd();
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('❌ Failed to send message:', error);
-    } finally {
-      // Always reset flag, even on error
-      this.isSending = false;
+    });
+
+    // Scroll immediately to give responsive feel
+    if (this.scroller) {
+      this.scroller.scrollToEnd();
     }
+
+    // Reset sending flag immediately (non-blocking send)
+    this.isSending = false;
   }
 
   // Handle message send from composer widget (legacy - kept for compatibility)
