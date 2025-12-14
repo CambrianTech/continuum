@@ -14,6 +14,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { Events } from '../../../../system/core/shared/Events';
 import { COLLECTIONS } from '../../../../system/shared/Constants';
 import { DecisionRankCommand } from '../shared/DecisionRankCommand';
 import type { DecisionRankParams, DecisionRankResult } from '../shared/DecisionRankTypes';
@@ -23,6 +24,7 @@ import type { DataListResult } from '../../../../commands/data/list/shared/DataL
 import type { ChatSendParams, ChatSendResult } from '../../../../commands/chat/send/shared/ChatSendTypes';
 import { calculateCondorcetWinner } from '../../../../system/shared/CondorcetUtils';
 import { Logger } from '../../../../system/core/logging/Logger';
+import { UserIdentityResolver } from '../../../../system/user/shared/UserIdentityResolver';
 
 /**
  * DecisionRankServerCommand - Server implementation
@@ -59,32 +61,44 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         return transformPayload(params, { success: false, error: 'Ranked choices are required' });
       }
 
-      // Get voter ID
+      // Get voter info - auto-detect caller identity
       let voterId: UUID;
+      let voterName: string;
+
       if (params.voterId) {
-        voterId = params.voterId;
-      } else {
-        const usersResult = await Commands.execute<any, DataListResult<UserEntity>>('data/list', {
+        // Explicit voterId provided
+        const voterResult = await Commands.execute<any, any>('data/read', {
           collection: COLLECTIONS.USERS,
-          filter: { type: 'human' },
-          limit: 1
+          id: params.voterId
         });
-        if (!usersResult.success || !usersResult.items || usersResult.items.length === 0) {
+
+        if (!voterResult.success || !voterResult.data) {
           return transformPayload(params, { success: false, error: 'Could not find voter user' });
         }
-        voterId = usersResult.items[0].id;
+
+        voterId = params.voterId;
+        voterName = voterResult.data.displayName;
+      } else {
+        // Auto-detect caller identity using UserIdentityResolver
+        const identity = await UserIdentityResolver.resolve();
+
+        this.log.debug('Auto-detected voter identity', {
+          uniqueId: identity.uniqueId,
+          displayName: identity.displayName,
+          type: identity.type,
+          exists: identity.exists
+        });
+
+        if (!identity.exists || !identity.userId) {
+          return transformPayload(params, {
+            success: false,
+            error: `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. Run seed script to create users.`
+          });
+        }
+
+        voterId = identity.userId;
+        voterName = identity.displayName;
       }
-
-      const voterResult = await Commands.execute<any, any>('data/read', {
-        collection: COLLECTIONS.USERS,
-        id: voterId
-      });
-
-      if (!voterResult.success || !voterResult.data) {
-        return transformPayload(params, { success: false, error: 'Could not find voter user' });
-      }
-
-      const voter = voterResult.data;
 
       // Get proposal
       const proposalResult = await Commands.execute<any, any>('data/read', {
@@ -144,7 +158,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       // Create vote
       const vote: RankedVote = {
         voterId,
-        voterName: voter.displayName,
+        voterName: voterName,
         rankings: params.rankedChoices,
         votedAt: now
       };
@@ -162,6 +176,26 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: params.proposalId,
         data: { votes }
+      });
+
+      // Emit event for vote (keep rankings private until finalization)
+      Events.emit('decision:voted', {
+        proposalId: params.proposalId,
+        proposalTopic: proposal.topic,
+        voterId,
+        voterName: voterName,
+        votedAt: now,
+        totalVotes: votes.length,
+        isUpdate: existingVoteIndex >= 0,
+        // Rankings intentionally omitted to keep votes private until finalization
+      });
+
+      this.log.info('Vote cast successfully', {
+        proposalId: params.proposalId,
+        voterId,
+        voterName: voterName,
+        isUpdate: existingVoteIndex >= 0,
+        totalVotes: votes.length
       });
 
       // Check if voting is complete

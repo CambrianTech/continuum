@@ -23,6 +23,7 @@ import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { DataListResult } from '../../../../commands/data/list/shared/DataListTypes';
 import type { ChatSendParams, ChatSendResult } from '../../../../commands/chat/send/shared/ChatSendTypes';
 import { Logger } from '../../../../system/core/logging/Logger';
+import { UserIdentityResolver } from '../../../../system/user/shared/UserIdentityResolver';
 
 /**
  * Calculate voting deadline based on significance level
@@ -281,33 +282,44 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       }
     }
 
-    // Get proposer info from params or find default user
+    // Get proposer info - auto-detect caller identity (similar to ChatSendCommand)
     let proposerId: UUID;
+    let proposerName: string;
+
     if (params.proposerId) {
-      proposerId = params.proposerId;
-    } else {
-      // Fall back to finding default human user (similar to ChatSendCommand)
-      const usersResult = await Commands.execute<any, DataListResult<UserEntity>>('data/list', {
+      // Explicit proposerId provided
+      const proposerResult = await Commands.execute<any, any>('data/read', {
         collection: COLLECTIONS.USERS,
-        filter: { type: 'human' },
-        limit: 1
+        id: params.proposerId
       });
-      if (!usersResult.success || !usersResult.items || usersResult.items.length === 0) {
+
+      if (!proposerResult.success || !proposerResult.data) {
         return transformPayload(params, { success: false, error: 'Could not find proposer user' });
       }
-      proposerId = usersResult.items[0].id;
+
+      proposerId = params.proposerId;
+      proposerName = proposerResult.data.displayName;
+    } else {
+      // Auto-detect caller identity using UserIdentityResolver
+      const identity = await UserIdentityResolver.resolve();
+
+      this.log.debug('Auto-detected proposer identity', {
+        uniqueId: identity.uniqueId,
+        displayName: identity.displayName,
+        type: identity.type,
+        exists: identity.exists
+      });
+
+      if (!identity.exists || !identity.userId) {
+        return transformPayload(params, {
+          success: false,
+          error: `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. Run seed script to create users.`
+        });
+      }
+
+      proposerId = identity.userId;
+      proposerName = identity.displayName;
     }
-
-    const proposerResult = await Commands.execute<any, any>('data/read', {
-      collection: COLLECTIONS.USERS,
-      id: proposerId
-    });
-
-    if (!proposerResult.success || !proposerResult.data) {
-      return transformPayload(params, { success: false, error: 'Could not find proposer user' });
-    }
-
-    const proposer = proposerResult.data;
     const scope = params.scope || 'all';
     const significanceLevel = params.significanceLevel || 'medium';
     const proposalId = generateUUID();
@@ -346,7 +358,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
     const proposalData: Partial<DecisionProposalEntity> = {
       id: proposalId,
       proposerId: proposerId,
-      proposerName: proposer.displayName,
+      proposerName: proposerName,
       topic: params.topic,
       context: params.rationale,
       tags,

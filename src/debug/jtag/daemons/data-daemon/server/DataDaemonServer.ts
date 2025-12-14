@@ -93,6 +93,11 @@ export class DataDaemonServer extends DataDaemonBase {
     await SystemDaemon.initialize(this.context);
     this.log.info('System daemon initialized');
 
+    // Initialize governance notifications (vote events → chat messages)
+    const { initializeGovernanceNotifications } = await import('../../../system/governance/GovernanceNotifications');
+    initializeGovernanceNotifications();
+    this.log.info('Governance notifications initialized');
+
     // Emit system ready event so other daemons can proceed with initialization
     const { Events } = await import('../../../system/core/shared/Events');
     const { SYSTEM_EVENTS } = await import('../../../system/core/shared/EventConstants');
