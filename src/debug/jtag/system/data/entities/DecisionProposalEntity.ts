@@ -35,9 +35,10 @@ export type ProposalScope = 'all' | 'code-experts' | 'user-facing-ais' | 'local-
 
 /**
  * Decision option with tracking of who proposed it
+ * Options use UUIDs like proposals - enables #abc123 short ID voting
  */
 export interface DecisionOption {
-  id: string;
+  id: UUID;
   label: string;
   description: string;
   proposedBy?: UUID; // Track which AI contributed this option

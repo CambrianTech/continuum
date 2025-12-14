@@ -6,6 +6,7 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import { toShortId } from '../../../../system/core/types/CrossPlatformUUID';
 // import { ValidationError } from '../../../../system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { DecisionViewParams, DecisionViewResult } from '../shared/DecisionViewTypes';
 import { createDecisionViewResultFromParams } from '../shared/DecisionViewTypes';
@@ -76,7 +77,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
       const optionCount = proposal.options?.length || 0;
       const timeRemaining = proposal.deadline ? Math.max(0, proposal.deadline - Date.now()) : 0;
       const hoursRemaining = Math.floor(timeRemaining / (1000 * 60 * 60));
-      const proposalShortId = proposal.id.slice(-6);
+      const proposalShortId = toShortId(proposal.id);
 
       let summary = `**${proposal.topic}** (#${proposalShortId})\n\n`;
       summary += `Status: ${proposal.status}\n`;
@@ -87,10 +88,11 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         summary += `Time remaining: ${hoursRemaining}h\n`;
       }
 
-      summary += `\n**Options (use these IDs for voting):**\n`;
+      summary += `\n**Options (use these short IDs for voting):**\n`;
       for (const option of proposal.options || []) {
-        const optionShortId = option.id.slice(-6);
-        summary += `- #${optionShortId} (${option.id}) - ${option.label}: ${option.description}\n`;
+        const { toShortId } = await import('../../../../system/core/types/CrossPlatformUUID');
+        const optionShortId = toShortId(option.id);
+        summary += `- #${optionShortId} → ${option.label}: ${option.description}\n`;
       }
 
       return createDecisionViewResultFromParams(params, {

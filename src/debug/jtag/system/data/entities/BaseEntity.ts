@@ -3,7 +3,7 @@
  */
 
 import { PrimaryField, DateField, NumberField } from '../decorators/FieldDecorators';
-import { generateUUID, UUID } from '../../core/types/CrossPlatformUUID';
+import { generateUUID, UUID, toShortId, ShortId } from '../../core/types/CrossPlatformUUID';
 import { getDataEventName } from '../../../commands/data/shared/DataEventConstants';
 
 export abstract class BaseEntity {
@@ -11,6 +11,14 @@ export abstract class BaseEntity {
 
   @PrimaryField()
   id: UUID; //TODO; all entities must have id field
+
+  /**
+   * Computed short ID - last 6 characters of UUID for human-friendly references
+   * Automatically available on all entities (e.g., #7bd593)
+   */
+  get shortId(): ShortId {
+    return toShortId(this.id);
+  }
 
   @DateField({ index: true })
   createdAt: Date;

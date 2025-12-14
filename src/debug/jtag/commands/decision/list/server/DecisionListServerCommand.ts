@@ -54,15 +54,10 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
       const proposals = listResult.items || [];
       const total = listResult.total || proposals.length;
 
-      // Add short IDs to each proposal for easy reference
-      const proposalsWithShortIds = proposals.map((p: any) => ({
-        ...p,
-        shortId: p.id.slice(-6)
-      }));
-
+      // Proposals automatically have .shortId from BaseEntity getter
       return createDecisionListResultFromParams(params, {
         success: true,
-        proposals: proposalsWithShortIds as any,  // Type mismatch between DecisionEntity and DecisionProposalEntity
+        proposals: proposals as any,  // Type mismatch between DecisionEntity and DecisionProposalEntity
         total,
         limit,
         offset

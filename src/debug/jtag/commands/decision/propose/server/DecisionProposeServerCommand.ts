@@ -10,7 +10,7 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { generateUUID, toShortId } from '../../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -329,9 +329,9 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       ? params.tags
       : extractTags(params.topic, params.rationale);
 
-    // Generate option IDs with proposedBy tracking
-    const options: DecisionOption[] = params.options.map((opt, idx) => ({
-      id: `opt-${idx + 1}`,
+    // Generate option IDs with proposedBy tracking (UUIDs for #abc123 short ID voting)
+    const options: DecisionOption[] = params.options.map((opt) => ({
+      id: generateUUID(),
       label: opt.label,
       description: opt.description,
       proposedBy: opt.proposedBy || proposerId // Default to proposer
@@ -411,7 +411,7 @@ Proposal ID: ${proposalId}`;
     return transformPayload(params, {
       success: true,
       proposalId,
-      shortId: proposalId.slice(-6), // Last 6 chars for easy reference (#abc123)
+      shortId: toShortId(proposalId), // Human-friendly reference (#abc123)
       deadline,
       notifiedCount: usersInScope.length,
       relatedProposals
