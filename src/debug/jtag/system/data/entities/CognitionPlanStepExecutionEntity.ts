@@ -14,7 +14,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField, EnumField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, EnumField, CompositeIndex } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -25,7 +25,21 @@ export type PlanStepStatus = 'started' | 'completed' | 'failed';
 
 /**
  * CognitionPlanStepExecutionEntity - Complete record of plan step execution
+ *
+ * Composite indexes optimize common observability queries:
+ * 1. Steps for plan (chronological): WHERE planId = ? ORDER BY stepNumber ASC
+ * 2. Failed steps by persona: WHERE personaId = ? AND status = 'failed' ORDER BY sequenceNumber DESC
  */
+@CompositeIndex({
+  name: 'idx_cognition_plan_steps_plan_number',
+  fields: ['planId', 'stepNumber'],
+  direction: 'ASC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_plan_steps_persona_status',
+  fields: ['personaId', 'status', 'sequenceNumber'],
+  direction: 'DESC'
+})
 export class CognitionPlanStepExecutionEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS;
 

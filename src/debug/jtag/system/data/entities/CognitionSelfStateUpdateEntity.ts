@@ -14,7 +14,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField, EnumField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, EnumField, CompositeIndex } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -25,7 +25,27 @@ export type SelfStateUpdateType = 'belief' | 'goal' | 'preoccupation';
 
 /**
  * CognitionSelfStateUpdateEntity - Complete record of self-state changes
+ *
+ * Composite indexes optimize common observability queries:
+ * 1. Recent updates by persona: WHERE personaId = ? ORDER BY sequenceNumber DESC
+ * 2. Updates by type: WHERE personaId = ? AND updateType = ? ORDER BY sequenceNumber DESC
+ * 3. Updates for plan: WHERE planId = ? ORDER BY sequenceNumber DESC
  */
+@CompositeIndex({
+  name: 'idx_cognition_self_state_persona_sequence',
+  fields: ['personaId', 'sequenceNumber'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_self_state_persona_type',
+  fields: ['personaId', 'updateType', 'sequenceNumber'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_self_state_plan',
+  fields: ['planId', 'sequenceNumber'],
+  direction: 'DESC'
+})
 export class CognitionSelfStateUpdateEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.COGNITION_SELF_STATE_UPDATES;
 

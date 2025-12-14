@@ -6,7 +6,7 @@
  */
 
 import { BaseEntity } from './BaseEntity';
-import { TextField, JsonField, NumberField, DateField, EnumField } from '../decorators/FieldDecorators';
+import { TextField, JsonField, NumberField, DateField, EnumField, CompositeIndex } from '../decorators/FieldDecorators';
 
 /**
  * Memory types - categorize different kinds of memories
@@ -26,7 +26,27 @@ export enum MemoryType {
  *
  * Stores consolidated memories from working memory into long-term storage.
  * Each persona has dedicated database with proper schema via decorators.
+ *
+ * Composite indexes optimize common RAG queries:
+ * 1. Recent memories: WHERE personaId = ? ORDER BY timestamp DESC
+ * 2. Memories by type: WHERE personaId = ? AND type = ? ORDER BY timestamp DESC
+ * 3. Important memories: WHERE personaId = ? AND importance > ? ORDER BY timestamp DESC
  */
+@CompositeIndex({
+  name: 'idx_memories_persona_timestamp',
+  fields: ['personaId', 'timestamp'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_memories_persona_type_timestamp',
+  fields: ['personaId', 'type', 'timestamp'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_memories_persona_importance',
+  fields: ['personaId', 'importance'],
+  direction: 'DESC'
+})
 export class MemoryEntity extends BaseEntity {
   static readonly collection = 'memories';
 

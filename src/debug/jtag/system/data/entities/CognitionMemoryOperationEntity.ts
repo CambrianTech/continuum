@@ -15,7 +15,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, EnumField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, EnumField, CompositeIndex } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -26,7 +26,27 @@ export type MemoryOperationType = 'add' | 'remove' | 'evict';
 
 /**
  * CognitionMemoryOperationEntity - Complete record of memory operations
+ *
+ * Composite indexes optimize common observability queries:
+ * 1. Recent operations by persona: WHERE personaId = ? ORDER BY sequenceNumber DESC
+ * 2. Operations by type: WHERE personaId = ? AND operation = ? ORDER BY sequenceNumber DESC
+ * 3. Operations for plan: WHERE planId = ? ORDER BY sequenceNumber DESC
  */
+@CompositeIndex({
+  name: 'idx_cognition_memory_ops_persona_sequence',
+  fields: ['personaId', 'sequenceNumber'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_memory_ops_persona_operation',
+  fields: ['personaId', 'operation', 'sequenceNumber'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_memory_ops_plan',
+  fields: ['planId', 'sequenceNumber'],
+  direction: 'DESC'
+})
 export class CognitionMemoryOperationEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.COGNITION_MEMORY_OPERATIONS;
 

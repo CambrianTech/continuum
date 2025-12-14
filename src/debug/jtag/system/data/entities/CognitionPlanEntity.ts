@@ -16,7 +16,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField, EnumField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, EnumField, CompositeIndex } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -81,7 +81,27 @@ export type PlanStatus = 'active' | 'completed' | 'failed' | 'aborted';
 
 /**
  * CognitionPlanEntity - Complete plan lifecycle record
+ *
+ * Composite indexes optimize common observability queries:
+ * 1. Active plans by persona: WHERE personaId = ? AND status = 'active' ORDER BY startedAt DESC
+ * 2. Recent plans by persona: WHERE personaId = ? ORDER BY startedAt DESC
+ * 3. Plans in conversation: WHERE domain = ? AND contextId = ? ORDER BY sequenceNumber DESC
  */
+@CompositeIndex({
+  name: 'idx_cognition_plans_persona_status',
+  fields: ['personaId', 'status', 'startedAt'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_plans_persona_started',
+  fields: ['personaId', 'startedAt'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_plans_context',
+  fields: ['domain', 'contextId', 'sequenceNumber'],
+  direction: 'DESC'
+})
 export class CognitionPlanEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.COGNITION_PLAN_RECORDS;
 

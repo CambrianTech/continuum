@@ -308,8 +308,8 @@ export function BooleanField(options?: { nullable?: boolean; default?: boolean }
  * ON chat_messages(room_id, timestamp DESC);
  */
 export function CompositeIndex(index: CompositeIndexMetadata) {
-  return function <T extends EntityConstructor>(target: T, _context: ClassDecoratorContext) {
-    // Add composite index metadata after class is fully constructed
+  return function <T extends EntityConstructor>(target: T) {
+    // Add composite index metadata to the class constructor
     addCompositeIndex(target, index);
     return target;
   };

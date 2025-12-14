@@ -15,7 +15,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, CompositeIndex } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -64,7 +64,21 @@ export interface WorkingMemoryCapacity {
 
 /**
  * CognitionStateEntity - Complete snapshot of persona cognition state
+ *
+ * Composite indexes optimize common observability queries:
+ * 1. Recent state snapshots: WHERE personaId = ? ORDER BY sequenceNumber DESC
+ * 2. State in conversation: WHERE domain = ? AND contextId = ? ORDER BY sequenceNumber DESC
  */
+@CompositeIndex({
+  name: 'idx_cognition_state_persona_sequence',
+  fields: ['personaId', 'sequenceNumber'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_state_context',
+  fields: ['domain', 'contextId', 'sequenceNumber'],
+  direction: 'DESC'
+})
 export class CognitionStateEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.COGNITION_STATE_SNAPSHOTS;
 

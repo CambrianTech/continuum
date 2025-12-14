@@ -15,14 +15,28 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, CompositeIndex } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 import type { PlanStepSnapshot } from './CognitionPlanEntity';
 
 /**
  * CognitionPlanReplanEntity - Complete record of plan replanning
+ *
+ * Composite indexes optimize common observability queries:
+ * 1. Recent replans by persona: WHERE personaId = ? ORDER BY sequenceNumber DESC
+ * 2. Replans for old plan: WHERE oldPlanId = ? ORDER BY sequenceNumber DESC
  */
+@CompositeIndex({
+  name: 'idx_cognition_replans_persona_sequence',
+  fields: ['personaId', 'sequenceNumber'],
+  direction: 'DESC'
+})
+@CompositeIndex({
+  name: 'idx_cognition_replans_old_plan',
+  fields: ['oldPlanId', 'sequenceNumber'],
+  direction: 'DESC'
+})
 export class CognitionPlanReplanEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.COGNITION_PLAN_REPLANS;
 
