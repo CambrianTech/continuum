@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-15T06:51:04.901Z",
+  "generated": "2025-12-15T11:36:51.631Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2031,6 +2031,17 @@
           "type": "array",
           "required": false,
           "description": "excludeDirs parameter"
+        }
+      }
+    },
+    {
+      "name": "data-vacuum",
+      "description": "Data Vacuum Command - Shared Types\n *\n * Reclaim disk space after bulk deletes (VACUUM for SQLite, OPTIMIZE for MySQL, etc.)",
+      "params": {
+        "dbHandle": {
+          "type": "string",
+          "required": false,
+          "description": "dbHandle parameter"
         }
       }
     },

@@ -22,6 +22,8 @@ export interface BaseDataParams extends JTAGPayload {
   readonly backend: JTAGEnvironment;
   /** Optional database handle for multi-database operations (defaults to 'default') */
   readonly dbHandle?: DbHandle;
+  /** Suppress CRUD events for this operation (for internal operations like archiving) */
+  readonly suppressEvents?: boolean;
 }
 
 /**

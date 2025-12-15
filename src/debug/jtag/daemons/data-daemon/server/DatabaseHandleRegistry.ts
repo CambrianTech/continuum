@@ -52,7 +52,7 @@ export type OpenMode = 'readonly' | 'readwrite' | 'create';
  * SQLite-specific configuration
  */
 export interface SqliteConfig {
-  path: string;                        // Database file path
+  filename: string;                    // Database file path
   mode?: OpenMode;                     // Open mode (default: readwrite)
   poolSize?: number;                   // Connection pool size
   foreignKeys?: boolean;               // Enable foreign key constraints
@@ -100,6 +100,7 @@ export interface HandleMetadata {
   config: AdapterConfig;
   openedAt: number;
   lastUsedAt: number;
+  emitEvents?: boolean;  // Whether to emit CRUD events for operations on this handle (default: true)
 }
 
 /**
@@ -122,9 +123,13 @@ export class DatabaseHandleRegistry {
   // Track metadata for each handle (adapter type, config, timestamps)
   private handleMetadata: Map<DbHandle, HandleMetadata>;
 
+  // Map alias names to handle UUIDs (e.g., 'primary' → UUID, 'archive' → UUID)
+  private handleAliases: Map<string, DbHandle>;
+
   private constructor() {
     this.handles = new Map();
     this.handleMetadata = new Map();
+    this.handleAliases = new Map();
 
     // Initialize default handle (SQLite main database)
     // This ensures backward compatibility - all existing code works without changes
@@ -145,7 +150,7 @@ export class DatabaseHandleRegistry {
     this.handles.set(DEFAULT_HANDLE, defaultAdapter);
     this.handleMetadata.set(DEFAULT_HANDLE, {
       adapter: 'sqlite',
-      config: { path: DATABASE_PATHS.SQLITE },
+      config: { filename: DATABASE_PATHS.SQLITE },
       openedAt: Date.now(),
       lastUsedAt: Date.now()
     });
@@ -166,15 +171,21 @@ export class DatabaseHandleRegistry {
    *
    * @param adapter - Adapter type ('sqlite', 'json', 'vector', 'graph')
    * @param config - Adapter-specific configuration
+   * @param options - Handle options (e.g., emitEvents)
    * @returns DbHandle - Opaque identifier for this connection
    *
    * @example
    * ```typescript
    * // Open training database
    * const handle = await registry.open('sqlite', {
-   *   path: '/datasets/prepared/continuum-git.sqlite',
+   *   filename: '/datasets/prepared/continuum-git.sqlite',
    *   mode: 'readonly'
    * });
+   *
+   * // Open archive database without event emission
+   * const archiveHandle = await registry.open('sqlite', {
+   *   filename: '/path/to/archive.sqlite'
+   * }, { emitEvents: false });
    *
    * // Open vector database
    * const vectorHandle = await registry.open('vector', {
@@ -184,7 +195,7 @@ export class DatabaseHandleRegistry {
    * });
    * ```
    */
-  async open(adapter: AdapterType, config: AdapterConfig): Promise<DbHandle> {
+  async open(adapter: AdapterType, config: AdapterConfig, options?: { emitEvents?: boolean }): Promise<DbHandle> {
     const handle = generateUUID();
 
     // Create adapter based on type
@@ -200,7 +211,7 @@ export class DatabaseHandleRegistry {
           type: 'sqlite',
           namespace: handle,  // Use handle as namespace
           options: {
-            filename: sqliteConfig.path,
+            filename: sqliteConfig.filename,
             mode: sqliteConfig.mode,
             poolSize: sqliteConfig.poolSize,
             foreignKeys: sqliteConfig.foreignKeys,
@@ -225,12 +236,35 @@ export class DatabaseHandleRegistry {
       adapter,
       config,
       openedAt: Date.now(),
-      lastUsedAt: Date.now()
+      lastUsedAt: Date.now(),
+      emitEvents: options?.emitEvents ?? true  // Default to emitting events
     });
 
-    console.log(`🔌 DatabaseHandleRegistry: Opened ${adapter} handle ${handle}`);
+    console.log(`🔌 DatabaseHandleRegistry: Opened ${adapter} handle ${handle} (emitEvents=${options?.emitEvents ?? true})`);
 
     return handle;
+  }
+
+  /**
+   * Register an alias name for a database handle
+   *
+   * @param alias - Alias name (e.g., 'primary', 'archive')
+   * @param handle - The DbHandle (UUID) to map to
+   *
+   * @example
+   * ```typescript
+   * const handle = await registry.open('sqlite', { path: '/path/to/db.sqlite' });
+   * registry.registerAlias('primary', handle);
+   * // Now can use 'primary' instead of UUID
+   * const adapter = registry.getAdapter('primary');
+   * ```
+   */
+  registerAlias(alias: string, handle: DbHandle): void {
+    if (!this.handles.has(handle)) {
+      throw new Error(`Cannot register alias '${alias}': handle '${handle}' does not exist`);
+    }
+    this.handleAliases.set(alias, handle);
+    console.log(`🔌 DatabaseHandleRegistry: Registered alias '${alias}' → ${handle}`);
   }
 
   /**
@@ -239,7 +273,9 @@ export class DatabaseHandleRegistry {
    * **Backward Compatibility**: If handle is undefined/null, returns default adapter.
    * This ensures all existing code continues to work without modification.
    *
-   * @param handle - Database handle (optional, defaults to 'default')
+   * **Alias Resolution**: If handle is a string that exists in handleAliases, resolves to UUID first.
+   *
+   * @param handle - Database handle or alias name (optional, defaults to 'default')
    * @returns DataStorageAdapter - The storage adapter for this handle
    *
    * @example
@@ -247,13 +283,21 @@ export class DatabaseHandleRegistry {
    * // Get default adapter (backward compatible)
    * const adapter = registry.getAdapter();
    *
-   * // Get specific adapter by handle
+   * // Get specific adapter by handle UUID
    * const trainingAdapter = registry.getAdapter(trainingHandle);
+   *
+   * // Get adapter by alias name
+   * const primaryAdapter = registry.getAdapter('primary');
+   * const archiveAdapter = registry.getAdapter('archive');
    * ```
    */
   getAdapter(handle?: DbHandle): DataStorageAdapter {
     const actualHandle = handle || DEFAULT_HANDLE;
-    const adapter = this.handles.get(actualHandle);
+
+    // Resolve alias to UUID if applicable
+    const resolvedHandle = this.handleAliases.get(actualHandle as string) || actualHandle;
+
+    const adapter = this.handles.get(resolvedHandle);
 
     if (!adapter) {
       console.warn(`⚠️  Database handle '${actualHandle}' not found, using default`);
@@ -261,7 +305,7 @@ export class DatabaseHandleRegistry {
     }
 
     // Update last used timestamp (for LRU eviction in future)
-    const metadata = this.handleMetadata.get(actualHandle);
+    const metadata = this.handleMetadata.get(resolvedHandle);
     if (metadata) {
       metadata.lastUsedAt = Date.now();
     }

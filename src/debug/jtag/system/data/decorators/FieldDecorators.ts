@@ -54,11 +54,33 @@ export interface CompositeIndexMetadata {
   direction?: 'ASC' | 'DESC';   // Sort direction (applies to last field)
 }
 
+/**
+ * Archive Configuration
+ * Defines automatic data movement between handles (archiving, migration, etc.)
+ *
+ * Uses two-handle pattern with IDENTICAL table names:
+ * - Both handles point to the same collection name
+ * - Different storage locations (databases, adapters, etc.)
+ * - UUIDs prevent conflicts when merging
+ * - Flexible: archive, migrate, restore, merge
+ */
+export interface ArchiveConfig {
+  sourceHandle: string;         // Source handle identifier (e.g., 'primary', 'local', 'sqlite-main')
+  destHandle: string;           // Destination handle identifier (e.g., 'archive', 'postgres-prod')
+  maxRows: number;              // Max rows in source before archiving (e.g., 10000)
+  rowsPerArchive: number;       // Rows to move per operation (e.g., 1000)
+  maxArchiveFileRows: number;   // Max rows per archive file before creating new one (e.g., 100000)
+  orderByField: string;         // Field to order by for oldest-first movement (e.g., 'timestamp')
+}
+
 // Global field metadata storage
 const FIELD_METADATA = new Map<EntityConstructor, Map<string, FieldMetadata>>();
 
 // Global composite index metadata storage
 const COMPOSITE_INDEXES = new Map<EntityConstructor, CompositeIndexMetadata[]>();
+
+// Global archive configuration storage
+const ARCHIVE_CONFIGS = new Map<EntityConstructor, ArchiveConfig>();
 
 /**
  * Get composite indexes for an entity class
@@ -311,6 +333,64 @@ export function CompositeIndex(index: CompositeIndexMetadata) {
   return function <T extends EntityConstructor>(target: T) {
     // Add composite index metadata to the class constructor
     addCompositeIndex(target, index);
+    return target;
+  };
+}
+
+/**
+ * Get archive configuration for an entity class
+ */
+export function getArchiveConfig(entityClass: EntityConstructor): ArchiveConfig | null {
+  return ARCHIVE_CONFIGS.get(entityClass) || null;
+}
+
+/**
+ * Archive Decorator (Class-level)
+ *
+ * Defines automatic data movement between handles using the two-handle pattern.
+ * The ArchiveDaemon reads from source handle and writes to destination handle.
+ *
+ * Both handles use IDENTICAL collection names - only storage location differs.
+ * This enables: archiving, migration, restoration, merging archives, etc.
+ *
+ * @example Archive to separate database:
+ * ```typescript
+ * @Archive({
+ *   sourceHandle: 'primary',    // SQLite main.db
+ *   destHandle: 'archive',      // SQLite archive.db
+ *   maxRows: 10000,             // Archive when source exceeds 10k rows
+ *   rowsPerArchive: 1000,       // Move 1000 rows per batch
+ *   orderByField: 'timestamp'   // Oldest first
+ * })
+ * export class ChatMessageEntity extends BaseEntity {
+ *   static readonly collection = 'chat_messages';  // Same name in BOTH handles!
+ *   @DateField({ index: true })
+ *   timestamp: Date;
+ * }
+ * ```
+ *
+ * @example Migrate to Postgres:
+ * ```typescript
+ * @Archive({
+ *   sourceHandle: 'sqlite-local',
+ *   destHandle: 'postgres-prod',  // Different adapter!
+ *   maxRows: 10000,
+ *   rowsPerArchive: 1000,
+ *   orderByField: 'timestamp'
+ * })
+ * ```
+ *
+ * Process:
+ * 1. Open source handle (e.g., SQLite) → chat_messages
+ * 2. Open dest handle (e.g., Postgres) → chat_messages (SAME name!)
+ * 3. Read oldest rows from source
+ * 4. Write to dest, verify, then delete from source
+ * 5. UUIDs prevent conflicts, foreign keys may break (acceptable)
+ */
+export function Archive(config: ArchiveConfig) {
+  return function <T extends EntityConstructor>(target: T) {
+    // Add archive config metadata to the class constructor
+    ARCHIVE_CONFIGS.set(target, config);
     return target;
   };
 }

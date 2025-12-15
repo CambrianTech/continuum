@@ -136,7 +136,8 @@ export class DataDaemon {
   async create<T extends BaseEntity>(
     collection: string,
     data: T,
-    context: DataOperationContext
+    context: DataOperationContext,
+    suppressEvents: boolean = false
   ): Promise<T> {
     await this.ensureInitialized();
 
@@ -178,8 +179,8 @@ export class DataDaemon {
     if (result.success && result.data) {
       const entity = result.data.data;
 
-      // Emit created event via universal Events system
-      if (DataDaemon.jtagContext) {
+      // Emit created event via universal Events system (unless suppressed)
+      if (DataDaemon.jtagContext && !suppressEvents) {
         const eventName = getDataEventName(collection, 'created');
         await Events.emit(DataDaemon.jtagContext, eventName, entity);
       }
@@ -840,7 +841,7 @@ export class DataDaemon {
    * @example
    * const success = await DataDaemon.remove('users', userId);
    */
-  static async remove(collection: string, id: UUID): Promise<StorageResult<boolean>> {
+  static async remove(collection: string, id: UUID, suppressEvents = false): Promise<StorageResult<boolean>> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context || !DataDaemon.jtagContext) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
@@ -852,7 +853,8 @@ export class DataDaemon {
     const deleteResult = await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context);
 
     // ✨ Universal event emission - works anywhere!
-    if (deleteResult.success && entity) {
+    // Skip if suppressEvents is true (for internal operations like archiving)
+    if (deleteResult.success && entity && !suppressEvents) {
       const eventName = BaseEntity.getEventName(collection, 'deleted');
       await Events.emit(DataDaemon.jtagContext, eventName, entity);
     }
