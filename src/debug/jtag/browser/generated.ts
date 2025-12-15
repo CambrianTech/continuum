@@ -17,7 +17,6 @@ import { UserDaemonBrowser } from './../daemons/user-daemon/browser/UserDaemonBr
 import { WidgetDaemonBrowser } from './../daemons/widget-daemon/browser/WidgetDaemonBrowser';
 
 // Browser commands Imports
-import { ActivityUserPresentCommand } from './../commands/activity/user-present/browser/ActivityUserPresentCommand';
 import { BagOfWordsBrowserCommand } from './../commands/ai/bag-of-words/browser/BagOfWordsBrowserCommand';
 import { AICostBrowserCommand } from './../commands/ai/cost/browser/AICostBrowserCommand';
 import { AIGenerateBrowserCommand } from './../commands/ai/generate/browser/AIGenerateBrowserCommand';
@@ -30,12 +29,23 @@ import { AIShouldRespondBrowserCommand } from './../commands/ai/should-respond/b
 import { AIStatusBrowserCommand } from './../commands/ai/status/browser/AIStatusBrowserCommand';
 import { ThoughtStreamBrowserCommand } from './../commands/ai/thoughtstream/browser/ThoughtStreamBrowserCommand';
 import { AIValidateResponseBrowserCommand } from './../commands/ai/validate-response/browser/AIValidateResponseBrowserCommand';
-import { ChatAnalyzeBrowserCommand } from './../commands/chat/analyze/browser/ChatAnalyzeBrowserCommand';
-import { ChatExportBrowserCommand } from './../commands/chat/export/browser/ChatExportBrowserCommand';
-import { ChatPollBrowserCommand } from './../commands/chat/poll/browser/ChatPollBrowserCommand';
-import { ChatSendBrowserCommand } from './../commands/chat/send/browser/ChatSendBrowserCommand';
+import { ActivityUserPresentCommand } from './../commands/collaboration/activity/user-present/browser/ActivityUserPresentCommand';
+import { ChatAnalyzeBrowserCommand } from './../commands/collaboration/chat/analyze/browser/ChatAnalyzeBrowserCommand';
+import { ChatExportBrowserCommand } from './../commands/collaboration/chat/export/browser/ChatExportBrowserCommand';
+import { ChatPollBrowserCommand } from './../commands/collaboration/chat/poll/browser/ChatPollBrowserCommand';
+import { ChatSendBrowserCommand } from './../commands/collaboration/chat/send/browser/ChatSendBrowserCommand';
+import { ContentOpenBrowserCommand } from './../commands/collaboration/content/open/browser/ContentOpenBrowserCommand';
+import { DecisionCreateBrowserCommand } from './../commands/collaboration/decision/create/browser/DecisionCreateBrowserCommand';
+import { DecisionFinalizeBrowserCommand } from './../commands/collaboration/decision/finalize/browser/DecisionFinalizeBrowserCommand';
+import { DecisionListBrowserCommand } from './../commands/collaboration/decision/list/browser/DecisionListBrowserCommand';
+import { DecisionProposeBrowserCommand } from './../commands/collaboration/decision/propose/browser/DecisionProposeBrowserCommand';
+import { DecisionRankBrowserCommand } from './../commands/collaboration/decision/rank/browser/DecisionRankBrowserCommand';
+import { DecisionViewBrowserCommand } from './../commands/collaboration/decision/view/browser/DecisionViewBrowserCommand';
+import { DecisionVoteBrowserCommand } from './../commands/collaboration/decision/vote/browser/DecisionVoteBrowserCommand';
+import { WallListBrowserCommand } from './../commands/collaboration/wall/list/browser/WallListBrowserCommand';
+import { WallReadBrowserCommand } from './../commands/collaboration/wall/read/browser/WallReadBrowserCommand';
+import { WallWriteBrowserCommand } from './../commands/collaboration/wall/write/browser/WallWriteBrowserCommand';
 import { CompileTypescriptBrowserCommand } from './../commands/compile-typescript/browser/CompileTypescriptBrowserCommand';
-import { ContentOpenBrowserCommand } from './../commands/content/open/browser/ContentOpenBrowserCommand';
 import { EmotionBrowserCommand } from './../commands/continuum/emotion/browser/EmotionBrowserCommand';
 import { ContinuumSetBrowserCommand } from './../commands/continuum/set/browser/ContinuumSetBrowserCommand';
 import { BackfillVectorsBrowserCommand } from './../commands/data/backfill-vectors/browser/BackfillVectorsBrowserCommand';
@@ -65,13 +75,6 @@ import { WidgetCSSBrowserCommand } from './../commands/debug/widget-css/browser/
 import { WidgetEventsDebugBrowserCommand } from './../commands/debug/widget-events/browser/WidgetEventsDebugBrowserCommand';
 import { WidgetInteractBrowserCommand } from './../commands/debug/widget-interact/browser/WidgetInteractBrowserCommand';
 import { WidgetStateBrowserCommand } from './../commands/debug/widget-state/browser/WidgetStateBrowserCommand';
-import { DecisionCreateBrowserCommand } from './../commands/decision/create/browser/DecisionCreateBrowserCommand';
-import { DecisionFinalizeBrowserCommand } from './../commands/decision/finalize/browser/DecisionFinalizeBrowserCommand';
-import { DecisionListBrowserCommand } from './../commands/decision/list/browser/DecisionListBrowserCommand';
-import { DecisionProposeBrowserCommand } from './../commands/decision/propose/browser/DecisionProposeBrowserCommand';
-import { DecisionRankBrowserCommand } from './../commands/decision/rank/browser/DecisionRankBrowserCommand';
-import { DecisionViewBrowserCommand } from './../commands/decision/view/browser/DecisionViewBrowserCommand';
-import { DecisionVoteBrowserCommand } from './../commands/decision/vote/browser/DecisionVoteBrowserCommand';
 import { ExecBrowserCommand } from './../commands/exec/browser/ExecBrowserCommand';
 import { FileAppendBrowserCommand } from './../commands/file/append/browser/FileAppendBrowserCommand';
 import { FileLoadBrowserCommand } from './../commands/file/load/browser/FileLoadBrowserCommand';
@@ -123,9 +126,6 @@ import { DocsListBrowserCommand } from './../commands/utilities/docs/list/browse
 import { DocsReadBrowserCommand } from './../commands/utilities/docs/read/browser/DocsReadBrowserCommand';
 import { DocsSearchBrowserCommand } from './../commands/utilities/docs/search/browser/DocsSearchBrowserCommand';
 import { HelloBrowserCommand } from './../commands/utilities/hello/browser/HelloBrowserCommand';
-import { WallListBrowserCommand } from './../commands/wall/list/browser/WallListBrowserCommand';
-import { WallReadBrowserCommand } from './../commands/wall/read/browser/WallReadBrowserCommand';
-import { WallWriteBrowserCommand } from './../commands/wall/write/browser/WallWriteBrowserCommand';
 import { GitCommitBrowserCommand } from './../commands/workspace/git/commit/browser/GitCommitBrowserCommand';
 import { GitPushBrowserCommand } from './../commands/workspace/git/push/browser/GitPushBrowserCommand';
 import { GitStatusBrowserCommand } from './../commands/workspace/git/status/browser/GitStatusBrowserCommand';
@@ -214,11 +214,6 @@ export const BROWSER_DAEMONS: DaemonEntry[] = [
 
 export const BROWSER_COMMANDS: CommandEntry[] = [
 {
-    name: 'activity/user-present',
-    className: 'ActivityUserPresentCommand',
-    commandClass: ActivityUserPresentCommand
-  },
-{
     name: 'ai/bag-of-words',
     className: 'BagOfWordsBrowserCommand',
     commandClass: BagOfWordsBrowserCommand
@@ -279,34 +274,89 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: AIValidateResponseBrowserCommand
   },
 {
-    name: 'chat/analyze',
+    name: 'collaboration/activity/user-present',
+    className: 'ActivityUserPresentCommand',
+    commandClass: ActivityUserPresentCommand
+  },
+{
+    name: 'collaboration/chat/analyze',
     className: 'ChatAnalyzeBrowserCommand',
     commandClass: ChatAnalyzeBrowserCommand
   },
 {
-    name: 'chat/export',
+    name: 'collaboration/chat/export',
     className: 'ChatExportBrowserCommand',
     commandClass: ChatExportBrowserCommand
   },
 {
-    name: 'chat/poll',
+    name: 'collaboration/chat/poll',
     className: 'ChatPollBrowserCommand',
     commandClass: ChatPollBrowserCommand
   },
 {
-    name: 'chat/send',
+    name: 'collaboration/chat/send',
     className: 'ChatSendBrowserCommand',
     commandClass: ChatSendBrowserCommand
+  },
+{
+    name: 'collaboration/content/open',
+    className: 'ContentOpenBrowserCommand',
+    commandClass: ContentOpenBrowserCommand
+  },
+{
+    name: 'collaboration/decision/create',
+    className: 'DecisionCreateBrowserCommand',
+    commandClass: DecisionCreateBrowserCommand
+  },
+{
+    name: 'collaboration/decision/finalize',
+    className: 'DecisionFinalizeBrowserCommand',
+    commandClass: DecisionFinalizeBrowserCommand
+  },
+{
+    name: 'collaboration/decision/list',
+    className: 'DecisionListBrowserCommand',
+    commandClass: DecisionListBrowserCommand
+  },
+{
+    name: 'collaboration/decision/propose',
+    className: 'DecisionProposeBrowserCommand',
+    commandClass: DecisionProposeBrowserCommand
+  },
+{
+    name: 'collaboration/decision/rank',
+    className: 'DecisionRankBrowserCommand',
+    commandClass: DecisionRankBrowserCommand
+  },
+{
+    name: 'collaboration/decision/view',
+    className: 'DecisionViewBrowserCommand',
+    commandClass: DecisionViewBrowserCommand
+  },
+{
+    name: 'collaboration/decision/vote',
+    className: 'DecisionVoteBrowserCommand',
+    commandClass: DecisionVoteBrowserCommand
+  },
+{
+    name: 'collaboration/wall/list',
+    className: 'WallListBrowserCommand',
+    commandClass: WallListBrowserCommand
+  },
+{
+    name: 'collaboration/wall/read',
+    className: 'WallReadBrowserCommand',
+    commandClass: WallReadBrowserCommand
+  },
+{
+    name: 'collaboration/wall/write',
+    className: 'WallWriteBrowserCommand',
+    commandClass: WallWriteBrowserCommand
   },
 {
     name: 'compile-typescript',
     className: 'CompileTypescriptBrowserCommand',
     commandClass: CompileTypescriptBrowserCommand
-  },
-{
-    name: 'content/open',
-    className: 'ContentOpenBrowserCommand',
-    commandClass: ContentOpenBrowserCommand
   },
 {
     name: 'continuum/emotion',
@@ -452,41 +502,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'debug/widget-state',
     className: 'WidgetStateBrowserCommand',
     commandClass: WidgetStateBrowserCommand
-  },
-{
-    name: 'decision/create',
-    className: 'DecisionCreateBrowserCommand',
-    commandClass: DecisionCreateBrowserCommand
-  },
-{
-    name: 'decision/finalize',
-    className: 'DecisionFinalizeBrowserCommand',
-    commandClass: DecisionFinalizeBrowserCommand
-  },
-{
-    name: 'decision/list',
-    className: 'DecisionListBrowserCommand',
-    commandClass: DecisionListBrowserCommand
-  },
-{
-    name: 'decision/propose',
-    className: 'DecisionProposeBrowserCommand',
-    commandClass: DecisionProposeBrowserCommand
-  },
-{
-    name: 'decision/rank',
-    className: 'DecisionRankBrowserCommand',
-    commandClass: DecisionRankBrowserCommand
-  },
-{
-    name: 'decision/view',
-    className: 'DecisionViewBrowserCommand',
-    commandClass: DecisionViewBrowserCommand
-  },
-{
-    name: 'decision/vote',
-    className: 'DecisionVoteBrowserCommand',
-    commandClass: DecisionVoteBrowserCommand
   },
 {
     name: 'exec',
@@ -742,21 +757,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'utilities/hello',
     className: 'HelloBrowserCommand',
     commandClass: HelloBrowserCommand
-  },
-{
-    name: 'wall/list',
-    className: 'WallListBrowserCommand',
-    commandClass: WallListBrowserCommand
-  },
-{
-    name: 'wall/read',
-    className: 'WallReadBrowserCommand',
-    commandClass: WallReadBrowserCommand
-  },
-{
-    name: 'wall/write',
-    className: 'WallWriteBrowserCommand',
-    commandClass: WallWriteBrowserCommand
   },
 {
     name: 'workspace/git/commit',

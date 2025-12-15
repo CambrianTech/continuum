@@ -16,7 +16,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { WallDocumentEntity } from '../../data/entities/WallDocumentEntity';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
-import { isRoomUUID, sanitizeDocumentName } from '../../../commands/wall/shared/WallTypes';
+import { isRoomUUID, sanitizeDocumentName } from '@commands/collaboration/wall/shared/WallTypes';
 import type { FileSaveParams, FileSaveResult } from '../../../commands/file/save/shared/FileSaveTypes';
 import type { FileLoadParams, FileLoadResult } from '../../../commands/file/load/shared/FileLoadTypes';
 

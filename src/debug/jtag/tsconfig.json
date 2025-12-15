@@ -20,7 +20,10 @@
       "@browser/*": ["browser/*"],
       "@server/*": ["server/*"],
       "@generator/*": ["generator/*"],
-      "@commands-utilities/*": ["commands/utilities/*"]
+      "@commands-utilities/*": ["commands/utilities/*"],
+      "@commands-workspace/*": ["commands/workspace/*"],
+      "@commands-interface/*": ["commands/interface/*"],
+      "@commands-collaboration/*": ["commands/collaboration/*"]
     },
     "strict": true,
     "noImplicitAny": true,

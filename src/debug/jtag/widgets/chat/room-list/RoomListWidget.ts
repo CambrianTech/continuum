@@ -15,7 +15,7 @@ import { Events } from '../../../system/core/shared/Events';
 import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
-import type { ContentOpenParams, ContentOpenResult } from '../../../commands/content/open/shared/ContentOpenTypes';
+import type { ContentOpenParams, ContentOpenResult } from '@commands/collaboration/content/open/shared/ContentOpenTypes';
 
 export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID; // Sync with ChatWidget's default

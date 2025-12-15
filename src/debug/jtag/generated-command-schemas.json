@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-15T00:45:58.267Z",
+  "generated": "2025-12-15T01:01:02.146Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -237,146 +237,6 @@
           "type": "array",
           "required": false,
           "description": "files parameter"
-        }
-      }
-    },
-    {
-      "name": "wall/write",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
-      "params": {
-        "room": {
-          "type": "string",
-          "required": true,
-          "description": "room parameter"
-        },
-        "doc": {
-          "type": "string",
-          "required": true,
-          "description": "doc parameter"
-        },
-        "content": {
-          "type": "string",
-          "required": true,
-          "description": "content parameter"
-        },
-        "append": {
-          "type": "boolean",
-          "required": false,
-          "description": "append parameter"
-        },
-        "author": {
-          "type": "string",
-          "required": false,
-          "description": "author parameter"
-        },
-        "commitMessage": {
-          "type": "string",
-          "required": false,
-          "description": "commitMessage parameter"
-        }
-      }
-    },
-    {
-      "name": "wall/read",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
-      "params": {
-        "room": {
-          "type": "string",
-          "required": true,
-          "description": "room parameter"
-        },
-        "doc": {
-          "type": "string",
-          "required": true,
-          "description": "doc parameter"
-        },
-        "toc": {
-          "type": "boolean",
-          "required": false,
-          "description": "toc parameter"
-        },
-        "lines": {
-          "type": "string",
-          "required": false,
-          "description": "lines parameter"
-        },
-        "startLine": {
-          "type": "number",
-          "required": false,
-          "description": "startLine parameter"
-        },
-        "endLine": {
-          "type": "number",
-          "required": false,
-          "description": "endLine parameter"
-        },
-        "includeMetadata": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeMetadata parameter"
-        }
-      }
-    },
-    {
-      "name": "wall/list",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
-      "params": {
-        "room": {
-          "type": "string",
-          "required": true,
-          "description": "room parameter"
-        },
-        "pattern": {
-          "type": "string",
-          "required": false,
-          "description": "pattern parameter"
-        }
-      }
-    },
-    {
-      "name": "wall/history",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
-      "params": {
-        "room": {
-          "type": "string",
-          "required": true,
-          "description": "room parameter"
-        },
-        "doc": {
-          "type": "string",
-          "required": true,
-          "description": "doc parameter"
-        },
-        "limit": {
-          "type": "number",
-          "required": false,
-          "description": "limit parameter"
-        }
-      }
-    },
-    {
-      "name": "wall/diff",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
-      "params": {
-        "room": {
-          "type": "string",
-          "required": true,
-          "description": "room parameter"
-        },
-        "doc": {
-          "type": "string",
-          "required": true,
-          "description": "doc parameter"
-        },
-        "from": {
-          "type": "string",
-          "required": false,
-          "description": "from parameter"
-        },
-        "to": {
-          "type": "string",
-          "required": false,
-          "description": "to parameter"
         }
       }
     },
@@ -1728,188 +1588,6 @@
       }
     },
     {
-      "name": "decision-vote",
-      "description": "Decision Vote Command - Shared Types\n *\n * Cast ranked-choice vote on a proposal",
-      "params": {
-        "proposalId": {
-          "type": "string",
-          "required": true,
-          "description": "proposalId parameter"
-        },
-        "rankedChoices": {
-          "type": "array",
-          "required": true,
-          "description": "rankedChoices parameter"
-        },
-        "comment": {
-          "type": "string",
-          "required": false,
-          "description": "comment parameter"
-        }
-      }
-    },
-    {
-      "name": "decision-view",
-      "description": "Decision View Command - Shared Types\n *\n * View detailed information about a specific governance proposal",
-      "params": {
-        "proposalId": {
-          "type": "string",
-          "required": true,
-          "description": "proposalId parameter"
-        }
-      }
-    },
-    {
-      "name": "decision-rank",
-      "description": "decision/rank - Types\n * Submit ranked-choice vote for a decision proposal",
-      "params": {
-        "proposalId": {
-          "type": "string",
-          "required": true,
-          "description": "proposalId parameter"
-        },
-        "rankedChoices": {
-          "type": "array",
-          "required": true,
-          "description": "rankedChoices parameter"
-        },
-        "voterId": {
-          "type": "string",
-          "required": false,
-          "description": "voterId parameter"
-        }
-      }
-    },
-    {
-      "name": "decision-propose",
-      "description": "decision/propose - Create a new decision proposal with ranked-choice voting\n *\n * Enables AIs to:\n * - Propose decisions to the team\n * - Define multiple options for ranked-choice voting\n * - Target specific expert groups via scope\n * - Set urgency via significance level\n * - Automatically link to related past decisions",
-      "params": {
-        "topic": {
-          "type": "string",
-          "required": true,
-          "description": "topic parameter"
-        },
-        "rationale": {
-          "type": "string",
-          "required": true,
-          "description": "rationale parameter"
-        },
-        "tags": {
-          "type": "array",
-          "required": false,
-          "description": "tags parameter"
-        },
-        "options": {
-          "type": "array",
-          "required": true,
-          "description": "options parameter"
-        },
-        "description": {
-          "type": "string",
-          "required": true,
-          "description": "description parameter"
-        },
-        "proposedBy": {
-          "type": "string",
-          "required": false,
-          "description": "proposedBy parameter"
-        }
-      }
-    },
-    {
-      "name": "decision-list",
-      "description": "Decision List Command - Shared Types\n *\n * List all governance proposals with optional filtering",
-      "params": {
-        "status": {
-          "type": "string",
-          "required": false,
-          "description": "status parameter"
-        },
-        "domain": {
-          "type": "string",
-          "required": false,
-          "description": "domain parameter"
-        },
-        "proposedBy": {
-          "type": "string",
-          "required": false,
-          "description": "proposedBy parameter"
-        },
-        "limit": {
-          "type": "number",
-          "required": false,
-          "description": "limit parameter"
-        },
-        "offset": {
-          "type": "number",
-          "required": false,
-          "description": "offset parameter"
-        }
-      }
-    },
-    {
-      "name": "decision-finalize",
-      "description": "Decision Finalize Command - Shared Types\n *\n * Close voting and calculate winner using ranked-choice voting",
-      "params": {
-        "proposalId": {
-          "type": "string",
-          "required": true,
-          "description": "proposalId parameter"
-        }
-      }
-    },
-    {
-      "name": "decision-create",
-      "description": "Decision Create Command - Shared Types\n *\n * Create a new governance proposal with voting options",
-      "params": {
-        "proposalId": {
-          "type": "string",
-          "required": true,
-          "description": "proposalId parameter"
-        },
-        "topic": {
-          "type": "string",
-          "required": true,
-          "description": "topic parameter"
-        },
-        "rationale": {
-          "type": "string",
-          "required": true,
-          "description": "rationale parameter"
-        },
-        "description": {
-          "type": "string",
-          "required": true,
-          "description": "description parameter"
-        },
-        "options": {
-          "type": "array",
-          "required": true,
-          "description": "options parameter"
-        },
-        "tags": {
-          "type": "array",
-          "required": false,
-          "description": "tags parameter"
-        },
-        "votingDeadline": {
-          "type": "string",
-          "required": false,
-          "description": "votingDeadline parameter"
-        },
-        "requiredQuorum": {
-          "type": "number",
-          "required": false,
-          "description": "requiredQuorum parameter"
-        },
-        "visibility": {
-          "type": "string",
-          "required": false,
-          "description": "visibility parameter"
-        }
-      }
-    },
-    {
       "name": "widget-state-debug",
       "description": "Widget State Debug Command Types\n *\n * Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development\n * Enables inspection of widget internal state, event listeners, and DOM structure",
       "params": {
@@ -2306,6 +1984,359 @@
       }
     },
     {
+      "name": "compile-typescript",
+      "description": "Compile TypeScript Command - Shared Types\n * \n * Minimal, focused types for TypeScript compilation only.\n * Follows screenshot/navigate pattern - simple params and results.\n * \n * DESIGN PRINCIPLES:\n * ✅ Single responsibility - only TypeScript compilation\n * ✅ Clean parameter interface with sensible defaults\n * ✅ Object.assign() constructor pattern\n * ✅ No over-engineering or god objects\n * ✅ Focused scope - just TSC compilation\n * \n * SCOPE:\n * - Browser: Uses monaco/typescript service if available\n * - Server: Uses local tsc executable or typescript module\n * - Consistent interface across contexts",
+      "params": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "description": "source parameter"
+        },
+        "filename": {
+          "type": "string",
+          "required": false,
+          "description": "filename parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "strict": {
+          "type": "boolean",
+          "required": false,
+          "description": "strict parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": false,
+          "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "wall-write",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "append": {
+          "type": "boolean",
+          "required": false,
+          "description": "append parameter"
+        },
+        "author": {
+          "type": "string",
+          "required": false,
+          "description": "author parameter"
+        },
+        "commitMessage": {
+          "type": "string",
+          "required": false,
+          "description": "commitMessage parameter"
+        }
+      }
+    },
+    {
+      "name": "wall-read",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "toc": {
+          "type": "boolean",
+          "required": false,
+          "description": "toc parameter"
+        },
+        "lines": {
+          "type": "string",
+          "required": false,
+          "description": "lines parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "includeMetadata": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMetadata parameter"
+        }
+      }
+    },
+    {
+      "name": "wall-list",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        }
+      }
+    },
+    {
+      "name": "wall-history",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "wall-diff",
+      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": true,
+          "description": "room parameter"
+        },
+        "doc": {
+          "type": "string",
+          "required": true,
+          "description": "doc parameter"
+        },
+        "from": {
+          "type": "string",
+          "required": false,
+          "description": "from parameter"
+        },
+        "to": {
+          "type": "string",
+          "required": false,
+          "description": "to parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-vote",
+      "description": "Decision Vote Command - Shared Types\n *\n * Cast ranked-choice vote on a proposal",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        },
+        "rankedChoices": {
+          "type": "array",
+          "required": true,
+          "description": "rankedChoices parameter"
+        },
+        "comment": {
+          "type": "string",
+          "required": false,
+          "description": "comment parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-view",
+      "description": "Decision View Command - Shared Types\n *\n * View detailed information about a specific governance proposal",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-rank",
+      "description": "decision/rank - Types\n * Submit ranked-choice vote for a decision proposal",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        },
+        "rankedChoices": {
+          "type": "array",
+          "required": true,
+          "description": "rankedChoices parameter"
+        },
+        "voterId": {
+          "type": "string",
+          "required": false,
+          "description": "voterId parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-propose",
+      "description": "decision/propose - Create a new decision proposal with ranked-choice voting\n *\n * Enables AIs to:\n * - Propose decisions to the team\n * - Define multiple options for ranked-choice voting\n * - Target specific expert groups via scope\n * - Set urgency via significance level\n * - Automatically link to related past decisions",
+      "params": {
+        "topic": {
+          "type": "string",
+          "required": true,
+          "description": "topic parameter"
+        },
+        "rationale": {
+          "type": "string",
+          "required": true,
+          "description": "rationale parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "options": {
+          "type": "array",
+          "required": true,
+          "description": "options parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "proposedBy": {
+          "type": "string",
+          "required": false,
+          "description": "proposedBy parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-list",
+      "description": "Decision List Command - Shared Types\n *\n * List all governance proposals with optional filtering",
+      "params": {
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "proposedBy": {
+          "type": "string",
+          "required": false,
+          "description": "proposedBy parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "offset": {
+          "type": "number",
+          "required": false,
+          "description": "offset parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-finalize",
+      "description": "Decision Finalize Command - Shared Types\n *\n * Close voting and calculate winner using ranked-choice voting",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        }
+      }
+    },
+    {
+      "name": "decision-create",
+      "description": "Decision Create Command - Shared Types\n *\n * Create a new governance proposal with voting options",
+      "params": {
+        "proposalId": {
+          "type": "string",
+          "required": true,
+          "description": "proposalId parameter"
+        },
+        "topic": {
+          "type": "string",
+          "required": true,
+          "description": "topic parameter"
+        },
+        "rationale": {
+          "type": "string",
+          "required": true,
+          "description": "rationale parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "options": {
+          "type": "array",
+          "required": true,
+          "description": "options parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "votingDeadline": {
+          "type": "string",
+          "required": false,
+          "description": "votingDeadline parameter"
+        },
+        "requiredQuorum": {
+          "type": "number",
+          "required": false,
+          "description": "requiredQuorum parameter"
+        },
+        "visibility": {
+          "type": "string",
+          "required": false,
+          "description": "visibility parameter"
+        }
+      }
+    },
+    {
       "name": "content-open",
       "description": "Content Open Command Types\n *\n * Opens content and adds it to user's openItems array.\n * Emits content:opened event for widgets to respond to.",
       "params": {
@@ -2348,114 +2379,6 @@
           "type": "object",
           "required": false,
           "description": "metadata parameter"
-        }
-      }
-    },
-    {
-      "name": "compile-typescript",
-      "description": "Compile TypeScript Command - Shared Types\n * \n * Minimal, focused types for TypeScript compilation only.\n * Follows screenshot/navigate pattern - simple params and results.\n * \n * DESIGN PRINCIPLES:\n * ✅ Single responsibility - only TypeScript compilation\n * ✅ Clean parameter interface with sensible defaults\n * ✅ Object.assign() constructor pattern\n * ✅ No over-engineering or god objects\n * ✅ Focused scope - just TSC compilation\n * \n * SCOPE:\n * - Browser: Uses monaco/typescript service if available\n * - Server: Uses local tsc executable or typescript module\n * - Consistent interface across contexts",
-      "params": {
-        "source": {
-          "type": "string",
-          "required": true,
-          "description": "source parameter"
-        },
-        "filename": {
-          "type": "string",
-          "required": false,
-          "description": "filename parameter"
-        },
-        "outputPath": {
-          "type": "string",
-          "required": false,
-          "description": "outputPath parameter"
-        },
-        "strict": {
-          "type": "boolean",
-          "required": false,
-          "description": "strict parameter"
-        },
-        "target": {
-          "type": "string",
-          "required": false,
-          "description": "target parameter"
-        }
-      }
-    },
-    {
-      "name": "code-read",
-      "description": "code/read command types",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "path": {
-          "type": "string",
-          "required": true,
-          "description": "path parameter"
-        },
-        "startLine": {
-          "type": "number",
-          "required": false,
-          "description": "startLine parameter"
-        },
-        "endLine": {
-          "type": "number",
-          "required": false,
-          "description": "endLine parameter"
-        },
-        "includeMetadata": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeMetadata parameter"
-        },
-        "forceRefresh": {
-          "type": "boolean",
-          "required": false,
-          "description": "forceRefresh parameter"
-        }
-      }
-    },
-    {
-      "name": "code-find",
-      "description": "code/find command types - Find files by name pattern",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "pattern": {
-          "type": "string",
-          "required": true,
-          "description": "pattern parameter"
-        },
-        "baseDir": {
-          "type": "string",
-          "required": false,
-          "description": "baseDir parameter"
-        },
-        "caseInsensitive": {
-          "type": "boolean",
-          "required": false,
-          "description": "caseInsensitive parameter"
-        },
-        "maxResults": {
-          "type": "number",
-          "required": false,
-          "description": "maxResults parameter"
-        },
-        "includeHidden": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeHidden parameter"
-        },
-        "excludeDirs": {
-          "type": "array",
-          "required": false,
-          "description": "excludeDirs parameter"
         }
       }
     },
@@ -2574,6 +2497,99 @@
           "type": "number",
           "required": false,
           "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "activity-user-present",
+      "description": "Activity User Presence - Track user tab visibility for temperature\n *\n * Phase 3bis: Browser tab visibility integration\n * Called by MainWidget when tab visibility changes",
+      "params": {
+        "activityId": {
+          "type": "string",
+          "required": true,
+          "description": "activityId parameter"
+        },
+        "present": {
+          "type": "boolean",
+          "required": true,
+          "description": "present parameter"
+        }
+      }
+    },
+    {
+      "name": "code-read",
+      "description": "code/read command types",
+      "params": {
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "path": {
+          "type": "string",
+          "required": true,
+          "description": "path parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "includeMetadata": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMetadata parameter"
+        },
+        "forceRefresh": {
+          "type": "boolean",
+          "required": false,
+          "description": "forceRefresh parameter"
+        }
+      }
+    },
+    {
+      "name": "code-find",
+      "description": "code/find command types - Find files by name pattern",
+      "params": {
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "baseDir": {
+          "type": "string",
+          "required": false,
+          "description": "baseDir parameter"
+        },
+        "caseInsensitive": {
+          "type": "boolean",
+          "required": false,
+          "description": "caseInsensitive parameter"
+        },
+        "maxResults": {
+          "type": "number",
+          "required": false,
+          "description": "maxResults parameter"
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeHidden parameter"
+        },
+        "excludeDirs": {
+          "type": "array",
+          "required": false,
+          "description": "excludeDirs parameter"
         }
       }
     },
@@ -3446,22 +3462,6 @@
           "type": "boolean",
           "required": false,
           "description": "all parameter"
-        }
-      }
-    },
-    {
-      "name": "activity-user-present",
-      "description": "Activity User Presence - Track user tab visibility for temperature\n *\n * Phase 3bis: Browser tab visibility integration\n * Called by MainWidget when tab visibility changes",
-      "params": {
-        "activityId": {
-          "type": "string",
-          "required": true,
-          "description": "activityId parameter"
-        },
-        "present": {
-          "type": "boolean",
-          "required": true,
-          "description": "present parameter"
         }
       }
     }

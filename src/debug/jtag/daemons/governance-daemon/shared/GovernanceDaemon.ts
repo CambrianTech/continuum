@@ -15,7 +15,7 @@ import { Events } from '../../../system/core/shared/Events';
 import { COLLECTIONS } from '../../../system/shared/Constants';
 import type { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
-import type { DecisionFinalizeParams, DecisionFinalizeResult } from '../../../commands/decision/finalize/shared/DecisionFinalizeTypes';
+import type { DecisionFinalizeParams, DecisionFinalizeResult } from '@commands/collaboration/decision/finalize/shared/DecisionFinalizeTypes';
 
 /**
  * Governance Daemon - Universal governance workflow handler

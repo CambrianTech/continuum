@@ -7,7 +7,7 @@
 
 import { Events } from '../core/shared/Events';
 import { Commands } from '../core/shared/Commands';
-import type { ChatSendParams, ChatSendResult } from '../../commands/chat/send/shared/ChatSendTypes';
+import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { Logger } from '../core/logging/Logger';
 
 const log = Logger.create('GovernanceNotifications', 'governance');

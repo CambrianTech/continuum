@@ -46,14 +46,24 @@ import { AIShouldRespondServerCommand } from './../commands/ai/should-respond/se
 import { AIStatusServerCommand } from './../commands/ai/status/server/AIStatusServerCommand';
 import { ThoughtStreamServerCommand } from './../commands/ai/thoughtstream/server/ThoughtStreamServerCommand';
 import { AIValidateResponseServerCommand } from './../commands/ai/validate-response/server/AIValidateResponseServerCommand';
-import { ChatAnalyzeServerCommand } from './../commands/chat/analyze/server/ChatAnalyzeServerCommand';
-import { ChatExportServerCommand } from './../commands/chat/export/server/ChatExportServerCommand';
-import { ChatPollServerCommand } from './../commands/chat/poll/server/ChatPollServerCommand';
-import { ChatSendServerCommand } from './../commands/chat/send/server/ChatSendServerCommand';
 import { CodeFindServerCommand } from './../commands/code/pattern-search/server/CodeFindServerCommand';
 import { CodeReadServerCommand } from './../commands/code/read/server/CodeReadServerCommand';
+import { ChatAnalyzeServerCommand } from './../commands/collaboration/chat/analyze/server/ChatAnalyzeServerCommand';
+import { ChatExportServerCommand } from './../commands/collaboration/chat/export/server/ChatExportServerCommand';
+import { ChatPollServerCommand } from './../commands/collaboration/chat/poll/server/ChatPollServerCommand';
+import { ChatSendServerCommand } from './../commands/collaboration/chat/send/server/ChatSendServerCommand';
+import { ContentOpenServerCommand } from './../commands/collaboration/content/open/server/ContentOpenServerCommand';
+import { DecisionCreateServerCommand } from './../commands/collaboration/decision/create/server/DecisionCreateServerCommand';
+import { DecisionFinalizeServerCommand } from './../commands/collaboration/decision/finalize/server/DecisionFinalizeServerCommand';
+import { DecisionListServerCommand } from './../commands/collaboration/decision/list/server/DecisionListServerCommand';
+import { DecisionProposeServerCommand } from './../commands/collaboration/decision/propose/server/DecisionProposeServerCommand';
+import { DecisionRankServerCommand } from './../commands/collaboration/decision/rank/server/DecisionRankServerCommand';
+import { DecisionViewServerCommand } from './../commands/collaboration/decision/view/server/DecisionViewServerCommand';
+import { DecisionVoteServerCommand } from './../commands/collaboration/decision/vote/server/DecisionVoteServerCommand';
+import { WallListServerCommand } from './../commands/collaboration/wall/list/server/WallListServerCommand';
+import { WallReadServerCommand } from './../commands/collaboration/wall/read/server/WallReadServerCommand';
+import { WallWriteServerCommand } from './../commands/collaboration/wall/write/server/WallWriteServerCommand';
 import { CompileTypescriptServerCommand } from './../commands/compile-typescript/server/CompileTypescriptServerCommand';
-import { ContentOpenServerCommand } from './../commands/content/open/server/ContentOpenServerCommand';
 import { EmotionServerCommand } from './../commands/continuum/emotion/server/EmotionServerCommand';
 import { ContinuumSetServerCommand } from './../commands/continuum/set/server/ContinuumSetServerCommand';
 import { BackfillVectorsServerCommand } from './../commands/data/backfill-vectors/server/BackfillVectorsServerCommand';
@@ -83,13 +93,6 @@ import { WidgetCSSServerCommand } from './../commands/debug/widget-css/server/Wi
 import { WidgetEventsDebugServerCommand } from './../commands/debug/widget-events/server/WidgetEventsDebugServerCommand';
 import { WidgetInteractServerCommand } from './../commands/debug/widget-interact/server/WidgetInteractServerCommand';
 import { WidgetStateServerCommand } from './../commands/debug/widget-state/server/WidgetStateServerCommand';
-import { DecisionCreateServerCommand } from './../commands/decision/create/server/DecisionCreateServerCommand';
-import { DecisionFinalizeServerCommand } from './../commands/decision/finalize/server/DecisionFinalizeServerCommand';
-import { DecisionListServerCommand } from './../commands/decision/list/server/DecisionListServerCommand';
-import { DecisionProposeServerCommand } from './../commands/decision/propose/server/DecisionProposeServerCommand';
-import { DecisionRankServerCommand } from './../commands/decision/rank/server/DecisionRankServerCommand';
-import { DecisionViewServerCommand } from './../commands/decision/view/server/DecisionViewServerCommand';
-import { DecisionVoteServerCommand } from './../commands/decision/vote/server/DecisionVoteServerCommand';
 import { ExecServerCommand } from './../commands/exec/server/ExecServerCommand';
 import { FileAppendServerCommand } from './../commands/file/append/server/FileAppendServerCommand';
 import { FileLoadServerCommand } from './../commands/file/load/server/FileLoadServerCommand';
@@ -154,9 +157,6 @@ import { DocsReadServerCommand } from './../commands/utilities/docs/read/server/
 import { DocsSearchServerCommand } from './../commands/utilities/docs/search/server/DocsSearchServerCommand';
 import { HelloServerCommand } from './../commands/utilities/hello/server/HelloServerCommand';
 import { PipeChainServerCommand } from './../commands/utilities/pipe/chain/server/PipeChainServerCommand';
-import { WallListServerCommand } from './../commands/wall/list/server/WallListServerCommand';
-import { WallReadServerCommand } from './../commands/wall/read/server/WallReadServerCommand';
-import { WallWriteServerCommand } from './../commands/wall/write/server/WallWriteServerCommand';
 import { GitCommitServerCommand } from './../commands/workspace/git/commit/server/GitCommitServerCommand';
 import { GitPushServerCommand } from './../commands/workspace/git/push/server/GitPushServerCommand';
 import { GitStatusServerCommand } from './../commands/workspace/git/status/server/GitStatusServerCommand';
@@ -376,26 +376,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: AIValidateResponseServerCommand
   },
 {
-    name: 'chat/analyze',
-    className: 'ChatAnalyzeServerCommand',
-    commandClass: ChatAnalyzeServerCommand
-  },
-{
-    name: 'chat/export',
-    className: 'ChatExportServerCommand',
-    commandClass: ChatExportServerCommand
-  },
-{
-    name: 'chat/poll',
-    className: 'ChatPollServerCommand',
-    commandClass: ChatPollServerCommand
-  },
-{
-    name: 'chat/send',
-    className: 'ChatSendServerCommand',
-    commandClass: ChatSendServerCommand
-  },
-{
     name: 'code/pattern-search',
     className: 'CodeFindServerCommand',
     commandClass: CodeFindServerCommand
@@ -406,14 +386,84 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: CodeReadServerCommand
   },
 {
+    name: 'collaboration/chat/analyze',
+    className: 'ChatAnalyzeServerCommand',
+    commandClass: ChatAnalyzeServerCommand
+  },
+{
+    name: 'collaboration/chat/export',
+    className: 'ChatExportServerCommand',
+    commandClass: ChatExportServerCommand
+  },
+{
+    name: 'collaboration/chat/poll',
+    className: 'ChatPollServerCommand',
+    commandClass: ChatPollServerCommand
+  },
+{
+    name: 'collaboration/chat/send',
+    className: 'ChatSendServerCommand',
+    commandClass: ChatSendServerCommand
+  },
+{
+    name: 'collaboration/content/open',
+    className: 'ContentOpenServerCommand',
+    commandClass: ContentOpenServerCommand
+  },
+{
+    name: 'collaboration/decision/create',
+    className: 'DecisionCreateServerCommand',
+    commandClass: DecisionCreateServerCommand
+  },
+{
+    name: 'collaboration/decision/finalize',
+    className: 'DecisionFinalizeServerCommand',
+    commandClass: DecisionFinalizeServerCommand
+  },
+{
+    name: 'collaboration/decision/list',
+    className: 'DecisionListServerCommand',
+    commandClass: DecisionListServerCommand
+  },
+{
+    name: 'collaboration/decision/propose',
+    className: 'DecisionProposeServerCommand',
+    commandClass: DecisionProposeServerCommand
+  },
+{
+    name: 'collaboration/decision/rank',
+    className: 'DecisionRankServerCommand',
+    commandClass: DecisionRankServerCommand
+  },
+{
+    name: 'collaboration/decision/view',
+    className: 'DecisionViewServerCommand',
+    commandClass: DecisionViewServerCommand
+  },
+{
+    name: 'collaboration/decision/vote',
+    className: 'DecisionVoteServerCommand',
+    commandClass: DecisionVoteServerCommand
+  },
+{
+    name: 'collaboration/wall/list',
+    className: 'WallListServerCommand',
+    commandClass: WallListServerCommand
+  },
+{
+    name: 'collaboration/wall/read',
+    className: 'WallReadServerCommand',
+    commandClass: WallReadServerCommand
+  },
+{
+    name: 'collaboration/wall/write',
+    className: 'WallWriteServerCommand',
+    commandClass: WallWriteServerCommand
+  },
+{
     name: 'compile-typescript',
     className: 'CompileTypescriptServerCommand',
     commandClass: CompileTypescriptServerCommand
-  },
-{
-    name: 'content/open',
-    className: 'ContentOpenServerCommand',
-    commandClass: ContentOpenServerCommand
   },
 {
     name: 'continuum/emotion',
@@ -559,41 +609,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'debug/widget-state',
     className: 'WidgetStateServerCommand',
     commandClass: WidgetStateServerCommand
-  },
-{
-    name: 'decision/create',
-    className: 'DecisionCreateServerCommand',
-    commandClass: DecisionCreateServerCommand
-  },
-{
-    name: 'decision/finalize',
-    className: 'DecisionFinalizeServerCommand',
-    commandClass: DecisionFinalizeServerCommand
-  },
-{
-    name: 'decision/list',
-    className: 'DecisionListServerCommand',
-    commandClass: DecisionListServerCommand
-  },
-{
-    name: 'decision/propose',
-    className: 'DecisionProposeServerCommand',
-    commandClass: DecisionProposeServerCommand
-  },
-{
-    name: 'decision/rank',
-    className: 'DecisionRankServerCommand',
-    commandClass: DecisionRankServerCommand
-  },
-{
-    name: 'decision/view',
-    className: 'DecisionViewServerCommand',
-    commandClass: DecisionViewServerCommand
-  },
-{
-    name: 'decision/vote',
-    className: 'DecisionVoteServerCommand',
-    commandClass: DecisionVoteServerCommand
   },
 {
     name: 'exec',
@@ -914,21 +929,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'utilities/pipe/chain',
     className: 'PipeChainServerCommand',
     commandClass: PipeChainServerCommand
-  },
-{
-    name: 'wall/list',
-    className: 'WallListServerCommand',
-    commandClass: WallListServerCommand
-  },
-{
-    name: 'wall/read',
-    className: 'WallReadServerCommand',
-    commandClass: WallReadServerCommand
-  },
-{
-    name: 'wall/write',
-    className: 'WallWriteServerCommand',
-    commandClass: WallWriteServerCommand
   },
 {
     name: 'workspace/git/commit',
