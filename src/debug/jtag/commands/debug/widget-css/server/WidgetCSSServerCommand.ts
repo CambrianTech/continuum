@@ -8,7 +8,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { WidgetCSSDebugParams, WidgetCSSDebugResult } from '../shared/WidgetCSSDebugTypes';
 import { createWidgetCSSDebugResult } from '../shared/WidgetCSSDebugTypes';
-import type { ScreenshotResult } from '../../../screenshot/shared/ScreenshotTypes';
+import type { ScreenshotResult } from '@commands/interface/screenshot/shared/ScreenshotTypes';
 
 export class WidgetCSSServerCommand extends CommandBase<WidgetCSSDebugParams, WidgetCSSDebugResult> {
 

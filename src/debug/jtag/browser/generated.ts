@@ -34,7 +34,6 @@ import { ChatAnalyzeBrowserCommand } from './../commands/chat/analyze/browser/Ch
 import { ChatExportBrowserCommand } from './../commands/chat/export/browser/ChatExportBrowserCommand';
 import { ChatPollBrowserCommand } from './../commands/chat/poll/browser/ChatPollBrowserCommand';
 import { ChatSendBrowserCommand } from './../commands/chat/send/browser/ChatSendBrowserCommand';
-import { ClickBrowserCommand } from './../commands/click/browser/ClickBrowserCommand';
 import { CompileTypescriptBrowserCommand } from './../commands/compile-typescript/browser/CompileTypescriptBrowserCommand';
 import { ContentOpenBrowserCommand } from './../commands/content/open/browser/ContentOpenBrowserCommand';
 import { EmotionBrowserCommand } from './../commands/continuum/emotion/browser/EmotionBrowserCommand';
@@ -83,8 +82,15 @@ import { GenerateBrowserCommand } from './../commands/generate/browser/GenerateB
 import { GenomeBatchMicroTuneBrowserCommand } from './../commands/genome/batch-micro-tune/browser/GenomeBatchMicroTuneBrowserCommand';
 import { GenomeJobCreateBrowserCommand } from './../commands/genome/job-create/browser/GenomeJobCreateBrowserCommand';
 import { GenomeJobStatusBrowserCommand } from './../commands/genome/job-status/browser/GenomeJobStatusBrowserCommand';
-import { GetTextBrowserCommand } from './../commands/get-text/browser/GetTextBrowserCommand';
 import { IndicatorBrowserCommand } from './../commands/indicator/browser/IndicatorBrowserCommand';
+import { ClickBrowserCommand } from './../commands/interface/click/browser/ClickBrowserCommand';
+import { GetTextBrowserCommand } from './../commands/interface/get-text/browser/GetTextBrowserCommand';
+import { NavigateBrowserCommand } from './../commands/interface/navigate/browser/NavigateBrowserCommand';
+import { ProxyNavigateBrowserCommand } from './../commands/interface/proxy-navigate/browser/ProxyNavigateBrowserCommand';
+import { ScreenshotBrowserCommand } from './../commands/interface/screenshot/browser/ScreenshotBrowserCommand';
+import { ScrollBrowserCommand } from './../commands/interface/scroll/browser/ScrollBrowserCommand';
+import { TypeBrowserCommand } from './../commands/interface/type/browser/TypeBrowserCommand';
+import { WaitForElementBrowserCommand } from './../commands/interface/wait-for-element/browser/WaitForElementBrowserCommand';
 import { ListBrowserCommand } from './../commands/list/browser/ListBrowserCommand';
 import { LogsListBrowserCommand } from './../commands/logs/list/browser/LogsListBrowserCommand';
 import { LogsReadBrowserCommand } from './../commands/logs/read/browser/LogsReadBrowserCommand';
@@ -92,16 +98,12 @@ import { LogsSearchBrowserCommand } from './../commands/logs/search/browser/Logs
 import { LogsStatsBrowserCommand } from './../commands/logs/stats/browser/LogsStatsBrowserCommand';
 import { MediaProcessBrowserCommand } from './../commands/media/process/browser/MediaProcessBrowserCommand';
 import { MediaResizeBrowserCommand } from './../commands/media/resize/browser/MediaResizeBrowserCommand';
-import { NavigateBrowserCommand } from './../commands/navigate/browser/NavigateBrowserCommand';
 import { GenomeCaptureFeedbackBrowserCommand } from './../commands/persona/learning/capture-feedback/browser/GenomeCaptureFeedbackBrowserCommand';
 import { GenomeCaptureInteractionBrowserCommand } from './../commands/persona/learning/capture-interaction/browser/GenomeCaptureInteractionBrowserCommand';
 import { GenomeMultiAgentLearnBrowserCommand } from './../commands/persona/learning/multi-agent-learn/browser/GenomeMultiAgentLearnBrowserCommand';
 import { PingBrowserCommand } from './../commands/ping/browser/PingBrowserCommand';
 import { ProcessRegistryBrowserCommand } from './../commands/process-registry/browser/ProcessRegistryBrowserCommand';
-import { ProxyNavigateBrowserCommand } from './../commands/proxy-navigate/browser/ProxyNavigateBrowserCommand';
 import { SchemaGenerateBrowserCommand } from './../commands/schema/generate/browser/SchemaGenerateBrowserCommand';
-import { ScreenshotBrowserCommand } from './../commands/screenshot/browser/ScreenshotBrowserCommand';
-import { ScrollBrowserCommand } from './../commands/scroll/browser/ScrollBrowserCommand';
 import { SessionCreateBrowserCommand } from './../commands/session/create/browser/SessionCreateBrowserCommand';
 import { SessionDestroyBrowserCommand } from './../commands/session/destroy/browser/SessionDestroyBrowserCommand';
 import { SessionGetIdBrowserCommand } from './../commands/session/get-id/browser/SessionGetIdBrowserCommand';
@@ -115,14 +117,12 @@ import { ThemeGetBrowserCommand } from './../commands/theme/get/browser/ThemeGet
 import { ThemeListBrowserCommand } from './../commands/theme/list/browser/ThemeListBrowserCommand';
 import { ThemeSetBrowserCommand } from './../commands/theme/set/browser/ThemeSetBrowserCommand';
 import { TrainingImportBrowserCommand } from './../commands/training/import/browser/TrainingImportBrowserCommand';
-import { TypeBrowserCommand } from './../commands/type/browser/TypeBrowserCommand';
 import { UserCreateBrowserCommand } from './../commands/user/create/browser/UserCreateBrowserCommand';
 import { UserGetMeBrowserCommand } from './../commands/user/get-me/browser/UserGetMeBrowserCommand';
 import { DocsListBrowserCommand } from './../commands/utilities/docs/list/browser/DocsListBrowserCommand';
 import { DocsReadBrowserCommand } from './../commands/utilities/docs/read/browser/DocsReadBrowserCommand';
 import { DocsSearchBrowserCommand } from './../commands/utilities/docs/search/browser/DocsSearchBrowserCommand';
 import { HelloBrowserCommand } from './../commands/utilities/hello/browser/HelloBrowserCommand';
-import { WaitForElementBrowserCommand } from './../commands/wait-for-element/browser/WaitForElementBrowserCommand';
 import { WallListBrowserCommand } from './../commands/wall/list/browser/WallListBrowserCommand';
 import { WallReadBrowserCommand } from './../commands/wall/read/browser/WallReadBrowserCommand';
 import { WallWriteBrowserCommand } from './../commands/wall/write/browser/WallWriteBrowserCommand';
@@ -297,11 +297,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'chat/send',
     className: 'ChatSendBrowserCommand',
     commandClass: ChatSendBrowserCommand
-  },
-{
-    name: 'click',
-    className: 'ClickBrowserCommand',
-    commandClass: ClickBrowserCommand
   },
 {
     name: 'compile-typescript',
@@ -544,14 +539,49 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: GenomeJobStatusBrowserCommand
   },
 {
-    name: 'get-text',
+    name: 'indicator',
+    className: 'IndicatorBrowserCommand',
+    commandClass: IndicatorBrowserCommand
+  },
+{
+    name: 'interface/click',
+    className: 'ClickBrowserCommand',
+    commandClass: ClickBrowserCommand
+  },
+{
+    name: 'interface/get-text',
     className: 'GetTextBrowserCommand',
     commandClass: GetTextBrowserCommand
   },
 {
-    name: 'indicator',
-    className: 'IndicatorBrowserCommand',
-    commandClass: IndicatorBrowserCommand
+    name: 'interface/navigate',
+    className: 'NavigateBrowserCommand',
+    commandClass: NavigateBrowserCommand
+  },
+{
+    name: 'interface/proxy-navigate',
+    className: 'ProxyNavigateBrowserCommand',
+    commandClass: ProxyNavigateBrowserCommand
+  },
+{
+    name: 'interface/screenshot',
+    className: 'ScreenshotBrowserCommand',
+    commandClass: ScreenshotBrowserCommand
+  },
+{
+    name: 'interface/scroll',
+    className: 'ScrollBrowserCommand',
+    commandClass: ScrollBrowserCommand
+  },
+{
+    name: 'interface/type',
+    className: 'TypeBrowserCommand',
+    commandClass: TypeBrowserCommand
+  },
+{
+    name: 'interface/wait-for-element',
+    className: 'WaitForElementBrowserCommand',
+    commandClass: WaitForElementBrowserCommand
   },
 {
     name: 'list',
@@ -589,11 +619,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: MediaResizeBrowserCommand
   },
 {
-    name: 'navigate',
-    className: 'NavigateBrowserCommand',
-    commandClass: NavigateBrowserCommand
-  },
-{
     name: 'persona/learning/capture-feedback',
     className: 'GenomeCaptureFeedbackBrowserCommand',
     commandClass: GenomeCaptureFeedbackBrowserCommand
@@ -619,24 +644,9 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: ProcessRegistryBrowserCommand
   },
 {
-    name: 'proxy-navigate',
-    className: 'ProxyNavigateBrowserCommand',
-    commandClass: ProxyNavigateBrowserCommand
-  },
-{
     name: 'schema/generate',
     className: 'SchemaGenerateBrowserCommand',
     commandClass: SchemaGenerateBrowserCommand
-  },
-{
-    name: 'screenshot',
-    className: 'ScreenshotBrowserCommand',
-    commandClass: ScreenshotBrowserCommand
-  },
-{
-    name: 'scroll',
-    className: 'ScrollBrowserCommand',
-    commandClass: ScrollBrowserCommand
   },
 {
     name: 'session/create',
@@ -704,11 +714,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: TrainingImportBrowserCommand
   },
 {
-    name: 'type',
-    className: 'TypeBrowserCommand',
-    commandClass: TypeBrowserCommand
-  },
-{
     name: 'user/create',
     className: 'UserCreateBrowserCommand',
     commandClass: UserCreateBrowserCommand
@@ -737,11 +742,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'utilities/hello',
     className: 'HelloBrowserCommand',
     commandClass: HelloBrowserCommand
-  },
-{
-    name: 'wait-for-element',
-    className: 'WaitForElementBrowserCommand',
-    commandClass: WaitForElementBrowserCommand
   },
 {
     name: 'wall/list',

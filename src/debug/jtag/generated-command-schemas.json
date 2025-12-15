@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-15T00:04:32.281Z",
+  "generated": "2025-12-15T00:45:58.267Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -381,32 +381,6 @@
       }
     },
     {
-      "name": "wait-for-element",
-      "description": "wait-for-element command",
-      "params": {
-        "selector": {
-          "type": "string",
-          "required": true,
-          "description": "selector parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "visible": {
-          "type": "boolean",
-          "required": false,
-          "description": "visible parameter"
-        },
-        "interval": {
-          "type": "number",
-          "required": false,
-          "description": "interval parameter"
-        }
-      }
-    },
-    {
       "name": "pipe-chain",
       "description": "Pipe Chain Command Types\n * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
       "params": {
@@ -563,32 +537,6 @@
       "params": {}
     },
     {
-      "name": "type",
-      "description": "type command",
-      "params": {
-        "selector": {
-          "type": "string",
-          "required": true,
-          "description": "selector parameter"
-        },
-        "text": {
-          "type": "string",
-          "required": true,
-          "description": "text parameter"
-        },
-        "clearFirst": {
-          "type": "boolean",
-          "required": false,
-          "description": "clearFirst parameter"
-        },
-        "delay": {
-          "type": "number",
-          "required": false,
-          "description": "delay parameter"
-        }
-      }
-    },
-    {
       "name": "daemons",
       "description": "Daemons Command Types\n *\n * List all registered system daemons with their status",
       "params": {
@@ -684,133 +632,6 @@
       }
     },
     {
-      "name": "scroll",
-      "description": "scroll command",
-      "params": {
-        "x": {
-          "type": "number",
-          "required": false,
-          "description": "x parameter"
-        },
-        "y": {
-          "type": "number",
-          "required": false,
-          "description": "y parameter"
-        },
-        "selector": {
-          "type": "string",
-          "required": false,
-          "description": "selector parameter"
-        },
-        "behavior": {
-          "type": "string",
-          "required": false,
-          "description": "behavior parameter"
-        }
-      }
-    },
-    {
-      "name": "screenshot",
-      "description": "Screenshot Command - Shared Types\n * \n * Common types and interfaces used by both browser and server screenshot implementations.",
-      "params": {
-        "filename": {
-          "type": "string",
-          "required": false,
-          "description": "filename parameter"
-        },
-        "selector": {
-          "type": "string",
-          "required": false,
-          "description": "selector parameter"
-        },
-        "querySelector": {
-          "type": "string",
-          "required": false,
-          "description": "querySelector parameter"
-        },
-        "elementName": {
-          "type": "string",
-          "required": false,
-          "description": "elementName parameter"
-        },
-        "options": {
-          "type": "string",
-          "required": false,
-          "description": "options parameter"
-        },
-        "cropX": {
-          "type": "number",
-          "required": false,
-          "description": "cropX parameter"
-        },
-        "cropY": {
-          "type": "number",
-          "required": false,
-          "description": "cropY parameter"
-        },
-        "cropWidth": {
-          "type": "number",
-          "required": false,
-          "description": "cropWidth parameter"
-        },
-        "cropHeight": {
-          "type": "number",
-          "required": false,
-          "description": "cropHeight parameter"
-        },
-        "width": {
-          "type": "number",
-          "required": false,
-          "description": "width parameter"
-        },
-        "height": {
-          "type": "number",
-          "required": false,
-          "description": "height parameter"
-        },
-        "scale": {
-          "type": "number",
-          "required": false,
-          "description": "scale parameter"
-        },
-        "quality": {
-          "type": "number",
-          "required": false,
-          "description": "quality parameter"
-        },
-        "maxFileSize": {
-          "type": "number",
-          "required": false,
-          "description": "maxFileSize parameter"
-        },
-        "format": {
-          "type": "string",
-          "required": false,
-          "description": "format parameter"
-        },
-        "destination": {
-          "type": "string",
-          "required": false,
-          "description": "destination parameter"
-        },
-        "resultType": {
-          "type": "string",
-          "required": true,
-          "description": "resultType parameter"
-        },
-        "dataUrl": {
-          "type": "string",
-          "required": false,
-          "description": "dataUrl parameter"
-        },
-        "metadata": {
-          "type": "string",
-          "required": false,
-          "description": "metadata parameter"
-        }
-      }
-    },
-    {
       "name": "ragload",
       "description": "RAG Load Command - Test incremental message loading with token counting\n *\n * Shows exactly which messages would be loaded for RAG context given a token budget.\n * Makes the incremental loading algorithm transparent and debuggable.",
       "params": {
@@ -879,37 +700,6 @@
           "type": "number",
           "required": false,
           "description": "avgTokensPerMessage parameter"
-        }
-      }
-    },
-    {
-      "name": "proxy-navigate",
-      "description": "Proxy Navigate Command - Shared Types\n * \n * Enables cross-origin navigation through proxy system for widget training.\n * Solves the fundamental html2canvas + cross-origin iframe limitation.",
-      "params": {
-        "url": {
-          "type": "string",
-          "required": true,
-          "description": "url parameter"
-        },
-        "target": {
-          "type": "string",
-          "required": false,
-          "description": "target parameter"
-        },
-        "rewriteUrls": {
-          "type": "boolean",
-          "required": false,
-          "description": "rewriteUrls parameter"
-        },
-        "userAgent": {
-          "type": "string",
-          "required": false,
-          "description": "userAgent parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
         }
       }
     },
@@ -1088,32 +878,6 @@
       }
     },
     {
-      "name": "navigate",
-      "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
-      "params": {
-        "url": {
-          "type": "string",
-          "required": true,
-          "description": "url parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "waitForSelector": {
-          "type": "string",
-          "required": false,
-          "description": "waitForSelector parameter"
-        },
-        "target": {
-          "type": "string",
-          "required": false,
-          "description": "target parameter"
-        }
-      }
-    },
-    {
       "name": "media-resize",
       "description": "Media Resize Command Types\n *\n * Image resizing via sharp library with model-aware dimension calculation.\n * Enables PersonaUsers to receive appropriately-sized images based on their\n * model's context window capacity.",
       "params": {
@@ -1273,6 +1037,242 @@
       }
     },
     {
+      "name": "wait-for-element",
+      "description": "wait-for-element command",
+      "params": {
+        "selector": {
+          "type": "string",
+          "required": true,
+          "description": "selector parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "visible": {
+          "type": "boolean",
+          "required": false,
+          "description": "visible parameter"
+        },
+        "interval": {
+          "type": "number",
+          "required": false,
+          "description": "interval parameter"
+        }
+      }
+    },
+    {
+      "name": "type",
+      "description": "type command",
+      "params": {
+        "selector": {
+          "type": "string",
+          "required": true,
+          "description": "selector parameter"
+        },
+        "text": {
+          "type": "string",
+          "required": true,
+          "description": "text parameter"
+        },
+        "clearFirst": {
+          "type": "boolean",
+          "required": false,
+          "description": "clearFirst parameter"
+        },
+        "delay": {
+          "type": "number",
+          "required": false,
+          "description": "delay parameter"
+        }
+      }
+    },
+    {
+      "name": "scroll",
+      "description": "scroll command",
+      "params": {
+        "x": {
+          "type": "number",
+          "required": false,
+          "description": "x parameter"
+        },
+        "y": {
+          "type": "number",
+          "required": false,
+          "description": "y parameter"
+        },
+        "selector": {
+          "type": "string",
+          "required": false,
+          "description": "selector parameter"
+        },
+        "behavior": {
+          "type": "string",
+          "required": false,
+          "description": "behavior parameter"
+        }
+      }
+    },
+    {
+      "name": "screenshot",
+      "description": "Screenshot Command - Shared Types\n * \n * Common types and interfaces used by both browser and server screenshot implementations.",
+      "params": {
+        "filename": {
+          "type": "string",
+          "required": false,
+          "description": "filename parameter"
+        },
+        "selector": {
+          "type": "string",
+          "required": false,
+          "description": "selector parameter"
+        },
+        "querySelector": {
+          "type": "string",
+          "required": false,
+          "description": "querySelector parameter"
+        },
+        "elementName": {
+          "type": "string",
+          "required": false,
+          "description": "elementName parameter"
+        },
+        "options": {
+          "type": "string",
+          "required": false,
+          "description": "options parameter"
+        },
+        "cropX": {
+          "type": "number",
+          "required": false,
+          "description": "cropX parameter"
+        },
+        "cropY": {
+          "type": "number",
+          "required": false,
+          "description": "cropY parameter"
+        },
+        "cropWidth": {
+          "type": "number",
+          "required": false,
+          "description": "cropWidth parameter"
+        },
+        "cropHeight": {
+          "type": "number",
+          "required": false,
+          "description": "cropHeight parameter"
+        },
+        "width": {
+          "type": "number",
+          "required": false,
+          "description": "width parameter"
+        },
+        "height": {
+          "type": "number",
+          "required": false,
+          "description": "height parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "quality": {
+          "type": "number",
+          "required": false,
+          "description": "quality parameter"
+        },
+        "maxFileSize": {
+          "type": "number",
+          "required": false,
+          "description": "maxFileSize parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "destination": {
+          "type": "string",
+          "required": false,
+          "description": "destination parameter"
+        },
+        "resultType": {
+          "type": "string",
+          "required": true,
+          "description": "resultType parameter"
+        },
+        "dataUrl": {
+          "type": "string",
+          "required": false,
+          "description": "dataUrl parameter"
+        },
+        "metadata": {
+          "type": "string",
+          "required": false,
+          "description": "metadata parameter"
+        }
+      }
+    },
+    {
+      "name": "proxy-navigate",
+      "description": "Proxy Navigate Command - Shared Types\n * \n * Enables cross-origin navigation through proxy system for widget training.\n * Solves the fundamental html2canvas + cross-origin iframe limitation.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": false,
+          "description": "target parameter"
+        },
+        "rewriteUrls": {
+          "type": "boolean",
+          "required": false,
+          "description": "rewriteUrls parameter"
+        },
+        "userAgent": {
+          "type": "string",
+          "required": false,
+          "description": "userAgent parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        }
+      }
+    },
+    {
+      "name": "navigate",
+      "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": false,
+          "description": "target parameter"
+        }
+      }
+    },
+    {
       "name": "get-text",
       "description": "get-text command",
       "params": {
@@ -1290,6 +1290,37 @@
           "type": "boolean",
           "required": false,
           "description": "innerText parameter"
+        }
+      }
+    },
+    {
+      "name": "click",
+      "description": "Click Command - Shared Types for Element Interaction\n * \n * Minimal types for clicking DOM elements. Follows screenshot/navigate pattern\n * with clean inheritance and Object.assign() initialization.\n * \n * DESIGN ANALYSIS:\n * ✅ Focused on single action - clicking elements\n * ✅ Clean parameter interface with optional properties\n * ✅ Proper constructor pattern with Object.assign()\n * ✅ Result type includes success state and metadata\n * ✅ No over-engineering - just what's needed for clicks\n * \n * SCOPE:\n * - Browser: Direct DOM element.click() calls\n * - Server: Delegates to browser context\n * - Consistent interface across contexts",
+      "params": {
+        "selector": {
+          "type": "string",
+          "required": true,
+          "description": "selector parameter"
+        },
+        "button": {
+          "type": "string",
+          "required": false,
+          "description": "button parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "shadowRoot": {
+          "type": "boolean",
+          "required": false,
+          "description": "shadowRoot parameter"
+        },
+        "innerSelector": {
+          "type": "string",
+          "required": false,
+          "description": "innerSelector parameter"
         }
       }
     },
@@ -2425,37 +2456,6 @@
           "type": "array",
           "required": false,
           "description": "excludeDirs parameter"
-        }
-      }
-    },
-    {
-      "name": "click",
-      "description": "Click Command - Shared Types for Element Interaction\n * \n * Minimal types for clicking DOM elements. Follows screenshot/navigate pattern\n * with clean inheritance and Object.assign() initialization.\n * \n * DESIGN ANALYSIS:\n * ✅ Focused on single action - clicking elements\n * ✅ Clean parameter interface with optional properties\n * ✅ Proper constructor pattern with Object.assign()\n * ✅ Result type includes success state and metadata\n * ✅ No over-engineering - just what's needed for clicks\n * \n * SCOPE:\n * - Browser: Direct DOM element.click() calls\n * - Server: Delegates to browser context\n * - Consistent interface across contexts",
-      "params": {
-        "selector": {
-          "type": "string",
-          "required": true,
-          "description": "selector parameter"
-        },
-        "button": {
-          "type": "string",
-          "required": false,
-          "description": "button parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "shadowRoot": {
-          "type": "boolean",
-          "required": false,
-          "description": "shadowRoot parameter"
-        },
-        "innerSelector": {
-          "type": "string",
-          "required": false,
-          "description": "innerSelector parameter"
         }
       }
     },

@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { ScrollTestParams, ScrollTestResult } from '../shared/ScrollTestTypes';
 import { createScrollTestResult } from '../shared/ScrollTestTypes';
-import { smartQuerySelector } from '../../../screenshot/shared/browser-utils/BrowserElementUtils';
+import { smartQuerySelector } from '@commands/interface/screenshot/shared/browser-utils/BrowserElementUtils';
 
 export class ScrollTestBrowserCommand extends CommandBase<ScrollTestParams, ScrollTestResult> {
 

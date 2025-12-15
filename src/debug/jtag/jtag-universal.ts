@@ -31,7 +31,7 @@ export type {
   ScreenshotParams,
   ScreenshotResult,
   ScreenshotOptions
-} from './commands/screenshot/shared/ScreenshotTypes';
+} from './commands/interface/screenshot/shared/ScreenshotTypes';
 
 // Export the base classes for extending
 export { JTAGModule } from './system/core/shared/JTAGModule';

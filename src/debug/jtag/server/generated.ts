@@ -50,7 +50,6 @@ import { ChatAnalyzeServerCommand } from './../commands/chat/analyze/server/Chat
 import { ChatExportServerCommand } from './../commands/chat/export/server/ChatExportServerCommand';
 import { ChatPollServerCommand } from './../commands/chat/poll/server/ChatPollServerCommand';
 import { ChatSendServerCommand } from './../commands/chat/send/server/ChatSendServerCommand';
-import { ClickServerCommand } from './../commands/click/server/ClickServerCommand';
 import { CodeFindServerCommand } from './../commands/code/pattern-search/server/CodeFindServerCommand';
 import { CodeReadServerCommand } from './../commands/code/read/server/CodeReadServerCommand';
 import { CompileTypescriptServerCommand } from './../commands/compile-typescript/server/CompileTypescriptServerCommand';
@@ -107,9 +106,18 @@ import { GenomeDeactivateServerCommand } from './../commands/genome/paging-deact
 import { GenomeRegisterServerCommand } from './../commands/genome/paging-register/server/GenomeRegisterServerCommand';
 import { GenomePagingStatsServerCommand } from './../commands/genome/paging-stats/server/GenomePagingStatsServerCommand';
 import { GenomeUnregisterServerCommand } from './../commands/genome/paging-unregister/server/GenomeUnregisterServerCommand';
-import { GetTextServerCommand } from './../commands/get-text/server/GetTextServerCommand';
 import { HelpServerCommand } from './../commands/help/server/HelpServerCommand';
 import { IndicatorServerCommand } from './../commands/indicator/server/IndicatorServerCommand';
+import { ClickServerCommand } from './../commands/interface/click/server/ClickServerCommand';
+import { GetTextServerCommand } from './../commands/interface/get-text/server/GetTextServerCommand';
+import { NavigateServerCommand } from './../commands/interface/navigate/server/NavigateServerCommand';
+import { ProxyNavigateServerCommand } from './../commands/interface/proxy-navigate/server/ProxyNavigateServerCommand';
+import { ScreenshotServerCommand } from './../commands/interface/screenshot/server/ScreenshotServerCommand';
+import { ScrollServerCommand } from './../commands/interface/scroll/server/ScrollServerCommand';
+import { TypeServerCommand } from './../commands/interface/type/server/TypeServerCommand';
+import { WaitForElementServerCommand } from './../commands/interface/wait-for-element/server/WaitForElementServerCommand';
+import { WebFetchServerCommand } from './../commands/interface/web/fetch/server/WebFetchServerCommand';
+import { WebSearchServerCommand } from './../commands/interface/web/search/server/WebSearchServerCommand';
 import { ListServerCommand } from './../commands/list/server/ListServerCommand';
 import { LogsListServerCommand } from './../commands/logs/list/server/LogsListServerCommand';
 import { LogsReadServerCommand } from './../commands/logs/read/server/LogsReadServerCommand';
@@ -117,18 +125,14 @@ import { LogsSearchServerCommand } from './../commands/logs/search/server/LogsSe
 import { LogsStatsServerCommand } from './../commands/logs/stats/server/LogsStatsServerCommand';
 import { MediaProcessServerCommand } from './../commands/media/process/server/MediaProcessServerCommand';
 import { MediaResizeServerCommand } from './../commands/media/resize/server/MediaResizeServerCommand';
-import { NavigateServerCommand } from './../commands/navigate/server/NavigateServerCommand';
 import { GenomeCaptureFeedbackServerCommand } from './../commands/persona/learning/capture-feedback/server/GenomeCaptureFeedbackServerCommand';
 import { GenomeCaptureInteractionServerCommand } from './../commands/persona/learning/capture-interaction/server/GenomeCaptureInteractionServerCommand';
 import { GenomeMultiAgentLearnServerCommand } from './../commands/persona/learning/multi-agent-learn/server/GenomeMultiAgentLearnServerCommand';
 import { PingServerCommand } from './../commands/ping/server/PingServerCommand';
 import { ProcessRegistryServerCommand } from './../commands/process-registry/server/ProcessRegistryServerCommand';
-import { ProxyNavigateServerCommand } from './../commands/proxy-navigate/server/ProxyNavigateServerCommand';
 import { RAGBudgetServerCommand } from './../commands/rag/budget/server/RAGBudgetServerCommand';
 import { RAGLoadServerCommand } from './../commands/rag/load/server/RAGLoadServerCommand';
 import { SchemaGenerateServerCommand } from './../commands/schema/generate/server/SchemaGenerateServerCommand';
-import { ScreenshotServerCommand } from './../commands/screenshot/server/ScreenshotServerCommand';
-import { ScrollServerCommand } from './../commands/scroll/server/ScrollServerCommand';
 import { SecuritySetupServerCommand } from './../commands/security/setup/server/SecuritySetupServerCommand';
 import { SessionCreateServerCommand } from './../commands/session/create/server/SessionCreateServerCommand';
 import { SessionDestroyServerCommand } from './../commands/session/destroy/server/SessionDestroyServerCommand';
@@ -143,7 +147,6 @@ import { ThemeGetServerCommand } from './../commands/theme/get/server/ThemeGetSe
 import { ThemeListServerCommand } from './../commands/theme/list/server/ThemeListServerCommand';
 import { ThemeSetServerCommand } from './../commands/theme/set/server/ThemeSetServerCommand';
 import { TrainingImportServerCommand } from './../commands/training/import/server/TrainingImportServerCommand';
-import { TypeServerCommand } from './../commands/type/server/TypeServerCommand';
 import { UserCreateServerCommand } from './../commands/user/create/server/UserCreateServerCommand';
 import { UserGetMeServerCommand } from './../commands/user/get-me/server/UserGetMeServerCommand';
 import { DocsListServerCommand } from './../commands/utilities/docs/list/server/DocsListServerCommand';
@@ -151,12 +154,9 @@ import { DocsReadServerCommand } from './../commands/utilities/docs/read/server/
 import { DocsSearchServerCommand } from './../commands/utilities/docs/search/server/DocsSearchServerCommand';
 import { HelloServerCommand } from './../commands/utilities/hello/server/HelloServerCommand';
 import { PipeChainServerCommand } from './../commands/utilities/pipe/chain/server/PipeChainServerCommand';
-import { WaitForElementServerCommand } from './../commands/wait-for-element/server/WaitForElementServerCommand';
 import { WallListServerCommand } from './../commands/wall/list/server/WallListServerCommand';
 import { WallReadServerCommand } from './../commands/wall/read/server/WallReadServerCommand';
 import { WallWriteServerCommand } from './../commands/wall/write/server/WallWriteServerCommand';
-import { WebFetchServerCommand } from './../commands/web/fetch/server/WebFetchServerCommand';
-import { WebSearchServerCommand } from './../commands/web/search/server/WebSearchServerCommand';
 import { GitCommitServerCommand } from './../commands/workspace/git/commit/server/GitCommitServerCommand';
 import { GitPushServerCommand } from './../commands/workspace/git/push/server/GitPushServerCommand';
 import { GitStatusServerCommand } from './../commands/workspace/git/status/server/GitStatusServerCommand';
@@ -394,11 +394,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'chat/send',
     className: 'ChatSendServerCommand',
     commandClass: ChatSendServerCommand
-  },
-{
-    name: 'click',
-    className: 'ClickServerCommand',
-    commandClass: ClickServerCommand
   },
 {
     name: 'code/pattern-search',
@@ -681,11 +676,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: GenomeUnregisterServerCommand
   },
 {
-    name: 'get-text',
-    className: 'GetTextServerCommand',
-    commandClass: GetTextServerCommand
-  },
-{
     name: 'help',
     className: 'HelpServerCommand',
     commandClass: HelpServerCommand
@@ -694,6 +684,56 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'indicator',
     className: 'IndicatorServerCommand',
     commandClass: IndicatorServerCommand
+  },
+{
+    name: 'interface/click',
+    className: 'ClickServerCommand',
+    commandClass: ClickServerCommand
+  },
+{
+    name: 'interface/get-text',
+    className: 'GetTextServerCommand',
+    commandClass: GetTextServerCommand
+  },
+{
+    name: 'interface/navigate',
+    className: 'NavigateServerCommand',
+    commandClass: NavigateServerCommand
+  },
+{
+    name: 'interface/proxy-navigate',
+    className: 'ProxyNavigateServerCommand',
+    commandClass: ProxyNavigateServerCommand
+  },
+{
+    name: 'interface/screenshot',
+    className: 'ScreenshotServerCommand',
+    commandClass: ScreenshotServerCommand
+  },
+{
+    name: 'interface/scroll',
+    className: 'ScrollServerCommand',
+    commandClass: ScrollServerCommand
+  },
+{
+    name: 'interface/type',
+    className: 'TypeServerCommand',
+    commandClass: TypeServerCommand
+  },
+{
+    name: 'interface/wait-for-element',
+    className: 'WaitForElementServerCommand',
+    commandClass: WaitForElementServerCommand
+  },
+{
+    name: 'interface/web/fetch',
+    className: 'WebFetchServerCommand',
+    commandClass: WebFetchServerCommand
+  },
+{
+    name: 'interface/web/search',
+    className: 'WebSearchServerCommand',
+    commandClass: WebSearchServerCommand
   },
 {
     name: 'list',
@@ -731,11 +771,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: MediaResizeServerCommand
   },
 {
-    name: 'navigate',
-    className: 'NavigateServerCommand',
-    commandClass: NavigateServerCommand
-  },
-{
     name: 'persona/learning/capture-feedback',
     className: 'GenomeCaptureFeedbackServerCommand',
     commandClass: GenomeCaptureFeedbackServerCommand
@@ -761,11 +796,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: ProcessRegistryServerCommand
   },
 {
-    name: 'proxy-navigate',
-    className: 'ProxyNavigateServerCommand',
-    commandClass: ProxyNavigateServerCommand
-  },
-{
     name: 'rag/budget',
     className: 'RAGBudgetServerCommand',
     commandClass: RAGBudgetServerCommand
@@ -779,16 +809,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'schema/generate',
     className: 'SchemaGenerateServerCommand',
     commandClass: SchemaGenerateServerCommand
-  },
-{
-    name: 'screenshot',
-    className: 'ScreenshotServerCommand',
-    commandClass: ScreenshotServerCommand
-  },
-{
-    name: 'scroll',
-    className: 'ScrollServerCommand',
-    commandClass: ScrollServerCommand
   },
 {
     name: 'security/setup',
@@ -861,11 +881,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: TrainingImportServerCommand
   },
 {
-    name: 'type',
-    className: 'TypeServerCommand',
-    commandClass: TypeServerCommand
-  },
-{
     name: 'user/create',
     className: 'UserCreateServerCommand',
     commandClass: UserCreateServerCommand
@@ -901,11 +916,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: PipeChainServerCommand
   },
 {
-    name: 'wait-for-element',
-    className: 'WaitForElementServerCommand',
-    commandClass: WaitForElementServerCommand
-  },
-{
     name: 'wall/list',
     className: 'WallListServerCommand',
     commandClass: WallListServerCommand
@@ -919,16 +929,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'wall/write',
     className: 'WallWriteServerCommand',
     commandClass: WallWriteServerCommand
-  },
-{
-    name: 'web/fetch',
-    className: 'WebFetchServerCommand',
-    commandClass: WebFetchServerCommand
-  },
-{
-    name: 'web/search',
-    className: 'WebSearchServerCommand',
-    commandClass: WebSearchServerCommand
   },
 {
     name: 'workspace/git/commit',

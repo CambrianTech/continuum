@@ -9,7 +9,7 @@
 import type { CommandParams, CommandResult } from '../../types/JTAGTypes';
 
 // Import all command types (will be auto-generated eventually)
-import type { ScreenshotParams, ScreenshotResult } from '../../../../commands/screenshot/shared/ScreenshotTypes';
+import type { ScreenshotParams, ScreenshotResult } from '@commands/interface/screenshot/shared/ScreenshotTypes';
 import type { FileSaveParams, FileSaveResult } from '../../../../commands/file/save/shared/FileSaveTypes';
 import type { FileLoadParams, FileLoadResult } from '../../../../commands/file/load/shared/FileLoadTypes';
 import type { PingParams, PingResult } from '../../../../commands/ping/shared/PingTypes';
