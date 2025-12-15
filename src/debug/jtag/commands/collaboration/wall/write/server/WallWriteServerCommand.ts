@@ -55,7 +55,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
       // Create or update WallDocumentEntity
       if (existingDocs.items && existingDocs.items.length > 0) {
         // Update existing document
-        await Commands.execute<DataUpdateParams<WallDocumentEntity>, DataUpdateResult<WallDocumentEntity>>('data/update', {
+        await Commands.execute<DataUpdateParams<WallDocumentEntity>, DataUpdateResult<WallDocumentEntity>>(DATA_COMMANDS.UPDATE, {
           collection: COLLECTIONS.WALL_DOCUMENTS,
           id: existingDocs.items[0].id,
           data: {

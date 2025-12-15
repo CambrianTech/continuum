@@ -68,7 +68,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       }
 
       // 5. Save updated userState to database
-      await Commands.execute<DataUpdateParams, DataUpdateResult>('data/update', {
+      await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
         collection: 'user_states',
         id: userState.id,
         data: userState

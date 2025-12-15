@@ -276,7 +276,7 @@ export class SystemSchedulingState {
 
     // Persist to database
     try {
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: SystemSchedulingConfigEntity.collection,
         id: this._config.id,
         updates: {

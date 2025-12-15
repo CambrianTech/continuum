@@ -346,7 +346,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       };
     }
 
-    await Commands.execute('data/update', {
+    await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'training_sessions',
       id: sessionId,
       data: updateData

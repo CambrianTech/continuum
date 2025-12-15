@@ -160,7 +160,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
    * Helper to update test status in database
    */
   private async updateTestStatus(testId: string, updates: Partial<TestExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams<TestExecutionEntity>, CommandResult>('data/update', {
+    await Commands.execute<DataUpdateParams<TestExecutionEntity>, CommandResult>(DATA_COMMANDS.UPDATE, {
       collection: TestExecutionEntity.collection,
       id: testId,
       data: {

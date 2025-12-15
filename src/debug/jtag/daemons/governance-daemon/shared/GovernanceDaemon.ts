@@ -197,7 +197,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
   protected async flagForManualReview(proposal: DecisionProposalEntity, reason: string): Promise<void> {
     try {
       // Update proposal status to require manual review
-      await Commands.execute<any, any>('data/update', {
+      await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: proposal.id,
         data: {

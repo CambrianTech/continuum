@@ -286,7 +286,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       if (!trainingResult.success) {
         // Training failed - update job status
-        await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>('data/update', {
+        await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
           collection: COLLECTIONS.FINE_TUNING_JOBS,
           id: jobId,
           updates: {
@@ -309,7 +309,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       console.log(`✅ GENOME JOB CREATE: Training started, session ID: ${trainingResult.modelId}`);
 
       // Update job entity with training session info
-      await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>('data/update', {
+      await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: jobId,
         updates: {

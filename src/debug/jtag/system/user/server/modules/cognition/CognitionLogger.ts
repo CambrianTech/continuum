@@ -279,7 +279,7 @@ export class CognitionLogger {
       const completedAt = Date.now();
       const totalDuration = completedAt - planRecord.startedAt;
 
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         id: planRecord.id,
         data: {
@@ -343,7 +343,7 @@ export class CognitionLogger {
       // Update plan record
       const updatedAdjustments = [...planRecord.adjustments, adjustmentSnapshot];
 
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         id: planRecord.id,
         data: {

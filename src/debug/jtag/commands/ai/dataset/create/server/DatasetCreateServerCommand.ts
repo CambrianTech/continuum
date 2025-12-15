@@ -193,7 +193,7 @@ export class DatasetCreateServerCommand {
    * Update job status in database
    */
   private async updateJobStatus(jobId: string, updates: Partial<DatasetExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams<DatasetExecutionEntity>, any>('data/update', {
+    await Commands.execute<DataUpdateParams<DatasetExecutionEntity>, any>(DATA_COMMANDS.UPDATE, {
       collection: DatasetExecutionEntity.collection,
       id: jobId,
       data: updates,

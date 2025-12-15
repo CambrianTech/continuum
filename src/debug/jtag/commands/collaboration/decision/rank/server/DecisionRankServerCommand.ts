@@ -162,7 +162,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       const now = Date.now();
       if (proposal.deadline && now > proposal.deadline) {
         // Proposal expired - mark as expired and don't accept vote
-        await Commands.execute<any, any>('data/update', {
+        await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
           collection: COLLECTIONS.DECISION_PROPOSALS,
           id: resolvedProposalId,
           data: { status: 'expired' }
@@ -211,7 +211,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Update proposal with vote
-      await Commands.execute<any, any>('data/update', {
+      await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId,
         data: { votes }
@@ -248,7 +248,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
         if (winner) {
           // Update proposal status
-          await Commands.execute<any, any>('data/update', {
+          await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
             collection: COLLECTIONS.DECISION_PROPOSALS,
             id: resolvedProposalId,
             data: { status: 'complete' }

@@ -22,6 +22,7 @@ import type { GenomeEntity } from '../../../genome/entities/GenomeEntity';
 import type { DataReadParams, DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class PersonaGenomeManager {
   constructor(
@@ -86,7 +87,7 @@ export class PersonaGenomeManager {
       entity.genomeId = genomeId;
 
       // Persist to database
-      const result = await client.daemons.commands.execute<DataUpdateParams<UserEntity>, DataUpdateResult<UserEntity>>('data/update', {
+      const result = await client.daemons.commands.execute<DataUpdateParams<UserEntity>, DataUpdateResult<UserEntity>>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.USERS,
         id: entity.id,
         data: { genomeId },

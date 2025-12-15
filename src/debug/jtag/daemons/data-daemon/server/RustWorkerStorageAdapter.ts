@@ -326,7 +326,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     incrementVersion?: boolean
   ): Promise<StorageResult<DataRecord<T>>> {
     try {
-      const response = await this.sendMessage<{ data: T }>('data/update', {
+      const response = await this.sendMessage<{ data: T }>(DATA_COMMANDS.UPDATE, {
         collection,
         id,
         updates: data

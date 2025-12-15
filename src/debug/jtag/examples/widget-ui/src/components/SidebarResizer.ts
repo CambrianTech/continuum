@@ -100,7 +100,7 @@ class SidebarResizer extends HTMLElement {
 
             if (readResult.success && readResult.found) {
                 // Entity exists, update it
-                await Commands.execute<DataUpdateResult<UIPreferencesEntity>>('data/update', {
+                await Commands.execute<DataUpdateResult<UIPreferencesEntity>>(DATA_COMMANDS.UPDATE, {
                     collection: 'UIPreferences',
                     id: this.uiPrefsId,
                     data: {

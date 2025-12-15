@@ -84,7 +84,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Update proposal status to concluded
-    await Commands.execute<any, any>('data/update', {
+    await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId,
       data: {
