@@ -39,9 +39,6 @@ export const DATA_COMMANDS = {
 
   /** List all database handles */
   LIST_HANDLES: 'data/list-handles',
-
-  /** Vacuum database to reclaim disk space after deletes */
-  VACUUM: 'data/vacuum',
 } as const;
 
 /**

@@ -235,21 +235,6 @@ export abstract class DataStorageAdapter {
    */
   abstract explainQuery(query: StorageQuery): Promise<QueryExplanation>;
 
-  /**
-   * Vacuum/optimize database to reclaim disk space after deletes
-   * Default no-op - adapters that need it (SQLite, etc.) override this
-   */
-  async vacuum(): Promise<void> {
-    // No-op by default
-  }
-
-  /**
-   * Get database file size in bytes
-   * Default returns 0 - adapters that track size override this
-   */
-  async getDatabaseSize(): Promise<number> {
-    return 0;
-  }
 }
 
 /**

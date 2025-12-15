@@ -673,9 +673,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     if (!this.db) return;
 
     try {
-      // VACUUM to reclaim space
-      await this.executor.runStatement('VACUUM');
-
       // ANALYZE to update statistics
       await this.executor.runStatement('ANALYZE');
 
@@ -848,26 +845,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    */
   async getVectorSearchCapabilities(): Promise<VectorSearchCapabilities> {
     return this.vectorSearchManager.getVectorSearchCapabilities();
-  }
-
-  /**
-   * Execute VACUUM to reclaim disk space after deletes
-   */
-  async vacuum(): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-    this.db.exec('VACUUM');
-  }
-
-  /**
-   * Get database file size in bytes
-   */
-  async getDatabaseSize(): Promise<number> {
-    const fs = await import('fs');
-    const filename = (this as any).options.filename;
-    const stats = fs.statSync(filename);
-    return stats.size;
   }
 
 }

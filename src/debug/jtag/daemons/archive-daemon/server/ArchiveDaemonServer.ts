@@ -378,31 +378,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
 
     this.log.info(`🗄️  ✅ [${collection}] Archiving complete: ${totalArchived} rows (${sourceHandle} → ${destHandle})`);
 
-    // Vacuum the source database to reclaim disk space
-    if (totalArchived > 0) {
-      this.log.info(`🗄️  [${collection}] Running VACUUM on ${sourceHandle} to reclaim disk space...`);
-      await this.vacuumDatabase(sourceHandle);
-    }
-
     return totalArchived;
-  }
-
-  /**
-   * Vacuum a database to reclaim disk space after deletes
-   */
-  private async vacuumDatabase(dbHandle: string): Promise<void> {
-    try {
-      const result = await Commands.execute(DATA_COMMANDS.VACUUM, { dbHandle } as any) as any;
-      if (result.success) {
-        const savedBytes = (result.beforeSize || 0) - (result.afterSize || 0);
-        if (savedBytes > 0) {
-          const savedMB = (savedBytes / 1024 / 1024).toFixed(2);
-          this.log.info(`🗄️  ✅ VACUUM complete on ${dbHandle}: Reclaimed ${savedMB} MB in ${result.duration}ms`);
-        }
-      }
-    } catch (error) {
-      this.log.error(`🗄️  Failed to VACUUM ${dbHandle}:`, error);
-    }
   }
 
   /**

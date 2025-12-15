@@ -628,9 +628,6 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
    */
   async cleanup(): Promise<void> {
     try {
-      // VACUUM to reclaim space
-      await this.executor.runStatement('VACUUM');
-
       // ANALYZE to update statistics
       await this.executor.runStatement('ANALYZE');
 

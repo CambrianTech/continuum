@@ -158,7 +158,7 @@ import { BaseEntity } from './BaseEntity';
 @Archive({
   sourceHandle: 'primary',
   destHandle: 'archive',
-  maxRows: 10000,
+  maxRows: 10000,  // Archive when exceeds 10,000 messages
   rowsPerArchive: 1000,
   maxArchiveFileRows: 100000,  // Each archive file holds up to 100k rows before creating new file
   orderByField: 'timestamp'
