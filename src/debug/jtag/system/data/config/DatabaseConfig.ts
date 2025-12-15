@@ -23,6 +23,12 @@ export const DATABASE_PATHS = {
   /** Infrastructure log files directory (SQL, tools, system) */
   LOGS_DIR: '.continuum/jtag/logs',
 
+  /** Signal files directory (system ready indicators) */
+  SIGNALS_DIR: '.continuum/jtag/signals',
+
+  /** Sessions directory */
+  SESSIONS_DIR: '.continuum/jtag/sessions',
+
   /** Legacy database path (for migration reference) */
   LEGACY: '.continuum/database/continuum.db'
 } as const;

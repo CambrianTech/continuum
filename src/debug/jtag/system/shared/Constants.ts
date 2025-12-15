@@ -46,8 +46,8 @@ export const PATHS = {
   /** Legacy (for migration) */
   LEGACY_DB: '.continuum/database/continuum.db',
 
-  /** Default working directory for shell commands */
-  DEFAULT_WORKING_DIR: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
+  /** Default working directory for shell commands - uses current working directory */
+  get DEFAULT_WORKING_DIR() { return process.cwd(); }
 } as const;
 
 /**

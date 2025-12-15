@@ -135,7 +135,7 @@ export class UserStateEntity extends BaseEntity {
       level: 'active' // Default: fully active
     };
     this.shellState = {
-      currentWorkingDir: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
+      currentWorkingDir: process.cwd()
     };
   }
 
