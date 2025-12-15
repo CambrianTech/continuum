@@ -131,7 +131,7 @@ async function testCRUDWithDBAndWidget() {
       console.log(`✅ Created: ${entityId}`);
 
       // Test CREATE immediately - no delays needed
-      const dbRead1 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
+      const dbRead1 = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="${collection}" --id="${entityId}"`);
       const dbPersisted = Boolean(dbRead1?.success && dbRead1?.found);
 
       // Add small delay for UI synchronization
@@ -149,9 +149,9 @@ async function testCRUDWithDBAndWidget() {
 
       // UPDATE - Test for all collections
       {
-        const updateResult = await runJtagCommand(`data/update --collection="${collection}" --id="${entityId}" --data='${JSON.stringify(updateData)}'`);
+        const updateResult = await runJtagCommand(`${DATA_COMMANDS.UPDATE} --collection="${collection}" --id="${entityId}" --data='${JSON.stringify(updateData)}'`);
         if (updateResult?.found) {
-        const dbRead2 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
+        const dbRead2 = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="${collection}" --id="${entityId}"`);
         const updatePersisted = Boolean(dbRead2?.success && dbRead2?.data &&
           Object.keys(updateData).every(key => JSON.stringify(dbRead2.data[key]) === JSON.stringify(updateData[key]))
         );
@@ -182,9 +182,9 @@ async function testCRUDWithDBAndWidget() {
 
       // DELETE - Test for all collections
       {
-        const deleteResult = await runJtagCommand(`data/delete --collection="${collection}" --id="${entityId}"`);
+        const deleteResult = await runJtagCommand(`${DATA_COMMANDS.DELETE} --collection="${collection}" --id="${entityId}"`);
         if (deleteResult?.found && deleteResult?.deleted) {
-          const dbRead3 = await runJtagCommand(`data/read --collection="${collection}" --id="${entityId}"`);
+          const dbRead3 = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="${collection}" --id="${entityId}"`);
           const deleteFromDB = Boolean(dbRead3?.success && !dbRead3?.found);
 
           // Add delay for widget to process DELETE event and update UI

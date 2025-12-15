@@ -48,7 +48,7 @@ async function sendMessageAndWaitForResponse(
   try {
     // Get message count before
     const beforeResult = await runJtagCommand(
-      `data/list --collection=chat_messages --filter='{"roomId":"${GENERAL_ROOM_ID}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]'`
+      `${DATA_COMMANDS.LIST} --collection=chat_messages --filter='{"roomId":"${GENERAL_ROOM_ID}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]'`
     );
     const messagesBefore = beforeResult?.items?.length || 0;
 
@@ -75,7 +75,7 @@ async function sendMessageAndWaitForResponse(
       await new Promise(resolve => setTimeout(resolve, 500)); // Check every 500ms
 
       const afterResult = await runJtagCommand(
-        `data/list --collection=chat_messages --filter='{"roomId":"${GENERAL_ROOM_ID}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]'`
+        `${DATA_COMMANDS.LIST} --collection=chat_messages --filter='{"roomId":"${GENERAL_ROOM_ID}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]'`
       );
       const messagesAfter = afterResult?.items || [];
 

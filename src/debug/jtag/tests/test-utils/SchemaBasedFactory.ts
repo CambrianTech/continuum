@@ -99,7 +99,7 @@ async function getSchema(collection: string): Promise<EntitySchema> {
     return schemaCache.get(collection)!;
   }
 
-  const response = runJtagCommand(`data/schema --collection="${collection}"`);
+  const response = runJtagCommand(`${DATA_COMMANDS.SCHEMA} --collection="${collection}"`);
 
   if (!response.success || !response.schema) {
     throw new Error(`Failed to get schema for ${collection}: ${response.error ?? 'Unknown error'}`);
@@ -115,7 +115,7 @@ async function getSchema(collection: string): Promise<EntitySchema> {
  */
 async function getExampleEntity(collection: string): Promise<Record<string, unknown> | null> {
   try {
-    const response = runJtagCommand(`data/list --collection="${collection}" --limit=1`);
+    const response = runJtagCommand(`${DATA_COMMANDS.LIST} --collection="${collection}" --limit=1`);
 
     if (response.success && response.items && response.items.length > 0) {
       return response.items[0] as Record<string, unknown>;
@@ -379,7 +379,7 @@ export async function createCompleteEntity(
       }
     } else {
       // All other entities use data/create
-      result = runJtagCommand(`data/create --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
+      result = runJtagCommand(`${DATA_COMMANDS.CREATE} --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
 
       if (result.success && result.data?.id) {
         console.log(`✅ SchemaFactory: Created ${collection}/${result.data.id}`);
@@ -463,7 +463,7 @@ export async function createSchemaBasedEntity(
     console.log(`🏗️ SchemaFactory: Generated data for ${collection}:`, entityData);
 
     // Create entity via JTAG
-    const result = runJtagCommand(`data/create --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
+    const result = runJtagCommand(`${DATA_COMMANDS.CREATE} --collection="${collection}" --data='${JSON.stringify(entityData)}'`);
 
     if (result.success && result.data?.id) {
       console.log(`✅ SchemaFactory: Created ${collection}/${result.data.id}`);
@@ -538,7 +538,7 @@ export const schemaFactory = {
    */
   async delete(collection: string, id: string): Promise<boolean> {
     try {
-      const result = runJtagCommand(`data/delete --collection="${collection}" --id="${id}"`);
+      const result = runJtagCommand(`${DATA_COMMANDS.DELETE} --collection="${collection}" --id="${id}"`);
       return result.deleted === true;
     } catch (error) {
       console.error(`Failed to delete ${collection}/${id}:`, error);

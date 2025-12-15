@@ -471,7 +471,7 @@ ${result.error || 'Unknown error'}
     if (toolName === 'data/list') {
       const items = data as any[];
       const count = Array.isArray(items) ? items.length : 0;
-      return `data/list returned ${count} item${count !== 1 ? 's' : ''}`;
+      return `${DATA_COMMANDS.LIST} returned ${count} item${count !== 1 ? 's' : ''}`;
     }
 
     if (toolName === 'data/read') {

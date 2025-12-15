@@ -57,7 +57,7 @@ async function waitForAIResponses(
     await new Promise(resolve => setTimeout(resolve, 500));
 
     const result = await runJtagCommand(
-      `data/list --collection=chat_messages --filter='{"roomId":"${roomId}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]' --limit=20`
+      `${DATA_COMMANDS.LIST} --collection=chat_messages --filter='{"roomId":"${roomId}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]' --limit=20`
     );
 
     const messages = result?.items || [];

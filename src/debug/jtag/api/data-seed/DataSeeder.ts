@@ -16,6 +16,7 @@
 import UserDataSeed from './UserDataSeed';
 import RoomDataSeed from './RoomDataSeed';
 import { SystemIdentity } from './SystemIdentity';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 
 // Rust-like branded types for strict typing
 export type CollectionName = string & { readonly __brand: 'CollectionName' };
@@ -53,7 +54,7 @@ export class DataSeeder {
         // First, list all items to see what we're deleting
         const { execSync } = require('child_process');
         const listResult = execSync(
-          `./jtag data/list --collection="${collection}"`,
+          `./jtag ${DATA_COMMANDS.LIST} --collection="${collection}"`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
         
@@ -66,7 +67,7 @@ export class DataSeeder {
           for (const item of listData.items) {
             try {
               const deleteResult = execSync(
-                `./jtag data/delete --collection="${collection}" --id="${item.id}"`,
+                `./jtag ${DATA_COMMANDS.DELETE} --collection="${collection}" --id="${item.id}"`,
                 { encoding: 'utf-8', cwd: process.cwd() }
               );
               console.log(`🗑️ Deleted ${item.id} from ${collection}`);
@@ -121,7 +122,7 @@ export class DataSeeder {
         
         const { execSync } = require('child_process');
         const result = execSync(
-          `./jtag data/create --collection="${command.collection}" --id="${command.id}" --data='${JSON.stringify(command.data)}'`,
+          `./jtag ${DATA_COMMANDS.CREATE} --collection="${command.collection}" --id="${command.id}" --data='${JSON.stringify(command.data)}'`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
         
@@ -153,7 +154,7 @@ export class DataSeeder {
 
         const { execSync } = require('child_process');
         const result = execSync(
-          `./jtag data/create --collection="rooms" --data='${JSON.stringify(validatedRoom)}'`,
+          `./jtag ${DATA_COMMANDS.CREATE} --collection="rooms" --data='${JSON.stringify(validatedRoom)}'`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
 
@@ -189,7 +190,7 @@ export class DataSeeder {
 
         const { execSync } = require('child_process');
         const result = execSync(
-          `./jtag data/create --collection="chat_messages" --data='${JSON.stringify(validatedMessage)}'`,
+          `./jtag ${DATA_COMMANDS.CREATE} --collection="chat_messages" --data='${JSON.stringify(validatedMessage)}'`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
 
@@ -214,7 +215,7 @@ export class DataSeeder {
       try {
         const { execSync } = require('child_process');
         const result = execSync(
-          `./jtag data/list --collection="${collection}"`,
+          `./jtag ${DATA_COMMANDS.LIST} --collection="${collection}"`,
           { encoding: 'utf-8', cwd: process.cwd() }
         );
         
