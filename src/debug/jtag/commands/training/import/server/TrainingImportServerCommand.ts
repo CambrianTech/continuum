@@ -66,7 +66,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
 
       // Step 3: Open training database
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const openResult = await Commands.execute('data/open', {
+      const openResult = await Commands.execute(DATA_COMMANDS.OPEN, {
         adapter: 'sqlite',
         config: {
           path: dbPath,
@@ -126,7 +126,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
       // Close database if opened
       if (dbHandle !== 'default') {
         try {
-          await Commands.execute<DataCloseResult>('data/close', { dbHandle });
+          await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, { dbHandle });
         } catch (closeError) {
           console.error('Failed to close database after error:', closeError);
         }

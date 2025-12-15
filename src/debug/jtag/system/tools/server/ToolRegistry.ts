@@ -264,7 +264,7 @@ export class ToolRegistry {
       return `Collection: ${result.collection || 'unknown'}\nCount: ${result.count || result.items.length}\n\nResults:\n${JSON.stringify(result.items, null, 2)}`;
     }
 
-    if (toolName.startsWith('data/read') && result.data) {
+    if (toolName.startsWith(DATA_COMMANDS.READ) && result.data) {
       return `Collection: ${result.collection || 'unknown'}\nID: ${result.id || 'unknown'}\n\nData:\n${JSON.stringify(result.data, null, 2)}`;
     }
 

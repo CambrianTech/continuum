@@ -34,7 +34,7 @@ async function runTests(): Promise<void> {
 
     // Test 1: List handles before opening any
     console.log('📋 TEST 1: List handles (should only show default)');
-    const listResult1 = await Commands.execute<DataListHandlesResult>('data/list-handles', {});
+    const listResult1 = await Commands.execute<DataListHandlesResult>(DATA_COMMANDS.LIST_HANDLES, {});
     console.log(`  Handles: ${listResult1.handles.length}`);
     console.log(`  Default handle exists: ${listResult1.handles.some(h => h.isDefault)}`);
     
@@ -50,7 +50,7 @@ async function runTests(): Promise<void> {
     await fs.mkdir(tempDir1, { recursive: true });
     const dbPath1 = path.join(tempDir1, 'training1.sqlite');
 
-    const openResult1 = await Commands.execute<DataOpenResult>('data/open', {
+    const openResult1 = await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, {
       adapter: 'sqlite',
       config: {
         path: dbPath1,
@@ -75,7 +75,7 @@ async function runTests(): Promise<void> {
     await fs.mkdir(tempDir2, { recursive: true });
     const dbPath2 = path.join(tempDir2, 'training2.sqlite');
 
-    const openResult2 = await Commands.execute<DataOpenResult>('data/open', {
+    const openResult2 = await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, {
       adapter: 'sqlite',
       config: {
         path: dbPath2,
@@ -92,7 +92,7 @@ async function runTests(): Promise<void> {
 
     // Test 4: List handles (should show 3: default + 2 training)
     console.log('📋 TEST 4: List handles (should show 3 total)');
-    const listResult2 = await Commands.execute<DataListHandlesResult>('data/list-handles', {});
+    const listResult2 = await Commands.execute<DataListHandlesResult>(DATA_COMMANDS.LIST_HANDLES, {});
     console.log(`  Total handles: ${listResult2.handles.length}`);
     console.log(`  Default: ${listResult2.handles.filter(h => h.isDefault).length}`);
     console.log(`  Training DBs: ${listResult2.handles.filter(h => !h.isDefault).length}`);
@@ -108,7 +108,7 @@ async function runTests(): Promise<void> {
 
     // Test 5: Close first training database
     console.log('🔌 TEST 5: Close first training database');
-    const closeResult1 = await Commands.execute<DataCloseResult>('data/close', {
+    const closeResult1 = await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, {
       dbHandle: handle1
     });
 
@@ -120,7 +120,7 @@ async function runTests(): Promise<void> {
 
     // Test 6: List handles (should show 2: default + 1 training)
     console.log('📋 TEST 6: List handles after closing first DB');
-    const listResult3 = await Commands.execute<DataListHandlesResult>('data/list-handles', {});
+    const listResult3 = await Commands.execute<DataListHandlesResult>(DATA_COMMANDS.LIST_HANDLES, {});
     console.log(`  Total handles: ${listResult3.handles.length}`);
     
     if (listResult3.handles.length !== 2) {
@@ -130,7 +130,7 @@ async function runTests(): Promise<void> {
 
     // Test 7: Try to close default handle (should fail)
     console.log('🔌 TEST 7: Try to close default handle (should fail)');
-    const closeDefaultResult = await Commands.execute<DataCloseResult>('data/close', {
+    const closeDefaultResult = await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, {
       dbHandle: 'default'
     });
 
@@ -144,7 +144,7 @@ async function runTests(): Promise<void> {
 
     // Test 8: Close second training database
     console.log('🔌 TEST 8: Close second training database');
-    const closeResult2 = await Commands.execute<DataCloseResult>('data/close', {
+    const closeResult2 = await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, {
       dbHandle: handle2
     });
 
@@ -155,7 +155,7 @@ async function runTests(): Promise<void> {
 
     // Test 9: Final handle list (should only show default)
     console.log('📋 TEST 9: Final handle list (back to default only)');
-    const listResult4 = await Commands.execute<DataListHandlesResult>('data/list-handles', {});
+    const listResult4 = await Commands.execute<DataListHandlesResult>(DATA_COMMANDS.LIST_HANDLES, {});
     console.log(`  Total handles: ${listResult4.handles.length}`);
     
     if (listResult4.handles.length !== 1 || !listResult4.handles[0].isDefault) {

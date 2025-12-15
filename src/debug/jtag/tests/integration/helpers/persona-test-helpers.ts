@@ -297,7 +297,7 @@ export function mockTypeScriptExpertEmbedding(): number[] {
  */
 export async function cleanupTestRooms(): Promise<void> {
   for (const roomId of testRoomIds) {
-    await Commands.execute('data/delete', {
+    await Commands.execute(DATA_COMMANDS.DELETE, {
       collection: 'rooms',
       id: roomId
     });
@@ -310,7 +310,7 @@ export async function cleanupTestRooms(): Promise<void> {
  */
 export async function cleanupTestPersonas(): Promise<void> {
   for (const personaId of testPersonaIds) {
-    await Commands.execute('data/delete', {
+    await Commands.execute(DATA_COMMANDS.DELETE, {
       collection: 'users',
       id: personaId
     });
@@ -323,7 +323,7 @@ export async function cleanupTestPersonas(): Promise<void> {
  */
 export async function cleanupTestMessages(): Promise<void> {
   for (const messageId of testMessageIds) {
-    await Commands.execute('data/delete', {
+    await Commands.execute(DATA_COMMANDS.DELETE, {
       collection: 'chat_messages',
       id: messageId
     });
@@ -336,7 +336,7 @@ export async function cleanupTestMessages(): Promise<void> {
  */
 export async function cleanupTestGenomeLayers(): Promise<void> {
   for (const layerId of testGenomeLayerIds) {
-    await Commands.execute('data/delete', {
+    await Commands.execute(DATA_COMMANDS.DELETE, {
       collection: 'genome_layers',
       id: layerId
     });
@@ -349,7 +349,7 @@ export async function cleanupTestGenomeLayers(): Promise<void> {
  */
 export async function cleanupTestGenomes(): Promise<void> {
   for (const genomeId of testGenomeIds) {
-    await Commands.execute('data/delete', {
+    await Commands.execute(DATA_COMMANDS.DELETE, {
       collection: 'genomes',
       id: genomeId
     });

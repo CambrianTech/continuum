@@ -66,7 +66,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       if (params.voterId) {
         // Explicit voterId provided
-        const voterResult = await Commands.execute<any, any>('data/read', {
+        const voterResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
           collection: COLLECTIONS.USERS,
           id: params.voterId
         });
@@ -123,7 +123,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Get proposal
-      const proposalResult = await Commands.execute<any, any>('data/read', {
+      const proposalResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });

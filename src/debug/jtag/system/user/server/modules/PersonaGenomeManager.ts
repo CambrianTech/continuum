@@ -49,7 +49,7 @@ export class PersonaGenomeManager {
     }
 
     try {
-      const result = await client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeEntity>>('data/read', {
+      const result = await client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeEntity>>(DATA_COMMANDS.READ, {
         collection: 'genomes',
         id: entity.genomeId,
         context: client.context,

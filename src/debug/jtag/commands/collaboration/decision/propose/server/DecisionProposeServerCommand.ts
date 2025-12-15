@@ -289,7 +289,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
 
     if (params.proposerId) {
       // Explicit proposerId provided
-      const proposerResult = await Commands.execute<any, any>('data/read', {
+      const proposerResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.USERS,
         id: params.proposerId
       });

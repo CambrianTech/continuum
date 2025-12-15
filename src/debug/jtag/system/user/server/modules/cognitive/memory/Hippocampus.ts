@@ -129,7 +129,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     try {
       this.log(`Opening LTM database: ${dbPath}`);
 
-      const result = await Commands.execute<DataOpenParams, DataOpenResult>('data/open', {
+      const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
         adapter: 'sqlite',
         config: {
           path: dbPath,
@@ -162,7 +162,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
           // Retry opening (will create fresh database)
           this.log(`🔄 Retrying database initialization with fresh file...`);
-          const result = await Commands.execute<DataOpenParams, DataOpenResult>('data/open', {
+          const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
             adapter: 'sqlite',
             config: {
               path: dbPath,

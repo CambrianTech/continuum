@@ -8,6 +8,7 @@
  */
 
 import { Commands } from '../../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
 
 /**
@@ -20,7 +21,7 @@ import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
  * @example
  * ```typescript
  * // From browser code
- * const result = await Commands.execute<DataOpenResult>('data/open', {
+ * const result = await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, {
  *   adapter: 'sqlite',
  *   config: {
  *     path: '/datasets/prepared/continuum-git.sqlite',
@@ -43,6 +44,6 @@ export class DataOpenBrowserCommand {
    * @returns Result from server with dbHandle on success
    */
   async execute(params: DataOpenParams): Promise<DataOpenResult> {
-    return await Commands.execute<DataOpenResult>('data/open', params) as DataOpenResult;
+    return await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, params) as DataOpenResult;
   }
 }

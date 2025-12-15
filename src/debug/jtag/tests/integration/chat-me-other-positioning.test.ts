@@ -448,7 +448,7 @@ class ChatMeOtherPositioningTest {
   private async clearTestRoom(): Promise<void> {
     const controlUser = this.userManager.getUser('Human');
     if (controlUser) {
-      await controlUser.client.executeCommand('data/clear', {
+      await controlUser.client.executeCommand(DATA_COMMANDS.CLEAR, {
         collection: 'chat_messages',
         filter: { roomId: this.testRoomId }
       });

@@ -297,7 +297,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     const { Commands } = await import('../../../../system/core/shared/Commands');
     /* eslint-enable @typescript-eslint/naming-convention */
 
-    const rawResult = await Commands.execute('data/read', {
+    const rawResult = await Commands.execute(DATA_COMMANDS.READ, {
       collection: 'training_sessions',
       id: sessionId
     } as never);

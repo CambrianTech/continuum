@@ -238,7 +238,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
-      const response = await this.sendMessage<{ data: T | null }>('data/read', {
+      const response = await this.sendMessage<{ data: T | null }>(DATA_COMMANDS.READ, {
         collection,
         id
       });

@@ -22,7 +22,7 @@ import { createDataOpenResultFromParams } from '../shared/DataOpenTypes';
  * @example
  * ```typescript
  * // Open training database
- * const result = await Commands.execute('data/open', {
+ * const result = await Commands.execute(DATA_COMMANDS.OPEN, {
  *   adapter: 'sqlite',
  *   config: {
  *     path: '/datasets/prepared/continuum-git.sqlite',

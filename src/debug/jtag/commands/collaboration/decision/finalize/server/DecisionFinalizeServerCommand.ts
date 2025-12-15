@@ -33,7 +33,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Get proposal
-    const proposalResult = await Commands.execute<any, any>('data/read', {
+    const proposalResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId
     });

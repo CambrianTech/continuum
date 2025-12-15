@@ -51,7 +51,7 @@ class SidebarResizer extends HTMLElement {
     private async loadSavedWidth(): Promise<void> {
         try {
             // Try to load UIPreferencesEntity from localStorage
-            const result = await Commands.execute<DataReadResult<UIPreferencesEntity>>('data/read', {
+            const result = await Commands.execute<DataReadResult<UIPreferencesEntity>>(DATA_COMMANDS.READ, {
                 collection: 'UIPreferences',
                 id: this.uiPrefsId,
                 backend: 'browser'
@@ -92,7 +92,7 @@ class SidebarResizer extends HTMLElement {
     private async saveWidth(width: number): Promise<void> {
         try {
             // Try to read first to see if entity exists
-            const readResult = await Commands.execute<DataReadResult<UIPreferencesEntity>>('data/read', {
+            const readResult = await Commands.execute<DataReadResult<UIPreferencesEntity>>(DATA_COMMANDS.READ, {
                 collection: 'UIPreferences',
                 id: this.uiPrefsId,
                 backend: 'browser'

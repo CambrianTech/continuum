@@ -19,6 +19,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { promisify } from 'util';
 import { exec } from 'child_process';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 const execAsync = promisify(exec);
 
@@ -43,7 +44,7 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
       }
 
       // 2. Get persona user entity to get display name and email
-      const userResult = await Commands.execute<any, any>('data/read', {
+      const userResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.USERS,
         id: personaId
       });
