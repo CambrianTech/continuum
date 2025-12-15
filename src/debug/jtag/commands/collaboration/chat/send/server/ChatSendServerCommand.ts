@@ -4,6 +4,7 @@
  */
 
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatSendCommand } from '../shared/ChatSendCommand';
@@ -89,7 +90,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // 4. Store message using data/create command (proper delegation)
     // data/create handles validation, storage, and event broadcast
     const createResult = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
-      'data/create',
+      DATA_COMMANDS.CREATE,
       {
         collection: ChatMessageEntity.collection,
         data: messageEntity,
@@ -126,7 +127,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     // Query all rooms using data/list command
     const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
         filter: {},
@@ -164,7 +165,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
    */
   private async findUserById(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
     const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: UserEntity.collection,
         filter: { id: userId },
@@ -201,7 +202,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // If user exists in database, return it
     if (identity.exists && identity.userId) {
       const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
-        'data/list',
+        DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,
           filter: { id: identity.userId },

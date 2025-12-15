@@ -14,6 +14,7 @@
  */
 
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { BaseEntity } from '../system/data/entities/BaseEntity';
 
 /**
@@ -487,8 +488,8 @@ export const PERMISSION_COMMAND_ACCESS: Record<PermissionLevel, string[]> = {
 
   [PermissionLevel.RESTRICTED]: [
     'ping',
-    'data/list',      // Read only
-    'data/read',
+    DATA_COMMANDS.LIST,      // Read only
+    DATA_COMMANDS.READ,
     'docs/list',
     'docs/read',
     'chat/send',      // Can chat
@@ -497,8 +498,8 @@ export const PERMISSION_COMMAND_ACCESS: Record<PermissionLevel, string[]> = {
 
   [PermissionLevel.STANDARD]: [
     // Everything from RESTRICTED plus:
-    'data/create',
-    'data/update',
+    DATA_COMMANDS.CREATE,
+    DATA_COMMANDS.UPDATE,
     'lease/request',  // Can request leases
     'vote/cast',      // Can vote (lowered from SENIOR per AI feedback)
     'screenshot'
@@ -506,7 +507,7 @@ export const PERMISSION_COMMAND_ACCESS: Record<PermissionLevel, string[]> = {
 
   [PermissionLevel.ELEVATED]: [
     // Everything from STANDARD plus:
-    'data/delete',
+    DATA_COMMANDS.DELETE,
     'lease/kick',     // Can initiate kicks
     'bash/execute'    // Can run bash (with voting for dangerous ops)
   ],

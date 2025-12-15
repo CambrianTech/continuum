@@ -5,6 +5,7 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DecisionVoteParams, DecisionVoteResult } from '../shared/DecisionVoteTypes';
 import { createDecisionVoteResultFromParams } from '../shared/DecisionVoteTypes';
@@ -106,7 +107,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
 
     // 7. Update proposal in database
     const updateResult = await Commands.execute<DataUpdateParams<DecisionEntity>, DataUpdateResult<DecisionEntity>>(
-      'data/update',
+      DATA_COMMANDS.UPDATE,
       {
         collection: DecisionEntity.collection,
         id: proposal.id,
@@ -136,7 +137,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
    */
   private async findProposal(params: DecisionVoteParams): Promise<DecisionEntity> {
     const result = await Commands.execute<DataListParams<DecisionEntity>, DataListResult<DecisionEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: DecisionEntity.collection,
         filter: { proposalId: params.proposalId },
@@ -188,7 +189,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
     // If user exists in database, return it
     if (identity.exists && identity.userId) {
       const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
-        'data/list',
+        DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,
           filter: { id: identity.userId },

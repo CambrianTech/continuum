@@ -5,6 +5,7 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { DecisionCreateParams, DecisionCreateResult } from '../shared/DecisionCreateTypes';
@@ -123,7 +124,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
 
     // Store in database using data/create command
     await Commands.execute<DataCreateParams<DecisionEntity>, DataCreateResult<DecisionEntity>>(
-      'data/create',
+      DATA_COMMANDS.CREATE,
       {
         collection: DecisionEntity.collection,
         data: decision,
@@ -153,7 +154,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
 
     // Find user by uniqueId in database using Commands.execute
     const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: UserEntity.collection,
         filter: { uniqueId },

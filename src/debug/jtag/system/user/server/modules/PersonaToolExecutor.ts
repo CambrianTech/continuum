@@ -468,13 +468,13 @@ ${result.error || 'Unknown error'}
       return 'Screenshot captured';
     }
 
-    if (toolName === 'data/list') {
+    if (toolName === DATA_COMMANDS.LIST) {
       const items = data as any[];
       const count = Array.isArray(items) ? items.length : 0;
       return `${DATA_COMMANDS.LIST} returned ${count} item${count !== 1 ? 's' : ''}`;
     }
 
-    if (toolName === 'data/read') {
+    if (toolName === DATA_COMMANDS.READ) {
       // When fetching tool results from working memory, don't output raw JSON
       // Just acknowledge the retrieval
       return 'Retrieved data from working memory';

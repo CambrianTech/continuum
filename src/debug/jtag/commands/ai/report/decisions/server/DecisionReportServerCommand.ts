@@ -8,6 +8,7 @@
  */
 
 import { CommandBase } from '../../../../../daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import { Commands } from '../../../../../system/core/shared/Commands';
 import type { JTAGContext } from '../../../../../system/core/types/JTAGTypes';
@@ -63,7 +64,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
 
     // Execute data/list command
     const listResult = await Commands.execute<DataListParams<CoordinationDecisionEntity>, DataListResult<CoordinationDecisionEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         filter: Object.keys(filter).length > 0 ? filter : undefined,

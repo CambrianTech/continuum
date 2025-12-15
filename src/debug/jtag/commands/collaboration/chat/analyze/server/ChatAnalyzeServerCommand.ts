@@ -1,4 +1,5 @@
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatAnalyzeCommand } from '../shared/ChatAnalyzeCommand';
@@ -28,7 +29,7 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
 
     // Get all messages from room
     const listResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: ChatMessageEntity.collection,
         filter: { roomId: resolvedRoomId },
@@ -195,7 +196,7 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
 
     // Query all rooms to find by name
     const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
         filter: {},

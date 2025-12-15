@@ -4,6 +4,7 @@
  */
 
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatExportCommand } from '../shared/ChatExportCommand';
@@ -88,7 +89,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
 
     // Query messages using data/list command
     const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: collection,
         filter: filter,
@@ -149,7 +150,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
   private async findRoom(roomIdOrName: string, params: ChatExportParams): Promise<{ id: import('@system/core/types/CrossPlatformUUID').UUID; entity: RoomEntity }> {
     // Query all rooms using data/list command
     const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
         filter: {},

@@ -14,6 +14,7 @@
  */
 
 import type { UUID } from '../types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { Commands } from '../shared/Commands';
 import { COLLECTIONS } from '../../shared/Constants';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
@@ -147,7 +148,7 @@ export class RoomResolver {
 
     // Fetch from database
     const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
-      'data/list',
+      DATA_COMMANDS.LIST,
       {
         collection: COLLECTIONS.ROOMS,
         filter: {}

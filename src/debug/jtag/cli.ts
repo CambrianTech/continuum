@@ -11,6 +11,10 @@ import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGC
 import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
 import { systemOrchestrator } from './system/orchestration/SystemOrchestrator';
 import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
+import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
+import { FILE_COMMANDS } from './commands/file/shared/FileCommandConstants';
+import { USER_COMMANDS } from './commands/shared/SystemCommandConstants';
+import { CODE_COMMANDS } from './commands/development/code/shared/CodeCommandConstants';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -76,66 +80,6 @@ function storePersistentSessionId(sessionId: string): void {
   } catch (error) {
     console.log(`❌ Failed to store session ID: ${error}`);
   }
-}
-
-/**
- * AI-Friendly Help System - For Fresh AIs Learning JTAG
- */
-function displayHelp() {
-  console.log('🤖 JTAG - Global Debugging CLI for Any Node.js Project');
-  console.log('=' .repeat(80));
-  console.log('🎯 Install once globally, use anywhere in any project directory');
-  console.log('📦 Installation: npm install -g @continuum/jtag');
-  console.log('');
-  
-  console.log('📋 CORE COMMANDS (Works from any directory):');
-  console.log('----------------------------------------');
-  console.log('📸 SCREENSHOT:   jtag screenshot --querySelector="body" --filename="debug.png"');
-  console.log('⚡ PING TEST:    jtag ping');
-  console.log('📝 LIST ALL:     jtag list');
-  console.log('🔧 EXECUTE JS:   jtag exec --code="return {test: \'success\'}" --environment="browser"');
-  console.log(`🌐 NAVIGATE:     jtag navigate --url="http://localhost:${instanceConfig.ports.http_server}"`);
-  console.log('🖱️ CLICK:        jtag click --selector="button.submit"');
-  console.log('⌨️ TYPE:         jtag type --text="Hello world" --selector="input"');
-  console.log('📄 FILE SAVE:    jtag file/save --path="output.txt" --content="Generated content"');
-  console.log('📖 GET TEXT:     jtag get-text --selector="div.content"');
-  console.log('⏳ WAIT:         jtag wait-for-element --selector="div.loaded"');
-  console.log('');
-  
-  console.log('🚨 AI DEVELOPMENT WORKFLOW:');
-  console.log('----------------------------------------');
-  console.log('1. 📍 cd /your/project/directory');
-  console.log('2. 📸 jtag screenshot --filename=debug-$(date +%s).png');
-  console.log('3. 🔍 jtag ping  # Check system health');
-  console.log('4. 📋 ls -la .continuum/jtag/currentUser/logs/  # Check logs');
-  console.log('5. 🔄 jtag --restart  # Restart if needed');
-  console.log('');
-  console.log('🔗 SESSION PERSISTENCE:');
-  console.log('----------------------------------------');
-  console.log('✅ CLI automatically reuses browser sessions for continuity');
-  console.log('🆕 jtag --new-session <command>  # Force new session');
-  console.log('📝 Session state preserved across multiple CLI calls');
-  console.log('');
-  
-  console.log('💡 GLOBAL CLI PATTERNS:');
-  console.log('----------------------------------------');
-  console.log('• Works from ANY directory after global install');
-  console.log('• Creates .continuum/jtag/ in current working directory');
-  console.log('• Auto-starts system as needed (browser opens automatically)');
-  console.log('• Screenshots saved to .continuum/jtag/currentUser/screenshots/');
-  console.log('• Logs saved to .continuum/jtag/currentUser/logs/');
-  console.log('• Use --filename with timestamps: debug-$(date +%s).png');
-  console.log('');
-  
-  console.log('🔗 GETTING STARTED:');
-  console.log('----------------------------------------');
-  console.log('📦 npm install -g @continuum/jtag');
-  console.log('📍 cd /your/project');
-  console.log('📸 jtag screenshot  # System auto-starts, browser opens');
-  console.log('🎉 Debug screenshots saved to .continuum/jtag/currentUser/screenshots/');
-  console.log('');
-  
-  console.log('🚀 LIKE CLAUDE CODE: Install once globally, use everywhere!');
 }
 
 async function main() {
@@ -270,13 +214,13 @@ async function main() {
       // Map of commands to their primary parameter name
       const singleParamCommands: Record<string, string> = {
         'help': 'commandName',
-        'code/read': 'path',
-        'code/find': 'pattern',
-        'file/load': 'path',
-        'file/save': 'path',
-        'data/read': 'id',
-        'data/delete': 'id',
-        'user/create': 'uniqueId',
+        [CODE_COMMANDS.READ]: 'path',
+        [CODE_COMMANDS.FIND]: 'pattern',
+        [FILE_COMMANDS.LOAD]: 'path',
+        [FILE_COMMANDS.SAVE]: 'path',
+        [DATA_COMMANDS.READ]: 'id',
+        [DATA_COMMANDS.DELETE]: 'id',
+        [USER_COMMANDS.CREATE]: 'uniqueId',
         // Add more single-param commands as needed
       };
 
