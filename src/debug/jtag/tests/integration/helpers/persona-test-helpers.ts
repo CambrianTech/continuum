@@ -30,7 +30,7 @@ export async function createTestRoom(
 ): Promise<RoomEntity> {
   const roomId = randomUUID();
 
-  const result = await Commands.execute('data/create', {
+  const result = await Commands.execute(DATA_COMMANDS.CREATE, {
     collection: 'rooms',
     data: {
       id: roomId,
@@ -62,7 +62,7 @@ export async function createTestPersona(
 ): Promise<UserEntity> {
   const personaId = randomUUID();
 
-  const result = await Commands.execute('data/create', {
+  const result = await Commands.execute(DATA_COMMANDS.CREATE, {
     collection: 'users',
     data: {
       id: personaId,
@@ -104,7 +104,7 @@ export async function seedConversationHistory(
     const messageId = randomUUID();
     const timestamp = msg.timestamp ?? Date.now() + index * 1000;
 
-    const result = await Commands.execute('data/create', {
+    const result = await Commands.execute(DATA_COMMANDS.CREATE, {
       collection: 'chat_messages',
       data: {
         id: messageId,
@@ -188,7 +188,7 @@ export async function createTestGenomeLayer(
   // Generate random 768-dim embedding if not provided
   const layerEmbedding = embedding ?? Array(768).fill(0).map(() => Math.random());
 
-  const result = await Commands.execute('data/create', {
+  const result = await Commands.execute(DATA_COMMANDS.CREATE, {
     collection: 'genome_layers',
     data: {
       id: layerId,
@@ -238,7 +238,7 @@ export async function createTestGenome(
   const compositeEmbedding = Array(768).fill(0);
   // For testing, just use zeros (would normally compute from layer embeddings)
 
-  const result = await Commands.execute('data/create', {
+  const result = await Commands.execute(DATA_COMMANDS.CREATE, {
     collection: 'genomes',
     data: {
       id: genomeId,

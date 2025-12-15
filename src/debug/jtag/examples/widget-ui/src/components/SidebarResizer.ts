@@ -112,7 +112,7 @@ class SidebarResizer extends HTMLElement {
                 });
             } else {
                 // Entity doesn't exist, create it
-                await Commands.execute('data/create', {
+                await Commands.execute(DATA_COMMANDS.CREATE, {
                     collection: 'UIPreferences',
                     data: {
                         id: this.uiPrefsId,

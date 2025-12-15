@@ -424,7 +424,7 @@ class ChatMeOtherPositioningTest {
     const client = result.client;
 
     // Create user with specific type
-    await client.executeCommand('data/create', {
+    await client.executeCommand(DATA_COMMANDS.CREATE, {
       collection: 'users',
       data: {
         name,

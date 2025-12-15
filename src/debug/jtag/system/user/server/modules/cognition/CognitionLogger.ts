@@ -124,7 +124,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_STATE_SNAPSHOTS,
         data: entityData,
         backend: 'server',
@@ -218,7 +218,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         data: entityData,
         backend: 'server',
@@ -424,7 +424,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entityData,
         backend: 'server',
@@ -489,7 +489,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entityData,
         backend: 'server',
@@ -573,7 +573,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entityData,
         backend: 'server',
@@ -630,7 +630,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
         data: entityData,
         backend: 'server',
@@ -683,7 +683,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
         data: entityData,
         backend: 'server',
@@ -740,7 +740,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
         data: entityData,
         backend: 'server',
@@ -795,7 +795,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.ADAPTER_REASONING_LOGS,
         data: entityData,
         backend: 'server',
@@ -858,7 +858,7 @@ export class CognitionLogger {
         modelUsed
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_PLAN_REPLANS,
         data: entityData,
         backend: 'server',

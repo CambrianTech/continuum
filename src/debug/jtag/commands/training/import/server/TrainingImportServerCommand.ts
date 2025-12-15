@@ -20,6 +20,7 @@ import type { DataCloseResult } from '../../../data/close/shared/DataCloseTypes'
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type { TrainingMessage } from '../../../../daemons/data-daemon/shared/entities/TrainingExampleEntity';
 import { DATABASE_PATHS } from '../../../../system/data/config/DatabaseConfig';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import * as fs from 'fs';
 import * as readline from 'readline';
 
@@ -196,7 +197,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
 
         // Create TrainingExampleEntity (pass partial data, DataDaemon constructs full entity)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const createResult = await Commands.execute('data/create', {
+        const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
           collection: 'training_examples',
           data: {
             messages: data.messages,

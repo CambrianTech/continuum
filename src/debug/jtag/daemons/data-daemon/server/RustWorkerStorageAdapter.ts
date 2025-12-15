@@ -210,7 +210,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
       // Send raw entity data to Rust (it doesn't need full DataRecord structure)
-      const response = await this.sendMessage<{ data: T }>('data/create', {
+      const response = await this.sendMessage<{ data: T }>(DATA_COMMANDS.CREATE, {
         collection: record.collection,
         document: record.data
       });

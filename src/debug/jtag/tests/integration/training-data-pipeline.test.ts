@@ -119,7 +119,7 @@ describe('Training Data Pipeline Integration Test', () => {
       const example = trainingExamples[i];
       console.log(`  Creating example ${i + 1}/${trainingExamples.length}...`);
 
-      const createResult = await Commands.execute<DataCreateResult>('data/create', {
+      const createResult = await Commands.execute<DataCreateResult>(DATA_COMMANDS.CREATE, {
         collection: 'training_examples',
         data: example,
         dbHandle

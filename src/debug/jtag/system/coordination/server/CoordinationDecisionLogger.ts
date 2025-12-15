@@ -37,6 +37,7 @@ import { getChatCoordinator } from './ChatCoordinationStream';
 import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
 import { SystemPaths } from '../../core/config/SystemPaths';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 /**
  * Parameters for logging a decision
@@ -181,7 +182,7 @@ export class CoordinationDecisionLogger {
       } as any;
 
       // Store to database (fire-and-forget in PersonaUser, but sync here for error handling)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         data: entity,
         backend: 'server',

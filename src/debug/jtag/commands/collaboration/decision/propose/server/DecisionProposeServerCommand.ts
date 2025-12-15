@@ -377,7 +377,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       updatedAt: new Date(Date.now())
     };
 
-    const createResult = await Commands.execute<any, any>('data/create', {
+    const createResult = await Commands.execute<any, any>(DATA_COMMANDS.CREATE, {
       collection: COLLECTIONS.DECISION_PROPOSALS,
       data: proposalData
     });

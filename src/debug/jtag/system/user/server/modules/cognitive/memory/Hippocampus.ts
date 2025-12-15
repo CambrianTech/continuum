@@ -360,7 +360,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       for (const memory of memories) {
         try {
-          const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>('data/create', {
+          const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>(DATA_COMMANDS.CREATE, {
             dbHandle: this.memoryDbHandle,
             collection: 'memories',
             data: memory

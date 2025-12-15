@@ -18,6 +18,7 @@ import { Commands } from '../../../../../system/core/shared/Commands';
 import type { DataCreateParams, DataUpdateParams, DataCreateResult as DataCreateResultType } from '../../../../../daemons/data-daemon/shared/DataTypes';
 import { DatasetExecutionEntity, type DatasetArchiveInfo } from '../../../../../daemons/data-daemon/shared/entities/DatasetExecutionEntity';
 import type { CompressionType } from '../../shared/DatasetConfig';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class DatasetCreateServerCommand {
   /**
@@ -57,7 +58,7 @@ export class DatasetCreateServerCommand {
     };
 
     // Save to database
-    const createResult = await Commands.execute<DataCreateParams<DatasetExecutionEntity>, DataCreateResultType>('data/create', {
+    const createResult = await Commands.execute<DataCreateParams<DatasetExecutionEntity>, DataCreateResultType>(DATA_COMMANDS.CREATE, {
       collection: DatasetExecutionEntity.collection,
       data: execution,
       id: jobId,

@@ -68,7 +68,7 @@ describe('Logging Entities Integration Test', () => {
       entity.sequenceNumber = 1;
 
       // Create
-      const createResult = await Commands.execute('data/create', {
+      const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entity
       });
@@ -136,7 +136,7 @@ describe('Logging Entities Integration Test', () => {
       entity.sequenceNumber = 2;
 
       // Create
-      const createResult = await Commands.execute('data/create', {
+      const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entity
       });
@@ -206,7 +206,7 @@ describe('Logging Entities Integration Test', () => {
       entity.sequenceNumber = 3;
 
       // Create
-      const createResult = await Commands.execute('data/create', {
+      const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entity
       });

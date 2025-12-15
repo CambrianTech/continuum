@@ -31,6 +31,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import type { DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
 import type { TrainingSessionEntity } from '../../../../system/data/entities/TrainingSessionEntity';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 /**
  * Server-side base class with database operations
@@ -235,7 +236,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     /* eslint-enable @typescript-eslint/naming-convention */
 
     // Create session entity
-    const rawResult = await Commands.execute('data/create', {
+    const rawResult = await Commands.execute(DATA_COMMANDS.CREATE, {
       collection: 'training_sessions',
       data: {
         personaId: request.personaId,

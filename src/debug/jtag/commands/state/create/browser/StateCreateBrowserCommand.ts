@@ -11,6 +11,7 @@ import { createStateCreateResult } from '../shared/StateCreateTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class StateCreateBrowserCommand extends CommandBase<StateCreateParams, StateCreateResult<BaseEntity>> {
 
@@ -29,7 +30,7 @@ export class StateCreateBrowserCommand extends CommandBase<StateCreateParams, St
       }
 
       // Delegate to the elegant data/create command
-      const dataResult = await Commands.execute<any, DataCreateResult<BaseEntity>>('data/create', {
+      const dataResult = await Commands.execute<any, DataCreateResult<BaseEntity>>(DATA_COMMANDS.CREATE, {
         collection: params.collection,
         data: enhancedData,
         id: params.id

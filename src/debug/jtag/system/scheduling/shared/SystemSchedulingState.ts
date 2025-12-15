@@ -99,7 +99,7 @@ export class SystemSchedulingState {
     const config = new SystemSchedulingConfigEntity();
 
     // Use data/create command to persist
-    const result = await Commands.execute('data/create', {
+    const result = await Commands.execute(DATA_COMMANDS.CREATE, {
       collection: SystemSchedulingConfigEntity.collection,
       entity: config,
     });

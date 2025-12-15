@@ -79,7 +79,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
         newDoc.byteCount = writeResult.byteCount;
         newDoc.lastCommitHash = writeResult.commitHash;
 
-        await Commands.execute<DataCreateParams<WallDocumentEntity>, DataCreateResult<WallDocumentEntity>>('data/create', {
+        await Commands.execute<DataCreateParams<WallDocumentEntity>, DataCreateResult<WallDocumentEntity>>(DATA_COMMANDS.CREATE, {
           collection: COLLECTIONS.WALL_DOCUMENTS,
           data: newDoc
         });
