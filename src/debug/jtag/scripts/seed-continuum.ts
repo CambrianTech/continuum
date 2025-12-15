@@ -19,6 +19,7 @@ import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEn
 import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
 import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
+import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 import {
   createUserCapabilities,
   createRoom,
