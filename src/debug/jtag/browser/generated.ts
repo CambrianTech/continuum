@@ -84,11 +84,6 @@ import { GenomeBatchMicroTuneBrowserCommand } from './../commands/genome/batch-m
 import { GenomeJobCreateBrowserCommand } from './../commands/genome/job-create/browser/GenomeJobCreateBrowserCommand';
 import { GenomeJobStatusBrowserCommand } from './../commands/genome/job-status/browser/GenomeJobStatusBrowserCommand';
 import { GetTextBrowserCommand } from './../commands/get-text/browser/GetTextBrowserCommand';
-import { GitCommitBrowserCommand } from './../commands/git/commit/browser/GitCommitBrowserCommand';
-import { GitPushBrowserCommand } from './../commands/git/push/browser/GitPushBrowserCommand';
-import { GitStatusBrowserCommand } from './../commands/git/status/browser/GitStatusBrowserCommand';
-import { GitWorkspaceCleanBrowserCommand } from './../commands/git/workspace/clean/browser/GitWorkspaceCleanBrowserCommand';
-import { GitWorkspaceInitBrowserCommand } from './../commands/git/workspace/init/browser/GitWorkspaceInitBrowserCommand';
 import { IndicatorBrowserCommand } from './../commands/indicator/browser/IndicatorBrowserCommand';
 import { ListBrowserCommand } from './../commands/list/browser/ListBrowserCommand';
 import { LogsListBrowserCommand } from './../commands/logs/list/browser/LogsListBrowserCommand';
@@ -104,7 +99,6 @@ import { GenomeMultiAgentLearnBrowserCommand } from './../commands/persona/learn
 import { PingBrowserCommand } from './../commands/ping/browser/PingBrowserCommand';
 import { ProcessRegistryBrowserCommand } from './../commands/process-registry/browser/ProcessRegistryBrowserCommand';
 import { ProxyNavigateBrowserCommand } from './../commands/proxy-navigate/browser/ProxyNavigateBrowserCommand';
-import { RecipeLoadBrowserCommand } from './../commands/recipe/load/browser/RecipeLoadBrowserCommand';
 import { SchemaGenerateBrowserCommand } from './../commands/schema/generate/browser/SchemaGenerateBrowserCommand';
 import { ScreenshotBrowserCommand } from './../commands/screenshot/browser/ScreenshotBrowserCommand';
 import { ScrollBrowserCommand } from './../commands/scroll/browser/ScrollBrowserCommand';
@@ -117,14 +111,10 @@ import { StateCreateBrowserCommand } from './../commands/state/create/browser/St
 import { StateGetBrowserCommand } from './../commands/state/get/browser/StateGetBrowserCommand';
 import { StateUpdateBrowserCommand } from './../commands/state/update/browser/StateUpdateBrowserCommand';
 import { DaemonsBrowserCommand } from './../commands/system/daemons/browser/DaemonsBrowserCommand';
-import { TaskCompleteBrowserCommand } from './../commands/task/complete/browser/TaskCompleteBrowserCommand';
-import { TaskCreateBrowserCommand } from './../commands/task/create/browser/TaskCreateBrowserCommand';
-import { TaskListBrowserCommand } from './../commands/task/list/browser/TaskListBrowserCommand';
 import { ThemeGetBrowserCommand } from './../commands/theme/get/browser/ThemeGetBrowserCommand';
 import { ThemeListBrowserCommand } from './../commands/theme/list/browser/ThemeListBrowserCommand';
 import { ThemeSetBrowserCommand } from './../commands/theme/set/browser/ThemeSetBrowserCommand';
 import { TrainingImportBrowserCommand } from './../commands/training/import/browser/TrainingImportBrowserCommand';
-import { TreeBrowserCommand } from './../commands/tree/browser/TreeBrowserCommand';
 import { TypeBrowserCommand } from './../commands/type/browser/TypeBrowserCommand';
 import { UserCreateBrowserCommand } from './../commands/user/create/browser/UserCreateBrowserCommand';
 import { UserGetMeBrowserCommand } from './../commands/user/get-me/browser/UserGetMeBrowserCommand';
@@ -136,6 +126,16 @@ import { WaitForElementBrowserCommand } from './../commands/wait-for-element/bro
 import { WallListBrowserCommand } from './../commands/wall/list/browser/WallListBrowserCommand';
 import { WallReadBrowserCommand } from './../commands/wall/read/browser/WallReadBrowserCommand';
 import { WallWriteBrowserCommand } from './../commands/wall/write/browser/WallWriteBrowserCommand';
+import { GitCommitBrowserCommand } from './../commands/workspace/git/commit/browser/GitCommitBrowserCommand';
+import { GitPushBrowserCommand } from './../commands/workspace/git/push/browser/GitPushBrowserCommand';
+import { GitStatusBrowserCommand } from './../commands/workspace/git/status/browser/GitStatusBrowserCommand';
+import { GitWorkspaceCleanBrowserCommand } from './../commands/workspace/git/workspace/clean/browser/GitWorkspaceCleanBrowserCommand';
+import { GitWorkspaceInitBrowserCommand } from './../commands/workspace/git/workspace/init/browser/GitWorkspaceInitBrowserCommand';
+import { RecipeLoadBrowserCommand } from './../commands/workspace/recipe/load/browser/RecipeLoadBrowserCommand';
+import { TaskCompleteBrowserCommand } from './../commands/workspace/task/complete/browser/TaskCompleteBrowserCommand';
+import { TaskCreateBrowserCommand } from './../commands/workspace/task/create/browser/TaskCreateBrowserCommand';
+import { TaskListBrowserCommand } from './../commands/workspace/task/list/browser/TaskListBrowserCommand';
+import { TreeBrowserCommand } from './../commands/workspace/tree/browser/TreeBrowserCommand';
 
 // Browser adapters Imports
 import { UDPMulticastTransportBrowser } from './../system/transports/udp-multicast-transport/browser/UDPMulticastTransportBrowser';
@@ -549,31 +549,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: GetTextBrowserCommand
   },
 {
-    name: 'git/commit',
-    className: 'GitCommitBrowserCommand',
-    commandClass: GitCommitBrowserCommand
-  },
-{
-    name: 'git/push',
-    className: 'GitPushBrowserCommand',
-    commandClass: GitPushBrowserCommand
-  },
-{
-    name: 'git/status',
-    className: 'GitStatusBrowserCommand',
-    commandClass: GitStatusBrowserCommand
-  },
-{
-    name: 'git/workspace/clean',
-    className: 'GitWorkspaceCleanBrowserCommand',
-    commandClass: GitWorkspaceCleanBrowserCommand
-  },
-{
-    name: 'git/workspace/init',
-    className: 'GitWorkspaceInitBrowserCommand',
-    commandClass: GitWorkspaceInitBrowserCommand
-  },
-{
     name: 'indicator',
     className: 'IndicatorBrowserCommand',
     commandClass: IndicatorBrowserCommand
@@ -649,11 +624,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: ProxyNavigateBrowserCommand
   },
 {
-    name: 'recipe/load',
-    className: 'RecipeLoadBrowserCommand',
-    commandClass: RecipeLoadBrowserCommand
-  },
-{
     name: 'schema/generate',
     className: 'SchemaGenerateBrowserCommand',
     commandClass: SchemaGenerateBrowserCommand
@@ -714,21 +684,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: DaemonsBrowserCommand
   },
 {
-    name: 'task/complete',
-    className: 'TaskCompleteBrowserCommand',
-    commandClass: TaskCompleteBrowserCommand
-  },
-{
-    name: 'task/create',
-    className: 'TaskCreateBrowserCommand',
-    commandClass: TaskCreateBrowserCommand
-  },
-{
-    name: 'task/list',
-    className: 'TaskListBrowserCommand',
-    commandClass: TaskListBrowserCommand
-  },
-{
     name: 'theme/get',
     className: 'ThemeGetBrowserCommand',
     commandClass: ThemeGetBrowserCommand
@@ -747,11 +702,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'training/import',
     className: 'TrainingImportBrowserCommand',
     commandClass: TrainingImportBrowserCommand
-  },
-{
-    name: 'tree',
-    className: 'TreeBrowserCommand',
-    commandClass: TreeBrowserCommand
   },
 {
     name: 'type',
@@ -807,6 +757,56 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'wall/write',
     className: 'WallWriteBrowserCommand',
     commandClass: WallWriteBrowserCommand
+  },
+{
+    name: 'workspace/git/commit',
+    className: 'GitCommitBrowserCommand',
+    commandClass: GitCommitBrowserCommand
+  },
+{
+    name: 'workspace/git/push',
+    className: 'GitPushBrowserCommand',
+    commandClass: GitPushBrowserCommand
+  },
+{
+    name: 'workspace/git/status',
+    className: 'GitStatusBrowserCommand',
+    commandClass: GitStatusBrowserCommand
+  },
+{
+    name: 'workspace/git/workspace/clean',
+    className: 'GitWorkspaceCleanBrowserCommand',
+    commandClass: GitWorkspaceCleanBrowserCommand
+  },
+{
+    name: 'workspace/git/workspace/init',
+    className: 'GitWorkspaceInitBrowserCommand',
+    commandClass: GitWorkspaceInitBrowserCommand
+  },
+{
+    name: 'workspace/recipe/load',
+    className: 'RecipeLoadBrowserCommand',
+    commandClass: RecipeLoadBrowserCommand
+  },
+{
+    name: 'workspace/task/complete',
+    className: 'TaskCompleteBrowserCommand',
+    commandClass: TaskCompleteBrowserCommand
+  },
+{
+    name: 'workspace/task/create',
+    className: 'TaskCreateBrowserCommand',
+    commandClass: TaskCreateBrowserCommand
+  },
+{
+    name: 'workspace/task/list',
+    className: 'TaskListBrowserCommand',
+    commandClass: TaskListBrowserCommand
+  },
+{
+    name: 'workspace/tree',
+    className: 'TreeBrowserCommand',
+    commandClass: TreeBrowserCommand
   }
 ];
 

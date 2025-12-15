@@ -1,7 +1,245 @@
 {
-  "generated": "2025-12-14T23:44:54.672Z",
+  "generated": "2025-12-15T00:04:32.281Z",
   "version": "1.0.0",
   "commands": [
+    {
+      "name": "task-list",
+      "description": "TaskListTypes - List tasks for PersonaUsers\n *\n * Query tasks by assignee, status, domain, etc.\n * Used for monitoring AI work queues and debugging.",
+      "params": {
+        "assigneeId": {
+          "type": "string",
+          "required": false,
+          "description": "assigneeId parameter"
+        },
+        "status": {
+          "type": "array",
+          "required": false,
+          "description": "status parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "taskType": {
+          "type": "string",
+          "required": false,
+          "description": "taskType parameter"
+        },
+        "createdBy": {
+          "type": "string",
+          "required": false,
+          "description": "createdBy parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "sortBy": {
+          "type": "string",
+          "required": false,
+          "description": "sortBy parameter"
+        },
+        "sortOrder": {
+          "type": "string",
+          "required": false,
+          "description": "sortOrder parameter"
+        },
+        "includeCompleted": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeCompleted parameter"
+        }
+      }
+    },
+    {
+      "name": "task-create",
+      "description": "TaskCreateTypes - Create new tasks for PersonaUsers\n *\n * Allows users to assign tasks to AI personas (or themselves).\n * Tasks can be chat responses, code reviews, analysis, or self-improvement.",
+      "params": {
+        "assigneeId": {
+          "type": "string",
+          "required": true,
+          "description": "assigneeId parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "taskType": {
+          "type": "string",
+          "required": true,
+          "description": "taskType parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "description": "priority parameter"
+        },
+        "dueDate": {
+          "type": "string",
+          "required": false,
+          "description": "dueDate parameter"
+        },
+        "estimatedDuration": {
+          "type": "number",
+          "required": false,
+          "description": "estimatedDuration parameter"
+        },
+        "dependsOn": {
+          "type": "array",
+          "required": false,
+          "description": "dependsOn parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        }
+      }
+    },
+    {
+      "name": "task-complete",
+      "description": "TaskCompleteTypes - Mark tasks as completed (or failed)\n *\n * Updates task status and records results.\n * Used by PersonaUsers to report task completion.",
+      "params": {
+        "taskId": {
+          "type": "string",
+          "required": true,
+          "description": "taskId parameter"
+        },
+        "success": {
+          "type": "boolean",
+          "required": true,
+          "description": "success parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": false,
+          "description": "output parameter"
+        },
+        "error": {
+          "type": "string",
+          "required": false,
+          "description": "error parameter"
+        },
+        "metrics": {
+          "type": "object",
+          "required": false,
+          "description": "metrics parameter"
+        },
+        "latencyMs": {
+          "type": "number",
+          "required": false,
+          "description": "latencyMs parameter"
+        },
+        "confidence": {
+          "type": "number",
+          "required": false,
+          "description": "confidence parameter"
+        }
+      }
+    },
+    {
+      "name": "recipe-load",
+      "description": "Recipe Load Command Types\n *\n * Loads recipe JSON files from system/recipes/*.json into database",
+      "params": {
+        "recipeId": {
+          "type": "string",
+          "required": false,
+          "description": "recipeId parameter"
+        },
+        "loadAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "loadAll parameter"
+        },
+        "reload": {
+          "type": "boolean",
+          "required": false,
+          "description": "reload parameter"
+        }
+      }
+    },
+    {
+      "name": "git-workspace-init",
+      "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
+      "params": {}
+    },
+    {
+      "name": "git-workspace-clean",
+      "description": "Git Workspace Clean Command - Shared Types\n *\n * Clean up git workspace and remove worktree",
+      "params": {
+        "workspacePath": {
+          "type": "string",
+          "required": false,
+          "description": "workspacePath parameter"
+        },
+        "force": {
+          "type": "boolean",
+          "required": false,
+          "description": "force parameter"
+        },
+        "deleteBranch": {
+          "type": "boolean",
+          "required": false,
+          "description": "deleteBranch parameter"
+        }
+      }
+    },
+    {
+      "name": "git-status",
+      "description": "Git Status Command - Shared Types\n *\n * Show git workspace status and changes",
+      "params": {
+        "workspacePath": {
+          "type": "string",
+          "required": false,
+          "description": "workspacePath parameter"
+        }
+      }
+    },
+    {
+      "name": "git-push",
+      "description": "Git Push Command - Shared Types\n *\n * Push workspace branch to remote repository",
+      "params": {
+        "workspacePath": {
+          "type": "string",
+          "required": false,
+          "description": "workspacePath parameter"
+        },
+        "remote": {
+          "type": "string",
+          "required": false,
+          "description": "remote parameter"
+        }
+      }
+    },
+    {
+      "name": "git-commit",
+      "description": "Git Commit Command - Shared Types\n *\n * Commit changes in git workspace with persona identity",
+      "params": {
+        "message": {
+          "type": "string",
+          "required": true,
+          "description": "message parameter"
+        },
+        "workspacePath": {
+          "type": "string",
+          "required": false,
+          "description": "workspacePath parameter"
+        },
+        "files": {
+          "type": "array",
+          "required": false,
+          "description": "files parameter"
+        }
+      }
+    },
     {
       "name": "wall/write",
       "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
@@ -351,149 +589,6 @@
       }
     },
     {
-      "name": "task-list",
-      "description": "TaskListTypes - List tasks for PersonaUsers\n *\n * Query tasks by assignee, status, domain, etc.\n * Used for monitoring AI work queues and debugging.",
-      "params": {
-        "assigneeId": {
-          "type": "string",
-          "required": false,
-          "description": "assigneeId parameter"
-        },
-        "status": {
-          "type": "array",
-          "required": false,
-          "description": "status parameter"
-        },
-        "domain": {
-          "type": "string",
-          "required": false,
-          "description": "domain parameter"
-        },
-        "taskType": {
-          "type": "string",
-          "required": false,
-          "description": "taskType parameter"
-        },
-        "createdBy": {
-          "type": "string",
-          "required": false,
-          "description": "createdBy parameter"
-        },
-        "limit": {
-          "type": "number",
-          "required": false,
-          "description": "limit parameter"
-        },
-        "sortBy": {
-          "type": "string",
-          "required": false,
-          "description": "sortBy parameter"
-        },
-        "sortOrder": {
-          "type": "string",
-          "required": false,
-          "description": "sortOrder parameter"
-        },
-        "includeCompleted": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeCompleted parameter"
-        }
-      }
-    },
-    {
-      "name": "task-create",
-      "description": "TaskCreateTypes - Create new tasks for PersonaUsers\n *\n * Allows users to assign tasks to AI personas (or themselves).\n * Tasks can be chat responses, code reviews, analysis, or self-improvement.",
-      "params": {
-        "assigneeId": {
-          "type": "string",
-          "required": true,
-          "description": "assigneeId parameter"
-        },
-        "domain": {
-          "type": "string",
-          "required": true,
-          "description": "domain parameter"
-        },
-        "taskType": {
-          "type": "string",
-          "required": true,
-          "description": "taskType parameter"
-        },
-        "description": {
-          "type": "string",
-          "required": true,
-          "description": "description parameter"
-        },
-        "priority": {
-          "type": "string",
-          "required": false,
-          "description": "priority parameter"
-        },
-        "dueDate": {
-          "type": "string",
-          "required": false,
-          "description": "dueDate parameter"
-        },
-        "estimatedDuration": {
-          "type": "number",
-          "required": false,
-          "description": "estimatedDuration parameter"
-        },
-        "dependsOn": {
-          "type": "array",
-          "required": false,
-          "description": "dependsOn parameter"
-        },
-        "metadata": {
-          "type": "object",
-          "required": false,
-          "description": "metadata parameter"
-        }
-      }
-    },
-    {
-      "name": "task-complete",
-      "description": "TaskCompleteTypes - Mark tasks as completed (or failed)\n *\n * Updates task status and records results.\n * Used by PersonaUsers to report task completion.",
-      "params": {
-        "taskId": {
-          "type": "string",
-          "required": true,
-          "description": "taskId parameter"
-        },
-        "success": {
-          "type": "boolean",
-          "required": true,
-          "description": "success parameter"
-        },
-        "output": {
-          "type": "string",
-          "required": false,
-          "description": "output parameter"
-        },
-        "error": {
-          "type": "string",
-          "required": false,
-          "description": "error parameter"
-        },
-        "metrics": {
-          "type": "object",
-          "required": false,
-          "description": "metrics parameter"
-        },
-        "latencyMs": {
-          "type": "number",
-          "required": false,
-          "description": "latencyMs parameter"
-        },
-        "confidence": {
-          "type": "number",
-          "required": false,
-          "description": "confidence parameter"
-        }
-      }
-    },
-    {
       "name": "daemons",
       "description": "Daemons Command Types\n *\n * List all registered system daemons with their status",
       "params": {
@@ -712,27 +807,6 @@
           "type": "string",
           "required": false,
           "description": "metadata parameter"
-        }
-      }
-    },
-    {
-      "name": "recipe-load",
-      "description": "Recipe Load Command Types\n *\n * Loads recipe JSON files from system/recipes/*.json into database",
-      "params": {
-        "recipeId": {
-          "type": "string",
-          "required": false,
-          "description": "recipeId parameter"
-        },
-        "loadAll": {
-          "type": "boolean",
-          "required": false,
-          "description": "loadAll parameter"
-        },
-        "reload": {
-          "type": "boolean",
-          "required": false,
-          "description": "reload parameter"
         }
       }
     },
@@ -1195,80 +1269,6 @@
           "type": "boolean",
           "required": false,
           "description": "includeSessionLogs parameter"
-        }
-      }
-    },
-    {
-      "name": "git-workspace-init",
-      "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
-      "params": {}
-    },
-    {
-      "name": "git-workspace-clean",
-      "description": "Git Workspace Clean Command - Shared Types\n *\n * Clean up git workspace and remove worktree",
-      "params": {
-        "workspacePath": {
-          "type": "string",
-          "required": false,
-          "description": "workspacePath parameter"
-        },
-        "force": {
-          "type": "boolean",
-          "required": false,
-          "description": "force parameter"
-        },
-        "deleteBranch": {
-          "type": "boolean",
-          "required": false,
-          "description": "deleteBranch parameter"
-        }
-      }
-    },
-    {
-      "name": "git-status",
-      "description": "Git Status Command - Shared Types\n *\n * Show git workspace status and changes",
-      "params": {
-        "workspacePath": {
-          "type": "string",
-          "required": false,
-          "description": "workspacePath parameter"
-        }
-      }
-    },
-    {
-      "name": "git-push",
-      "description": "Git Push Command - Shared Types\n *\n * Push workspace branch to remote repository",
-      "params": {
-        "workspacePath": {
-          "type": "string",
-          "required": false,
-          "description": "workspacePath parameter"
-        },
-        "remote": {
-          "type": "string",
-          "required": false,
-          "description": "remote parameter"
-        }
-      }
-    },
-    {
-      "name": "git-commit",
-      "description": "Git Commit Command - Shared Types\n *\n * Commit changes in git workspace with persona identity",
-      "params": {
-        "message": {
-          "type": "string",
-          "required": true,
-          "description": "message parameter"
-        },
-        "workspacePath": {
-          "type": "string",
-          "required": false,
-          "description": "workspacePath parameter"
-        },
-        "files": {
-          "type": "array",
-          "required": false,
-          "description": "files parameter"
         }
       }
     },

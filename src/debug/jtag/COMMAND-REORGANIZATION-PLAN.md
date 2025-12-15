@@ -200,7 +200,7 @@ find . -name "*.md" -exec sed -i '' \
 | Category | Commands | Status | Commit | Notes |
 |----------|----------|--------|--------|-------|
 | utilities | 4 | ✅ Complete | c0e97b0f | hello, docs, pipe, lease |
-| workspace | 4 | ⏳ Ready | - | Next: git, recipe, task, tree |
+| workspace | 4 | ⏳ Ready to test | - | Migrated, build passes, awaiting user test |
 | interface | 9 | 📋 Planned | - | |
 | collaboration | 5 | 📋 Planned | - | |
 | development | 7 | 📋 Planned | - | |

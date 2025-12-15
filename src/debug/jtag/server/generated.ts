@@ -108,11 +108,6 @@ import { GenomeRegisterServerCommand } from './../commands/genome/paging-registe
 import { GenomePagingStatsServerCommand } from './../commands/genome/paging-stats/server/GenomePagingStatsServerCommand';
 import { GenomeUnregisterServerCommand } from './../commands/genome/paging-unregister/server/GenomeUnregisterServerCommand';
 import { GetTextServerCommand } from './../commands/get-text/server/GetTextServerCommand';
-import { GitCommitServerCommand } from './../commands/git/commit/server/GitCommitServerCommand';
-import { GitPushServerCommand } from './../commands/git/push/server/GitPushServerCommand';
-import { GitStatusServerCommand } from './../commands/git/status/server/GitStatusServerCommand';
-import { GitWorkspaceCleanServerCommand } from './../commands/git/workspace/clean/server/GitWorkspaceCleanServerCommand';
-import { GitWorkspaceInitServerCommand } from './../commands/git/workspace/init/server/GitWorkspaceInitServerCommand';
 import { HelpServerCommand } from './../commands/help/server/HelpServerCommand';
 import { IndicatorServerCommand } from './../commands/indicator/server/IndicatorServerCommand';
 import { ListServerCommand } from './../commands/list/server/ListServerCommand';
@@ -131,7 +126,6 @@ import { ProcessRegistryServerCommand } from './../commands/process-registry/ser
 import { ProxyNavigateServerCommand } from './../commands/proxy-navigate/server/ProxyNavigateServerCommand';
 import { RAGBudgetServerCommand } from './../commands/rag/budget/server/RAGBudgetServerCommand';
 import { RAGLoadServerCommand } from './../commands/rag/load/server/RAGLoadServerCommand';
-import { RecipeLoadServerCommand } from './../commands/recipe/load/server/RecipeLoadServerCommand';
 import { SchemaGenerateServerCommand } from './../commands/schema/generate/server/SchemaGenerateServerCommand';
 import { ScreenshotServerCommand } from './../commands/screenshot/server/ScreenshotServerCommand';
 import { ScrollServerCommand } from './../commands/scroll/server/ScrollServerCommand';
@@ -145,14 +139,10 @@ import { StateCreateServerCommand } from './../commands/state/create/server/Stat
 import { StateGetServerCommand } from './../commands/state/get/server/StateGetServerCommand';
 import { StateUpdateServerCommand } from './../commands/state/update/server/StateUpdateServerCommand';
 import { DaemonsServerCommand } from './../commands/system/daemons/server/DaemonsServerCommand';
-import { TaskCompleteServerCommand } from './../commands/task/complete/server/TaskCompleteServerCommand';
-import { TaskCreateServerCommand } from './../commands/task/create/server/TaskCreateServerCommand';
-import { TaskListServerCommand } from './../commands/task/list/server/TaskListServerCommand';
 import { ThemeGetServerCommand } from './../commands/theme/get/server/ThemeGetServerCommand';
 import { ThemeListServerCommand } from './../commands/theme/list/server/ThemeListServerCommand';
 import { ThemeSetServerCommand } from './../commands/theme/set/server/ThemeSetServerCommand';
 import { TrainingImportServerCommand } from './../commands/training/import/server/TrainingImportServerCommand';
-import { TreeServerCommand } from './../commands/tree/server/TreeServerCommand';
 import { TypeServerCommand } from './../commands/type/server/TypeServerCommand';
 import { UserCreateServerCommand } from './../commands/user/create/server/UserCreateServerCommand';
 import { UserGetMeServerCommand } from './../commands/user/get-me/server/UserGetMeServerCommand';
@@ -167,6 +157,16 @@ import { WallReadServerCommand } from './../commands/wall/read/server/WallReadSe
 import { WallWriteServerCommand } from './../commands/wall/write/server/WallWriteServerCommand';
 import { WebFetchServerCommand } from './../commands/web/fetch/server/WebFetchServerCommand';
 import { WebSearchServerCommand } from './../commands/web/search/server/WebSearchServerCommand';
+import { GitCommitServerCommand } from './../commands/workspace/git/commit/server/GitCommitServerCommand';
+import { GitPushServerCommand } from './../commands/workspace/git/push/server/GitPushServerCommand';
+import { GitStatusServerCommand } from './../commands/workspace/git/status/server/GitStatusServerCommand';
+import { GitWorkspaceCleanServerCommand } from './../commands/workspace/git/workspace/clean/server/GitWorkspaceCleanServerCommand';
+import { GitWorkspaceInitServerCommand } from './../commands/workspace/git/workspace/init/server/GitWorkspaceInitServerCommand';
+import { RecipeLoadServerCommand } from './../commands/workspace/recipe/load/server/RecipeLoadServerCommand';
+import { TaskCompleteServerCommand } from './../commands/workspace/task/complete/server/TaskCompleteServerCommand';
+import { TaskCreateServerCommand } from './../commands/workspace/task/create/server/TaskCreateServerCommand';
+import { TaskListServerCommand } from './../commands/workspace/task/list/server/TaskListServerCommand';
+import { TreeServerCommand } from './../commands/workspace/tree/server/TreeServerCommand';
 
 // Server adapters Imports
 import { UDPMulticastTransportServer } from './../system/transports/udp-multicast-transport/server/UDPMulticastTransportServer';
@@ -686,31 +686,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: GetTextServerCommand
   },
 {
-    name: 'git/commit',
-    className: 'GitCommitServerCommand',
-    commandClass: GitCommitServerCommand
-  },
-{
-    name: 'git/push',
-    className: 'GitPushServerCommand',
-    commandClass: GitPushServerCommand
-  },
-{
-    name: 'git/status',
-    className: 'GitStatusServerCommand',
-    commandClass: GitStatusServerCommand
-  },
-{
-    name: 'git/workspace/clean',
-    className: 'GitWorkspaceCleanServerCommand',
-    commandClass: GitWorkspaceCleanServerCommand
-  },
-{
-    name: 'git/workspace/init',
-    className: 'GitWorkspaceInitServerCommand',
-    commandClass: GitWorkspaceInitServerCommand
-  },
-{
     name: 'help',
     className: 'HelpServerCommand',
     commandClass: HelpServerCommand
@@ -801,11 +776,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: RAGLoadServerCommand
   },
 {
-    name: 'recipe/load',
-    className: 'RecipeLoadServerCommand',
-    commandClass: RecipeLoadServerCommand
-  },
-{
     name: 'schema/generate',
     className: 'SchemaGenerateServerCommand',
     commandClass: SchemaGenerateServerCommand
@@ -871,21 +841,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: DaemonsServerCommand
   },
 {
-    name: 'task/complete',
-    className: 'TaskCompleteServerCommand',
-    commandClass: TaskCompleteServerCommand
-  },
-{
-    name: 'task/create',
-    className: 'TaskCreateServerCommand',
-    commandClass: TaskCreateServerCommand
-  },
-{
-    name: 'task/list',
-    className: 'TaskListServerCommand',
-    commandClass: TaskListServerCommand
-  },
-{
     name: 'theme/get',
     className: 'ThemeGetServerCommand',
     commandClass: ThemeGetServerCommand
@@ -904,11 +859,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'training/import',
     className: 'TrainingImportServerCommand',
     commandClass: TrainingImportServerCommand
-  },
-{
-    name: 'tree',
-    className: 'TreeServerCommand',
-    commandClass: TreeServerCommand
   },
 {
     name: 'type',
@@ -979,6 +929,56 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'web/search',
     className: 'WebSearchServerCommand',
     commandClass: WebSearchServerCommand
+  },
+{
+    name: 'workspace/git/commit',
+    className: 'GitCommitServerCommand',
+    commandClass: GitCommitServerCommand
+  },
+{
+    name: 'workspace/git/push',
+    className: 'GitPushServerCommand',
+    commandClass: GitPushServerCommand
+  },
+{
+    name: 'workspace/git/status',
+    className: 'GitStatusServerCommand',
+    commandClass: GitStatusServerCommand
+  },
+{
+    name: 'workspace/git/workspace/clean',
+    className: 'GitWorkspaceCleanServerCommand',
+    commandClass: GitWorkspaceCleanServerCommand
+  },
+{
+    name: 'workspace/git/workspace/init',
+    className: 'GitWorkspaceInitServerCommand',
+    commandClass: GitWorkspaceInitServerCommand
+  },
+{
+    name: 'workspace/recipe/load',
+    className: 'RecipeLoadServerCommand',
+    commandClass: RecipeLoadServerCommand
+  },
+{
+    name: 'workspace/task/complete',
+    className: 'TaskCompleteServerCommand',
+    commandClass: TaskCompleteServerCommand
+  },
+{
+    name: 'workspace/task/create',
+    className: 'TaskCreateServerCommand',
+    commandClass: TaskCreateServerCommand
+  },
+{
+    name: 'workspace/task/list',
+    className: 'TaskListServerCommand',
+    commandClass: TaskListServerCommand
+  },
+{
+    name: 'workspace/tree',
+    className: 'TreeServerCommand',
+    commandClass: TreeServerCommand
   }
 ];
 
