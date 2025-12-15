@@ -75,7 +75,7 @@ describe('Logging Entities Integration Test', () => {
       expect(createResult.success).toBe(true);
 
       // Retrieve
-      const listResult = await Commands.execute<any, DataListResult<ToolExecutionLogEntity>>('data/list', {
+      const listResult = await Commands.execute<any, DataListResult<ToolExecutionLogEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         filter: { personaId: testPersonaId },
         limit: 10
@@ -143,7 +143,7 @@ describe('Logging Entities Integration Test', () => {
       expect(createResult.success).toBe(true);
 
       // Retrieve
-      const listResult = await Commands.execute<any, DataListResult<AdapterDecisionLogEntity>>('data/list', {
+      const listResult = await Commands.execute<any, DataListResult<AdapterDecisionLogEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         filter: { personaId: testPersonaId },
         limit: 10
@@ -213,7 +213,7 @@ describe('Logging Entities Integration Test', () => {
       expect(createResult.success).toBe(true);
 
       // Retrieve
-      const listResult = await Commands.execute<any, DataListResult<ResponseGenerationLogEntity>>('data/list', {
+      const listResult = await Commands.execute<any, DataListResult<ResponseGenerationLogEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         filter: { personaId: testPersonaId },
         limit: 10
@@ -232,19 +232,19 @@ describe('Logging Entities Integration Test', () => {
   describe('Collection Registration', () => {
     it('should have all three collections available', async () => {
       // Verify collections are registered by attempting to list (even if empty)
-      const toolLogs = await Commands.execute<any, DataListResult<ToolExecutionLogEntity>>('data/list', {
+      const toolLogs = await Commands.execute<any, DataListResult<ToolExecutionLogEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         limit: 1
       });
       expect(toolLogs.collection).toBe(COLLECTIONS.TOOL_EXECUTION_LOGS);
 
-      const adapterLogs = await Commands.execute<any, DataListResult<AdapterDecisionLogEntity>>('data/list', {
+      const adapterLogs = await Commands.execute<any, DataListResult<AdapterDecisionLogEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         limit: 1
       });
       expect(adapterLogs.collection).toBe(COLLECTIONS.ADAPTER_DECISION_LOGS);
 
-      const responseLogs = await Commands.execute<any, DataListResult<ResponseGenerationLogEntity>>('data/list', {
+      const responseLogs = await Commands.execute<any, DataListResult<ResponseGenerationLogEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         limit: 1
       });

@@ -6,6 +6,7 @@
  */
 
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { ContentOpenParams, ContentOpenResult, ContentOpenedEvent } from '../shared/ContentOpenTypes';
@@ -29,7 +30,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       const userId = params.userId;
 
       // 1. Load user's UserStateEntity from database
-      const listResult = await Commands.execute<DataListParams<UserStateEntity>, DataListResult<UserStateEntity>>('data/list', {
+      const listResult = await Commands.execute<DataListParams<UserStateEntity>, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: 'user_states',
         filter: { userId },
         limit: 1

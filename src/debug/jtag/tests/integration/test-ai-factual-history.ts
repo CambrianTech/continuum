@@ -50,7 +50,7 @@ async function testAIFactualHistory(): Promise<void> {
   try {
     // Get general room
     console.log('📋 Finding general room...');
-    const roomsResult = await client.execute<DataListParams, DataListResult<RoomEntity>>('data/list', {
+    const roomsResult = await client.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.ROOMS,
       filter: { name: 'general' },
       limit: 1
@@ -205,7 +205,7 @@ async function testAIFactualHistory(): Promise<void> {
 
     // Get AI responses to verify content
     console.log('\n📥 Checking AI response content...');
-    const messagesResult = await client.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+    const messagesResult = await client.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: { roomId: room.uniqueId },
       orderBy: [{ field: 'createdAt', direction: 'desc' }],

@@ -3,7 +3,6 @@
  *
  * All data/* command names defined here.
  * Usage:
- *   import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
  *   await Commands.execute(DATA_COMMANDS.LIST, params);
  */
 

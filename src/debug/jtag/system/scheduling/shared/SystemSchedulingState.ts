@@ -65,7 +65,7 @@ export class SystemSchedulingState {
 
     try {
       // Query for singleton config entity
-      const result = await Commands.execute('data/list', {
+      const result = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: SystemConfigEntity.collection,
         filter: { name: 'default' },
         limit: 1,

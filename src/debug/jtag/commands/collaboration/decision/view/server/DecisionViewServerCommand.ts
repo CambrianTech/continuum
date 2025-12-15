@@ -5,9 +5,9 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { toShortId } from '@system/core/types/CrossPlatformUUID';
-// import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { DecisionViewParams, DecisionViewResult } from '../shared/DecisionViewTypes';
 import { createDecisionViewResultFromParams } from '../shared/DecisionViewTypes';
 
@@ -43,7 +43,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         const proposalShortId = normalizeShortId(params.proposalId);
 
         // Query for proposals ending with this short ID
-        const proposalsResult = await Commands.execute<any, any>('data/list', {
+        const proposalsResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });

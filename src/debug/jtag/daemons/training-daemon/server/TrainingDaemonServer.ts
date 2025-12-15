@@ -22,6 +22,7 @@
  */
 
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { TrainingDaemon } from '../shared/TrainingDaemon';
@@ -101,7 +102,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
     for (const roomUniqueId of this.config.enabledRooms) {
       try {
         // Use Commands.execute instead of DataDaemon.query for reliability
-        const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>('data/list', {
+        const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.ROOMS,
           filter: { uniqueId: roomUniqueId },
           limit: 1

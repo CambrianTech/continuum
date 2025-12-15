@@ -137,7 +137,7 @@ describe('Training Data Pipeline Integration Test', () => {
     // Step 3: Query database to verify data exists
     console.log('\n🔧 Step 3: Querying database to verify data...');
 
-    const listResult = await Commands.execute<DataListResult>('data/list', {
+    const listResult = await Commands.execute<DataListResult>(DATA_COMMANDS.LIST, {
       collection: 'training_examples',
       dbHandle
     });

@@ -15,6 +15,7 @@
  */
 
 import { PersonaContinuousSubprocess } from '../../PersonaSubprocess';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { PersonaUser } from '../../../PersonaUser';
 import { Commands } from '../../../../../core/shared/Commands';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
@@ -245,7 +246,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       }
 
       // Query LTM
-      const result = (await Commands.execute('data/list', {
+      const result = (await Commands.execute(DATA_COMMANDS.LIST, {
         dbHandle: this.memoryDbHandle,
         collection: 'memories',
         filter,

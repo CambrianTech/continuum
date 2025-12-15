@@ -6,7 +6,6 @@
  *
  * Usage:
  *   // Granular import (preferred for tree-shaking)
- *   import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
  *   await Commands.execute(DATA_COMMANDS.LIST, params);
  *
  *   // Central import (convenience)
@@ -35,8 +34,8 @@ export {
 } from './SystemCommandConstants';
 
 // Import for aggregation
-import { DATA_COMMANDS } from '../data/shared/DataCommandConstants';
 import { DEBUG_COMMANDS } from '@commands/development/debug/shared/DebugCommandConstants';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { STATE_COMMANDS } from '../state/shared/StateCommandConstants';
 import { FILE_COMMANDS } from '../file/shared/FileCommandConstants';
 import { THEME_COMMANDS } from '../theme/shared/ThemeCommandConstants';
@@ -99,7 +98,7 @@ export function isValidCommand(command: string): command is CommandName {
  * Parse command to get domain and action
  *
  * @example
- * parseCommand('data/list') // { domain: 'data', action: 'list' }
+ * parseCommand(DATA_COMMANDS.LIST) // { domain: 'data', action: 'list' }
  * parseCommand('screenshot') // { domain: 'ui', action: 'screenshot' }
  */
 export function parseCommand(command: string): { domain: string; action: string } | null {

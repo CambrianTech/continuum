@@ -10,6 +10,7 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
@@ -19,8 +20,6 @@ import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionRankCommand } from '../shared/DecisionRankCommand';
 import type { DecisionRankParams, DecisionRankResult } from '../shared/DecisionRankTypes';
 import type { DecisionProposalEntity, RankedVote } from '@system/data/entities/DecisionProposalEntity';
-import type { UserEntity } from '@system/data/entities/UserEntity';
-import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
@@ -109,7 +108,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         const proposalShortId = normalizeShortId(params.proposalId);
 
         // Query for proposals ending with this short ID
-        const proposalsResult = await Commands.execute<any, any>('data/list', {
+        const proposalsResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });

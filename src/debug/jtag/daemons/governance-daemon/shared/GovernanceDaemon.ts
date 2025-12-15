@@ -8,6 +8,7 @@
  */
 
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { Commands } from '../../../system/core/shared/Commands';
@@ -172,7 +173,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
    */
   protected async checkLowParticipation(proposal: DecisionProposalEntity): Promise<boolean> {
     // Get total eligible voters (all AIs for now)
-    const usersResult = await Commands.execute<any, any>('data/list', {
+    const usersResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.USERS,
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100

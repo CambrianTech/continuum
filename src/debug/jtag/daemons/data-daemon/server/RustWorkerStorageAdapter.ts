@@ -11,6 +11,7 @@
  */
 
 import * as net from 'net';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import {
@@ -280,7 +281,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       const response = await this.sendMessage<{
         items: T[];
         total: number;
-      }>('data/list', {
+      }>(DATA_COMMANDS.LIST, {
         collection: query.collection,
         filter: query.filter,
         orderBy: query.sort,

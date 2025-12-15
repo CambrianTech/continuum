@@ -16,6 +16,7 @@
  */
 
 import { Commands } from '../../core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
@@ -259,7 +260,7 @@ export class ToolRegistry {
         .join('\n');
     }
 
-    if (toolName.startsWith('data/list') && result.items) {
+    if (toolName.startsWith(DATA_COMMANDS.LIST) && result.items) {
       return `Collection: ${result.collection || 'unknown'}\nCount: ${result.count || result.items.length}\n\nResults:\n${JSON.stringify(result.items, null, 2)}`;
     }
 

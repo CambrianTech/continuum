@@ -6,6 +6,7 @@
  */
 
 import { ShouldRespondFastCommand } from '../shared/ShouldRespondFastCommand';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type {
@@ -218,7 +219,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       // Check if persona sent message in last 10 minutes
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
 
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: 'chat_messages',
         filter: {
           roomId: contextId,
@@ -248,7 +249,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
     try {
       const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: 'chat_messages',
         filter: { roomId: contextId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -283,7 +284,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
     try {
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: 'chat_messages',
         filter: { roomId: contextId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],

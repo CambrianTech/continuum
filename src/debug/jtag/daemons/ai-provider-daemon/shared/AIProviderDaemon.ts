@@ -22,6 +22,7 @@
  */
 
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
@@ -39,7 +40,6 @@ import type {
 import { AIProviderError, chatMessagesToPrompt } from './AIProviderTypesV2';
 import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEntity';
 import { Commands } from '../../../system/core/shared/Commands';
-import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 
 // AI Provider Payloads

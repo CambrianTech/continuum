@@ -5,6 +5,7 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { DecisionFinalizeParams, DecisionFinalizeResult } from '../shared/DecisionFinalizeTypes';
@@ -65,7 +66,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Get total eligible voters (all AIs for now)
-    const usersResult = await Commands.execute<any, DataListResult<UserEntity>>('data/list', {
+    const usersResult = await Commands.execute<any, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.USERS,
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100

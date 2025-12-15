@@ -144,7 +144,7 @@ class ShadowDOMEndToEndValidator {
   async testChatHistoryAccess(): Promise<{ accessible: boolean; historyData?: any }> {
     try {
       // Try to retrieve chat history via data commands
-      const historyResult = await this.framework.executeCommand('data/list', {
+      const historyResult = await this.framework.executeCommand(DATA_COMMANDS.LIST, {
         collection: 'messages',
         filter: { roomId: 'general' },
         format: 'json'

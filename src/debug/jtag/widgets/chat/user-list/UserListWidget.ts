@@ -4,10 +4,10 @@
  */
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { Commands } from '../../../system/core/shared/Commands';
-import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { Events } from '../../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';

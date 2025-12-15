@@ -31,7 +31,7 @@ import { createDataOpenResultFromParams } from '../shared/DataOpenTypes';
  * });
  *
  * // Use handle in other commands
- * const examples = await Commands.execute('data/list', {
+ * const examples = await Commands.execute(DATA_COMMANDS.LIST, {
  *   dbHandle: result.dbHandle,
  *   collection: 'training_examples'
  * });

@@ -52,7 +52,7 @@ async function testStateAPIIntegration() {
     if (commandWorks) {
       console.log('\n📋 Testing data delegation consistency...');
 
-      const dataResult = await runJtagCommand('data/list --collection=UserState --limit=5');
+      const dataResult = await runJtagCommand(DATA_COMMANDS.LIST --collection=UserState --limit=5');
       const stateResult = basicResult;
 
       const dataWorks = Boolean(dataResult?.success);

@@ -10,6 +10,7 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { generateUUID, toShortId } from '@system/core/types/CrossPlatformUUID';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
@@ -83,7 +84,7 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
       return [];
     }
 
-    const result = await Commands.execute<any, DataListResult<DecisionProposalEntity>>('data/list', {
+    const result = await Commands.execute<any, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.DECISION_PROPOSALS,
       orderBy: [{ field: 'sequenceNumber', direction: 'desc' }],
       limit: 100
@@ -132,7 +133,7 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
  */
 async function getUsersInScope(scope: string): Promise<UserEntity[]> {
   try {
-    const result = await Commands.execute<any, DataListResult<UserEntity>>('data/list', {
+    const result = await Commands.execute<any, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.USERS,
       limit: 100
     });
@@ -344,7 +345,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
     const relatedProposals = await findRelatedProposals(tags);
 
     // Get next sequence number
-    const countResult = await Commands.execute<any, any>('data/list', {
+    const countResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.DECISION_PROPOSALS,
       limit: 1,
       orderBy: [{ field: 'sequenceNumber', direction: 'desc' }]

@@ -5,6 +5,7 @@
  */
 
 import { WallWriteCommand } from '../shared/WallWriteCommand';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { WallWriteParams, WallWriteResult } from '../../shared/WallTypes';
@@ -45,7 +46,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
       const sanitizedName = sanitizeDocumentName(params.doc);
 
       // Check if WallDocumentEntity already exists
-      const existingDocs = await Commands.execute<DataListParams<WallDocumentEntity>, DataListResult<WallDocumentEntity>>('data/list', {
+      const existingDocs = await Commands.execute<DataListParams<WallDocumentEntity>, DataListResult<WallDocumentEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.WALL_DOCUMENTS,
         filter: { roomId: roomInfo.roomId, name: sanitizedName },
         limit: 1

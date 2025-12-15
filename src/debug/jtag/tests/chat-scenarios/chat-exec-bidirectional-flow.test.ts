@@ -131,7 +131,7 @@ class ExecBidirectionalChatTest {
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Verify server received the message using data/list
-      const serverCheck = await this.client.executeCommand('data/list', {
+      const serverCheck = await this.client.executeCommand(DATA_COMMANDS.LIST, {
         collection: 'chat_messages',
         limit: 10
       });

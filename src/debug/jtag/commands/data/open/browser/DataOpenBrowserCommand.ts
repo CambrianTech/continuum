@@ -29,7 +29,7 @@ import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
  * });
  *
  * // Use handle in other commands
- * const examples = await Commands.execute<DataListResult>('data/list', {
+ * const examples = await Commands.execute<DataListResult>(DATA_COMMANDS.LIST, {
  *   dbHandle: result.dbHandle,
  *   collection: 'training_examples'
  * });

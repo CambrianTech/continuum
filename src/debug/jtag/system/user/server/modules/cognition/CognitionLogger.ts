@@ -16,6 +16,7 @@
  */
 
 import type { UUID } from '../../../../core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { Commands } from '../../../../core/shared/Commands';
 import { COLLECTIONS } from '../../../../shared/Constants';
 import { DataDaemon } from '../../../../../daemons/data-daemon/shared/DataDaemon';
@@ -241,7 +242,7 @@ export class CognitionLogger {
   ): Promise<void> {
     try {
       // Find the plan record in database
-      const planRecords = await Commands.execute('data/list', {
+      const planRecords = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         filter: { planId },
         limit: 1,
@@ -307,7 +308,7 @@ export class CognitionLogger {
   ): Promise<void> {
     try {
       // Find the plan record in database
-      const planRecords = await Commands.execute('data/list', {
+      const planRecords = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         filter: { planId },
         limit: 1,

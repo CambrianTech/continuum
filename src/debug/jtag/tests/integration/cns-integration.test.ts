@@ -17,7 +17,7 @@ describe('CNS Integration', () => {
 
   it('should have CNS initialized for all personas', async () => {
     // Get all PersonaUsers
-    const users = await Commands.execute<any, any>('data/list', {
+    const users = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
       collection: 'users',
       filter: { type: 'persona' }
     });
@@ -32,7 +32,7 @@ describe('CNS Integration', () => {
     // This test verifies the integration by sending a message
     // If CNS wasn't working, the system would crash or fall back
 
-    const rooms = await Commands.execute<any, any>('data/list', {
+    const rooms = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
       collection: 'rooms',
       limit: 1
     });

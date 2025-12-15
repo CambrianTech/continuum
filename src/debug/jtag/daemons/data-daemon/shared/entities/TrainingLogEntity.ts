@@ -54,7 +54,7 @@ export type LogSource = 'stdout' | 'stderr' | 'system' | 'provider';
  * });
  *
  * // Query error logs
- * const errors = await Commands.execute('data/list', {
+ * const errors = await Commands.execute(DATA_COMMANDS.LIST, {
  *   collection: 'training_logs',
  *   filter: {
  *     sessionId: session.id,
@@ -65,7 +65,7 @@ export type LogSource = 'stdout' | 'stderr' | 'system' | 'provider';
  * });
  *
  * // Search logs
- * const cudaLogs = await Commands.execute('data/list', {
+ * const cudaLogs = await Commands.execute(DATA_COMMANDS.LIST, {
  *   collection: 'training_logs',
  *   filter: {
  *     sessionId: session.id,

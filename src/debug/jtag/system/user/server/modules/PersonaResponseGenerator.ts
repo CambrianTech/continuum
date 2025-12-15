@@ -13,13 +13,13 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
-import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';

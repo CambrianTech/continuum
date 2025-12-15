@@ -7,18 +7,17 @@
  */
 
 import { BaseWidget } from './BaseWidget';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
 import { THEME_COMMANDS } from '../../commands/theme/shared/ThemeCommandConstants';
-import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry } from './themes/ThemeTypes';
 import type { DataListResult, DataListParams } from '../../commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { ThemeSetParams, ThemeSetResult } from '../../commands/theme/set/shared/ThemeSetTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
-import { stringToUUID } from '../../system/core/types/CrossPlatformUUID';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
 
 export class ThemeWidget extends BaseWidget {

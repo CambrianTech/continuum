@@ -21,7 +21,6 @@ import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import { Commands } from '../../core/shared/Commands';
-import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';

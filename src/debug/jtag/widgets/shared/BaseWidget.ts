@@ -18,6 +18,7 @@
 
 // Event types - Rust-like strict typing
 import type { ChatEventName, ChatEventDataFor } from '../chat/shared/ChatEventTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
@@ -189,7 +190,7 @@ export abstract class BaseWidget extends HTMLElement {
       }
 
       // Load user state
-      const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>('data/list', {
+      const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.USER_STATES,
         filter: { userId: currentUser.id },
         limit: 1

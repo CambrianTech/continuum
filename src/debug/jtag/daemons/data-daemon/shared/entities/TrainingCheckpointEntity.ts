@@ -64,7 +64,7 @@ export interface ValidationMetrics {
  * });
  *
  * // Query best checkpoint for deployment
- * const bestCheckpoint = await Commands.execute('data/list', {
+ * const bestCheckpoint = await Commands.execute(DATA_COMMANDS.LIST, {
  *   collection: 'training_checkpoints',
  *   filter: {
  *     sessionId: session.id,

@@ -8,6 +8,7 @@
  */
 
 import { UserCreateCommand } from '../shared/UserCreateCommand';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { UserCreateParams, UserCreateResult } from '../shared/UserCreateTypes';
@@ -43,7 +44,7 @@ export class UserCreateServerCommand extends UserCreateCommand {
       // Check if user with this uniqueId already exists (prevent duplicates on re-seed)
       if (params.uniqueId) {
         // Use proper command interface, not direct DataDaemon access
-        const listCommand = this.commander.commands.get('data/list');
+        const listCommand = this.commander.commands.get(DATA_COMMANDS.LIST);
         if (!listCommand) {
           throw new Error('data/list command not available');
         }

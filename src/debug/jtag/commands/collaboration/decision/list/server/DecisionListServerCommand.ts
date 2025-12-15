@@ -5,6 +5,7 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 // import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { DecisionListParams, DecisionListResult } from '../shared/DecisionListTypes';
@@ -33,7 +34,7 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
         filter.status = params.status;
       }
 
-      const listResult = await Commands.execute<any, any>('data/list', {
+      const listResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         filter,
         limit,
