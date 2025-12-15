@@ -45,7 +45,6 @@ import { DecisionVoteBrowserCommand } from './../commands/collaboration/decision
 import { WallListBrowserCommand } from './../commands/collaboration/wall/list/browser/WallListBrowserCommand';
 import { WallReadBrowserCommand } from './../commands/collaboration/wall/read/browser/WallReadBrowserCommand';
 import { WallWriteBrowserCommand } from './../commands/collaboration/wall/write/browser/WallWriteBrowserCommand';
-import { CompileTypescriptBrowserCommand } from './../commands/compile-typescript/browser/CompileTypescriptBrowserCommand';
 import { EmotionBrowserCommand } from './../commands/continuum/emotion/browser/EmotionBrowserCommand';
 import { ContinuumSetBrowserCommand } from './../commands/continuum/set/browser/ContinuumSetBrowserCommand';
 import { BackfillVectorsBrowserCommand } from './../commands/data/backfill-vectors/browser/BackfillVectorsBrowserCommand';
@@ -65,23 +64,26 @@ import { DataSchemaBrowserCommand } from './../commands/data/schema/browser/Data
 import { DataTruncateBrowserCommand } from './../commands/data/truncate/browser/DataTruncateBrowserCommand';
 import { DataUpdateBrowserCommand } from './../commands/data/update/browser/DataUpdateBrowserCommand';
 import { VectorSearchBrowserCommand } from './../commands/data/vector-search/browser/VectorSearchBrowserCommand';
-import { ArtifactsCheckBrowserCommand } from './../commands/debug/artifacts-check/browser/ArtifactsCheckBrowserCommand';
-import { ChatSendDebugBrowserCommand } from './../commands/debug/chat-send/browser/ChatSendDebugBrowserCommand';
-import { CrudSyncBrowserCommand } from './../commands/debug/crud-sync/browser/CrudSyncBrowserCommand';
-import { DebugErrorBrowserCommand } from './../commands/debug/error/browser/DebugErrorBrowserCommand';
-import { HtmlInspectorBrowserCommand } from './../commands/debug/html-inspector/browser/HtmlInspectorBrowserCommand';
-import { ScrollTestBrowserCommand } from './../commands/debug/scroll-test/browser/ScrollTestBrowserCommand';
-import { WidgetCSSBrowserCommand } from './../commands/debug/widget-css/browser/WidgetCSSBrowserCommand';
-import { WidgetEventsDebugBrowserCommand } from './../commands/debug/widget-events/browser/WidgetEventsDebugBrowserCommand';
-import { WidgetInteractBrowserCommand } from './../commands/debug/widget-interact/browser/WidgetInteractBrowserCommand';
-import { WidgetStateBrowserCommand } from './../commands/debug/widget-state/browser/WidgetStateBrowserCommand';
-import { ExecBrowserCommand } from './../commands/exec/browser/ExecBrowserCommand';
+import { CompileTypescriptBrowserCommand } from './../commands/development/compile-typescript/browser/CompileTypescriptBrowserCommand';
+import { ArtifactsCheckBrowserCommand } from './../commands/development/debug/artifacts-check/browser/ArtifactsCheckBrowserCommand';
+import { ChatSendDebugBrowserCommand } from './../commands/development/debug/chat-send/browser/ChatSendDebugBrowserCommand';
+import { CrudSyncBrowserCommand } from './../commands/development/debug/crud-sync/browser/CrudSyncBrowserCommand';
+import { DebugErrorBrowserCommand } from './../commands/development/debug/error/browser/DebugErrorBrowserCommand';
+import { HtmlInspectorBrowserCommand } from './../commands/development/debug/html-inspector/browser/HtmlInspectorBrowserCommand';
+import { ScrollTestBrowserCommand } from './../commands/development/debug/scroll-test/browser/ScrollTestBrowserCommand';
+import { WidgetCSSBrowserCommand } from './../commands/development/debug/widget-css/browser/WidgetCSSBrowserCommand';
+import { WidgetEventsDebugBrowserCommand } from './../commands/development/debug/widget-events/browser/WidgetEventsDebugBrowserCommand';
+import { WidgetInteractBrowserCommand } from './../commands/development/debug/widget-interact/browser/WidgetInteractBrowserCommand';
+import { WidgetStateBrowserCommand } from './../commands/development/debug/widget-state/browser/WidgetStateBrowserCommand';
+import { ExecBrowserCommand } from './../commands/development/exec/browser/ExecBrowserCommand';
+import { GenerateAuditBrowserCommand } from './../commands/development/generate/audit/browser/GenerateAuditBrowserCommand';
+import { GenerateBrowserCommand } from './../commands/development/generate/browser/GenerateBrowserCommand';
+import { SchemaGenerateBrowserCommand } from './../commands/development/schema/generate/browser/SchemaGenerateBrowserCommand';
+import { ShellExecuteBrowserCommand } from './../commands/development/shell/execute/browser/ShellExecuteBrowserCommand';
 import { FileAppendBrowserCommand } from './../commands/file/append/browser/FileAppendBrowserCommand';
 import { FileLoadBrowserCommand } from './../commands/file/load/browser/FileLoadBrowserCommand';
 import { FileMimeTypeBrowserCommand } from './../commands/file/mime-type/browser/FileMimeTypeBrowserCommand';
 import { FileSaveBrowserCommand } from './../commands/file/save/browser/FileSaveBrowserCommand';
-import { GenerateAuditBrowserCommand } from './../commands/generate/audit/browser/GenerateAuditBrowserCommand';
-import { GenerateBrowserCommand } from './../commands/generate/browser/GenerateBrowserCommand';
 import { GenomeBatchMicroTuneBrowserCommand } from './../commands/genome/batch-micro-tune/browser/GenomeBatchMicroTuneBrowserCommand';
 import { GenomeJobCreateBrowserCommand } from './../commands/genome/job-create/browser/GenomeJobCreateBrowserCommand';
 import { GenomeJobStatusBrowserCommand } from './../commands/genome/job-status/browser/GenomeJobStatusBrowserCommand';
@@ -106,12 +108,10 @@ import { GenomeCaptureInteractionBrowserCommand } from './../commands/persona/le
 import { GenomeMultiAgentLearnBrowserCommand } from './../commands/persona/learning/multi-agent-learn/browser/GenomeMultiAgentLearnBrowserCommand';
 import { PingBrowserCommand } from './../commands/ping/browser/PingBrowserCommand';
 import { ProcessRegistryBrowserCommand } from './../commands/process-registry/browser/ProcessRegistryBrowserCommand';
-import { SchemaGenerateBrowserCommand } from './../commands/schema/generate/browser/SchemaGenerateBrowserCommand';
 import { SessionCreateBrowserCommand } from './../commands/session/create/browser/SessionCreateBrowserCommand';
 import { SessionDestroyBrowserCommand } from './../commands/session/destroy/browser/SessionDestroyBrowserCommand';
 import { SessionGetIdBrowserCommand } from './../commands/session/get-id/browser/SessionGetIdBrowserCommand';
 import { SessionGetUserBrowserCommand } from './../commands/session/get-user/browser/SessionGetUserBrowserCommand';
-import { ShellExecuteBrowserCommand } from './../commands/shell/execute/browser/ShellExecuteBrowserCommand';
 import { StateCreateBrowserCommand } from './../commands/state/create/browser/StateCreateBrowserCommand';
 import { StateGetBrowserCommand } from './../commands/state/get/browser/StateGetBrowserCommand';
 import { StateUpdateBrowserCommand } from './../commands/state/update/browser/StateUpdateBrowserCommand';
@@ -354,11 +354,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: WallWriteBrowserCommand
   },
 {
-    name: 'compile-typescript',
-    className: 'CompileTypescriptBrowserCommand',
-    commandClass: CompileTypescriptBrowserCommand
-  },
-{
     name: 'continuum/emotion',
     className: 'EmotionBrowserCommand',
     commandClass: EmotionBrowserCommand
@@ -454,59 +449,84 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: VectorSearchBrowserCommand
   },
 {
-    name: 'debug/artifacts-check',
+    name: 'development/compile-typescript',
+    className: 'CompileTypescriptBrowserCommand',
+    commandClass: CompileTypescriptBrowserCommand
+  },
+{
+    name: 'development/debug/artifacts-check',
     className: 'ArtifactsCheckBrowserCommand',
     commandClass: ArtifactsCheckBrowserCommand
   },
 {
-    name: 'debug/chat-send',
+    name: 'development/debug/chat-send',
     className: 'ChatSendDebugBrowserCommand',
     commandClass: ChatSendDebugBrowserCommand
   },
 {
-    name: 'debug/crud-sync',
+    name: 'development/debug/crud-sync',
     className: 'CrudSyncBrowserCommand',
     commandClass: CrudSyncBrowserCommand
   },
 {
-    name: 'debug/error',
+    name: 'development/debug/error',
     className: 'DebugErrorBrowserCommand',
     commandClass: DebugErrorBrowserCommand
   },
 {
-    name: 'debug/html-inspector',
+    name: 'development/debug/html-inspector',
     className: 'HtmlInspectorBrowserCommand',
     commandClass: HtmlInspectorBrowserCommand
   },
 {
-    name: 'debug/scroll-test',
+    name: 'development/debug/scroll-test',
     className: 'ScrollTestBrowserCommand',
     commandClass: ScrollTestBrowserCommand
   },
 {
-    name: 'debug/widget-css',
+    name: 'development/debug/widget-css',
     className: 'WidgetCSSBrowserCommand',
     commandClass: WidgetCSSBrowserCommand
   },
 {
-    name: 'debug/widget-events',
+    name: 'development/debug/widget-events',
     className: 'WidgetEventsDebugBrowserCommand',
     commandClass: WidgetEventsDebugBrowserCommand
   },
 {
-    name: 'debug/widget-interact',
+    name: 'development/debug/widget-interact',
     className: 'WidgetInteractBrowserCommand',
     commandClass: WidgetInteractBrowserCommand
   },
 {
-    name: 'debug/widget-state',
+    name: 'development/debug/widget-state',
     className: 'WidgetStateBrowserCommand',
     commandClass: WidgetStateBrowserCommand
   },
 {
-    name: 'exec',
+    name: 'development/exec',
     className: 'ExecBrowserCommand',
     commandClass: ExecBrowserCommand
+  },
+{
+    name: 'development/generate/audit',
+    className: 'GenerateAuditBrowserCommand',
+    commandClass: GenerateAuditBrowserCommand
+  },
+{
+    name: 'development/generate',
+    className: 'GenerateBrowserCommand',
+    commandClass: GenerateBrowserCommand
+  },
+{
+    name: 'development/schema/generate',
+    className: 'SchemaGenerateBrowserCommand',
+    commandClass: SchemaGenerateBrowserCommand
+  },
+{
+    name: 'development/shell/execute',
+    className: 'ShellExecuteBrowserCommand',
+    commandClass: ShellExecuteBrowserCommand
   },
 {
     name: 'file/append',
@@ -527,16 +547,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'file/save',
     className: 'FileSaveBrowserCommand',
     commandClass: FileSaveBrowserCommand
-  },
-{
-    name: 'generate/audit',
-    className: 'GenerateAuditBrowserCommand',
-    commandClass: GenerateAuditBrowserCommand
-  },
-{
-    name: 'generate',
-    className: 'GenerateBrowserCommand',
-    commandClass: GenerateBrowserCommand
   },
 {
     name: 'genome/batch-micro-tune',
@@ -659,11 +669,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     commandClass: ProcessRegistryBrowserCommand
   },
 {
-    name: 'schema/generate',
-    className: 'SchemaGenerateBrowserCommand',
-    commandClass: SchemaGenerateBrowserCommand
-  },
-{
     name: 'session/create',
     className: 'SessionCreateBrowserCommand',
     commandClass: SessionCreateBrowserCommand
@@ -682,11 +687,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'session/get-user',
     className: 'SessionGetUserBrowserCommand',
     commandClass: SessionGetUserBrowserCommand
-  },
-{
-    name: 'shell/execute',
-    className: 'ShellExecuteBrowserCommand',
-    commandClass: ShellExecuteBrowserCommand
   },
 {
     name: 'state/create',

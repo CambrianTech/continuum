@@ -16,7 +16,7 @@
 
 // Re-export all modular constants
 export { DATA_COMMANDS, type DataCommand } from '../data/shared/DataCommandConstants';
-export { DEBUG_COMMANDS, type DebugCommand } from '../debug/shared/DebugCommandConstants';
+export { DEBUG_COMMANDS, type DebugCommand } from '@commands/development/debug/shared/DebugCommandConstants';
 export { STATE_COMMANDS, type StateCommand } from '../state/shared/StateCommandConstants';
 export { FILE_COMMANDS, type FileCommand } from '../file/shared/FileCommandConstants';
 export { THEME_COMMANDS, type ThemeCommand } from '../theme/shared/ThemeCommandConstants';
@@ -36,7 +36,7 @@ export {
 
 // Import for aggregation
 import { DATA_COMMANDS } from '../data/shared/DataCommandConstants';
-import { DEBUG_COMMANDS } from '../debug/shared/DebugCommandConstants';
+import { DEBUG_COMMANDS } from '@commands/development/debug/shared/DebugCommandConstants';
 import { STATE_COMMANDS } from '../state/shared/StateCommandConstants';
 import { FILE_COMMANDS } from '../file/shared/FileCommandConstants';
 import { THEME_COMMANDS } from '../theme/shared/ThemeCommandConstants';

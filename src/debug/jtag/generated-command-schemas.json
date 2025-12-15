@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-15T01:01:02.146Z",
+  "generated": "2025-12-15T01:14:01.412Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -409,42 +409,6 @@
           "type": "boolean",
           "required": false,
           "description": "statusOnly parameter"
-        }
-      }
-    },
-    {
-      "name": "shell-execute",
-      "description": "Shell Execute Command Types\n *\n * Provides safe shell command execution for PersonaUsers and other AI agents.\n * Commands are whitelisted and sanitized to prevent security issues.",
-      "params": {
-        "command": {
-          "type": "string",
-          "required": true,
-          "description": "command parameter"
-        },
-        "args": {
-          "type": "array",
-          "required": false,
-          "description": "args parameter"
-        },
-        "cwd": {
-          "type": "string",
-          "required": false,
-          "description": "cwd parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "maxOutputSize": {
-          "type": "number",
-          "required": false,
-          "description": "maxOutputSize parameter"
-        },
-        "env": {
-          "type": "object",
-          "required": false,
-          "description": "env parameter"
         }
       }
     },
@@ -1469,6 +1433,58 @@
       }
     },
     {
+      "name": "file",
+      "description": "File Command Base Types - Generic Foundation for File Operations\n * \n * Provides type-safe base classes for all file operations using TypeScript generics.\n * Follows the modular command architecture with ~50 line modules and shared types.\n * \n * CORE ARCHITECTURE:\n * - Generic FileParams<T> base for type-safe parameter extension\n * - Generic FileResult<T> base for consistent result structure\n * - Abstract base classes prevent direct instantiation\n * - Object.assign constructor pattern for elegant initialization\n * \n * TESTING REQUIREMENTS:\n * - Unit tests: Parameter validation and default value assignment\n * - Integration tests: Cross-command type compatibility\n * - Type tests: Generic constraint validation\n * \n * ARCHITECTURAL INSIGHTS:\n * - Generics enable type-safe command extension without duplication\n * - Abstract classes provide structure while allowing specialization\n * - Shared types ensure consistency across file operations",
+      "params": {
+        "filepath": {
+          "type": "string",
+          "required": true,
+          "description": "filepath parameter"
+        },
+        "encoding": {
+          "type": "string",
+          "required": false,
+          "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "shell-execute",
+      "description": "Shell Execute Command Types\n *\n * Provides safe shell command execution for PersonaUsers and other AI agents.\n * Commands are whitelisted and sanitized to prevent security issues.",
+      "params": {
+        "command": {
+          "type": "string",
+          "required": true,
+          "description": "command parameter"
+        },
+        "args": {
+          "type": "array",
+          "required": false,
+          "description": "args parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "maxOutputSize": {
+          "type": "number",
+          "required": false,
+          "description": "maxOutputSize parameter"
+        },
+        "env": {
+          "type": "object",
+          "required": false,
+          "description": "env parameter"
+        }
+      }
+    },
+    {
       "name": "generate",
       "description": "Generate Command - Shared Types\n *\n * Generate a new command from a CommandSpec JSON definition",
       "params": {
@@ -1511,23 +1527,7 @@
       }
     },
     {
-      "name": "file",
-      "description": "File Command Base Types - Generic Foundation for File Operations\n * \n * Provides type-safe base classes for all file operations using TypeScript generics.\n * Follows the modular command architecture with ~50 line modules and shared types.\n * \n * CORE ARCHITECTURE:\n * - Generic FileParams<T> base for type-safe parameter extension\n * - Generic FileResult<T> base for consistent result structure\n * - Abstract base classes prevent direct instantiation\n * - Object.assign constructor pattern for elegant initialization\n * \n * TESTING REQUIREMENTS:\n * - Unit tests: Parameter validation and default value assignment\n * - Integration tests: Cross-command type compatibility\n * - Type tests: Generic constraint validation\n * \n * ARCHITECTURAL INSIGHTS:\n * - Generics enable type-safe command extension without duplication\n * - Abstract classes provide structure while allowing specialization\n * - Shared types ensure consistency across file operations",
-      "params": {
-        "filepath": {
-          "type": "string",
-          "required": true,
-          "description": "filepath parameter"
-        },
-        "encoding": {
-          "type": "string",
-          "required": false,
-          "description": "encoding parameter"
-        }
-      }
-    },
-    {
-      "name": "exec/command",
+      "name": "exec-command",
       "description": "ExecCommand Types - Universal Script Execution System\n * \n * Defines types for JTAG's meta-command that enables AI agents to write\n * custom automation scripts with visual feedback and cross-context execution.",
       "params": {
         "code": {
@@ -1927,6 +1927,114 @@
       }
     },
     {
+      "name": "compile-typescript",
+      "description": "Compile TypeScript Command - Shared Types\n * \n * Minimal, focused types for TypeScript compilation only.\n * Follows screenshot/navigate pattern - simple params and results.\n * \n * DESIGN PRINCIPLES:\n * ✅ Single responsibility - only TypeScript compilation\n * ✅ Clean parameter interface with sensible defaults\n * ✅ Object.assign() constructor pattern\n * ✅ No over-engineering or god objects\n * ✅ Focused scope - just TSC compilation\n * \n * SCOPE:\n * - Browser: Uses monaco/typescript service if available\n * - Server: Uses local tsc executable or typescript module\n * - Consistent interface across contexts",
+      "params": {
+        "source": {
+          "type": "string",
+          "required": true,
+          "description": "source parameter"
+        },
+        "filename": {
+          "type": "string",
+          "required": false,
+          "description": "filename parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "strict": {
+          "type": "boolean",
+          "required": false,
+          "description": "strict parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": false,
+          "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "code-read",
+      "description": "code/read command types",
+      "params": {
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "path": {
+          "type": "string",
+          "required": true,
+          "description": "path parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "includeMetadata": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMetadata parameter"
+        },
+        "forceRefresh": {
+          "type": "boolean",
+          "required": false,
+          "description": "forceRefresh parameter"
+        }
+      }
+    },
+    {
+      "name": "code-find",
+      "description": "code/find command types - Find files by name pattern",
+      "params": {
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "baseDir": {
+          "type": "string",
+          "required": false,
+          "description": "baseDir parameter"
+        },
+        "caseInsensitive": {
+          "type": "boolean",
+          "required": false,
+          "description": "caseInsensitive parameter"
+        },
+        "maxResults": {
+          "type": "number",
+          "required": false,
+          "description": "maxResults parameter"
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeHidden parameter"
+        },
+        "excludeDirs": {
+          "type": "array",
+          "required": false,
+          "description": "excludeDirs parameter"
+        }
+      }
+    },
+    {
       "name": "continuum-set",
       "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
       "params": {
@@ -1980,37 +2088,6 @@
           "type": "number",
           "required": false,
           "description": "duration parameter"
-        }
-      }
-    },
-    {
-      "name": "compile-typescript",
-      "description": "Compile TypeScript Command - Shared Types\n * \n * Minimal, focused types for TypeScript compilation only.\n * Follows screenshot/navigate pattern - simple params and results.\n * \n * DESIGN PRINCIPLES:\n * ✅ Single responsibility - only TypeScript compilation\n * ✅ Clean parameter interface with sensible defaults\n * ✅ Object.assign() constructor pattern\n * ✅ No over-engineering or god objects\n * ✅ Focused scope - just TSC compilation\n * \n * SCOPE:\n * - Browser: Uses monaco/typescript service if available\n * - Server: Uses local tsc executable or typescript module\n * - Consistent interface across contexts",
-      "params": {
-        "source": {
-          "type": "string",
-          "required": true,
-          "description": "source parameter"
-        },
-        "filename": {
-          "type": "string",
-          "required": false,
-          "description": "filename parameter"
-        },
-        "outputPath": {
-          "type": "string",
-          "required": false,
-          "description": "outputPath parameter"
-        },
-        "strict": {
-          "type": "boolean",
-          "required": false,
-          "description": "strict parameter"
-        },
-        "target": {
-          "type": "string",
-          "required": false,
-          "description": "target parameter"
         }
       }
     },
@@ -2513,83 +2590,6 @@
           "type": "boolean",
           "required": true,
           "description": "present parameter"
-        }
-      }
-    },
-    {
-      "name": "code-read",
-      "description": "code/read command types",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "path": {
-          "type": "string",
-          "required": true,
-          "description": "path parameter"
-        },
-        "startLine": {
-          "type": "number",
-          "required": false,
-          "description": "startLine parameter"
-        },
-        "endLine": {
-          "type": "number",
-          "required": false,
-          "description": "endLine parameter"
-        },
-        "includeMetadata": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeMetadata parameter"
-        },
-        "forceRefresh": {
-          "type": "boolean",
-          "required": false,
-          "description": "forceRefresh parameter"
-        }
-      }
-    },
-    {
-      "name": "code-find",
-      "description": "code/find command types - Find files by name pattern",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "pattern": {
-          "type": "string",
-          "required": true,
-          "description": "pattern parameter"
-        },
-        "baseDir": {
-          "type": "string",
-          "required": false,
-          "description": "baseDir parameter"
-        },
-        "caseInsensitive": {
-          "type": "boolean",
-          "required": false,
-          "description": "caseInsensitive parameter"
-        },
-        "maxResults": {
-          "type": "number",
-          "required": false,
-          "description": "maxResults parameter"
-        },
-        "includeHidden": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeHidden parameter"
-        },
-        "excludeDirs": {
-          "type": "array",
-          "required": false,
-          "description": "excludeDirs parameter"
         }
       }
     },

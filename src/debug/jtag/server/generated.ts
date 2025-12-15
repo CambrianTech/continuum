@@ -46,8 +46,6 @@ import { AIShouldRespondServerCommand } from './../commands/ai/should-respond/se
 import { AIStatusServerCommand } from './../commands/ai/status/server/AIStatusServerCommand';
 import { ThoughtStreamServerCommand } from './../commands/ai/thoughtstream/server/ThoughtStreamServerCommand';
 import { AIValidateResponseServerCommand } from './../commands/ai/validate-response/server/AIValidateResponseServerCommand';
-import { CodeFindServerCommand } from './../commands/code/pattern-search/server/CodeFindServerCommand';
-import { CodeReadServerCommand } from './../commands/code/read/server/CodeReadServerCommand';
 import { ChatAnalyzeServerCommand } from './../commands/collaboration/chat/analyze/server/ChatAnalyzeServerCommand';
 import { ChatExportServerCommand } from './../commands/collaboration/chat/export/server/ChatExportServerCommand';
 import { ChatPollServerCommand } from './../commands/collaboration/chat/poll/server/ChatPollServerCommand';
@@ -63,7 +61,6 @@ import { DecisionVoteServerCommand } from './../commands/collaboration/decision/
 import { WallListServerCommand } from './../commands/collaboration/wall/list/server/WallListServerCommand';
 import { WallReadServerCommand } from './../commands/collaboration/wall/read/server/WallReadServerCommand';
 import { WallWriteServerCommand } from './../commands/collaboration/wall/write/server/WallWriteServerCommand';
-import { CompileTypescriptServerCommand } from './../commands/compile-typescript/server/CompileTypescriptServerCommand';
 import { EmotionServerCommand } from './../commands/continuum/emotion/server/EmotionServerCommand';
 import { ContinuumSetServerCommand } from './../commands/continuum/set/server/ContinuumSetServerCommand';
 import { BackfillVectorsServerCommand } from './../commands/data/backfill-vectors/server/BackfillVectorsServerCommand';
@@ -83,23 +80,28 @@ import { DataSchemaServerCommand } from './../commands/data/schema/server/DataSc
 import { DataTruncateServerCommand } from './../commands/data/truncate/server/DataTruncateServerCommand';
 import { DataUpdateServerCommand } from './../commands/data/update/server/DataUpdateServerCommand';
 import { VectorSearchServerCommand } from './../commands/data/vector-search/server/VectorSearchServerCommand';
-import { ArtifactsCheckServerCommand } from './../commands/debug/artifacts-check/server/ArtifactsCheckServerCommand';
-import { ChatSendDebugServerCommand } from './../commands/debug/chat-send/server/ChatSendDebugServerCommand';
-import { CrudSyncServerCommand } from './../commands/debug/crud-sync/server/CrudSyncServerCommand';
-import { DebugErrorServerCommand } from './../commands/debug/error/server/DebugErrorServerCommand';
-import { HtmlInspectorServerCommand } from './../commands/debug/html-inspector/server/HtmlInspectorServerCommand';
-import { ScrollTestServerCommand } from './../commands/debug/scroll-test/server/ScrollTestServerCommand';
-import { WidgetCSSServerCommand } from './../commands/debug/widget-css/server/WidgetCSSServerCommand';
-import { WidgetEventsDebugServerCommand } from './../commands/debug/widget-events/server/WidgetEventsDebugServerCommand';
-import { WidgetInteractServerCommand } from './../commands/debug/widget-interact/server/WidgetInteractServerCommand';
-import { WidgetStateServerCommand } from './../commands/debug/widget-state/server/WidgetStateServerCommand';
-import { ExecServerCommand } from './../commands/exec/server/ExecServerCommand';
+import { CodeFindServerCommand } from './../commands/development/code/pattern-search/server/CodeFindServerCommand';
+import { CodeReadServerCommand } from './../commands/development/code/read/server/CodeReadServerCommand';
+import { CompileTypescriptServerCommand } from './../commands/development/compile-typescript/server/CompileTypescriptServerCommand';
+import { ArtifactsCheckServerCommand } from './../commands/development/debug/artifacts-check/server/ArtifactsCheckServerCommand';
+import { ChatSendDebugServerCommand } from './../commands/development/debug/chat-send/server/ChatSendDebugServerCommand';
+import { CrudSyncServerCommand } from './../commands/development/debug/crud-sync/server/CrudSyncServerCommand';
+import { DebugErrorServerCommand } from './../commands/development/debug/error/server/DebugErrorServerCommand';
+import { HtmlInspectorServerCommand } from './../commands/development/debug/html-inspector/server/HtmlInspectorServerCommand';
+import { ScrollTestServerCommand } from './../commands/development/debug/scroll-test/server/ScrollTestServerCommand';
+import { WidgetCSSServerCommand } from './../commands/development/debug/widget-css/server/WidgetCSSServerCommand';
+import { WidgetEventsDebugServerCommand } from './../commands/development/debug/widget-events/server/WidgetEventsDebugServerCommand';
+import { WidgetInteractServerCommand } from './../commands/development/debug/widget-interact/server/WidgetInteractServerCommand';
+import { WidgetStateServerCommand } from './../commands/development/debug/widget-state/server/WidgetStateServerCommand';
+import { ExecServerCommand } from './../commands/development/exec/server/ExecServerCommand';
+import { GenerateAuditServerCommand } from './../commands/development/generate/audit/server/GenerateAuditServerCommand';
+import { GenerateServerCommand } from './../commands/development/generate/server/GenerateServerCommand';
+import { SchemaGenerateServerCommand } from './../commands/development/schema/generate/server/SchemaGenerateServerCommand';
+import { ShellExecuteServerCommand } from './../commands/development/shell/execute/server/ShellExecuteServerCommand';
 import { FileAppendServerCommand } from './../commands/file/append/server/FileAppendServerCommand';
 import { FileLoadServerCommand } from './../commands/file/load/server/FileLoadServerCommand';
 import { FileMimeTypeServerCommand } from './../commands/file/mime-type/server/FileMimeTypeServerCommand';
 import { FileSaveServerCommand } from './../commands/file/save/server/FileSaveServerCommand';
-import { GenerateAuditServerCommand } from './../commands/generate/audit/server/GenerateAuditServerCommand';
-import { GenerateServerCommand } from './../commands/generate/server/GenerateServerCommand';
 import { GenomeBatchMicroTuneServerCommand } from './../commands/genome/batch-micro-tune/server/GenomeBatchMicroTuneServerCommand';
 import { GenomeJobCreateServerCommand } from './../commands/genome/job-create/server/GenomeJobCreateServerCommand';
 import { GenomeJobStatusServerCommand } from './../commands/genome/job-status/server/GenomeJobStatusServerCommand';
@@ -135,13 +137,11 @@ import { PingServerCommand } from './../commands/ping/server/PingServerCommand';
 import { ProcessRegistryServerCommand } from './../commands/process-registry/server/ProcessRegistryServerCommand';
 import { RAGBudgetServerCommand } from './../commands/rag/budget/server/RAGBudgetServerCommand';
 import { RAGLoadServerCommand } from './../commands/rag/load/server/RAGLoadServerCommand';
-import { SchemaGenerateServerCommand } from './../commands/schema/generate/server/SchemaGenerateServerCommand';
 import { SecuritySetupServerCommand } from './../commands/security/setup/server/SecuritySetupServerCommand';
 import { SessionCreateServerCommand } from './../commands/session/create/server/SessionCreateServerCommand';
 import { SessionDestroyServerCommand } from './../commands/session/destroy/server/SessionDestroyServerCommand';
 import { SessionGetIdServerCommand } from './../commands/session/get-id/server/SessionGetIdServerCommand';
 import { SessionGetUserServerCommand } from './../commands/session/get-user/server/SessionGetUserServerCommand';
-import { ShellExecuteServerCommand } from './../commands/shell/execute/server/ShellExecuteServerCommand';
 import { StateCreateServerCommand } from './../commands/state/create/server/StateCreateServerCommand';
 import { StateGetServerCommand } from './../commands/state/get/server/StateGetServerCommand';
 import { StateUpdateServerCommand } from './../commands/state/update/server/StateUpdateServerCommand';
@@ -376,16 +376,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: AIValidateResponseServerCommand
   },
 {
-    name: 'code/pattern-search',
-    className: 'CodeFindServerCommand',
-    commandClass: CodeFindServerCommand
-  },
-{
-    name: 'code/read',
-    className: 'CodeReadServerCommand',
-    commandClass: CodeReadServerCommand
-  },
-{
     name: 'collaboration/chat/analyze',
     className: 'ChatAnalyzeServerCommand',
     commandClass: ChatAnalyzeServerCommand
@@ -459,11 +449,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'collaboration/wall/write',
     className: 'WallWriteServerCommand',
     commandClass: WallWriteServerCommand
-  },
-{
-    name: 'compile-typescript',
-    className: 'CompileTypescriptServerCommand',
-    commandClass: CompileTypescriptServerCommand
   },
 {
     name: 'continuum/emotion',
@@ -561,59 +546,94 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: VectorSearchServerCommand
   },
 {
-    name: 'debug/artifacts-check',
+    name: 'development/code/pattern-search',
+    className: 'CodeFindServerCommand',
+    commandClass: CodeFindServerCommand
+  },
+{
+    name: 'development/code/read',
+    className: 'CodeReadServerCommand',
+    commandClass: CodeReadServerCommand
+  },
+{
+    name: 'development/compile-typescript',
+    className: 'CompileTypescriptServerCommand',
+    commandClass: CompileTypescriptServerCommand
+  },
+{
+    name: 'development/debug/artifacts-check',
     className: 'ArtifactsCheckServerCommand',
     commandClass: ArtifactsCheckServerCommand
   },
 {
-    name: 'debug/chat-send',
+    name: 'development/debug/chat-send',
     className: 'ChatSendDebugServerCommand',
     commandClass: ChatSendDebugServerCommand
   },
 {
-    name: 'debug/crud-sync',
+    name: 'development/debug/crud-sync',
     className: 'CrudSyncServerCommand',
     commandClass: CrudSyncServerCommand
   },
 {
-    name: 'debug/error',
+    name: 'development/debug/error',
     className: 'DebugErrorServerCommand',
     commandClass: DebugErrorServerCommand
   },
 {
-    name: 'debug/html-inspector',
+    name: 'development/debug/html-inspector',
     className: 'HtmlInspectorServerCommand',
     commandClass: HtmlInspectorServerCommand
   },
 {
-    name: 'debug/scroll-test',
+    name: 'development/debug/scroll-test',
     className: 'ScrollTestServerCommand',
     commandClass: ScrollTestServerCommand
   },
 {
-    name: 'debug/widget-css',
+    name: 'development/debug/widget-css',
     className: 'WidgetCSSServerCommand',
     commandClass: WidgetCSSServerCommand
   },
 {
-    name: 'debug/widget-events',
+    name: 'development/debug/widget-events',
     className: 'WidgetEventsDebugServerCommand',
     commandClass: WidgetEventsDebugServerCommand
   },
 {
-    name: 'debug/widget-interact',
+    name: 'development/debug/widget-interact',
     className: 'WidgetInteractServerCommand',
     commandClass: WidgetInteractServerCommand
   },
 {
-    name: 'debug/widget-state',
+    name: 'development/debug/widget-state',
     className: 'WidgetStateServerCommand',
     commandClass: WidgetStateServerCommand
   },
 {
-    name: 'exec',
+    name: 'development/exec',
     className: 'ExecServerCommand',
     commandClass: ExecServerCommand
+  },
+{
+    name: 'development/generate/audit',
+    className: 'GenerateAuditServerCommand',
+    commandClass: GenerateAuditServerCommand
+  },
+{
+    name: 'development/generate',
+    className: 'GenerateServerCommand',
+    commandClass: GenerateServerCommand
+  },
+{
+    name: 'development/schema/generate',
+    className: 'SchemaGenerateServerCommand',
+    commandClass: SchemaGenerateServerCommand
+  },
+{
+    name: 'development/shell/execute',
+    className: 'ShellExecuteServerCommand',
+    commandClass: ShellExecuteServerCommand
   },
 {
     name: 'file/append',
@@ -634,16 +654,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'file/save',
     className: 'FileSaveServerCommand',
     commandClass: FileSaveServerCommand
-  },
-{
-    name: 'generate/audit',
-    className: 'GenerateAuditServerCommand',
-    commandClass: GenerateAuditServerCommand
-  },
-{
-    name: 'generate',
-    className: 'GenerateServerCommand',
-    commandClass: GenerateServerCommand
   },
 {
     name: 'genome/batch-micro-tune',
@@ -821,11 +831,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     commandClass: RAGLoadServerCommand
   },
 {
-    name: 'schema/generate',
-    className: 'SchemaGenerateServerCommand',
-    commandClass: SchemaGenerateServerCommand
-  },
-{
     name: 'security/setup',
     className: 'SecuritySetupServerCommand',
     commandClass: SecuritySetupServerCommand
@@ -849,11 +854,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'session/get-user',
     className: 'SessionGetUserServerCommand',
     commandClass: SessionGetUserServerCommand
-  },
-{
-    name: 'shell/execute',
-    className: 'ShellExecuteServerCommand',
-    commandClass: ShellExecuteServerCommand
   },
 {
     name: 'state/create',

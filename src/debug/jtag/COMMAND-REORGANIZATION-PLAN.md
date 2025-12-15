@@ -202,8 +202,8 @@ find . -name "*.md" -exec sed -i '' \
 | utilities | 4 | ✅ Complete | c0e97b0f | hello, docs, pipe, lease |
 | workspace | 4 | ✅ Complete | efd6e0f0 | git, recipe, task, tree |
 | interface | 9 | ✅ Complete | ad11baf3 | click, navigate, screenshot, scroll, web, etc. |
-| collaboration | 5 | ✅ Build passes | - | Migrated, build verified, awaiting user test |
-| development | 7 | 📋 Planned | - | |
+| collaboration | 5 | ✅ Complete | 2a6e61e9 | chat, decision, activity, wall, content |
+| development | 7 | ✅ Build passes | - | Migrated, build verified, awaiting user test |
 | storage | 4 | 📋 Planned | - | High impact |
 | platform | 11 | 📋 Planned | - | Core system |
 | intelligence | 6+ | 📋 Planned | - | AI/ML |
