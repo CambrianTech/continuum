@@ -275,7 +275,7 @@ export class ToolRegistry {
       return `Path: ${result.path || 'unknown'}${lineRange}\n\n${result.content}`;
     }
 
-    if (toolName === 'chat/export' && result.markdown) {
+    if (toolName === 'collaboration/chat/export' && result.markdown) {
       return `Exported ${result.messageCount || 0} messages:\n\n${result.markdown}`;
     }
 

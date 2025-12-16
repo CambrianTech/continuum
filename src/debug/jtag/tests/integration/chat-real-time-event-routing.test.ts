@@ -80,7 +80,7 @@ async function sendSpecificMessageViaUI(messageId: string): Promise<string> {
 
 // REUSABLE FUNCTION: Send message via CLI
 async function sendMessageViaCLI(message: string, roomId: string = 'general', senderName: string = 'TestBot'): Promise<void> {
-  const result = await execAsync(`./jtag chat/send-message --roomId="${roomId}" --message="${message}" --senderName="${senderName}"`);
+  const result = await execAsync(`./jtag chat/send --roomId="${roomId}" --message="${message}" --senderName="${senderName}"`);
 
   if (result.stderr) {
     throw new Error(`Message send failed: ${result.stderr}`);

@@ -92,7 +92,7 @@ class ChatMeOtherPositioningTest {
       await this.browserSession.screenshot('chat-widget', 'human1-me-message');
 
       // Human2 sends message (should appear as OTHER)
-      await human2.client.executeCommand('chat/send-message', {
+      await human2.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         content: 'Message from Human2 - should show as OTHER',
         senderName: human2.name
@@ -219,7 +219,7 @@ class ChatMeOtherPositioningTest {
 
       for (const msgData of testMessages) {
         // Send message with different entity type but same user ID
-        await currentUser.client.executeCommand('chat/send-message', {
+        await currentUser.client.executeCommand('collaboration/chat/send', {
           roomId: this.testRoomId,
           content: msgData.content,
           senderName: currentUser.name,

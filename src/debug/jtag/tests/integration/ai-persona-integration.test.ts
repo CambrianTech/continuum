@@ -172,7 +172,7 @@ class AIPersonaIntegrationTest {
       
       // Send message as AI agent
       const sendResult = this.executeJTAGCommand(
-        `chat/send-message --message="${testMessage}" --userId="ai_agent_claude" --roomId="ai_testing"`
+        `collaboration/chat/send --message="${testMessage}" --userId="ai_agent_claude" --roomId="ai_testing"`
       );
       
       const messageSent = sendResult.success && sendResult.messageId;

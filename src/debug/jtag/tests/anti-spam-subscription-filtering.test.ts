@@ -25,7 +25,7 @@ import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer'
 import type { JTAGClientConnectOptions } from '../system/core/client/shared/JTAGClient';
 import { CHAT_EVENTS } from '../widgets/chat/shared/ChatEventConstants';
 import type { SubscribeRoomResult } from '../commands/chat/subscribe-room/shared/SubscribeRoomCommand';
-import type { ChatSendMessageResult } from '../commands/chat/send-message/shared/ChatSendMessageTypes';
+import type { ChatSendMessageResult } from '../commands/chat/send/shared/ChatSendMessageTypes';
 import type { LogsDebugResult } from '../commands/debug/logs/shared/LogsDebugTypes';
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
 
@@ -89,7 +89,7 @@ async function runAntiSpamSubscriptionTest(): Promise<void> {
       console.log(`   🚫 NOT subscribing to: ${unsubscribedSystemPath}`);
       console.log(`   🚫 NOT subscribing to: ${unsubscribedUserPath}`);
 
-      const subscriptionResult = await client.commands['chat/subscribe-room']({
+      const subscriptionResult = await client.commands['collaboration/chat/subscribe-room']({
         roomId: 'subscribed-test',
         eventTypes: [CHAT_EVENTS.MESSAGE_RECEIVED],
         context: client.context,
@@ -137,7 +137,7 @@ async function runAntiSpamSubscriptionTest(): Promise<void> {
       console.log(`🧪 Test 2: Server→Browser routing test (subscribed path)...`);
       console.log(`   📨 Sending to subscribed path: ${subscribedChatPath}`);
 
-      const messageResult = await client.executeCommand('chat/send-message', {
+      const messageResult = await client.executeCommand('collaboration/chat/send', {
         roomId: 'subscribed-test',
         message: subscribedMessage,
         senderName: 'Cross-Environment Tester'
@@ -185,7 +185,7 @@ async function runAntiSpamSubscriptionTest(): Promise<void> {
       console.log(`🧪 Test 3: Sending message to UNSUBSCRIBED room "${unsubscribedChatPath}"...`);
       console.log(`   🚫 ANTI-SPAM TEST: This message should NOT be delivered to us`);
 
-      const spamResult = await client.executeCommand('chat/send-message', {
+      const spamResult = await client.executeCommand('collaboration/chat/send', {
         roomId: 'UNWANTED-SPAM',
         message: spamMessage,
         senderName: 'Spam Generator'

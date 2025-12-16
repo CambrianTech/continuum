@@ -54,7 +54,7 @@ async function testChatEventIntegration() {
     
     // Step 2: Send chat message that should emit event
     console.log('\n📤 Step 2: Sending chat message...');
-    const chatResult = await client.commands['chat/send-message']({
+    const chatResult = await client.commands['collaboration/chat/send']({
       roomId: testRoomId,
       content: 'Integration test message for event verification',
       sessionId: testSessionId,

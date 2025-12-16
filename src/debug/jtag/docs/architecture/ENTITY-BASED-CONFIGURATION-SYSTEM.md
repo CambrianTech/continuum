@@ -614,7 +614,7 @@ npm start
 ```bash
 # Ares should start monitoring and making adjustments
 # Check its activity in general chat
-./jtag chat/export --room="general" --limit=50 | grep "Ares"
+./jtag collaboration/chat/export --room="general" --limit=50 | grep "Ares"
 ```
 
 ### Phase 4: Create Settings Widget

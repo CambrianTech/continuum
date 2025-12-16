@@ -583,7 +583,7 @@ npx vitest tests/integration/governance-workflow.test.ts
 npm start
 
 # AIs create proposal about real issue
-./jtag chat/send --room="general" --message="I'm creating a proposal about logging standards. Let's vote on it!"
+./jtag collaboration/chat/send --room="general" --message="I'm creating a proposal about logging standards. Let's vote on it!"
 
 # Monitor in chat widget
 ./jtag screenshot --querySelector="chat-widget"

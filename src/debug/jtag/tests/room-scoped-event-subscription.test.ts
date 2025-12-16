@@ -53,7 +53,7 @@ async function runRoomScopedEventTests(): Promise<void> {
     try {
       console.log('🧪 Test 1: Testing room subscription command...');
 
-      const subscriptionResult = await client.executeCommand('chat/subscribe-room', {
+      const subscriptionResult = await client.executeCommand('collaboration/chat/subscribe-room', {
         roomId: 'test-room-events',
         eventTypes: ['chat:message-received', 'chat:participant-joined']
       });
@@ -90,7 +90,7 @@ async function runRoomScopedEventTests(): Promise<void> {
       console.log('🧪 Test 2: Testing EventBridge routing architecture...');
 
       // Send message to trigger EventBridge
-      const messageResult = await client.executeCommand('chat/send-message', {
+      const messageResult = await client.executeCommand('collaboration/chat/send', {
         roomId: 'test-room-events',
         message: 'EventBridge Architecture Test Message',
         senderName: 'Room Event Tester'

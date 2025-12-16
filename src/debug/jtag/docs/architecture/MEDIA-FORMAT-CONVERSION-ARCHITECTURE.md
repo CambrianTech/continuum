@@ -700,7 +700,7 @@ describe('DeepSeekAdapter', () => {
 
 ```bash
 # Send WebP image to DeepSeek via CLI
-./jtag chat/send --room="general" --message="Test WebP" --media ../test-images/image-8.webp
+./jtag collaboration/chat/send --room="general" --message="Test WebP" --media ../test-images/image-8.webp
 
 # Expected behavior:
 # 1. ChatSendServerCommand stores WebP in database

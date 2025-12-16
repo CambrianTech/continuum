@@ -57,7 +57,7 @@ async function testAIResponseIntegration(): Promise<void> {
     console.log(`✅ Found general room: ${generalRoomId}`);
 
     // Send message via chat widget (triggers proper event flow)
-    const sendResult = await client.commands['chat/send']({
+    const sendResult = await client.commands['collaboration/chat/send']({
       room: generalRoomId,
       message: testMessage,
       metadata: { isSystemTest: true, testType: 'precommit-hook' }

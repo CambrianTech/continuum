@@ -172,7 +172,7 @@ class ExecBidirectionalChatTest {
       const startTime = Date.now();
       
       // Send message from server side
-      const serverSend = await this.client.executeCommand('chat/send-message', {
+      const serverSend = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: testMessage
@@ -329,7 +329,7 @@ class ExecBidirectionalChatTest {
       
       // Step 2: Server sends response message
       await new Promise(resolve => setTimeout(resolve, 500));
-      const serverSend = await this.client.executeCommand('chat/send-message', {
+      const serverSend = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: 'server-responder',
         content: serverMessage
@@ -411,7 +411,7 @@ class ExecBidirectionalChatTest {
     try {
       // Send a styled message for validation
       const styledMessage = `STYLED_TEST_${Date.now()}`;
-      await this.client.executeCommand('chat/send-message', {
+      await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: 'style-tester',
         content: styledMessage
@@ -591,7 +591,7 @@ class ExecBidirectionalChatTest {
       });
       
       // Send message to trigger events
-      const triggerEvent = await this.client.executeCommand('chat/send-message', {
+      const triggerEvent = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: 'event-trigger',
         content: eventMessage

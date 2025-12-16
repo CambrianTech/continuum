@@ -96,7 +96,7 @@ export const StandardEventTests = {
     trigger: async () => {
       const runner = new EventTestRunner();
       await runner.initialize();
-      await runner.client.commands['chat/send-message'](
+      await runner.client.commands['collaboration/chat/send'](
         EventTestUtils.createTestMessage(EventTestPatterns.TEST_ROOM_ID, 'basic')
       );
       await runner.cleanup();
@@ -124,7 +124,7 @@ export const StandardEventTests = {
       const runner = new EventTestRunner();
       await runner.initialize();
       for (let i = 0; i < messageCount; i++) {
-        await runner.client.commands['chat/send-message'](
+        await runner.client.commands['collaboration/chat/send'](
           EventTestUtils.createTestMessage(`perf-${i}`, 'performance')
         );
       }

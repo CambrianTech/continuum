@@ -45,8 +45,8 @@ const CHAT_INTERACTIONS = {
     console.log(`💬 PROPER CHAT: Sending message to room ${roomId} via JTAG command`);
     
     try {
-      // Use proper chat/send-message command (not DOM manipulation!)
-      const result = await client.commands['chat/send-message']({
+      // Use proper chat/send command (not DOM manipulation!)
+      const result = await client.commands['collaboration/chat/send']({
         roomId: roomId,
         content: message,
         senderId: 'test-user',

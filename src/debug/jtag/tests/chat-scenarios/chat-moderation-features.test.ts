@@ -97,7 +97,7 @@ class ChatModerationTest {
     console.log('🏗️ Setting up moderation test environment...');
     
     // Create test room
-    await this.client.executeCommand('chat/create-room', {
+    await this.client.executeCommand('collaboration/chat/create-room', {
       name: 'Moderation Test Room',
       roomId: this.testRoomId,
       category: 'testing',
@@ -105,13 +105,13 @@ class ChatModerationTest {
     });
     
     // Set up user roles
-    await this.client.executeCommand('chat/set-user-role', {
+    await this.client.executeCommand('collaboration/chat/set-user-role', {
       userId: this.adminUserId,
       roomId: this.testRoomId,
       role: 'admin'
     });
     
-    await this.client.executeCommand('chat/set-user-role', {
+    await this.client.executeCommand('collaboration/chat/set-user-role', {
       userId: this.moderatorUserId,
       roomId: this.testRoomId,
       role: 'moderator'
@@ -126,7 +126,7 @@ class ChatModerationTest {
     
     try {
       // Regular user blocks troublesome user
-      const blockUser = await this.client.executeCommand('chat/block-user', {
+      const blockUser = await this.client.executeCommand('collaboration/chat/block-user', {
         userId: this.regularUserId,
         blockedUserId: this.troubleUserId,
         roomId: this.testRoomId,
@@ -142,7 +142,7 @@ class ChatModerationTest {
       });
       
       // Verify blocked user cannot send messages to blocker
-      const blockedMessage = await this.client.executeCommand('chat/send-message', {
+      const blockedMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.troubleUserId,
         content: 'This message should be blocked',
@@ -158,7 +158,7 @@ class ChatModerationTest {
       });
       
       // Get block list
-      const blockList = await this.client.executeCommand('chat/get-blocked-users', {
+      const blockList = await this.client.executeCommand('collaboration/chat/get-blocked-users', {
         userId: this.regularUserId,
         roomId: this.testRoomId
       });
@@ -172,7 +172,7 @@ class ChatModerationTest {
       });
       
       // Unblock user
-      const unblockUser = await this.client.executeCommand('chat/unblock-user', {
+      const unblockUser = await this.client.executeCommand('collaboration/chat/unblock-user', {
         userId: this.regularUserId,
         unblockedUserId: this.troubleUserId,
         roomId: this.testRoomId
@@ -187,7 +187,7 @@ class ChatModerationTest {
       });
       
       // Verify unblocked user can send messages again
-      const unblockedMessage = await this.client.executeCommand('chat/send-message', {
+      const unblockedMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.troubleUserId,
         content: 'This message should work after unblocking'
@@ -218,7 +218,7 @@ class ChatModerationTest {
     
     try {
       // Send problematic message
-      const problematicMessage = await this.client.executeCommand('chat/send-message', {
+      const problematicMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.troubleUserId,
         content: 'This is a problematic message that should be deleted'
@@ -234,7 +234,7 @@ class ChatModerationTest {
       
       if (problematicMessage.success) {
         // Moderator deletes message
-        const deleteMessage = await this.client.executeCommand('chat/delete-message', {
+        const deleteMessage = await this.client.executeCommand('collaboration/chat/delete-message', {
           messageId: problematicMessage.messageId,
           roomId: this.testRoomId,
           moderatorId: this.moderatorUserId,
@@ -250,7 +250,7 @@ class ChatModerationTest {
         });
         
         // Verify message is no longer visible
-        const getMessage = await this.client.executeCommand('chat/get-message', {
+        const getMessage = await this.client.executeCommand('collaboration/chat/get-message', {
           messageId: problematicMessage.messageId,
           roomId: this.testRoomId
         });
@@ -267,7 +267,7 @@ class ChatModerationTest {
       // Send multiple problematic messages for bulk deletion
       const bulkMessageIds: string[] = [];
       for (let i = 0; i < 3; i++) {
-        const bulkMessage = await this.client.executeCommand('chat/send-message', {
+        const bulkMessage = await this.client.executeCommand('collaboration/chat/send', {
           roomId: this.testRoomId,
           userId: this.troubleUserId,
           content: `Problematic bulk message ${i + 1}`
@@ -286,7 +286,7 @@ class ChatModerationTest {
       
       // Bulk delete messages
       if (bulkMessageIds.length > 0) {
-        const bulkDelete = await this.client.executeCommand('chat/bulk-delete-messages', {
+        const bulkDelete = await this.client.executeCommand('collaboration/chat/bulk-delete-messages', {
           messageIds: bulkMessageIds,
           roomId: this.testRoomId,
           moderatorId: this.adminUserId,
@@ -303,14 +303,14 @@ class ChatModerationTest {
       }
       
       // Test unauthorized deletion (regular user trying to delete)
-      const anotherMessage = await this.client.executeCommand('chat/send-message', {
+      const anotherMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.regularUserId,
         content: 'A normal message'
       });
       
       if (anotherMessage.success) {
-        const unauthorizedDelete = await this.client.executeCommand('chat/delete-message', {
+        const unauthorizedDelete = await this.client.executeCommand('collaboration/chat/delete-message', {
           messageId: anotherMessage.messageId,
           roomId: this.testRoomId,
           moderatorId: this.troubleUserId, // Non-moderator trying to delete
@@ -343,7 +343,7 @@ class ChatModerationTest {
     
     try {
       // Admin promotes user to moderator
-      const promoteModerator = await this.client.executeCommand('chat/set-user-role', {
+      const promoteModerator = await this.client.executeCommand('collaboration/chat/set-user-role', {
         userId: this.regularUserId,
         roomId: this.testRoomId,
         role: 'moderator',
@@ -359,7 +359,7 @@ class ChatModerationTest {
       });
       
       // Check user permissions after promotion
-      const checkPermissions = await this.client.executeCommand('chat/get-user-permissions', {
+      const checkPermissions = await this.client.executeCommand('collaboration/chat/get-user-permissions', {
         userId: this.regularUserId,
         roomId: this.testRoomId
       });
@@ -373,7 +373,7 @@ class ChatModerationTest {
       });
       
       // Set room-level moderation settings
-      const roomSettings = await this.client.executeCommand('chat/update-room-settings', {
+      const roomSettings = await this.client.executeCommand('collaboration/chat/update-room-settings', {
         roomId: this.testRoomId,
         adminId: this.adminUserId,
         settings: {
@@ -393,7 +393,7 @@ class ChatModerationTest {
       });
       
       // Admin views moderation log
-      const moderationLog = await this.client.executeCommand('chat/get-moderation-log', {
+      const moderationLog = await this.client.executeCommand('collaboration/chat/get-moderation-log', {
         roomId: this.testRoomId,
         adminId: this.adminUserId,
         limit: 50
@@ -408,7 +408,7 @@ class ChatModerationTest {
       });
       
       // Admin demotes moderator
-      const demoteModerator = await this.client.executeCommand('chat/set-user-role', {
+      const demoteModerator = await this.client.executeCommand('collaboration/chat/set-user-role', {
         userId: this.regularUserId,
         roomId: this.testRoomId,
         role: 'user',
@@ -440,7 +440,7 @@ class ChatModerationTest {
     
     try {
       // Set up content filter
-      const setupFilter = await this.client.executeCommand('chat/create-content-filter', {
+      const setupFilter = await this.client.executeCommand('collaboration/chat/create-content-filter', {
         roomId: this.testRoomId,
         adminId: this.adminUserId,
         filter: {
@@ -461,7 +461,7 @@ class ChatModerationTest {
       });
       
       // Send message that triggers filter
-      const filteredMessage = await this.client.executeCommand('chat/send-message', {
+      const filteredMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.troubleUserId,
         content: 'This message contains badword1 and should be filtered'
@@ -476,7 +476,7 @@ class ChatModerationTest {
       });
       
       // Set up spam detection
-      const spamFilter = await this.client.executeCommand('chat/create-content-filter', {
+      const spamFilter = await this.client.executeCommand('collaboration/chat/create-content-filter', {
         roomId: this.testRoomId,
         adminId: this.adminUserId,
         filter: {
@@ -503,7 +503,7 @@ class ChatModerationTest {
       // Simulate spam (rapid messages)
       let spamDetected = false;
       for (let i = 0; i < 12; i++) {
-        const spamMessage = await this.client.executeCommand('chat/send-message', {
+        const spamMessage = await this.client.executeCommand('collaboration/chat/send', {
           roomId: this.testRoomId,
           userId: this.troubleUserId,
           content: `Spam message number ${i}`
@@ -527,7 +527,7 @@ class ChatModerationTest {
       });
       
       // Get filter statistics
-      const filterStats = await this.client.executeCommand('chat/get-filter-stats', {
+      const filterStats = await this.client.executeCommand('collaboration/chat/get-filter-stats', {
         roomId: this.testRoomId,
         adminId: this.adminUserId
       });
@@ -542,7 +542,7 @@ class ChatModerationTest {
       
       // Disable filter
       if (setupFilter.success) {
-        const disableFilter = await this.client.executeCommand('chat/update-content-filter', {
+        const disableFilter = await this.client.executeCommand('collaboration/chat/update-content-filter', {
           filterId: setupFilter.filterId,
           roomId: this.testRoomId,
           adminId: this.adminUserId,
@@ -575,7 +575,7 @@ class ChatModerationTest {
     
     try {
       // Send message that will be reported
-      const reportableMessage = await this.client.executeCommand('chat/send-message', {
+      const reportableMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.troubleUserId,
         content: 'This is a message that will be reported for harassment'
@@ -591,7 +591,7 @@ class ChatModerationTest {
       
       if (reportableMessage.success) {
         // Regular user reports the message
-        const reportMessage = await this.client.executeCommand('chat/report-message', {
+        const reportMessage = await this.client.executeCommand('collaboration/chat/report-message', {
           messageId: reportableMessage.messageId,
           roomId: this.testRoomId,
           reporterId: this.regularUserId,
@@ -609,7 +609,7 @@ class ChatModerationTest {
         });
         
         // Another user also reports the same message
-        const secondReport = await this.client.executeCommand('chat/report-message', {
+        const secondReport = await this.client.executeCommand('collaboration/chat/report-message', {
           messageId: reportableMessage.messageId,
           roomId: this.testRoomId,
           reporterId: 'another-user',
@@ -628,7 +628,7 @@ class ChatModerationTest {
       }
       
       // Report user for overall behavior
-      const reportUser = await this.client.executeCommand('chat/report-user', {
+      const reportUser = await this.client.executeCommand('collaboration/chat/report-user', {
         userId: this.troubleUserId,
         roomId: this.testRoomId,
         reporterId: this.regularUserId,
@@ -646,7 +646,7 @@ class ChatModerationTest {
       });
       
       // Moderator views reports queue
-      const reportsQueue = await this.client.executeCommand('chat/get-reports-queue', {
+      const reportsQueue = await this.client.executeCommand('collaboration/chat/get-reports-queue', {
         roomId: this.testRoomId,
         moderatorId: this.moderatorUserId,
         status: 'pending',
@@ -663,7 +663,7 @@ class ChatModerationTest {
       
       // Moderator investigates report
       if (reportsQueue.success && reportsQueue.reports?.length > 0) {
-        const investigateReport = await this.client.executeCommand('chat/investigate-report', {
+        const investigateReport = await this.client.executeCommand('collaboration/chat/investigate-report', {
           reportId: reportsQueue.reports[0].reportId,
           moderatorId: this.moderatorUserId,
           roomId: this.testRoomId,
@@ -679,7 +679,7 @@ class ChatModerationTest {
         });
         
         // Resolve report
-        const resolveReport = await this.client.executeCommand('chat/resolve-report', {
+        const resolveReport = await this.client.executeCommand('collaboration/chat/resolve-report', {
           reportId: reportsQueue.reports[0].reportId,
           moderatorId: this.moderatorUserId,
           roomId: this.testRoomId,
@@ -714,7 +714,7 @@ class ChatModerationTest {
     
     try {
       // Moderator gives user a timeout
-      const timeoutUser = await this.client.executeCommand('chat/timeout-user', {
+      const timeoutUser = await this.client.executeCommand('collaboration/chat/timeout-user', {
         userId: this.troubleUserId,
         roomId: this.testRoomId,
         moderatorId: this.moderatorUserId,
@@ -731,7 +731,7 @@ class ChatModerationTest {
       });
       
       // Verify timed out user cannot send messages
-      const timeoutMessage = await this.client.executeCommand('chat/send-message', {
+      const timeoutMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.troubleUserId,
         content: 'This message should be blocked due to timeout'
@@ -746,7 +746,7 @@ class ChatModerationTest {
       });
       
       // Check timeout status
-      const timeoutStatus = await this.client.executeCommand('chat/get-user-status', {
+      const timeoutStatus = await this.client.executeCommand('collaboration/chat/get-user-status', {
         userId: this.troubleUserId,
         roomId: this.testRoomId
       });
@@ -760,7 +760,7 @@ class ChatModerationTest {
       });
       
       // Remove timeout early
-      const removeTimeout = await this.client.executeCommand('chat/remove-timeout', {
+      const removeTimeout = await this.client.executeCommand('collaboration/chat/remove-timeout', {
         userId: this.troubleUserId,
         roomId: this.testRoomId,
         moderatorId: this.moderatorUserId,
@@ -776,7 +776,7 @@ class ChatModerationTest {
       });
       
       // Admin bans user
-      const banUser = await this.client.executeCommand('chat/ban-user', {
+      const banUser = await this.client.executeCommand('collaboration/chat/ban-user', {
         userId: this.troubleUserId,
         roomId: this.testRoomId,
         adminId: this.adminUserId,
@@ -794,7 +794,7 @@ class ChatModerationTest {
       });
       
       // Verify banned user cannot join room
-      const bannedJoin = await this.client.executeCommand('chat/join-room', {
+      const bannedJoin = await this.client.executeCommand('collaboration/chat/join-room', {
         roomId: this.testRoomId,
         userId: this.troubleUserId
       });
@@ -808,7 +808,7 @@ class ChatModerationTest {
       });
       
       // Get ban list
-      const banList = await this.client.executeCommand('chat/get-ban-list', {
+      const banList = await this.client.executeCommand('collaboration/chat/get-ban-list', {
         roomId: this.testRoomId,
         adminId: this.adminUserId
       });
@@ -822,7 +822,7 @@ class ChatModerationTest {
       });
       
       // Unban user
-      const unbanUser = await this.client.executeCommand('chat/unban-user', {
+      const unbanUser = await this.client.executeCommand('collaboration/chat/unban-user', {
         userId: this.troubleUserId,
         roomId: this.testRoomId,
         adminId: this.adminUserId,
@@ -854,7 +854,7 @@ class ChatModerationTest {
     
     try {
       // Test user permissions
-      const userPermissions = await this.client.executeCommand('chat/check-permission', {
+      const userPermissions = await this.client.executeCommand('collaboration/chat/check-permission', {
         userId: this.regularUserId,
         roomId: this.testRoomId,
         permission: 'delete_messages'
@@ -869,7 +869,7 @@ class ChatModerationTest {
       });
       
       // Test moderator permissions
-      const moderatorPermissions = await this.client.executeCommand('chat/check-permission', {
+      const moderatorPermissions = await this.client.executeCommand('collaboration/chat/check-permission', {
         userId: this.moderatorUserId,
         roomId: this.testRoomId,
         permission: 'delete_messages'
@@ -884,7 +884,7 @@ class ChatModerationTest {
       });
       
       // Test admin permissions
-      const adminPermissions = await this.client.executeCommand('chat/check-permission', {
+      const adminPermissions = await this.client.executeCommand('collaboration/chat/check-permission', {
         userId: this.adminUserId,
         roomId: this.testRoomId,
         permission: 'ban_users'
@@ -899,7 +899,7 @@ class ChatModerationTest {
       });
       
       // Create custom role with specific permissions
-      const customRole = await this.client.executeCommand('chat/create-role', {
+      const customRole = await this.client.executeCommand('collaboration/chat/create-role', {
         roomId: this.testRoomId,
         adminId: this.adminUserId,
         role: {
@@ -918,7 +918,7 @@ class ChatModerationTest {
       });
       
       // Assign custom role to user
-      const assignRole = await this.client.executeCommand('chat/set-user-role', {
+      const assignRole = await this.client.executeCommand('collaboration/chat/set-user-role', {
         userId: this.regularUserId,
         roomId: this.testRoomId,
         role: 'helper',
@@ -934,7 +934,7 @@ class ChatModerationTest {
       });
       
       // Test permission inheritance
-      const inheritedPermission = await this.client.executeCommand('chat/check-permission', {
+      const inheritedPermission = await this.client.executeCommand('collaboration/chat/check-permission', {
         userId: this.regularUserId,
         roomId: this.testRoomId,
         permission: 'delete_own_messages'
@@ -949,7 +949,7 @@ class ChatModerationTest {
       });
       
       // Test permission restriction
-      const restrictedPermission = await this.client.executeCommand('chat/check-permission', {
+      const restrictedPermission = await this.client.executeCommand('collaboration/chat/check-permission', {
         userId: this.regularUserId,
         roomId: this.testRoomId,
         permission: 'mention_all'

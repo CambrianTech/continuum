@@ -29,7 +29,7 @@ Settings organized like command paths:
 ```typescript
 // Command structure (existing)
 ./jtag data/list
-./jtag chat/send
+./jtag collaboration/chat/send
 ./jtag system/config/get
 
 // Settings mirror this (new)
@@ -808,8 +808,8 @@ DATABASE_URL="postgresql://localhost/continuum" ./jtag data/import --input="/tmp
 
 ```bash
 # 1. Set up perfect dev state manually
-./jtag chat/send --room="general" --message="Test message 1"
-./jtag chat/send --room="general" --message="Test message 2"
+./jtag collaboration/chat/send --room="general" --message="Test message 1"
+./jtag collaboration/chat/send --room="general" --message="Test message 2"
 
 # 2. Export as fixture
 ./jtag data/export \

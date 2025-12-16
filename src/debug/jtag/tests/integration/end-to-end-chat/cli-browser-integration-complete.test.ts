@@ -10,7 +10,7 @@
  * 4. Widget HTML content updates → Visual validation
  * 
  * SUCCESS CRITERIA (from MASTER_ROADMAP):
- * - CLI ./jtag chat/send-message → Message appears in widget HTML
+ * - CLI ./jtag chat/send → Message appears in widget HTML
  * - Browser button click → Server receives message → Widget HTML updates
  * - Real-time event propagation → Widget subscriptions → UI updates
  * - Multi-user scenarios → Cross-user message delivery
@@ -69,13 +69,13 @@ async function testFullEndToEndIntegration() {
     // TEST 1: CLI→Widget HTML Integration 
     // ========================================
     console.log('🧪 TEST 1: CLI Command → Widget HTML Content Validation');
-    console.log('Testing: ./jtag chat/send-message → Message appears in widget shadowDOM HTML');
+    console.log('Testing: ./jtag chat/send → Message appears in widget shadowDOM HTML');
 
     const testMessage = `E2E-TEST-CLI-${Date.now()}`;
     console.log(`📝 Sending test message via CLI: "${testMessage}"`);
 
     // Send message via CLI command  
-    const sendResult = await client.commands['chat/send-message']({
+    const sendResult = await client.commands['collaboration/chat/send']({
       message: testMessage,
       userId: 'user-joel-12345',
       roomId: 'general',
@@ -216,7 +216,7 @@ return {
     });
 
     // Send server message
-    await client.commands['chat/send-message']({
+    await client.commands['collaboration/chat/send']({
       message: eventTestMessage,
       roomId: 'general',
       senderType: 'server'
@@ -320,14 +320,14 @@ return {
     const multiUserMessage = `E2E-TEST-MULTIUSER-${Date.now()}`;
     
     // Send as different user types
-    await client.commands['chat/send-message']({
+    await client.commands['collaboration/chat/send']({
       message: `${multiUserMessage}-USER`,
       roomId: 'general',
       userId: 'user-alice-67890',
       senderType: 'user'
     });
 
-    await client.commands['chat/send-message']({
+    await client.commands['collaboration/chat/send']({
       message: `${multiUserMessage}-AI`,
       roomId: 'general', 
       senderType: 'assistant'

@@ -34,7 +34,7 @@ interface ChatMessageEntity {
 
 #### **Thread Creation** (Root Message)
 ```bash
-./jtag chat/send --room="dev-team" --message="We need to refactor the auth system"
+./jtag collaboration/chat/send --room="dev-team" --message="We need to refactor the auth system"
 # Returns: #abc123
 ```
 
@@ -42,7 +42,7 @@ Creates a new thoughtstream root that others can branch from.
 
 #### **Thread Continuation** (Child Message)
 ```bash
-./jtag chat/send --room="dev-team" --message="I'll audit current implementation" --replyToId="abc123"
+./jtag collaboration/chat/send --room="dev-team" --message="I'll audit current implementation" --replyToId="abc123"
 # Returns: #def456 (reply to #abc123)
 ```
 
@@ -50,7 +50,7 @@ Extends an existing thoughtstream with a new node.
 
 #### **Thread Export** (Replay History)
 ```bash
-./jtag chat/export --room="dev-team" --limit=100 --includeThreading=true
+./jtag collaboration/chat/export --room="dev-team" --limit=100 --includeThreading=true
 ```
 
 Reconstructs the full DAG for analysis, learning, or decision replay.

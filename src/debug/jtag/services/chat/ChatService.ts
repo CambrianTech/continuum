@@ -48,8 +48,8 @@ export class ChatService extends ServiceBase implements IChatService {
       throw new Error('Sender information is required');
     }
 
-    // Use existing chat/send-message command through transport
-    return await this.executeCommand('chat/send-message', params);
+    // Use existing chat/send command through transport
+    return await this.executeCommand('collaboration/chat/send', params);
   }
 
   async createRoom(params: CreateRoomParams): Promise<CreateRoomResult> {
@@ -61,7 +61,7 @@ export class ChatService extends ServiceBase implements IChatService {
     }
 
     // Use existing daemon system through transport
-    return await this.executeCommand('chat/create-room', params);
+    return await this.executeCommand('collaboration/chat/create-room', params);
   }
 
   async joinRoom(params: JoinRoomParams): Promise<JoinRoomResult> {
@@ -72,16 +72,16 @@ export class ChatService extends ServiceBase implements IChatService {
       throw new Error('User is required');
     }
 
-    return await this.executeCommand('chat/join-room', params);
+    return await this.executeCommand('collaboration/chat/join-room', params);
   }
 
   async leaveRoom(roomId: string, user: BaseUser): Promise<{ success: boolean }> {
     const params = { roomId, user };
-    const result = await this.executeCommand('chat/leave-room', params);
+    const result = await this.executeCommand('collaboration/chat/leave-room', params);
     return { success: result.success };
   }
 
   async listRooms(params: ListRoomsParams = {}): Promise<ListRoomsResult> {
-    return await this.executeCommand('chat/list-rooms', params);
+    return await this.executeCommand('collaboration/chat/list-rooms', params);
   }
 }

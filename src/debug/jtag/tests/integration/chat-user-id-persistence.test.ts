@@ -441,7 +441,7 @@ class UserIdPersistenceValidator {
       // Test server → browser message with different sender
       const serverMessage = `server-test-${Date.now()}`;
       
-      const serverSendResult = await this.jtag!.executeCommand('chat/send-message', {
+      const serverSendResult = await this.jtag!.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         content: serverMessage,
         senderType: 'server'

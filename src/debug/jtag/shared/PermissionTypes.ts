@@ -492,8 +492,8 @@ export const PERMISSION_COMMAND_ACCESS: Record<PermissionLevel, string[]> = {
     DATA_COMMANDS.READ,
     'docs/list',
     'docs/read',
-    'chat/send',      // Can chat
-    'chat/export'
+    'collaboration/chat/send',      // Can chat
+    'collaboration/chat/export'
   ],
 
   [PermissionLevel.STANDARD]: [

@@ -51,7 +51,7 @@ async function detectEventRoutingFailure(): Promise<void> {
   console.log(`\n💾 STEP 3: Verify server storage`);
   await sleep(1000); // Give server time to store
 
-  const serverCheck = await runJTAGCommand('chat/get-messages', { roomId: 'general', limit: 3 });
+  const serverCheck = await runJTAGCommand('collaboration/chat/get-messages', { roomId: 'general', limit: 3 });
 
   if (!serverCheck?.success || !serverCheck.messages?.length) {
     console.log(`❌ FAILED: Server storage check failed`);

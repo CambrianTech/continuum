@@ -13,13 +13,13 @@ Every interface layer should use its **natural, expected format** - the idiom th
 **❌ BAD (forcing API format into CLI):**
 ```bash
 # Making humans write JSON is a square peg in a round hole:
-./jtag chat/send --message="Test" '--media=["/path/img1.png","/path/img2.jpg"]'
+./jtag collaboration/chat/send --message="Test" '--media=["/path/img1.png","/path/img2.jpg"]'
 ```
 
 **✅ GOOD (CLI uses CLI idioms):**
 ```bash
 # Natural CLI convention (Git, Docker, npm all use this):
-./jtag chat/send --message="Test" --media /path/img1.png --media /path/img2.jpg
+./jtag collaboration/chat/send --message="Test" --media /path/img1.png --media /path/img2.jpg
 ```
 
 **Why it matters:**
@@ -144,7 +144,7 @@ async function handleMCPRequest(req: JSONRPCRequest): Promise<JSONRPCResponse> {
 **BAD:**
 ```bash
 # Making CLI users write tool JSON:
-./jtag chat/send '{"message":"Test","media":["p1","p2"]}'
+./jtag collaboration/chat/send '{"message":"Test","media":["p1","p2"]}'
 ```
 
 **Why it's bad:** CLI users don't think in JSON. They think in flags and arguments.
@@ -245,7 +245,7 @@ git add file1.txt file2.txt
 docker run -v vol1 -v vol2 image
 
 # So this feels natural:
-./jtag chat/send --media img1.png --media img2.png
+./jtag collaboration/chat/send --media img1.png --media img2.png
 ```
 
 ---
@@ -274,7 +274,7 @@ Validation happens in the format users understand:
 ```bash
 # CLI errors speak CLI language:
 ❌ Error: Parameter 'media' expected file path, got directory
-./jtag chat/send --media /path/to/directory
+./jtag collaboration/chat/send --media /path/to/directory
 
 # Not cryptic JSON errors:
 ❌ Error: JSON parsing failed at position 42: unexpected token '/'
@@ -287,11 +287,11 @@ Standard formats work with existing tools:
 
 ```bash
 # Shell completion works naturally:
-./jtag chat/send --media <TAB>
+./jtag collaboration/chat/send --media <TAB>
 # → Shows files, because shells know --flag <value> pattern
 
 # vs breaking completion:
-./jtag chat/send --media='["<TAB>
+./jtag collaboration/chat/send --media='["<TAB>
 # → Shell has no idea what to complete inside JSON
 ```
 
@@ -348,7 +348,7 @@ When adding a new interface or parameter type:
 
 ```bash
 # ❌ Square peg in round hole:
-./jtag chat/send --message="Test" '--media=["/path/img1.png","/path/img2.jpg"]'
+./jtag collaboration/chat/send --message="Test" '--media=["/path/img1.png","/path/img2.jpg"]'
 ```
 
 **Problems:**
@@ -365,7 +365,7 @@ When adding a new interface or parameter type:
 **CLI (repeated flags):**
 ```bash
 # ✅ Follows Git/Docker/npm convention:
-./jtag chat/send --message="Test" --media /path/img1.png --media /path/img2.jpg
+./jtag collaboration/chat/send --message="Test" --media /path/img1.png --media /path/img2.jpg
 ```
 
 **TypeScript API (native arrays):**

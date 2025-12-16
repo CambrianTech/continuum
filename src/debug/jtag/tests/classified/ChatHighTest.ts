@@ -17,7 +17,7 @@ import { TestSpec, TestLevel, TestImportance, TestCategory } from '../shared/Tes
   description: 'Multi-user chat system - enhanced JTAG collaboration',
   timeout: 60000,
   requiresSystem: true,
-  dependencies: ['chat/send-message', 'data/list', 'events']
+  dependencies: ['collaboration/chat/send', 'data/list', 'events']
 })
 export class ChatHighTest {
   

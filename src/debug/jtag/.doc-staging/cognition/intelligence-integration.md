@@ -327,12 +327,12 @@ This mirrors human cognition:
 **Testing**:
 ```bash
 # Send message
-./jtag chat/send --room="general" --message="What do you think about X?"
+./jtag collaboration/chat/send --room="general" --message="What do you think about X?"
 
 # AI responds, stores reflection in WorkingMemory
 
 # Later, ask related question
-./jtag chat/send --room="general" --message="Tell me more about X"
+./jtag collaboration/chat/send --room="general" --message="Tell me more about X"
 
 # AI should reference earlier thoughts
 
@@ -505,7 +505,7 @@ const augmentedHistory = [
 **Testing**:
 ```bash
 # Send message that multiple AIs might respond to
-./jtag chat/send --room="general" --message="What's the best approach to X?"
+./jtag collaboration/chat/send --room="general" --message="What's the best approach to X?"
 
 # Observe: First AI responds, stores thoughts in WorkingMemory
 # Second AI queries first AI's memory, sees topic covered
@@ -593,10 +593,10 @@ while (!plan.isGoalAchieved() && state.hasCapacity() && !isTimeout()) {
 **Testing**:
 ```bash
 # Simple task (should complete in 3-5 steps, not hit old maxSteps)
-./jtag chat/send --room="general" --message="What's 2+2?"
+./jtag collaboration/chat/send --room="general" --message="What's 2+2?"
 
 # Complex task (should run longer than 10 steps if needed)
-./jtag chat/send --room="general" --message="Research the history of X, compare with Y, and write a detailed analysis"
+./jtag collaboration/chat/send --room="general" --message="Research the history of X, compare with Y, and write a detailed analysis"
 
 # Verify: No artificial step limits, terminates when goal achieved
 ```

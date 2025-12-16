@@ -131,7 +131,7 @@ class EventPropagationGapTest {
       
       // Send message via CLI
       const sendResult = this.executeJTAGCommand(
-        `chat/send-message --message="${testMessage}" --userId="event_test_user" --roomId="event_test_room"`
+        `collaboration/chat/send --message="${testMessage}" --userId="event_test_user" --roomId="event_test_room"`
       );
       
       const messageSent = sendResult.success && sendResult.messageId;
@@ -200,7 +200,7 @@ class EventPropagationGapTest {
       
       // Send another message
       const sendResult = this.executeJTAGCommand(
-        `chat/send-message --message="${testMessage}" --userId="propagation_test_user" --roomId="event_test_room"`
+        `collaboration/chat/send --message="${testMessage}" --userId="propagation_test_user" --roomId="event_test_room"`
       );
       
       if (!sendResult.success) {

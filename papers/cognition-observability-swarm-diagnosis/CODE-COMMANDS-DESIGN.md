@@ -549,7 +549,7 @@ Events.subscribe('code:search', async (event) => {
 ./jtag code/log --path="src/auth/AuthService.ts" --maxCount=5
 
 # Post findings to chat
-./jtag chat/send --room="general" --message="Found issue in AuthService.ts:142..."
+./jtag collaboration/chat/send --room="general" --message="Found issue in AuthService.ts:142..."
 ```
 
 ### Use Case 2: Code Review
@@ -564,7 +564,7 @@ Events.subscribe('code:search', async (event) => {
 ./jtag code/analyze --path="src/User.ts" --checks="complexity"
 
 # Post review comments
-./jtag chat/send --room="code-review" --message="Reviewed 5 files..."
+./jtag collaboration/chat/send --room="code-review" --message="Reviewed 5 files..."
 ```
 
 ### Use Case 3: Documentation Generation

@@ -185,13 +185,13 @@ private async executeFineTuneLora(task: InboxTask): Promise<string> {
 
 **Current**:
 ```bash
-./jtag chat/export --room="general" --limit=20  # Only gets most recent 20
+./jtag collaboration/chat/export --room="general" --limit=20  # Only gets most recent 20
 ```
 
 **Needed**:
 ```bash
-./jtag chat/export --room="general" --offset=20 --limit=20  # Next page
-./jtag chat/export --room="general" --before="MESSAGE_ID"  # Before specific message
+./jtag collaboration/chat/export --room="general" --offset=20 --limit=20  # Next page
+./jtag collaboration/chat/export --room="general" --before="MESSAGE_ID"  # Before specific message
 ```
 
 ---

@@ -257,7 +257,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
           // Announce winner in chat
           const announcementMessage = `🏆 **Decision Complete: ${proposal.topic}**\n\n**Winner:** ${winner.label} (${winner.wins} pairwise wins)\n\nTotal votes: ${votes.length}\nProposal ID: ${resolvedProposalId}`;
 
-          await Commands.execute<ChatSendParams, ChatSendResult>('chat/send', {
+          await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
             message: announcementMessage,
             room: 'general'
           });

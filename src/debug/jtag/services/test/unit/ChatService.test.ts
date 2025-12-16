@@ -156,7 +156,7 @@ async function testSuccessfulMessageSending(): Promise<void> {
   const chatService = new ChatService(mockTransport, mockContext);
   
   // Mock successful response
-  mockTransport.setMockResponse('chat/send-message', {
+  mockTransport.setMockResponse('collaboration/chat/send', {
     success: true,
     message: {
       id: 'msg-123',
@@ -186,7 +186,7 @@ async function testSuccessfulMessageSending(): Promise<void> {
   // Verify transport was called with correct parameters
   const callLog = mockTransport.getCallLog();
   assert(callLog.length === 1, 'Should have made one transport call');
-  assert(callLog[0].command === 'chat/send-message', 'Should have called correct command');
+  assert(callLog[0].command === 'collaboration/chat/send', 'Should have called correct command');
   assert(callLog[0].params.roomId === 'room-123', 'Should have passed correct room ID');
 }
 
@@ -223,7 +223,7 @@ async function testRoomCreation(): Promise<void> {
   }
   
   // Test successful room creation
-  mockTransport.setMockResponse('chat/create-room', {
+  mockTransport.setMockResponse('collaboration/chat/create-room', {
     success: true,
     room: {
       id: 'room-456',
@@ -263,7 +263,7 @@ async function testErrorHandling(): Promise<void> {
   const chatService = new ChatService(mockTransport, mockContext);
   
   // Mock transport failure
-  mockTransport.setMockResponse('chat/send-message', {
+  mockTransport.setMockResponse('collaboration/chat/send', {
     success: false,
     error: 'Network timeout'
   });
@@ -291,7 +291,7 @@ async function testRoomOperations(): Promise<void> {
   const chatService = new ChatService(mockTransport, mockContext);
   
   // Test joining room
-  mockTransport.setMockResponse('chat/join-room', {
+  mockTransport.setMockResponse('collaboration/chat/join-room', {
     success: true,
     room: {
       id: 'room-123',
@@ -310,7 +310,7 @@ async function testRoomOperations(): Promise<void> {
   assert(joinResult.joined, 'Should indicate user joined');
   
   // Test leaving room  
-  mockTransport.setMockResponse('chat/leave-room', {
+  mockTransport.setMockResponse('collaboration/chat/leave-room', {
     success: true,
     left: true
   });
@@ -321,7 +321,7 @@ async function testRoomOperations(): Promise<void> {
   
   // Verify correct parameters were passed
   const callLog = mockTransport.getCallLog();
-  const leaveCall = callLog.find(call => call.command === 'chat/leave-room');
+  const leaveCall = callLog.find(call => call.command === 'collaboration/chat/leave-room');
   assert(leaveCall !== undefined, 'Should have called leave-room command');
   assert(leaveCall.params.roomId === 'room-123', 'Should pass correct room ID');
   assert(leaveCall.params.user.id === 'user-123', 'Should pass correct user');
@@ -337,7 +337,7 @@ async function testRoomListing(): Promise<void> {
   const mockTransport = new MockServiceTransport();
   const chatService = new ChatService(mockTransport, mockContext);
   
-  mockTransport.setMockResponse('chat/list-rooms', {
+  mockTransport.setMockResponse('collaboration/chat/list-rooms', {
     success: true,
     rooms: [
       {

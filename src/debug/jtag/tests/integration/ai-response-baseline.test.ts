@@ -53,7 +53,7 @@ describe('AI Response Baseline (Phase 1)', () => {
     const testMessage = `Baseline test: Normal message - ${Date.now()}`;
 
     // Send test message
-    const sendResult = await client!.commands['chat/send']({
+    const sendResult = await client!.commands['collaboration/chat/send']({
       room: generalRoomId,
       message: testMessage
     });
@@ -87,7 +87,7 @@ describe('AI Response Baseline (Phase 1)', () => {
     const testMessage = `Baseline test: Response check - ${Date.now()}`;
 
     // Send test message
-    const sendResult = await client!.commands['chat/send']({
+    const sendResult = await client!.commands['collaboration/chat/send']({
       room: generalRoomId,
       message: testMessage
     });
@@ -117,7 +117,7 @@ describe('AI Response Baseline (Phase 1)', () => {
 
     // Send 5 messages rapidly (2 seconds apart)
     for (let i = 0; i < 5; i++) {
-      await client!.commands['chat/send']({
+      await client!.commands['collaboration/chat/send']({
         room: generalRoomId,
         message: `Rapid message ${i + 1} - ${Date.now()}`
       });

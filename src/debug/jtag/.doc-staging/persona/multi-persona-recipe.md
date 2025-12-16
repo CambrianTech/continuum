@@ -300,7 +300,7 @@ Result: Helper AI responds regardless of domain match
 npm start
 
 # 2. Send test messages with different domain keywords
-./jtag chat/send --roomId=general --content="How do I fix TypeScript errors?"
+./jtag collaboration/chat/send --roomId=general --content="How do I fix TypeScript errors?"
 
 # 3. Observe logs for gating scores
 ./jtag debug/logs --filterPattern="Fast gating score" --tailLines=20

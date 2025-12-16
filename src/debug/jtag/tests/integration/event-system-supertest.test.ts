@@ -108,7 +108,7 @@ async function testBasicEventFlow(client: any) {
   
   // Send message to trigger event
   console.log('📤 Sending chat message to trigger event...');
-  const messageResult = await client.commands['chat/send-message']({
+  const messageResult = await client.commands['collaboration/chat/send']({
     roomId: 'supertest-basic',
     message: 'Basic flow test',
     metadata: { testType: 'basic' }
@@ -170,7 +170,7 @@ async function testDeduplication(client: any) {
     }
   });
   
-  await client.commands['chat/send-message']({
+  await client.commands['collaboration/chat/send']({
     roomId: 'supertest-dedup',
     message: 'Deduplication test',
     metadata: { testType: 'deduplication' }
@@ -229,7 +229,7 @@ async function testPerformance(client: any) {
   // Send 5 rapid messages
   const rapidCount = 5;
   for (let i = 0; i < rapidCount; i++) {
-    await client.commands['chat/send-message']({
+    await client.commands['collaboration/chat/send']({
       roomId: 'supertest-perf',
       message: `Performance test ${i + 1}`,
       metadata: { testType: 'performance', index: i }
@@ -291,7 +291,7 @@ async function testChatIntegration(client: any) {
   console.log('📊 Chat integration:', result.commandResult.result);
   
   // Send final test message
-  await client.commands['chat/send-message']({
+  await client.commands['collaboration/chat/send']({
     roomId: 'supertest-chat',
     message: 'Chat integration supertest complete!',
     metadata: { testType: 'final-integration' }

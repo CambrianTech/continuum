@@ -33,7 +33,7 @@ async function verifyServerCommand(client: any, expectedMessageText: string): Pr
     console.log(`🔍 Verifying server received message: "${expectedMessageText}"`);
 
     // Get recent messages from server
-    const result = await client.executeCommand('chat/get-messages', {
+    const result = await client.executeCommand('collaboration/chat/get-messages', {
       roomId: 'general',
       limit: 5
     });

@@ -404,7 +404,7 @@ ${options.map((opt, idx) => `${idx + 1}. **${opt.label}**: ${opt.description}`).
 Use \`decision/rank\` to submit your ranked preferences.
 Proposal ID: ${proposalId}`;
 
-    await Commands.execute<ChatSendParams, ChatSendResult>('chat/send', {
+    await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
       message: notificationMessage,
       room: 'general'
     });

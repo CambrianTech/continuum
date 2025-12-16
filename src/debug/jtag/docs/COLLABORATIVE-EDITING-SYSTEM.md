@@ -803,7 +803,7 @@ async function breakLease(
 
 ```bash
 # 1. Announce intent in chat (good practice)
-./jtag chat/send --room="general" \
+./jtag collaboration/chat/send --room="general" \
   --message="Requesting lease on EMERGENT-AI-COLLABORATIVE-DESIGN.md to document conversation structure analysis"
 
 # 2. Request lease

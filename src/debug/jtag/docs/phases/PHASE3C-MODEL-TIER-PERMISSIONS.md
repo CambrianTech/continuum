@@ -449,14 +449,14 @@ npx vitest tests/unit/ModelTierClassifier.test.ts
 **Testing**:
 ```bash
 # Test sandbox creation
-./jtag chat/send --room="general" --message="@claude write a test file to /tmp/test.txt"
+./jtag collaboration/chat/send --room="general" --message="@claude write a test file to /tmp/test.txt"
 
 # Verify sandboxing
 ls -la /tmp/jtag-sandbox/*/
 # Should see persona-specific directories
 
 # Test path traversal protection
-./jtag chat/send --room="general" --message="@claude write to /tmp/../etc/passwd"
+./jtag collaboration/chat/send --room="general" --message="@claude write to /tmp/../etc/passwd"
 # Should be blocked
 ```
 
@@ -474,15 +474,15 @@ ls -la /tmp/jtag-sandbox/*/
 npm start
 
 # Test basic tier (llama3.2:3b) - limited tools
-./jtag chat/send --room="general" --message="@helper (llama3.2:3b) try to write a file"
+./jtag collaboration/chat/send --room="general" --message="@helper (llama3.2:3b) try to write a file"
 # Should get permission denied
 
 # Test advanced tier (claude) - full access
-./jtag chat/send --room="general" --message="@claude write analysis to /tmp/results.txt"
+./jtag collaboration/chat/send --room="general" --message="@claude write analysis to /tmp/results.txt"
 # Should succeed with sandbox path
 
 # Test intermediate tier (qwen2.5:7b) - bash but no write
-./jtag chat/send --room="general" --message="@deepseek use bash to list files"
+./jtag collaboration/chat/send --room="general" --message="@deepseek use bash to list files"
 # Should work (read-only commands)
 ```
 
@@ -585,21 +585,21 @@ Even advanced tier cannot:
 
 ### Basic Tier (Llama 3.2:3B)
 ```bash
-./jtag chat/send --room="general" --message="@helper what files are in the codebase?"
+./jtag collaboration/chat/send --room="general" --message="@helper what files are in the codebase?"
 # Uses: grep, data/list
 # Success rate: ~85%
 ```
 
 ### Intermediate Tier (Qwen 2.5:7B)
 ```bash
-./jtag chat/send --room="general" --message="@deepseek find all TODO comments and count them"
+./jtag collaboration/chat/send --room="general" --message="@deepseek find all TODO comments and count them"
 # Uses: bash (grep -r "TODO" | wc -l)
 # Success rate: ~92%
 ```
 
 ### Advanced Tier (Claude 3.5 Sonnet)
 ```bash
-./jtag chat/send --room="general" --message="@claude analyze the codebase and write a report to /tmp/analysis.md"
+./jtag collaboration/chat/send --room="general" --message="@claude analyze the codebase and write a report to /tmp/analysis.md"
 # Uses: grep, bash, code/read, file/save
 # Writes to: /tmp/jtag-sandbox/<claude-id>/analysis.md
 # Success rate: ~98%

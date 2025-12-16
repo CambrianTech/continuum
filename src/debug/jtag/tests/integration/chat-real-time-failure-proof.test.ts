@@ -23,7 +23,7 @@ async function proveRealTimeEventRoutingFailure(): Promise<void> {
   const execAsync = promisify(exec);
 
   try {
-    const result = await execAsync(`./jtag chat/send-message --roomId="general" --message="${testMessage}" --senderName="ProofBot"`);
+    const result = await execAsync(`./jtag chat/send --roomId="general" --message="${testMessage}" --senderName="ProofBot"`);
 
     if (result.stderr) {
       console.log(`❌ STEP 1 FAILED: CLI send error: ${result.stderr}`);

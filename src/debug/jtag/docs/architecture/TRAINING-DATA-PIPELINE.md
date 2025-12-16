@@ -516,7 +516,7 @@ curl -X POST http://localhost:9002/webhooks/github \
 ./jtag data/list --collection=webhook_events
 
 # Check it was posted to chat
-./jtag chat/export --room=dev-updates --limit=1
+./jtag collaboration/chat/export --room=dev-updates --limit=1
 
 # Check TrainingDaemon created training example
 ./jtag data/list --collection=training_examples --limit=1

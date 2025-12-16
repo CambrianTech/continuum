@@ -89,7 +89,7 @@ async function testRealEventBridgeProof() {
     
     // Step 2: Send chat message from server (this should emit event that bridges to browser)
     console.log('💬 Step 2: Sending server chat message (should bridge to browser)...');
-    const chatResult = await client.commands['chat/send-message']({
+    const chatResult = await client.commands['collaboration/chat/send']({
       context: { uuid: 'bridge-proof', environment: 'server' },
       // Use shared session instead of hardcoded string
       roomId: 'bridge-proof-room',

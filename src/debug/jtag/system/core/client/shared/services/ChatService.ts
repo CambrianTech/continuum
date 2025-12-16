@@ -33,7 +33,7 @@ export class ChatService implements IChatService {
   }
 
   async sendMessage(params: { message: string; roomId?: string }): Promise<{ success: boolean; messageId: string }> {
-    // Delegate to chat/send-message command - proper typing would require command result types
+    // Delegate to chat/send command - proper typing would require command result types
     console.debug('ChatService: Sending message', params.message);
     // TODO: Implement proper command delegation with correct types
     return {

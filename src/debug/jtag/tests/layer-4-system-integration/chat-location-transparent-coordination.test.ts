@@ -343,7 +343,7 @@ describe('Layer 3: Location-Transparent Coordination', () => {
       const routingLog = router.getRoutingLog();
       
       // BREAKTHROUGH TEST: JTAG endpoint patterns used
-      const localEndpoints = routingLog.filter(r => r.endpoint === 'chat/room-update');
+      const localEndpoints = routingLog.filter(r => r.endpoint === 'collaboration/chat/room-update');
       const remoteEndpoints = routingLog.filter(r => r.endpoint.startsWith('/remote/'));
       
       expect(localEndpoints.length).toBe(1);

@@ -57,7 +57,7 @@ async function sendMessageAndWaitForResponse(
     // Send message using proper chat/send command
     console.log(`📨 Sending message: "${messageText}"`);
     const sendResult = await runJtagCommand(
-      `chat/send --room="${GENERAL_ROOM_ID}" --message="${messageText}"`
+      `collaboration/chat/send --room="${GENERAL_ROOM_ID}" --message="${messageText}"`
     );
 
     if (!sendResult?.success) {

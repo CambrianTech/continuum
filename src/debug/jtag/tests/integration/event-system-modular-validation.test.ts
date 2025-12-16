@@ -24,7 +24,7 @@ async function runModularEventValidation() {
       name: 'Basic DOM Event Flow',
       setup: EventTestUtils.createDOMEventListener('chat:message-received', 'modularBasicTest'),
       trigger: async (client) => {
-        return await client.commands['chat/send-message'](
+        return await client.commands['collaboration/chat/send'](
           EventTestUtils.createTestMessage('modular-basic', 'modular-basic')
         );
       },
@@ -67,7 +67,7 @@ async function runModularEventValidation() {
         })();
       `,
       trigger: async (client) => {
-        return await client.commands['chat/send-message'](
+        return await client.commands['collaboration/chat/send'](
           EventTestUtils.createTestMessage('validation-test', 'validation')
         );
       },

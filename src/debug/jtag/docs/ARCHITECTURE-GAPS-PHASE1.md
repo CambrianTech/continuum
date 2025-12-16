@@ -369,7 +369,7 @@ async serviceInbox() {
 ./jtag rag/index-codebase --paths="/system/user/"
 
 # 2. Ask question
-./jtag chat/send --roomId="general" --message="Why does PersonaUser have inbox?"
+./jtag collaboration/chat/send --roomId="general" --message="Why does PersonaUser have inbox?"
 
 # 3. Wait for response
 sleep 10

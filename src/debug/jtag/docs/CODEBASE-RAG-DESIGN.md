@@ -368,7 +368,7 @@ class ChatRAGBuilder extends RAGBuilder {
 # Helper AI joins room with code-focused persona
 
 # User asks in chat
-./jtag chat/send --roomId="<room-id>" --message="Why does PersonaUser have inbox?"
+./jtag collaboration/chat/send --roomId="<room-id>" --message="Why does PersonaUser have inbox?"
 
 # ChatRAGBuilder sees recipe.ragSource === 'codebase'
 # → Queries code index with hybrid search

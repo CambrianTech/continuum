@@ -129,7 +129,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
 Proposal ID: ${params.proposalId}`;
 
-    await Commands.execute<ChatSendParams, ChatSendResult>('chat/send', {
+    await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
       message: announcementMessage,
       room: 'general'
     });

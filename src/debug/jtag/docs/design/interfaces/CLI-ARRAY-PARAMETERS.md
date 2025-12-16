@@ -6,10 +6,10 @@ The current CLI parser requires awkward JSON syntax for array parameters:
 
 ```bash
 # ❌ Current (terrible UX):
-./jtag chat/send --message="Test" '--media=["/path/img1.png","/path/img2.jpg"]'
+./jtag collaboration/chat/send --message="Test" '--media=["/path/img1.png","/path/img2.jpg"]'
 
 # ✅ Desired (industry standard):
-./jtag chat/send --message="Test" --media /path/img1.png --media /path/img2.jpg
+./jtag collaboration/chat/send --message="Test" --media /path/img1.png --media /path/img2.jpg
 ```
 
 **Root Cause:** CLI parser (`cli.ts:159-205`) uses direct assignment (`params[key] = value`), which overwrites previous values instead of accumulating them into arrays.
@@ -185,7 +185,7 @@ function generateExamples(command: CommandSignature, callerContext: 'cli' | 'api
 ```bash
 # CLI user sees CLI examples:
 ./jtag help chat/send
-# → Shows: ./jtag chat/send --media path1 --media path2
+# → Shows: ./jtag collaboration/chat/send --media path1 --media path2
 
 # AI asking for help sees tool format:
 Commands.execute('help', { commandName: 'chat/send', callerType: 'tool' })
@@ -313,11 +313,11 @@ Commands should treat these differently if semantics require.
 ```bash
 # Existing commands continue working:
 ./jtag ping
-./jtag chat/send --message="Test"
+./jtag collaboration/chat/send --message="Test"
 ./jtag screenshot --querySelector="body"
 
 # New array syntax works:
-./jtag chat/send --message="Test" --media p1.png --media p2.jpg
+./jtag collaboration/chat/send --message="Test" --media p1.png --media p2.jpg
 ```
 
 ---
@@ -413,19 +413,19 @@ describe('chat/send with multiple media', () => {
 npm start
 
 # 1. Single value (should work as before)
-./jtag chat/send --message="Single" --media /test-images/image-1.webp
+./jtag collaboration/chat/send --message="Single" --media /test-images/image-1.webp
 
 # 2. Multiple values (new syntax)
-./jtag chat/send --message="Multiple" \
+./jtag collaboration/chat/send --message="Multiple" \
   --media /test-images/image-1.webp \
   --media /test-images/image-3.jpg \
   --media /test-images/image-6.png
 
 # 3. JSON array (backward compat)
-./jtag chat/send --message="JSON" --media='["/test-images/image-1.webp","/test-images/image-3.jpg"]'
+./jtag collaboration/chat/send --message="JSON" --media='["/test-images/image-1.webp","/test-images/image-3.jpg"]'
 
 # 4. Verify in chat export
-./jtag chat/export --room="general" --limit=10
+./jtag collaboration/chat/export --room="general" --limit=10
 ```
 
 ---
@@ -443,10 +443,10 @@ Commands that accept arrays (like `media`, `labels`, `files`) support multiple v
 
 ```bash
 # ✅ Industry standard (Git, Docker, npm):
-./jtag chat/send --message="Test" --media img1.png --media img2.jpg
+./jtag collaboration/chat/send --message="Test" --media img1.png --media img2.jpg
 
 # ✅ Also works - JSON arrays:
-./jtag chat/send --message="Test" --media='["img1.png","img2.jpg"]'
+./jtag collaboration/chat/send --message="Test" --media='["img1.png","img2.jpg"]'
 ```
 
 **Rule:** If you repeat a flag, values accumulate into an array. Single flags remain single values.
@@ -471,7 +471,7 @@ Update docs for commands with array params:
 ./jtag help chat/send
 
 # Should show:
-Usage: ./jtag chat/send [options]
+Usage: ./jtag collaboration/chat/send [options]
 
 Options:
   --message <text>     Message text (required)
@@ -480,10 +480,10 @@ Options:
 
 Examples:
   # Single image:
-  ./jtag chat/send --message="Test" --media screenshot.png
+  ./jtag collaboration/chat/send --message="Test" --media screenshot.png
 
   # Multiple images:
-  ./jtag chat/send --message="Test" \
+  ./jtag collaboration/chat/send --message="Test" \
     --media image1.png \
     --media image2.jpg \
     --media image3.webp
@@ -497,10 +497,10 @@ Examples:
 
 ```bash
 # Shell glob expansion (already works via bash):
-./jtag chat/send --message="Test" --media /test-images/*.png
+./jtag collaboration/chat/send --message="Test" --media /test-images/*.png
 
 # Native glob support (future):
-./jtag chat/send --message="Test" --media="/test-images/*.png"
+./jtag collaboration/chat/send --message="Test" --media="/test-images/*.png"
 ```
 
 **Implementation:** Use `glob` library to expand patterns before processing.
@@ -511,7 +511,7 @@ Examples:
 
 ```bash
 # Pipe file list into command:
-find /test-images -name "*.png" | ./jtag chat/send --message="Test" --media=@stdin
+find /test-images -name "*.png" | ./jtag collaboration/chat/send --message="Test" --media=@stdin
 ```
 
 **Use Case:** Processing large lists of files.
@@ -522,7 +522,7 @@ find /test-images -name "*.png" | ./jtag chat/send --message="Test" --media=@std
 
 ```bash
 # Read parameters from file:
-./jtag chat/send @params.json
+./jtag collaboration/chat/send @params.json
 
 # Where params.json contains:
 {

@@ -43,7 +43,7 @@ describe('CNS Integration', () => {
     const roomId = rooms.items[0].uniqueId;
 
     // Send a test message
-    const sendResult = await Commands.execute<any, any>('chat/send', {
+    const sendResult = await Commands.execute<any, any>('collaboration/chat/send', {
       room: roomId,
       message: '[TEST] CNS integration test message'
     });

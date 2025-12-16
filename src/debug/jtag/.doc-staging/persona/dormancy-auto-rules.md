@@ -675,7 +675,7 @@ describe('Auto-Dormancy Rules', () => {
 ### Integration Tests
 ```bash
 # Test 5-minute suggestion flow
-./jtag chat/send --room="general" --message="Starting AI discussion"
+./jtag collaboration/chat/send --room="general" --message="Starting AI discussion"
 # Wait 6 minutes of AI-only messages
 # Verify AIs receive dormancy suggestions
 
@@ -684,11 +684,11 @@ describe('Auto-Dormancy Rules', () => {
 # Verify AIs are auto-slept with notification
 
 # Test auto-wake
-./jtag chat/send --room="general" --message="I'm back"
+./jtag collaboration/chat/send --room="general" --message="I'm back"
 # Verify all dormant AIs wake immediately
 
 # Test LLM wake decision
-./jtag chat/send --room="general" --message="Emergency: production is down!"
+./jtag collaboration/chat/send --room="general" --message="Emergency: production is down!"
 # Verify sleeping AIs evaluate and wake
 ```
 

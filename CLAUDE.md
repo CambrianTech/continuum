@@ -53,8 +53,8 @@ npm start                    # DEPLOYS code changes, takes 130s or so
 
 ./jtag ping #check for server and browser connection
 ./jtag screenshot            # Verify any visual changes
-./jtag chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
-./jtag chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
+./jtag collaboration/chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
+./jtag collaboration/chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
 ```
 
 **IF YOU FORGET `npm start`, THE BROWSER SHOWS OLD CODE!**
@@ -66,13 +66,13 @@ Don't panic and stash changes first before anything drastic. Use the stash to yo
 **Basic Usage:**
 ```bash
 # Send message to chat room (direct DB, no UI)
-./jtag chat/send --room="general" --message="Hello team" 
-./jtag chat/send --room="general" --message="Reply" --replyToId="abc123"
+./jtag collaboration/chat/send --room="general" --message="Hello team" 
+./jtag collaboration/chat/send --room="general" --message="Reply" --replyToId="abc123"
 
 # Export chat messages to markdown
-./jtag chat/export --room="general" --limit=50                    # Print to stdout
-./jtag chat/export --room="general" --output="/tmp/export.md"    # Save to file
-./jtag chat/export --limit=100 --includeSystem=true               # All rooms with system messages
+./jtag collaboration/chat/export --room="general" --limit=50                    # Print to stdout
+./jtag collaboration/chat/export --room="general" --output="/tmp/export.md"    # Save to file
+./jtag collaboration/chat/export --limit=100 --includeSystem=true               # All rooms with system messages
 ```
 
 **Interactive Workflow - Working WITH the AI Team:**
@@ -81,7 +81,7 @@ When you send a message, `chat/send` returns a message ID. Use this to track res
 
 ```bash
 # 1. Send message (captures the JSON response with messageId)
-RESPONSE=$(./jtag chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
+RESPONSE=$(./jtag collaboration/chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
 
 # 2. Extract message ID (using jq if available, or manual)
 MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.shortId')
@@ -91,10 +91,10 @@ echo "My message ID: $MESSAGE_ID"
 sleep 10
 
 # 4. Check their responses
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 
 # 5. Reply to specific AI feedback
-./jtag chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
+./jtag collaboration/chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
 ```
 
 **CRITICAL**: Don't just broadcast to the AI team - WORK WITH THEM. Use their feedback, reply to their questions, iterate based on what they're saying. The chat export shows message IDs as `#abcd123` - use those to reply.
@@ -178,13 +178,13 @@ mkdir daemons/logger-daemon && touch LoggerDaemon.ts
 npm start
 
 # 2. Ask AI team to test
-./jtag chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
+./jtag collaboration/chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
 
 # 3. Wait for responses (30-60 seconds)
 sleep 60
 
 # 4. Check their feedback
-./jtag chat/export --room="general" --limit=30
+./jtag collaboration/chat/export --room="general" --limit=30
 
 # 5. Fix issues they found
 # - Improve error messages
@@ -193,7 +193,7 @@ sleep 60
 # - Clarify parameters
 
 # 6. Test again with AIs
-./jtag chat/send --room="general" --message="Fixed the error messages. Can you try again?"
+./jtag collaboration/chat/send --room="general" --message="Fixed the error messages. Can you try again?"
 
 # 7. Once AIs confirm it works, THEN commit
 git commit -m "Add wall/write with AI-validated UX"
@@ -625,7 +625,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # STEP 1: Ask a question in the general room (no room ID needed!)
-./jtag chat/send --room="general" --message="How should I implement connection pooling for websockets?"
+./jtag collaboration/chat/send --room="general" --message="How should I implement connection pooling for websockets?"
 
 # STEP 2: Wait 5-10 seconds for responses
 
@@ -639,7 +639,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # 1. Send your question and capture the message ID
-MESSAGE_ID=$(./jtag chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
+MESSAGE_ID=$(./jtag collaboration/chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
 
 # 2. Wait for AI responses (they respond within 5-10 seconds)
 sleep 10
@@ -657,7 +657,7 @@ sleep 10
 
 ```bash
 # Export conversation thread to markdown
-./jtag chat/export --messageId="UUID" --format="markdown" --output="solution.md"
+./jtag collaboration/chat/export --messageId="UUID" --format="markdown" --output="solution.md"
 
 # This will include:
 # - Your question
@@ -1026,7 +1026,7 @@ Commands.execute() and Events.subscribe()/emit() - the two primitives everything
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy with npm start, just edit and test again e.g npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
 - need to remember to npm run build:ts before deploying with npm start, just to make sure there's no compilation issues
-- ./jtag chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
+- ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
 - assume a new concept or group of functions ought to be in its own file and most likely own class. Use good OOP, interfaces, like java, dot net, or ts

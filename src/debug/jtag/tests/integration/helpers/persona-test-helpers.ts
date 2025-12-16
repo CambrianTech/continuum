@@ -135,7 +135,7 @@ export async function sendMessage(
   sender: string,
   text: string
 ): Promise<ChatMessageEntity> {
-  const result = await Commands.execute('chat/send', {
+  const result = await Commands.execute('collaboration/chat/send', {
     roomId,
     senderId: sender,
     content: { text }

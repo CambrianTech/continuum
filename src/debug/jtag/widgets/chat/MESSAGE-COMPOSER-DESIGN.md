@@ -388,7 +388,7 @@ message-composer-widget {
 # Attach 3 images → see 3 previews + [Image #1] [Image #2] [Image #3]
 
 # Test 4: Send message
-./jtag chat/send --room="general" --message="Test" --image="/path/to/image.png"
+./jtag collaboration/chat/send --room="general" --message="Test" --image="/path/to/image.png"
 # Message appears with image inline
 
 # Test 5: Message row rendering

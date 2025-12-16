@@ -328,11 +328,11 @@ describe('Incremental Loading', () => {
 ### Integration Tests
 ```bash
 # Test GPT-4 with real messages
-./jtag chat/send --room="general" --message="@gpt test message"
+./jtag collaboration/chat/send --room="general" --message="@gpt test message"
 # Monitor logs for: "📊 GPT Assistant: Context calc: model=gpt-4, window=8192, available=4692, safe=15 msgs"
 
 # Test Claude with same room (should get more messages)
-./jtag chat/send --room="general" --message="@claude test message"
+./jtag collaboration/chat/send --room="general" --message="@claude test message"
 # Monitor logs for: "📊 Claude Assistant: Context calc: model=claude-3-sonnet, window=200000, available=196500, safe=600+ msgs"
 
 # Verify no context errors in logs

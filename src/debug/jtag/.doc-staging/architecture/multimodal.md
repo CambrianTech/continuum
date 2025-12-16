@@ -825,7 +825,7 @@ private static buildResponseMessages(context: AIDecisionContext): ChatMessage[] 
 
 ```typescript
 // User uploads screenshot in chat
-./jtag chat/send --room="general" \
+./jtag collaboration/chat/send --room="general" \
   --message="What's wrong with this UI?" \
   --image="/path/to/screenshot.png"
 
@@ -1019,7 +1019,7 @@ time ./jtag ai/analyze-media --image="/path/to/screenshot.png" \
   --analyses='["vision-description","ocr","object-detection"]'
 
 # Test 5: Multiple AIs responding to image
-./jtag chat/send --room="general" \
+./jtag collaboration/chat/send --room="general" \
   --message="Everyone: what do you see?" \
   --image="/path/to/screenshot.png"
 # Should see ~10 responses, but only 1 vision inference!

@@ -100,7 +100,7 @@ async function testCrossEnvironmentEventRouting() {
     console.log('📨 Step 2: Emitting server→browser event...');
     
     // Use a simple chat message to test events - this should work via existing event bridge
-    const serverEventResult = await client.commands['chat/send-message']({
+    const serverEventResult = await client.commands['collaboration/chat/send']({
       roomId: 'test-room',
       message: 'This is a cross-environment test message',
       metadata: {
