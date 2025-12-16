@@ -467,50 +467,53 @@ export class SystemOrchestrator extends EventEmitter {
    */
   private async executeServerStart(): Promise<boolean> {
     console.debug('🔌 Starting server process...');
-    
+
     // Clear any existing signals
     await this.signaler.clearSignals();
-    
+
     // Start the server using the existing launch-active-example script
     // but WITHOUT the premature browser opening
     const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
     const activePorts = await getActivePorts();
-    
+
     // Import and start the JTAG system server
     const { JTAGSystemServer } = await import('../core/system/server/JTAGSystemServer');
     const jtagServer = await JTAGSystemServer.connect();
     console.debug(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
-    
-    // Start the example HTTP server
+
+    // Start the example HTTP server (REQUIRED - serves the UI)
+    // NOTE: This is intentional architecture - two separate servers:
+    //   1. JTAGSystemServer (WebSocket + daemons) - core backend
+    //   2. minimal-server.ts (HTTP) - serves UI and static files
     const { getActiveExamplePath } = await import('../../examples/shared/ExampleConfig');
     const activeExamplePath = getActiveExamplePath();
-    
-    console.debug(`🎯 Starting npm start in: ${activeExamplePath}`);
-    
+
+    console.debug(`🎯 Starting HTTP server in: ${activeExamplePath}`);
+
     this.serverProcess = spawn('npm', ['start'], {
       cwd: activeExamplePath,
       stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout/stderr
       shell: true
     });
-    
+
     this.serverProcess.stdout?.on('data', (data) => {
       console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
     });
-    
+
     this.serverProcess.stderr?.on('data', (data) => {
       console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
     });
-    
+
     this.serverProcess.on('error', (error) => {
       console.error(`❌ Server process failed: ${error.message}`);
     });
-    
+
     this.serverProcess.on('exit', (code, signal) => {
       console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
     });
-    
+
     await milestoneEmitter.completeMilestone(
-      SYSTEM_MILESTONES.SERVER_START, 
+      SYSTEM_MILESTONES.SERVER_START,
       this.currentEntryPoint
     );
     return true;

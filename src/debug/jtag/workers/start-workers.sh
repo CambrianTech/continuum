@@ -29,12 +29,15 @@ echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"
 pkill -f logger-worker || true
 pkill -f training-worker || true
 
-# Give processes time to die
-sleep 0.5
+# Give processes time to die and release sockets (macOS needs more time)
+sleep 1.5
 
 # Remove old sockets
 rm -f /tmp/jtag-logger-worker.sock
 rm -f /tmp/training-worker.sock
+
+# Extra safety: wait for sockets to be fully removed
+sleep 0.5
 
 # Start LoggerWorker
 echo -e "${YELLOW}🚀 Starting LoggerWorker...${NC}"
