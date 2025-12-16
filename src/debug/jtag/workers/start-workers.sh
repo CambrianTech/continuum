@@ -19,6 +19,11 @@ cd workers/training
 cargo build --release
 cd ../..
 
+# Build ArchiveWorker
+cd workers/archive
+cargo build --release
+cd ../..
+
 echo -e "${GREEN}✅ Build complete${NC}"
 
 # Setup log directory
@@ -28,6 +33,7 @@ mkdir -p .continuum/jtag/logs/system
 echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"
 pkill -f logger-worker || true
 pkill -f training-worker || true
+pkill -f archive-worker || true
 
 # Give processes time to die and release sockets (macOS needs more time)
 sleep 1.5
@@ -35,6 +41,8 @@ sleep 1.5
 # Remove old sockets
 rm -f /tmp/jtag-logger-worker.sock
 rm -f /tmp/training-worker.sock
+rm -f /tmp/jtag-archive-worker.sock
+rm -f /tmp/jtag-command-router.sock
 
 # Extra safety: wait for sockets to be fully removed
 sleep 0.5
@@ -77,12 +85,52 @@ for i in {1..10}; do
   sleep 0.5
 done
 
+# Start ArchiveWorker
+echo -e "${YELLOW}🚀 Starting ArchiveWorker...${NC}"
+
+# Get database paths
+PRIMARY_DB=".continuum/jtag/data/database.sqlite"
+ARCHIVE_DB=".continuum/jtag/data/archive/database-001.sqlite"
+
+# Ensure archive directory exists
+mkdir -p .continuum/jtag/data/archive
+
+# Create archive database if it doesn't exist (copy schema from primary)
+if [ ! -f "$ARCHIVE_DB" ]; then
+  echo -e "${YELLOW}📋 Creating archive database...${NC}"
+  cp "$PRIMARY_DB" "$ARCHIVE_DB"
+  # Clear all data from archive (keep schema only)
+  sqlite3 "$ARCHIVE_DB" "DELETE FROM chat_messages; DELETE FROM ai_generations; DELETE FROM cognition_plan_records; DELETE FROM cognition_state_snapshots; DELETE FROM adapter_decision_logs;" 2>/dev/null || true
+fi
+
+workers/archive/target/release/archive-worker \
+  /tmp/jtag-archive-worker.sock \
+  /tmp/jtag-command-router.sock \
+  "$PRIMARY_DB" \
+  "$ARCHIVE_DB" \
+  >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+ARCHIVE_PID=$!
+
+# Wait for ArchiveWorker socket to be created
+for i in {1..10}; do
+  if [ -S /tmp/jtag-archive-worker.sock ]; then
+    echo -e "${GREEN}✅ ArchiveWorker started (PID: $ARCHIVE_PID)${NC}"
+    break
+  fi
+  if [ $i -eq 10 ]; then
+    echo -e "${RED}❌ ArchiveWorker failed to start${NC}"
+    exit 1
+  fi
+  sleep 0.5
+done
+
 # Verify all workers are running
 sleep 0.5
-if pgrep -f logger-worker > /dev/null && pgrep -f training-worker > /dev/null; then
+if pgrep -f logger-worker > /dev/null && pgrep -f training-worker > /dev/null && pgrep -f archive-worker > /dev/null; then
   echo -e "${GREEN}✅ All workers running successfully${NC}"
   echo -e "   LoggerWorker:   PID $LOGGER_PID (/tmp/jtag-logger-worker.sock)"
   echo -e "   TrainingWorker: PID $TRAINING_PID (/tmp/training-worker.sock)"
+  echo -e "   ArchiveWorker:  PID $ARCHIVE_PID (/tmp/jtag-archive-worker.sock)"
   exit 0
 else
   echo -e "${RED}❌ One or more workers failed to start${NC}"
