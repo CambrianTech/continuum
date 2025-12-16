@@ -13,13 +13,13 @@ import { WallManager } from '@system/storage/core/WallManager';
 import { Events } from '@system/core/shared/Events';
 import { Commands } from '@system/core/shared/Commands';
 import { WallDocumentEntity } from '@system/data/entities/WallDocumentEntity';
-import { UserStateEntity } from '@system/data/entities/UserStateEntity';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { sanitizeDocumentName } from '../../shared/WallTypes';
 import { Logger, type ComponentLogger } from '@system/core/logging/Logger';
+import { SessionStateHelper } from '@daemons/session-daemon/server/SessionStateHelper';
 
 export class WallWriteServerCommand extends WallWriteCommand {
   private wallManager: WallManager;
@@ -32,45 +32,39 @@ export class WallWriteServerCommand extends WallWriteCommand {
   }
 
   /**
-   * Get current room from user's session state
-   * Uses UserStateEntity.getCurrentContentItem() for proper multi-tab support
+   * Get current room from session using centralized SessionStateHelper
    */
   private async getCurrentRoom(sessionId: string): Promise<string | undefined> {
     try {
-      // TODO: Map sessionId to userId properly (for now, get first user state)
-      const userStates = await Commands.execute<DataListParams<UserStateEntity>, DataListResult<UserStateEntity>>(
-        DATA_COMMANDS.LIST,
-        {
-          collection: COLLECTIONS.USER_STATES,
-          filter: {},
-          limit: 1
+      // Get SessionDaemon to convert sessionId → userId
+      const sessionDaemon = this.commander.router.getSubscriber('session-daemon');
+      if (!sessionDaemon) {
+        this.log.error('SessionDaemon not available');
+        return undefined;
+      }
+
+      // Get session metadata to extract userId
+      const sessionMessage = {
+        endpoint: 'session-daemon/get',
+        payload: {
+          context: this.context,
+          sessionId: sessionId,
+          operation: 'get'
         }
-      );
+      } as any;
 
-      if (!userStates.items || userStates.items.length === 0) {
-        this.log.warn('No user states found');
+      const sessionResponse = await sessionDaemon.handleMessage(sessionMessage) as any;
+
+      if (!sessionResponse?.success || !sessionResponse?.session) {
+        this.log.warn(`Session ${sessionId} not found`);
         return undefined;
       }
 
-      // Hydrate UserStateEntity to get methods
-      const userStateData = userStates.items[0];
-      const userState = Object.assign(new UserStateEntity(), userStateData);
+      const userId = sessionResponse.session.userId;
 
-      // Use UserStateEntity's method to get current content item
-      const currentItem = userState.getCurrentContentItem();
-
-      if (!currentItem) {
-        this.log.warn('No current content item found');
-        return undefined;
-      }
-
-      // If current content is a chat room, use its entityId as roomId
-      if (currentItem.type === 'chat') {
-        return currentItem.entityId;
-      }
-
-      this.log.warn(`Current content type is '${currentItem.type}', not 'chat'`);
-      return undefined;
+      // Use centralized SessionStateHelper to get current room for this user
+      const roomId = await SessionStateHelper.getCurrentRoom(userId);
+      return roomId || undefined;
     } catch (error) {
       this.log.error('Failed to get current room from session:', error);
       return undefined;
