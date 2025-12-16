@@ -114,6 +114,97 @@ tail -f .continuum/sessions/user/shared/*/logs/browser.log
 
 ---
 
+## 🤖 AI QA TESTING: YOUR UX VALIDATION TEAM
+
+**The AI team is your QA department.** They expose real usability problems that you'd never catch with manual testing.
+
+### The Correct Development Workflow
+
+```
+1. Edit code
+2. Deploy with npm start (90+ seconds)
+3. Test manually (verify basic functionality)
+4. ✨ ASK AI TEAM TO QA TEST ✨
+5. Wait for AI feedback (they WILL find issues)
+6. Fix confusing errors, improve help text, update READMEs
+7. THEN commit (precommit hook kills system, so QA must be done first)
+```
+
+### Why AI QA is Critical
+
+**AIs fail in real ways that reveal UX problems:**
+- Confusing error messages
+- Missing or unclear help text
+- Incomplete README documentation
+- Commands that work but are hard to discover
+- Parameter names that aren't intuitive
+
+**Use their failures as opportunities:**
+- Improve error messages with context
+- Add examples to help text
+- Clarify README usage instructions
+- Add missing parameter descriptions
+
+### Generators Create Discoverable Systems
+
+**Always use generators when they exist** (commands, daemons, etc.):
+
+```bash
+# ✅ CORRECT - Use generator
+npx tsx generator/generate-logger-daemon.ts
+
+# ❌ WRONG - Manual file creation
+mkdir daemons/logger-daemon && touch LoggerDaemon.ts
+```
+
+**What generators provide:**
+- Auto-generated README with usage examples
+- Help text that AIs can access via `./jtag command/name --help`
+- Package.json integration for `npm run` scripts
+- Consistent structure across all modules
+- Proper discovery mechanisms
+
+**When you "go it alone" (skip generators):**
+- Documentation is fragmented
+- Help text is missing or inconsistent
+- AIs can't find the info they need
+- System becomes harder to use
+- You're fighting the architecture instead of using it
+
+### Example AI QA Session
+
+```bash
+# 1. Deploy your changes
+npm start
+
+# 2. Ask AI team to test
+./jtag chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
+
+# 3. Wait for responses (30-60 seconds)
+sleep 60
+
+# 4. Check their feedback
+./jtag chat/export --room="general" --limit=30
+
+# 5. Fix issues they found
+# - Improve error messages
+# - Update README
+# - Add help text
+# - Clarify parameters
+
+# 6. Test again with AIs
+./jtag chat/send --room="general" --message="Fixed the error messages. Can you try again?"
+
+# 7. Once AIs confirm it works, THEN commit
+git commit -m "Add wall/write with AI-validated UX"
+```
+
+### Why This Can't Happen During Commit
+
+**CRITICAL BUG**: The precommit hook kills the system to run tests, so you can't ask AIs for feedback during commit. QA must happen BEFORE attempting to commit.
+
+---
+
 ## 🔍 ANTI-PATTERN DETECTION: PROTECT THE MODULAR ARCHITECTURE
 
 **CRITICAL TASK: Always search for and eliminate these anti-patterns that violate the modular command architecture**

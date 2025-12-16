@@ -14,8 +14,8 @@ import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes'
  * Parameters for writing to a room wall
  */
 export interface WallWriteParams extends CommandParams {
-  /** Room name (e.g., "general") or UUID - auto-detected */
-  readonly room: UUID | string;
+  /** Room name (e.g., "general") or UUID - auto-detected from current room if not provided */
+  readonly room?: UUID | string;
 
   /** Document name (relative to room wall) */
   readonly doc: string;

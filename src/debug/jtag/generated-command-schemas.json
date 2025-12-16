@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-16T02:06:58.603Z",
+  "generated": "2025-12-16T03:05:58.947Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2097,7 +2097,7 @@
       "params": {
         "room": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "room parameter"
         },
         "doc": {
