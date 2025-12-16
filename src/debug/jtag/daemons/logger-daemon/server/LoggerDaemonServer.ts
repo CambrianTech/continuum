@@ -1,114 +1,157 @@
 /**
- * LoggerDaemonServer - DaemonBase wrapper for LoggerDaemon
+ * LoggerDaemonServer - Rust-backed daemon for high-performance logging
  *
- * Hybrid architecture:
- * - Extends DaemonBase (registered in JTAGSystem)
- * - Internally spawns LoggerDaemonProcess as child process
- * - Routes IPC messages to child process for log aggregation
+ * RUST-BACKED DAEMON PATTERN:
+ * This daemon establishes the pattern for TypeScript→Rust integration:
+ *
+ * 1. TypeScript (this file):
+ *    - DaemonBase lifecycle integration
+ *    - Connection management to Rust worker
+ *    - Health checks and restart logic
+ *    - Thin wrapper with minimal logic
+ *
+ * 2. Rust worker (workers/logger/):
+ *    - Multi-threaded processing
+ *    - Batching and buffering
+ *    - File I/O and flushing
+ *    - All performance-critical code
+ *
+ * 3. Communication:
+ *    - Unix domain socket (/tmp/jtag-logger-worker.sock)
+ *    - JSON messages over socket
+ *    - Non-blocking async I/O
  *
  * Benefits:
- * - Standard DaemonBase interface for JTAGSystem
- * - Process isolation for performance
- * - Centralized log file management (160+ log instances)
+ * - TypeScript: Easy to write, good for orchestration
+ * - Rust: Fast, memory-safe, handles heavy lifting
+ * - Clean separation of concerns
+ * - Easy to test each side independently
  */
 
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 import { createBaseResponse } from '../../../system/core/types/ResponseTypes';
-import { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
+import { LoggerDaemon } from '../shared/LoggerDaemon';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
-import { ProcessManager, type ManagedProcess } from '../../../system/core/process/ProcessManager';
-import * as path from 'path';
+import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
 
 /**
- * LoggerDaemonServer - DaemonBase implementation with child process
+ * LoggerDaemonServer - manages Rust logger worker connection
  */
-export class LoggerDaemonServer extends DaemonBase {
-  public readonly subpath = 'logger';
+export class LoggerDaemonServer extends LoggerDaemon {
   protected log: ComponentLogger;
-  private process?: ManagedProcess;
-  private processManager: ProcessManager;
+  private workerClient: LoggerWorkerClient | null = null;
+  private readonly SOCKET_PATH = '/tmp/jtag-logger-worker.sock';
+  private healthCheckInterval: NodeJS.Timeout | null = null;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
-    super('LoggerDaemon', context, router);
+    super(context, router);
 
     // Initialize standardized logging
+    // NOTE: This uses Logger.ts which connects to the Rust worker we're managing
+    // During initialization, Logger.ts will fall back to TypeScript logging if worker not ready yet
     const className = this.constructor.name;
     this.log = Logger.create(className, `daemons/${className}`);
-
-    // Initialize ProcessManager
-    this.processManager = new ProcessManager();
   }
 
   /**
-   * Initialize daemon - spawn child process
+   * Initialize daemon - connect to Rust worker
+   *
+   * NOTE: We assume the Rust worker is already started by npm run worker:start.
+   * This daemon just manages the connection, not the process itself.
+   * Future: Could add process management here to auto-start/restart worker.
    */
   protected async initialize(): Promise<void> {
-    this.log.info('Initializing LoggerDaemon with child process');
+    this.log.info('🦀 Initializing Rust logger worker connection');
 
-    // Spawn LoggerDaemonProcess as child process using tsx
-    // Run TypeScript directly - no compilation needed!
-    const scriptPath = path.join(process.cwd(), 'daemons/logger-daemon/process/LoggerDaemonProcess.ts');
-
-    this.process = this.processManager.spawn({
-      processId: 'logger-daemon',
-      command: 'npx',
-      args: ['tsx'],
-      scriptPath,
-      autoRestart: true,
-      maxRestarts: 3,
-      restartDelayMs: 1000,
-      healthCheckIntervalMs: 5000
+    // Create client connection to Rust worker
+    this.workerClient = new LoggerWorkerClient({
+      socketPath: this.SOCKET_PATH,
+      timeout: 10000,
+      userId: 'logger-daemon'
     });
 
-    // Start the process
-    await this.process.start();
+    try {
+      // Connect to Rust worker
+      await this.workerClient.connect();
+      this.log.info('🦀 Connected to Rust logger worker');
 
-    // REMOVED: IPC path no longer used (Logger.ts now uses direct socket connection)
-    // Logger.daemonClient.setProcess(this.process);
+      // Start health checks
+      this.startHealthChecks();
 
-    this.log.info('LoggerDaemon child process started with tsx');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.log.error('❌ Failed to connect to Rust logger worker:', error);
+      this.log.warn('⚠️  Falling back to TypeScript logging');
+      this.log.warn('⚠️  To start Rust worker: npm run worker:start');
+
+      // Don't fail initialization - Logger.ts will fall back to TypeScript logging
+      this.workerClient = null;
+    }
   }
 
   /**
-   * Handle incoming messages - route to child process via IPC
+   * Start periodic health checks
+   */
+  private startHealthChecks(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    // Check connection health every 30 seconds
+    this.healthCheckInterval = setInterval(() => {
+      if (this.workerClient) {
+        // Future: implement ping/pong health check
+        // For now, connection errors will be caught when logs are sent
+      }
+    }, 30000);
+  }
+
+  /**
+   * Handle incoming messages
+   *
+   * Currently, LoggerDaemon doesn't handle direct commands.
+   * Logging happens via Logger.ts which connects to Rust worker directly.
+   * This could be extended to support commands like:
+   * - logger/flush - force flush all buffers
+   * - logger/rotate - rotate log files
+   * - logger/stats - get logging statistics
    */
   async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const sessionId = message.payload.sessionId;
 
-    if (!this.process) {
-      return createBaseResponse(false, this.context, sessionId, {
-        message: 'LoggerDaemon process not initialized'
-      });
-    }
+    this.log.debug('LoggerDaemon received message');
 
-    try {
-      // Route message to child process via IPC
-      // TODO: Implement proper IPC message routing
-      // For now, return success
-      return createBaseResponse(true, this.context, sessionId, {});
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.log.error('Failed to route message to child process:', error);
-      return createBaseResponse(false, this.context, sessionId, {
-        message: errorMessage
-      });
-    }
+    // For now, no commands supported - logging happens via Logger.ts
+    return createBaseResponse(false, this.context, sessionId, {
+      message: 'LoggerDaemon does not handle commands yet. Use Logger.ts for logging.'
+    });
   }
 
   /**
-   * Cleanup daemon - stop child process
+   * Cleanup daemon - disconnect from Rust worker
    */
   async cleanup(): Promise<void> {
-    this.log.info('Shutting down LoggerDaemon');
+    this.log.info('🛑 Shutting down LoggerDaemon');
 
-    if (this.process) {
-      await this.process.stop();
-      this.process = undefined;
+    // Stop health checks
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
     }
 
-    this.log.info('LoggerDaemon shutdown complete');
+    // Disconnect from Rust worker
+    if (this.workerClient) {
+      try {
+        await this.workerClient.disconnect();
+        this.log.info('✅ Disconnected from Rust logger worker');
+      } catch (error) {
+        this.log.error('⚠️  Error disconnecting from Rust worker:', error);
+      }
+      this.workerClient = null;
+    }
+
+    this.log.info('✅ LoggerDaemon shutdown complete');
   }
 }
