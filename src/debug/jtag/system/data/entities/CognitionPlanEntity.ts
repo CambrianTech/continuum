@@ -16,7 +16,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField, EnumField, CompositeIndex } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, EnumField, CompositeIndex, Archive } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -87,6 +87,14 @@ export type PlanStatus = 'active' | 'completed' | 'failed' | 'aborted';
  * 2. Recent plans by persona: WHERE personaId = ? ORDER BY startedAt DESC
  * 3. Plans in conversation: WHERE domain = ? AND contextId = ? ORDER BY sequenceNumber DESC
  */
+@Archive({
+  sourceHandle: 'primary',
+  destHandle: 'archive',
+  maxRows: 10000,
+  rowsPerArchive: 1000,
+  maxArchiveFileRows: 100000,
+  orderByField: 'createdAt'
+})
 @CompositeIndex({
   name: 'idx_cognition_plans_persona_status',
   fields: ['personaId', 'status', 'startedAt'],

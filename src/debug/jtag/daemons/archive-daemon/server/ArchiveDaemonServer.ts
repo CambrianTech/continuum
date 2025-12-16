@@ -37,14 +37,15 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
    * Runs every 12 seconds, archives small batches to avoid overwhelming system
    */
   protected override async onStart(): Promise<void> {
-    this.log.info('🗄️  Archive daemon started (checking every 12 seconds, 50 rows max per cycle)');
+    this.log.info('🗄️  Archive daemon DISABLED (will be replaced by Rust worker)');
 
-    // Use DaemonBase's registerInterval for proper concurrency management
-    // This keeps the interval alive and handles cleanup automatically
-    this.registerInterval('archive-check', async () => {
-      this.checkCounter++;
-      await this.checkAndArchive();
-    }, 12000); // Check every 12 seconds (250 rows/min throughput)
+    // DISABLED: Old TypeScript archiving causes memory exhaustion
+    // TODO: Re-enable when Rust ArchiveWorker is ready
+
+    // this.registerInterval('archive-check', async () => {
+    //   this.checkCounter++;
+    //   await this.checkAndArchive();
+    // }, 12000);
   }
 
   /**

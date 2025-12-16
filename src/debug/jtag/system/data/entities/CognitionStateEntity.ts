@@ -15,7 +15,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField, CompositeIndex } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, CompositeIndex, Archive } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -69,6 +69,14 @@ export interface WorkingMemoryCapacity {
  * 1. Recent state snapshots: WHERE personaId = ? ORDER BY sequenceNumber DESC
  * 2. State in conversation: WHERE domain = ? AND contextId = ? ORDER BY sequenceNumber DESC
  */
+@Archive({
+  sourceHandle: 'primary',
+  destHandle: 'archive',
+  maxRows: 10000,
+  rowsPerArchive: 1000,
+  maxArchiveFileRows: 100000,
+  orderByField: 'createdAt'
+})
 @CompositeIndex({
   name: 'idx_cognition_state_persona_sequence',
   fields: ['personaId', 'sequenceNumber'],

@@ -590,8 +590,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider || 'ollama',
-          this.modelConfig.model || 'llama3.2:3b',
+          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.model ?? 'llama3.2:3b',
           `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           messages.reduce((sum, m) => sum + m.content.length, 0),  // Rough token estimate
           aiResponse.text.length,  // Completion tokens estimate
