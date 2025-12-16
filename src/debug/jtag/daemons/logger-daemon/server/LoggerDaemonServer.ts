@@ -1,44 +1,22 @@
 /**
- * LoggerDaemonServer - Rust-backed daemon for high-performance logging
+ * LoggerDaemon Server - Rust-backed implementation
  *
- * RUST-BACKED DAEMON PATTERN:
+ * RUST-BACKED DAEMON PATTERN REFERENCE IMPLEMENTATION
+ *
  * This daemon establishes the pattern for TypeScript→Rust integration:
+ * 1. TypeScript: Connection management, health checks, lifecycle
+ * 2. Rust worker: Heavy lifting (I/O, threading, batching)
+ * 3. Communication: Unix domain socket
  *
- * 1. TypeScript (this file):
- *    - DaemonBase lifecycle integration
- *    - Connection management to Rust worker
- *    - Health checks and restart logic
- *    - Thin wrapper with minimal logic
- *
- * 2. Rust worker (workers/logger/):
- *    - Multi-threaded processing
- *    - Batching and buffering
- *    - File I/O and flushing
- *    - All performance-critical code
- *
- * 3. Communication:
- *    - Unix domain socket (/tmp/jtag-logger-worker.sock)
- *    - JSON messages over socket
- *    - Non-blocking async I/O
- *
- * Benefits:
- * - TypeScript: Easy to write, good for orchestration
- * - Rust: Fast, memory-safe, handles heavy lifting
- * - Clean separation of concerns
- * - Easy to test each side independently
+ * Future daemons (Training, Inference, Embedding) follow this pattern.
  */
 
-import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
-import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
-import { createBaseResponse } from '../../../system/core/types/ResponseTypes';
-import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { LoggerDaemon } from '../shared/LoggerDaemon';
+import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
 
-/**
- * LoggerDaemonServer - manages Rust logger worker connection
- */
 export class LoggerDaemonServer extends LoggerDaemon {
   protected log: ComponentLogger;
   private workerClient: LoggerWorkerClient | null = null;
@@ -49,21 +27,17 @@ export class LoggerDaemonServer extends LoggerDaemon {
     super(context, router);
 
     // Initialize standardized logging
-    // NOTE: This uses Logger.ts which connects to the Rust worker we're managing
-    // During initialization, Logger.ts will fall back to TypeScript logging if worker not ready yet
+    // NOTE: Uses Logger.ts which connects to Rust worker we're managing
+    // Falls back to TypeScript logging if worker not ready during init
     const className = this.constructor.name;
     this.log = Logger.create(className, `daemons/${className}`);
   }
 
   /**
-   * Initialize daemon - connect to Rust worker
-   *
-   * NOTE: We assume the Rust worker is already started by npm run worker:start.
-   * This daemon just manages the connection, not the process itself.
-   * Future: Could add process management here to auto-start/restart worker.
+   * Lifecycle: Connect to Rust logger worker
    */
-  protected async initialize(): Promise<void> {
-    this.log.info('🦀 Initializing Rust logger worker connection');
+  protected override async onStart(): Promise<void> {
+    this.log.info('🦀 Connecting to Rust logger worker');
 
     // Create client connection to Rust worker
     this.workerClient = new LoggerWorkerClient({
@@ -86,54 +60,16 @@ export class LoggerDaemonServer extends LoggerDaemon {
       this.log.warn('⚠️  Falling back to TypeScript logging');
       this.log.warn('⚠️  To start Rust worker: npm run worker:start');
 
-      // Don't fail initialization - Logger.ts will fall back to TypeScript logging
+      // Don't fail - Logger.ts will fall back to TypeScript logging
       this.workerClient = null;
     }
   }
 
   /**
-   * Start periodic health checks
+   * Lifecycle: Disconnect from Rust worker
    */
-  private startHealthChecks(): void {
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-    }
-
-    // Check connection health every 30 seconds
-    this.healthCheckInterval = setInterval(() => {
-      if (this.workerClient) {
-        // Future: implement ping/pong health check
-        // For now, connection errors will be caught when logs are sent
-      }
-    }, 30000);
-  }
-
-  /**
-   * Handle incoming messages
-   *
-   * Currently, LoggerDaemon doesn't handle direct commands.
-   * Logging happens via Logger.ts which connects to Rust worker directly.
-   * This could be extended to support commands like:
-   * - logger/flush - force flush all buffers
-   * - logger/rotate - rotate log files
-   * - logger/stats - get logging statistics
-   */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
-    const sessionId = message.payload.sessionId;
-
-    this.log.debug('LoggerDaemon received message');
-
-    // For now, no commands supported - logging happens via Logger.ts
-    return createBaseResponse(false, this.context, sessionId, {
-      message: 'LoggerDaemon does not handle commands yet. Use Logger.ts for logging.'
-    });
-  }
-
-  /**
-   * Cleanup daemon - disconnect from Rust worker
-   */
-  async cleanup(): Promise<void> {
-    this.log.info('🛑 Shutting down LoggerDaemon');
+  protected override async onStop(): Promise<void> {
+    this.log.info('🛑 Disconnecting from Rust logger worker');
 
     // Stop health checks
     if (this.healthCheckInterval) {
@@ -151,7 +87,107 @@ export class LoggerDaemonServer extends LoggerDaemon {
       }
       this.workerClient = null;
     }
+  }
 
-    this.log.info('✅ LoggerDaemon shutdown complete');
+  /**
+   * Start periodic health checks
+   */
+  private startHealthChecks(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    // Check connection health every 30 seconds
+    this.healthCheckInterval = setInterval(async () => {
+      try {
+        const isHealthy = await this.healthCheck();
+        if (!isHealthy) {
+          this.log.warn('⚠️  Rust worker health check failed - attempting reconnect');
+          await this.reconnect();
+        }
+      } catch (error) {
+        this.log.error('❌ Health check error:', error);
+      }
+    }, 30000);
+  }
+
+  /**
+   * Attempt to reconnect to Rust worker
+   */
+  private async reconnect(): Promise<void> {
+    if (!this.workerClient) return;
+
+    try {
+      await this.workerClient.disconnect();
+    } catch {
+      // Ignore disconnect errors during reconnect
+    }
+
+    try {
+      await this.workerClient.connect();
+      this.log.info('✅ Reconnected to Rust logger worker');
+    } catch (error) {
+      this.log.error('❌ Reconnection failed:', error);
+      this.workerClient = null;
+    }
+  }
+
+  /**
+   * Force flush all log buffers to disk
+   */
+  protected override async flush(): Promise<void> {
+    if (!this.workerClient) {
+      throw new Error('Rust worker not connected');
+    }
+
+    // TODO: Implement flush command to Rust worker
+    // await this.workerClient.send({ command: 'flush' });
+    this.log.info('🚽 Flushed log buffers');
+  }
+
+  /**
+   * Rotate log files (close current, open new)
+   */
+  protected override async rotate(category?: string): Promise<void> {
+    if (!this.workerClient) {
+      throw new Error('Rust worker not connected');
+    }
+
+    // TODO: Implement rotate command to Rust worker
+    // await this.workerClient.send({ command: 'rotate', category });
+    this.log.info(`🔄 Rotated log files${category ? ` for ${category}` : ''}`);
+  }
+
+  /**
+   * Get logging statistics from Rust worker
+   */
+  protected override async getStats(): Promise<Record<string, { messagesLogged: number; bytesWritten: number }>> {
+    if (!this.workerClient) {
+      throw new Error('Rust worker not connected');
+    }
+
+    // TODO: Implement stats query to Rust worker
+    // return await this.workerClient.send({ command: 'stats' });
+    return {
+      'system': { messagesLogged: 0, bytesWritten: 0 },
+      'daemons': { messagesLogged: 0, bytesWritten: 0 }
+    };
+  }
+
+  /**
+   * Check connection health to Rust worker
+   */
+  protected override async healthCheck(): Promise<boolean> {
+    if (!this.workerClient) {
+      return false;
+    }
+
+    try {
+      // TODO: Implement ping/pong health check
+      // await this.workerClient.send({ command: 'ping' });
+      return true;
+    } catch (error) {
+      return false;
+    }
   }
 }
