@@ -34,16 +34,17 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
 
   /**
    * Start the intermittent archive loop using DaemonBase.registerInterval()
+   * Runs every 12 seconds, archives small batches to avoid overwhelming system
    */
   protected override async onStart(): Promise<void> {
-    this.log.info('🗄️  Archive daemon started (checking every 60 seconds)');
+    this.log.info('🗄️  Archive daemon started (checking every 12 seconds, 50 rows max per cycle)');
 
     // Use DaemonBase's registerInterval for proper concurrency management
     // This keeps the interval alive and handles cleanup automatically
     this.registerInterval('archive-check', async () => {
       this.checkCounter++;
       await this.checkAndArchive();
-    }, 60000); // Check every 60 seconds (1 minute)
+    }, 12000); // Check every 12 seconds (250 rows/min throughput)
   }
 
   /**
@@ -347,13 +348,18 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
       return 0;
     }
 
-    this.log.info(`🗄️  Archiving ${rowsToArchive} rows from ${collection} (${sourceHandle} → ${destHandle})`);
+    // CRITICAL: Cap work per cycle to prevent overwhelming system
+    // Archive max 50 rows per 12-second cycle = ~250 rows/min throughput
+    const maxRowsPerCycle = 50;
+    const rowsThisCycle = Math.min(rowsToArchive, maxRowsPerCycle);
+
+    this.log.info(`🗄️  Archiving ${rowsThisCycle} of ${rowsToArchive} rows from ${collection} (${sourceHandle} → ${destHandle})`);
 
     let totalArchived = 0;
 
-    // Archive in batches
-    while (totalArchived < rowsToArchive) {
-      const batchSize = Math.min(rowsPerArchive, rowsToArchive - totalArchived);
+    // Archive in batches (capped per cycle)
+    while (totalArchived < rowsThisCycle) {
+      const batchSize = Math.min(rowsPerArchive, rowsThisCycle - totalArchived);
 
       // Get oldest rows from source handle (ordered by archiveConfig.orderByField)
       const batchResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
@@ -370,13 +376,20 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
       const archived = await this.copyVerifyDelete(collection, rowsToMove, sourceHandle, destHandle);
       totalArchived += archived;
 
-      this.log.info(`🗄️  [${collection}] Progress: ${totalArchived}/${rowsToArchive} rows (${Math.round(totalArchived/rowsToArchive*100)}% complete)`);
+      const remainingInDb = currentCount - totalArchived;
+      this.log.info(`🗄️  [${collection}] Progress: ${totalArchived}/${rowsThisCycle} rows this cycle (${remainingInDb} remain in primary)`);
 
-      // Sleep between batches (low CPU impact)
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Sleep between batches (give main thread breathing room)
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
-    this.log.info(`🗄️  ✅ [${collection}] Archiving complete: ${totalArchived} rows (${sourceHandle} → ${destHandle})`);
+    // Check if more archiving is needed
+    const remainingToArchive = rowsToArchive - totalArchived;
+    if (remainingToArchive > 0) {
+      this.log.info(`🗄️  ⏸️  [${collection}] Cycle complete: ${totalArchived} rows archived, ${remainingToArchive} remain (will continue next cycle in 12s)`);
+    } else {
+      this.log.info(`🗄️  ✅ [${collection}] Archiving complete: ${totalArchived} rows (${sourceHandle} → ${destHandle})`);
+    }
 
     return totalArchived;
   }
