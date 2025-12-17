@@ -4,56 +4,53 @@
 🔌 Server: Connecting via JTAGClientServer (target: server)
 🔄 JTAGClient: Connecting to server system with secure configuration...
 🎯 JTAGClient: Provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
+🔍 getLocalSystem() CHECK at 2025-12-17T18:38:15.114Z: instance=NULL
 🌐 JTAGClientServer: No local system - using remote connection
 🔗 JTAGClient: Using Connection Broker for intelligent connection management
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (7cd3d179-90ed-4f57-b1b3-d27369c574c0) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9001 (8386670f-9201-40a7-902a-78271b26e77f) on port 9001
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
-🔗 websocket-server-client: Connecting to ws://localhost:9002
+🔗 websocket-server-client: Connecting to ws://localhost:9001
 ✅ websocket-server-client: Connected
 ✅ websocket-server-client: Handler compliance enforced by TypeScript
 🚀 Server Factory: Adapter WebSocketTransportClientServer connected successfully
 ✅ Server Transport Factory (Registry-Based): web-socket-transport-client-server transport created successfully
-✅ JTAGClient: created_new connection established on port 9002
+✅ JTAGClient: created_new connection established on port 9001
 🏷️ JTAGClient: Requesting session from SessionDaemon...
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1765939989362_3g7y8946
-🏷️ JTAGClientServer: Session updated to: f70c0310-a752-4520-ad6a-92573c83afc6 (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1765996695128_vs6io6fv
+🏷️ JTAGClientServer: Session updated to: 7c6ec490-13c8-485a-956f-81dfc3928df7 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765939989365_thyhlru8
+📤 RemoteConnection: Sending command 'list' with correlation client_1765996695130_oqkeh9oi
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765939989367_fat428cn
+📤 RemoteConnection: Sending command 'list' with correlation client_1765996695134_ktyz83ke
 ✅ Server: JTAGClient connected with 143 commands
 ✅ Connected
 
 🧹 Cleaning up orphaned test data from previous runs...
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765939989368_5n5yw14r
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765996695136_va20d7vk
   ✅ No orphaned test users found
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765939989370_jclpls4d
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765996695137_bs8m54sg
   ✅ No orphaned test rooms found
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765939989372_gnsehw9o
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765939989629_48l57u3f
-  ✅ Deleted orphaned test message: 532958dd-dd7d-4fcf-b876-5dd23753affb
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765939989637_h3obyqeo
-  ✅ Deleted orphaned test message: 73f18db0-f07c-4554-9475-241323942744
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765939989641_2r0g7xdn
-  ✅ Deleted orphaned test message: e842a7a4-514f-45ce-bcbc-c262be2e696e
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765996695142_17b9eynb
+  ✅ No orphaned test messages found
 ✅ Cleanup complete
 
 ⏳ Waiting for widgets to initialize...
+❌ TIMEOUT: websocket-server-client connection failed to establish or was abnormally closed (code: 1006) - connection cancelled
 ❌ Test failed: Error: Command 'debug/widget-state' not available. Available commands: ai/adapter/test, ai/bag-of-words, ai/cost, ai/dataset/create, ai/dataset/list, ai/embedding/generate, ai/generate, ai/genome/stats, ai/model/find, ai/model/list, ai/rag/index/create, ai/rag/inspect, ai/rag/query-close, ai/rag/query-fetch, ai/rag/query-open, ai/report/decisions, ai/report, ai/should-respond-fast, ai/should-respond, ai/status, ai/thoughtstream, ai/validate-response, collaboration/chat/analyze, collaboration/chat/export, collaboration/chat/poll, collaboration/chat/send, collaboration/content/open, collaboration/decision/create, collaboration/decision/finalize, collaboration/decision/list, collaboration/decision/propose, collaboration/decision/rank, collaboration/decision/view, collaboration/decision/vote, collaboration/wall/list, collaboration/wall/read, collaboration/wall/write, continuum/emotion, continuum/set, data/backfill-vectors, data/clear, data/close, data/create, data/delete, data/generate-embedding, data/list-handles, data/list, data/open, data/query-close, data/query-next, data/query-open, data/read, data/schema, data/truncate, data/update, data/vector-search, development/code/pattern-search, development/code/read, development/compile-typescript, development/debug/artifacts-check, development/debug/chat-send, development/debug/crud-sync, development/debug/error, development/debug/html-inspector, development/debug/scroll-test, development/debug/widget-css, development/debug/widget-events, development/debug/widget-interact, development/debug/widget-state, development/exec, development/generate/audit, development/generate, development/schema/generate, development/shell/execute, file/append, file/load, file/mime-type, file/save, genome/batch-micro-tune, genome/job-create, genome/job-status, genome/paging-activate, genome/paging-adapter-register, genome/paging-deactivate, genome/paging-register, genome/paging-stats, genome/paging-unregister, help, indicator, interface/click, interface/get-text, interface/navigate, interface/proxy-navigate, interface/screenshot, interface/scroll, interface/type, interface/wait-for-element, interface/web/fetch, interface/web/search, list, logs/list, logs/read, logs/search, logs/stats, media/process, media/resize, persona/learning/capture-feedback, persona/learning/capture-interaction, persona/learning/multi-agent-learn, ping, process-registry, rag/budget, rag/load, security/setup, session/create, session/destroy, session/get-id, session/get-user, state/create, state/get, state/update, system/daemons, theme/get, theme/list, theme/set, training/import, user/create, user/get-me, utilities/docs/list, utilities/docs/read, utilities/docs/search, utilities/hello, utilities/pipe/chain, workspace/git/commit, workspace/git/push, workspace/git/status, workspace/git/workspace/clean, workspace/git/workspace/init, workspace/recipe/load, workspace/task/complete, workspace/task/create, workspace/task/list, workspace/tree
     at Object.get (/Volumes/SlimGordon/continuum/src/debug/jtag/system/core/client/shared/JTAGClient.ts:654:17)
     at waitForWidgetInitialization (/Volumes/SlimGordon/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:118:38)
     at async testDatabaseChatIntegration (/Volumes/SlimGordon/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:278:5)
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session f70c0310-a752-4520-ad6a-92573c83afc6 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session 7c6ec490-13c8-485a-956f-81dfc3928df7 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

@@ -11,6 +11,7 @@ import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGC
 import { EntryPointAdapter } from './system/core/entry-points/EntryPointAdapter';
 import { systemOrchestrator } from './system/orchestration/SystemOrchestrator';
 import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
+import { COMMANDS } from './shared/generated-command-constants';
 import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
 import { FILE_COMMANDS } from './commands/file/shared/FileCommandConstants';
 import { USER_COMMANDS } from './commands/shared/SystemCommandConstants';
@@ -281,7 +282,7 @@ async function main() {
     
     // Session persistence: reuse existing session unless --new-session flag
     let sessionId: string | undefined;
-    if (!params['new-session'] && command !== 'session/create') {
+    if (!params['new-session'] && command !== COMMANDS.SESSION_CREATE) {
       sessionId = getPersistentSessionId();
       if (behavior.logLevel === 'verbose') {
         console.log(`🔄 Session persistence: ${sessionId ? `reusing ${sessionId}` : 'creating new session'}`);

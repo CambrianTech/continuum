@@ -217,6 +217,24 @@ export const MODEL_IDS = {
 } as const;
 
 /**
+
+/**
+ * Command Names - SINGLE SOURCE OF TRUTH
+ *
+ * ⚠️ AUTO-GENERATED via generator/generate-command-constants.ts
+ * ⚠️ Re-exported from shared/generated-command-constants.ts
+ * ⚠️ NEVER hardcode command strings - use COMMANDS.* constants
+ *
+ * Usage:
+ *   await Commands.execute(COMMANDS.DATA_LIST, params);
+ *   if (command === COMMANDS.SESSION_CREATE) { ... }
+ *
+ * Exception: Only 'list' command may be hardcoded (bootstrap requirement)
+ */
+export { COMMANDS, CommandName } from '../../shared/generated-command-constants';
+
+
+/**
  * ⚠️ DO NOT ADD FUNCTIONS THAT ACCESS process.env HERE ⚠️
  * This file is browser-safe and gets bundled into client code.
  * For runtime config that checks environment variables, use ServerConfig.ts
