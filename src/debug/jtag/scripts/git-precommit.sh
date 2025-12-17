@@ -1,38 +1,49 @@
 #!/bin/bash
 set -e  # Exit immediately on any error
 
-# Post-commit cleanup function - called after successful commit
-post_commit_summary() {
-    echo ""
-    echo "📋 POST-COMMIT SUMMARY: Validation complete"
-    echo "============================================"
-    echo "✅ Bulletproof validation: 100% CRUD tests passed"
-    echo "✅ Screenshots and logs captured for inspection"
-    echo "✅ No git artifacts committed - clean repository"
-    echo ""
-    echo "🎯 Validation artifacts: .continuum/sessions/validation/run_${COMMIT_HASH:0:12}/"
-    echo "📸 Screenshots available for manual review if needed"
-    echo "🚀 Ready for next development cycle!"
-}
-
-echo "🔒 GIT PRECOMMIT: Bulletproof validation with proof artifacts"
-echo "=================================================="
-
 # Navigate to the correct working directory
 cd "$(dirname "$0")/.."
 
-# Phase 1: Foundation Validation
-echo ""
-echo "📋 Phase 1: Compilation & Deployment"
-echo "-------------------------------------"
+# ==============================================================================
+# LOAD CONFIGURATION
+# ==============================================================================
+# Source the modular configuration file
+if [ -f "scripts/precommit-config.sh" ]; then
+    source scripts/precommit-config.sh
+    echo "✅ Loaded precommit configuration from scripts/precommit-config.sh"
+else
+    echo "❌ Configuration file not found: scripts/precommit-config.sh"
+    echo "   Using default settings"
+    export ENABLE_TYPESCRIPT_CHECK=true
+    export ENABLE_BROWSER_TEST=true
+    export RESTART_STRATEGY="on_code_change"
+    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts"
+fi
 
-echo "🔨 Running TypeScript compilation..."
-npm run build:ts
-# Restore version.ts to avoid timestamp-only changes in commit
-cd ../../..
-git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
-cd src/debug/jtag
-echo "✅ TypeScript compilation passed"
+echo "🔒 GIT PRECOMMIT: Modular validation (config-driven)"
+echo "=================================================="
+echo "📋 Active phases:"
+[ "$ENABLE_TYPESCRIPT_CHECK" = true ] && echo "  ✅ TypeScript compilation"
+[ "$ENABLE_SYSTEM_RESTART" = true ] && echo "  ✅ System restart (strategy: $RESTART_STRATEGY)"
+[ "$ENABLE_BROWSER_TEST" = true ] && echo "  ✅ Browser tests ($PRECOMMIT_TESTS)"
+echo ""
+
+# Phase 1: Foundation Validation
+if [ "$ENABLE_TYPESCRIPT_CHECK" = true ]; then
+    echo ""
+    echo "📋 Phase 1: TypeScript Compilation"
+    echo "-------------------------------------"
+
+    echo "🔨 Running TypeScript compilation..."
+    npm run build:ts
+    # Restore version.ts to avoid timestamp-only changes in commit
+    cd ../../..
+    git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
+    cd src/debug/jtag
+    echo "✅ TypeScript compilation passed"
+else
+    echo "⏭️  Phase 1: TypeScript compilation SKIPPED (disabled in config)"
+fi
 
 # Detect if code changes require deployment
 echo "🔍 Checking if code changes require deployment..."
@@ -52,20 +63,47 @@ fi
 
 cd src/debug/jtag
 
-# Determine if restart is needed
-echo "🏓 Checking if system restart is required..."
-NEED_RESTART=false
+# Determine if restart is needed based on strategy
+if [ "$ENABLE_SYSTEM_RESTART" = true ]; then
+    echo "🏓 Checking if system restart is required (strategy: $RESTART_STRATEGY)..."
+    NEED_RESTART=false
 
-# If code changed, restart to test new code (prevent breaking changes)
-if [ "$CODE_CHANGED" = true ]; then
-    echo "📝 Code changed - restart required to test new code"
-    NEED_RESTART=true
-# Otherwise, only restart if ping fails
-elif ! ./jtag ping >/dev/null 2>&1; then
-    echo "❌ System not responding to ping - restart required"
-    NEED_RESTART=true
+    case "$RESTART_STRATEGY" in
+        always)
+            echo "📝 Always restart (strategy: always)"
+            NEED_RESTART=true
+            ;;
+        on_code_change)
+            if [ "$CODE_CHANGED" = true ]; then
+                echo "📝 Code changed - restart required to test new code"
+                NEED_RESTART=true
+            elif ! ./jtag ping >/dev/null 2>&1; then
+                echo "❌ System not responding to ping - restart required"
+                NEED_RESTART=true
+            else
+                echo "✅ System running and no code changes - no restart needed"
+            fi
+            ;;
+        on_ping_fail)
+            if ! ./jtag ping >/dev/null 2>&1; then
+                echo "❌ System not responding to ping - restart required"
+                NEED_RESTART=true
+            else
+                echo "✅ System responding to ping - no restart needed"
+            fi
+            ;;
+        never)
+            echo "⏭️  Restart disabled (strategy: never)"
+            NEED_RESTART=false
+            ;;
+        *)
+            echo "⚠️  Unknown restart strategy: $RESTART_STRATEGY (defaulting to on_code_change)"
+            NEED_RESTART=$CODE_CHANGED
+            ;;
+    esac
 else
-    echo "✅ System running and no code changes - no restart needed"
+    echo "⏭️  System restart SKIPPED (disabled in config)"
+    NEED_RESTART=false
 fi
 
 # Start system if ping failed
@@ -107,48 +145,60 @@ else
     echo "⚡ System already running - no restart needed"
 fi
 
-# Phase 2: Browser Connectivity Test
-echo ""
-echo "🧪 Phase 2: Browser Ping Test (minimum viable validation)"
-echo "-----------------------------------------------------------"
+# Phase 2: Browser Tests
+if [ "$ENABLE_BROWSER_TEST" = true ]; then
+    echo ""
+    echo "🧪 Phase 2: Browser Tests"
+    echo "-----------------------------------------------------------"
 
-echo "🧪 Running minimal browser connectivity test..."
+    echo "🧪 Running precommit tests: $PRECOMMIT_TESTS"
 
-# Ensure test output directory exists
-mkdir -p .continuum/sessions/validation
+    # Ensure test output directory exists
+    mkdir -p .continuum/sessions/validation
 
-# Run simple browser ping test
-echo "=================================================="
-npx tsx tests/precommit/browser-ping.test.ts 2>&1 | tee .continuum/sessions/validation/test1-output.txt
-TEST_EXIT_CODE=${PIPESTATUS[0]}
-TEST_OUTPUT=$(cat .continuum/sessions/validation/test1-output.txt)
-echo "=================================================="
+    # Run all configured tests
+    TEST_EXIT_CODE=0
+    TEST_SUMMARY=""
 
-echo ""
-# Check if test passed
-if [ $TEST_EXIT_CODE -eq 0 ]; then
-    echo "✅ Precommit browser ping test: PASSED"
-    echo "📊 Test result: Browser can ping back ✅"
+    for TEST_FILE in $PRECOMMIT_TESTS; do
+        echo "=================================================="
+        echo "🧪 Running: $TEST_FILE"
+        echo "=================================================="
 
-    # Store test results for commit message
-    TEST_SUMMARY="Browser Ping: PASSED"
+        npx tsx "$TEST_FILE" 2>&1 | tee .continuum/sessions/validation/test-output.txt
+        CURRENT_EXIT_CODE=${PIPESTATUS[0]}
+
+        if [ $CURRENT_EXIT_CODE -ne 0 ]; then
+            TEST_EXIT_CODE=$CURRENT_EXIT_CODE
+            echo ""
+            echo "❌ TEST FAILED - BLOCKING COMMIT"
+            echo "=================================================="
+            echo "❌ Test FAILED (exit code: $CURRENT_EXIT_CODE)"
+            echo "   Test file: $TEST_FILE"
+            echo "   Output shown above"
+            echo ""
+            echo "🔍 Fix the failing test before committing"
+            echo "=================================================="
+            exit 1
+        else
+            echo "✅ Test passed: $TEST_FILE"
+            TEST_SUMMARY="$TEST_SUMMARY $TEST_FILE:PASSED"
+        fi
+    done
+
+    echo ""
+    echo "✅ All precommit tests: PASSED"
+    echo "📊 Test results: $TEST_SUMMARY"
 else
-    echo ""
-    echo "❌ PRECOMMIT BROWSER PING TEST FAILED - BLOCKING COMMIT"
-    echo "=================================================="
-    echo "❌ Browser ping test FAILED (exit code: $TEST_EXIT_CODE)"
-    echo "   Test file: tests/precommit/browser-ping.test.ts"
-    echo "   Output shown above"
-    echo ""
-    echo "🔍 Fix the browser connectivity before committing"
-    echo "=================================================="
-    exit 1
+    echo "⏭️  Phase 2: Browser tests SKIPPED (disabled in config)"
+    TEST_SUMMARY="Browser tests: SKIPPED"
 fi
 
-# Phase 3: Session Artifacts Collection (Following Legacy Git Hook Pattern)
-echo ""
-echo "📦 Phase 4: Collecting complete session artifacts for commit inclusion"
-echo "---------------------------------------------------------------------"
+# Phase 3: Session Artifacts Collection
+if [ "$ENABLE_ARTIFACTS_COLLECTION" = true ]; then
+    echo ""
+    echo "📦 Phase 3: Collecting session artifacts"
+    echo "---------------------------------------------------------------------"
 
 # Use a stable validation ID based on timestamp for this precommit run
 VALIDATION_ID="$(date +%Y%m%d-%H%M%S)-$$"
@@ -224,64 +274,19 @@ EOF
 else
     echo "❌ No screenshots found from integration tests"
     echo "   Expected: examples/widget-ui/.continuum/jtag/sessions/user/*/screenshots/*.png"
-    echo "   This means the CRUD integration test didn't capture screenshots properly"
+    echo "   This means the integration test didn't capture screenshots properly"
     exit 1
 fi
-
-# Phase 5: Final Validation
-echo ""
-echo "🔎 Phase 5: Final validation check"
-echo "----------------------------------"
-
-# Verify critical proof artifacts exist (screenshots and metadata)
-REQUIRED_ARTIFACTS=(
-    "$VALIDATION_RUN_DIR/screenshots"
-    "$VALIDATION_RUN_DIR/validation-info.json"
-)
-
-for artifact in "${REQUIRED_ARTIFACTS[@]}"; do
-    if [ -e "$artifact" ]; then
-        echo "✅ $artifact"
-    else
-        echo "❌ Missing required artifact: $artifact"
-        exit 1
-    fi
-done
-
-# Logs are optional (user sessions don't always have them)
-if [ -e "$VALIDATION_RUN_DIR/logs" ]; then
-    echo "✅ $VALIDATION_RUN_DIR/logs (optional)"
+else
+    echo "⏭️  Phase 3: Artifacts collection SKIPPED (disabled in config)"
 fi
 
-# Phase 6: Commit Message Enhancement
-echo ""
-echo "📝 Phase 6: Preparing validation summary for commit message"
-echo "-----------------------------------------------------------"
-
-# Create validation summary matching existing commit format
-VALIDATION_SUMMARY=$(cat << EOF
-🔍 JTAG INTEGRATION TEST: ✅ $TEST_SUMMARY - All validation phases completed
-🛡️ Git Hook Validation: ✅ All 6 phases passed (TypeScript → JTAG Test Runner → Artifacts → Message Enhancement)
-EOF
-)
-
-# Save validation summary for prepare-commit-msg hook to use
-VALIDATION_SUMMARY_DIR=".continuum/sessions/validation"
-mkdir -p "$VALIDATION_SUMMARY_DIR"
-echo "$VALIDATION_SUMMARY" > "$VALIDATION_SUMMARY_DIR/latest-validation-summary.txt"
-echo "📝 Validation summary saved for commit message enhancement"
-
+# Final Summary
 echo ""
 echo "🎉 PRECOMMIT VALIDATION COMPLETE!"
 echo "=================================================="
-echo "✅ TypeScript compilation: PASSED"
-echo "✅ System deployment: PASSED"
-echo "✅ CRUD + State integration: 100% PASSED"
-echo "✅ Screenshot proof: COLLECTED"
-echo "✅ Session artifacts: PROMOTED"
-echo "✅ All validation artifacts included in commit"
+[ "$ENABLE_TYPESCRIPT_CHECK" = true ] && echo "✅ TypeScript compilation: PASSED"
+[ "$ENABLE_SYSTEM_RESTART" = true ] && echo "✅ System restart: COMPLETED (strategy: $RESTART_STRATEGY)"
+[ "$ENABLE_BROWSER_TEST" = true ] && echo "✅ Browser tests: PASSED"
 echo ""
-echo "🚀 Commit approved - system is bulletproof!"
-
-# Call summary after successful validation (no cleanup - keep artifacts in git)
-post_commit_summary
+echo "🚀 Commit approved - all enabled validations passed!"
