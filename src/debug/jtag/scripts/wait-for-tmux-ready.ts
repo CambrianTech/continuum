@@ -4,8 +4,8 @@
  * 
  * Waits for the JTAG tmux session to be fully established with:
  * 1. Tmux session 'jtag-test' running
- * 2. WebSocket server active on port 9001  
- * 3. HTTP server active on port 9002
+ * 2. WebSocket server active on port WS_PORT  
+ * 3. HTTP server active on port HTTP_PORT
  * 4. Browser interface accessible and responding
  * 
  * This replaces timeout-based approaches with proper startup dependency checking.

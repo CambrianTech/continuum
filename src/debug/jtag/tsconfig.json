@@ -20,6 +20,8 @@
       "@browser/*": ["browser/*"],
       "@server/*": ["server/*"],
       "@generator/*": ["generator/*"],
+      "@scripts/*": ["scripts/*"],
+      "@utils/*": ["utils/*"],
       "@commands-utilities/*": ["commands/utilities/*"],
       "@commands-workspace/*": ["commands/workspace/*"],
       "@commands-interface/*": ["commands/interface/*"],

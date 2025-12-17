@@ -126,7 +126,8 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
         env: {
           ...process.env,
           FORCE_COLOR: '1',
-          TERM: 'xterm-256color'
+          TERM: 'xterm-256color',
+          NODE_OPTIONS: '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON'
         },
         cwd: process.cwd()
       });

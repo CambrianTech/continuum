@@ -358,6 +358,9 @@ import { Commands } from '@system/core/shared/Commands';
 | `@types/*` | `types/*` | Type definitions |
 | `@browser/*` | `browser/*` | Browser-specific code |
 | `@server/*` | `server/*` | Server-specific code |
+| `@scripts/*` | `scripts/*` | Build and utility scripts |
+| `@utils/*` | `utils/*` | Utility functions |
+| `@generator/*` | `generator/*` | Code generators |
 
 **Migration Strategy:**
 - **New code**: Always use path aliases
