@@ -4,7 +4,7 @@
  * Performs semantic search over a collection using vector similarity.
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
@@ -17,7 +17,7 @@ import type { RecordData } from '../../../../daemons/data-daemon/shared/DataStor
 /**
  * Vector search command parameters
  */
-export interface VectorSearchParams extends JTAGPayload {
+export interface VectorSearchParams extends CommandParams {
   readonly collection: string;
 
   // Query can be text (will generate embedding) OR pre-computed vector

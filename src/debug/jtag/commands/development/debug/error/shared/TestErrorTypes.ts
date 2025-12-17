@@ -5,7 +5,7 @@
  * Supports environment-specific triggers and multi-level error testing.
  */
 
-import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
@@ -36,7 +36,7 @@ export type ErrorLevel =
 /**
  * Enhanced test error command parameters
  */
-export interface TestErrorParams extends JTAGPayload {
+export interface TestErrorParams extends CommandParams {
   /** Type of error to trigger */
   errorType: ErrorTrigger;
   /** Level at which to trigger the error */

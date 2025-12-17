@@ -5,13 +5,13 @@
  * Returns clean text content from HTML pages.
  */
 
-import type { JTAGContext, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Web fetch parameters
  */
-export interface WebFetchParams extends JTAGPayload {
+export interface WebFetchParams extends CommandParams {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
 

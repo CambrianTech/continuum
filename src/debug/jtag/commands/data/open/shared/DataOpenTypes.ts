@@ -7,7 +7,7 @@
  * See docs/MULTI-DATABASE-HANDLES.md for architecture
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
@@ -23,7 +23,7 @@ import type {
 /**
  * Data Open Parameters
  */
-export interface DataOpenParams extends JTAGPayload {
+export interface DataOpenParams extends CommandParams {
   // Adapter type: 'sqlite', 'json', 'vector', 'graph'
   readonly adapter: AdapterType;
 

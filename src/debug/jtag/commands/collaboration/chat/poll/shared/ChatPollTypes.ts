@@ -7,14 +7,14 @@
  * 3. Poll for all messages after your question
  */
 
-import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 
 /**
  * Chat poll parameters
  */
-export interface ChatPollParams extends JTAGPayload {
+export interface ChatPollParams extends CommandParams {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
 

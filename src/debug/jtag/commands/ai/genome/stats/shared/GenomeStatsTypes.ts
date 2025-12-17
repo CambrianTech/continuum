@@ -8,13 +8,13 @@
  * ./jtag genome/stats --format=json      # Machine-readable output
  */
 
-import type { JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Genome Stats Request Parameters
  */
-export interface GenomeStatsParams extends JTAGPayload {
+export interface GenomeStatsParams extends CommandParams {
   // Optional filters
   genomeId?: UUID;           // Stats for specific genome
   personaId?: UUID;          // Stats for specific persona's genome

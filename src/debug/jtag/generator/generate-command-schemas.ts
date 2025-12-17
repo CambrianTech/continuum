@@ -170,7 +170,8 @@ class CommandSchemaGenerator {
    *   WallWriteParams + "wall" → "wall/write"
    *   WallListParams + "wall" → "wall/list"
    *   PingParams + "ping" → "ping"
-   *   ScreenshotParams + "screenshot" → "screenshot"
+   *   TreeParams + "workspace/tree" → "workspace/tree"
+   *   ScreenshotParams + "interface/screenshot" → "interface/screenshot"
    */
   private deriveCommandName(interfaceName: string, basePath: string): string {
     // Remove "Params" suffix: WallWriteParams → WallWrite
@@ -181,14 +182,24 @@ class CommandSchemaGenerator {
       .replace(/([a-z])([A-Z])/g, '$1-$2')
       .toLowerCase();
 
-    // If kebab starts with basePath, extract subcommand
-    // "wall-write" with basePath "wall" → "wall/write"
-    // "ping" with basePath "ping" → "ping"
-    if (kebabCase.startsWith(basePath + '-')) {
-      const subcommand = kebabCase.substring(basePath.length + 1);
+    // Get the last segment of basePath (workspace/tree → tree)
+    const basePathSegments = basePath.split('/');
+    const lastSegment = basePathSegments[basePathSegments.length - 1];
+
+    // If kebab matches the last segment exactly, use full basePath
+    // TreeParams + "workspace/tree" → "workspace/tree"
+    if (kebabCase === lastSegment) {
+      return basePath;
+    }
+
+    // If kebab starts with last segment + dash, it's a subcommand
+    // "tree-list" with basePath "workspace/tree" → "workspace/tree/list"
+    if (kebabCase.startsWith(lastSegment + '-')) {
+      const subcommand = kebabCase.substring(lastSegment.length + 1);
       return `${basePath}/${subcommand}`;
     }
 
+    // Fallback: just return kebab (for simple commands like "ping")
     return kebabCase;
   }
 

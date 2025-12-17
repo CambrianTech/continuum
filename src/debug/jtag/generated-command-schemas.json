@@ -1,7 +1,28 @@
 {
-  "generated": "2025-12-17T17:26:29.632Z",
+  "generated": "2025-12-17T18:47:03.727Z",
   "version": "1.0.0",
   "commands": [
+    {
+      "name": "workspace/tree",
+      "description": "Tree Command Types\n *\n * Displays hierarchical command structure auto-generated from command registry.\n * Shows parent/child relationships like a file tree.",
+      "params": {
+        "filter": {
+          "type": "string",
+          "required": false,
+          "description": "filter parameter"
+        },
+        "showDescriptions": {
+          "type": "boolean",
+          "required": false,
+          "description": "showDescriptions parameter"
+        },
+        "maxDepth": {
+          "type": "number",
+          "required": false,
+          "description": "maxDepth parameter"
+        }
+      }
+    },
     {
       "name": "task-list",
       "description": "TaskListTypes - List tasks for PersonaUsers\n *\n * Query tasks by assignee, status, domain, etc.\n * Used for monitoring AI work queues and debugging.",
@@ -308,7 +329,7 @@
       }
     },
     {
-      "name": "hello",
+      "name": "utilities/hello",
       "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
       "params": {
         "_noParams": {
@@ -397,7 +418,99 @@
       "params": {}
     },
     {
-      "name": "daemons",
+      "name": "user-create",
+      "description": "User Create Command - Shared Types\n *\n * Follows ARCHITECTURE-RULES.md:\n * - Generic programming with BaseEntity\n * - Type safety with proper constraints\n * - No entity mixing in command layer\n *\n * Factory pattern: user/create calls BaseUser.create() which routes to\n * PersonaUser.create(), AgentUser.create(), or HumanUser.create()",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "displayName": {
+          "type": "string",
+          "required": true,
+          "description": "displayName parameter"
+        },
+        "uniqueId": {
+          "type": "string",
+          "required": true,
+          "description": "uniqueId parameter"
+        },
+        "addToRooms": {
+          "type": "array",
+          "required": false,
+          "description": "addToRooms parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "modelConfig": {
+          "type": "string",
+          "required": false,
+          "description": "modelConfig parameter"
+        },
+        "capabilities": {
+          "type": "string",
+          "required": false,
+          "description": "capabilities parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "intelligenceLevel": {
+          "type": "number",
+          "required": false,
+          "description": "intelligenceLevel parameter"
+        }
+      }
+    },
+    {
+      "name": "training-import",
+      "description": "Training Import Command - Shared Types\n *\n * Imports JSONL training data into SQLite database for MLX fine-tuning.\n * Uses multi-database handle system for isolation.",
+      "params": {
+        "jsonlPath": {
+          "type": "string",
+          "required": true,
+          "description": "jsonlPath parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "datasetName": {
+          "type": "string",
+          "required": true,
+          "description": "datasetName parameter"
+        },
+        "targetSkill": {
+          "type": "string",
+          "required": true,
+          "description": "targetSkill parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        },
+        "maxExamples": {
+          "type": "number",
+          "required": false,
+          "description": "maxExamples parameter"
+        },
+        "createIndices": {
+          "type": "boolean",
+          "required": false,
+          "description": "createIndices parameter"
+        }
+      }
+    },
+    {
+      "name": "system/daemons",
       "description": "Daemons Command Types\n *\n * List all registered system daemons with their status",
       "params": {
         "nameFilter": {
@@ -436,6 +549,37 @@
           "type": "string",
           "required": false,
           "description": "reason parameter"
+        }
+      }
+    },
+    {
+      "name": "session-create",
+      "description": "Session Create Command Types - Shared\n * \n * Command interface for creating sessions via the session daemon.\n * Handles session creation by routing to SessionDaemon internally.",
+      "params": {
+        "category": {
+          "type": "string",
+          "required": true,
+          "description": "category parameter"
+        },
+        "displayName": {
+          "type": "string",
+          "required": true,
+          "description": "displayName parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
+        },
+        "isShared": {
+          "type": "boolean",
+          "required": false,
+          "description": "isShared parameter"
+        },
+        "connectionContext": {
+          "type": "object",
+          "required": false,
+          "description": "connectionContext parameter"
         }
       }
     },
@@ -524,6 +668,84 @@
           "type": "number",
           "required": false,
           "description": "avgTokensPerMessage parameter"
+        }
+      }
+    },
+    {
+      "name": "register-process",
+      "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
+      "params": {
+        "processType": {
+          "type": "string",
+          "required": true,
+          "description": "processType parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "ports": {
+          "type": "array",
+          "required": false,
+          "description": "ports parameter"
+        },
+        "capabilities": {
+          "type": "array",
+          "required": false,
+          "description": "capabilities parameter"
+        },
+        "parentProcessId": {
+          "type": "string",
+          "required": false,
+          "description": "parentProcessId parameter"
+        }
+      }
+    },
+    {
+      "name": "list-processes",
+      "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
+      "params": {
+        "filterByPorts": {
+          "type": "array",
+          "required": false,
+          "description": "filterByPorts parameter"
+        },
+        "filterByType": {
+          "type": "string",
+          "required": false,
+          "description": "filterByType parameter"
+        },
+        "includeStale": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeStale parameter"
+        }
+      }
+    },
+    {
+      "name": "cleanup-processes",
+      "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
+      "params": {
+        "forceAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "forceAll parameter"
+        },
+        "preserveActive": {
+          "type": "boolean",
+          "required": false,
+          "description": "preserveActive parameter"
+        },
+        "targetProcessId": {
+          "type": "string",
+          "required": false,
+          "description": "targetProcessId parameter"
+        },
+        "targetPorts": {
+          "type": "array",
+          "required": false,
+          "description": "targetPorts parameter"
         }
       }
     },
@@ -763,6 +985,87 @@
       }
     },
     {
+      "name": "media-process",
+      "description": "Media Process Command Types\n *\n * Comprehensive video/audio/image processing via ffmpeg and other media tools.\n * Supports speed adjustment, format conversion, trimming, audio manipulation, and more.",
+      "params": {
+        "inputPath": {
+          "type": "string",
+          "required": true,
+          "description": "inputPath parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "speed": {
+          "type": "number",
+          "required": false,
+          "description": "speed parameter"
+        },
+        "stripAudio": {
+          "type": "boolean",
+          "required": false,
+          "description": "stripAudio parameter"
+        },
+        "extractAudio": {
+          "type": "boolean",
+          "required": false,
+          "description": "extractAudio parameter"
+        },
+        "audioPath": {
+          "type": "string",
+          "required": false,
+          "description": "audioPath parameter"
+        },
+        "volume": {
+          "type": "number",
+          "required": false,
+          "description": "volume parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "quality": {
+          "type": "string",
+          "required": false,
+          "description": "quality parameter"
+        },
+        "videoCodec": {
+          "type": "string",
+          "required": false,
+          "description": "videoCodec parameter"
+        },
+        "audioCodec": {
+          "type": "string",
+          "required": false,
+          "description": "audioCodec parameter"
+        },
+        "videoBitrate": {
+          "type": "string",
+          "required": false,
+          "description": "videoBitrate parameter"
+        },
+        "audioBitrate": {
+          "type": "string",
+          "required": false,
+          "description": "audioBitrate parameter"
+        },
+        "resolution": {
+          "type": "object",
+          "required": false,
+          "description": "resolution parameter"
+        },
+        "height": {
+          "type": "number",
+          "required": true,
+          "description": "height parameter"
+        }
+      }
+    },
+    {
       "name": "logs-search",
       "description": "logs-search command",
       "params": {
@@ -861,8 +1164,66 @@
       }
     },
     {
-      "name": "wait-for-element",
-      "description": "wait-for-element command",
+      "name": "list",
+      "description": "List Command Types - Command Discovery Interface\n * \n * Provides strongly-typed interface for discovering available commands from the system.\n * Essential command that all JTAG systems must implement for client discovery.",
+      "params": {
+        "includeDescription": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeDescription parameter"
+        },
+        "includeSignature": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeSignature parameter"
+        }
+      }
+    },
+    {
+      "name": "web-search",
+      "description": "Web Search Command Types\n *\n * Allows AIs to search the web and get results.\n * Uses search APIs to find relevant information.",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "maxResults": {
+          "type": "number",
+          "required": false,
+          "description": "maxResults parameter"
+        },
+        "domains": {
+          "type": "array",
+          "required": false,
+          "description": "domains parameter"
+        }
+      }
+    },
+    {
+      "name": "web-fetch",
+      "description": "Web Fetch Command Types\n *\n * Allows AIs to fetch and read web pages.\n * Returns clean text content from HTML pages.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "maxLength": {
+          "type": "number",
+          "required": false,
+          "description": "maxLength parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/wait-for-element",
+      "description": "interface/wait-for-element command",
       "params": {
         "selector": {
           "type": "string",
@@ -887,8 +1248,8 @@
       }
     },
     {
-      "name": "type",
-      "description": "type command",
+      "name": "interface/type",
+      "description": "interface/type command",
       "params": {
         "selector": {
           "type": "string",
@@ -913,8 +1274,8 @@
       }
     },
     {
-      "name": "scroll",
-      "description": "scroll command",
+      "name": "interface/scroll",
+      "description": "interface/scroll command",
       "params": {
         "x": {
           "type": "number",
@@ -939,7 +1300,7 @@
       }
     },
     {
-      "name": "screenshot",
+      "name": "interface/screenshot",
       "description": "Screenshot Command - Shared Types\n * \n * Common types and interfaces used by both browser and server screenshot implementations.",
       "params": {
         "filename": {
@@ -1040,7 +1401,7 @@
       }
     },
     {
-      "name": "proxy-navigate",
+      "name": "interface/proxy-navigate",
       "description": "Proxy Navigate Command - Shared Types\n * \n * Enables cross-origin navigation through proxy system for widget training.\n * Solves the fundamental html2canvas + cross-origin iframe limitation.",
       "params": {
         "url": {
@@ -1071,7 +1432,7 @@
       }
     },
     {
-      "name": "navigate",
+      "name": "interface/navigate",
       "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
       "params": {
         "url": {
@@ -1097,8 +1458,8 @@
       }
     },
     {
-      "name": "get-text",
-      "description": "get-text command",
+      "name": "interface/get-text",
+      "description": "interface/get-text command",
       "params": {
         "selector": {
           "type": "string",
@@ -1118,7 +1479,7 @@
       }
     },
     {
-      "name": "click",
+      "name": "interface/click",
       "description": "Click Command - Shared Types for Element Interaction\n * \n * Minimal types for clicking DOM elements. Follows screenshot/navigate pattern\n * with clean inheritance and Object.assign() initialization.\n * \n * DESIGN ANALYSIS:\n * ✅ Focused on single action - clicking elements\n * ✅ Clean parameter interface with optional properties\n * ✅ Proper constructor pattern with Object.assign()\n * ✅ Result type includes success state and metadata\n * ✅ No over-engineering - just what's needed for clicks\n * \n * SCOPE:\n * - Browser: Direct DOM element.click() calls\n * - Server: Delegates to browser context\n * - Consistent interface across contexts",
       "params": {
         "selector": {
@@ -1145,6 +1506,17 @@
           "type": "string",
           "required": false,
           "description": "innerSelector parameter"
+        }
+      }
+    },
+    {
+      "name": "help",
+      "description": "Help Command Types\n *\n * Auto-generates help documentation for any command by querying the list command.\n * Returns both structured data and human-readable help text.",
+      "params": {
+        "commandName": {
+          "type": "string",
+          "required": false,
+          "description": "commandName parameter"
         }
       }
     },
@@ -1485,7 +1857,38 @@
       }
     },
     {
-      "name": "generate",
+      "name": "schema-generate",
+      "description": "Schema Generate Command Types\n *\n * Generates JSON schemas from TypeScript interfaces using the TypeScript compiler.\n * Properly resolves cross-file inheritance.\n *\n * Usage:\n *   ./jtag schema/generate --pattern=\"*Params\" --output=\"schemas.json\"\n *   ./jtag schema/generate --interface=\"DataReadParams\" --file=\"commands/data/read/shared/DataReadTypes.ts\"",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "pattern parameter"
+        },
+        "interface": {
+          "type": "string",
+          "required": false,
+          "description": "interface parameter"
+        },
+        "file": {
+          "type": "string",
+          "required": false,
+          "description": "file parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": false,
+          "description": "output parameter"
+        },
+        "rootDir": {
+          "type": "string",
+          "required": false,
+          "description": "rootDir parameter"
+        }
+      }
+    },
+    {
+      "name": "development/generate",
       "description": "Generate Command - Shared Types\n *\n * Generate a new command from a CommandSpec JSON definition",
       "params": {
         "spec": {
@@ -1527,7 +1930,7 @@
       }
     },
     {
-      "name": "exec-command",
+      "name": "development/exec/command",
       "description": "ExecCommand Types - Universal Script Execution System\n * \n * Defines types for JTAG's meta-command that enables AI agents to write\n * custom automation scripts with visual feedback and cross-context execution.",
       "params": {
         "code": {
@@ -1588,7 +1991,7 @@
       }
     },
     {
-      "name": "widget-state-debug",
+      "name": "development/debug/widget-state/debug",
       "description": "Widget State Debug Command Types\n *\n * Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development\n * Enables inspection of widget internal state, event listeners, and DOM structure",
       "params": {
         "widgetSelector": {
@@ -1644,7 +2047,7 @@
       }
     },
     {
-      "name": "widget-interact",
+      "name": "development/debug/widget-interact",
       "description": "Widget Interaction Command Types\n *\n * Complete widget interaction capabilities - everything you can do in UX/devtools\n * Perfect for MCP integration where Claude needs full UI control",
       "params": {
         "widgetSelector": {
@@ -1715,7 +2118,7 @@
       }
     },
     {
-      "name": "widget-events-debug",
+      "name": "development/debug/widget-events/debug",
       "description": "Widget Events Debug Command Types\n * \n * Specialized command for debugging widget event listeners and event system connectivity\n * Replaces raw exec commands for widget event debugging",
       "params": {
         "widgetSelector": {
@@ -1812,7 +2215,7 @@
       }
     },
     {
-      "name": "scroll-test",
+      "name": "development/debug/scroll-test",
       "description": "Scroll Test Debug Command Types - Clean Testing Interface\n *\n * Animated scroll testing for debugging intersection observers and scroll behaviors.\n * Useful for testing infinite scroll, chat positioning, and scroll restoration.",
       "params": {
         "target": {
@@ -1858,7 +2261,7 @@
       }
     },
     {
-      "name": "html-inspector",
+      "name": "development/debug/html-inspector",
       "description": "HTML Inspector Types - Shadow DOM debugging",
       "params": {
         "selector": {
@@ -1879,7 +2282,48 @@
       }
     },
     {
-      "name": "crud-sync-debug",
+      "name": "test-error",
+      "description": "Test Error Command Types - Enhanced\n * \n * Comprehensive error testing command for validating error handling at all levels.\n * Supports environment-specific triggers and multi-level error testing.",
+      "params": {
+        "errorType": {
+          "type": "string",
+          "required": true,
+          "description": "errorType parameter"
+        },
+        "level": {
+          "type": "string",
+          "required": false,
+          "description": "level parameter"
+        },
+        "environment": {
+          "type": "string",
+          "required": false,
+          "description": "environment parameter"
+        },
+        "errorMessage": {
+          "type": "string",
+          "required": false,
+          "description": "errorMessage parameter"
+        },
+        "delay": {
+          "type": "number",
+          "required": false,
+          "description": "delay parameter"
+        },
+        "recoverable": {
+          "type": "boolean",
+          "required": false,
+          "description": "recoverable parameter"
+        },
+        "shouldThrow": {
+          "type": "boolean",
+          "required": false,
+          "description": "shouldThrow parameter"
+        }
+      }
+    },
+    {
+      "name": "development/debug/crud-sync/debug",
       "description": "CRUD Sync Debug Command Types\n *\n * Verifies database/UI synchronization across all three main widgets:\n * - room-list-widget: Rooms data\n * - chat-widget: Messages data\n * - user-list-widget: Users data",
       "params": {
         "collections": {
@@ -1900,7 +2344,7 @@
       }
     },
     {
-      "name": "chat-send-debug",
+      "name": "development/debug/chat-send/debug",
       "description": "Chat Send Debug Command Types\n *\n * Triggers chat widget to send a message for testing event flow",
       "params": {
         "message": {
@@ -1916,7 +2360,7 @@
       }
     },
     {
-      "name": "artifacts-check",
+      "name": "development/debug/artifacts-check",
       "description": "Debug command to check if ArtifactsDaemon is working",
       "params": {
         "testFile": {
@@ -1927,7 +2371,7 @@
       }
     },
     {
-      "name": "compile-typescript",
+      "name": "development/compile-typescript",
       "description": "Compile TypeScript Command - Shared Types\n * \n * Minimal, focused types for TypeScript compilation only.\n * Follows screenshot/navigate pattern - simple params and results.\n * \n * DESIGN PRINCIPLES:\n * ✅ Single responsibility - only TypeScript compilation\n * ✅ Clean parameter interface with sensible defaults\n * ✅ Object.assign() constructor pattern\n * ✅ No over-engineering or god objects\n * ✅ Focused scope - just TSC compilation\n * \n * SCOPE:\n * - Browser: Uses monaco/typescript service if available\n * - Server: Uses local tsc executable or typescript module\n * - Consistent interface across contexts",
       "params": {
         "source": {
@@ -2035,6 +2479,318 @@
       }
     },
     {
+      "name": "data/vector-search",
+      "description": "Vector Search Command - Shared Types\n *\n * Performs semantic search over a collection using vector similarity.",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "queryText": {
+          "type": "string",
+          "required": false,
+          "description": "queryText parameter"
+        },
+        "queryVector": {
+          "type": "string",
+          "required": false,
+          "description": "queryVector parameter"
+        },
+        "k": {
+          "type": "number",
+          "required": false,
+          "description": "k parameter"
+        },
+        "similarityThreshold": {
+          "type": "number",
+          "required": false,
+          "description": "similarityThreshold parameter"
+        },
+        "hybridMode": {
+          "type": "string",
+          "required": false,
+          "description": "hybridMode parameter"
+        },
+        "filter": {
+          "type": "object",
+          "required": false,
+          "description": "filter parameter"
+        },
+        "embeddingModel": {
+          "type": "string",
+          "required": false,
+          "description": "embeddingModel parameter"
+        },
+        "embeddingProvider": {
+          "type": "string",
+          "required": false,
+          "description": "embeddingProvider parameter"
+        }
+      }
+    },
+    {
+      "name": "data-truncate",
+      "description": "Data Truncate Command - Shared Types\n *\n * Truncate all records from a specific collection using adapter methods",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        }
+      }
+    },
+    {
+      "name": "base-data",
+      "description": "Base Data Command Types - Generic Abstractions\n *\n * Following ARCHITECTURE-RULES.md:\n * ✅ Generic programming with BaseEntity only\n * ✅ No specific entity references (UserEntity, etc.)\n * ✅ Backend routing abstraction",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "dbHandle": {
+          "type": "string",
+          "required": false,
+          "description": "dbHandle parameter"
+        },
+        "suppressEvents": {
+          "type": "boolean",
+          "required": false,
+          "description": "suppressEvents parameter"
+        }
+      }
+    },
+    {
+      "name": "data-schema",
+      "description": "Data Schema Command - Entity Schema Introspection\n *\n * Provides runtime schema information from entity decorators\n * Allows callers to understand entity structure, constraints, and validation rules",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "examples": {
+          "type": "boolean",
+          "required": false,
+          "description": "examples parameter"
+        },
+        "sql": {
+          "type": "boolean",
+          "required": false,
+          "description": "sql parameter"
+        },
+        "validateData": {
+          "type": "object",
+          "required": false,
+          "description": "validateData parameter"
+        }
+      }
+    },
+    {
+      "name": "data-query-open",
+      "description": "Data Query Open Command Types\n *\n * Opens a paginated query and returns a handle (UUID)\n * DataDaemon maintains the query state (filters, sorting, cursor position)",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        },
+        "filter": {
+          "type": "object",
+          "required": false,
+          "description": "filter parameter"
+        },
+        "orderBy": {
+          "type": "object",
+          "required": false,
+          "description": "orderBy parameter"
+        }
+      }
+    },
+    {
+      "name": "data-query-next",
+      "description": "Data Query Next Command Types\n *\n * Gets the next page of results from a query handle\n * DataDaemon manages cursor position internally",
+      "params": {
+        "queryHandle": {
+          "type": "string",
+          "required": true,
+          "description": "queryHandle parameter"
+        },
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        }
+      }
+    },
+    {
+      "name": "data-query-close",
+      "description": "Data Query Close Command Types\n *\n * Closes a query handle and frees resources\n * Should be called when done with pagination",
+      "params": {
+        "queryHandle": {
+          "type": "string",
+          "required": true,
+          "description": "queryHandle parameter"
+        },
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "backend": {
+          "type": "string",
+          "required": true,
+          "description": "backend parameter"
+        }
+      }
+    },
+    {
+      "name": "data-open",
+      "description": "Data Open Command - Shared Types\n *\n * Opens a new database handle for multi-database operations.\n * Storage-adapter-agnostic: works with SQLite, JSON, Vector DB, Graph DB, etc.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
+      "params": {
+        "adapter": {
+          "type": "string",
+          "required": true,
+          "description": "adapter parameter"
+        },
+        "config": {
+          "type": "string",
+          "required": true,
+          "description": "config parameter"
+        }
+      }
+    },
+    {
+      "name": "data-list-handles",
+      "description": "Data List-Handles Command - Shared Types",
+      "params": {}
+    },
+    {
+      "name": "data/generate-embedding",
+      "description": "Generate Embedding Command - Shared Types\n *\n * Generates vector embedding for text using specified model.",
+      "params": {
+        "text": {
+          "type": "string",
+          "required": true,
+          "description": "text parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        }
+      }
+    },
+    {
+      "name": "data-delete",
+      "description": "Data Delete Command Types - Universal Delete Interface\n * \n * Follows working data create pattern with strong typing",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "id parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "dbHandle": {
+          "type": "string",
+          "required": false,
+          "description": "dbHandle parameter"
+        },
+        "suppressEvents": {
+          "type": "boolean",
+          "required": false,
+          "description": "suppressEvents parameter"
+        }
+      }
+    },
+    {
+      "name": "data-close",
+      "description": "Data Close Command - Shared Types\n *\n * Closes a database handle and releases associated resources.\n * Cannot close the default handle - it remains open for the lifetime of the process.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
+      "params": {
+        "dbHandle": {
+          "type": "string",
+          "required": true,
+          "description": "dbHandle parameter"
+        }
+      }
+    },
+    {
+      "name": "data-clear",
+      "description": "Data Clear Command - Shared Types\n *\n * Clear all data from all collections using adapter methods",
+      "params": {}
+    },
+    {
+      "name": "data/backfill-vectors",
+      "description": "Backfill Vectors Command - Shared Types\n *\n * Batch generates vector embeddings for existing records in a collection.",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "textField": {
+          "type": "string",
+          "required": true,
+          "description": "textField parameter"
+        },
+        "filter": {
+          "type": "string",
+          "required": false,
+          "description": "filter parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "skipExisting": {
+          "type": "boolean",
+          "required": false,
+          "description": "skipExisting parameter"
+        }
+      }
+    },
+    {
       "name": "continuum-set",
       "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
       "params": {
@@ -2071,8 +2827,8 @@
       }
     },
     {
-      "name": "emotion",
-      "description": "emotion command",
+      "name": "continuum/emotion",
+      "description": "continuum/emotion command",
       "params": {
         "emoji": {
           "type": "string",
@@ -2092,7 +2848,7 @@
       }
     },
     {
-      "name": "wall-write",
+      "name": "collaboration/wall/write",
       "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
       "params": {
         "room": {
@@ -2128,7 +2884,7 @@
       }
     },
     {
-      "name": "wall-read",
+      "name": "collaboration/wall/read",
       "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
       "params": {
         "room": {
@@ -2169,7 +2925,7 @@
       }
     },
     {
-      "name": "wall-list",
+      "name": "collaboration/wall/list",
       "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
       "params": {
         "room": {
@@ -2185,7 +2941,7 @@
       }
     },
     {
-      "name": "wall-history",
+      "name": "collaboration/wall/history",
       "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
       "params": {
         "room": {
@@ -2206,7 +2962,7 @@
       }
     },
     {
-      "name": "wall-diff",
+      "name": "collaboration/wall/diff",
       "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
       "params": {
         "room": {
@@ -2496,6 +3252,32 @@
       }
     },
     {
+      "name": "chat-poll",
+      "description": "Chat Poll Command Types - Get messages after a specific messageId\n *\n * Simple command for conversational research workflow:\n * 1. Send a question and get messageId\n * 2. Wait for responses (sleep)\n * 3. Poll for all messages after your question",
+      "params": {
+        "afterMessageId": {
+          "type": "string",
+          "required": true,
+          "description": "afterMessageId parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "room": {
+          "type": "string",
+          "required": false,
+          "description": "room parameter"
+        }
+      }
+    },
+    {
       "name": "chat-export",
       "description": "Chat Export Command\n * Export chat messages to markdown format\n *\n * Supports flexible filtering - can filter by:\n * - Room (name or ID)\n * - Entity type (to support future universal activity export)\n * - After timestamp/message ID\n * - Custom filter object (passed to data/list)",
       "params": {
@@ -2707,7 +3489,7 @@
       }
     },
     {
-      "name": "should-respond-fast",
+      "name": "ai/should-respond-fast",
       "description": "AI Should Respond Fast - Types\n *\n * Bag-of-words scoring for fast \"should respond\" detection without LLM calls\n * Deterministic, lightweight, and configurable per-persona",
       "params": {
         "personaId": {
@@ -3235,6 +4017,53 @@
       }
     },
     {
+      "name": "genome-stats",
+      "description": "Genome Stats Command Types\n * Performance monitoring for genome inference system\n *\n * Usage:\n * ./jtag genome/stats                    # Overall pool stats\n * ./jtag genome/stats --genomeId=<id>    # Specific genome stats\n * ./jtag genome/stats --format=json      # Machine-readable output",
+      "params": {
+        "genomeId": {
+          "type": "string",
+          "required": false,
+          "description": "genomeId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "includeHistory": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeHistory parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        }
+      }
+    },
+    {
+      "name": "aigenerate",
+      "description": "AI Generate Command Types\n * ==========================\n *\n * Types for text generation via AIProviderDaemon\n * Follows data command pattern for consistency",
+      "params": {
+        "messages": {
+          "type": "array",
+          "required": false,
+          "description": "messages parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        }
+      }
+    },
+    {
       "name": "embedding-generate",
       "description": "Embedding Generate Command Types\n *\n * Low-level primitive for generating embeddings from text",
       "params": {
@@ -3389,7 +4218,7 @@
       }
     },
     {
-      "name": "bag-of-words",
+      "name": "ai/bag-of-words",
       "description": "Bag of Words Command Types\n *\n * Orchestrates multi-persona conversations in a chat room.\n * \"Bag of words\" = collection of AI personas interacting naturally based on conversation context.",
       "params": {
         "roomId": {

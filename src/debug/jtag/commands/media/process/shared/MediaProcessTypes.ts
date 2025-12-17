@@ -5,7 +5,7 @@
  * Supports speed adjustment, format conversion, trimming, audio manipulation, and more.
  */
 
-import type { JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 
 /**
  * Media format types supported by ffmpeg
@@ -30,7 +30,7 @@ export type AudioCodec = 'aac' | 'mp3' | 'opus' | 'flac' | 'copy';
 /**
  * Parameters for media processing
  */
-export interface MediaProcessParams extends JTAGPayload {
+export interface MediaProcessParams extends CommandParams {
   /** Input file path (required) */
   inputPath: string;
 

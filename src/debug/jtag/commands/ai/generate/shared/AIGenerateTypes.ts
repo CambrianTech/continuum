@@ -6,13 +6,13 @@
  * Follows data command pattern for consistency
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { TextGenerationRequest, TextGenerationResponse } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 // AI Generate Parameters
-export interface AIGenerateParams extends JTAGPayload {
+export interface AIGenerateParams extends CommandParams {
   // Input - Two modes: Direct messages OR RAG context building
   // Mode 1: Direct messages (existing behavior)
   messages?: Array<{

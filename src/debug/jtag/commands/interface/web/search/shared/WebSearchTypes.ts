@@ -5,13 +5,13 @@
  * Uses search APIs to find relevant information.
  */
 
-import type { JTAGContext, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Web search parameters
  */
-export interface WebSearchParams extends JTAGPayload {
+export interface WebSearchParams extends CommandParams {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
 

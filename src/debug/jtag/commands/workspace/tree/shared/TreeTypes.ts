@@ -5,13 +5,13 @@
  * Shows parent/child relationships like a file tree.
  */
 
-import type { JTAGContext, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * Tree command parameters
  */
-export interface TreeParams extends JTAGPayload {
+export interface TreeParams extends CommandParams {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
   /**

@@ -5,11 +5,11 @@
  * DataDaemon manages cursor position internally
  */
 
-import type { JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
-export interface DataQueryNextParams extends JTAGPayload {
+export interface DataQueryNextParams extends CommandParams {
   readonly queryHandle: UUID; // Handle from query-open
   readonly collection: string; // Required by BaseDataParams
   readonly backend: JTAGEnvironment; // Required by BaseDataParams

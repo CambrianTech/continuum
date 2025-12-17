@@ -5,10 +5,10 @@
  * DataDaemon maintains the query state (filters, sorting, cursor position)
  */
 
-import type { JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface DataQueryOpenParams extends JTAGPayload {
+export interface DataQueryOpenParams extends CommandParams {
   readonly collection: string;
   readonly backend: JTAGEnvironment;
   readonly filter?: Record<string, any>;

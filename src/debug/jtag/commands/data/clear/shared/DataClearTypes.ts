@@ -4,14 +4,14 @@
  * Clear all data from all collections using adapter methods
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Data Clear Parameters
  */
-export interface DataClearParams extends JTAGPayload {
+export interface DataClearParams extends CommandParams {
   // No additional parameters needed - clear all collections
 }
 

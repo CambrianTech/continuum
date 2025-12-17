@@ -9,10 +9,10 @@
  *   ./jtag schema/generate --interface="DataReadParams" --file="commands/data/read/shared/DataReadTypes.ts"
  */
 
-import type { JTAGPayload } from '@system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 
-export interface SchemaGenerateParams extends JTAGPayload {
+export interface SchemaGenerateParams extends CommandParams {
   /**
    * Pattern to match interface names (e.g., "*Params", "*Result")
    * If not provided, must specify interface + file

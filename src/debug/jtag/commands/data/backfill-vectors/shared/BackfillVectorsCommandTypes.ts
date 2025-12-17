@@ -4,7 +4,7 @@
  * Batch generates vector embeddings for existing records in a collection.
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { UniversalFilter } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
@@ -12,7 +12,7 @@ import type { UniversalFilter } from '../../../../daemons/data-daemon/shared/Dat
 /**
  * Backfill vectors command parameters
  */
-export interface BackfillVectorsParams extends JTAGPayload {
+export interface BackfillVectorsParams extends CommandParams {
   readonly collection: string;
   readonly textField: string;                    // Field to generate embeddings from (e.g., 'content')
   readonly filter?: UniversalFilter;             // Only backfill matching records

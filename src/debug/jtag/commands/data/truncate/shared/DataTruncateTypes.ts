@@ -4,14 +4,14 @@
  * Truncate all records from a specific collection using adapter methods
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Data Truncate Parameters
  */
-export interface DataTruncateParams extends JTAGPayload {
+export interface DataTruncateParams extends CommandParams {
   readonly collection: string; // Collection to truncate
 }
 
