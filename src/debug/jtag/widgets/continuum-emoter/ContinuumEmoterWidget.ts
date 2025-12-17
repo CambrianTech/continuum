@@ -9,12 +9,14 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversation/shared/CognitionEventTypes';
+import { OrbStateManager, type ConnectionStatus, type HealthState } from './OrbStateManager';
 
 export class ContinuumEmoterWidget extends BaseWidget {
-  private connectionStatus: 'initializing' | 'connected' | 'disconnected' = 'initializing';
-  private health: 'unknown' | 'healthy' | 'warning' | 'error' = 'unknown';
+  private connectionStatus: ConnectionStatus = 'initializing';
+  private health: HealthState = 'unknown';
   private maxMessages: number;
   private healthCheckInterval?: NodeJS.Timeout;
+  private orbManager: OrbStateManager | null = null;
 
   constructor(maxMessages: number = 100) {
     super({
@@ -49,6 +51,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
     }
+    this.orbManager?.destroy();
   }
 
   /**
@@ -143,12 +146,9 @@ export class ContinuumEmoterWidget extends BaseWidget {
 
     // Handle clear request - revert to health-based color
     if (status.clear) {
-      // Remove custom class and CSS variable
-      orb.classList.remove('status-custom');
-      orb.style.removeProperty('--orb-color');
-
-      // Revert to health-based color
-      this.updateOrb(); // Uses this.health to determine color
+      // Clear any active emotion and revert to health state
+      this.orbManager?.clearEmotion();
+      this.orbManager?.updateHealth(this.connectionStatus, this.health);
       return;
     }
 
@@ -174,9 +174,22 @@ export class ContinuumEmoterWidget extends BaseWidget {
    */
   private showEmotion(emoji: string, color: string, duration: number): void {
     const orb = this.shadowRoot?.querySelector('.status-orb') as HTMLElement;
-    if (!orb) return;
+    if (!orb || !this.orbManager) return;
 
-    // Create emoji overlay - positioned INSIDE the ring, ABOVE the orb, BELOW the ring border
+    // Apply emotion color via manager
+    this.orbManager.setEmotion(color, duration);
+
+    // Emit continuum:status event so favicon updates with emoji and color
+    Events.emit('continuum:status', {
+      emoji,
+      color,
+      message: 'Emotion active',
+      priority: 'high',
+      source: 'emoter',
+      autoRevertAt: Date.now() + duration
+    });
+
+    // Create emoji overlay - floats OUT of the ring (above border)
     const emojiOverlay = document.createElement('div');
     emojiOverlay.className = 'emotion-emoji';
     emojiOverlay.textContent = emoji;
@@ -186,27 +199,26 @@ export class ContinuumEmoterWidget extends BaseWidget {
       left: 50%;
       transform: translate(-50%, -50%);
       font-size: 24px;
-      z-index: 2;
+      z-index: 10;
       pointer-events: none;
       opacity: 1;
-      transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+      transition: opacity 0.6s ease-out, transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
     `;
 
-    // Save current color and apply emotion color temporarily
-    const originalColor = orb.style.color;
-    orb.style.color = color;
     orb.appendChild(emojiOverlay);
 
-    // Fade out and float upward before removing
+    // Float up slowly like an angel going to heaven - brief but nice touch
     setTimeout(() => {
       emojiOverlay.style.opacity = '0';
-      emojiOverlay.style.transform = 'translate(-50%, -70%)'; // Move up 20% while fading
-    }, duration - 500);
+      emojiOverlay.style.transform = 'translate(-50%, -150%)'; // Slow float up
+    }, duration - 600);
 
-    // Reset after duration
+    // Remove emoji overlay after animation
     setTimeout(() => {
-      orb.style.color = originalColor;
       emojiOverlay.remove();
+
+      // Clear continuum:status after emotion ends
+      Events.emit('continuum:status', { clear: true });
     }, duration);
   }
 
@@ -240,11 +252,13 @@ export class ContinuumEmoterWidget extends BaseWidget {
   /**
    * Update connection status and health
    */
-  private updateStatus(connectionStatus: typeof this.connectionStatus, health: typeof this.health): void {
+  private updateStatus(connectionStatus: ConnectionStatus, health: HealthState): void {
     if (this.connectionStatus !== connectionStatus || this.health !== health) {
       this.connectionStatus = connectionStatus;
       this.health = health;
-      this.updateOrb();
+
+      // Update orb via manager (respects active emotions automatically)
+      this.orbManager?.updateHealth(connectionStatus, health);
 
       // Emit health status event so ContinuumWidget (favicon) can update too
       const statusKey = `${connectionStatus}-${health}`;
@@ -265,26 +279,6 @@ export class ContinuumEmoterWidget extends BaseWidget {
     }
   }
 
-  /**
-   * Update just the orb color (not full re-render)
-   */
-  private updateOrb(): void {
-    const orb = this.shadowRoot?.querySelector('.status-orb') as HTMLElement;
-    if (orb) {
-      // Remove all status classes
-      orb.classList.remove('status-healthy', 'status-warning', 'status-error', 'status-initializing');
-
-      // Add current status class
-      const statusKey = `${this.connectionStatus}-${this.health}`;
-      if (statusKey === 'connected-healthy') {
-        orb.classList.add('status-healthy'); // Green (default when online)
-      } else if (statusKey.includes('error') || statusKey.includes('disconnected')) {
-        orb.classList.add('status-error'); // Red (error state)
-      } else {
-        orb.classList.add('status-warning'); // Yellow (connecting/initializing)
-      }
-    }
-  }
 
   /**
    * Add a status message to the scrolling feed
@@ -320,6 +314,14 @@ export class ContinuumEmoterWidget extends BaseWidget {
       <style>${styles}</style>
       ${templateString}
     `;
+
+    // Initialize orb state manager after DOM is ready
+    const orbElement = this.shadowRoot.querySelector('.status-orb') as HTMLElement;
+    if (orbElement) {
+      this.orbManager = new OrbStateManager(orbElement);
+      // Apply initial health state
+      this.orbManager.updateHealth(this.connectionStatus, this.health);
+    }
   }
 
   protected resolveResourcePath(filename: string): string {
