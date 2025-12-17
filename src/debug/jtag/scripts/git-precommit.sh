@@ -52,14 +52,20 @@ fi
 
 cd src/debug/jtag
 
-# Check if system is responding to ping
-echo "🏓 Checking if system is already running..."
-if ./jtag ping >/dev/null 2>&1; then
-    echo "✅ System is running and responding to ping"
-    NEED_RESTART=false
-else
+# Determine if restart is needed
+echo "🏓 Checking if system restart is required..."
+NEED_RESTART=false
+
+# If code changed, restart to test new code (prevent breaking changes)
+if [ "$CODE_CHANGED" = true ]; then
+    echo "📝 Code changed - restart required to test new code"
+    NEED_RESTART=true
+# Otherwise, only restart if ping fails
+elif ! ./jtag ping >/dev/null 2>&1; then
     echo "❌ System not responding to ping - restart required"
     NEED_RESTART=true
+else
+    echo "✅ System running and no code changes - no restart needed"
 fi
 
 # Start system if ping failed
