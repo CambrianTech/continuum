@@ -67,8 +67,29 @@ export class Events {
         // Form 1: emit(eventName, data, options?)
         // Auto-discover context from JTAGClient.sharedInstance
         const { JTAGClient } = await import('../client/shared/JTAGClient');
-        const client = await JTAGClient.sharedInstance;
-        context = client.context;
+
+        try {
+          const client = await JTAGClient.sharedInstance;
+          context = client.context;
+        } catch (error) {
+          // sharedInstance not ready yet (browser initialization race)
+          // Use minimal fallback context - will trigger DOM-only event path
+          const isBrowserRuntime = typeof document !== 'undefined';
+          if (isBrowserRuntime) {
+            // Create minimal context for DOM-only events
+            const { generateUUID } = await import('../types/CrossPlatformUUID');
+            context = {
+              uuid: generateUUID(),
+              environment: 'browser' as const,
+              config: {} as any,
+              getConfig: () => ({} as any)
+            };
+          } else {
+            // Server runtime - re-throw error
+            throw error;
+          }
+        }
+
         eventName = contextOrEventName;
         eventData = eventNameOrData as T;
         options = (eventDataOrOptions as EventEmitOptions) ?? {};

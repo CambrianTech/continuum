@@ -166,6 +166,7 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 3.5. Set static instance BEFORE daemon setup so PersonaUsers can use local router
     JTAGSystemServer.instance = system;
+    console.log(`✅ JTAGSystemServer.instance SET at ${new Date().toISOString()}`);
 
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();
