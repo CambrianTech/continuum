@@ -135,7 +135,7 @@ export class UserStateEntity extends BaseEntity {
       level: 'active' // Default: fully active
     };
     this.shellState = {
-      currentWorkingDir: process.cwd()
+      currentWorkingDir: typeof process !== 'undefined' ? process.cwd() : '/'
     };
   }
 
