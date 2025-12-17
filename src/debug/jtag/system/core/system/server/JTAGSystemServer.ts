@@ -163,7 +163,10 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 3. Create server system instance with config
     const system = new JTAGSystemServer(context, router, config);
-    
+
+    // 3.5. Set static instance BEFORE daemon setup so PersonaUsers can use local router
+    JTAGSystemServer.instance = system;
+
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();
 
@@ -188,8 +191,6 @@ export class JTAGSystemServer extends JTAGSystem {
     } catch (error) {
       console.warn(`⚠️  JTAG System: Command Router failed to start (Rust workers will not work):`, error);
     }
-
-    JTAGSystemServer.instance = system;
 
     // 8. Register this process in the ProcessRegistry to prevent cleanup false positives
     await system.registerSystemProcess();

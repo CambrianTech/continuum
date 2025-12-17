@@ -63,13 +63,13 @@ export class JTAGClientServer extends JTAGClient {
     // FIXED: Never auto-create systems - only connect to existing ones
     // This prevents server clients from automatically creating new JTAG systems
     // when they should connect to existing systems (like test-bench on port 9002)
-    
+
     // Only return existing instance if it's already running in same process
     if (JTAGSystemServer.instance) {
       console.log('🏠 JTAGClientServer: Found existing local system instance');
       return JTAGSystemServer.instance;
     }
-    
+
     // Force remote connection for all other cases
     console.log('🌐 JTAGClientServer: No local system - using remote connection');
     return null;

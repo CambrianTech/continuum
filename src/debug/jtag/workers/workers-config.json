@@ -27,7 +27,7 @@
       "binary": "workers/logger/target/release/logger-worker",
       "socket": "/tmp/jtag-logger-worker.sock",
       "description": "High-performance logging worker for file I/O",
-      "enabled": false
+      "enabled": true
     }
   ],
   "sharedSockets": [
