@@ -6,11 +6,7 @@
 /// 3. Rust → TypeScript: Emit progress events
 /// 4. Rust → TypeScript: Return completion status
 ///
-/// Uses DirectSqliteAdapter for fast SQL operations.
-
-mod data_adapter;
-
-use data_adapter::{DataAdapter, DirectSqliteAdapter};
+/// Uses CommandClient to call TypeScript Commands.execute() for coordinated database access.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -151,31 +147,25 @@ fn main() -> std::io::Result<()> {
     println!("📁 Primary DB: {}", primary_db);
     println!("📁 Archive DB: {}", archive_db);
 
-    // Create database adapter
-    let db_adapter = match DirectSqliteAdapter::new(&primary_db, &archive_db) {
-        Ok(adapter) => Arc::new(adapter),
-        Err(e) => {
-            eprintln!("❌ Failed to open databases: {}", e);
-            std::process::exit(1);
-        }
-    };
-    println!("✅ Database connections ready");
+    // Create command client for calling TypeScript data commands
+    let command_client = Arc::new(CommandClient::new(command_router_socket.clone()));
+    println!("✅ Command client ready");
 
     // Shared state
     let queue: Arc<Mutex<VecDeque<Task>>> = Arc::new(Mutex::new(VecDeque::new()));
     let (task_tx, task_rx) = mpsc::channel::<Task>();
 
-    // Spawn worker thread with database access
+    // Spawn worker thread with command client access
     let worker_queue = queue.clone();
-    let worker_db = db_adapter.clone();
+    let worker_command_client = command_client.clone();
     thread::spawn(move || {
         println!("🔥 Worker thread started");
 
         for task in task_rx.iter() {
             println!("📦 Processing task: {} ({})", task.task_id, task.collection);
 
-            // Archive rows using direct SQL
-            match archive_rows(&worker_db, &task) {
+            // Archive rows using Commands.execute() via CommandRouterServer
+            match archive_rows(&worker_command_client, &task) {
                 Ok(archived) => {
                     println!("✅ Task {} complete: Archived {} rows from {}",
                         task.task_id, archived, task.collection);
@@ -283,42 +273,66 @@ fn handle_connection(
 // Archive Logic (Copy-Verify-Delete Pattern)
 // ============================================================================
 
-fn archive_rows(db: &Arc<DirectSqliteAdapter>, task: &Task) -> Result<usize, String> {
+fn archive_rows(command_client: &CommandClient, task: &Task) -> Result<usize, String> {
     let mut total_archived = 0;
 
     loop {
-        // Get batch of rows from source
-        let rows = db.list_rows(
-            &task.collection,
-            &task.source_handle,
-            task.batch_size,
-            "created_at"  // Order by creation time (oldest first)
-        )?;
+        // Get batch of rows from source via Commands.execute()
+        let list_result = command_client.execute("data/list", json!({
+            "collection": task.collection,
+            "dbHandle": task.source_handle,
+            "limit": task.batch_size,
+            "orderBy": [{"field": "created_at", "direction": "asc"}]
+        }))?;
 
-        if rows.is_empty() {
+        let items = list_result.get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "Missing items in response".to_string())?;
+
+        if items.is_empty() {
             break;  // No more rows to archive
         }
 
-        let batch_size = rows.len();
+        let batch_size = items.len();
         println!("  📋 Batch: {} rows", batch_size);
 
         // Copy-verify-delete for each row
-        for row in rows {
+        for row in items {
             let id = row.get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing id field".to_string())?;
 
-            // 1. Copy to archive
-            db.insert_row(&task.collection, &task.dest_handle, &row)?;
+            // 1. Copy to archive via Commands.execute()
+            command_client.execute("data/create", json!({
+                "collection": task.collection,
+                "dbHandle": task.dest_handle,
+                "data": row,
+                "suppressEvents": true
+            }))?;
 
             // 2. Verify copied (read back from archive)
-            let verify = db.list_rows(&task.collection, &task.dest_handle, 1, "id")?;
-            if verify.is_empty() {
+            let verify_result = command_client.execute("data/list", json!({
+                "collection": task.collection,
+                "dbHandle": task.dest_handle,
+                "filter": {"id": id},
+                "limit": 1
+            }))?;
+
+            let verified_items = verify_result.get("items")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "Missing items in verify response".to_string())?;
+
+            if verified_items.is_empty() {
                 return Err(format!("Failed to verify row {} in archive", id));
             }
 
-            // 3. Delete from primary
-            db.delete_row(&task.collection, &task.source_handle, id)?;
+            // 3. Delete from primary via Commands.execute()
+            command_client.execute("data/delete", json!({
+                "collection": task.collection,
+                "dbHandle": task.source_handle,
+                "id": id,
+                "suppressEvents": true
+            }))?;
 
             total_archived += 1;
         }

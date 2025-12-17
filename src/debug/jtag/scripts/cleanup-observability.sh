@@ -2,7 +2,9 @@
 # Auto-cleanup observability data (keep last 1 hour only)
 # Run this periodically to prevent DB bloat
 
-DB_PATH=".continuum/jtag/data/database.sqlite"
+# Use DATABASE_DIR env var or default to machine-level location
+DATABASE_DIR="${DATABASE_DIR:-$HOME/.continuum/data}"
+DB_PATH="$DATABASE_DIR/database.sqlite"
 
 if [ ! -f "$DB_PATH" ]; then
   exit 0  # Silent exit if no DB

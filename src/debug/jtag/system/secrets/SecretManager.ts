@@ -248,11 +248,25 @@ export class SecretManager {
         continue;
       }
 
-      // Parse KEY=value
-      const match = trimmed.match(/^([A-Z_0-9]+)=(.*)$/);
+      // Parse KEY=value (handles spaces around =)
+      const match = trimmed.match(/^([A-Z_0-9]+)\s*=\s*(.*)$/);
       if (match) {
-        const [, key, value] = match;
+        const [, key, rawValue] = match;
+
+        // Expand tilde (~) to home directory
+        let value = rawValue.trim();
+        if (value.startsWith('~/')) {
+          value = path.join(os.homedir(), value.slice(2));
+        }
+
+        // Store in secrets Map
         this.secrets.set(key, value);
+
+        // Also set DATABASE_* and DATASETS_* vars in process.env for PATHS to use
+        if (key.startsWith('DATABASE_') || key.startsWith('DATASETS_') ||
+            key === 'SENTINEL_PATH' || key === 'REPO_PATH') {
+          process.env[key] = value;
+        }
       }
     }
   }

@@ -9,7 +9,7 @@
 🔧 JTAGClient: Connection with sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de (provided: deadbeef-cafe-4bad-8ace-5e551000c0de, current: deadbeef-cafe-4bad-8ace-5e551000c0de)
 🔗 ConnectionBroker: Processing connection request for server (mode: preferred)
 🔗 ConnectionBroker: Creating client connection to existing server
-📋 ConnectionBroker: Registered server existing-jtag-server-9002 (f508ef44-fc21-4c5d-bc0a-4e5df2c7fd7c) on port 9002
+📋 ConnectionBroker: Registered server existing-jtag-server-9002 (aea70924-3883-4545-8024-1b0885fc6cc2) on port 9002
 🏭 Server Transport Factory (Registry-Based): Creating websocket transport for server environment
 🔍 Server Factory: Looking for websocket transport (role: client) in registry
 ✅ Server Factory: Found adapter WebSocketTransportClientServer for websocket/client
@@ -23,25 +23,30 @@
 🔄 JTAGClient: Using provided sessionId: deadbeef-cafe-4bad-8ace-5e551000c0de
 🔍 JTAGClient: Detected category=user, displayName=CLI Client, isAgent=undefined
 🔑 JTAGClient: Computed uniqueId="cli" for CLI Client (isEphemeralClient=true, isAgent=undefined)
-📤 RemoteConnection: Sending command 'session/create' with correlation client_1765857187586_sbaxj1le
-🏷️ JTAGClientServer: Session updated to: b3954c45-2f46-4a8d-b191-4be140efc137 (managed by base class)
+📤 RemoteConnection: Sending command 'session/create' with correlation client_1765938286592_l9q41zxh
+🏷️ JTAGClientServer: Session updated to: 17b0a30a-b475-45f0-89a4-ea1be55c4497 (managed by base class)
 📋 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765857187591_v420kwr2
+📤 RemoteConnection: Sending command 'list' with correlation client_1765938286597_836o94bg
 ✅ JTAGClient: Connection established
 🔄 JTAGClient: Discovering available commands...
-📤 RemoteConnection: Sending command 'list' with correlation client_1765857187592_vzvhbkdw
+📤 RemoteConnection: Sending command 'list' with correlation client_1765938286598_zehd7p8k
 ✅ Server: JTAGClient connected with 143 commands
 ✅ Connected
 
 🧹 Cleaning up orphaned test data from previous runs...
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765857187594_66v2s34g
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765857189842_76qwtdis
-  ✅ Deleted orphaned test user: State Test User (1765756149220-1l26asr2y)
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765857190854_uwz70w25
-📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765857191395_frp3xsxg
-  ✅ Deleted orphaned test room: State Test Room (1765756150062-hgfq51nru)
-📤 RemoteConnection: Sending command 'data/list' with correlation client_1765857191425_0d7znqeg
-  ✅ No orphaned test messages found
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765938286600_l27e5q5h
+  ✅ No orphaned test users found
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765938286601_ci88ye4n
+  ✅ No orphaned test rooms found
+📤 RemoteConnection: Sending command 'data/list' with correlation client_1765938286603_qk88mw0f
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765938286904_g2icqp73
+  ✅ Deleted orphaned test message: b7c80494-0443-495f-94c5-ff7b19f007cf
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765938286909_cuzava6j
+  ✅ Deleted orphaned test message: e15e9f1f-45ed-4a42-b294-8edb095912ae
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765938286912_ap8slnmj
+  ✅ Deleted orphaned test message: 2fbd5bc2-dec8-473c-b8d3-a228458bd21a
+📤 RemoteConnection: Sending command 'data/delete' with correlation client_1765938286918_rir8zf2d
+  ✅ Deleted orphaned test message: bfad619a-c861-499f-a5ff-c7d58d638e6c
 ✅ Cleanup complete
 
 ⏳ Waiting for widgets to initialize...
@@ -50,7 +55,7 @@
     at waitForWidgetInitialization (/Volumes/SlimGordon/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:118:38)
     at async testDatabaseChatIntegration (/Volumes/SlimGordon/continuum/src/debug/jtag/tests/integration/database-chat-integration.test.ts:278:5)
 🔌 JTAGClient: Disconnecting...
-🔄 JTAGClient: Preserving shared session b3954c45-2f46-4a8d-b191-4be140efc137 on disconnect (shared: true)
+🔄 JTAGClient: Preserving shared session 17b0a30a-b475-45f0-89a4-ea1be55c4497 on disconnect (shared: true)
 🔌 websocket-server-client: Disconnecting
 ✅ JTAGClient: Transport disconnected
 🛑 ConnectionBroker: Shutting down...

@@ -16,12 +16,15 @@ import type { DataCreateParams, DataCreateResult } from '../../../commands/data/
 import type { DataDeleteParams, DataDeleteResult } from '../../../commands/data/delete/shared/DataDeleteTypes';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { Logger } from '../../../system/core/logging/Logger';
+import * as net from 'net';
+import type { ArchiveResponse } from '@shared/ipc/archive-worker/ArchiveMessageTypes';
 
 export class ArchiveDaemonServer extends ArchiveDaemon {
   private checkCounter = 0;
   private archiveConfigs: Map<string, ArchiveConfig> = new Map(); // Cached configs (re-scanned periodically)
   private readonly RESCAN_INTERVAL = 60; // Re-discover entities every 60 checks (1 hour)
   private isArchiving = false; // Mutex to prevent concurrent archive operations
+  private workerSocketPath = '/tmp/jtag-archive-worker.sock';
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
@@ -34,16 +37,63 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
 
   /**
    * Start the intermittent archive loop using DaemonBase.registerInterval()
-   * Runs every 12 seconds, archives small batches to avoid overwhelming system
+   * Runs every 12 seconds, checks if archiving needed and queues tasks to Rust worker
    */
+  /**
+   * Send a message to the Rust ArchiveWorker
+   */
+  private async sendToWorker(message: unknown): Promise<ArchiveResponse> {
+    return new Promise((resolve, reject) => {
+      const client = net.connect(this.workerSocketPath);
+
+      client.on('connect', () => {
+        client.write(JSON.stringify(message) + '\n');
+      });
+
+      client.on('data', (data) => {
+        try {
+          const response = JSON.parse(data.toString()) as ArchiveResponse;
+          client.end();
+          resolve(response);
+        } catch (error) {
+          client.end();
+          reject(new Error(`Failed to parse response: ${error}`));
+        }
+      });
+
+      client.on('error', (error) => {
+        reject(error);
+      });
+
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        client.destroy();
+        reject(new Error('Request timeout'));
+      }, 5000);
+    });
+  }
+
   protected override async onStart(): Promise<void> {
     this.log.info('🗄️  Archive daemon starting with Rust worker...');
 
-    // TODO: Launch Rust worker and queue archive tasks
-    // For now, archiving is disabled to prevent memory exhaustion
-    // Rust worker will be integrated in next phase
+    // Check if Rust ArchiveWorker socket exists
+    const fs = await import('fs');
+    if (!fs.existsSync(this.workerSocketPath)) {
+      this.log.warn(`🗄️  Worker socket not found: ${this.workerSocketPath}`);
+      this.log.warn('🗄️  Archiving will be disabled until worker is available');
+      return;
+    }
 
-    this.log.info('🗄️  Rust worker integration pending');
+    this.log.info(`🗄️  Found Rust ArchiveWorker at ${this.workerSocketPath}`);
+
+    // Discover entities with @Archive() decorator
+    this.discoverArchivableEntities();
+
+    // Register periodic check (every 60 seconds)
+    // Now safe: Uses Commands.execute() for coordinated DB access (no lock contention)
+    this.registerInterval('archive-check', () => this.checkAndArchive(), 60000);
+
+    this.log.info('🗄️  Archive daemon ready (checking every 60s - coordinated via DataDaemon)');
   }
 
   /**
@@ -89,14 +139,16 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
   }
 
   /**
-   * Check all monitored entities and archive if needed
+   * Check all monitored entities and queue archive tasks to Rust worker if needed
    * Periodically re-discovers entities to pick up new @Archive() configurations
    * SERIAL EXECUTION: Skips if previous operation still running
    */
   protected override async checkAndArchive(): Promise<void> {
+    this.checkCounter++;
+
     // Mutex: prevent concurrent archive operations
     if (this.isArchiving) {
-      this.log.info('🗄️  Archive operation already in progress, skipping this check');
+      this.log.info('🗄️  Archive check already in progress, skipping');
       return;
     }
 
@@ -111,41 +163,48 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
         return; // Nothing to do
       }
 
-      let entitiesArchived = 0;
+      let tasksQueued = 0;
 
-    // Check each monitored entity using cached config
-    for (const [collectionName, archiveConfig] of this.archiveConfigs.entries()) {
-      try {
-        // Count rows in active table
-        const countResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
-          collection: collectionName,
-          limit: 0
-        });
+      // Check each monitored entity using cached config
+      for (const [collectionName, archiveConfig] of this.archiveConfigs.entries()) {
+        try {
+          // Count rows in active table
+          const countResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+            collection: collectionName,
+            limit: 0
+          });
 
-        const currentCount = countResult.count || 0;
+          const currentCount = countResult.count || 0;
 
-        // Archive if over limit
-        if (currentCount > archiveConfig.maxRows) {
-          this.log.info(`🗄️  ${collectionName}: ${currentCount} rows exceeds ${archiveConfig.maxRows}, archiving...`);
+          // Queue archive task if over limit
+          if (currentCount > archiveConfig.maxRows) {
+            this.log.info(`🗄️  ${collectionName}: ${currentCount} rows exceeds ${archiveConfig.maxRows}, queueing archive task...`);
 
-          const archived = await this.archiveEntity(
-            collectionName,
-            archiveConfig.maxRows,
-            archiveConfig.rowsPerArchive
-          );
+            const response = await this.sendToWorker({
+              command: 'archive',
+              task_id: `${collectionName}-${Date.now()}`,
+              collection: collectionName,
+              source_handle: archiveConfig.sourceHandle,
+              dest_handle: archiveConfig.destHandle,
+              batch_size: archiveConfig.rowsPerArchive
+            });
 
-          this.log.info(`🗄️  Archived ${archived} rows from ${collectionName}`);
-          entitiesArchived++;
+            if (response.status === 'queued') {
+              this.log.info(`🗄️  Task queued for ${collectionName} (position: ${response.queue_position})`);
+              tasksQueued++;
+            } else {
+              this.log.warn(`🗄️  Unexpected response for ${collectionName}:`, response);
+            }
+          }
+        } catch (error) {
+          this.log.error(`Failed to queue archive for ${collectionName}:`, error);
         }
-      } catch (error) {
-        this.log.error(`Failed to archive ${collectionName}:`, error);
       }
-    }
 
-      // Periodic status log (every 10 checks or when archiving happens)
-      if (this.checkCounter % 10 === 0 || entitiesArchived > 0) {
-        if (entitiesArchived > 0) {
-          this.log.info(`🗄️  Check #${this.checkCounter}: Archived ${entitiesArchived} collections`);
+      // Periodic status log (every 10 checks or when tasks queued)
+      if (this.checkCounter % 10 === 0 || tasksQueued > 0) {
+        if (tasksQueued > 0) {
+          this.log.info(`🗄️  Check #${this.checkCounter}: Queued ${tasksQueued} archive tasks`);
         } else {
           this.log.info(`🗄️  Check #${this.checkCounter}: All ${this.archiveConfigs.size} entities within limits`);
         }
