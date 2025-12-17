@@ -27,7 +27,7 @@ import {
   type QueryExplanation
 } from '../shared/DataStorageAdapter';
 import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
-import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
+import { getDatabasePath } from '../../../system/config/ServerConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
 import {
@@ -124,7 +124,7 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
     const options = config.options as RustSqliteOptions || {};
 
     // Use explicit filename from options, or fall back to default database path
-    const dbPath = options.filename || DATABASE_PATHS.SQLITE;
+    const dbPath = options.filename || getDatabasePath();
     log.info(`Using database path: ${dbPath}`);
 
     // Socket path to Rust worker

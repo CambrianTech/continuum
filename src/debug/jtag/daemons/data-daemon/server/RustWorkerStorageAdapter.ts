@@ -14,6 +14,7 @@ import * as net from 'net';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { getDatabasePath } from '../../../system/config/ServerConfig';
 import {
   DataStorageAdapter,
   type DataRecord,
@@ -91,7 +92,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     // Merge initialization config with constructor config
     this.config = {
       socketPath: this.config?.socketPath || '/tmp/data-worker.sock',
-      dbPath: (config.options as any)?.dbPath || '.continuum/jtag/data/database.sqlite',
+      dbPath: (config.options as any)?.dbPath || getDatabasePath(),
       dbHandle: (config.options as any)?.dbHandle || 'default',
       timeout: this.config?.timeout || 30000
     };

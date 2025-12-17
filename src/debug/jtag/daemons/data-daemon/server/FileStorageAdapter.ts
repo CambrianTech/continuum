@@ -11,6 +11,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { getDatabaseDir } from '../../../system/config/ServerConfig';
 import {
   DataStorageAdapter,
   type DataRecord,
@@ -47,7 +48,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   async initialize(config: StorageAdapterConfig): Promise<void> {
     this.namespace = config.namespace;
     this.options = {
-      basePath: '.continuum/jtag/data',
+      basePath: getDatabaseDir(),
       createDirectories: true,
       atomicWrites: true,
       enableIndexes: false,

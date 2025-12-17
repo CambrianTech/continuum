@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Load environment from config.env if it exists (matches SecretManager.ts location)
+if [ -f "$HOME/.continuum/config.env" ]; then
+  set -a  # automatically export all variables
+  source "$HOME/.continuum/config.env"
+  set +a
+fi
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -88,20 +95,11 @@ done
 # Start ArchiveWorker
 echo -e "${YELLOW}🚀 Starting ArchiveWorker...${NC}"
 
-# Get database paths
-PRIMARY_DB=".continuum/jtag/data/database.sqlite"
-ARCHIVE_DB=".continuum/jtag/data/archive/database-001.sqlite"
-
-# Ensure archive directory exists
-mkdir -p .continuum/jtag/data/archive
-
-# Create archive database if it doesn't exist (copy schema from primary)
-if [ ! -f "$ARCHIVE_DB" ]; then
-  echo -e "${YELLOW}📋 Creating archive database...${NC}"
-  cp "$PRIMARY_DB" "$ARCHIVE_DB"
-  # Clear all data from archive (keep schema only)
-  sqlite3 "$ARCHIVE_DB" "DELETE FROM chat_messages; DELETE FROM ai_generations; DELETE FROM cognition_plan_records; DELETE FROM cognition_state_snapshots; DELETE FROM adapter_decision_logs;" 2>/dev/null || true
-fi
+# Get database paths from environment (loaded from config.env) or use defaults
+# DEFAULT: $HOME/.continuum/data (matches DatabaseConfig.ts)
+PRIMARY_DB="${DATABASE_DIR:-$HOME/.continuum/data}/database.sqlite"
+ARCHIVE_DIR="${DATABASE_ARCHIVE_DIR:-$HOME/.continuum/data/archive}"
+ARCHIVE_DB="$ARCHIVE_DIR/database-001.sqlite"
 
 workers/archive/target/release/archive-worker \
   /tmp/jtag-archive-worker.sock \

@@ -30,7 +30,7 @@ import type { UserEntity } from '../../system/data/entities/UserEntity';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
-import { COLLECTIONS } from '../../system/data/config/DatabaseConfig';
+import { COLLECTIONS } from '../../system/shared/Constants';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
