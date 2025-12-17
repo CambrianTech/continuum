@@ -213,8 +213,8 @@ export interface PortPoolConfig {
 /**
  * Port allocation strategies
  */
-export type PortAllocationStrategy = 
-  | 'sequential'  // Allocate ports in order (9001, 9002, 9003...)
+export type PortAllocationStrategy =
+  | 'sequential'  // Allocate ports in order (9002, 9003, 9004...)
   | 'random'      // Random port selection within range
   | 'round_robin' // Distribute ports evenly across range
   | 'least_used'; // Prefer ports with fewer historical allocations
@@ -388,9 +388,9 @@ export interface BrokerStatistics {
  */
 export const DEFAULT_BROKER_CONFIG: ConnectionBrokerConfig = {
   portPool: {
-    startPort: 9001,
+    startPort: 9002, // Start after reserved ports: HTTP_PORT=9000, WS_PORT=9001
     endPort: 9100,
-    reservedPorts: [],
+    reservedPorts: [9000, 9001], // Reserved for HTTP and WS from config.env
     allocationStrategy: 'sequential'
   },
   registry: {

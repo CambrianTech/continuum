@@ -4,8 +4,8 @@
   "description": "JTAG Widget UI - Standalone Widget Development Environment",
   "main": "dist/index.js",
   "config": {
-    "http_port": 9003,
-    "websocket_port": 9002
+    "http_port": 9000,
+    "websocket_port": 9001
   },
   "scripts": {
     "start": "npm run build && npm run dev",

@@ -55,7 +55,7 @@ class TestConfigManager {
    */
   private static getDefaults(): JTAGConfiguration {
     // Get dynamic ports from active example configuration
-    const { getActivePortsSync } = require('../../examples/shared/ExampleConfig');
+    const { getActivePortsSync } = require('../../examples/server/ExampleConfigServer');
     const activePorts = getActivePortsSync();
     
     return {

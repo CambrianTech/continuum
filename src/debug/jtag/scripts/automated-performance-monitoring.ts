@@ -149,7 +149,7 @@ class AutomatedPerformanceMonitor {
   private async isSystemRunning(): Promise<boolean> {
     try {
       // Use dynamic port resolution
-      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const { getActivePorts } = require('../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
       const response = await fetch(`http://localhost:${activePorts.http_server}`, { 
         method: 'GET',
@@ -225,7 +225,7 @@ class AutomatedPerformanceMonitor {
     try {
       const httpStart = performance.now();
       // Use dynamic port resolution  
-      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const { getActivePorts } = require('../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
       const response = await fetch(`http://localhost:${activePorts.http_server}`, { 
         signal: AbortSignal.timeout(5000)
@@ -260,7 +260,7 @@ class AutomatedPerformanceMonitor {
       
       try {
         // Simple HTTP ping test
-        const { getActivePorts } = require('../examples/shared/ExampleConfig');
+        const { getActivePorts } = require('../examples/server/ExampleConfigServer');
         const activePorts = await getActivePorts();
         await fetch(`http://localhost:${activePorts.http_server}`, { 
           method: 'HEAD',

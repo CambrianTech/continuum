@@ -8,7 +8,7 @@
 
 import { SystemReadySignaler, type SystemReadySignal } from '../scripts/signal-system-ready';
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
-import { getActiveExampleName, getActivePorts } from "../examples/shared/ExampleConfig";
+import { getActiveExampleName, getActivePorts } from "../examples/server/ExampleConfigServer";
 import fs from 'fs/promises';
 import path from 'path';
 

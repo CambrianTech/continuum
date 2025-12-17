@@ -18,6 +18,7 @@
 
 import { SecretManager } from '../secrets/SecretManager';
 import { DATABASE_PATHS } from '../data/config/DatabaseConfig';
+import { HTTP_PORT, WS_PORT } from '../../shared/config';
 
 /**
  * Server Configuration - Singleton accessor for all config.env values
@@ -116,6 +117,26 @@ export class ServerConfig {
    */
   getSessionsDir(): string {
     return DATABASE_PATHS.SESSIONS_DIR;
+  }
+
+  // ===================================
+  // Network Port Accessors
+  // ===================================
+
+  /**
+   * Get HTTP server port
+   * Returns build-time constant from shared/config.ts (generated from config.env)
+   */
+  getHttpPort(): number {
+    return HTTP_PORT;
+  }
+
+  /**
+   * Get WebSocket server port
+   * Returns build-time constant from shared/config.ts (generated from config.env)
+   */
+  getWsPort(): number {
+    return WS_PORT;
   }
 
   // ===================================

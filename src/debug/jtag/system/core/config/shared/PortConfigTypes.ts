@@ -54,7 +54,7 @@ export interface InstanceEnvironmentVars {
  * Default port ranges for different environments
  */
 export const PORT_RANGES = {
-  DEVELOPMENT: { startPort: 9000, endPort: 9099, reservedPorts: [9001, 9002] },
+  DEVELOPMENT: { startPort: 9000, endPort: 9099, reservedPorts: [9000, 9001] }, // HTTP_PORT and WS_PORT from config.env
   TESTING: { startPort: 9100, endPort: 9299, reservedPorts: [] },
   PRODUCTION: { startPort: 8000, endPort: 8099, reservedPorts: [] },
   P2P_TESTING: { startPort: 9300, endPort: 9599, reservedPorts: [] }

@@ -23,6 +23,14 @@ if (process.argv.includes('--verbose')) {
   process.env.JTAG_VERBOSE = 'true';
 }
 
+// CRITICAL: Initialize SecretManager to load config.env into process.env SYNCHRONOUSLY
+// ServerConfig needs HTTP_PORT and WS_PORT from process.env
+// Use require() to avoid bundling SecretManager in browser builds
+if (typeof require !== 'undefined' && typeof process !== 'undefined') {
+  const { SecretManager } = require('./system/secrets/SecretManager');
+  SecretManager.getInstance().initializeSync();
+}
+
 // Load config once at startup
 const instanceConfig = loadInstanceConfigForContext();
 

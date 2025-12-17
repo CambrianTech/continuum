@@ -1,13 +1,13 @@
 /**
- * Browser-Safe Configuration - No Node.js Dependencies
- * 
- * This module provides configuration defaults that work in both browser and server environments.
- * Uses package.json-based configuration discovery pattern (NPM standard).
+ * Browser-Safe Configuration - DEPRECATED
+ *
+ * This module is deprecated. Use shared/config.ts instead (generated at build time).
+ * Kept temporarily for backward compatibility during migration.
  */
 
-import type { 
+import type {
   JTAGServerConfiguration,
-  JTAGClientConfiguration, 
+  JTAGClientConfiguration,
   JTAGTestConfiguration,
   JTAGConfig,
   InstanceConfiguration,
@@ -15,6 +15,7 @@ import type {
 } from './SecureConfigTypes';
 
 import { DEFAULT_STORAGE_CONFIG } from './SecureConfigTypes';
+import { EXAMPLE_CONFIG, HTTP_PORT, WS_PORT } from '../../shared/config';
 
 /**
  * Runtime environment detection
@@ -22,64 +23,18 @@ import { DEFAULT_STORAGE_CONFIG } from './SecureConfigTypes';
 export const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
 export const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
-// Import ExampleConfig only in Node.js environment
-// Bundlers will tree-shake this in browser builds
-let ExampleConfig: any = null;
-if (isNode) {
-  try {
-    ExampleConfig = require('../../examples/shared/ExampleConfig');
-  } catch {
-    // Build environment - will use fallback
-  }
-}
-
-
 /**
- * Load active instance configuration using package.json discovery pattern
- * Server uses package.json files, browser derives from current port
- * NO ENVIRONMENT VARIABLES - Uses NPM-standard configuration discovery
- *
- * NOTE: Server code should import and use ExampleConfig directly, not this function.
- * This function is primarily for browser environment.
+ * Load instance configuration from generated config
+ * @deprecated Use shared/config.ts directly instead
  */
 export function loadInstanceConfigForContext(): InstanceConfiguration {
-  // Server context - delegate to ExampleConfig
-  if (isNode && ExampleConfig) {
-    const example = ExampleConfig.getActiveExample();
-    return {
-      name: example.name,
-      description: example.description,
-      ports: example.ports,
-      paths: example.paths,
-      capabilities: {}
-    };
-  }
-
-  // Browser context - derive from current port
-  if (isBrowser) {
-    // Derive configuration from current port
-    const currentPort = parseInt(window.location.port);
-    const websocketPort = currentPort - 1;
-
-    // Determine configuration based on port without hardcoded values
-    const isWidgetUI = window.location.pathname.includes('widget') ||
-                      document.title?.includes('Widget') ||
-                      currentPort > 9002; // Widget-UI typically uses higher ports
-
-    return {
-      name: isWidgetUI ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
-      description: isWidgetUI ? 'Focused widget development environment' : 'Full-featured testing environment',
-      ports: { http_server: currentPort, websocket_server: websocketPort },
-      paths: {
-        directory: isWidgetUI ? 'examples/widget-ui' : 'examples/test-bench',
-        html_file: isWidgetUI ? 'index.html' : 'public/demo.html',
-        build_output: 'dist'
-      },
-      capabilities: {}
-    };
-  }
-
-  throw new Error('Cannot determine environment');
+  return {
+    name: EXAMPLE_CONFIG.name,
+    description: EXAMPLE_CONFIG.description,
+    ports: EXAMPLE_CONFIG.ports,
+    paths: EXAMPLE_CONFIG.paths,
+    capabilities: {}
+  };
 }
 
 /**

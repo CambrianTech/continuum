@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6142",
+  "version": "1.0.6152",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -132,7 +132,7 @@
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "clean:logs": "find .continuum/jtag/system/logs -name '*.log' -type f -delete 2>/dev/null || true; find .continuum/personas -name '*.log' -type f -delete 2>/dev/null || true; echo '✅ Cleaned all log files'",
     "prebuild": "npm run version:bump && npm run clean:all && npm run worker:build && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts",
-    "build:ts": "npx tsx generator/generate-version.ts && npx tsx scripts/build-with-loud-failure.ts",
+    "build:ts": "npx tsx generator/generate-version.ts && npx tsx generator/generate-config.ts && npx tsx scripts/build-with-loud-failure.ts",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
     "build": "npm run build:ts",

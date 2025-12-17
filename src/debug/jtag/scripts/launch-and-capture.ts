@@ -590,9 +590,13 @@ const MODE_BEHAVIORS = {
 // Run the configurable smart launcher
 async function main(): Promise<void> {
   try {
+    // CRITICAL: Initialize SecretManager to load config.env into process.env
+    const { SecretManager } = await import('../system/secrets/SecretManager');
+    await SecretManager.getInstance().initialize();
+
     const behavior = MODE_BEHAVIORS[CONFIG.mode];
     const sessionName = TmuxSessionManager.getSessionName(); // Generate session name for this workdir
-    
+
     if (CONFIG.verbose) {
       console.log(`🚀 SMART JTAG LAUNCHER - ${behavior.label}`);
       console.log(`📊 Config: ${JSON.stringify(CONFIG, null, 2)}`);

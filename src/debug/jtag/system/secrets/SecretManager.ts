@@ -80,6 +80,37 @@ export class SecretManager {
   }
 
   /**
+   * Initialize secrets synchronously (for CLI and scripts)
+   * Use this when top-level await is not available
+   */
+  initializeSync(): void {
+    if (this.isInitialized) {
+      if (process.env.JTAG_VERBOSE === 'true') {
+        console.log('🔐 SecretManager: Already initialized');
+      }
+      return;
+    }
+
+    if (process.env.JTAG_VERBOSE === 'true') {
+      console.log('🔐 SecretManager: Initializing secrets (sync)...');
+    }
+
+    // Load from ~/.continuum/config.env (primary source) - synchronous
+    this.loadFromHomeConfigSync();
+
+    // Load from process.env (fallback/override)
+    this.loadFromProcessEnv();
+
+    // Load from .env file (local development) - synchronous
+    this.loadFromProjectEnvSync();
+
+    this.isInitialized = true;
+    if (process.env.JTAG_VERBOSE === 'true') {
+      console.log(`✅ SecretManager: Loaded ${this.secrets.size} secrets`);
+    }
+  }
+
+  /**
    * Get secret value (returns undefined if not found)
    * @param key - Secret key (e.g., 'OPENAI_API_KEY')
    * @param requestedBy - Who is requesting (for audit trail)
@@ -201,6 +232,32 @@ export class SecretManager {
   }
 
   /**
+   * Load from ~/.continuum/config.env (synchronous version)
+   */
+  private loadFromHomeConfigSync(): void {
+    const homeDir = os.homedir();
+    const configPath = path.join(homeDir, '.continuum', 'config.env');
+
+    try {
+      if (!fs.existsSync(configPath)) {
+        if (process.env.JTAG_VERBOSE === 'true') {
+          console.log(`ℹ️  SecretManager: No config.env found at ${configPath}`);
+        }
+        return;
+      }
+
+      const content = fs.readFileSync(configPath, 'utf-8');
+      this.parseEnvFile(content, 'home-config');
+
+      if (process.env.JTAG_VERBOSE === 'true') {
+        console.log(`✅ SecretManager: Loaded secrets from ${configPath}`);
+      }
+    } catch (error) {
+      console.warn(`⚠️  SecretManager: Failed to load home config:`, error);
+    }
+  }
+
+  /**
    * Load from process.env
    */
   private loadFromProcessEnv(): void {
@@ -235,6 +292,28 @@ export class SecretManager {
   }
 
   /**
+   * Load from .env file (project-local) - synchronous version
+   */
+  private loadFromProjectEnvSync(): void {
+    const projectEnvPath = path.resolve(process.cwd(), '.env');
+
+    try {
+      if (!fs.existsSync(projectEnvPath)) {
+        return;
+      }
+
+      const content = fs.readFileSync(projectEnvPath, 'utf-8');
+      this.parseEnvFile(content, 'project-env');
+
+      if (process.env.JTAG_VERBOSE === 'true') {
+        console.log(`✅ SecretManager: Loaded secrets from .env`);
+      }
+    } catch (error) {
+      console.warn(`⚠️  SecretManager: Failed to load project .env:`, error);
+    }
+  }
+
+  /**
    * Parse .env file format
    */
   private parseEnvFile(content: string, source: string): void {
@@ -262,8 +341,9 @@ export class SecretManager {
         // Store in secrets Map
         this.secrets.set(key, value);
 
-        // Also set DATABASE_* and DATASETS_* vars in process.env for PATHS to use
+        // Also set config vars in process.env for ServerConfig to use
         if (key.startsWith('DATABASE_') || key.startsWith('DATASETS_') ||
+            key === 'HTTP_PORT' || key === 'WS_PORT' ||
             key === 'SENTINEL_PATH' || key === 'REPO_PATH') {
           process.env[key] = value;
         }

@@ -137,7 +137,7 @@ async function runBrowserIntegrationTests(): Promise<void> {
   
   try {
     // Connect to JTAG system (same as ./jtag screenshot)
-    const { getActivePorts } = require('../../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     const websocketPort = activePorts.websocket_server;
     const serverUrl = `ws://localhost:${websocketPort}`;

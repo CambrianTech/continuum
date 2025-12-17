@@ -31,7 +31,7 @@ async function improvedSystemDetector(): Promise<void> {
       check: async () => {
         try {
           // Use dynamic port resolution
-          const { getActivePorts } = require('../examples/shared/ExampleConfig');
+          const { getActivePorts } = require('../examples/server/ExampleConfigServer');
           const activePorts = await getActivePorts();
           const { stdout } = await execAsync(`curl -s -w "%{http_code}" -o /dev/null http://localhost:${activePorts.http_server}/`);
           const statusCode = stdout.trim();
@@ -51,7 +51,7 @@ async function improvedSystemDetector(): Promise<void> {
       check: async () => {
         try {
           // Test if WebSocket port is open using dynamic configuration
-          const { getActivePorts } = require('../examples/shared/ExampleConfig');
+          const { getActivePorts } = require('../examples/server/ExampleConfigServer');
           const activePorts = await getActivePorts();
           const { stdout } = await execAsync(`nc -z localhost ${activePorts.websocket_server} && echo "open" || echo "closed"`);
           if (stdout.trim() === 'open') {
@@ -144,7 +144,7 @@ async function improvedSystemDetector(): Promise<void> {
     console.log('   • Run tests: npm test');
     console.log('   • Take screenshots: npm run screenshot');  
     // Show dynamic ports in success message
-    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     console.log(`   • Access browser UI: http://localhost:${activePorts.http_server}`);
     console.log(`   • Use JTAG commands via WebSocket on port ${activePorts.websocket_server}`);
@@ -170,7 +170,7 @@ async function improvedSystemDetector(): Promise<void> {
     
     if (failedChecks.some(c => c.name === 'WebSocket Server')) {
       console.log('   • WebSocket server not running - check for port conflicts');
-      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const { getActivePorts } = require('../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
       console.log(`   • Try: lsof -i :${activePorts.websocket_server}`);
     }

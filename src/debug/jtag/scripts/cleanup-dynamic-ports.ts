@@ -20,12 +20,17 @@ class DynamicPortCleanup {
    */
   public static async cleanup(forceAll = false): Promise<void> {
     try {
+      // CRITICAL: Initialize SecretManager to load config.env into process.env
+      // ServerConfig needs HTTP_PORT and WS_PORT from process.env
+      const { SecretManager } = await import('../system/secrets/SecretManager');
+      await SecretManager.getInstance().initialize();
+
       // CRITICAL: Synchronize registry state across all locations before cleanup
-      // This solves the distributed state consistency problem 
+      // This solves the distributed state consistency problem
       console.log('🔄 Synchronizing registry state across all locations...');
       await syncRegistryState();
       console.log('✅ Registry state synchronized');
-      
+
       // Create a mock command daemon for the server command
       const mockCommander = {
         subpath: 'system-cleanup',
@@ -36,7 +41,7 @@ class DynamicPortCleanup {
       // Create proper JTAG context for the command
       const { createJTAGConfig } = await import('../system/shared/BrowserSafeConfig');
       const { createServerContext } = await import('../system/core/context/SecureJTAGContext');
-      
+
       const jtagConfig = createJTAGConfig();
       const context = createServerContext(jtagConfig, 'cleanup-script');
 

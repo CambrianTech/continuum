@@ -9,7 +9,7 @@
  */
 
 import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
-import { getActiveExampleName } from "../examples/shared/ExampleConfig";
+import { getActiveExampleName } from "../examples/server/ExampleConfigServer";
 import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 
 async function launchActiveExample(): Promise<void> {
