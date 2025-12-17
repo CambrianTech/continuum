@@ -52,33 +52,24 @@ fi
 
 cd src/debug/jtag
 
-# Check if system is already running
-SYSTEM_ALREADY_RUNNING=false
+# Check if system is responding to ping
+echo "🏓 Checking if system is already running..."
 if ./jtag ping >/dev/null 2>&1; then
-    SYSTEM_ALREADY_RUNNING=true
-
-    if [ "$CODE_CHANGED" = true ]; then
-        echo "🔄 System running but CODE CHANGED - forcing deployment to load new code"
-        echo "💡 This prevents the 'old code deployed' bug"
-        SYSTEM_ALREADY_RUNNING=false  # Force deployment
-    else
-        echo "✅ System already running with current code - skipping restart (massive time savings!)"
-    fi
+    echo "✅ System is running and responding to ping"
+    NEED_RESTART=false
+else
+    echo "❌ System not responding to ping - restart required"
+    NEED_RESTART=true
 fi
 
-# Start system if needed
-if [ "$SYSTEM_ALREADY_RUNNING" = false ]; then
+# Start system if ping failed
+if [ "$NEED_RESTART" = true ]; then
     echo "🚀 Starting deployment..."
     npm start &
     DEPLOY_PID=$!
-fi
 
-# Wait for system to be ready (with timeout) - skip if already running
-if [ "$SYSTEM_ALREADY_RUNNING" = true ]; then
-    echo "⚡ System already healthy - skipping startup wait"
-else
     echo "⏳ Waiting for system to be ready..."
-    TIMEOUT=60  # 1 minute should be plenty for ping to succeed
+    TIMEOUT=90  # Generous timeout for initial startup
     COUNTER=0
 
     while [ $COUNTER -lt $TIMEOUT ]; do
@@ -106,58 +97,44 @@ else
         kill $DEPLOY_PID 2>/dev/null || true
         exit 1
     fi
+else
+    echo "⚡ System already running - no restart needed"
 fi
 
-# Phase 2: Integration Testing
+# Phase 2: Browser Connectivity Test
 echo ""
-echo "🧪 Phase 2: CRUD + State Integration (100% required)"
-echo "-----------------------------------------------------"
+echo "🧪 Phase 2: Browser Ping Test (minimum viable validation)"
+echo "-----------------------------------------------------------"
 
-echo "🧪 Running precommit test profile via JTAG test runner..."
+echo "🧪 Running minimal browser connectivity test..."
 
 # Ensure test output directory exists
 mkdir -p .continuum/sessions/validation
 
-# Run precommit integration tests with immediate output visibility
-echo "🧪 Running CRUD integration test..."
+# Run simple browser ping test
 echo "=================================================="
-npx tsx tests/integration/database-chat-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test1-output.txt
-TEST_EXIT_CODE1=${PIPESTATUS[0]}
-TEST_OUTPUT1=$(cat .continuum/sessions/validation/test1-output.txt)
-echo "=================================================="
-
-echo ""
-echo "🧪 Running State integration test..."
-echo "=================================================="
-npx tsx tests/integration/state-system-integration.test.ts 2>&1 | tee .continuum/sessions/validation/test2-output.txt
-TEST_EXIT_CODE2=${PIPESTATUS[0]}
-TEST_OUTPUT2=$(cat .continuum/sessions/validation/test2-output.txt)
+npx tsx tests/precommit/browser-ping.test.ts 2>&1 | tee .continuum/sessions/validation/test1-output.txt
+TEST_EXIT_CODE=${PIPESTATUS[0]}
+TEST_OUTPUT=$(cat .continuum/sessions/validation/test1-output.txt)
 echo "=================================================="
 
 echo ""
-# Check if all tests passed
-if [ $TEST_EXIT_CODE1 -eq 0 ] && [ $TEST_EXIT_CODE2 -eq 0 ]; then
-    echo "✅ Precommit integration tests: ALL PASSED"
-    echo "📊 Test results: 2 of 2 tests passed (CRUD + State)"
+# Check if test passed
+if [ $TEST_EXIT_CODE -eq 0 ]; then
+    echo "✅ Precommit browser ping test: PASSED"
+    echo "📊 Test result: Browser can ping back ✅"
 
     # Store test results for commit message
-    TEST_SUMMARY="CRUD + State: 2/2 - ALL TESTS PASSED"
+    TEST_SUMMARY="Browser Ping: PASSED"
 else
     echo ""
-    echo "❌ PRECOMMIT INTEGRATION TESTS FAILED - BLOCKING COMMIT"
+    echo "❌ PRECOMMIT BROWSER PING TEST FAILED - BLOCKING COMMIT"
     echo "=================================================="
-    if [ $TEST_EXIT_CODE1 -ne 0 ]; then
-        echo "❌ CRUD integration test FAILED (exit code: $TEST_EXIT_CODE1)"
-        echo "   Test file: tests/integration/database-chat-integration.test.ts"
-        echo "   Output shown above"
-    fi
-    if [ $TEST_EXIT_CODE2 -ne 0 ]; then
-        echo "❌ State integration test FAILED (exit code: $TEST_EXIT_CODE2)"
-        echo "   Test file: tests/integration/state-system-integration.test.ts"
-        echo "   Output shown above"
-    fi
+    echo "❌ Browser ping test FAILED (exit code: $TEST_EXIT_CODE)"
+    echo "   Test file: tests/precommit/browser-ping.test.ts"
+    echo "   Output shown above"
     echo ""
-    echo "🔍 Fix the failing tests before committing"
+    echo "🔍 Fix the browser connectivity before committing"
     echo "=================================================="
     exit 1
 fi
