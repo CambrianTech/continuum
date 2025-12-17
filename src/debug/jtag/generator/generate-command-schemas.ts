@@ -166,41 +166,44 @@ class CommandSchemaGenerator {
 
   /**
    * Derive command name from Params interface name and base path
+   *
+   * SIMPLIFIED APPROACH: Just use basePath directly since it comes from the file structure
+   * which is the authoritative source of truth for command naming.
+   *
    * Examples:
-   *   WallWriteParams + "wall" → "wall/write"
-   *   WallListParams + "wall" → "wall/list"
-   *   PingParams + "ping" → "ping"
+   *   TaskListParams + "workspace/task/list" → "workspace/task/list"
    *   TreeParams + "workspace/tree" → "workspace/tree"
-   *   ScreenshotParams + "interface/screenshot" → "interface/screenshot"
+   *   AIGenerateParams + "ai/generate" → "ai/generate"
+   *   PingParams + "ping" → "ping"
+   *   WallWriteParams + "wall" → "wall/write" (subcommand case)
    */
   private deriveCommandName(interfaceName: string, basePath: string): string {
-    // Remove "Params" suffix: WallWriteParams → WallWrite
+    // Remove "Params" suffix: WallWriteParams → WallWrite, TaskListParams → TaskList
     const withoutParams = interfaceName.replace(/Params$/, '');
 
-    // Convert PascalCase to kebab-case: WallWrite → wall-write
+    // Convert PascalCase to kebab-case, handling acronyms correctly
     const kebabCase = withoutParams
-      .replace(/([a-z])([A-Z])/g, '$1-$2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')  // AIGenerate → AI-Generate
+      .replace(/([a-z])([A-Z])/g, '$1-$2')        // TaskList → Task-List
       .toLowerCase();
 
-    // Get the last segment of basePath (workspace/tree → tree)
+    // Get the last segment of basePath (workspace/task/list → list)
     const basePathSegments = basePath.split('/');
     const lastSegment = basePathSegments[basePathSegments.length - 1];
 
-    // If kebab matches the last segment exactly, use full basePath
-    // TreeParams + "workspace/tree" → "workspace/tree"
-    if (kebabCase === lastSegment) {
-      return basePath;
-    }
-
-    // If kebab starts with last segment + dash, it's a subcommand
-    // "tree-list" with basePath "workspace/tree" → "workspace/tree/list"
+    // Check if this is a subcommand: WallWriteParams + "wall" → "wall/write"
+    // kebabCase="wall-write", lastSegment="wall" → extract "write" as subcommand
     if (kebabCase.startsWith(lastSegment + '-')) {
       const subcommand = kebabCase.substring(lastSegment.length + 1);
       return `${basePath}/${subcommand}`;
     }
 
-    // Fallback: just return kebab (for simple commands like "ping")
-    return kebabCase;
+    // Otherwise, just use the full basePath from the file structure
+    // This handles all cases correctly:
+    // - workspace/task/list (multi-level paths)
+    // - interface/screenshot (two-level paths)
+    // - ping (single-level paths)
+    return basePath;
   }
 
   /**

@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-17T18:47:03.727Z",
+  "generated": "2025-12-17T19:03:44.288Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -24,7 +24,7 @@
       }
     },
     {
-      "name": "task-list",
+      "name": "workspace/task/list",
       "description": "TaskListTypes - List tasks for PersonaUsers\n *\n * Query tasks by assignee, status, domain, etc.\n * Used for monitoring AI work queues and debugging.",
       "params": {
         "assigneeId": {
@@ -75,7 +75,7 @@
       }
     },
     {
-      "name": "task-create",
+      "name": "workspace/task/create",
       "description": "TaskCreateTypes - Create new tasks for PersonaUsers\n *\n * Allows users to assign tasks to AI personas (or themselves).\n * Tasks can be chat responses, code reviews, analysis, or self-improvement.",
       "params": {
         "assigneeId": {
@@ -126,7 +126,7 @@
       }
     },
     {
-      "name": "task-complete",
+      "name": "workspace/task/complete",
       "description": "TaskCompleteTypes - Mark tasks as completed (or failed)\n *\n * Updates task status and records results.\n * Used by PersonaUsers to report task completion.",
       "params": {
         "taskId": {
@@ -167,7 +167,7 @@
       }
     },
     {
-      "name": "recipe-load",
+      "name": "workspace/recipe/load",
       "description": "Recipe Load Command Types\n *\n * Loads recipe JSON files from system/recipes/*.json into database",
       "params": {
         "recipeId": {
@@ -188,12 +188,12 @@
       }
     },
     {
-      "name": "git-workspace-init",
+      "name": "workspace/git/workspace/init",
       "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
       "params": {}
     },
     {
-      "name": "git-workspace-clean",
+      "name": "workspace/git/workspace/clean",
       "description": "Git Workspace Clean Command - Shared Types\n *\n * Clean up git workspace and remove worktree",
       "params": {
         "workspacePath": {
@@ -214,7 +214,7 @@
       }
     },
     {
-      "name": "git-status",
+      "name": "workspace/git/status",
       "description": "Git Status Command - Shared Types\n *\n * Show git workspace status and changes",
       "params": {
         "workspacePath": {
@@ -225,7 +225,7 @@
       }
     },
     {
-      "name": "git-push",
+      "name": "workspace/git/push",
       "description": "Git Push Command - Shared Types\n *\n * Push workspace branch to remote repository",
       "params": {
         "workspacePath": {
@@ -241,7 +241,7 @@
       }
     },
     {
-      "name": "git-commit",
+      "name": "workspace/git/commit",
       "description": "Git Commit Command - Shared Types\n *\n * Commit changes in git workspace with persona identity",
       "params": {
         "message": {
@@ -262,7 +262,7 @@
       }
     },
     {
-      "name": "pipe-chain",
+      "name": "utilities/pipe/chain",
       "description": "Pipe Chain Command Types\n * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
       "params": {
         "commands": {
@@ -293,7 +293,7 @@
       }
     },
     {
-      "name": "lease-request",
+      "name": "utilities/lease/request",
       "description": "Lease Request Command - Shared Types\n *\n * Command to request a file lease for editing",
       "params": {
         "filePath": {
@@ -340,8 +340,8 @@
       }
     },
     {
-      "name": "docs-search",
-      "description": "docs-search command",
+      "name": "utilities/docs/search",
+      "description": "utilities/docs/search command",
       "params": {
         "pattern": {
           "type": "string",
@@ -361,8 +361,8 @@
       }
     },
     {
-      "name": "docs-read",
-      "description": "docs-read command",
+      "name": "utilities/docs/read",
+      "description": "utilities/docs/read command",
       "params": {
         "doc": {
           "type": "string",
@@ -392,8 +392,8 @@
       }
     },
     {
-      "name": "docs-list",
-      "description": "docs-list command",
+      "name": "utilities/docs/list",
+      "description": "utilities/docs/list command",
       "params": {
         "dir": {
           "type": "string",
@@ -413,12 +413,12 @@
       }
     },
     {
-      "name": "user-get-me",
+      "name": "user/get-me",
       "description": "User Get Me Command - Get current user info\n *\n * Convenience command that returns the caller's full user information.\n * No parameters needed - sessionId is auto-injected and used to look up user.",
       "params": {}
     },
     {
-      "name": "user-create",
+      "name": "user/create",
       "description": "User Create Command - Shared Types\n *\n * Follows ARCHITECTURE-RULES.md:\n * - Generic programming with BaseEntity\n * - Type safety with proper constraints\n * - No entity mixing in command layer\n *\n * Factory pattern: user/create calls BaseUser.create() which routes to\n * PersonaUser.create(), AgentUser.create(), or HumanUser.create()",
       "params": {
         "type": {
@@ -469,7 +469,7 @@
       }
     },
     {
-      "name": "training-import",
+      "name": "training/import",
       "description": "Training Import Command - Shared Types\n *\n * Imports JSONL training data into SQLite database for MLX fine-tuning.\n * Uses multi-database handle system for isolation.",
       "params": {
         "jsonlPath": {
@@ -526,8 +526,8 @@
       }
     },
     {
-      "name": "session-get-user",
-      "description": "session-get-user command",
+      "name": "session/get-user",
+      "description": "session/get-user command",
       "params": {
         "targetSessionId": {
           "type": "string",
@@ -537,12 +537,12 @@
       }
     },
     {
-      "name": "session-get-id",
+      "name": "session/get-id",
       "description": "Session Get ID Command - Get current session ID\n *\n * Convenience command that returns the caller's session ID.\n * No parameters needed - sessionId is auto-injected by framework.",
       "params": {}
     },
     {
-      "name": "session-destroy",
+      "name": "session/destroy",
       "description": "Session Destroy Command Types\n * \n * Shared types for session destroy command across client/server contexts.",
       "params": {
         "reason": {
@@ -553,7 +553,7 @@
       }
     },
     {
-      "name": "session-create",
+      "name": "session/create",
       "description": "Session Create Command Types - Shared\n * \n * Command interface for creating sessions via the session daemon.\n * Handles session creation by routing to SessionDaemon internally.",
       "params": {
         "category": {
@@ -584,8 +584,8 @@
       }
     },
     {
-      "name": "security-setup",
-      "description": "security-setup command",
+      "name": "security/setup",
+      "description": "security/setup command",
       "params": {
         "statusOnly": {
           "type": "boolean",
@@ -600,7 +600,7 @@
       }
     },
     {
-      "name": "ragload",
+      "name": "rag/load",
       "description": "RAG Load Command - Test incremental message loading with token counting\n *\n * Shows exactly which messages would be loaded for RAG context given a token budget.\n * Makes the incremental loading algorithm transparent and debuggable.",
       "params": {
         "roomId": {
@@ -641,7 +641,7 @@
       }
     },
     {
-      "name": "ragbudget",
+      "name": "rag/budget",
       "description": "RAG Budget Command - Calculate token budget for RAG context\n *\n * Shows the algorithm for calculating safe message counts based on model's context window.\n * Makes the token budget calculation transparent and debuggable.",
       "params": {
         "model": {
@@ -672,7 +672,7 @@
       }
     },
     {
-      "name": "register-process",
+      "name": "process-registry",
       "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
       "params": {
         "processType": {
@@ -703,7 +703,7 @@
       }
     },
     {
-      "name": "list-processes",
+      "name": "process-registry",
       "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
       "params": {
         "filterByPorts": {
@@ -724,7 +724,7 @@
       }
     },
     {
-      "name": "cleanup-processes",
+      "name": "process-registry",
       "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
       "params": {
         "forceAll": {
@@ -771,7 +771,7 @@
       }
     },
     {
-      "name": "genome-multi-agent-learn",
+      "name": "persona/learning/multi-agent-learn",
       "description": "GenomeMultiAgentLearnTypes - Multi-agent collaborative learning\n *\n * All participants learn from shared outcome after recipe completion.\n * Enables GAN-like training where multiple PersonaUsers improve together.",
       "params": {
         "domain": {
@@ -792,7 +792,7 @@
       }
     },
     {
-      "name": "genome-capture-interaction",
+      "name": "persona/learning/capture-interaction",
       "description": "GenomeCaptureInteractionTypes - Capture AI interactions for continuous learning\n *\n * Called during recipe execution to record inputs/outputs for LoRA training.\n * Accumulates examples in-memory for batch micro-tuning.",
       "params": {
         "roleId": {
@@ -853,7 +853,7 @@
       }
     },
     {
-      "name": "genome-capture-feedback",
+      "name": "persona/learning/capture-feedback",
       "description": "GenomeCaptureFeedbackTypes - Capture feedback between PersonaUsers\n *\n * Records corrections, critiques, scores from one persona to another.\n * Enables reciprocal learning - both giver and receiver learn from feedback.",
       "params": {
         "interactionId": {
@@ -924,7 +924,7 @@
       }
     },
     {
-      "name": "media-resize",
+      "name": "media/resize",
       "description": "Media Resize Command Types\n *\n * Image resizing via sharp library with model-aware dimension calculation.\n * Enables PersonaUsers to receive appropriately-sized images based on their\n * model's context window capacity.",
       "params": {
         "inputPath": {
@@ -985,7 +985,7 @@
       }
     },
     {
-      "name": "media-process",
+      "name": "media/process",
       "description": "Media Process Command Types\n *\n * Comprehensive video/audio/image processing via ffmpeg and other media tools.\n * Supports speed adjustment, format conversion, trimming, audio manipulation, and more.",
       "params": {
         "inputPath": {
@@ -1066,8 +1066,8 @@
       }
     },
     {
-      "name": "logs-search",
-      "description": "logs-search command",
+      "name": "logs/search",
+      "description": "logs/search command",
       "params": {
         "pattern": {
           "type": "string",
@@ -1077,8 +1077,8 @@
       }
     },
     {
-      "name": "logs-read",
-      "description": "logs-read command",
+      "name": "logs/read",
+      "description": "logs/read command",
       "params": {
         "log": {
           "type": "string",
@@ -1123,7 +1123,7 @@
       }
     },
     {
-      "name": "logs-list",
+      "name": "logs/list",
       "description": "logs/list Command Types",
       "params": {
         "category": {
@@ -1180,7 +1180,7 @@
       }
     },
     {
-      "name": "web-search",
+      "name": "interface/web/search",
       "description": "Web Search Command Types\n *\n * Allows AIs to search the web and get results.\n * Uses search APIs to find relevant information.",
       "params": {
         "query": {
@@ -1201,7 +1201,7 @@
       }
     },
     {
-      "name": "web-fetch",
+      "name": "interface/web/fetch",
       "description": "Web Fetch Command Types\n *\n * Allows AIs to fetch and read web pages.\n * Returns clean text content from HTML pages.",
       "params": {
         "url": {
@@ -1601,7 +1601,7 @@
       }
     },
     {
-      "name": "genome-unregister",
+      "name": "genome/paging-unregister",
       "description": "Genome Unregister Command Types\n *\n * Unregister persona from genome daemon - unloads all adapters for persona.",
       "params": {
         "personaId": {
@@ -1612,7 +1612,7 @@
       }
     },
     {
-      "name": "genome-stats",
+      "name": "genome/paging-stats",
       "description": "Genome Stats Command Types\n *\n * Get genome statistics - returns global daemon stats and per-persona stats.",
       "params": {
         "personaId": {
@@ -1623,7 +1623,7 @@
       }
     },
     {
-      "name": "genome-register",
+      "name": "genome/paging-register",
       "description": "Genome Register Command Types\n *\n * Register persona with genome daemon - must be called before activating adapters.",
       "params": {
         "personaId": {
@@ -1649,7 +1649,7 @@
       }
     },
     {
-      "name": "genome-deactivate",
+      "name": "genome/paging-deactivate",
       "description": "Genome Deactivate Command Types\n *\n * Deactivate adapter for persona - unloads adapter from memory.",
       "params": {
         "personaId": {
@@ -1665,7 +1665,7 @@
       }
     },
     {
-      "name": "genome-paging-adapter-register",
+      "name": "genome/paging-adapter-register",
       "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Ollama adapters",
       "params": {
         "adapterId": {
@@ -1696,7 +1696,7 @@
       }
     },
     {
-      "name": "genome-activate",
+      "name": "genome/paging-activate",
       "description": "Genome Activate Command Types\n *\n * Activate adapter for persona - loads adapter into memory, evicting others if needed.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
       "params": {
         "personaId": {
@@ -1712,7 +1712,7 @@
       }
     },
     {
-      "name": "genome-job-status",
+      "name": "genome/job-status",
       "description": "GenomeJobStatusTypes - Query fine-tuning job status\n *\n * Retrieves current status, progress, and metadata for a training job.\n * Works with jobs created via genome/job-create.",
       "params": {
         "jobId": {
@@ -1728,7 +1728,7 @@
       }
     },
     {
-      "name": "genome-job-create",
+      "name": "genome/job-create",
       "description": "GenomeJobCreateTypes - Create fine-tuning jobs with comprehensive configuration\n *\n * Universal command for creating fine-tuning jobs across all providers (OpenAI, DeepSeek, Fireworks, Together).\n * Uses provider-agnostic JobConfiguration schema with automatic validation.",
       "params": {
         "personaId": {
@@ -1764,7 +1764,7 @@
       }
     },
     {
-      "name": "genome-batch-micro-tune",
+      "name": "genome/batch-micro-tune",
       "description": "GenomeBatchMicroTuneTypes - Lightweight in-recipe LoRA updates\n *\n * Performs fast micro-tuning during recipe execution using accumulated examples.\n * Soft updates in RAM, not persisted to disk (that happens during deep training).",
       "params": {
         "domain": {
@@ -1821,7 +1821,7 @@
       }
     },
     {
-      "name": "shell-execute",
+      "name": "development/shell/execute",
       "description": "Shell Execute Command Types\n *\n * Provides safe shell command execution for PersonaUsers and other AI agents.\n * Commands are whitelisted and sanitized to prevent security issues.",
       "params": {
         "command": {
@@ -1857,7 +1857,7 @@
       }
     },
     {
-      "name": "schema-generate",
+      "name": "development/schema/generate",
       "description": "Schema Generate Command Types\n *\n * Generates JSON schemas from TypeScript interfaces using the TypeScript compiler.\n * Properly resolves cross-file inheritance.\n *\n * Usage:\n *   ./jtag schema/generate --pattern=\"*Params\" --output=\"schemas.json\"\n *   ./jtag schema/generate --interface=\"DataReadParams\" --file=\"commands/data/read/shared/DataReadTypes.ts\"",
       "params": {
         "pattern": {
@@ -1904,7 +1904,7 @@
       }
     },
     {
-      "name": "generate-audit",
+      "name": "development/generate/audit",
       "description": "Generate/Audit Command - Shared Types\n *\n * Audit generated modules for issues and optionally fix them",
       "params": {
         "module": {
@@ -2149,7 +2149,7 @@
       }
     },
     {
-      "name": "widget-cssdebug",
+      "name": "development/debug/widget-css/debug",
       "description": "Debug Command: widget-css\n * Hot-inject CSS into widgets for rapid iteration without full deployment",
       "params": {
         "widgetSelector": {
@@ -2282,7 +2282,7 @@
       }
     },
     {
-      "name": "test-error",
+      "name": "development/debug/error",
       "description": "Test Error Command Types - Enhanced\n * \n * Comprehensive error testing command for validating error handling at all levels.\n * Supports environment-specific triggers and multi-level error testing.",
       "params": {
         "errorType": {
@@ -2402,7 +2402,7 @@
       }
     },
     {
-      "name": "code-read",
+      "name": "development/code/read",
       "description": "code/read command types",
       "params": {
         "backend": {
@@ -2438,7 +2438,7 @@
       }
     },
     {
-      "name": "code-find",
+      "name": "development/code/pattern-search",
       "description": "code/find command types - Find files by name pattern",
       "params": {
         "backend": {
@@ -2530,7 +2530,7 @@
       }
     },
     {
-      "name": "data-truncate",
+      "name": "data/truncate",
       "description": "Data Truncate Command - Shared Types\n *\n * Truncate all records from a specific collection using adapter methods",
       "params": {
         "collection": {
@@ -2541,7 +2541,7 @@
       }
     },
     {
-      "name": "base-data",
+      "name": "data",
       "description": "Base Data Command Types - Generic Abstractions\n *\n * Following ARCHITECTURE-RULES.md:\n * ✅ Generic programming with BaseEntity only\n * ✅ No specific entity references (UserEntity, etc.)\n * ✅ Backend routing abstraction",
       "params": {
         "collection": {
@@ -2567,7 +2567,7 @@
       }
     },
     {
-      "name": "data-schema",
+      "name": "data/schema",
       "description": "Data Schema Command - Entity Schema Introspection\n *\n * Provides runtime schema information from entity decorators\n * Allows callers to understand entity structure, constraints, and validation rules",
       "params": {
         "collection": {
@@ -2593,7 +2593,7 @@
       }
     },
     {
-      "name": "data-query-open",
+      "name": "data/query-open",
       "description": "Data Query Open Command Types\n *\n * Opens a paginated query and returns a handle (UUID)\n * DataDaemon maintains the query state (filters, sorting, cursor position)",
       "params": {
         "collection": {
@@ -2619,7 +2619,7 @@
       }
     },
     {
-      "name": "data-query-next",
+      "name": "data/query-next",
       "description": "Data Query Next Command Types\n *\n * Gets the next page of results from a query handle\n * DataDaemon manages cursor position internally",
       "params": {
         "queryHandle": {
@@ -2640,7 +2640,7 @@
       }
     },
     {
-      "name": "data-query-close",
+      "name": "data/query-close",
       "description": "Data Query Close Command Types\n *\n * Closes a query handle and frees resources\n * Should be called when done with pagination",
       "params": {
         "queryHandle": {
@@ -2661,7 +2661,7 @@
       }
     },
     {
-      "name": "data-open",
+      "name": "data/open",
       "description": "Data Open Command - Shared Types\n *\n * Opens a new database handle for multi-database operations.\n * Storage-adapter-agnostic: works with SQLite, JSON, Vector DB, Graph DB, etc.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
       "params": {
         "adapter": {
@@ -2677,7 +2677,7 @@
       }
     },
     {
-      "name": "data-list-handles",
+      "name": "data/list-handles",
       "description": "Data List-Handles Command - Shared Types",
       "params": {}
     },
@@ -2703,7 +2703,7 @@
       }
     },
     {
-      "name": "data-delete",
+      "name": "data/delete",
       "description": "Data Delete Command Types - Universal Delete Interface\n * \n * Follows working data create pattern with strong typing",
       "params": {
         "collection": {
@@ -2734,7 +2734,7 @@
       }
     },
     {
-      "name": "data-close",
+      "name": "data/close",
       "description": "Data Close Command - Shared Types\n *\n * Closes a database handle and releases associated resources.\n * Cannot close the default handle - it remains open for the lifetime of the process.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
       "params": {
         "dbHandle": {
@@ -2745,7 +2745,7 @@
       }
     },
     {
-      "name": "data-clear",
+      "name": "data/clear",
       "description": "Data Clear Command - Shared Types\n *\n * Clear all data from all collections using adapter methods",
       "params": {}
     },
@@ -2791,7 +2791,7 @@
       }
     },
     {
-      "name": "continuum-set",
+      "name": "continuum/set",
       "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
       "params": {
         "emoji": {
@@ -2988,7 +2988,7 @@
       }
     },
     {
-      "name": "decision-vote",
+      "name": "collaboration/decision/vote",
       "description": "Decision Vote Command - Shared Types\n *\n * Cast ranked-choice vote on a proposal",
       "params": {
         "proposalId": {
@@ -3009,7 +3009,7 @@
       }
     },
     {
-      "name": "decision-view",
+      "name": "collaboration/decision/view",
       "description": "Decision View Command - Shared Types\n *\n * View detailed information about a specific governance proposal",
       "params": {
         "proposalId": {
@@ -3020,7 +3020,7 @@
       }
     },
     {
-      "name": "decision-rank",
+      "name": "collaboration/decision/rank",
       "description": "decision/rank - Types\n * Submit ranked-choice vote for a decision proposal",
       "params": {
         "proposalId": {
@@ -3041,7 +3041,7 @@
       }
     },
     {
-      "name": "decision-propose",
+      "name": "collaboration/decision/propose",
       "description": "decision/propose - Create a new decision proposal with ranked-choice voting\n *\n * Enables AIs to:\n * - Propose decisions to the team\n * - Define multiple options for ranked-choice voting\n * - Target specific expert groups via scope\n * - Set urgency via significance level\n * - Automatically link to related past decisions",
       "params": {
         "topic": {
@@ -3077,7 +3077,7 @@
       }
     },
     {
-      "name": "decision-list",
+      "name": "collaboration/decision/list",
       "description": "Decision List Command - Shared Types\n *\n * List all governance proposals with optional filtering",
       "params": {
         "status": {
@@ -3108,7 +3108,7 @@
       }
     },
     {
-      "name": "decision-finalize",
+      "name": "collaboration/decision/finalize",
       "description": "Decision Finalize Command - Shared Types\n *\n * Close voting and calculate winner using ranked-choice voting",
       "params": {
         "proposalId": {
@@ -3119,7 +3119,7 @@
       }
     },
     {
-      "name": "decision-create",
+      "name": "collaboration/decision/create",
       "description": "Decision Create Command - Shared Types\n *\n * Create a new governance proposal with voting options",
       "params": {
         "proposalId": {
@@ -3170,7 +3170,7 @@
       }
     },
     {
-      "name": "content-open",
+      "name": "collaboration/content/open",
       "description": "Content Open Command Types\n *\n * Opens content and adds it to user's openItems array.\n * Emits content:opened event for widgets to respond to.",
       "params": {
         "userId": {
@@ -3216,7 +3216,7 @@
       }
     },
     {
-      "name": "chat-send",
+      "name": "collaboration/chat/send",
       "description": "Chat Send Command\n * Send chat messages directly to the database (no UI)",
       "params": {
         "message": {
@@ -3252,7 +3252,7 @@
       }
     },
     {
-      "name": "chat-poll",
+      "name": "collaboration/chat/poll",
       "description": "Chat Poll Command Types - Get messages after a specific messageId\n *\n * Simple command for conversational research workflow:\n * 1. Send a question and get messageId\n * 2. Wait for responses (sleep)\n * 3. Poll for all messages after your question",
       "params": {
         "afterMessageId": {
@@ -3278,7 +3278,7 @@
       }
     },
     {
-      "name": "chat-export",
+      "name": "collaboration/chat/export",
       "description": "Chat Export Command\n * Export chat messages to markdown format\n *\n * Supports flexible filtering - can filter by:\n * - Room (name or ID)\n * - Entity type (to support future universal activity export)\n * - After timestamp/message ID\n * - Custom filter object (passed to data/list)",
       "params": {
         "room": {
@@ -3334,8 +3334,8 @@
       }
     },
     {
-      "name": "chat-analyze",
-      "description": "chat-analyze command",
+      "name": "collaboration/chat/analyze",
+      "description": "collaboration/chat/analyze command",
       "params": {
         "roomId": {
           "type": "string",
@@ -3360,7 +3360,7 @@
       }
     },
     {
-      "name": "activity-user-present",
+      "name": "collaboration/activity/user-present",
       "description": "Activity User Presence - Track user tab visibility for temperature\n *\n * Phase 3bis: Browser tab visibility integration\n * Called by MainWidget when tab visibility changes",
       "params": {
         "activityId": {
@@ -3376,7 +3376,7 @@
       }
     },
     {
-      "name": "aivalidate-response",
+      "name": "ai/validate-response",
       "description": "AI Validate-Response Command Types\n *\n * After generating a response, AI evaluates if it actually answers the question.\n * Returns: SUBMIT (relevant) | CLARIFY (ask for context) | SILENT (off-topic)",
       "params": {
         "generatedResponse": {
@@ -3412,7 +3412,7 @@
       }
     },
     {
-      "name": "thought-stream",
+      "name": "ai/thoughtstream",
       "description": "AI ThoughtStream Command Types\n *\n * Inspect ThoughtStream coordinator activity for a specific message\n * Shows thought broadcasts, rankings, and final decisions",
       "params": {
         "messageId": {
@@ -3463,7 +3463,7 @@
       }
     },
     {
-      "name": "aistatus",
+      "name": "ai/status",
       "description": "AI Status Command Types\n *\n * Get comprehensive status of all AI personas in the system",
       "params": {
         "personaId": {
@@ -3525,7 +3525,7 @@
       }
     },
     {
-      "name": "aishould-respond",
+      "name": "ai/should-respond",
       "description": "AI Should-Respond Command Types\n *\n * Unified gating command with multiple strategies:\n * - fast: Bag-of-words scoring (<1ms, no LLM)\n * - llm: Deep reasoning with LLM (slower, more accurate)\n * - hybrid: Fast filter → LLM confirmation",
       "params": {
         "personaName": {
@@ -3561,7 +3561,7 @@
       }
     },
     {
-      "name": "aireport",
+      "name": "ai/report",
       "description": "AI Report Command Types\n *\n * Analyze AI decision logs to generate actionable insights",
       "params": {
         "roomId": {
@@ -3622,7 +3622,7 @@
       }
     },
     {
-      "name": "decision-report",
+      "name": "ai/report/decisions",
       "description": "Decision Report Command Types\n *\n * Macro command that orchestrates:\n * 1. data/list (query coordination_decisions)\n * 2. Markdown formatting\n * 3. file/save (write report to disk)",
       "params": {
         "startDate": {
@@ -3658,7 +3658,7 @@
       }
     },
     {
-      "name": "rag-query-open",
+      "name": "ai/rag/query-open",
       "description": "RAG Query Open Command Types\n *\n * Opens a semantic similarity search query and returns a handle\n * Results are ranked by relevance score (cosine similarity)",
       "params": {
         "query": {
@@ -3699,7 +3699,7 @@
       }
     },
     {
-      "name": "rag-query-fetch",
+      "name": "ai/rag/query-fetch",
       "description": "RAG Query Fetch Command Types\n *\n * Fetches results from an open query at any position\n * Supports bidirectional navigation and random access",
       "params": {
         "queryHandle": {
@@ -3725,7 +3725,7 @@
       }
     },
     {
-      "name": "rag-query-close",
+      "name": "ai/rag/query-close",
       "description": "RAG Query Close Command Types\n *\n * Closes a query handle and cleans up resources",
       "params": {
         "queryHandle": {
@@ -3736,7 +3736,7 @@
       }
     },
     {
-      "name": "raginspect",
+      "name": "ai/rag/inspect",
       "description": "RAG Inspect Command Types\n *\n * Utility command to inspect RAG context building for a persona in a room\n * Useful for debugging and validating RAG system behavior",
       "params": {
         "personaId": {
@@ -3772,7 +3772,7 @@
       }
     },
     {
-      "name": "codebase-index",
+      "name": "ai/rag/index-codebase",
       "description": "Codebase Index Command Types\n *\n * Index TypeScript and Markdown files with domain-specific embeddings\n * for semantic code search via RAG",
       "params": {
         "paths": {
@@ -3813,7 +3813,7 @@
       }
     },
     {
-      "name": "index-create",
+      "name": "ai/rag/index/create",
       "description": "Index Create Command Types\n *\n * Low-level primitive for storing a single code entry with embeddings",
       "params": {
         "filePath": {
@@ -3884,7 +3884,7 @@
       }
     },
     {
-      "name": "aimute",
+      "name": "ai/mute",
       "description": "AI Mute Command - Shared Types\n *\n * Mute or unmute an AI persona from acting in the system.\n * Enforces democratic governance with permission checks and veto power.\n *\n * Command: ai/mute\n *\n * Examples:\n *   ./jtag ai/mute --persona=\"helper-ai\" --reason=\"Repeated errors\" --duration=3600\n *   ./jtag ai/mute --userId=\"UUID\" --reason=\"Hostile behavior\" --permanent=true\n *   ./jtag ai/unmute --persona=\"helper-ai\" --reason=\"Appeal granted\"\n *   ./jtag ai/mute --persona=\"local-assistant\" --rooms='[\"general\"]' --reason=\"Room-specific timeout\"",
       "params": {
         "action": {
@@ -3965,7 +3965,7 @@
       }
     },
     {
-      "name": "model-list",
+      "name": "ai/model/list",
       "description": "Model List Command - Types\n *\n * Lists available AI models with their capabilities and metadata\n * Like AVCaptureDevice.DiscoverySession - enumerate available devices",
       "params": {
         "capabilities": {
@@ -3986,7 +3986,7 @@
       }
     },
     {
-      "name": "model-find",
+      "name": "ai/model/find",
       "description": "Model Find Command - Types\n *\n * Find the best AI model matching capability requirements\n * Like AVCaptureDevice.default(for:position:) - pick best matching device",
       "params": {
         "capabilities": {
@@ -4017,7 +4017,7 @@
       }
     },
     {
-      "name": "genome-stats",
+      "name": "ai/genome/stats",
       "description": "Genome Stats Command Types\n * Performance monitoring for genome inference system\n *\n * Usage:\n * ./jtag genome/stats                    # Overall pool stats\n * ./jtag genome/stats --genomeId=<id>    # Specific genome stats\n * ./jtag genome/stats --format=json      # Machine-readable output",
       "params": {
         "genomeId": {
@@ -4043,7 +4043,7 @@
       }
     },
     {
-      "name": "aigenerate",
+      "name": "ai/generate",
       "description": "AI Generate Command Types\n * ==========================\n *\n * Types for text generation via AIProviderDaemon\n * Follows data command pattern for consistency",
       "params": {
         "messages": {
@@ -4064,7 +4064,7 @@
       }
     },
     {
-      "name": "embedding-generate",
+      "name": "ai/embedding/generate",
       "description": "Embedding Generate Command Types\n *\n * Low-level primitive for generating embeddings from text",
       "params": {
         "input": {
@@ -4090,7 +4090,7 @@
       }
     },
     {
-      "name": "dataset-list",
+      "name": "ai/dataset/list",
       "description": "Dataset List Command Types",
       "params": {
         "path": {
@@ -4106,7 +4106,7 @@
       }
     },
     {
-      "name": "dataset-create",
+      "name": "ai/dataset/create",
       "description": "Dataset Create Command Types",
       "params": {
         "project": {
@@ -4137,7 +4137,7 @@
       }
     },
     {
-      "name": "aicost",
+      "name": "ai/cost",
       "description": "AI Cost Command Types\n *\n * Query and visualize AI generation costs with filtering and time-series data",
       "params": {
         "startTime": {
@@ -4264,7 +4264,7 @@
       }
     },
     {
-      "name": "adapter-test",
+      "name": "ai/adapter/test",
       "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns UUID immediately, tests run in background.\n * Use ai/adapter/test/status and ai/adapter/test/results to monitor progress.",
       "params": {
         "adapter": {
