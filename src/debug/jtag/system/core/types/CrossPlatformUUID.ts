@@ -21,25 +21,17 @@ export type UUID = string;
 
 /**
  * Cross-platform UUID generation
+ *
+ * NOTE: Server code should use crypto.randomUUID() directly from Node.js crypto module.
+ * This function is for browser environments only.
  */
 export function generateUUID(): UUID {
-  // Server environment - use Node.js crypto
-  if (typeof process !== 'undefined' && process.versions?.node) {
-    try {
-      // Dynamic import to avoid bundling issues
-      const crypto = eval('require')('crypto');
-      return crypto.randomUUID();
-    } catch  {
-      console.warn('Failed to load Node.js crypto, falling back to browser implementation');
-    }
-  }
-  
   // Browser environment - use crypto.randomUUID if available
   if (typeof globalThis !== 'undefined' && globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID() as UUID;
   }
-  
-  // Fallback implementation using Math.random
+
+  // Fallback implementation using Math.random (for older browsers)
   return generateUUIDFallback();
 }
 

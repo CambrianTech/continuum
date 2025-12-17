@@ -22,18 +22,30 @@ import { DEFAULT_STORAGE_CONFIG } from './SecureConfigTypes';
 export const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
 export const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
+// Import ExampleConfig only in Node.js environment
+// Bundlers will tree-shake this in browser builds
+let ExampleConfig: any = null;
+if (isNode) {
+  try {
+    ExampleConfig = require('../../examples/shared/ExampleConfig');
+  } catch {
+    // Build environment - will use fallback
+  }
+}
+
 
 /**
  * Load active instance configuration using package.json discovery pattern
  * Server uses package.json files, browser derives from current port
  * NO ENVIRONMENT VARIABLES - Uses NPM-standard configuration discovery
+ *
+ * NOTE: Server code should import and use ExampleConfig directly, not this function.
+ * This function is primarily for browser environment.
  */
 export function loadInstanceConfigForContext(): InstanceConfiguration {
   // Server context - delegate to ExampleConfig
-  if (isNode) {
-    const { getActiveExample } = eval('require')('../../examples/shared/ExampleConfig');
-    const example = getActiveExample();
-    
+  if (isNode && ExampleConfig) {
+    const example = ExampleConfig.getActiveExample();
     return {
       name: example.name,
       description: example.description,
@@ -43,36 +55,28 @@ export function loadInstanceConfigForContext(): InstanceConfiguration {
     };
   }
 
-  // Browser context - use ConfigurationFactory if initialized, otherwise derive from port
+  // Browser context - derive from current port
   if (isBrowser) {
-    try {
-      // Try to use ConfigurationFactory if it was initialized
-      const { ConfigurationFactory } = eval('require')('./ConfigurationFactory');
-      const factory = ConfigurationFactory.getInstance();
-      const context = factory.getContext();
-      return context.instance;
-    } catch {
-      // Fallback: derive from current port (requires configuration passing in the future)
-      const currentPort = parseInt(window.location.port);
-      const websocketPort = currentPort - 1;
-      
-      // Determine configuration based on port without hardcoded values
-      const isWidgetUI = window.location.pathname.includes('widget') || 
-                        document.title?.includes('Widget') ||
-                        currentPort > 9002; // Widget-UI typically uses higher ports
-      
-      return {
-        name: isWidgetUI ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
-        description: isWidgetUI ? 'Focused widget development environment' : 'Full-featured testing environment',
-        ports: { http_server: currentPort, websocket_server: websocketPort },
-        paths: { 
-          directory: isWidgetUI ? 'examples/widget-ui' : 'examples/test-bench', 
-          html_file: isWidgetUI ? 'index.html' : 'public/demo.html',
-          build_output: 'dist'
-        },
-        capabilities: {}
-      };
-    }
+    // Derive configuration from current port
+    const currentPort = parseInt(window.location.port);
+    const websocketPort = currentPort - 1;
+
+    // Determine configuration based on port without hardcoded values
+    const isWidgetUI = window.location.pathname.includes('widget') ||
+                      document.title?.includes('Widget') ||
+                      currentPort > 9002; // Widget-UI typically uses higher ports
+
+    return {
+      name: isWidgetUI ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
+      description: isWidgetUI ? 'Focused widget development environment' : 'Full-featured testing environment',
+      ports: { http_server: currentPort, websocket_server: websocketPort },
+      paths: {
+        directory: isWidgetUI ? 'examples/widget-ui' : 'examples/test-bench',
+        html_file: isWidgetUI ? 'index.html' : 'public/demo.html',
+        build_output: 'dist'
+      },
+      capabilities: {}
+    };
   }
 
   throw new Error('Cannot determine environment');

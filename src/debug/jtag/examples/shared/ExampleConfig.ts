@@ -1,9 +1,22 @@
 /**
  * Centralized Example Configuration - Single source of truth
- * 
+ *
  * Browser-safe configuration management that reads config ONCE at startup.
  * NO environment variables, NO repeated file system access.
  */
+
+// Import Node.js modules only in server environment
+// These imports will be tree-shaken by bundlers in browser builds
+let fs: any = null;
+let path: any = null;
+if (typeof require !== 'undefined' && typeof process !== 'undefined') {
+  try {
+    fs = require('fs');
+    path = require('path');
+  } catch {
+    // Bundler environment - these will be null
+  }
+}
 
 interface ExampleConfig {
   readonly active_example: string;
@@ -41,10 +54,8 @@ function loadConfig(): ExampleConfig {
   }
 
   // Server environment - load from package.json discovery pattern
-  if (typeof require !== 'undefined' && typeof process !== 'undefined') {
+  if (typeof require !== 'undefined' && typeof process !== 'undefined' && fs && path) {
     try {
-      const fs = eval('require')('fs');
-      const path = eval('require')('path');
       
       // 1. Read active_example from main package.json
       const mainPackageJsonPath = path.join(__dirname, '../../package.json');
@@ -135,8 +146,7 @@ export function getActiveExamplePath(): string {
   }
   
   // Return path for server environment only
-  if (typeof require !== 'undefined' && typeof process !== 'undefined') {
-    const path = eval('require')('path');
+  if (typeof require !== 'undefined' && typeof process !== 'undefined' && path) {
     return path.join(__dirname, '../../', example.paths.directory);
   }
   
