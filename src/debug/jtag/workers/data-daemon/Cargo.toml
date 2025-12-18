@@ -12,7 +12,12 @@ uuid = { version = "1", features = ["serde", "v4"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 deadpool-postgres = "0.14"
 tokio-postgres = "0.7"
+chrono = "0.4"
 
 [[bin]]
 name = "data-daemon-worker"
 path = "src/main.rs"
+
+[[bin]]
+name = "data-worker-test"
+path = "src/main_test.rs"

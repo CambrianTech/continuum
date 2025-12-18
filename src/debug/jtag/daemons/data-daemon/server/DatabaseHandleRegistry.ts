@@ -42,7 +42,7 @@ export const DEFAULT_HANDLE: DbHandle = 'default';
  * Adapter types supported by the system
  * Extensible - add new types as needed (vector, graph, etc.)
  */
-export type AdapterType = 'sqlite' | 'json' | 'vector' | 'graph';
+export type AdapterType = 'sqlite' | 'json' | 'vector' | 'graph' | 'rust';
 
 /**
  * Open mode for database connections
@@ -89,9 +89,19 @@ export interface GraphConfig {
 }
 
 /**
+ * Rust worker configuration (experimental)
+ */
+export interface RustConfig {
+  filename: string;                    // Database file path
+  socketPath?: string;                 // Unix socket path to Rust worker (default: /tmp/jtag-data-worker.sock)
+  mode?: OpenMode;                     // Open mode (default: readwrite)
+  storageType?: 'auto-detect' | 'internal-ssd' | 'external-ssd' | 'sd-card';  // Storage detection override
+}
+
+/**
  * Union type for all adapter configs
  */
-export type AdapterConfig = SqliteConfig | JsonConfig | VectorConfig | GraphConfig;
+export type AdapterConfig = SqliteConfig | JsonConfig | VectorConfig | GraphConfig | RustConfig;
 
 /**
  * Handle metadata - tracks adapter type and config
