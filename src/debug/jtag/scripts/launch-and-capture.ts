@@ -203,10 +203,9 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                   try {
                     const signal = await signaler.generateReadySignal();
 
-                    const isSystemReady = (
-                      signal.bootstrapComplete &&
-                      (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')
-                    );
+                    // Exit as soon as bootstrap completes - health may be "unhealthy" during command registration
+                    // The ping inside generateReadySignal() already confirms server + browser are responsive
+                    const isSystemReady = signal.bootstrapComplete;
 
                     if (isSystemReady) {
                       clearInterval(readinessCheckInterval);

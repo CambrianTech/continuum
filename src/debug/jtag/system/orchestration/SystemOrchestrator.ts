@@ -8,8 +8,11 @@
  */
 
 import { EventEmitter } from 'events';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, exec } from 'child_process';
+import { promisify } from 'util';
 import { WorkingDirConfig } from '../core/config/WorkingDirConfig';
+
+const execAsync = promisify(exec);
 import { SystemReadySignaler } from '../../scripts/signal-system-ready';
 import { 
   SYSTEM_MILESTONES, 
@@ -675,17 +678,35 @@ export class SystemOrchestrator extends EventEmitter {
     if (options.skipBrowser) {
       console.debug('⏭️ Skipping browser launch (skipBrowser option)');
       await milestoneEmitter.completeMilestone(
-        SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED, 
+        SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
         this.currentEntryPoint
       );
       return true;
     }
-    
+
+    // Check if browser is already connected using ping
+    try {
+      const { stdout } = await execAsync('./jtag ping');
+      const pingResponse = JSON.parse(stdout);
+
+      if (pingResponse.success && pingResponse.browser) {
+        console.log('⏭️ Browser already connected - skipping launch');
+        await milestoneEmitter.completeMilestone(
+          SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
+          this.currentEntryPoint
+        );
+        return true;
+      }
+    } catch (error) {
+      // Ping failed or no browser - proceed with launch
+      console.debug('🔍 No browser connected - will launch new tab');
+    }
+
     console.debug('🌐 Launching browser...');
-    
+
     // CRITICAL FIX: Browser only launches AFTER server ready milestone
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-    
+
     try {
       spawn('open', [browserUrl], {
         detached: true,
@@ -696,9 +717,9 @@ export class SystemOrchestrator extends EventEmitter {
       console.warn(`⚠️ Failed to auto-open browser: ${error}`);
       console.debug(`👉 Manually open: ${browserUrl}`);
     }
-    
+
     await milestoneEmitter.completeMilestone(
-      SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED, 
+      SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
       this.currentEntryPoint
     );
     return true;
@@ -808,11 +829,23 @@ export class SystemOrchestrator extends EventEmitter {
       console.debug('⏭️ Skipping browser launch (skipBrowser option)');
       return;
     }
-    
+
+    // Check if browser is already connected before opening a new tab
+    try {
+      const systemReady = await this.signaler.checkSystemReady(1000);
+      if (systemReady?.browserReady) {
+        console.debug('⏭️ Browser already connected - skipping launch');
+        return;
+      }
+    } catch (error) {
+      // Signal check failed - proceed with launch
+      console.debug('🔍 Could not verify browser status - will launch new tab');
+    }
+
     console.debug('🌐 Ensuring browser is opened...');
-    
+
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-    
+
     try {
       spawn('open', [browserUrl], { 
         detached: true, 

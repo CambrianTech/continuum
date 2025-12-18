@@ -39,8 +39,8 @@ jq -r '.workers[].name' "$CONFIG_FILE" | while read -r worker_name; do
   pkill -f "${worker_name}-worker" || true
 done
 
-# Give processes time to die and release sockets (macOS needs more time)
-sleep 1.5
+# Give processes time to die and release sockets (macOS needs more time, especially on external drives)
+sleep 2.0
 
 # Remove old sockets
 jq -r '.workers[].socket' "$CONFIG_FILE" | while read -r socket_path; do
@@ -51,8 +51,8 @@ jq -r '.sharedSockets[]' "$CONFIG_FILE" | while read -r socket_path; do
   rm -f "$socket_path"
 done
 
-# Extra safety: wait for sockets to be fully removed
-sleep 0.5
+# Extra safety: wait for sockets to be fully removed before starting new workers
+sleep 1.0
 
 # Start each enabled worker
 declare -a WORKER_PIDS=()
@@ -84,14 +84,16 @@ jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r wo
 
   WORKER_PID=$!
 
-  # Wait for socket to be created
-  for i in {1..10}; do
+  # Wait for socket to be created with increased timeout for macOS
+  # macOS can be slow with filesystem operations, especially on external drives
+  for i in {1..20}; do
     if [ -S "$socket" ]; then
       echo -e "${GREEN}✅ ${name}-worker started (PID: $WORKER_PID)${NC}"
       break
     fi
-    if [ $i -eq 10 ]; then
-      echo -e "${RED}❌ ${name}-worker failed to start (socket not created)${NC}"
+    if [ $i -eq 20 ]; then
+      echo -e "${RED}❌ ${name}-worker failed to start (socket not created after 10s)${NC}"
+      echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/rust-worker.log${NC}"
       exit 1
     fi
     sleep 0.5

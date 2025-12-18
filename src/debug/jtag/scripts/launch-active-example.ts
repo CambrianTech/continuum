@@ -15,13 +15,14 @@ import { WorkingDirConfig } from '../system/core/config/WorkingDirConfig';
 async function launchActiveExample(): Promise<void> {
   try {
     console.log('🚀 MILESTONE-BASED JTAG SYSTEM STARTUP');
-    
-    // Set up working directory context  
+
+    // Set up working directory context
     const activeExample = getActiveExampleName();
     const workingDir = `examples/${activeExample}`;
-    
+
     // Use milestone-based orchestration for 'system-start' entry point
     // This ensures proper milestone order: BUILD → SERVER → BROWSER → SYSTEM
+    // Browser check happens inside orchestrator using ./jtag ping after server is ready
     const systemState = await systemOrchestrator.orchestrate('system-start', {
       workingDir,
       verbose: true,
