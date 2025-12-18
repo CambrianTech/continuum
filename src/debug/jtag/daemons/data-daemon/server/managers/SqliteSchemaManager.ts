@@ -74,10 +74,10 @@ export class SqliteSchemaManager {
     if (!this.db) return;
 
     // Set temp directory relative to database (for VACUUM operations)
-    const { DATABASE_PATHS } = await import('../../../../system/data/config/DatabaseConfig');
+    const { getDatabaseDir } = await import('../../../../system/config/ServerConfig');
     const path = await import('path');
     const fs = await import('fs');
-    const tempDir = path.join(DATABASE_PATHS.DATA_DIR, 'tmp');
+    const tempDir = path.join(getDatabaseDir(), 'tmp');  // Expand $HOME in path
     try {
       await fs.promises.mkdir(tempDir, { recursive: true, mode: 0o755 });
       process.env.SQLITE_TMPDIR = tempDir;

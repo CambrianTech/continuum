@@ -221,7 +221,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
    */
   private async checkAndRotateArchiveIfNeeded(archiveConfig: ArchiveConfig, collection: string): Promise<void> {
     const { DatabaseHandleRegistry } = await import('../../data-daemon/server/DatabaseHandleRegistry');
-    const { DATABASE_PATHS } = await import('../../../system/data/config/DatabaseConfig');
+    const { getDatabasePath } = await import('../../../system/config/ServerConfig');
     const fs = await import('fs');
     const path = await import('path');
 
@@ -244,7 +244,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
     this.log.info(`🗄️  Archive file for ${collection} has ${currentArchiveRows} rows (max: ${archiveConfig.maxArchiveFileRows}), rotating...`);
 
     // Find current archive file number and create next one
-    const primaryDbPath = DATABASE_PATHS.SQLITE;
+    const primaryDbPath = getDatabasePath();  // Expand $HOME in path
     const archiveDir = path.join(path.dirname(primaryDbPath), 'archive');
     const sourceDbName = path.basename(primaryDbPath, '.sqlite');
 

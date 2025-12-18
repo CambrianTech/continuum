@@ -23,6 +23,7 @@ import { DataStorageAdapter } from '../shared/DataStorageAdapter';
 import { SqliteStorageAdapter } from './SqliteStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { getDatabasePath } from '../../../system/config/ServerConfig';
 
 /**
  * Database handle - opaque identifier for ANY storage adapter
@@ -137,12 +138,13 @@ export class DatabaseHandleRegistry {
 
     // Must call initialize() before use
     // SqliteStorageAdapter expects StorageAdapterConfig with type and namespace
+    const expandedDbPath = getDatabasePath();  // Expand $HOME in path
     defaultAdapter.initialize({
       type: 'sqlite',
       namespace: 'default',
       options: {}
     }).then(() => {
-      console.log(`🔌 DatabaseHandleRegistry: Default handle initialized (${DATABASE_PATHS.SQLITE})`);
+      console.log(`🔌 DatabaseHandleRegistry: Default handle initialized (${expandedDbPath})`);
     }).catch((error) => {
       console.error('❌ DatabaseHandleRegistry: Failed to initialize default handle:', error);
     });
@@ -150,7 +152,7 @@ export class DatabaseHandleRegistry {
     this.handles.set(DEFAULT_HANDLE, defaultAdapter);
     this.handleMetadata.set(DEFAULT_HANDLE, {
       adapter: 'sqlite',
-      config: { filename: DATABASE_PATHS.SQLITE },
+      config: { filename: expandedDbPath },
       openedAt: Date.now(),
       lastUsedAt: Date.now()
     });

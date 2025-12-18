@@ -17,6 +17,7 @@ import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
+import { getDatabasePath, getDatabaseDir } from '../../../system/config/ServerConfig';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -38,7 +39,7 @@ export class DataDaemonServer extends DataDaemonBase {
       backend: 'sqlite',
       namespace: context.uuid, // Use context UUID as namespace
       options: {
-        basePath: DATABASE_PATHS.DATA_DIR,
+        basePath: getDatabaseDir(),  // Expand $HOME in path
         databaseName: DATABASE_FILES.SQLITE_FILENAME,
         foreignKeys: false  // Disable foreign key constraints to avoid constraint violations
       },
@@ -137,7 +138,7 @@ export class DataDaemonServer extends DataDaemonBase {
 
     // Register 'primary' handle pointing to main database
     // Note: emitEvents=false for archive operations to prevent UI spam during bulk moves
-    const primaryDbPath = DATABASE_PATHS.SQLITE;
+    const primaryDbPath = getDatabasePath();  // Expand $HOME in path
     this.log.info(`Registering 'primary' handle: ${primaryDbPath}`);
 
     const primaryHandle = await registry.open('sqlite', {
