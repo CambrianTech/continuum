@@ -9,6 +9,7 @@
  */
 
 import { AgentDetector, type AgentInfo } from '../../core/detection/AgentDetector';
+import { agentDetection } from '../../core/detection/AgentDetectionRegistry';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import type { UserEntity } from '../../data/entities/UserEntity';
@@ -60,8 +61,24 @@ export class UserIdentityResolver {
    * @returns Resolved user identity with lookup result
    */
   static async resolve(overrides?: Partial<AgentInfo>): Promise<ResolvedUserIdentity> {
-    // STEP 1: Detect agent (or use overrides)
-    const detectedAgent = AgentDetector.detect();
+    // STEP 1: Detect agent using plugin-based registry (matches JTAGClient detection)
+    const pluginDetection = agentDetection.detect();
+
+    // Map plugin adapter type to AgentInfo adapter type (plugin has 'bot', AgentInfo doesn't)
+    const adapterType = pluginDetection.adapterType === 'bot'
+      ? 'ai-api' as const
+      : pluginDetection.adapterType;
+
+    const detectedAgent: AgentInfo = {
+      name: pluginDetection.detection.name,
+      type: pluginDetection.detection.type as any,
+      version: pluginDetection.detection.version,
+      confidence: pluginDetection.detection.confidence,
+      capabilities: pluginDetection.capabilities,
+      outputFormat: pluginDetection.outputFormat,
+      adapterType,
+      participantCapabilities: pluginDetection.participantProfile
+    };
     const agentInfo = overrides ? { ...detectedAgent, ...overrides } : detectedAgent;
 
     // STEP 2: Generate stable uniqueId based on agent type
