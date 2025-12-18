@@ -281,6 +281,22 @@ else
     echo "⏭️  Phase 3: Artifacts collection SKIPPED (disabled in config)"
 fi
 
+# Phase 4: Cleanup artifacts from test run
+echo ""
+echo "🧹 Phase 4: Cleaning up test artifacts"
+echo "-----------------------------------------------------------"
+
+# Restore files that get auto-generated during npm start
+cd ../../..
+echo "🔄 Restoring auto-generated files to avoid commit noise..."
+git restore src/debug/jtag/package.json 2>/dev/null || true
+git restore src/debug/jtag/package-lock.json 2>/dev/null || true
+git restore src/debug/jtag/generated-command-schemas.json 2>/dev/null || true
+git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
+git restore src/debug/jtag/.continuum/sessions/validation/test-output.txt 2>/dev/null || true
+cd src/debug/jtag
+echo "✅ Test artifacts cleaned up"
+
 # Final Summary
 echo ""
 echo "🎉 PRECOMMIT VALIDATION COMPLETE!"
@@ -288,5 +304,6 @@ echo "=================================================="
 [ "$ENABLE_TYPESCRIPT_CHECK" = true ] && echo "✅ TypeScript compilation: PASSED"
 [ "$ENABLE_SYSTEM_RESTART" = true ] && echo "✅ System restart: COMPLETED (strategy: $RESTART_STRATEGY)"
 [ "$ENABLE_BROWSER_TEST" = true ] && echo "✅ Browser tests: PASSED"
+echo "✅ Test artifacts cleaned up"
 echo ""
 echo "🚀 Commit approved - all enabled validations passed!"
