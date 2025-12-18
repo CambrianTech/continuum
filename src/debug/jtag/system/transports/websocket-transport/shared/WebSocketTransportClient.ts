@@ -122,19 +122,23 @@ export abstract class WebSocketTransportClient extends TransportBase {
     socket.addEventListener('close', (event: JTAGWebSocketCloseEvent) => {
       this.connected = false;
 
-      // Provide better timeout labeling for connection issues
-      if (event.code === 1006) {
-        console.log(`❌ TIMEOUT: ${this.name || 'websocket'} connection failed to establish or was abnormally closed (code: ${event.code}) - connection cancelled`);
-      } else {
-        console.log(`🔌 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
+      // Only log on FIRST disconnect, not during reconnection attempts
+      if (!this.isReconnecting && this.reconnectAttempt === 0) {
+        if (event.code === 1006) {
+          console.log(`🔴 ${this.name || 'websocket'}: Connection lost (timeout/abnormal close)`);
+        } else {
+          console.log(`🔴 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
+        }
       }
 
-      // Emit DISCONNECTED event
-      this.emitTransportEvent('DISCONNECTED', {
-        clientId,
-        reason: event.code === 1006 ? 'connection_timeout' : 'connection_closed',
-        code: event.code
-      });
+      // Emit DISCONNECTED event (only once - not on every close during reconnection)
+      if (this.reconnectAttempt === 0) {
+        this.emitTransportEvent('DISCONNECTED', {
+          clientId,
+          reason: event.code === 1006 ? 'connection_timeout' : 'connection_closed',
+          code: event.code
+        });
+      }
 
       // Attempt automatic reconnection if not manually disconnected AND not already reconnecting
       if (!this.manualDisconnect && !this.isReconnecting && this.reconnectAttempt < (this.config.reconnectAttempts || 0)) {
@@ -142,15 +146,13 @@ export abstract class WebSocketTransportClient extends TransportBase {
         const delay = this.config.reconnectDelay! * Math.pow(2, this.reconnectAttempt); // Exponential backoff
         this.reconnectAttempt++;
 
-        console.log(`🔄 ${this.name || 'websocket'}: Attempting reconnect ${this.reconnectAttempt}/${this.config.reconnectAttempts} in ${delay}ms...`);
+        // Silent during reconnection - no need to log every attempt
 
         this.reconnectTimeout = setTimeout(async () => {
           await this.attemptReconnect();
         }, delay);
-      } else if (!this.manualDisconnect && !this.isReconnecting) {
-        // Only log this ONCE when we first exhaust attempts, not on every subsequent close event
-        console.log(`❌ ${this.name || 'websocket'}: Max reconnection attempts (${this.config.reconnectAttempts}) reached`);
       }
+      // Silent when max attempts reached - user already knows from first disconnect log
     });
 
     // Connection error - consistent addEventListener pattern
@@ -353,8 +355,12 @@ export abstract class WebSocketTransportClient extends TransportBase {
    */
   async connect(url: string): Promise<void> {
     this.lastConnectedUrl = url; // Store for reconnection
-    console.log(`🔗 ${this.name}: Connecting to ${url}`);
-    
+
+    // Only log on first connect, not during reconnection attempts
+    if (!this.isReconnecting) {
+      console.log(`🔗 ${this.name}: Connecting to ${url}`);
+    }
+
     return new Promise((resolve, reject) => {
       try {
         this.socket = this.createWebSocket(url);
@@ -409,6 +415,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Disconnect WebSocket - shared client implementation
    */
   async disconnect(): Promise<void> {
+    const wasReconnecting = this.isReconnecting; // Track if this is part of reconnection
     this.manualDisconnect = true; // Prevent auto-reconnect on manual disconnect
 
     // Clear any pending reconnect timeout
@@ -418,7 +425,10 @@ export abstract class WebSocketTransportClient extends TransportBase {
     }
 
     if (this.socket) {
-      console.debug(`🔌 ${this.name}: Disconnecting`);
+      // Only log on manual disconnect, not during reconnection
+      if (!wasReconnecting) {
+        console.debug(`🔌 ${this.name}: Disconnecting`);
+      }
       this.socket.close();
       this.socket = undefined;
       this.connected = false;
