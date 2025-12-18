@@ -45,6 +45,7 @@ import type { UUID } from '../../types/CrossPlatformUUID';
 import { TRANSPORT_TYPES } from '../../../transports';
 import type { ITransportFactory, TransportConfig, JTAGTransport, TransportEndpoint } from '../../../transports';
 import type { ITransportHandler } from '../../../transports';
+import { TRANSPORT_EVENTS } from '../../../transports/shared/TransportEvents';
 import { MessagePriority } from './queuing/JTAGMessageQueue';
 import type { QueuedItem } from './queuing/PriorityQueue';
 
@@ -175,11 +176,31 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       this.healthManager.setTransport(crossContextTransport);
       this.healthManager.startMonitoring();
     }
-    
+
+    // Set up transport event listeners
+    this.setupTransportEventListeners();
+
     // Start message queue processing
     this.messageQueue.startProcessing(this.flushQueuedMessages.bind(this));
 
     this.isInitialized = true;
+  }
+
+  /**
+   * Setup transport event listeners for connection state management
+   */
+  private setupTransportEventListeners(): void {
+    // Listen for disconnection to reject pending requests immediately
+    this.eventManager.events.on(TRANSPORT_EVENTS.DISCONNECTED, () => {
+      // Reject all pending requests to prevent 60-second timeout spam
+      this.responseCorrelator.rejectAll('WebSocket disconnected');
+    });
+
+    // Listen for connection to resume normal operation
+    this.eventManager.events.on(TRANSPORT_EVENTS.CONNECTED, () => {
+      // Connection restored - queued messages will be flushed automatically
+      console.log(`✅ ${this.toString()}: Connection restored, resuming operations`);
+    });
   }
 
   /**
@@ -389,8 +410,12 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
 
     } catch (error) {
       // Don't spam console when WebSocket is disconnected - this is expected
-      const isDisconnectedError = error instanceof Error &&
-        (error.message.includes('WebSocket not ready') || error.message.includes('WebSocket not connected'));
+      const isDisconnectedError = error instanceof Error && (
+        error.message.includes('WebSocket not ready') ||
+        error.message.includes('WebSocket not connected') ||
+        error.message.includes('WebSocket disconnected') ||
+        error.message.includes('Connection lost')
+      );
 
       if (!isDisconnectedError) {
         console.error(`❌ ${this.toString()}: Request failed:`, error);

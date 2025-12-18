@@ -124,4 +124,28 @@ export class ResponseCorrelator {
       console.log(`🧹 ResponseCorrelator: Cleaned ${cleaned} expired requests`);
     }
   }
+
+  /**
+   * Reject all pending requests (e.g., on disconnect)
+   * Silently fails pending requests without console spam
+   */
+  rejectAll(reason: string = 'Connection lost'): void {
+    const count = this.pendingRequests.size;
+    if (count === 0) return;
+
+    for (const [id, request] of this.pendingRequests.entries()) {
+      clearTimeout(request.timeout);
+      request.reject(new Error(reason));
+    }
+
+    this.pendingRequests.clear();
+    console.log(`🔌 ResponseCorrelator: Rejected ${count} pending requests (${reason})`);
+  }
+
+  /**
+   * Get count of pending requests
+   */
+  get pendingCount(): number {
+    return this.pendingRequests.size;
+  }
 }

@@ -15,6 +15,7 @@ import type {
 
 export class BrowserWebSocketAdapter implements JTAGUniversalWebSocket {
   private nativeSocket: WebSocket;
+  private listenerMap: Map<any, any> = new Map(); // Track wrapper functions for cleanup
 
   constructor(url: string) {
     this.nativeSocket = new WebSocket(url);
@@ -43,45 +44,31 @@ export class BrowserWebSocketAdapter implements JTAGUniversalWebSocket {
   addEventListener(type: 'close', listener: (event: JTAGWebSocketCloseEvent) => void): void;
   addEventListener(type: 'error', listener: (event: JTAGWebSocketErrorEvent) => void): void;
   addEventListener(type: string, listener: (event: any) => void): void {
-    switch (type) {
-      case 'open':
-        this.nativeSocket.addEventListener('open', (nativeEvent) => {
-          const jtagEvent: JTAGWebSocketOpenEvent = { type: 'open' };
-          listener(jtagEvent);
-        });
-        break;
+    // Create wrapper function and store it for later removal
+    const wrapper = (nativeEvent: any) => {
+      let jtagEvent: any;
+      switch (type) {
+        case 'open':
+          jtagEvent = { type: 'open' };
+          break;
+        case 'message':
+          jtagEvent = { type: 'message', data: nativeEvent.data };
+          break;
+        case 'close':
+          jtagEvent = { type: 'close', code: nativeEvent.code, reason: nativeEvent.reason };
+          break;
+        case 'error':
+          jtagEvent = { type: 'error', message: 'WebSocket error occurred' };
+          break;
+      }
+      listener(jtagEvent);
+    };
 
-      case 'message':
-        this.nativeSocket.addEventListener('message', (nativeEvent) => {
-          const jtagEvent: JTAGWebSocketMessageEvent = {
-            type: 'message',
-            data: nativeEvent.data
-          };
-          listener(jtagEvent);
-        });
-        break;
+    // Store wrapper for removal
+    this.listenerMap.set(listener, wrapper);
 
-      case 'close':
-        this.nativeSocket.addEventListener('close', (nativeEvent) => {
-          const jtagEvent: JTAGWebSocketCloseEvent = {
-            type: 'close',
-            code: nativeEvent.code,
-            reason: nativeEvent.reason
-          };
-          listener(jtagEvent);
-        });
-        break;
-
-      case 'error':
-        this.nativeSocket.addEventListener('error', (nativeEvent) => {
-          const jtagEvent: JTAGWebSocketErrorEvent = {
-            type: 'error',
-            message: 'WebSocket error occurred'
-          };
-          listener(jtagEvent);
-        });
-        break;
-    }
+    // Add wrapper to native socket
+    this.nativeSocket.addEventListener(type, wrapper);
   }
 
   // Consistent removeEventListener implementation with JTAG-specific typing
@@ -90,8 +77,12 @@ export class BrowserWebSocketAdapter implements JTAGUniversalWebSocket {
   removeEventListener(type: 'close', listener: (event: JTAGWebSocketCloseEvent) => void): void;
   removeEventListener(type: 'error', listener: (event: JTAGWebSocketErrorEvent) => void): void;
   removeEventListener(type: string, listener: (event: any) => void): void {
-    // Browser WebSocket removeEventListener requires the exact same function reference
-    // This is a simplified implementation - in practice you'd need to track listeners
-    console.warn(`removeEventListener not fully implemented for browser WebSocket adapter`);
+    // Get the stored wrapper function
+    const wrapper = this.listenerMap.get(listener);
+    if (wrapper) {
+      // Remove using the exact wrapper function reference
+      this.nativeSocket.removeEventListener(type, wrapper);
+      this.listenerMap.delete(listener);
+    }
   }
 }
