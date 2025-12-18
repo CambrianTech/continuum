@@ -11,16 +11,17 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { EventsInterface } from '../../../events';
 import { TRANSPORT_EVENTS } from '../../shared/TransportEvents';
 import type { TransportSendResult } from '../../shared';
-import type { 
-  JTAGUniversalWebSocket, 
-  JTAGWebSocketOpenEvent, 
-  JTAGWebSocketMessageEvent, 
-  JTAGWebSocketCloseEvent, 
+import type {
+  JTAGUniversalWebSocket,
+  JTAGWebSocketOpenEvent,
+  JTAGWebSocketMessageEvent,
+  JTAGWebSocketCloseEvent,
   JTAGWebSocketErrorEvent,
-  JTAGWebSocketReadyState 
+  JTAGWebSocketReadyState
 } from './WebSocketInterface';
 import { JTAG_WEBSOCKET_READY_STATE, JTAG_WEBSOCKET_EVENTS } from './WebSocketInterface';
 import { isJTAGSessionHandshake, isJTAGMessage } from './JTAGWebSocketTypes';
+import { Events } from '../../../core/shared/Events';
 
 // WebSocket specific configuration shared between client and server
 export interface WebSocketConfig {
@@ -282,14 +283,26 @@ export abstract class WebSocketTransportClient extends TransportBase {
 
   /**
    * Emit transport events with consistent format
+   * Emits to BOTH router's eventSystem AND global Events for widget access
    */
   protected emitTransportEvent(eventType: keyof typeof TRANSPORT_EVENTS, data: any): void {
+    const eventName = TRANSPORT_EVENTS[eventType];
+    const eventSystemType = this.eventSystem?.constructor?.name || 'undefined';
+    const eventData = {
+      transportType: 'websocket' as const,
+      ...data
+    };
+
+    // Emit to router's eventSystem (for router internals like ResponseCorrelator)
     if (this.eventSystem) {
-      this.eventSystem.emit(TRANSPORT_EVENTS[eventType], {
-        transportType: 'websocket' as const,
-        ...data
-      });
+      this.eventSystem.emit(eventName, eventData);
+      console.log(`✅ ${this.name}: Emitted ${eventName} to router eventSystem (${eventSystemType})`);
     }
+
+    // ALSO emit to global Events singleton (for widgets like ContinuumEmoterWidget)
+    // TODO ARCHITECTURAL DEBT: Unify event systems - router should use global Events
+    Events.emit(eventName, eventData);
+    console.log(`✅ ${this.name}: Emitted ${eventName} to global Events singleton`);
   }
 
   /**

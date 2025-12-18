@@ -228,6 +228,8 @@ export class ContinuumEmoterWidget extends BaseWidget {
    */
   private subscribeToTransportEvents(): void {
     console.log('🎭 ContinuumEmoter: Subscribing to transport events...');
+    console.log(`🎭 ContinuumEmoter: DISCONNECTED event name = "${TRANSPORT_EVENTS.DISCONNECTED}"`);
+    console.log(`🎭 ContinuumEmoter: CONNECTED event name = "${TRANSPORT_EVENTS.CONNECTED}"`);
 
     // Listen for instant disconnection
     Events.subscribe(TRANSPORT_EVENTS.DISCONNECTED, () => {
