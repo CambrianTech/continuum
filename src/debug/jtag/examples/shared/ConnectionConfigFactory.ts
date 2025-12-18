@@ -1,10 +1,12 @@
 /**
  * Connection Configuration Factory - Shared App Code
- * 
+ *
  * This is "shared app code" that examples can use to create their connection config.
  * Examples import this from '@continuum/jtag/example-shared' and use it.
- * 
- * This handles all the config reading (package.json, env) so examples don't have to.
+ *
+ * This handles all the config reading (shared/config.ts, env) so examples don't have to.
+ *
+ * IMPORTANT: Ports come from config.env → shared/config.ts (single source of truth)
  */
 
 import type { ConnectionConfig } from '@continuum/jtag/types';
@@ -13,34 +15,55 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Create connection configuration by reading from package.json and environment
- * 
+ * Create connection configuration by reading from shared/config.ts
+ *
  * This function does ALL the config reading so examples don't have to.
  * Examples just call this function and get a clean ConnectionConfig struct.
+ *
+ * Ports come from shared/config.ts which is generated from config.env at build time.
  */
 export function createConnectionConfig(exampleDir?: string): ConnectionConfig {
   // Determine the example directory
   const workingDir = exampleDir || process.cwd();
   const packageJsonPath = path.join(workingDir, 'package.json');
-  
-  // Read the example's package.json
+
+  // Read the example's package.json for metadata only (not ports!)
   if (!fs.existsSync(packageJsonPath)) {
-    throw new Error(`ConnectionConfigFactory: No package.json found at ${packageJsonPath}. Each example must have a package.json with config.http_port and config.websocket_port settings.`);
+    throw new Error(`ConnectionConfigFactory: No package.json found at ${packageJsonPath}`);
   }
-  
+
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-  const httpPort = packageJson.config?.http_port;
-  const websocketPort = packageJson.config?.websocket_port;
-  
-  if (!httpPort || !websocketPort) {
-    throw new Error(`ConnectionConfigFactory: Missing port configuration in ${packageJsonPath}. Please add "config": { "http_port": <port>, "websocket_port": <port> } to package.json`);
-  }
-  
+
   // Determine example name from directory or package name
-  const exampleName = path.basename(workingDir) || 
-                     packageJson.name?.split('/').pop() || 
+  const exampleName = path.basename(workingDir) ||
+                     packageJson.name?.split('/').pop() ||
                      'unknown-example';
-  
+
+  // Import ports from shared/config.ts (generated from config.env)
+  // This is the SINGLE SOURCE OF TRUTH for port configuration
+  let httpPort: number;
+  let websocketPort: number;
+
+  try {
+    // Dynamic import to get the latest values
+    const configModule = require('../../shared/config');
+    httpPort = configModule.HTTP_PORT;
+    websocketPort = configModule.WS_PORT;
+  } catch (error) {
+    throw new Error(
+      `ConnectionConfigFactory: Could not load shared/config.ts. ` +
+      `Make sure you've run 'npm run build:ts' to generate the config file. ` +
+      `Error: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  if (!httpPort || !websocketPort) {
+    throw new Error(
+      `ConnectionConfigFactory: Ports not found in shared/config.ts. ` +
+      `Ensure config.env has HTTP_PORT and WS_PORT defined.`
+    );
+  }
+
   // Create the configuration struct
   const config: ConnectionConfig = {
     websocketPort,
@@ -49,13 +72,13 @@ export function createConnectionConfig(exampleDir?: string): ConnectionConfig {
     exampleName,
     // Future: multicastPort, unicastPort as needed
   };
-  
+
   // Validate the configuration
   const validation = validateConnectionConfig(config);
   if (!validation.valid) {
     throw new Error(`ConnectionConfigFactory: Invalid configuration: ${validation.errors.join(', ')}`);
   }
-  
+
   return config;
 }
 

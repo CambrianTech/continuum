@@ -2,11 +2,11 @@
   "config": {
     "server": {
       "port": 9001,
-      "host": "localhost", 
+      "host": "localhost",
       "protocol": "ws"
     },
     "client": {
-      "ui_port": 9002,
+      "ui_port": 9000,
       "host": "localhost",
       "protocol": "http"
     },

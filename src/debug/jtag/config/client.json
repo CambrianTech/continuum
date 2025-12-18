@@ -1,6 +1,6 @@
 {
   "client": {
-    "ui_port": 9002,
+    "ui_port": 9000,
     "host": "localhost",
     "protocol": "http",
     "auto_connect": true,
