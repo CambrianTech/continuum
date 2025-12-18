@@ -1,10 +1,10 @@
 /**
  * Connection Broker Types - Core interfaces for intelligent connection management
- * 
+ *
  * The Connection Broker provides centralized, globally-aware transport orchestration
  * that eliminates port conflicts and enables intelligent server reuse across multiple
  * client connections.
- * 
+ *
  * Key Principles:
  * - Location Transparency: Same API works for local, remote, and P2P connections
  * - Connection Reuse: Multiple clients can share the same server when appropriate
@@ -19,6 +19,7 @@ import type { TransportProtocol, JTAGTransport } from '../../../transports/share
 import type { NodeCapability } from '../../../transports/udp-multicast-transport/shared/UDPMulticastTypes';
 import type { EventsInterface } from '../../../events/shared/JTAGEventSystem';
 import type { ITransportHandler } from '../../../transports/shared/ITransportHandler';
+import { HTTP_PORT, WS_PORT } from '../../../../shared/config';
 
 /**
  * Connection requirement specification - what the client needs
@@ -388,9 +389,9 @@ export interface BrokerStatistics {
  */
 export const DEFAULT_BROKER_CONFIG: ConnectionBrokerConfig = {
   portPool: {
-    startPort: 9002, // Start after reserved ports: HTTP_PORT=9000, WS_PORT=9001
+    startPort: Math.max(HTTP_PORT, WS_PORT) + 1, // Start after reserved ports from config
     endPort: 9100,
-    reservedPorts: [9000, 9001], // Reserved for HTTP and WS from config.env
+    reservedPorts: [HTTP_PORT, WS_PORT], // Reserved ports from config.env
     allocationStrategy: 'sequential'
   },
   registry: {

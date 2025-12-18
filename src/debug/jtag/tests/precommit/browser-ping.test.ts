@@ -22,7 +22,7 @@ async function testBrowserPing(): Promise<void> {
   try {
     // 1. Connect to JTAG system
     console.log('🔗 Connecting to JTAG system...');
-    client = await jtag();
+    client = await jtag.connect();
     console.log('✅ Connected\n');
 
     // 2. Execute ping from server context
