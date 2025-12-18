@@ -35,11 +35,18 @@ export abstract class WebSocketTransportClient extends TransportBase {
   protected sessionId?: UUID;
   protected connected = false;
   protected messageHandler?: (message: JTAGMessage) => void;
-  
+  protected reconnectAttempt = 0;
+  protected reconnectTimeout?: ReturnType<typeof setTimeout>;
+  protected manualDisconnect = false;
+  protected isReconnecting = false;
+  protected messageQueue: any[] = [];
+  protected lastErrorLog = 0;
+  protected hasEmittedDisconnectError = false; // Track if we've already emitted ERROR for being disconnected
+
   constructor(config: WebSocketConfig = {}) {
     super();
     this.config = {
-      reconnectAttempts: 1, // Fail fast - don't spam retries when server is clearly down
+      reconnectAttempts: 3, // Auto-reconnect up to 3 times (server restart, sleep recovery)
       reconnectDelay: 1000,
       pingInterval: 30000,
       sessionHandshake: true,
@@ -61,12 +68,30 @@ export abstract class WebSocketTransportClient extends TransportBase {
     socket.addEventListener('open', (event: JTAGWebSocketOpenEvent) => {
       console.log(`✅ ${this.name || 'websocket'}: Connected`);
       this.connected = true;
-      
+      this.reconnectAttempt = 0; // Reset reconnection counter on successful connect
+      this.manualDisconnect = false; // Reset manual disconnect flag
+      this.isReconnecting = false; // No longer reconnecting
+      this.hasEmittedDisconnectError = false; // Reset error state - we're connected now
+
       // Send session handshake after connection
       if (this.config.sessionHandshake) {
         this.sendSessionHandshake(socket);
       }
-      
+
+      // Flush queued messages after reconnection
+      if (this.messageQueue.length > 0) {
+        console.log(`📤 ${this.name}: Flushing ${this.messageQueue.length} queued messages`);
+        const queue = [...this.messageQueue];
+        this.messageQueue = [];
+        for (const message of queue) {
+          try {
+            this.sendWebSocketMessage(socket, message);
+          } catch (error) {
+            console.error(`❌ ${this.name}: Failed to send queued message:`, error);
+          }
+        }
+      }
+
       // Emit CONNECTED event
       this.emitTransportEvent('CONNECTED', { clientId });
     });
@@ -96,20 +121,36 @@ export abstract class WebSocketTransportClient extends TransportBase {
     // Connection closed - consistent addEventListener pattern
     socket.addEventListener('close', (event: JTAGWebSocketCloseEvent) => {
       this.connected = false;
-      
+
       // Provide better timeout labeling for connection issues
       if (event.code === 1006) {
         console.log(`❌ TIMEOUT: ${this.name || 'websocket'} connection failed to establish or was abnormally closed (code: ${event.code}) - connection cancelled`);
       } else {
         console.log(`🔌 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
       }
-      
+
       // Emit DISCONNECTED event
       this.emitTransportEvent('DISCONNECTED', {
         clientId,
         reason: event.code === 1006 ? 'connection_timeout' : 'connection_closed',
         code: event.code
       });
+
+      // Attempt automatic reconnection if not manually disconnected AND not already reconnecting
+      if (!this.manualDisconnect && !this.isReconnecting && this.reconnectAttempt < (this.config.reconnectAttempts || 0)) {
+        this.isReconnecting = true; // Mark as reconnecting to queue messages
+        const delay = this.config.reconnectDelay! * Math.pow(2, this.reconnectAttempt); // Exponential backoff
+        this.reconnectAttempt++;
+
+        console.log(`🔄 ${this.name || 'websocket'}: Attempting reconnect ${this.reconnectAttempt}/${this.config.reconnectAttempts} in ${delay}ms...`);
+
+        this.reconnectTimeout = setTimeout(async () => {
+          await this.attemptReconnect();
+        }, delay);
+      } else if (!this.manualDisconnect && !this.isReconnecting) {
+        // Only log this ONCE when we first exhaust attempts, not on every subsequent close event
+        console.log(`❌ ${this.name || 'websocket'}: Max reconnection attempts (${this.config.reconnectAttempts}) reached`);
+      }
     });
 
     // Connection error - consistent addEventListener pattern
@@ -188,6 +229,18 @@ export abstract class WebSocketTransportClient extends TransportBase {
    */
   protected sendWebSocketMessage(socket: JTAGUniversalWebSocket, message: any): void {
     if (!socket || socket.readyState !== JTAG_WEBSOCKET_READY_STATE.OPEN) {
+      // During reconnection, queue messages instead of throwing errors
+      if (this.isReconnecting) {
+        this.messageQueue.push(message);
+        // Throttle logging to avoid spam (max once per second)
+        const now = Date.now();
+        if (now - this.lastErrorLog > 1000) {
+          console.log(`🔄 ${this.name}: Queueing message during reconnection (${this.messageQueue.length} queued)`);
+          this.lastErrorLog = now;
+        }
+        return;
+      }
+
       throw new Error(`WebSocket not ready (readyState: ${socket?.readyState})`);
     }
 
@@ -248,6 +301,20 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Handle WebSocket error with consistent logging
    */
   protected handleWebSocketError(error: Error, context = 'connection'): void {
+    // Don't spam console OR events when trying to send messages while disconnected - this is NORMAL
+    if (context === 'message send' && !this.connected) {
+      // Only emit ERROR event ONCE when we first become disconnected
+      if (!this.hasEmittedDisconnectError) {
+        this.hasEmittedDisconnectError = true;
+        this.emitTransportEvent('ERROR', {
+          error: error.message,
+          context
+        });
+      }
+      // Silently fail subsequent attempts - application layer already knows we're disconnected
+      return;
+    }
+
     // For connection errors, check if it's a "server down" situation
     const isConnectionFailed = error.message.includes('Connection failed') ||
                               error.message.includes('ECONNREFUSED') ||
@@ -336,6 +403,14 @@ export abstract class WebSocketTransportClient extends TransportBase {
    * Disconnect WebSocket - shared client implementation
    */
   async disconnect(): Promise<void> {
+    this.manualDisconnect = true; // Prevent auto-reconnect on manual disconnect
+
+    // Clear any pending reconnect timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = undefined;
+    }
+
     if (this.socket) {
       console.debug(`🔌 ${this.name}: Disconnecting`);
       this.socket.close();
@@ -351,11 +426,57 @@ export abstract class WebSocketTransportClient extends TransportBase {
     if (!this.lastConnectedUrl) {
       throw new Error('Cannot reconnect: No previous connection URL stored');
     }
-    
+
+    // Mark as non-manual disconnect for reconnection
+    this.manualDisconnect = false;
+
+    // Clear any pending reconnect timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = undefined;
+    }
+
     // Disconnect first if still connected
+    const wasManualDisconnect = this.manualDisconnect;
+    this.manualDisconnect = true; // Temporarily set to prevent auto-reconnect during disconnect
     await this.disconnect();
-    
+    this.manualDisconnect = wasManualDisconnect; // Restore
+
     // Reconnect using stored URL
     await this.connect(this.lastConnectedUrl);
+  }
+
+  /**
+   * Attempt reconnection with automatic retry logic
+   * Called by the reconnect timeout - handles retries recursively
+   */
+  private async attemptReconnect(): Promise<void> {
+    try {
+      await this.reconnect();
+      console.log(`✅ ${this.name || 'websocket'}: Reconnection successful`);
+      this.reconnectAttempt = 0; // Reset on successful reconnect
+    } catch (error) {
+      console.error(`❌ ${this.name || 'websocket'}: Reconnection attempt ${this.reconnectAttempt} failed:`, error);
+      this.isReconnecting = false; // Reset to stop queueing messages
+
+      // Schedule another attempt
+      this.isReconnecting = true; // Re-enable queueing for next attempt
+
+      // Fast retries for first 3 attempts (1s, 2s, 4s), then slow persistent polling (10s)
+      let delay: number;
+      if (this.reconnectAttempt < (this.config.reconnectAttempts || 0)) {
+        delay = this.config.reconnectDelay! * Math.pow(2, this.reconnectAttempt);
+        this.reconnectAttempt++;
+        console.log(`🔄 ${this.name || 'websocket'}: Scheduling retry ${this.reconnectAttempt}/${this.config.reconnectAttempts} in ${delay}ms...`);
+      } else {
+        // After fast attempts, keep trying every 10 seconds until server comes back
+        delay = 10000; // 10 seconds
+        console.log(`🔄 ${this.name || 'websocket'}: Polling for server every ${delay/1000}s...`);
+      }
+
+      this.reconnectTimeout = setTimeout(async () => {
+        await this.attemptReconnect(); // Recursive retry - will keep trying forever
+      }, delay);
+    }
   }
 }

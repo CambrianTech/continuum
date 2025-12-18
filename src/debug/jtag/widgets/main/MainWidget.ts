@@ -307,7 +307,12 @@ export class MainWidget extends BaseWidget {
           } as any);  // Cast to any for new command not yet in type registry
           console.log(`🌡️ MainPanel: User ${present ? 'present' : 'left'} in room ${roomId}`);
         } catch (error) {
-          console.error('❌ MainPanel: Failed to track visibility:', error);
+          // Silently ignore when disconnected - this is expected
+          const isDisconnected = error instanceof Error &&
+            (error.message.includes('WebSocket not ready') || error.message.includes('WebSocket not connected'));
+          if (!isDisconnected) {
+            console.error('❌ MainPanel: Failed to track visibility:', error);
+          }
         }
       }
     });

@@ -373,23 +373,28 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       throw new Error('Expected request message');
     }
 
-    // Create pending request that will resolve when response arrives
-    const responsePromise = this.responseCorrelator.createRequest(message.correlationId);
-
     try {
       const crossContextTransport = this.transports.get(TRANSPORT_TYPES.CROSS_CONTEXT);
       if (!crossContextTransport) {
         throw new Error('No cross-context transport available for request');
       }
-      // Send message immediately (requests need immediate delivery)
+
+      // Send message immediately - will throw if disconnected
       await crossContextTransport.send(message);
 
-      // Await the correlated response
+      // Only create response promise AFTER successful send
+      const responsePromise = this.responseCorrelator.createRequest(message.correlationId);
       const response = await responsePromise;
       return { success: true, resolved: true, response };
 
     } catch (error) {
-      console.error(`❌ ${this.toString()}: Request failed:`, error);
+      // Don't spam console when WebSocket is disconnected - this is expected
+      const isDisconnectedError = error instanceof Error &&
+        (error.message.includes('WebSocket not ready') || error.message.includes('WebSocket not connected'));
+
+      if (!isDisconnectedError) {
+        console.error(`❌ ${this.toString()}: Request failed:`, error);
+      }
       throw error;
     }
   }

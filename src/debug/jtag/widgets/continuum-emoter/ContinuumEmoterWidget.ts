@@ -244,7 +244,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
       await Commands.execute('ping');
       this.updateStatus('connected', 'healthy');
     } catch (error) {
-      console.warn('🔴 ContinuumEmoter: Server disconnected', error);
+      // Silently update status - being disconnected is normal, not an error to spam
       this.updateStatus('disconnected', 'error');
     }
   }
