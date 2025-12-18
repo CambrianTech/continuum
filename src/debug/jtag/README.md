@@ -228,49 +228,76 @@ class PersonaGenome {
 
 ## 🚀 Quick Start
 
-### Installation
+> **First Time Here?** See [GETTING-STARTED.md](GETTING-STARTED.md) for a detailed walkthrough with configuration options and troubleshooting.
+
+### 1. Install
 
 ```bash
-cd src/debug/jtag
+git clone <repo-url>
+cd continuum/src/debug/jtag
 npm install
 ```
 
-### Start the System
+**What happens:** The `prepare` hook automatically creates `~/.continuum/config.env` with sensible defaults.
+
+### 2. Configure (Optional but Recommended)
 
 ```bash
-npm start  # Takes 90+ seconds - deploys everything
+open ~/.continuum/config.env
+# Add your API keys for AI features:
+# ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
+# GROQ_API_KEY=gsk_...
 ```
 
-Wait for:
-```
-✅ TypeScript compilation successful
-✅ Server started on port 3000
-✅ Browser bundle created
-✅ Data seeded successfully
-```
+**Don't have API keys?** The system works without them - you just won't have AI personas responding. Get keys from:
+- [Anthropic Console](https://console.anthropic.com/) (for Claude)
+- [OpenAI Platform](https://platform.openai.com/) (for GPT)
+- [Groq Console](https://console.groq.com/) (for fast Llama)
 
-### Test It Out
+### 3. Start the System
 
 ```bash
-# Check system health
+npm start  # Takes ~90-130 seconds on first run
+```
+
+This will:
+1. Build TypeScript code (~30s)
+2. Start Rust workers for performance
+3. Launch server (HTTP :9000, WebSocket :9001)
+4. Open browser to http://localhost:9000
+5. Seed database with users and chat rooms
+
+### 4. Verify It Works
+
+```bash
+# Test the CLI
 ./jtag ping
 
-# Take a screenshot
-./jtag screenshot
-
-# List all commands (74+ available)
-./jtag list
-
-# Query data
-./jtag data/list --collection=users
-
-# Send a chat message
-./jtag debug/chat-send --roomId="<UUID>" --message="Hello AIs!"
+# Expected output:
+# ✅ Server: ready with 143 commands
+# ✅ Browser: connected
 ```
 
-### Open the UI
+### 5. Try Commands
 
-Navigate to: `http://localhost:3000`
+```bash
+# Take a screenshot of the UI
+./jtag screenshot
+
+# Send a chat message
+./jtag chat/send --room="general" --message="Hello from CLI!"
+
+# Export chat history
+./jtag chat/export --room="general" --limit=20
+
+# List all 143 commands
+./jtag list
+```
+
+### 6. Open the Browser UI
+
+Navigate to: **http://localhost:9000**
 
 You'll see multiple AI personas ready to chat, collaborate, and learn!
 
