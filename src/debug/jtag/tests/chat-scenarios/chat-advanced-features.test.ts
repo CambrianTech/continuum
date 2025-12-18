@@ -13,7 +13,7 @@
 
 import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
 import type { ChatMessage } from '../../widgets/chat/shared/ChatModuleTypes';
-import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import type { ChatSendMessageParams, ChatSendMessageResult } from '../../commands/chat/send/shared/ChatSendMessageTypes';
 
 console.log('🧪 DISCORD-SCALE CHAT ADVANCED FEATURES TESTS');
 
@@ -99,7 +99,7 @@ class AdvancedChatFeaturesTest {
     
     try {
       // Send original message
-      const originalMessage = await this.client.executeCommand('chat/send-message', {
+      const originalMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'This is the original message that will start a thread',
@@ -116,7 +116,7 @@ class AdvancedChatFeaturesTest {
       
       if (originalMessage.success) {
         // Send reply message in thread
-        const replyMessage = await this.client.executeCommand('chat/send-message', {
+        const replyMessage = await this.client.executeCommand('collaboration/chat/send', {
           roomId: this.testRoomId,
           userId: 'reply-user',
           content: 'This is a reply in the thread',
@@ -135,7 +135,7 @@ class AdvancedChatFeaturesTest {
         
         // Send nested reply
         if (replyMessage.success) {
-          const nestedReply = await this.client.executeCommand('chat/send-message', {
+          const nestedReply = await this.client.executeCommand('collaboration/chat/send', {
             roomId: this.testRoomId,
             userId: 'nested-user',
             content: 'This is a nested reply to the reply',
@@ -154,7 +154,7 @@ class AdvancedChatFeaturesTest {
         }
         
         // Retrieve thread messages
-        const threadMessages = await this.client.executeCommand('chat/get-thread', {
+        const threadMessages = await this.client.executeCommand('collaboration/chat/get-thread', {
           threadId: originalMessage.messageId,
           roomId: this.testRoomId
         });
@@ -185,7 +185,7 @@ class AdvancedChatFeaturesTest {
     
     try {
       // Send message to react to
-      const messageToReact = await this.client.executeCommand('chat/send-message', {
+      const messageToReact = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'React to this message with emojis!'
@@ -201,7 +201,7 @@ class AdvancedChatFeaturesTest {
       
       if (messageToReact.success) {
         // Add thumbs up reaction
-        const thumbsUpReaction = await this.client.executeCommand('chat/add-reaction', {
+        const thumbsUpReaction = await this.client.executeCommand('collaboration/chat/add-reaction', {
           messageId: messageToReact.messageId,
           roomId: this.testRoomId,
           userId: this.testUserId,
@@ -217,7 +217,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Add heart reaction from different user
-        const heartReaction = await this.client.executeCommand('chat/add-reaction', {
+        const heartReaction = await this.client.executeCommand('collaboration/chat/add-reaction', {
           messageId: messageToReact.messageId,
           roomId: this.testRoomId,
           userId: 'reaction-user',
@@ -233,7 +233,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Add custom emoji reaction
-        const customReaction = await this.client.executeCommand('chat/add-reaction', {
+        const customReaction = await this.client.executeCommand('collaboration/chat/add-reaction', {
           messageId: messageToReact.messageId,
           roomId: this.testRoomId,
           userId: 'custom-user',
@@ -251,7 +251,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Get message with reactions
-        const messageWithReactions = await this.client.executeCommand('chat/get-message', {
+        const messageWithReactions = await this.client.executeCommand('collaboration/chat/get-message', {
           messageId: messageToReact.messageId,
           roomId: this.testRoomId,
           includeReactions: true
@@ -266,7 +266,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Remove reaction
-        const removeReaction = await this.client.executeCommand('chat/remove-reaction', {
+        const removeReaction = await this.client.executeCommand('collaboration/chat/remove-reaction', {
           messageId: messageToReact.messageId,
           roomId: this.testRoomId,
           userId: this.testUserId,
@@ -299,7 +299,7 @@ class AdvancedChatFeaturesTest {
     
     try {
       // Send message with user mention
-      const userMention = await this.client.executeCommand('chat/send-message', {
+      const userMention = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'Hey @john_doe, can you check this out?',
@@ -319,7 +319,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Send message with role mention
-      const roleMention = await this.client.executeCommand('chat/send-message', {
+      const roleMention = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'Attention @developers, we have a new requirement',
@@ -339,7 +339,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Send message with channel mention
-      const channelMention = await this.client.executeCommand('chat/send-message', {
+      const channelMention = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'Check the discussion in #general channel',
@@ -359,7 +359,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Get mentions for user
-      const userMentions = await this.client.executeCommand('chat/get-mentions', {
+      const userMentions = await this.client.executeCommand('collaboration/chat/get-mentions', {
         userId: 'john_doe',
         roomId: this.testRoomId,
         unreadOnly: true
@@ -375,7 +375,7 @@ class AdvancedChatFeaturesTest {
       
       // Mark mention as read
       if (userMention.success) {
-        const markRead = await this.client.executeCommand('chat/mark-mention-read', {
+        const markRead = await this.client.executeCommand('collaboration/chat/mark-mention-read', {
           messageId: userMention.messageId,
           userId: 'john_doe',
           roomId: this.testRoomId
@@ -407,7 +407,7 @@ class AdvancedChatFeaturesTest {
     
     try {
       // Upload file attachment
-      const fileUpload = await this.client.executeCommand('chat/upload-attachment', {
+      const fileUpload = await this.client.executeCommand('collaboration/chat/upload-attachment', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         fileName: 'test-document.pdf',
@@ -426,7 +426,7 @@ class AdvancedChatFeaturesTest {
       
       if (fileUpload.success) {
         // Send message with file attachment
-        const messageWithFile = await this.client.executeCommand('chat/send-message', {
+        const messageWithFile = await this.client.executeCommand('collaboration/chat/send', {
           roomId: this.testRoomId,
           userId: this.testUserId,
           content: 'Here is the document you requested',
@@ -449,7 +449,7 @@ class AdvancedChatFeaturesTest {
       }
       
       // Upload image attachment
-      const imageUpload = await this.client.executeCommand('chat/upload-attachment', {
+      const imageUpload = await this.client.executeCommand('collaboration/chat/upload-attachment', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         fileName: 'screenshot.png',
@@ -468,7 +468,7 @@ class AdvancedChatFeaturesTest {
       
       // Get attachment metadata
       if (fileUpload.success) {
-        const attachmentInfo = await this.client.executeCommand('chat/get-attachment', {
+        const attachmentInfo = await this.client.executeCommand('collaboration/chat/get-attachment', {
           fileId: fileUpload.fileId,
           roomId: this.testRoomId
         });
@@ -484,7 +484,7 @@ class AdvancedChatFeaturesTest {
       
       // Delete attachment
       if (fileUpload.success) {
-        const deleteAttachment = await this.client.executeCommand('chat/delete-attachment', {
+        const deleteAttachment = await this.client.executeCommand('collaboration/chat/delete-attachment', {
           fileId: fileUpload.fileId,
           roomId: this.testRoomId,
           userId: this.testUserId
@@ -516,7 +516,7 @@ class AdvancedChatFeaturesTest {
     
     try {
       // Send original message
-      const originalMessage = await this.client.executeCommand('chat/send-message', {
+      const originalMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'This is the original message content'
@@ -532,7 +532,7 @@ class AdvancedChatFeaturesTest {
       
       if (originalMessage.success) {
         // Edit message content
-        const editMessage = await this.client.executeCommand('chat/edit-message', {
+        const editMessage = await this.client.executeCommand('collaboration/chat/edit-message', {
           messageId: originalMessage.messageId,
           roomId: this.testRoomId,
           userId: this.testUserId,
@@ -549,7 +549,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Edit message again
-        const editAgain = await this.client.executeCommand('chat/edit-message', {
+        const editAgain = await this.client.executeCommand('collaboration/chat/edit-message', {
           messageId: originalMessage.messageId,
           roomId: this.testRoomId,
           userId: this.testUserId,
@@ -566,7 +566,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Get message edit history
-        const editHistory = await this.client.executeCommand('chat/get-edit-history', {
+        const editHistory = await this.client.executeCommand('collaboration/chat/get-edit-history', {
           messageId: originalMessage.messageId,
           roomId: this.testRoomId
         });
@@ -580,7 +580,7 @@ class AdvancedChatFeaturesTest {
         });
         
         // Try to edit someone else's message (should fail)
-        const unauthorizedEdit = await this.client.executeCommand('chat/edit-message', {
+        const unauthorizedEdit = await this.client.executeCommand('collaboration/chat/edit-message', {
           messageId: originalMessage.messageId,
           roomId: this.testRoomId,
           userId: 'other-user',
@@ -613,7 +613,7 @@ class AdvancedChatFeaturesTest {
     
     try {
       // Send message with bold text
-      const boldMessage = await this.client.executeCommand('chat/send-message', {
+      const boldMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'This message has **bold text** in it',
@@ -631,7 +631,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Send message with italic text
-      const italicMessage = await this.client.executeCommand('chat/send-message', {
+      const italicMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'This message has *italic text* in it',
@@ -649,7 +649,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Send message with inline code
-      const codeMessage = await this.client.executeCommand('chat/send-message', {
+      const codeMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'Use the `console.log()` function',
@@ -667,7 +667,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Send message with code block
-      const codeBlockMessage = await this.client.executeCommand('chat/send-message', {
+      const codeBlockMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'Here is some TypeScript code:\n```typescript\nfunction hello(): string {\n  return "Hello, World!";\n}\n```',
@@ -685,7 +685,7 @@ class AdvancedChatFeaturesTest {
       });
       
       // Send message with mixed formatting
-      const mixedMessage = await this.client.executeCommand('chat/send-message', {
+      const mixedMessage = await this.client.executeCommand('collaboration/chat/send', {
         roomId: this.testRoomId,
         userId: this.testUserId,
         content: 'This has **bold**, *italic*, and `code` all together',

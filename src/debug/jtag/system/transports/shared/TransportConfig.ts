@@ -13,6 +13,7 @@ export class TransportConfigHelper {
    * Auto-detect optimal transport configuration for environment
    */
   static detectOptimalConfig(environment: JTAGContext['environment'], context?: JTAGContext): Partial<TransportConfig> {
+    // Fallback to 9001 (should match WS_PORT in config.env) - context should always provide this
     const wsPort = context?.config?.instance?.ports?.websocket_server || 9001;
     
     // In browser, prefer WebSocket client

@@ -3,7 +3,7 @@
  * Event Bridge Cross-Environment Proof Test
  * 
  * Proves that the existing EventsDaemon bridge system works across environments
- * by using the working chat/send-message command and verifying event emission.
+ * by using the working chat/send command and verifying event emission.
  */
 
 import { jtag } from '../../server-index';
@@ -20,9 +20,9 @@ async function testEventBridgeProof() {
     
     console.log('✅ Connected! Testing existing event bridge system...');
     
-    // Use the existing working chat/send-message command which emits events
+    // Use the existing working chat/send command which emits events
     console.log('💬 Sending chat message (should emit bridged event)...');
-    const chatResult = await client.commands['chat/send-message']({
+    const chatResult = await client.commands['collaboration/chat/send']({
       context: { uuid: 'bridge-test', environment: 'server' },
       // Use shared session instead of hardcoded string
       roomId: 'bridge-test-room',

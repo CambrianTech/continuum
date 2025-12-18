@@ -42,6 +42,7 @@ import { type JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { isBootstrapSession } from '../../../system/core/types/SystemScopes';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import { SessionStateHelper } from './SessionStateHelper';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -557,5 +558,58 @@ export class SessionDaemonServer extends SessionDaemon {
       operation: 'destroy',
       destroyedSessionId: destroyedSession.sessionId
     });
+  }
+
+  /**
+   * Get current room for a session's user
+   * Convenience method that delegates to SessionStateHelper
+   */
+  public async getCurrentRoom(sessionId: UUID): Promise<UUID | null> {
+    const session = this.sessions.find(s => s.sessionId === sessionId);
+    if (!session) {
+      this.log.warn(`Session ${sessionId} not found for getCurrentRoom`);
+      return null;
+    }
+
+    return await SessionStateHelper.getCurrentRoom(session.userId);
+  }
+
+  /**
+   * Get current content item for a session's user
+   */
+  public async getCurrentContentItem(sessionId: UUID) {
+    const session = this.sessions.find(s => s.sessionId === sessionId);
+    if (!session) {
+      this.log.warn(`Session ${sessionId} not found for getCurrentContentItem`);
+      return null;
+    }
+
+    return await SessionStateHelper.getCurrentContentItem(session.userId);
+  }
+
+  /**
+   * Get open rooms for a session's user
+   */
+  public async getOpenRooms(sessionId: UUID) {
+    const session = this.sessions.find(s => s.sessionId === sessionId);
+    if (!session) {
+      this.log.warn(`Session ${sessionId} not found for getOpenRooms`);
+      return [];
+    }
+
+    return await SessionStateHelper.getOpenRooms(session.userId);
+  }
+
+  /**
+   * Get user state for a session's user
+   */
+  public async getUserState(sessionId: UUID) {
+    const session = this.sessions.find(s => s.sessionId === sessionId);
+    if (!session) {
+      this.log.warn(`Session ${sessionId} not found for getUserState`);
+      return null;
+    }
+
+    return await SessionStateHelper.getUserState(session.userId);
   }
 }

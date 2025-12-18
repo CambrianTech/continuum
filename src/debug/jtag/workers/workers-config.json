@@ -1,0 +1,36 @@
+{
+  "workers": [
+    {
+      "name": "archive",
+      "binary": "workers/archive/target/release/archive-worker",
+      "socket": "/tmp/jtag-archive-worker.sock",
+      "args": [
+        "/tmp/jtag-command-router.sock",
+        ".continuum/jtag/data/database.sqlite",
+        ".continuum/jtag/data/archive/database-001.sqlite"
+      ],
+      "description": "Archive worker for moving old data to cold storage using Commands.execute()",
+      "enabled": false
+    },
+    {
+      "name": "data-daemon",
+      "binary": "workers/data-daemon/target/release/data-daemon-worker",
+      "socket": "/tmp/jtag-data-daemon-worker.sock",
+      "args": [
+        ".continuum/jtag/data/database.sqlite"
+      ],
+      "description": "Data daemon worker for WAL cleanup and fast SQLite operations",
+      "enabled": false
+    },
+    {
+      "name": "logger",
+      "binary": "workers/logger/target/release/logger-worker",
+      "socket": "/tmp/jtag-logger-worker.sock",
+      "description": "High-performance logging worker for file I/O",
+      "enabled": true
+    }
+  ],
+  "sharedSockets": [
+    "/tmp/jtag-command-router.sock"
+  ]
+}

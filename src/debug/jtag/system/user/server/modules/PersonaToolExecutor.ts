@@ -11,6 +11,7 @@
  */
 
 import { CognitionLogger } from './cognition/CognitionLogger';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import { ToolRegistry } from '../../../tools/server/ToolRegistry';
@@ -18,7 +19,6 @@ import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { Commands } from '../../../core/shared/Commands';
-import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
 import { Logger, FileMode } from '../../../core/logging/Logger';
@@ -468,13 +468,13 @@ ${result.error || 'Unknown error'}
       return 'Screenshot captured';
     }
 
-    if (toolName === 'data/list') {
+    if (toolName === DATA_COMMANDS.LIST) {
       const items = data as any[];
       const count = Array.isArray(items) ? items.length : 0;
-      return `data/list returned ${count} item${count !== 1 ? 's' : ''}`;
+      return `${DATA_COMMANDS.LIST} returned ${count} item${count !== 1 ? 's' : ''}`;
     }
 
-    if (toolName === 'data/read') {
+    if (toolName === DATA_COMMANDS.READ) {
       // When fetching tool results from working memory, don't output raw JSON
       // Just acknowledge the retrieval
       return 'Retrieved data from working memory';

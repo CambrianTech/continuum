@@ -10,23 +10,15 @@
  */
 
 /**
- * File System Paths - ALL paths in ONE place
+ * File System Paths - Browser-safe constants only
  *
- * Priority for configurable paths:
- * 1. Explicit parameter (user provides full path)
- * 2. Environment variable (user overrides via process.env)
- * 3. These constants (our defaults)
+ * ⚠️ DO NOT add database paths or other server-only paths here!
+ * ⚠️ This file is bundled into browser code
+ * ⚠️ Use DatabaseConfig.ts for server-only database paths
  */
 export const PATHS = {
   /** Base continuum directory */
   CONTINUUM: '.continuum',
-
-  /** JTAG data storage */
-  JTAG_DATA: '.continuum/jtag/data',
-  JTAG_BACKUPS: '.continuum/jtag/backups',
-
-  /** Main SQLite database */
-  SQLITE_DB: '.continuum/jtag/data/database.sqlite',
 
   /** Training datasets directory - users can override with DATASETS_DIR env var for external drives */
   DATASETS: '.continuum/datasets',
@@ -41,26 +33,24 @@ export const PATHS = {
 
   /** Media processing output */
   MEDIA_OUTPUT: '.continuum/media',
-  MEDIA_TEMP: '.continuum/media/temp',
-
-  /** Legacy (for migration) */
-  LEGACY_DB: '.continuum/database/continuum.db',
-
-  /** Default working directory for shell commands */
-  DEFAULT_WORKING_DIR: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag'
+  MEDIA_TEMP: '.continuum/media/temp'
 } as const;
 
 /**
  * Environment Variables - standard names we check
  */
 export const ENV_VARS = {
+  DATABASE_DIR: 'DATABASE_DIR',
+  DATABASE_BACKUP_DIR: 'DATABASE_BACKUP_DIR',
+  DATABASE_ARCHIVE_DIR: 'DATABASE_ARCHIVE_DIR',
   DATASETS_DIR: 'DATASETS_DIR',
   REPO_PATH: 'REPO_PATH',
   SENTINEL_PATH: 'SENTINEL_PATH'
 } as const;
 
 /**
- * Collection Names - ALL entity collections
+ * Collection Names - Browser-safe, used for API calls
+ * Both browser and server need to know collection names
  */
 export const COLLECTIONS = {
   USERS: 'users',
@@ -70,6 +60,8 @@ export const COLLECTIONS = {
   ARTIFACTS: 'artifacts',
   SESSIONS: 'sessions',
   TASKS: 'tasks',
+  PINNED_ITEMS: 'pinned_items',
+  COORDINATION_DECISIONS: 'coordination_decisions',
   TRAINING_EXAMPLES: 'training_examples',
   TRAINING_SESSIONS: 'training_sessions',
   FINE_TUNING_JOBS: 'fine_tuning_jobs',
@@ -78,6 +70,12 @@ export const COLLECTIONS = {
   TRAINING_CHECKPOINTS: 'training_checkpoints',
   TRAINING_DATASETS: 'training_datasets',
   CODE_INDEX: 'code_index',
+
+  // Room Wall System
+  WALL_DOCUMENTS: 'wall_documents',
+
+  // Memory System (Phase 2)
+  MEMORIES: 'memories',
 
   // Cognition System Collections (Phase 1: Agent Architecture)
   PERSONA_SELF_STATE: 'persona_self_state',
@@ -131,15 +129,6 @@ export const COLLECTIONS = {
   KICK_APPEALS: 'kick_appeals'
 } as const;
 
-/**
- * Database Configuration
- */
-export const DB_CONFIG = {
-  DEFAULT_LIMIT: 100,
-  MAX_BATCH_SIZE: 500,
-  CONNECTION_TIMEOUT: 10000,
-  ENABLE_PERFORMANCE_LOGGING: false
-} as const;
 
 /**
  * Fine-Tuning Providers - Supported providers for LoRA training
@@ -228,19 +217,28 @@ export const MODEL_IDS = {
 } as const;
 
 /**
- * Helper: Get path with env var fallback
- * Usage: getPathWithEnvFallback('DATASETS_DIR', PATHS.DATASETS)
- */
-export function getPathWithEnvFallback(envVarName: keyof typeof ENV_VARS, defaultPath: string): string {
-  return process.env[ENV_VARS[envVarName]] || defaultPath;
-}
 
 /**
- * Helper: Resolve path priority (param > env > constant)
+ * Command Names - SINGLE SOURCE OF TRUTH
+ *
+ * ⚠️ AUTO-GENERATED via generator/generate-command-constants.ts
+ * ⚠️ Re-exported from shared/generated-command-constants.ts
+ * ⚠️ NEVER hardcode command strings - use COMMANDS.* constants
+ *
+ * Usage:
+ *   await Commands.execute(COMMANDS.DATA_LIST, params);
+ *   if (command === COMMANDS.SESSION_CREATE) { ... }
+ *
+ * Exception: Only 'list' command may be hardcoded (bootstrap requirement)
  */
-export function resolvePath(explicitPath: string | undefined, envVarName: keyof typeof ENV_VARS, defaultPath: string): string {
-  return explicitPath ?? getPathWithEnvFallback(envVarName, defaultPath);
-}
+export { COMMANDS, CommandName } from '../../shared/generated-command-constants';
+
+
+/**
+ * ⚠️ DO NOT ADD FUNCTIONS THAT ACCESS process.env HERE ⚠️
+ * This file is browser-safe and gets bundled into client code.
+ * For runtime config that checks environment variables, use ServerConfig.ts
+ */
 
 // Re-export for backward compatibility (will be deprecated)
 export { PATHS as DATABASE_PATHS };

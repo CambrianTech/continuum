@@ -17,7 +17,7 @@ import type {
   QueryExplanation
 } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
-import { SqliteRawExecutor } from '../SqliteRawExecutor';
+import type { SqlExecutor } from '../SqlExecutor';
 import { SqliteQueryBuilder } from '../SqliteQueryBuilder';
 import {
   getFieldMetadata,
@@ -33,7 +33,7 @@ const log = Logger.create('SqliteQueryExecutor', 'sql');
  */
 export class SqliteQueryExecutor {
   constructor(
-    private executor: SqliteRawExecutor
+    private executor: SqlExecutor
   ) {}
 
   /**

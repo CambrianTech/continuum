@@ -418,7 +418,7 @@ await genome.adjustWeights({
   --layers='[{"name":"wine-expertise","weight":0.7},{"name":"vin-diesel-style","weight":0.3}]'
 
 # Test generation
-./jtag chat/send --room="general" --message="What's the best Bordeaux vintage?"
+./jtag collaboration/chat/send --room="general" --message="What's the best Bordeaux vintage?"
 
 # Expected: Response shows BOTH wine knowledge AND Vin Diesel personality
 ```

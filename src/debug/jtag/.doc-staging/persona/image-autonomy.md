@@ -179,7 +179,7 @@ npm start
 # Wait 90+ seconds for deployment
 
 # 2. Create a test message with an image
-./jtag chat/send --room="general" --message="Test image upload" \
+./jtag collaboration/chat/send --room="general" --message="Test image upload" \
   --attachments='[{"filename":"test.jpg","path":"/tmp/test.jpg"}]'
 
 # Save the message ID from the output
@@ -378,11 +378,11 @@ npm start && sleep 120
 
 ```bash
 # 1. Upload an image
-./jtag chat/send --room="general" --message="Here's my dog" \
+./jtag collaboration/chat/send --room="general" --message="Here's my dog" \
   --attachments='[{"filename":"dog.jpg","path":"/tmp/dog.jpg"}]'
 
 # 2. Ask AI to analyze
-./jtag chat/send --room="general" --message="@Claude What breed is my dog?"
+./jtag collaboration/chat/send --room="general" --message="@Claude What breed is my dog?"
 
 # 3. Monitor logs for tool execution
 tail -f .continuum/sessions/user/shared/*/logs/server.log | grep -E "data/read|TOOL|📸"
@@ -394,7 +394,7 @@ tail -f .continuum/sessions/user/shared/*/logs/server.log | grep -E "data/read|T
 # "✅ Claude: [TOOL] data/read success"
 
 # 4. Check AI's response
-./jtag chat/export --room="general" --limit=5
+./jtag collaboration/chat/export --room="general" --limit=5
 
 # Expected: AI responds with breed identification based on visual analysis
 ```
@@ -405,10 +405,10 @@ tail -f .continuum/sessions/user/shared/*/logs/server.log | grep -E "data/read|T
 
 ```bash
 # 1. Upload image
-./jtag chat/send --room="general" --message="I just uploaded a photo"
+./jtag collaboration/chat/send --room="general" --message="I just uploaded a photo"
 
 # 2. Send message that doesn't require analysis
-./jtag chat/send --room="general" --message="Thanks for the upload"
+./jtag collaboration/chat/send --room="general" --message="Thanks for the upload"
 
 # 3. Check logs
 tail -f .continuum/sessions/user/shared/*/logs/server.log | grep "data/read"
@@ -422,14 +422,14 @@ tail -f .continuum/sessions/user/shared/*/logs/server.log | grep "data/read"
 
 ```bash
 # 1. Upload image
-./jtag chat/send --room="general" --message="Check this out!" \
+./jtag collaboration/chat/send --room="general" --message="Check this out!" \
   --attachments='[{"filename":"chart.png","path":"/tmp/chart.png"}]'
 
 # 2. Ask everyone
-./jtag chat/send --room="general" --message="@everyone What do you see in this image?"
+./jtag collaboration/chat/send --room="general" --message="@everyone What do you see in this image?"
 
 # 3. Check which AIs fetch images
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 
 # Expected behavior:
 # - Vision AIs (Claude, Grok, DeepSeek): Call data/read, analyze image

@@ -660,9 +660,9 @@ describe('Wall Commands Integration', () => {
 ```bash
 # tests/e2e/wall-ai-collaboration.sh
 ./jtag wall/write --room="general" --doc="collab-test.md" --content="# AI Collaboration Test"
-./jtag chat/send --room="general" --message="Please read the wall document collab-test.md and add your thoughts"
+./jtag collaboration/chat/send --room="general" --message="Please read the wall document collab-test.md and add your thoughts"
 sleep 10
-./jtag chat/export --room="general" --limit=5
+./jtag collaboration/chat/export --room="general" --limit=5
 ./jtag wall/read --room="general" --doc="collab-test.md"
 # Expect AI to have appended content
 ```

@@ -105,7 +105,7 @@ Security AI: Identifies vulnerabilities
 
 **Test**:
 ```bash
-./jtag chat/send --roomId="general" --message="Why does Commands.execute() work everywhere?"
+./jtag collaboration/chat/send --roomId="general" --message="Why does Commands.execute() work everywhere?"
 
 # Wait 5-10 seconds
 
@@ -203,12 +203,12 @@ Weekly Fine-Tuning:
 **Test**:
 ```bash
 # Correct the AI
-./jtag chat/send --message="Actually, that's wrong because..."
+./jtag collaboration/chat/send --message="Actually, that's wrong because..."
 
 # Wait 1 week for micro-tuning
 
 # Ask same question again
-./jtag chat/send --message="Why does Commands.execute() work everywhere?"
+./jtag collaboration/chat/send --message="Why does Commands.execute() work everywhere?"
 
 # Check if answer improved
 ./jtag screenshot
@@ -305,7 +305,7 @@ Helper AI: "In THIS scope (/system/user/server/modules/), the autonomous
 ./jtag recipe/create --scope="/system/genome/" --goal="Understand genome paging"
 
 # Ask scope-specific question
-./jtag chat/send --message="How does LRU eviction work?"
+./jtag collaboration/chat/send --message="How does LRU eviction work?"
 
 # Helper AI should give deep, scope-specific answer
 # Not generic "LRU is least-recently-used..."

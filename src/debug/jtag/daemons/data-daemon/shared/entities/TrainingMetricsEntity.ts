@@ -48,7 +48,7 @@ import {
  * });
  *
  * // Query metrics for charting
- * const allMetrics = await Commands.execute('data/list', {
+ * const allMetrics = await Commands.execute(DATA_COMMANDS.LIST, {
  *   collection: 'training_metrics',
  *   filter: { sessionId: session.id },
  *   orderBy: [{ field: 'step', direction: 'asc' }]

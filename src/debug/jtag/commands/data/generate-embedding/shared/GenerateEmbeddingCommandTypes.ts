@@ -4,7 +4,7 @@
  * Generates vector embedding for text using specified model.
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { VectorEmbedding, EmbeddingModel } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
@@ -12,7 +12,7 @@ import type { VectorEmbedding, EmbeddingModel } from '../../../../daemons/data-d
 /**
  * Generate embedding command parameters
  */
-export interface GenerateEmbeddingParams extends JTAGPayload {
+export interface GenerateEmbeddingParams extends CommandParams {
   readonly text: string;
   readonly model?: string;     // Model name: 'all-minilm' | 'nomic-embed-text' | 'text-embedding-3-small'
   readonly provider?: string;  // Provider: 'ollama' | 'openai' | 'huggingface'

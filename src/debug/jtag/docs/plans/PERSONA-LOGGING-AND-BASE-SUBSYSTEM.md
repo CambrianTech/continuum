@@ -657,7 +657,7 @@ npx vitest tests/integration/multi-persona-logging.test.ts
 npm start
 
 # Send message to Helper AI
-./jtag chat/send --room="general" --message="Test logging"
+./jtag collaboration/chat/send --room="general" --message="Test logging"
 
 # Check logs
 tail -f .continuum/sessions/user/helper-ai-uuid/logs/tools.log

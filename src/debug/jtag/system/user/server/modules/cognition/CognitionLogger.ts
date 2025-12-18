@@ -16,6 +16,7 @@
  */
 
 import type { UUID } from '../../../../core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { Commands } from '../../../../core/shared/Commands';
 import { COLLECTIONS } from '../../../../shared/Constants';
 import { DataDaemon } from '../../../../../daemons/data-daemon/shared/DataDaemon';
@@ -123,7 +124,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_STATE_SNAPSHOTS,
         data: entityData,
         backend: 'server',
@@ -217,7 +218,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         data: entityData,
         backend: 'server',
@@ -241,7 +242,7 @@ export class CognitionLogger {
   ): Promise<void> {
     try {
       // Find the plan record in database
-      const planRecords = await Commands.execute('data/list', {
+      const planRecords = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         filter: { planId },
         limit: 1,
@@ -278,7 +279,7 @@ export class CognitionLogger {
       const completedAt = Date.now();
       const totalDuration = completedAt - planRecord.startedAt;
 
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         id: planRecord.id,
         data: {
@@ -307,7 +308,7 @@ export class CognitionLogger {
   ): Promise<void> {
     try {
       // Find the plan record in database
-      const planRecords = await Commands.execute('data/list', {
+      const planRecords = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         filter: { planId },
         limit: 1,
@@ -342,7 +343,7 @@ export class CognitionLogger {
       // Update plan record
       const updatedAdjustments = [...planRecord.adjustments, adjustmentSnapshot];
 
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         id: planRecord.id,
         data: {
@@ -423,7 +424,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entityData,
         backend: 'server',
@@ -488,7 +489,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entityData,
         backend: 'server',
@@ -572,7 +573,7 @@ export class CognitionLogger {
       };
 
       // Store to database (fire-and-forget)
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entityData,
         backend: 'server',
@@ -629,7 +630,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
         data: entityData,
         backend: 'server',
@@ -682,7 +683,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
         data: entityData,
         backend: 'server',
@@ -739,7 +740,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
         data: entityData,
         backend: 'server',
@@ -794,7 +795,7 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.ADAPTER_REASONING_LOGS,
         data: entityData,
         backend: 'server',
@@ -857,7 +858,7 @@ export class CognitionLogger {
         modelUsed
       };
 
-      await Commands.execute('data/create', {
+      await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.COGNITION_PLAN_REPLANS,
         data: entityData,
         backend: 'server',

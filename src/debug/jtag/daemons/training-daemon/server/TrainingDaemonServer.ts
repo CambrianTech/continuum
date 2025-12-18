@@ -22,6 +22,7 @@
  */
 
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { TrainingDaemon } from '../shared/TrainingDaemon';
@@ -35,6 +36,7 @@ import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessag
 import type { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UserEntity } from '../../../system/data/entities/UserEntity';
 import { TrainingExampleEntity, type TrainingMessage } from '../../data-daemon/shared/entities/TrainingExampleEntity';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
 /**
  * Configuration for training data collection
@@ -75,13 +77,18 @@ export class TrainingDaemonServer extends TrainingDaemon {
   async initialize(): Promise<void> {
     this.log.info('TrainingDaemonServer: INITIALIZE CALLED - Starting setup');
 
-    // Load training-enabled room IDs
-    await this.loadTrainingRooms();
-
-    // Subscribe to chat message creation events
+    // Subscribe to chat message creation events first
     await this.setupEventSubscriptions();
 
-    this.log.info(`🧠 TrainingDaemonServer: Initialized, monitoring ${this.trainingRoomIds.size} room(s) for training data`);
+    // Defer room loading to allow DataDaemon to initialize
+    // TrainingDaemon can start without rooms and load them asynchronously
+    setTimeout(() => {
+      this.loadTrainingRooms().catch(error => {
+        this.log.error('❌ TrainingDaemon: Failed to load rooms after delay:', error);
+      });
+    }, 2000); // Wait 2 seconds for DataDaemon to initialize
+
+    this.log.info('🧠 TrainingDaemonServer: Initialized, will load training rooms asynchronously');
   }
 
   /**
@@ -90,22 +97,27 @@ export class TrainingDaemonServer extends TrainingDaemon {
   private async loadTrainingRooms(): Promise<void> {
     this.log.info('🔄 TrainingDaemon: Loading training-enabled rooms...');
 
+    const { Commands } = await import('../../../system/core/shared/Commands');
+
     for (const roomUniqueId of this.config.enabledRooms) {
       try {
-        const queryResult = await DataDaemon.query<RoomEntity>({
+        // Use Commands.execute instead of DataDaemon.query for reliability
+        const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.ROOMS,
-          filter: { uniqueId: roomUniqueId }
+          filter: { uniqueId: roomUniqueId },
+          limit: 1
         });
 
-        if (queryResult.success && queryResult.data && queryResult.data.length > 0) {
-          const roomId = queryResult.data[0].data.id;
+        if (result.success && result.items && result.items.length > 0) {
+          const roomId = result.items[0].id;
           this.trainingRoomIds.add(roomId);
           this.log.info(`🧠 TrainingDaemon: Monitoring room "${roomUniqueId}" (${roomId}) for training data`);
         } else {
           this.log.warn(`⚠️  TrainingDaemon: Training room "${roomUniqueId}" not found`);
         }
       } catch (error) {
-        this.log.error(`❌ TrainingDaemon: Failed to load room "${roomUniqueId}":`, error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.log.error(`❌ TrainingDaemon: Failed to load room "${roomUniqueId}": ${errorMessage}`);
       }
     }
   }

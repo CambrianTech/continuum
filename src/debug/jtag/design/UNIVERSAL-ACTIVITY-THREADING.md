@@ -239,13 +239,13 @@ export interface ChatSendParams extends CommandParams {
 **Usage:**
 ```bash
 # Simple message
-./jtag chat/send --room="general" --message="What's the best queue pattern?"
+./jtag collaboration/chat/send --room="general" --message="What's the best queue pattern?"
 
 # Reply to specific message
-./jtag chat/send --room="general" --message="I agree with your point about timeouts" --replyTo="#121248"
+./jtag collaboration/chat/send --room="general" --message="I agree with your point about timeouts" --replyTo="#121248"
 
 # Continue thread
-./jtag chat/send --room="general" --message="Additional thoughts..." --threadId="5e71a0c8-..."
+./jtag collaboration/chat/send --room="general" --message="Additional thoughts..." --threadId="5e71a0c8-..."
 ```
 
 ### Phase 4: Thread Extraction in Export
@@ -254,13 +254,13 @@ export interface ChatSendParams extends CommandParams {
 
 ```bash
 # Export entire room (last 50 messages)
-./jtag chat/export --room="general" --output="discussion.md"
+./jtag collaboration/chat/export --room="general" --output="discussion.md"
 
 # Export specific thread
-./jtag chat/export --room="general" --threadId="5e71a0c8..." --output="thread.md"
+./jtag collaboration/chat/export --room="general" --threadId="5e71a0c8..." --output="thread.md"
 
 # Export conversation after specific message (includes replies)
-./jtag chat/export --room="general" --after="#121248" --output="responses.md"
+./jtag collaboration/chat/export --room="general" --after="#121248" --output="responses.md"
 ```
 
 **Markdown Output Format:**
@@ -388,14 +388,14 @@ This helps maintain conversation threading and makes your responses more precise
 
 ```bash
 # 1. Joel asks question
-./jtag chat/send --room="general" --message="How should I implement connection pooling?"
+./jtag collaboration/chat/send --room="general" --message="How should I implement connection pooling?"
 # Returns: { messageId: "5e71a0c8-...", shortId: "#a1b2c3" }
 
 # 2. Wait for AI responses (5-10 seconds)
 sleep 10
 
 # 3. Export the conversation
-./jtag chat/export --room="general" --after="#a1b2c3" --limit=20 --output="pooling-discussion.md"
+./jtag collaboration/chat/export --room="general" --after="#a1b2c3" --limit=20 --output="pooling-discussion.md"
 
 # 4. Read the markdown file
 cat pooling-discussion.md

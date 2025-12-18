@@ -84,7 +84,7 @@ class AutonomousTestSuite {
     const tmuxRunning = await this.checkTmuxSession();
     
     // Check port availability using dynamic configuration
-    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     const portsActive = await this.checkPorts([activePorts.websocket_server, activePorts.http_server]);
     
@@ -367,7 +367,7 @@ class AutonomousTestSuite {
       }
       
       // Check if system is still responsive using dynamic ports
-      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const { getActivePorts } = require('../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
       const portCheck = await this.checkPorts([activePorts.websocket_server, activePorts.http_server]);
       if (!portCheck) {

@@ -23,12 +23,6 @@ export {
   validateConnectionConfig
 } from '@continuum/jtag/types';
 
-// Example-specific configuration (not part of the API)
-export {
-  getActiveExampleName,
-  getActivePorts,
-  getActiveExamplePath,
-  getActiveExample,
-  getActivePortsSync,
-  configureForBrowser
-} from './ExampleConfig';
+// Example-specific configuration removed - import directly from:
+// - Server code: import from '../examples/server/ExampleConfigServer'
+// - Shared code: import from '../shared/config' (generated constants)

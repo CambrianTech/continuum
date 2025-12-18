@@ -16,6 +16,7 @@
  */
 
 import { Commands } from '../../core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
@@ -259,11 +260,11 @@ export class ToolRegistry {
         .join('\n');
     }
 
-    if (toolName.startsWith('data/list') && result.items) {
+    if (toolName.startsWith(DATA_COMMANDS.LIST) && result.items) {
       return `Collection: ${result.collection || 'unknown'}\nCount: ${result.count || result.items.length}\n\nResults:\n${JSON.stringify(result.items, null, 2)}`;
     }
 
-    if (toolName.startsWith('data/read') && result.data) {
+    if (toolName.startsWith(DATA_COMMANDS.READ) && result.data) {
       return `Collection: ${result.collection || 'unknown'}\nID: ${result.id || 'unknown'}\n\nData:\n${JSON.stringify(result.data, null, 2)}`;
     }
 
@@ -274,7 +275,7 @@ export class ToolRegistry {
       return `Path: ${result.path || 'unknown'}${lineRange}\n\n${result.content}`;
     }
 
-    if (toolName === 'chat/export' && result.markdown) {
+    if (toolName === 'collaboration/chat/export' && result.markdown) {
       return `Exported ${result.messageCount || 0} messages:\n\n${result.markdown}`;
     }
 

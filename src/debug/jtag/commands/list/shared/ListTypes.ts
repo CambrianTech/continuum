@@ -5,13 +5,13 @@
  * Essential command that all JTAG systems must implement for client discovery.
  */
 
-import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * List command parameters
  */
-export interface ListParams extends JTAGPayload {
+export interface ListParams extends CommandParams {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
 

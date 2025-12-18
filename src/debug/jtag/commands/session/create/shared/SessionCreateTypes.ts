@@ -5,14 +5,14 @@
  * Handles session creation by routing to SessionDaemon internally.
  */
 
-import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { SessionCategory, SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
 /**
  * Session create command parameters
  */
-export interface SessionCreateParams extends JTAGPayload {
+export interface SessionCreateParams extends CommandParams {
   /** Session category */
   category: SessionCategory;
   /** Display name for the session */

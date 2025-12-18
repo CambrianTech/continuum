@@ -53,8 +53,8 @@ npm start                    # DEPLOYS code changes, takes 130s or so
 
 ./jtag ping #check for server and browser connection
 ./jtag screenshot            # Verify any visual changes
-./jtag chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
-./jtag chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
+./jtag collaboration/chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
+./jtag collaboration/chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
 ```
 
 **IF YOU FORGET `npm start`, THE BROWSER SHOWS OLD CODE!**
@@ -66,13 +66,13 @@ Don't panic and stash changes first before anything drastic. Use the stash to yo
 **Basic Usage:**
 ```bash
 # Send message to chat room (direct DB, no UI)
-./jtag chat/send --room="general" --message="Hello team" 
-./jtag chat/send --room="general" --message="Reply" --replyToId="abc123"
+./jtag collaboration/chat/send --room="general" --message="Hello team" 
+./jtag collaboration/chat/send --room="general" --message="Reply" --replyToId="abc123"
 
 # Export chat messages to markdown
-./jtag chat/export --room="general" --limit=50                    # Print to stdout
-./jtag chat/export --room="general" --output="/tmp/export.md"    # Save to file
-./jtag chat/export --limit=100 --includeSystem=true               # All rooms with system messages
+./jtag collaboration/chat/export --room="general" --limit=50                    # Print to stdout
+./jtag collaboration/chat/export --room="general" --output="/tmp/export.md"    # Save to file
+./jtag collaboration/chat/export --limit=100 --includeSystem=true               # All rooms with system messages
 ```
 
 **Interactive Workflow - Working WITH the AI Team:**
@@ -81,7 +81,7 @@ When you send a message, `chat/send` returns a message ID. Use this to track res
 
 ```bash
 # 1. Send message (captures the JSON response with messageId)
-RESPONSE=$(./jtag chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
+RESPONSE=$(./jtag collaboration/chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
 
 # 2. Extract message ID (using jq if available, or manual)
 MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.shortId')
@@ -91,10 +91,10 @@ echo "My message ID: $MESSAGE_ID"
 sleep 10
 
 # 4. Check their responses
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 
 # 5. Reply to specific AI feedback
-./jtag chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
+./jtag collaboration/chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
 ```
 
 **CRITICAL**: Don't just broadcast to the AI team - WORK WITH THEM. Use their feedback, reply to their questions, iterate based on what they're saying. The chat export shows message IDs as `#abcd123` - use those to reply.
@@ -111,6 +111,97 @@ sleep 10
 tail -f .continuum/sessions/user/shared/*/logs/server.log
 tail -f .continuum/sessions/user/shared/*/logs/browser.log
 ```
+
+---
+
+## 🤖 AI QA TESTING: YOUR UX VALIDATION TEAM
+
+**The AI team is your QA department.** They expose real usability problems that you'd never catch with manual testing.
+
+### The Correct Development Workflow
+
+```
+1. Edit code
+2. Deploy with npm start (90+ seconds)
+3. Test manually (verify basic functionality)
+4. ✨ ASK AI TEAM TO QA TEST ✨
+5. Wait for AI feedback (they WILL find issues)
+6. Fix confusing errors, improve help text, update READMEs
+7. THEN commit (precommit hook kills system, so QA must be done first)
+```
+
+### Why AI QA is Critical
+
+**AIs fail in real ways that reveal UX problems:**
+- Confusing error messages
+- Missing or unclear help text
+- Incomplete README documentation
+- Commands that work but are hard to discover
+- Parameter names that aren't intuitive
+
+**Use their failures as opportunities:**
+- Improve error messages with context
+- Add examples to help text
+- Clarify README usage instructions
+- Add missing parameter descriptions
+
+### Generators Create Discoverable Systems
+
+**Always use generators when they exist** (commands, daemons, etc.):
+
+```bash
+# ✅ CORRECT - Use generator
+npx tsx generator/generate-logger-daemon.ts
+
+# ❌ WRONG - Manual file creation
+mkdir daemons/logger-daemon && touch LoggerDaemon.ts
+```
+
+**What generators provide:**
+- Auto-generated README with usage examples
+- Help text that AIs can access via `./jtag command/name --help`
+- Package.json integration for `npm run` scripts
+- Consistent structure across all modules
+- Proper discovery mechanisms
+
+**When you "go it alone" (skip generators):**
+- Documentation is fragmented
+- Help text is missing or inconsistent
+- AIs can't find the info they need
+- System becomes harder to use
+- You're fighting the architecture instead of using it
+
+### Example AI QA Session
+
+```bash
+# 1. Deploy your changes
+npm start
+
+# 2. Ask AI team to test
+./jtag collaboration/chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
+
+# 3. Wait for responses (30-60 seconds)
+sleep 60
+
+# 4. Check their feedback
+./jtag collaboration/chat/export --room="general" --limit=30
+
+# 5. Fix issues they found
+# - Improve error messages
+# - Update README
+# - Add help text
+# - Clarify parameters
+
+# 6. Test again with AIs
+./jtag collaboration/chat/send --room="general" --message="Fixed the error messages. Can you try again?"
+
+# 7. Once AIs confirm it works, THEN commit
+git commit -m "Add wall/write with AI-validated UX"
+```
+
+### Why This Can't Happen During Commit
+
+**CRITICAL BUG**: The precommit hook kills the system to run tests, so you can't ask AIs for feedback during commit. QA must happen BEFORE attempting to commit.
 
 ---
 
@@ -267,6 +358,9 @@ import { Commands } from '@system/core/shared/Commands';
 | `@types/*` | `types/*` | Type definitions |
 | `@browser/*` | `browser/*` | Browser-specific code |
 | `@server/*` | `server/*` | Server-specific code |
+| `@scripts/*` | `scripts/*` | Build and utility scripts |
+| `@utils/*` | `utils/*` | Utility functions |
+| `@generator/*` | `generator/*` | Code generators |
 
 **Migration Strategy:**
 - **New code**: Always use path aliases
@@ -534,7 +628,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # STEP 1: Ask a question in the general room (no room ID needed!)
-./jtag chat/send --room="general" --message="How should I implement connection pooling for websockets?"
+./jtag collaboration/chat/send --room="general" --message="How should I implement connection pooling for websockets?"
 
 # STEP 2: Wait 5-10 seconds for responses
 
@@ -548,7 +642,7 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # 1. Send your question and capture the message ID
-MESSAGE_ID=$(./jtag chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
+MESSAGE_ID=$(./jtag collaboration/chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
 
 # 2. Wait for AI responses (they respond within 5-10 seconds)
 sleep 10
@@ -566,7 +660,7 @@ sleep 10
 
 ```bash
 # Export conversation thread to markdown
-./jtag chat/export --messageId="UUID" --format="markdown" --output="solution.md"
+./jtag collaboration/chat/export --messageId="UUID" --format="markdown" --output="solution.md"
 
 # This will include:
 # - Your question
@@ -935,7 +1029,7 @@ Commands.execute() and Events.subscribe()/emit() - the two primitives everything
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy with npm start, just edit and test again e.g npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
 - need to remember to npm run build:ts before deploying with npm start, just to make sure there's no compilation issues
-- ./jtag chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
+- ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
 - assume a new concept or group of functions ought to be in its own file and most likely own class. Use good OOP, interfaces, like java, dot net, or ts

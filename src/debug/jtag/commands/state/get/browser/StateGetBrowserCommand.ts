@@ -5,6 +5,7 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { StateGetParams, StateGetResult } from '../shared/StateGetTypes';
 import { createStateGetResult } from '../shared/StateGetTypes';
@@ -29,7 +30,7 @@ export class StateGetBrowserCommand extends CommandBase<StateGetParams, StateGet
       }
 
       // Delegate to the elegant data/list command
-      const dataResult = await Commands.execute<any, DataListResult<BaseEntity>>('data/list', {
+      const dataResult = await Commands.execute<any, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
         collection: params.collection,
         filter,
         limit: params.limit,

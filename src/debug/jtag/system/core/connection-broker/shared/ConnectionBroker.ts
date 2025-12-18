@@ -361,9 +361,8 @@ export class ConnectionBroker implements IConnectionBroker {
     // Use dynamic port configuration instead of hardcoded values
     let port: number;
     try {
-      const { getActivePortsSync } = require('../../../../examples/shared/ExampleConfig');
-      const activePorts = getActivePortsSync();
-      port = activePorts.websocket_server;
+      const { WS_PORT } = require('../../../../shared/config');
+      port = WS_PORT;
     } catch (error) {
       throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
     }

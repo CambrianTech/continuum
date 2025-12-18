@@ -5,6 +5,7 @@
  */
 
 import { RagQueryOpenCommand } from '../shared/RagQueryOpenCommand';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { RagQueryOpenParams, RagQueryOpenResult, CodeSearchResult } from '../shared/RagQueryOpenTypes';
 import { normalizeRagQueryOpenParams } from '../shared/RagQueryOpenTypes';
 import type { JTAGContext } from '../../../../../system/core/types/JTAGTypes';
@@ -95,7 +96,7 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
 
       // Step 2: Fetch all indexed entries from database
       // TODO: Add filters for fileType, exportType when fetching
-      const listResult = await Commands.execute('data/list', {
+      const listResult = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: 'code_index',
         orderBy: [{ field: 'lastIndexed', direction: 'desc' }],
         context: this.context,

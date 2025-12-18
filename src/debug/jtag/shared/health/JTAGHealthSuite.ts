@@ -1,19 +1,20 @@
 /**
  * JTAG System Health Suite - Modular replacement for improved-system-detector
- * 
+ *
  * Uses the new HealthCheckFramework to provide reusable JTAG system validation
  */
 
 import { HealthCheckRunner, HealthSuite, SystemHealthChecks } from './HealthCheckFramework';
+import { HTTP_PORT, WS_PORT } from '../config';
 
 export function createJTAGHealthSuite(): HealthSuite {
   return {
     name: 'JTAG System Health',
     description: 'Comprehensive validation of JTAG debugging infrastructure',
     checks: [
-      SystemHealthChecks.httpEndpoint('http://localhost:9003', 200),
-      SystemHealthChecks.portOpen(9001), // WebSocket port
-      SystemHealthChecks.portOpen(9003), // HTTP port
+      SystemHealthChecks.httpEndpoint(`http://localhost:${HTTP_PORT}`, 200),
+      SystemHealthChecks.portOpen(WS_PORT),  // WebSocket port (from config)
+      SystemHealthChecks.portOpen(HTTP_PORT), // HTTP port (from config)
       SystemHealthChecks.processRunning('tmux'),
       SystemHealthChecks.directoryExists('.continuum/jtag'),
       
@@ -97,7 +98,7 @@ export function createJTAGHealthSuite(): HealthSuite {
         description: 'Verify core widgets are loaded in browser',
         check: async () => {
           const { execAsync } = await import('../utils/ProcessUtils');
-          const result = await execAsync('curl -s http://localhost:9003/ | grep -E "chat-widget|screenshot-widget" | wc -l');
+          const result = await execAsync(`curl -s http://localhost:${HTTP_PORT}/ | grep -E "chat-widget|screenshot-widget" | wc -l`);
           
           if (result.success) {
             const widgetCount = parseInt(result.stdout.trim());
@@ -169,8 +170,8 @@ export async function checkJTAGCritical(): Promise<boolean> {
     name: 'JTAG Critical Systems',
     description: 'Essential systems that must be working',
     checks: [
-      SystemHealthChecks.httpEndpoint('http://localhost:9003', 200),
-      SystemHealthChecks.portOpen(9001),
+      SystemHealthChecks.httpEndpoint(`http://localhost:${HTTP_PORT}`, 200),
+      SystemHealthChecks.portOpen(WS_PORT),
       SystemHealthChecks.processRunning('tmux')
     ]
   };

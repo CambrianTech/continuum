@@ -67,7 +67,7 @@ async function testGenomeCRUD() {
     const tmpFile = join('/tmp', `genome-layer-${Date.now()}.json`);
     writeFileSync(tmpFile, JSON.stringify(layerData));
 
-    const createLayerResult = await runJtagCommand(`data/create --collection="genome_layers" --dataFile="${tmpFile}"`);
+    const createLayerResult = await runJtagCommand(`${DATA_COMMANDS.CREATE} --collection="genome_layers" --dataFile="${tmpFile}"`);
     unlinkSync(tmpFile); // Clean up temp file
 
     if (!createLayerResult?.success || !createLayerResult?.id) {
@@ -79,7 +79,7 @@ async function testGenomeCRUD() {
     console.log(`✅ Created GenomeLayerEntity: ${layerId}`);
 
     // Verify layer persisted to database
-    const dbReadLayer = await runJtagCommand(`data/read --collection="genome_layers" --id="${layerId}"`);
+    const dbReadLayer = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="genome_layers" --id="${layerId}"`);
     const layerPersisted = Boolean(dbReadLayer?.success && dbReadLayer?.found);
 
     results.push({
@@ -125,7 +125,7 @@ async function testGenomeCRUD() {
     const tmpGenomeFile = join('/tmp', `genome-${Date.now()}.json`);
     writeFileSync(tmpGenomeFile, JSON.stringify(genomeData));
 
-    const createGenomeResult = await runJtagCommand(`data/create --collection="genomes" --dataFile="${tmpGenomeFile}"`);
+    const createGenomeResult = await runJtagCommand(`${DATA_COMMANDS.CREATE} --collection="genomes" --dataFile="${tmpGenomeFile}"`);
     unlinkSync(tmpGenomeFile); // Clean up temp file
 
     if (!createGenomeResult?.success || !createGenomeResult?.id) {
@@ -137,7 +137,7 @@ async function testGenomeCRUD() {
     console.log(`✅ Created GenomeEntity: ${genomeId}`);
 
     // Verify genome persisted to database
-    const dbReadGenome = await runJtagCommand(`data/read --collection="genomes" --id="${genomeId}"`);
+    const dbReadGenome = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="genomes" --id="${genomeId}"`);
     const genomePersisted = Boolean(dbReadGenome?.success && dbReadGenome?.found);
 
     results.push({

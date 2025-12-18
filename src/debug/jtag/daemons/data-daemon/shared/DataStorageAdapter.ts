@@ -234,6 +234,7 @@ export abstract class DataStorageAdapter {
    * Explain query execution (dry-run) - shows what query would be generated
    */
   abstract explainQuery(query: StorageQuery): Promise<QueryExplanation>;
+
 }
 
 /**

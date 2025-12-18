@@ -3,7 +3,6 @@
  *
  * All data/* command names defined here.
  * Usage:
- *   import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
  *   await Commands.execute(DATA_COMMANDS.LIST, params);
  */
 
@@ -31,6 +30,15 @@ export const DATA_COMMANDS = {
 
   /** Get collection schema information */
   SCHEMA: 'data/schema',
+
+  /** Open a database handle */
+  OPEN: 'data/open',
+
+  /** Close a database handle */
+  CLOSE: 'data/close',
+
+  /** List all database handles */
+  LIST_HANDLES: 'data/list-handles',
 } as const;
 
 /**

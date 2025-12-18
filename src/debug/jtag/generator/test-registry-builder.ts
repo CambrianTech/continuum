@@ -13,7 +13,7 @@ const rootPath = path.join(__dirname, '..');
 // Sample entries
 const commandEntries: EntryInfo[] = [
   { name: 'ping', className: 'PingCommand', importPath: './commands/ping/server/PingServer' },
-  { name: 'screenshot', className: 'ScreenshotCommand', importPath: './commands/screenshot/browser/ScreenshotBrowser' }
+  { name: 'screenshot', className: 'ScreenshotCommand', importPath: './commands/interface/screenshot/browser/ScreenshotBrowser' }
 ];
 
 const widgetEntries: EntryInfo[] = [

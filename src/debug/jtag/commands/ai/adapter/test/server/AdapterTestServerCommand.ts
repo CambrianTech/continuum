@@ -24,6 +24,7 @@ import type { DataCreateParams, DataUpdateParams, DataCreateResult } from '../..
 import { TestExecutionEntity } from '../../../../../daemons/data-daemon/shared/entities/TestExecutionEntity';
 import { Events } from '../../../../../system/core/shared/Events';
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, AsyncTestResult> {
   constructor(
@@ -73,7 +74,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
     };
 
     // Save to database using data/create command
-    const createResult = await Commands.execute<DataCreateParams<TestExecutionEntity>, DataCreateResult>('data/create', {
+    const createResult = await Commands.execute<DataCreateParams<TestExecutionEntity>, DataCreateResult>(DATA_COMMANDS.CREATE, {
       collection: TestExecutionEntity.collection,
       data: execution,
       id: testId,
@@ -159,7 +160,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
    * Helper to update test status in database
    */
   private async updateTestStatus(testId: string, updates: Partial<TestExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams<TestExecutionEntity>, CommandResult>('data/update', {
+    await Commands.execute<DataUpdateParams<TestExecutionEntity>, CommandResult>(DATA_COMMANDS.UPDATE, {
       collection: TestExecutionEntity.collection,
       id: testId,
       data: {

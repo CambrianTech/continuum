@@ -550,13 +550,13 @@ describe('InferenceCoordinator', () => {
 
 ```bash
 # Send message to trigger all AIs
-./jtag chat/send --room="general" --message="Hello everyone!"
+./jtag collaboration/chat/send --room="general" --message="Hello everyone!"
 
 # Wait for responses
 sleep 30
 
 # Check - should see max 3 responses (not 50+)
-./jtag chat/export --room="general" --limit=10
+./jtag collaboration/chat/export --room="general" --limit=10
 
 # Check coordinator stats
 ./jtag ai/coordinator-stats

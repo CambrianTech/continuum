@@ -241,7 +241,7 @@ RESULT: PersonaUser = ~400 lines (pure coordinator)
 ```bash
 npm run build:ts  # TypeScript compilation
 npm start         # Full deployment
-./jtag chat/send --room="general" --message="Test evaluation"
+./jtag collaboration/chat/send --room="general" --message="Test evaluation"
 # Verify AI responds correctly
 ```
 
@@ -301,7 +301,7 @@ npm start         # Full deployment
 ```bash
 npm run build:ts
 npm start
-./jtag chat/send --room="general" --message="Generate a response"
+./jtag collaboration/chat/send --room="general" --message="Generate a response"
 # Verify AI generates response correctly
 ```
 
@@ -335,8 +335,8 @@ npm start
 ```bash
 npm run build:ts
 npm start
-./jtag chat/send --room="general" --message="Full system test"
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/send --room="general" --message="Full system test"
+./jtag collaboration/chat/export --room="general" --limit=20
 # Verify entire system works end-to-end
 ```
 
@@ -406,14 +406,14 @@ npx vitest tests/integration/persona-user-full.test.ts
 ### System Tests (End-to-End)
 ```bash
 npm start
-./jtag chat/send --room="general" --message="Test message 1"
+./jtag collaboration/chat/send --room="general" --message="Test message 1"
 sleep 10
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 # Verify AI responds correctly
 
-./jtag chat/send --room="general" --message="Test message 2"
+./jtag collaboration/chat/send --room="general" --message="Test message 2"
 sleep 10
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 # Verify AI responds correctly again
 ```
 

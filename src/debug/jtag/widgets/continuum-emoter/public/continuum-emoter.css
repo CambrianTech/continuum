@@ -30,11 +30,12 @@
   height: 24px;
   border-radius: 50%;
   flex-shrink: 0;
-  transition: transform 0.3s ease, opacity 0.3s ease;
+  transition: transform 0.3s ease;
   margin-top: -1px;
   position: relative;
   background: transparent;
-  border: 2px solid currentColor;
+  border: 2px solid var(--color-primary, #00d9ff); /* Ring always stays primary blue */
+  --orb-color: var(--color-primary, #00d9ff); /* Default orb color */
 }
 
 /* Glowing orb inside the ring (behind it) - HAL 9000 incandescent bulb effect */
@@ -47,11 +48,12 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: radial-gradient(circle, currentColor 0%, currentColor 30%, transparent 70%);
+  background: radial-gradient(circle, var(--orb-color) 0%, var(--orb-color) 30%, transparent 70%);
   opacity: 0.9;
   z-index: -1;
   filter: blur(2px);
-  box-shadow: 0 0 8px currentColor, 0 0 12px currentColor;
+  box-shadow: 0 0 8px var(--orb-color), 0 0 12px var(--orb-color);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 
 /* Brand Text */
@@ -137,29 +139,29 @@
   font-size: 8px;
 }
 
-/* Orb States - Ring colors using currentColor (crisp, no shadow on ring) */
+/* Orb States - Only inner orb changes color, ring stays primary blue */
 .status-orb.status-healthy {
-  color: var(--color-success, #00ff64);
+  --orb-color: var(--color-success, #00ff64);
   animation: pulse-healthy 3s infinite;
 }
 
 .status-orb.status-warning {
-  color: var(--color-warning, #ffaa00);
+  --orb-color: var(--color-warning, #ffaa00);
   animation: pulse-warning 2s infinite;
 }
 
 .status-orb.status-error {
-  color: var(--color-error, #ff0060);
+  --orb-color: var(--color-error, #ff0060);
   animation: pulse-error 1s infinite;
 }
 
 .status-orb.status-initializing {
-  color: var(--color-primary, #00d9ff);
+  --orb-color: var(--color-primary, #00d9ff);
   animation: pulse-initializing 2s infinite;
 }
 
 .status-orb.status-custom {
-  color: var(--orb-color, #00d9ff);
+  /* --orb-color set via inline style */
   animation: pulse-healthy 2s infinite;
 }
 

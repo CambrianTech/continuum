@@ -9,7 +9,7 @@
 import type { CommandParams, CommandResult } from '../../types/JTAGTypes';
 
 // Import all command types (will be auto-generated eventually)
-import type { ScreenshotParams, ScreenshotResult } from '../../../../commands/screenshot/shared/ScreenshotTypes';
+import type { ScreenshotParams, ScreenshotResult } from '@commands/interface/screenshot/shared/ScreenshotTypes';
 import type { FileSaveParams, FileSaveResult } from '../../../../commands/file/save/shared/FileSaveTypes';
 import type { FileLoadParams, FileLoadResult } from '../../../../commands/file/load/shared/FileLoadTypes';
 import type { PingParams, PingResult } from '../../../../commands/ping/shared/PingTypes';
@@ -29,8 +29,8 @@ import type { IndexCreateParams, IndexCreateResult } from '../../../../commands/
 import type { RagQueryOpenParams, RagQueryOpenResult } from '../../../../commands/ai/rag/query-open/shared/RagQueryOpenTypes';
 import type { RagQueryFetchParams, RagQueryFetchResult } from '../../../../commands/ai/rag/query-fetch/shared/RagQueryFetchTypes';
 import type { RagQueryCloseParams, RagQueryCloseResult } from '../../../../commands/ai/rag/query-close/shared/RagQueryCloseTypes';
-import type { TreeParams, TreeResult } from '../../../../commands/tree/shared/TreeTypes';
-import type { ContentOpenParams, ContentOpenResult } from '../../../../commands/content/open/shared/ContentOpenTypes';
+import type { TreeParams, TreeResult } from '@commands/workspace/tree/shared/TreeTypes';
+import type { ContentOpenParams, ContentOpenResult } from '@commands/collaboration/content/open/shared/ContentOpenTypes';
 
 /**
  * Command Registry - Maps command names to their param/result types

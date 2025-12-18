@@ -51,7 +51,7 @@ class SidebarResizer extends HTMLElement {
     private async loadSavedWidth(): Promise<void> {
         try {
             // Try to load UIPreferencesEntity from localStorage
-            const result = await Commands.execute<DataReadResult<UIPreferencesEntity>>('data/read', {
+            const result = await Commands.execute<DataReadResult<UIPreferencesEntity>>(DATA_COMMANDS.READ, {
                 collection: 'UIPreferences',
                 id: this.uiPrefsId,
                 backend: 'browser'
@@ -92,7 +92,7 @@ class SidebarResizer extends HTMLElement {
     private async saveWidth(width: number): Promise<void> {
         try {
             // Try to read first to see if entity exists
-            const readResult = await Commands.execute<DataReadResult<UIPreferencesEntity>>('data/read', {
+            const readResult = await Commands.execute<DataReadResult<UIPreferencesEntity>>(DATA_COMMANDS.READ, {
                 collection: 'UIPreferences',
                 id: this.uiPrefsId,
                 backend: 'browser'
@@ -100,7 +100,7 @@ class SidebarResizer extends HTMLElement {
 
             if (readResult.success && readResult.found) {
                 // Entity exists, update it
-                await Commands.execute<DataUpdateResult<UIPreferencesEntity>>('data/update', {
+                await Commands.execute<DataUpdateResult<UIPreferencesEntity>>(DATA_COMMANDS.UPDATE, {
                     collection: 'UIPreferences',
                     id: this.uiPrefsId,
                     data: {
@@ -112,7 +112,7 @@ class SidebarResizer extends HTMLElement {
                 });
             } else {
                 // Entity doesn't exist, create it
-                await Commands.execute('data/create', {
+                await Commands.execute(DATA_COMMANDS.CREATE, {
                     collection: 'UIPreferences',
                     data: {
                         id: this.uiPrefsId,

@@ -203,7 +203,11 @@ async function smartBuild(): Promise<void> {
         break;
       case 'TypeScript':
         runBuildStep('TypeScript compilation', 'npm run build:ts');
-        runBuildStep('Post-build processing', 'npm run postbuild');
+        // Only run postbuild if clean generator output exists (optional optimization)
+        const cleanConfigPath = path.join(__dirname, '../.continuum/generator/path-mappings.json');
+        if (fs.existsSync(cleanConfigPath)) {
+          runBuildStep('Post-build processing', 'npm run postbuild');
+        }
         break;
       case 'Tarball':
         runBuildStep('Package creation', 'npm run pack');
@@ -215,7 +219,7 @@ async function smartBuild(): Promise<void> {
   
   // Store version information for build detection
   try {
-    const { BuildVersionDetector } = await import('../utils/BuildVersionDetector');
+    const { BuildVersionDetector } = await import('../utils/server/BuildVersionDetector');
     const detector = new BuildVersionDetector();
     const sourceHash = await detector.calculateSourceHash();
     await detector.storeSystemVersion(sourceHash);

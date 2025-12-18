@@ -677,7 +677,7 @@ assert(phenotype.totalWeight === 1.0);
   --layers='[{"name":"wine-expertise","weight":0.7},{"name":"vin-diesel-style","weight":0.3}]'
 
 # Test generation
-./jtag chat/send --room="general" --message="What's the best Bordeaux vintage?"
+./jtag collaboration/chat/send --room="general" --message="What's the best Bordeaux vintage?"
 # Expected: Vin Diesel personality talking about wine
 ```
 
@@ -730,11 +730,11 @@ export GENOME_CLOUD_ADAPTERS='["vin-diesel-style"]'
 **Testing**:
 ```bash
 # Send straightforward message
-./jtag chat/send --room="general" --message="Hi"
+./jtag collaboration/chat/send --room="general" --message="Hi"
 # Genome should activate lightweight layers
 
 # Send nuanced message
-./jtag chat/send --room="general" --message="Compare the philosophical implications of actor-critic vs PPO in RLHF"
+./jtag collaboration/chat/send --room="general" --message="Compare the philosophical implications of actor-critic vs PPO in RLHF"
 # Genome should activate deep expertise layers
 
 # Check active phenotype

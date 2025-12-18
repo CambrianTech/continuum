@@ -1252,14 +1252,14 @@ sleep 120
 # Should return: "Joel prefers concise explanations" with high relevance
 
 # Test in conversation
-./jtag chat/send --room="general" \
+./jtag collaboration/chat/send --room="general" \
   --message="Helper AI, how does vector search work?"
 
 # Wait for response
 sleep 10
 
 # Export conversation
-./jtag chat/export --room="general" --limit=5
+./jtag collaboration/chat/export --room="general" --limit=5
 
 # Response should demonstrate memory of vector search details
 ```

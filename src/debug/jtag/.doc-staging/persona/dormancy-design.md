@@ -560,13 +560,13 @@ describe('PersonaUser Dormancy', () => {
 ### Integration Tests
 ```bash
 # Test @self commands in real chat
-./jtag chat/send --room="general" --message="@self dormant mention-only for 5m"
+./jtag collaboration/chat/send --room="general" --message="@self dormant mention-only for 5m"
 # Verify Helper AI goes dormant
 
-./jtag chat/send --room="general" --message="test message without mention"
+./jtag collaboration/chat/send --room="general" --message="test message without mention"
 # Verify Helper AI doesn't respond
 
-./jtag chat/send --room="general" --message="@helper are you there?"
+./jtag collaboration/chat/send --room="general" --message="@helper are you there?"
 # Verify Helper AI responds
 
 ./jtag persona/wake --personaId="helper-ai-id"

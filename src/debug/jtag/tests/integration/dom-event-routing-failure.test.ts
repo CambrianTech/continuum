@@ -41,7 +41,7 @@ async function proveDOMEventRoutingFailure(): Promise<void> {
     console.log(`Expected: ✅ SUCCESS - CLI can send messages`);
 
     console.log('🔧 DOM-ROUTING-TEST-' + Date.now() + ': About to send CLI message');
-    const cliResult = await client.commands['chat/send-message']({
+    const cliResult = await client.commands['collaboration/chat/send']({
       roomId: 'general',
       message: testMessage,
       senderName: 'TestBot'
@@ -68,7 +68,7 @@ async function proveDOMEventRoutingFailure(): Promise<void> {
       await new Promise(resolve => setTimeout(resolve, 1000)); // Give server time
 
       console.log('🔧 DOM-ROUTING-TEST-' + Date.now() + ': Checking server storage');
-      const storageResult = await client.commands['chat/get-messages']({
+      const storageResult = await client.commands['collaboration/chat/get-messages']({
         roomId: 'general',
         limit: 3
       });

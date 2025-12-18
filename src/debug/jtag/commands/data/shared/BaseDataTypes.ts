@@ -7,7 +7,7 @@
  * ✅ Backend routing abstraction
  */
 
-import type { JTAGPayload, JTAGContext, JTAGEnvironment } from '../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, JTAGEnvironment } from '../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandleRegistry';
@@ -17,11 +17,13 @@ import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandl
  * Uses JTAGEnvironment for routing capability
  * Supports optional dbHandle for multi-database operations
  */
-export interface BaseDataParams extends JTAGPayload {
+export interface BaseDataParams extends CommandParams {
   readonly collection: string;
   readonly backend: JTAGEnvironment;
   /** Optional database handle for multi-database operations (defaults to 'default') */
   readonly dbHandle?: DbHandle;
+  /** Suppress CRUD events for this operation (for internal operations like archiving) */
+  readonly suppressEvents?: boolean;
 }
 
 /**

@@ -16,7 +16,7 @@ import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import { JTAGClientFactory } from '../shared/JTAGClientFactory';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ExecCommandParams, ExecCommandResult } from '../../commands/exec/shared/ExecTypes';
-import type { ChatSendMessageParams } from '../../commands/chat/send-message/shared/ChatSendMessageTypes';
+import type { ChatSendMessageParams } from '../../commands/chat/send/shared/ChatSendMessageTypes';
 import { userIdManager } from '../../system/shared/UserIdManager';
 import type { UserId, SessionId } from '../../system/data/domains/CoreTypes';
 import type { User, UserType } from '../../system/data/domains/User';

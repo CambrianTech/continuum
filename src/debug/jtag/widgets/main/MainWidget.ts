@@ -9,6 +9,7 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
+import { COMMANDS } from '../../shared/generated-command-constants';
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
@@ -300,13 +301,18 @@ export class MainWidget extends BaseWidget {
         const present = !document.hidden;
 
         try {
-          await Commands.execute('activity/user-present', {
+          await Commands.execute(COMMANDS.COLLABORATION_ACTIVITY_USER_PRESENT, {
             activityId: roomId,
             present
           } as any);  // Cast to any for new command not yet in type registry
           console.log(`🌡️ MainPanel: User ${present ? 'present' : 'left'} in room ${roomId}`);
         } catch (error) {
-          console.error('❌ MainPanel: Failed to track visibility:', error);
+          // Silently ignore when disconnected - this is expected
+          const isDisconnected = error instanceof Error &&
+            (error.message.includes('WebSocket not ready') || error.message.includes('WebSocket not connected'));
+          if (!isDisconnected) {
+            console.error('❌ MainPanel: Failed to track visibility:', error);
+          }
         }
       }
     });

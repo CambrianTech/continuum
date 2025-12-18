@@ -21,7 +21,7 @@ class ErrorSerializationTest {
       // Connect to the running JTAG system
       console.log('🔗 Connecting to JTAG system...');
       // Use dynamic port resolution instead of hardcoded port
-      const { getActivePorts } = require('../examples/shared/ExampleConfig');
+      const { getActivePorts } = require('../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
       
       const { client } = await JTAGClientServer.connect({

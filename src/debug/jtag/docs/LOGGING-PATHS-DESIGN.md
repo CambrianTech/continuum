@@ -220,7 +220,7 @@ npm start  # Deploy changes
 sleep 130  # Wait for deployment
 
 # Send test message to trigger logging
-./jtag chat/send --room="general" --message="Test log paths"
+./jtag collaboration/chat/send --room="general" --message="Test log paths"
 
 # Check ALL logs appear in correct location (one flat directory)
 ls -la .continuum/personas/claude-assistant-79a5e548/logs/

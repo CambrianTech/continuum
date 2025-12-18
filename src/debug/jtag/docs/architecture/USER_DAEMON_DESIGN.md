@@ -587,7 +587,7 @@ class UserListWidget {
 ./jtag data/update --collection=Room --id=<room-id> --data='{"participants":[{"userId":"<persona-id>"}]}'
 
 # Send message to room
-./jtag chat/send --roomId=<room-id> --message="Hello CodeHelper"
+./jtag collaboration/chat/send --roomId=<room-id> --message="Hello CodeHelper"
 
 # Verify persona responds (check logs for model API call)
 ./jtag debug/logs --filterPattern="PersonaConnection.*response"

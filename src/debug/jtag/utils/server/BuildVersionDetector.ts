@@ -12,8 +12,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { globSync } from 'glob';
 // import { execSync } from 'child_process'; // Currently unused
-import { SystemReadySignaler } from '../scripts/signal-system-ready';
-import { diagnostics } from './DiagnosticsLogger';
+import { SystemReadySignaler } from '@scripts/signaling/server/SystemReadySignaler';
+import { diagnostics } from '@utils/DiagnosticsLogger';
 
 export interface VersionMismatchResult {
   needsRebuild: boolean;

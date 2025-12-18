@@ -81,7 +81,7 @@ async function testChatWidgetRoomEvents() {
     
     // Now send a message to room-123 that should trigger the room event
     console.log('💬 Sending message to room-123...');
-    const messageResult = await client.commands['chat/send-message']({
+    const messageResult = await client.commands['collaboration/chat/send']({
       context: { uuid: 'room-test', environment: 'server' },
       // Use shared session instead of hardcoded string
       roomId: 'room-123',

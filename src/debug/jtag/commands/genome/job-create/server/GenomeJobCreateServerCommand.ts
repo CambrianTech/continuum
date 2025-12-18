@@ -17,6 +17,7 @@ import { FineTuningJobEntity } from '../../../../daemons/data-daemon/shared/enti
 import { PARAMETER_RANGES, type JobConfiguration } from '../../../../daemons/data-daemon/shared/entities/FineTuningTypes';
 import { COLLECTIONS, FINE_TUNING_PROVIDERS } from '../../../../system/shared/Constants';
 import { Commands } from '../../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import { v4 as uuidv4 } from 'uuid';
@@ -245,7 +246,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       }
 
       // 6. Save to database
-      const createResult = await Commands.execute<any, DataCreateResult<FineTuningJobEntity>>('data/create', {
+      const createResult = await Commands.execute<any, DataCreateResult<FineTuningJobEntity>>(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         data: jobEntity
       });
@@ -285,7 +286,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       if (!trainingResult.success) {
         // Training failed - update job status
-        await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>('data/update', {
+        await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
           collection: COLLECTIONS.FINE_TUNING_JOBS,
           id: jobId,
           updates: {
@@ -308,7 +309,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       console.log(`✅ GENOME JOB CREATE: Training started, session ID: ${trainingResult.modelId}`);
 
       // Update job entity with training session info
-      await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>('data/update', {
+      await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: jobId,
         updates: {

@@ -15,7 +15,7 @@ import { WidgetDaemonBrowser } from '../../../../daemons/widget-daemon/browser/W
 // Browser Command Imports
 import { GetChatHistoryBrowserCommand } from '../../../../commands/chat/get-chat-history/browser/GetChatHistoryBrowserCommand';
 import { RoomEventBrowserCommand } from '../../../../commands/chat/room-events/browser/RoomEventBrowserCommand';
-import { SendMessageBrowserCommand } from '../../../../commands/chat/send-message/browser/SendMessageBrowserCommand';
+import { SendMessageBrowserCommand } from '../../../../commands/chat/send/browser/SendMessageBrowserCommand';
 import { SendRoomEventBrowserCommand } from '../../../../commands/chat/send-room-event/browser/SendRoomEventBrowserCommand';
 import { ClickBrowserCommand } from '../../../../commands/click/browser/ClickBrowserCommand';
 import { CompileTypescriptBrowserCommand } from '../../../../commands/compile-typescript/browser/CompileTypescriptBrowserCommand';
@@ -70,22 +70,22 @@ export const BROWSER_DAEMONS: DaemonEntry[] = [
 
 export const BROWSER_COMMANDS: CommandEntry[] = [
   {
-    name: 'chat/get-chat-history',
+    name: 'collaboration/chat/get-chat-history',
     className: 'GetChatHistoryBrowserCommand',
     commandClass: GetChatHistoryBrowserCommand
   },
   {
-    name: 'chat/room-events',
+    name: 'collaboration/chat/room-events',
     className: 'RoomEventBrowserCommand',
     commandClass: RoomEventBrowserCommand
   },
   {
-    name: 'chat/send-message',
+    name: 'collaboration/chat/send',
     className: 'SendMessageBrowserCommand',
     commandClass: SendMessageBrowserCommand
   },
   {
-    name: 'chat/send-room-event',
+    name: 'collaboration/chat/send-room-event',
     className: 'SendRoomEventBrowserCommand',
     commandClass: SendRoomEventBrowserCommand
   },

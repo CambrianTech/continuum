@@ -8,8 +8,11 @@
  */
 
 import { EventEmitter } from 'events';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, exec } from 'child_process';
+import { promisify } from 'util';
 import { WorkingDirConfig } from '../core/config/WorkingDirConfig';
+
+const execAsync = promisify(exec);
 import { SystemReadySignaler } from '../../scripts/signal-system-ready';
 import { 
   SYSTEM_MILESTONES, 
@@ -184,7 +187,7 @@ export class SystemOrchestrator extends EventEmitter {
     } else {
       // Use active example configuration
       try {
-        const { getActiveExampleName } = await import('../../examples/shared/ExampleConfig');
+        const { getActiveExampleName } = await import('../../examples/server/ExampleConfigServer');
         const activeExample = getActiveExampleName();
         const defaultWorkingDir = `examples/${activeExample}`;
         WorkingDirConfig.setWorkingDir(defaultWorkingDir);
@@ -231,7 +234,7 @@ export class SystemOrchestrator extends EventEmitter {
     
     // Fallback: Check if ports are in use (indicating servers are running)
     try {
-      const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
+      const { getActivePorts } = await import('../../examples/server/ExampleConfigServer');
       const activePorts = getActivePorts();
       
       const portChecks = await Promise.all([
@@ -467,50 +470,53 @@ export class SystemOrchestrator extends EventEmitter {
    */
   private async executeServerStart(): Promise<boolean> {
     console.debug('🔌 Starting server process...');
-    
+
     // Clear any existing signals
     await this.signaler.clearSignals();
-    
+
     // Start the server using the existing launch-active-example script
     // but WITHOUT the premature browser opening
-    const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
+    const { getActivePorts } = await import('../../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
-    
+
     // Import and start the JTAG system server
     const { JTAGSystemServer } = await import('../core/system/server/JTAGSystemServer');
     const jtagServer = await JTAGSystemServer.connect();
     console.debug(`✅ JTAG WebSocket Server running on port ${activePorts.websocket_server}`);
-    
-    // Start the example HTTP server
-    const { getActiveExamplePath } = await import('../../examples/shared/ExampleConfig');
+
+    // Start the example HTTP server (REQUIRED - serves the UI)
+    // NOTE: This is intentional architecture - two separate servers:
+    //   1. JTAGSystemServer (WebSocket + daemons) - core backend
+    //   2. minimal-server.ts (HTTP) - serves UI and static files
+    const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
     const activeExamplePath = getActiveExamplePath();
-    
-    console.debug(`🎯 Starting npm start in: ${activeExamplePath}`);
-    
+
+    console.debug(`🎯 Starting HTTP server in: ${activeExamplePath}`);
+
     this.serverProcess = spawn('npm', ['start'], {
       cwd: activeExamplePath,
       stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout/stderr
       shell: true
     });
-    
+
     this.serverProcess.stdout?.on('data', (data) => {
       console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
     });
-    
+
     this.serverProcess.stderr?.on('data', (data) => {
       console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
     });
-    
+
     this.serverProcess.on('error', (error) => {
       console.error(`❌ Server process failed: ${error.message}`);
     });
-    
+
     this.serverProcess.on('exit', (code, signal) => {
       console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
     });
-    
+
     await milestoneEmitter.completeMilestone(
-      SYSTEM_MILESTONES.SERVER_START, 
+      SYSTEM_MILESTONES.SERVER_START,
       this.currentEntryPoint
     );
     return true;
@@ -566,7 +572,7 @@ export class SystemOrchestrator extends EventEmitter {
     
     // SIMPLIFIED READINESS CHECK: Check port availability directly
     // This avoids complex signaling system issues while ensuring servers are actually ready
-    const { getActivePorts } = await import('../../examples/shared/ExampleConfig');
+    const { getActivePorts } = await import('../../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     
     const maxRetries = 30; // 30 seconds max wait
@@ -672,17 +678,35 @@ export class SystemOrchestrator extends EventEmitter {
     if (options.skipBrowser) {
       console.debug('⏭️ Skipping browser launch (skipBrowser option)');
       await milestoneEmitter.completeMilestone(
-        SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED, 
+        SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
         this.currentEntryPoint
       );
       return true;
     }
-    
+
+    // Check if browser is already connected using ping
+    try {
+      const { stdout } = await execAsync('./jtag ping');
+      const pingResponse = JSON.parse(stdout);
+
+      if (pingResponse.success && pingResponse.browser) {
+        console.log('⏭️ Browser already connected - skipping launch');
+        await milestoneEmitter.completeMilestone(
+          SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
+          this.currentEntryPoint
+        );
+        return true;
+      }
+    } catch (error) {
+      // Ping failed or no browser - proceed with launch
+      console.debug('🔍 No browser connected - will launch new tab');
+    }
+
     console.debug('🌐 Launching browser...');
-    
+
     // CRITICAL FIX: Browser only launches AFTER server ready milestone
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-    
+
     try {
       spawn('open', [browserUrl], {
         detached: true,
@@ -693,9 +717,9 @@ export class SystemOrchestrator extends EventEmitter {
       console.warn(`⚠️ Failed to auto-open browser: ${error}`);
       console.debug(`👉 Manually open: ${browserUrl}`);
     }
-    
+
     await milestoneEmitter.completeMilestone(
-      SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED, 
+      SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
       this.currentEntryPoint
     );
     return true;
@@ -805,11 +829,23 @@ export class SystemOrchestrator extends EventEmitter {
       console.debug('⏭️ Skipping browser launch (skipBrowser option)');
       return;
     }
-    
+
+    // Check if browser is already connected before opening a new tab
+    try {
+      const systemReady = await this.signaler.checkSystemReady(1000);
+      if (systemReady?.browserReady) {
+        console.debug('⏭️ Browser already connected - skipping launch');
+        return;
+      }
+    } catch (error) {
+      // Signal check failed - proceed with launch
+      console.debug('🔍 Could not verify browser status - will launch new tab');
+    }
+
     console.debug('🌐 Ensuring browser is opened...');
-    
+
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-    
+
     try {
       spawn('open', [browserUrl], { 
         detached: true, 
@@ -827,7 +863,7 @@ export class SystemOrchestrator extends EventEmitter {
    */
   private async getDefaultBrowserUrl(): Promise<string> {
     try {
-      const { getActivePorts } = require('../../examples/shared/ExampleConfig');
+      const { getActivePorts } = require('../../examples/server/ExampleConfigServer');
       const activePorts = await getActivePorts();
       return `http://localhost:${activePorts.http_server}`;
     } catch (error) {

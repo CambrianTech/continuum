@@ -639,26 +639,30 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         // For list command, use direct execution
         if (commandName === 'list') {
           return async (params?: Partial<ListParams>): Promise<ListResult> => {
-            const fullParams = createListParams(self.context, self.sessionId, params || {});
+            const fullParams = {
+              ...createListParams(self.context, self.sessionId, params || {}),
+              userId: (params as any)?.userId ?? self.userId
+            } as CommandParams;
             return await self.connection!.executeCommand('list', fullParams) as ListResult;
           };
         }
-        
+
         // For other commands, check if discovered
         const commandSignature = self.getDiscoveredCommands().get(commandName);
         if (!commandSignature) {
           const available = Array.from(self.getDiscoveredCommands().keys());
           throw new Error(`Command '${commandName}' not available. Available commands: ${available.join(', ')}`);
         }
-        
+
         // Delegate to connection
         return async (params?: JTAGPayload): Promise<JTAGPayload> => {
-          const fullParams: JTAGPayload = {
+          const fullParams = {
             ...params,
             context: params?.context ?? self.context,
-            sessionId: params?.sessionId ?? self.sessionId
-          };
-          
+            sessionId: params?.sessionId ?? self.sessionId,
+            userId: (params as any)?.userId ?? self.userId
+          } as CommandParams;
+
           return await self.connection!.executeCommand(commandName, fullParams);
         };
       }

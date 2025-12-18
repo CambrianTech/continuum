@@ -58,7 +58,7 @@ async function testAIChatParticipation() {
 
   // Step 2: Verify message exists in database
   console.log('\n📋 Step 2: Verifying message persisted to database');
-  const dbCheck = runCommand(`data/read --collection=ChatMessage --id="${humanMessage.id}"`);
+  const dbCheck = runCommand(`${DATA_COMMANDS.READ} --collection=ChatMessage --id="${humanMessage.id}"`);
 
   if (dbCheck?.success && dbCheck?.found) {
     console.log(`   ✅ Message found in database`);

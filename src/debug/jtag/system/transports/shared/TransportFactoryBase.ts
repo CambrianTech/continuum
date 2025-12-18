@@ -201,10 +201,11 @@ export abstract class TransportFactoryBase implements ITransportFactory, PureTra
    */
   protected getDefaultPort(protocol: string, environment: string): number {
     // Environment-specific implementations should override this with dynamic port resolution
-    // This is just a fallback for the base class
+    // This is just a fallback - actual ports come from config.env via ServerConfig
+    // WARNING: These fallbacks should match config.env defaults
     switch (protocol) {
-      case 'websocket': return 9001;
-      case 'http': return 9002;
+      case 'websocket': return 9001; // Should match WS_PORT in config.env
+      case 'http': return 9000;      // Should match HTTP_PORT in config.env
       case 'udp-multicast': return 37472;
       default: return 8000;
     }

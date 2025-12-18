@@ -641,7 +641,7 @@ export function getDefaultOutputFormat(commandName: string): 'json' | 'yaml' | '
 3. **Wait 10 seconds and check responses**
    ```bash
    sleep 10
-   ./jtag chat/export --room="general" --limit=10
+   ./jtag collaboration/chat/export --room="general" --limit=10
    ```
 
 4. **Look for**:

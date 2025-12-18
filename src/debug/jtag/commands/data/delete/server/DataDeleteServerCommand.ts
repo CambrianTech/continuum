@@ -36,7 +36,8 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
 
     // DataDaemon throws on failure, returns success result on success
     // Events are emitted by DataDaemon.remove() via universal Events system
-    const result = await DataDaemon.remove(collection, params.id);
+    // Pass suppressEvents flag to prevent events during internal operations (e.g., archiving)
+    const result = await DataDaemon.remove(collection, params.id, params.suppressEvents);
 
     if (!result.success) {
       throw new Error(result.error ?? 'Unknown error during data delete');

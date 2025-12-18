@@ -5,7 +5,7 @@
  * Allows callers to understand entity structure, constraints, and validation rules
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { FieldMetadata } from '../../../../system/data/decorators/FieldDecorators';
@@ -13,7 +13,7 @@ import type { FieldMetadata } from '../../../../system/data/decorators/FieldDeco
 /**
  * Request parameters for data/schema command
  */
-export interface DataSchemaParams extends JTAGPayload {
+export interface DataSchemaParams extends CommandParams {
   readonly collection: string; // Entity collection name to get schema for
   readonly examples?: boolean; // Include example JSON objects
   readonly sql?: boolean; // Include SQL CREATE statements

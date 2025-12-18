@@ -19,6 +19,7 @@ import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEn
 import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
 import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
+import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 import {
   createUserCapabilities,
   createRoom,
@@ -419,7 +420,7 @@ function createDefaultTrainingSessions(): any[] {
  */
 async function createStateRecord(collection: string, data: any, id: string, userId?: string, displayName?: string): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'\"'\"'`);
-  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
 
   try {
     const result = await execAsync(cmd);
@@ -457,7 +458,7 @@ async function updatePersonaProfile(userId: string, profile: { bio: string; spec
     shortDescription: profile.bio  // Use shortDescription which is on UserEntity directly
   };
   const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/update --collection=users --id=${userId} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
     const { stdout } = await execAsync(cmd);
@@ -483,7 +484,7 @@ async function updatePersonaConfig(userId: string, config: any): Promise<boolean
   const configArg = JSON.stringify(config).replace(/'/g, `'"'"'`);
   const updateData = { personaConfig: config };
   const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/update --collection=users --id=${userId} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
     const { stdout } = await execAsync(cmd);
@@ -544,11 +545,11 @@ async function createUserViaCommand(type: 'human' | 'agent' | 'persona', display
 }
 
 /**
- * Load an existing user by uniqueId using JTAG data/list command
+ * Load an existing user by uniqueId using JTAG ${DATA_COMMANDS.LIST} command
  */
 async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity | null> {
   try {
-    const { stdout } = await execAsync(`./jtag data/list --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
     const response = JSON.parse(stdout);
 
     if (response.success && response.items && response.items.length > 0) {
@@ -571,7 +572,7 @@ async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity | null> 
  */
 async function createRecord(collection: string, data: any, id: string, displayName?: string, userId?: string): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
 
   try {
     const result = await execAsync(cmd);
@@ -605,7 +606,7 @@ async function createRecord(collection: string, data: any, id: string, displayNa
  * Seed multiple records of the same type
  */
 async function seedRecords<T extends { id: string; displayName?: string }>(collection: string, records: T[], getDisplayName?: (record: T) => string, getUserId?: (record: T) => string): Promise<void> {
-  console.log(`📝 Creating ${records.length} ${collection} records via data/create...`);
+  console.log(`📝 Creating ${records.length} ${collection} records via ${DATA_COMMANDS.CREATE}...`);
 
   let successCount = 0;
   for (const record of records) {
@@ -628,7 +629,7 @@ async function seedRecords<T extends { id: string; displayName?: string }>(colle
 async function getEntityCount(collection: string): Promise<string> {
   try {
     // Use head to get first 10 lines which includes the count field
-    const result = await execAsync(`./jtag data/list --collection=${collection} 2>&1 | head -10`);
+    const result = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${collection} 2>&1 | head -10`);
     const count = result.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
     return count;
   } catch (error: any) {
@@ -649,7 +650,7 @@ async function getMissingUsers(): Promise<string[]> {
   ];
 
   try {
-    const result = await execAsync(`./jtag data/list --collection=${UserEntity.collection}`);
+    const result = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection}`);
     const stdout = result.stdout;
 
     const missingUsers = requiredUsers.filter(uniqueId => !stdout.includes(uniqueId));

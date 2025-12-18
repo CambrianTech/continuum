@@ -84,9 +84,10 @@ export class ConfigurationFactory {
 
     const websocketPort = ports.websocket_server;
     const httpPort = ports.http_server;
-    
-    const isWidgetUI = httpPort === 9003;
-    
+
+    // Determine UI type from baseDirectory path instead of hard-coded port check
+    const isWidgetUI = baseDirectory.includes('widget-ui');
+
     this.configurationContext = {
       instance: {
         name: isWidgetUI ? 'JTAG Widget Development UI' : 'JTAG Test Bench',
@@ -95,7 +96,7 @@ export class ConfigurationFactory {
           http_server: httpPort,
           websocket_server: websocketPort
         },
-        paths: { 
+        paths: {
           directory: isWidgetUI ? 'examples/widget-ui' : 'examples/test-bench',
           html_file: isWidgetUI ? 'index.html' : 'public/demo.html',
           build_output: 'dist'

@@ -5,7 +5,7 @@
  * Enables P2P mesh networking by preventing process collision during startup/cleanup.
  */
 
-import type { JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 export type ProcessType = 'server' | 'browser' | 'test' | 'client';
@@ -54,7 +54,7 @@ export interface ProcessRegistryEntry {
 /**
  * Register process parameters
  */
-export interface RegisterProcessParams extends JTAGPayload {
+export interface RegisterProcessParams extends CommandParams {
   readonly processType: ProcessType;
   readonly description: string;
   readonly ports?: readonly number[];
@@ -74,7 +74,7 @@ export interface RegisterProcessResult extends JTAGPayload {
 /**
  * List processes parameters
  */
-export interface ListProcessesParams extends JTAGPayload {
+export interface ListProcessesParams extends CommandParams {
   readonly filterByPorts?: readonly number[];
   readonly filterByType?: ProcessType;
   readonly includeStale?: boolean;
@@ -92,7 +92,7 @@ export interface ListProcessesResult extends JTAGPayload {
 /**
  * Cleanup processes parameters
  */
-export interface CleanupProcessesParams extends JTAGPayload {
+export interface CleanupProcessesParams extends CommandParams {
   readonly forceAll?: boolean;           // Kill all processes, ignore registry
   readonly preserveActive?: boolean;     // Preserve active JTAG processes
   readonly targetProcessId?: string;    // Only cleanup specific process

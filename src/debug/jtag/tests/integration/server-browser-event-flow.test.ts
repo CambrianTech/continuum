@@ -24,7 +24,7 @@ async function testServerToBrowserEventFlow() {
     // The chat command emits events that should bridge to browser context
     console.log('📨 Emitting server event via chat command...');
     
-    const chatResult = await client.commands['chat/send-message']({
+    const chatResult = await client.commands['collaboration/chat/send']({
       context: { uuid: 'server-test', environment: 'server' },
       // Don't hardcode session ID - use shared session
       roomId: 'test-room-123',

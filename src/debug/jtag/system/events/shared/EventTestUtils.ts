@@ -163,7 +163,7 @@ export class EventTestUtils {
     
     // Send messages
     for (let i = 0; i < messageCount; i++) {
-      await client.commands['chat/send-message']({
+      await client.commands['collaboration/chat/send']({
         roomId: `${roomId}-${i}`,
         message: `Performance test ${i + 1}`,
         metadata: { test: 'performance', index: i }

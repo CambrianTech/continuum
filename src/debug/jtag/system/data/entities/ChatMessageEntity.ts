@@ -132,7 +132,9 @@ import {
   TextField,
   DateField,
   EnumField,
-  JsonField
+  JsonField,
+  CompositeIndex,
+  Archive
 } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 
@@ -141,7 +143,31 @@ import { BaseEntity } from './BaseEntity';
  *
  * The decorators define which fields get extracted to dedicated columns
  * vs stored as JSON blobs for optimal query performance
+ *
+ * Composite index on (roomId, timestamp DESC) optimizes:
+ * - Chat room pagination: SELECT * FROM chat_messages WHERE room_id = ? ORDER BY timestamp DESC LIMIT 50
+ * - Recent messages per room: 10-100x faster than OFFSET scanning
+ *
+ * Archive configuration (two-handle pattern):
+ * - Moves data from 'primary' handle → 'archive' handle
+ * - Same collection name (chat_messages) in both handles
+ * - When primary exceeds 10,000 rows, moves oldest 1,000 to archive
+ * - Creates headroom: archives to 9,000 rows (1,000 buffer)
+ * - UUIDs prevent conflicts, enables flexible merging/restoration
  */
+@Archive({
+  sourceHandle: 'primary',
+  destHandle: 'archive',
+  maxRows: 10000,  // Archive when exceeds 10,000 messages
+  rowsPerArchive: 1000,
+  maxArchiveFileRows: 100000,  // Each archive file holds up to 100k rows before creating new file
+  orderByField: 'timestamp'
+})
+@CompositeIndex({
+  name: 'idx_chat_messages_room_timestamp',
+  fields: ['roomId', 'timestamp'],
+  direction: 'DESC'
+})
 export class ChatMessageEntity extends BaseEntity {
   // Single source of truth for collection name - used by both decorators and commands
   static readonly collection = 'chat_messages';

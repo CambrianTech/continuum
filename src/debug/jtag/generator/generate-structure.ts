@@ -159,7 +159,7 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
   rootPatterns: {
     exclude: [
       '**/*.bak',
-      '**/*.bak/**/*', 
+      '**/*.bak/**/*',
       '**/node_modules/**/*',
       '**/dist/**/*',
       '**/*.test.ts',

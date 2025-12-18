@@ -821,14 +821,14 @@ npx vitest tests/unit/media-convert.test.ts
 ### Integration Tests
 ```bash
 # Test with real models
-./jtag chat/send --room="general" --message="Describe this" \
+./jtag collaboration/chat/send --room="general" --message="Describe this" \
   --media="/path/to/test-image.png"
 
 # Wait for responses
 sleep 10
 
 # Check responses
-./jtag chat/export --room="general" --limit=20
+./jtag collaboration/chat/export --room="general" --limit=20
 ```
 
 ### Performance Tests

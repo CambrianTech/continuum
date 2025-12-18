@@ -107,6 +107,7 @@ pub enum JTAGErrorType {
 
 impl<T> JTAGResponse<T> {
     /// Create a success response from a request.
+    #[allow(dead_code)]
     pub fn success(request_id: String, r#type: String, payload: T) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -122,6 +123,7 @@ impl<T> JTAGResponse<T> {
     }
 
     /// Create an error response from a request.
+    #[allow(dead_code)]
     pub fn error(
         request_id: String,
         r#type: String,
@@ -142,16 +144,3 @@ impl<T> JTAGResponse<T> {
         }
     }
 }
-
-// ============================================================================
-// Legacy Aliases (for backwards compatibility)
-// ============================================================================
-
-/// @deprecated Use JTAGRequest instead
-pub type WorkerRequest<T> = JTAGRequest<T>;
-
-/// @deprecated Use JTAGResponse instead
-pub type WorkerResponse<T> = JTAGResponse<T>;
-
-/// @deprecated Use JTAGErrorType instead
-pub type ErrorType = JTAGErrorType;

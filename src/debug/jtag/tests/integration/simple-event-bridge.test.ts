@@ -56,9 +56,9 @@ async function testSimpleEventBridge() {
       throw new Error(`Browser setup failed: ${setupResult.error}`);
     }
     
-    // 2. Send test event via chat/send-message command (which emits events)
-    console.log('📤 Sending message via chat/send-message to trigger event...');
-    const chatResult = await client.commands['chat/send-message']({
+    // 2. Send test event via chat/send command (which emits events)
+    console.log('📤 Sending message via chat/send to trigger event...');
+    const chatResult = await client.commands['collaboration/chat/send']({
       roomId: 'simple-test-room',
       content: 'Test message to trigger event bridging',
       sessionId: sessionId

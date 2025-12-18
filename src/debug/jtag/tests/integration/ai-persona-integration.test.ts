@@ -108,7 +108,7 @@ class AIPersonaIntegrationTest {
     try {
       // Create a test persona using data commands
       const createResult = this.executeJTAGCommand(
-        `data/create --collection="personas" --data='{"name":"${this.testPersona}","type":"ai_assistant","capabilities":["chat","analysis"],"description":"Test persona for integration testing"}'`
+        `${DATA_COMMANDS.CREATE} --collection="personas" --data='{"name":"${this.testPersona}","type":"ai_assistant","capabilities":["chat","analysis"],"description":"Test persona for integration testing"}'`
       );
       
       const personaCreated = createResult.success && createResult.commandResult?.success;
@@ -118,7 +118,7 @@ class AIPersonaIntegrationTest {
       if (personaCreated) {
         // Retrieve the persona to verify persistence
         const retrieveResult = this.executeJTAGCommand(
-          `data/list --collection="personas" --filter='{"name":"${this.testPersona}"}'`
+          `${DATA_COMMANDS.LIST} --collection="personas" --filter='{"name":"${this.testPersona}"}'`
         );
         
         personaRetrieved = retrieveResult.success && 
@@ -172,7 +172,7 @@ class AIPersonaIntegrationTest {
       
       // Send message as AI agent
       const sendResult = this.executeJTAGCommand(
-        `chat/send-message --message="${testMessage}" --userId="ai_agent_claude" --roomId="ai_testing"`
+        `collaboration/chat/send --message="${testMessage}" --userId="ai_agent_claude" --roomId="ai_testing"`
       );
       
       const messageSent = sendResult.success && sendResult.messageId;
@@ -182,7 +182,7 @@ class AIPersonaIntegrationTest {
       
       // Check if message appears in chat history
       const historyResult = this.executeJTAGCommand(
-        `data/list --collection="messages" --filter='{"roomId":"ai_testing"}'`
+        `${DATA_COMMANDS.LIST} --collection="messages" --filter='{"roomId":"ai_testing"}'`
       );
       
       const messageInHistory = historyResult.success && 
@@ -289,12 +289,12 @@ class AIPersonaIntegrationTest {
     try {
       // Clean up test persona
       await this.executeJTAGCommand(
-        `data/delete --collection="personas" --filter='{"name":"${this.testPersona}"}'`
+        `${DATA_COMMANDS.DELETE} --collection="personas" --filter='{"name":"${this.testPersona}"}'`
       );
       
       // Clean up test messages
       await this.executeJTAGCommand(
-        `data/delete --collection="messages" --filter='{"roomId":"ai_testing"}'`
+        `${DATA_COMMANDS.DELETE} --collection="messages" --filter='{"roomId":"ai_testing"}'`
       );
     } catch (error) {
       console.warn('Cleanup failed:', error.message);

@@ -6,6 +6,7 @@
  */
 
 import type { BaseEntity } from '../../system/data/entities/BaseEntity';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataExecutor, DataQueryParams, DataQueryResult } from './DataLoaders';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
@@ -26,7 +27,7 @@ export function createDataExecutor<T extends BaseEntity>(
       } satisfies Omit<DataListParams, 'context' | 'sessionId'>;
 
       const result = await executeCommand<DataListParams, DataListResult<T>>(
-        'data/list',
+        DATA_COMMANDS.LIST,
         dataListParams as unknown as DataListParams
       );
 

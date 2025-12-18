@@ -57,7 +57,7 @@ async function waitForAIResponses(
     await new Promise(resolve => setTimeout(resolve, 500));
 
     const result = await runJtagCommand(
-      `data/list --collection=chat_messages --filter='{"roomId":"${roomId}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]' --limit=20`
+      `${DATA_COMMANDS.LIST} --collection=chat_messages --filter='{"roomId":"${roomId}"}' --orderBy='[{"field":"timestamp","direction":"desc"}]' --limit=20`
     );
 
     const messages = result?.items || [];
@@ -191,7 +191,7 @@ async function testScenario_TestMessage(): Promise<TestResult> {
 
   // Send message from test user
   await runJtagCommand(
-    `chat/send --room="${GENERAL_ROOM_ID}" --message="Integration test message" --senderId="test-user-123" --senderName="Test User"`
+    `collaboration/chat/send --room="${GENERAL_ROOM_ID}" --message="Integration test message" --senderId="test-user-123" --senderName="Test User"`
   );
 
   console.log('   📨 Sent test message, waiting for any AI responses...');
@@ -233,7 +233,7 @@ async function testScenario_NovelQuestion(): Promise<TestResult> {
   const question = `What are the key differences between REST and GraphQL APIs? [test-${Date.now()}]`;
 
   await runJtagCommand(
-    `chat/send --room="${GENERAL_ROOM_ID}" --message="${question}"`
+    `collaboration/chat/send --room="${GENERAL_ROOM_ID}" --message="${question}"`
   );
 
   console.log(`   📨 Sent: "${question}"`);
@@ -283,7 +283,7 @@ async function testScenario_AlreadyAnswered(): Promise<TestResult> {
   const question = `What is the purpose of async/await in JavaScript? [test-${Date.now()}]`;
 
   await runJtagCommand(
-    `chat/send --room="${GENERAL_ROOM_ID}" --message="${question}"`
+    `collaboration/chat/send --room="${GENERAL_ROOM_ID}" --message="${question}"`
   );
 
   console.log(`   📨 Sent: "${question}"`);
@@ -357,7 +357,7 @@ async function testScenario_FollowUpAngle(): Promise<TestResult> {
   const question = `How should I structure a Node.js microservices project? [test-${Date.now()}]`;
 
   await runJtagCommand(
-    `chat/send --room="${GENERAL_ROOM_ID}" --message="${question}"`
+    `collaboration/chat/send --room="${GENERAL_ROOM_ID}" --message="${question}"`
   );
 
   console.log(`   📨 Sent: "${question}"`);

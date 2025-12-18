@@ -10,13 +10,14 @@
  */
 
 import * as path from 'path';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Commands } from '../../core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { WallDocumentEntity } from '../../data/entities/WallDocumentEntity';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
-import { isRoomUUID, sanitizeDocumentName } from '../../../commands/wall/shared/WallTypes';
+import { isRoomUUID, sanitizeDocumentName } from '@commands/collaboration/wall/shared/WallTypes';
 import type { FileSaveParams, FileSaveResult } from '../../../commands/file/save/shared/FileSaveTypes';
 import type { FileLoadParams, FileLoadResult } from '../../../commands/file/load/shared/FileLoadTypes';
 
@@ -100,7 +101,7 @@ export class WallManager {
 
     if (isRoomUUID(roomNameOrId)) {
       // Query by UUID
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: 'rooms',
         filter: { id: roomNameOrId },
         limit: 1
@@ -113,7 +114,7 @@ export class WallManager {
       roomEntity = result.items[0];
     } else {
       // Query by name
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>('data/list', {
+      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: 'rooms',
         filter: { name: roomNameOrId },
         limit: 1
@@ -264,7 +265,7 @@ export class WallManager {
     const roomInfo = await this.resolveRoomPath(room);
 
     // Query WallDocumentEntity for this room
-    const result = await Commands.execute<DataListParams<WallDocumentEntity>, DataListResult<WallDocumentEntity>>('data/list', {
+    const result = await Commands.execute<DataListParams<WallDocumentEntity>, DataListResult<WallDocumentEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.WALL_DOCUMENTS,
       filter: { roomId: roomInfo.roomId }
     });

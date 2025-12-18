@@ -50,7 +50,7 @@ export const TEST_COMMANDS = {
 
 export const PIPE_COMMANDS = {
   /** Chain multiple commands */
-  CHAIN: 'pipe/chain',
+  CHAIN: 'utilities/pipe/chain',
 } as const;
 
 /**

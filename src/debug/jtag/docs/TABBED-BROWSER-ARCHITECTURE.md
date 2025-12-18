@@ -329,7 +329,7 @@ npm start
 
 ```bash
 # Human: "Research competitor pricing"
-./jtag chat/send --room="general" --message="Can you research competitor pricing for me?"
+./jtag collaboration/chat/send --room="general" --message="Can you research competitor pricing for me?"
 
 # AI responds and navigates
 ./jtag navigate --url="https://competitor1.com/pricing"
@@ -340,7 +340,7 @@ npm start
 ./jtag screenshot
 # AI compiles comparison, sends summary in chat
 
-./jtag chat/send --room="general" --message="Found 3 competitors: A ($10/mo), B ($15/mo), C ($20/mo). Screenshots in tabs."
+./jtag collaboration/chat/send --room="general" --message="Found 3 competitors: A ($10/mo), B ($15/mo), C ($20/mo). Screenshots in tabs."
 
 # Human can review all tabs, see AI's annotations
 ```

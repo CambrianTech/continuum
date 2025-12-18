@@ -12,6 +12,7 @@ use crate::health::StatsHandle;
 use crate::messages::*;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::mpsc;
 
 /// Debug logging to file (temporary - will be removed).
 fn debug_log(msg: &str) {
@@ -34,7 +35,7 @@ fn debug_log(msg: &str) {
 /// until the client disconnects (EOF on socket).
 ///
 /// Message types:
-/// - "write-log": Write log entry to file
+/// - "write-log": Write log entry to file (queues for background processing)
 /// - "ping": Health check (return stats)
 /// - Unknown types: Return error response
 pub fn handle_client(
@@ -43,6 +44,7 @@ pub fn handle_client(
     file_cache: FileCache,
     headers_written: HeaderTracker,
     stats: StatsHandle,
+    log_tx: mpsc::Sender<WriteLogPayload>,
 ) -> std::io::Result<()> {
     debug_log("handle_client: START");
     debug_log("Creating BufReader and cloning stream for writer");
@@ -90,6 +92,7 @@ pub fn handle_client(
                     &file_cache,
                     &headers_written,
                     &stats,
+                    &log_tx,
                     &mut writer,
                 )?;
             }
@@ -137,10 +140,11 @@ fn handle_message(
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
     stats: &StatsHandle,
+    log_tx: &mpsc::Sender<WriteLogPayload>,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     match msg_type {
-        "write-log" => handle_write_log(line, log_dir, file_cache, headers_written, stats, writer),
+        "write-log" => handle_write_log(line, log_dir, file_cache, headers_written, stats, log_tx, writer),
         "ping" => handle_ping(line, file_cache, stats, writer),
         _ => handle_unknown(msg_type, msg_id, writer),
     }
@@ -150,22 +154,28 @@ fn handle_message(
 // Message Handlers
 // ============================================================================
 
-/// Handle write-log request.
+/// Handle write-log request (non-blocking - queues for background processing).
 fn handle_write_log(
     line: &str,
-    log_dir: &str,
-    file_cache: &FileCache,
-    headers_written: &HeaderTracker,
+    _log_dir: &str,
+    _file_cache: &FileCache,
+    _headers_written: &HeaderTracker,
     stats: &StatsHandle,
+    log_tx: &mpsc::Sender<WriteLogPayload>,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     // Parse request
-    let request: WorkerRequest<WriteLogPayload> =
+    let request: JTAGRequest<WriteLogPayload> =
         serde_json::from_str(line).expect("Failed to parse write-log payload");
 
-    // Write log message
-    let bytes_written =
-        file_manager::write_log_message(&request.payload, log_dir, file_cache, headers_written)?;
+    // Queue log message for background processing (non-blocking fast path)
+    if let Err(e) = log_tx.send(request.payload.clone()) {
+        eprintln!("❌ Failed to queue log message: {}", e);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Queue send failed: {}", e),
+        ));
+    }
 
     // Update stats
     {
@@ -173,15 +183,15 @@ fn handle_write_log(
         s.record_request();
     }
 
-    // Build and send response
-    let response = WorkerResponse::success(
+    // Build and send response (bytes_written = 0 since actual write happens in background)
+    let response = JTAGResponse::success(
         request.id.clone(),
         request.r#type.clone(),
-        WriteLogResult { bytes_written },
+        WriteLogResult { bytes_written: 0 },
     );
     send_response(&response, writer)?;
 
-    println!("✅ Sent response: {} bytes written", bytes_written);
+    println!("✅ Sent response: log queued for processing");
     Ok(())
 }
 
@@ -193,7 +203,7 @@ fn handle_ping(
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     // Parse request
-    let request: WorkerRequest<PingPayload> =
+    let request: JTAGRequest<PingPayload> =
         serde_json::from_str(line).expect("Failed to parse ping payload");
 
     // Gather stats
@@ -211,7 +221,7 @@ fn handle_ping(
         requests_processed,
         active_categories,
     };
-    let response = WorkerResponse::success(request.id.clone(), request.r#type.clone(), ping_result);
+    let response = JTAGResponse::success(request.id.clone(), request.r#type.clone(), ping_result);
     send_response(&response, writer)?;
 
     println!(
@@ -224,12 +234,12 @@ fn handle_ping(
 /// Handle unknown message type.
 fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std::io::Result<()> {
     eprintln!("❌ Unknown message type: {}", msg_type);
-    let error_response = WorkerResponse::<WriteLogResult>::error(
+    let error_response = JTAGResponse::<WriteLogResult>::error(
         msg_id.to_string(),
         msg_type.to_string(),
         WriteLogResult { bytes_written: 0 },
         format!("Unknown message type: {}", msg_type),
-        ErrorType::Validation,
+        JTAGErrorType::Validation,
     );
     send_response(&error_response, writer)
 }
@@ -240,7 +250,7 @@ fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std:
 
 /// Send a response message (generic).
 fn send_response<T: serde::Serialize>(
-    response: &WorkerResponse<T>,
+    response: &JTAGResponse<T>,
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     let json = serde_json::to_string(response).expect("Failed to serialize response");
@@ -257,12 +267,12 @@ fn send_parse_error(
     // Try to extract request ID for error response
     if let Ok(base_msg) = serde_json::from_str::<serde_json::Value>(line) {
         if let Some(id) = base_msg.get("id").and_then(|v| v.as_str()) {
-            let error_response = WorkerResponse::<WriteLogResult>::error(
+            let error_response = JTAGResponse::<WriteLogResult>::error(
                 id.to_string(),
                 "write-log".to_string(),
                 WriteLogResult { bytes_written: 0 },
                 format!("Parse error: {}", error),
-                ErrorType::Validation,
+                JTAGErrorType::Validation,
             );
             send_response(&error_response, writer)?;
         }

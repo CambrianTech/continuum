@@ -15,6 +15,7 @@
  */
 
 import { PersonaContinuousSubprocess } from '../../PersonaSubprocess';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { PersonaUser } from '../../../PersonaUser';
 import { Commands } from '../../../../../core/shared/Commands';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
@@ -128,7 +129,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     try {
       this.log(`Opening LTM database: ${dbPath}`);
 
-      const result = await Commands.execute<DataOpenParams, DataOpenResult>('data/open', {
+      const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
         adapter: 'sqlite',
         config: {
           path: dbPath,
@@ -161,7 +162,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
           // Retry opening (will create fresh database)
           this.log(`🔄 Retrying database initialization with fresh file...`);
-          const result = await Commands.execute<DataOpenParams, DataOpenResult>('data/open', {
+          const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
             adapter: 'sqlite',
             config: {
               path: dbPath,
@@ -245,7 +246,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       }
 
       // Query LTM
-      const result = (await Commands.execute('data/list', {
+      const result = (await Commands.execute(DATA_COMMANDS.LIST, {
         dbHandle: this.memoryDbHandle,
         collection: 'memories',
         filter,
@@ -359,7 +360,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       for (const memory of memories) {
         try {
-          const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>('data/create', {
+          const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>(DATA_COMMANDS.CREATE, {
             dbHandle: this.memoryDbHandle,
             collection: 'memories',
             data: memory

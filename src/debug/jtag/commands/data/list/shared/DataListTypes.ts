@@ -6,6 +6,7 @@ import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTA
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
 export interface DataListParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
   // Collection name - comes from Entity.collection static property
@@ -25,6 +26,8 @@ export interface DataListParams<T extends BaseEntity = BaseEntity> extends JTAGP
   // Verbose flag - if false, returns only id + description field (lean mode)
   // Default: undefined (returns all fields for backward compatibility)
   readonly verbose?: boolean;
+  /** Optional database handle for multi-database operations (defaults to 'default') */
+  readonly dbHandle?: DbHandle;
 }
 
 export interface DataListResult<T extends BaseEntity> extends JTAGPayload {

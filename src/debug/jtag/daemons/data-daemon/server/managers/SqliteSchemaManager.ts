@@ -18,7 +18,7 @@ const execAsync = promisify(exec);
 
 import type { StorageResult } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
-import { SqliteRawExecutor } from '../SqliteRawExecutor';
+import type { SqlExecutor } from '../SqlExecutor';
 import {
   getFieldMetadata,
   hasFieldMetadata,
@@ -50,8 +50,8 @@ export class SqliteSchemaManager {
   private schemaVerified: Set<string> = new Set(); // Cache: only check schema once per process
 
   constructor(
-    private db: sqlite3.Database,
-    private executor: SqliteRawExecutor,
+    private db: sqlite3.Database | null,
+    private executor: SqlExecutor,
     private generateCreateTableSql: (
       collectionName: string,
       entityClass: EntityConstructor,
@@ -73,25 +73,36 @@ export class SqliteSchemaManager {
   async configureSqlite(options: SqliteOptions): Promise<void> {
     if (!this.db) return;
 
+    // Set temp directory relative to database (for VACUUM operations)
+    const { getDatabaseDir } = await import('../../../../system/config/ServerConfig');
+    const path = await import('path');
+    const fs = await import('fs');
+    const tempDir = path.join(getDatabaseDir(), 'tmp');  // Expand $HOME in path
+    try {
+      await fs.promises.mkdir(tempDir, { recursive: true, mode: 0o755 });
+      process.env.SQLITE_TMPDIR = tempDir;
+    } catch (error) {
+      this.log.warn('Could not set temp directory:', error);
+    }
+
     const settings = [
       // Set foreign keys based on configuration
       options.foreignKeys === false ? 'PRAGMA foreign_keys = OFF' : 'PRAGMA foreign_keys = ON',
 
-      // EXFAT FIX: Use MEMORY journal mode to avoid file permission issues
-      // WAL and DELETE modes create auxiliary files that may have permission problems
-      'PRAGMA journal_mode = MEMORY',
+      // Incremental auto-vacuum for gradual space reclamation (safe, no exclusive lock needed)
+      'PRAGMA auto_vacuum = INCREMENTAL',
 
-      // EXFAT FIX: Use FULL synchronous mode for data integrity without relying on filesystem
-      'PRAGMA synchronous = FULL',
+      // WAL mode for better concurrency and performance
+      'PRAGMA journal_mode = WAL',
+
+      // Balanced safety/performance (not exFAT anymore)
+      'PRAGMA synchronous = NORMAL',
 
       // Set cache size (negative = KB, positive = pages)
       options.cacheSize ? `PRAGMA cache_size = ${options.cacheSize}` : 'PRAGMA cache_size = -2000',
 
       // Set busy timeout
-      options.timeout ? `PRAGMA busy_timeout = ${options.timeout}` : 'PRAGMA busy_timeout = 10000',
-
-      // EXFAT FIX: Disable locking mode to reduce filesystem permission requirements
-      'PRAGMA locking_mode = NORMAL'
+      options.timeout ? `PRAGMA busy_timeout = ${options.timeout}` : 'PRAGMA busy_timeout = 10000'
     ].filter(Boolean);
 
     for (const sql of settings) {
@@ -100,15 +111,17 @@ export class SqliteSchemaManager {
       }
     }
 
-    this.log.info('Configuration applied (exFAT-compatible settings)');
+    this.log.info('SQLite configuration applied (WAL mode, incremental auto-vacuum)');
   }
 
   /**
    * Verify database integrity and write capability
    */
   async verifyIntegrity(): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
+    // For Rust adapter, db may be null (Rust manages connection)
+    // Verification proceeds via executor instead
+    if (!this.db && !this.executor) {
+      throw new Error('Neither database nor executor initialized');
     }
 
     this.log.info('Creating system_info table for version tracking...');

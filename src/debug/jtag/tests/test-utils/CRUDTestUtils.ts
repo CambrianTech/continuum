@@ -178,7 +178,7 @@ export class DatabaseVerifier {
     entityId: string
   ): Promise<{ exists: boolean; data?: EntityInstance }> {
     try {
-      const dbResult = await runJtagCommand(`data/read --collection=${collection} --id=${entityId}`);
+      const dbResult = await runJtagCommand(`${DATA_COMMANDS.READ} --collection=${collection} --id=${entityId}`);
 
       console.log(`   🔍 DB verification for ${collection}/${entityId}: success=${dbResult.success}, hasData=${Boolean(dbResult.data)}`);
 
@@ -356,7 +356,7 @@ export class CRUDOperationTester {
     validatedEntity?: Record<string, unknown>;
   }> {
     try {
-      const schemaCommand = `data/schema --collection=${this.collection} --validateData='${JSON.stringify(data)}'`;
+      const schemaCommand = `${DATA_COMMANDS.SCHEMA} --collection=${this.collection} --validateData='${JSON.stringify(data)}'`;
       const schemaResult = await runJtagCommand(schemaCommand);
 
       if (schemaResult.success && schemaResult.validation) {
@@ -410,7 +410,7 @@ export class CRUDOperationTester {
       }
 
       // STEP 2: Execute CREATE operation
-      const createCommand = `data/create --collection=${this.collection} --data='${JSON.stringify(dataToCreate)}'`;
+      const createCommand = `${DATA_COMMANDS.CREATE} --collection=${this.collection} --data='${JSON.stringify(dataToCreate)}'`;
       const createResult = await runJtagCommand(createCommand);
       const entityId = createResult.id ?? createResult.data?.id;
 
@@ -469,7 +469,7 @@ export class CRUDOperationTester {
 
     try {
       // Execute UPDATE operation
-      const updateCommand = `data/update --collection=${this.collection} --id=${entityId} --data='${JSON.stringify(updates)}'`;
+      const updateCommand = `${DATA_COMMANDS.UPDATE} --collection=${this.collection} --id=${entityId} --data='${JSON.stringify(updates)}'`;
       const updateResult = await runJtagCommand(updateCommand);
 
       testResults.push({
@@ -522,7 +522,7 @@ export class CRUDOperationTester {
 
     try {
       // Execute DELETE operation
-      const deleteCommand = `data/delete --collection=${this.collection} --id=${entityId}`;
+      const deleteCommand = `${DATA_COMMANDS.DELETE} --collection=${this.collection} --id=${entityId}`;
       const deleteResult = await runJtagCommand(deleteCommand);
 
       testResults.push({

@@ -35,7 +35,7 @@ class ShadowDOMEndToEndValidator {
    */
   async sendMessageViaCLI(): Promise<{ success: boolean; messageId?: string }> {
     try {
-      const result = await this.framework.executeCommand('chat/send-message', {
+      const result = await this.framework.executeCommand('collaboration/chat/send', {
         roomId: 'general',
         userId: 'e2e_test_user',
         message: this.testMessage,
@@ -144,7 +144,7 @@ class ShadowDOMEndToEndValidator {
   async testChatHistoryAccess(): Promise<{ accessible: boolean; historyData?: any }> {
     try {
       // Try to retrieve chat history via data commands
-      const historyResult = await this.framework.executeCommand('data/list', {
+      const historyResult = await this.framework.executeCommand(DATA_COMMANDS.LIST, {
         collection: 'messages',
         filter: { roomId: 'general' },
         format: 'json'
@@ -181,7 +181,7 @@ class ShadowDOMEndToEndValidator {
       // Send another message and immediately check for real-time updates
       const eventTestMessage = `EVENT_TEST_${Date.now()}`;
       
-      const sendResult = await this.framework.executeCommand('chat/send-message', {
+      const sendResult = await this.framework.executeCommand('collaboration/chat/send', {
         roomId: 'general',
         userId: 'event_test_user',
         message: eventTestMessage,

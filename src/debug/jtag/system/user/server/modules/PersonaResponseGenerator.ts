@@ -13,13 +13,13 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
-import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
@@ -590,8 +590,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider || 'ollama',
-          this.modelConfig.model || 'llama3.2:3b',
+          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.model ?? 'llama3.2:3b',
           `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           messages.reduce((sum, m) => sum + m.content.length, 0),  // Rough token estimate
           aiResponse.text.length,  // Completion tokens estimate
@@ -714,7 +714,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
             : '';
 
           // Phase 3B: Inject lean summary + UUID references instead of full results
-          const leanSummary = `TOOL RESULTS (Phase 3B - Lean RAG):\n\n${toolSummaries}\n\n📋 Full details stored in working memory.\n💡 To read full results: data/read --collection=chat_messages --id=<ID>\n\n${failureWarning}Based on these summaries, provide your analysis. Only use data/read if you need the full details.`;
+          const leanSummary = `TOOL RESULTS (Phase 3B - Lean RAG):\n\n${toolSummaries}\n\n📋 Full details stored in working memory.\n💡 To read full results: ${DATA_COMMANDS.READ} --collection=chat_messages --id=<ID>\n\n${failureWarning}Based on these summaries, provide your analysis. Only use ${DATA_COMMANDS.READ} if you need the full details.`;
 
           // Build tool results message with optional media
           const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
@@ -921,7 +921,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // Prefer this.client if available (set by UserDaemon), fallback to shared instance
       const postStartTime = Date.now();
       const result = this.client
-        ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>('data/create', {
+        ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
             context: this.client.context,
             sessionId: this.client.sessionId,
             collection: ChatMessageEntity.collection,

@@ -32,7 +32,7 @@
  */
 
 import { spawn } from 'child_process';
-import { getActiveExampleName } from '../examples/shared/ExampleConfig';
+import { getActiveExampleName } from '../examples/server/ExampleConfigServer';
 
 async function runIntelligentTest(testArgs: string[] = []): Promise<boolean> {
   const activeExample = getActiveExampleName();
@@ -174,7 +174,7 @@ async function runIntelligentTest(testArgs: string[] = []): Promise<boolean> {
   console.log('\n🔫 STEP 2: Kill any lingering processes on dynamic ports');
   try {
     // Get dynamic port configuration instead of hardcoded ports
-    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     const portsToKill = [activePorts.websocket_server, activePorts.http_server];
     

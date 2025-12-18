@@ -15,7 +15,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { TextField, NumberField, JsonField, EnumField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, JsonField, EnumField, Archive } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 
@@ -40,6 +40,14 @@ export interface DecisionContextMetadata {
 /**
  * AdapterDecisionLogEntity - Complete record of adapter decision
  */
+@Archive({
+  sourceHandle: 'primary',
+  destHandle: 'archive',
+  maxRows: 5000,
+  rowsPerArchive: 500,
+  maxArchiveFileRows: 50000,
+  orderByField: 'createdAt'
+})
 export class AdapterDecisionLogEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.ADAPTER_DECISION_LOGS;
 

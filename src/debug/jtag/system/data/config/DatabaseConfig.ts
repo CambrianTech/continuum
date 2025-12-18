@@ -1,27 +1,48 @@
 /**
- * Database Configuration Constants
+ * Database Configuration Constants - SERVER-ONLY
+ *
+ * ⚠️ DO NOT import this file in browser code!
+ * ⚠️ These paths should never be exposed to the browser
  *
  * Single source of truth for database paths and configuration
+ * Paths can be overridden via config.env (loaded by SecretManager)
  */
+
+import { PATHS } from '../../shared/Constants';
 
 /**
- * Database file paths - centralized configuration
+ * Database file paths - SERVER-ONLY configuration
+ *
+ * DEFAULT PATH: $HOME/.continuum/data (user's home directory)
+ * Override via config.env: DATABASE_DIR, DATABASE_BACKUP_DIR, DATABASE_ARCHIVE_DIR
+ *
+ * NOTE: These are COMPILE-TIME constants for fallback only.
+ * Runtime paths come from ServerConfig which checks config.env first.
  */
 export const DATABASE_PATHS = {
-  /** Main SQLite database file path */
-  SQLITE: '.continuum/jtag/data/database.sqlite',
+  /** Main SQLite database file path (server-only) */
+  SQLITE: '$HOME/.continuum/data/database.sqlite',
 
-  /** Data directory base path */
-  DATA_DIR: '.continuum/jtag/data',
+  /** Main database directory (server-only) - SINGULAR DEFAULT */
+  DATA_DIR: '$HOME/.continuum/data',
 
-  /** Backup directory path */
-  BACKUP_DIR: '.continuum/jtag/backups',
+  /** Backup directory path (server-only) */
+  BACKUP_DIR: '$HOME/.continuum/data/backups',
+
+  /** Archive directory path (server-only) */
+  ARCHIVE_DIR: '$HOME/.continuum/data/archive',
 
   /** Datasets directory path for training data */
-  DATASETS_DIR: '.continuum/datasets',
+  DATASETS_DIR: PATHS.DATASETS,
 
   /** Infrastructure log files directory (SQL, tools, system) */
   LOGS_DIR: '.continuum/jtag/logs',
+
+  /** Signal files directory (system ready indicators) */
+  SIGNALS_DIR: '.continuum/jtag/signals',
+
+  /** Sessions directory */
+  SESSIONS_DIR: '.continuum/jtag/sessions',
 
   /** Legacy database path (for migration reference) */
   LEGACY: '.continuum/database/continuum.db'
@@ -36,7 +57,7 @@ export const DATABASE_FILES = {
 } as const;
 
 /**
- * Database configuration settings
+ * Database configuration settings (SERVER-ONLY)
  */
 export const DATABASE_CONFIG = {
   /** Default query limit for data operations */
@@ -52,29 +73,18 @@ export const DATABASE_CONFIG = {
   ENABLE_PERFORMANCE_LOGGING: false
 } as const;
 
+// Legacy alias for backward compatibility
+export const DB_CONFIG = DATABASE_CONFIG;
+
+// Re-export COLLECTIONS from Constants.ts (don't duplicate)
+export { COLLECTIONS } from '../../shared/Constants';
+export type { CollectionName } from '../../shared/Constants';
+
 /**
- * Collection names - centralized collection naming
+ * ⚠️ DO NOT ADD ACCESSOR FUNCTIONS HERE ⚠️
+ *
+ * For runtime path accessors that check config.env, use:
+ * import { getDatabasePath, getBackupDir, etc. } from '../../config/ServerConfig';
+ *
+ * ServerConfig is the ONLY file that reads config.env/process.env
  */
-export const COLLECTIONS = {
-  USERS: 'users',
-  USER_STATES: 'user_states',
-  ROOMS: 'rooms',
-  CHAT_MESSAGES: 'chat_messages',
-  ARTIFACTS: 'artifacts',
-  SESSIONS: 'sessions',
-  TASKS: 'tasks',
-  PINNED_ITEMS: 'pinned_items',
-  COORDINATION_DECISIONS: 'coordination_decisions',
-
-  // Room Wall System
-  WALL_DOCUMENTS: 'wall_documents',
-
-  // Cognition Observability
-  COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
-  COGNITION_PLAN_RECORDS: 'cognition_plan_records',
-
-  // Memory System (Phase 2)
-  MEMORIES: 'memories'
-} as const;
-
-export type CollectionName = typeof COLLECTIONS[keyof typeof COLLECTIONS];

@@ -164,7 +164,7 @@ async function testRoomScopedEventDelivery(client: any): Promise<void> {
   });
   
   // Send chat message to specific room
-  const chatResult = await client.commands['chat/send-message']({
+  const chatResult = await client.commands['collaboration/chat/send']({
     roomId: 'test-room',
     content: 'Room-scoped event test message',
     sessionId: generateUUID()
@@ -204,7 +204,7 @@ async function testChatMessageEventEmission(client: any): Promise<void> {
   });
   
   // Send chat message that should emit cross-environment event
-  const chatResult = await client.commands['chat/send-message']({
+  const chatResult = await client.commands['collaboration/chat/send']({
     roomId: 'integration-test-room',
     content: 'Chat message integration test',
     sessionId: generateUUID()

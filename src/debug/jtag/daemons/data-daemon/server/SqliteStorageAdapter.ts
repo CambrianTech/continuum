@@ -24,7 +24,7 @@ import {
   type QueryExplanation
 } from '../shared/DataStorageAdapter';
 import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
-import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
+import { getDatabasePath } from '../../../system/config/ServerConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SqliteQueryBuilder } from './SqliteQueryBuilder';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
@@ -118,7 +118,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
     // Use explicit filename from options, or fall back to default database path
     // This allows multi-database support (training DBs, etc.) while maintaining backward compatibility
-    const dbPath = options.filename || DATABASE_PATHS.SQLITE;
+    const dbPath = options.filename || getDatabasePath();
     log.info(`Using database path: ${dbPath}`);
 
     // Ensure directory exists with proper permissions
@@ -673,9 +673,6 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     if (!this.db) return;
 
     try {
-      // VACUUM to reclaim space
-      await this.executor.runStatement('VACUUM');
-
       // ANALYZE to update statistics
       await this.executor.runStatement('ANALYZE');
 

@@ -213,7 +213,7 @@ async function teardownSystem(): Promise<void> {
 async function checkSystemReady(): Promise<boolean> {
   try {
     // Use dynamic port detection instead of hardcoded ports
-    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     const exec = require('util').promisify(require('child_process').exec);
     

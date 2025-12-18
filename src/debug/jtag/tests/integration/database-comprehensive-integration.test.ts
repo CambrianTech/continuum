@@ -101,7 +101,7 @@ class DatabaseComprehensiveIntegrationTest {
       for (const [collection, data] of Object.entries(this.testData)) {
         try {
           const createResult = this.executeJTAGCommand(
-            `data/create --collection="${collection}" --data='${JSON.stringify(data)}'`
+            `${DATA_COMMANDS.CREATE} --collection="${collection}" --data='${JSON.stringify(data)}'`
           );
           operations.push({
             operation: 'CREATE',
@@ -123,7 +123,7 @@ class DatabaseComprehensiveIntegrationTest {
       for (const collection of this.testCollections) {
         try {
           const readResult = this.executeJTAGCommand(
-            `data/list --collection="${collection}" --format="json"`
+            `${DATA_COMMANDS.LIST} --collection="${collection}" --format="json"`
           );
           const hasData = readResult.success === true && 
                          readResult.items && 
@@ -193,7 +193,7 @@ class DatabaseComprehensiveIntegrationTest {
       // Query 1: Find messages by user
       try {
         const userMessages = this.executeJTAGCommand(
-          `data/list --collection="messages" --filter='{"userId":"${this.testData.users.userId}"}'`
+          `${DATA_COMMANDS.LIST} --collection="messages" --filter='{"userId":"${this.testData.users.userId}"}'`
         );
         queries.push({
           query: 'Messages by User',
@@ -211,7 +211,7 @@ class DatabaseComprehensiveIntegrationTest {
       // Query 2: Find sessions by user
       try {
         const userSessions = this.executeJTAGCommand(
-          `data/list --collection="sessions" --filter='{"userId":"${this.testData.users.userId}"}'`
+          `${DATA_COMMANDS.LIST} --collection="sessions" --filter='{"userId":"${this.testData.users.userId}"}'`
         );
         queries.push({
           query: 'Sessions by User',
@@ -229,7 +229,7 @@ class DatabaseComprehensiveIntegrationTest {
       // Query 3: Find messages in room
       try {
         const roomMessages = this.executeJTAGCommand(
-          `data/list --collection="messages" --filter='{"roomId":"${this.testData.messages.roomId}"}'`
+          `${DATA_COMMANDS.LIST} --collection="messages" --filter='{"roomId":"${this.testData.messages.roomId}"}'`
         );
         queries.push({
           query: 'Messages in Room',
@@ -287,7 +287,7 @@ class DatabaseComprehensiveIntegrationTest {
     try {
       // First, verify our test data exists
       const beforeCheck = this.executeJTAGCommand(
-        `data/list --collection="users" --filter='{"userId":"${this.testData.users.userId}"}'`
+        `${DATA_COMMANDS.LIST} --collection="users" --filter='{"userId":"${this.testData.users.userId}"}'`
       );
       
       const dataExistsBefore = beforeCheck.success && 
@@ -302,7 +302,7 @@ class DatabaseComprehensiveIntegrationTest {
       
       // Re-query the data
       const afterCheck = this.executeJTAGCommand(
-        `data/list --collection="users" --filter='{"userId":"${this.testData.users.userId}"}'`
+        `${DATA_COMMANDS.LIST} --collection="users" --filter='{"userId":"${this.testData.users.userId}"}'`
       );
       
       const dataExistsAfter = afterCheck.success && 
@@ -372,7 +372,7 @@ class DatabaseComprehensiveIntegrationTest {
       
       try {
         const updateResult = this.executeJTAGCommand(
-          `data/update --collection="users" --filter='{"userId":"${this.testData.users.userId}"}' --data='${JSON.stringify(updatedData)}'`
+          `${DATA_COMMANDS.UPDATE} --collection="users" --filter='{"userId":"${this.testData.users.userId}"}' --data='${JSON.stringify(updatedData)}'`
         );
         
         const updateSuccess = updateResult.success && updateResult.commandResult?.success;
@@ -381,7 +381,7 @@ class DatabaseComprehensiveIntegrationTest {
         let verifySuccess = false;
         if (updateSuccess) {
           const verifyResult = this.executeJTAGCommand(
-            `data/list --collection="users" --filter='{"userId":"${this.testData.users.userId}"}'`
+            `${DATA_COMMANDS.LIST} --collection="users" --filter='{"userId":"${this.testData.users.userId}"}'`
           );
           const retrievedUser = verifyResult.commandResult?.items?.[0];
           verifySuccess = retrievedUser && retrievedUser.name === updatedData.name;
@@ -413,7 +413,7 @@ class DatabaseComprehensiveIntegrationTest {
           else if (collection === 'rooms') filter = { roomId: data.roomId };
           
           const deleteResult = this.executeJTAGCommand(
-            `data/delete --collection="${collection}" --filter='${JSON.stringify(filter)}'`
+            `${DATA_COMMANDS.DELETE} --collection="${collection}" --filter='${JSON.stringify(filter)}'`
           );
           
           operations.push({

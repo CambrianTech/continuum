@@ -22,7 +22,7 @@ async function testRoomScopedBridgeEvents() {
     
     // Send message to room-123
     console.log('💬 Sending message to room-123...');
-    const room123Result = await client.commands['chat/send-message']({
+    const room123Result = await client.commands['collaboration/chat/send']({
       context: { uuid: 'room-scope-test', environment: 'server' },
       // Use shared session instead of hardcoded string
       roomId: 'room-123',
@@ -34,7 +34,7 @@ async function testRoomScopedBridgeEvents() {
     
     // Send message to room-456  
     console.log('💬 Sending message to room-456...');
-    const room456Result = await client.commands['chat/send-message']({
+    const room456Result = await client.commands['collaboration/chat/send']({
       context: { uuid: 'room-scope-test', environment: 'server' },
       // Use shared session instead of hardcoded string
       roomId: 'room-456',

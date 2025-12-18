@@ -21,7 +21,7 @@ import { COLLECTIONS } from '../../shared/Constants';
 /**
  * Proposal status lifecycle
  */
-export type ProposalStatus = 'voting' | 'concluded' | 'expired' | 'cancelled';
+export type ProposalStatus = 'voting' | 'concluded' | 'expired' | 'cancelled' | 'manual_review';
 
 /**
  * Significance level determines urgency and response window
@@ -35,9 +35,10 @@ export type ProposalScope = 'all' | 'code-experts' | 'user-facing-ais' | 'local-
 
 /**
  * Decision option with tracking of who proposed it
+ * Options use UUIDs like proposals - enables #abc123 short ID voting
  */
 export interface DecisionOption {
-  id: string;
+  id: UUID;
   label: string;
   description: string;
   proposedBy?: UUID; // Track which AI contributed this option
@@ -214,7 +215,7 @@ export class DecisionProposalEntity extends BaseEntity {
       return { success: false, error: `DecisionProposal significanceLevel must be one of: ${validLevels.join(', ')}` };
     }
 
-    const validStatuses: ProposalStatus[] = ['voting', 'concluded', 'expired', 'cancelled'];
+    const validStatuses: ProposalStatus[] = ['voting', 'concluded', 'expired', 'cancelled', 'manual_review'];
     if (!validStatuses.includes(this.status)) {
       return { success: false, error: `DecisionProposal status must be one of: ${validStatuses.join(', ')}` };
     }

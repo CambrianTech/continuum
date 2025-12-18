@@ -74,7 +74,7 @@ async function testRoomOperations(client: any, context: any) {
   
   // Test 2a: List rooms (should be empty or contain default rooms)
   console.log('📋 Testing room listing...');
-  const listResult1 = await withTimeout(client.executeCommand('chat/list-rooms', {}), 10000);
+  const listResult1 = await withTimeout(client.executeCommand('collaboration/chat/list-rooms', {}), 10000);
   assert(listResult1.success, 'List rooms command succeeded');
   assert(Array.isArray(listResult1.rooms), 'Rooms returned as array');
   
@@ -90,7 +90,7 @@ async function testRoomOperations(client: any, context: any) {
     allowAI: true
   };
   
-  const createResult = await withTimeout(client.executeCommand('chat/create-room', testRoomData), 10000);
+  const createResult = await withTimeout(client.executeCommand('collaboration/chat/create-room', testRoomData), 10000);
   assert(createResult.success, 'Create room command succeeded');
   assert(typeof createResult.roomId === 'string', 'Room ID returned');
   assert(createResult.name === testRoomData.name, 'Room name matches');
@@ -100,7 +100,7 @@ async function testRoomOperations(client: any, context: any) {
   
   // Test 2c: List rooms again (should have our new room)
   console.log('📋 Testing updated room list...');
-  const listResult2 = await withTimeout(client.executeCommand('chat/list-rooms', {}), 10000);
+  const listResult2 = await withTimeout(client.executeCommand('collaboration/chat/list-rooms', {}), 10000);
   assert(listResult2.success, 'Updated list rooms command succeeded');
   assert(listResult2.rooms.length === initialRoomCount + 1, 'Room count increased by 1');
   
@@ -123,7 +123,7 @@ async function testCitizenOperations(client: any, context: any, roomId: string) 
     citizenType: 'user'
   };
   
-  const joinResult = await withTimeout(client.executeCommand('chat/join-room', joinData), 10000);
+  const joinResult = await withTimeout(client.executeCommand('collaboration/chat/join-room', joinData), 10000);
   assert(joinResult.success, 'Join room command succeeded');
   assert(typeof joinResult.citizenId === 'string', 'Citizen ID returned');
   assert(joinResult.roomId === roomId, 'Room ID matches');
@@ -140,7 +140,7 @@ async function testCitizenOperations(client: any, context: any, roomId: string) 
     content: 'Hello from integration test! This is a test message.'
   };
   
-  const sendResult = await withTimeout(client.executeCommand('chat/send-message', messageData), 10000);
+  const sendResult = await withTimeout(client.executeCommand('collaboration/chat/send', messageData), 10000);
   assert(sendResult.success, 'Send message command succeeded');
   assert(typeof sendResult.messageId === 'string', 'Message ID returned');
   assert(typeof sendResult.messageTimestamp === 'string', 'Message timestamp returned');
@@ -149,7 +149,7 @@ async function testCitizenOperations(client: any, context: any, roomId: string) 
   
   // Test 3c: Get chat history
   console.log('📜 Testing chat history retrieval...');
-  const historyResult = await withTimeout(client.executeCommand('chat/get-history', {
+  const historyResult = await withTimeout(client.executeCommand('collaboration/chat/get-history', {
     roomId,
     limit: 10
   }), 10000);
@@ -164,7 +164,7 @@ async function testCitizenOperations(client: any, context: any, roomId: string) 
   
   // Test 3d: Leave room
   console.log('👋 Testing room leaving...');
-  const leaveResult = await withTimeout(client.executeCommand('chat/leave-room', {
+  const leaveResult = await withTimeout(client.executeCommand('collaboration/chat/leave-room', {
     roomId,
     citizenId
   }), 10000);
@@ -188,7 +188,7 @@ async function testMultipleCitizens(client: any, context: any, roomId: string) {
       citizenType: 'user'
     };
     
-    const joinResult = await withTimeout(client.executeCommand('chat/join-room', joinData), 10000);
+    const joinResult = await withTimeout(client.executeCommand('collaboration/chat/join-room', joinData), 10000);
     assert(joinResult.success, `Citizen ${i + 1} joined successfully`);
     
     citizens.push({
@@ -207,12 +207,12 @@ async function testMultipleCitizens(client: any, context: any, roomId: string) {
       content: `Hello from ${citizens[i].name}! Message ${i + 1}.`
     };
     
-    const sendResult = await withTimeout(client.executeCommand('chat/send-message', messageData), 10000);
+    const sendResult = await withTimeout(client.executeCommand('collaboration/chat/send', messageData), 10000);
     assert(sendResult.success, `Message from ${citizens[i].name} sent successfully`);
   }
   
   // Check history has all messages
-  const historyResult = await withTimeout(client.executeCommand('chat/get-history', {
+  const historyResult = await withTimeout(client.executeCommand('collaboration/chat/get-history', {
     roomId,
     limit: 20
   }), 10000);
@@ -221,7 +221,7 @@ async function testMultipleCitizens(client: any, context: any, roomId: string) {
   
   // Clean up - leave all citizens
   for (const citizen of citizens) {
-    const leaveResult = await withTimeout(client.executeCommand('chat/leave-room', {
+    const leaveResult = await withTimeout(client.executeCommand('collaboration/chat/leave-room', {
       roomId,
       citizenId: citizen.citizenId
     }), 10000);
@@ -247,7 +247,7 @@ async function testAIIntegration(client: any, context: any, roomId: string) {
     }
   };
   
-  const aiJoinResult = await withTimeout(client.executeCommand('chat/join-room', aiJoinData), 10000);
+  const aiJoinResult = await withTimeout(client.executeCommand('collaboration/chat/join-room', aiJoinData), 10000);
   assert(aiJoinResult.success, 'AI agent joined successfully');
   
   const aiCitizenId = aiJoinResult.citizenId;
@@ -260,7 +260,7 @@ async function testAIIntegration(client: any, context: any, roomId: string) {
     citizenType: 'user'
   };
   
-  const userJoinResult = await withTimeout(client.executeCommand('chat/join-room', userJoinData), 10000);
+  const userJoinResult = await withTimeout(client.executeCommand('collaboration/chat/join-room', userJoinData), 10000);
   assert(userJoinResult.success, 'Human user joined successfully');
   
   const humanCitizenId = userJoinResult.citizenId;
@@ -273,14 +273,14 @@ async function testAIIntegration(client: any, context: any, roomId: string) {
     content: 'Hello AI, can you help me with something?'
   };
   
-  const questionResult = await withTimeout(client.executeCommand('chat/send-message', questionData), 10000);
+  const questionResult = await withTimeout(client.executeCommand('collaboration/chat/send', questionData), 10000);
   assert(questionResult.success, 'Question message sent successfully');
   
   // Wait a moment for AI processing
   await new Promise(resolve => setTimeout(resolve, 2000));
   
   // Check history for AI response
-  const historyResult = await withTimeout(client.executeCommand('chat/get-history', {
+  const historyResult = await withTimeout(client.executeCommand('collaboration/chat/get-history', {
     roomId,
     limit: 10
   }), 10000);
@@ -294,8 +294,8 @@ async function testAIIntegration(client: any, context: any, roomId: string) {
   console.log('🤖 AI response status:', aiResponse ? 'Found' : 'Not found (expected if no local LLM)');
   
   // Clean up
-  await withTimeout(client.executeCommand('chat/leave-room', { roomId, citizenId: aiCitizenId }), 10000);
-  await withTimeout(client.executeCommand('chat/leave-room', { roomId, citizenId: humanCitizenId }), 10000);
+  await withTimeout(client.executeCommand('collaboration/chat/leave-room', { roomId, citizenId: aiCitizenId }), 10000);
+  await withTimeout(client.executeCommand('collaboration/chat/leave-room', { roomId, citizenId: humanCitizenId }), 10000);
   
   return { aiCitizenId, humanCitizenId };
 }
@@ -310,7 +310,7 @@ async function testErrorHandling(client: any, context: any) {
   const fakeCitizenId = generateUUID();
   
   // Try to join non-existent room
-  const joinFakeResult = await withTimeout(client.executeCommand('chat/join-room', {
+  const joinFakeResult = await withTimeout(client.executeCommand('collaboration/chat/join-room', {
     roomId: fakeRoomId,
     citizenName: 'TestUser',
     citizenType: 'user'
@@ -319,7 +319,7 @@ async function testErrorHandling(client: any, context: any) {
   console.log('🏠 Join non-existent room result:', joinFakeResult.success ? 'Auto-created' : 'Failed as expected');
   
   // Try to send message with invalid citizen/room combo
-  const invalidMessageResult = await withTimeout(client.executeCommand('chat/send-message', {
+  const invalidMessageResult = await withTimeout(client.executeCommand('collaboration/chat/send', {
     roomId: fakeRoomId,
     citizenId: fakeCitizenId,
     content: 'This should fail'
@@ -327,7 +327,7 @@ async function testErrorHandling(client: any, context: any) {
   assert(!invalidMessageResult.success, 'Invalid message send failed as expected');
   
   // Try to get history from non-existent room
-  const invalidHistoryResult = await withTimeout(client.executeCommand('chat/get-history', {
+  const invalidHistoryResult = await withTimeout(client.executeCommand('collaboration/chat/get-history', {
     roomId: generateUUID(),
     limit: 10
   }), 10000);

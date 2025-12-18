@@ -99,22 +99,6 @@ async function captureCurrentThemeScreenshots(): Promise<void> {
     });
   }
   
-  console.log('\n💡 THEME SWITCHING INSTRUCTIONS:');
-  console.log('To capture different themes:');
-  console.log('1. Open browser at localhost:9003');
-  console.log('2. Use theme dropdown in top-right corner');
-  console.log('3. Switch to desired theme');
-  console.log('4. Run this script again');
-  console.log('5. Repeat for each theme you want to capture');
-  
-  console.log('\n🎨 Available themes to test:');
-  console.log('  • Base - Dark Cyberpunk');
-  console.log('  • Light - Clean Professional');
-  console.log('  • Cyberpunk - Neon Future');
-  console.log('  • Retro Mac - System 11');
-  console.log('  • Monochrome - High Contrast');
-  console.log('  • Classic - Professional');
-  
   console.log('\n' + '='.repeat(50));
 }
 

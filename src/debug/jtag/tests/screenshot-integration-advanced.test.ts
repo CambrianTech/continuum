@@ -49,7 +49,7 @@ async function runAdvancedScreenshotTests(): Promise<void> {
   
   try {
     // Connect to JTAG system
-    const { getActivePorts } = require('../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     const websocketPort = activePorts.websocket_server;
     const serverUrl = `ws://localhost:${websocketPort}`;

@@ -65,7 +65,7 @@ export class SystemSchedulingState {
 
     try {
       // Query for singleton config entity
-      const result = await Commands.execute('data/list', {
+      const result = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: SystemConfigEntity.collection,
         filter: { name: 'default' },
         limit: 1,
@@ -99,7 +99,7 @@ export class SystemSchedulingState {
     const config = new SystemSchedulingConfigEntity();
 
     // Use data/create command to persist
-    const result = await Commands.execute('data/create', {
+    const result = await Commands.execute(DATA_COMMANDS.CREATE, {
       collection: SystemSchedulingConfigEntity.collection,
       entity: config,
     });
@@ -276,7 +276,7 @@ export class SystemSchedulingState {
 
     // Persist to database
     try {
-      await Commands.execute('data/update', {
+      await Commands.execute(DATA_COMMANDS.UPDATE, {
         collection: SystemSchedulingConfigEntity.collection,
         id: this._config.id,
         updates: {

@@ -273,7 +273,7 @@ class RealDataWidgetIntegrationValidator {
       const chatStart = Date.now();
       try {
         // Simulate ChatService call through actual command
-        const chatResult = await this.client.commands['chat/send-message']({
+        const chatResult = await this.client.commands['collaboration/chat/send']({
           roomId: this.testRoomId,
           content: {
             text: 'Testing widget service integration!',
@@ -358,7 +358,7 @@ class RealDataWidgetIntegrationValidator {
         });
         
         if (userListResult.success) {
-          const messageResult = await this.client.commands['chat/send-message']({
+          const messageResult = await this.client.commands['collaboration/chat/send']({
             roomId: this.testRoomId,
             content: {
               text: 'Cross-service integration test message',
@@ -461,7 +461,7 @@ class RealDataWidgetIntegrationValidator {
         
         try {
           // Send message that would trigger UI update
-          const messageResult = await this.client.commands['chat/send-message']({
+          const messageResult = await this.client.commands['collaboration/chat/send']({
             roomId: this.testRoomId,
             content: {
               text: `Real-time UI update test message ${i + 1}`,
@@ -652,7 +652,7 @@ class RealDataWidgetIntegrationValidator {
       errorHandlingTests++;
       
       try {
-        const failMessageResult = await this.client.commands['chat/send-message']({
+        const failMessageResult = await this.client.commands['collaboration/chat/send']({
           roomId: 'nonexistent-room-12345',
           content: {
             text: 'This should fail gracefully',

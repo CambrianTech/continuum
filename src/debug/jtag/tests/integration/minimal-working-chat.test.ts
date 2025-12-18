@@ -50,7 +50,7 @@ async function testMinimalWorkingChat(): Promise<boolean> {
     console.log('💬 Testing basic message sending...');
     
     // User 1 sends message
-    await user1Client.commands['chat/send-message']({
+    await user1Client.commands['collaboration/chat/send']({
       roomId,
       content: 'Hello from User1!',
       messageContext: { role: 'tester' }
@@ -61,7 +61,7 @@ async function testMinimalWorkingChat(): Promise<boolean> {
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // User 2 sends message  
-    await user2Client.commands['chat/send-message']({
+    await user2Client.commands['collaboration/chat/send']({
       roomId,
       content: 'Hello back from User2!',
       messageContext: { role: 'tester' }

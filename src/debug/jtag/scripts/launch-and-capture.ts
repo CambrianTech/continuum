@@ -126,7 +126,8 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
         env: {
           ...process.env,
           FORCE_COLOR: '1',
-          TERM: 'xterm-256color'
+          TERM: 'xterm-256color',
+          NODE_OPTIONS: '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON'
         },
         cwd: process.cwd()
       });
@@ -202,10 +203,9 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                   try {
                     const signal = await signaler.generateReadySignal();
 
-                    const isSystemReady = (
-                      signal.bootstrapComplete &&
-                      (signal.systemHealth === 'healthy' || signal.systemHealth === 'degraded')
-                    );
+                    // Exit as soon as bootstrap completes - health may be "unhealthy" during command registration
+                    // The ping inside generateReadySignal() already confirms server + browser are responsive
+                    const isSystemReady = signal.bootstrapComplete;
 
                     if (isSystemReady) {
                       clearInterval(readinessCheckInterval);
@@ -589,9 +589,13 @@ const MODE_BEHAVIORS = {
 // Run the configurable smart launcher
 async function main(): Promise<void> {
   try {
+    // CRITICAL: Initialize SecretManager to load config.env into process.env
+    const { SecretManager } = await import('../system/secrets/SecretManager');
+    await SecretManager.getInstance().initialize();
+
     const behavior = MODE_BEHAVIORS[CONFIG.mode];
     const sessionName = TmuxSessionManager.getSessionName(); // Generate session name for this workdir
-    
+
     if (CONFIG.verbose) {
       console.log(`🚀 SMART JTAG LAUNCHER - ${behavior.label}`);
       console.log(`📊 Config: ${JSON.stringify(CONFIG, null, 2)}`);

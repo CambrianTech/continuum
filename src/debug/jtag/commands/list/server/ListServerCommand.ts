@@ -64,66 +64,50 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
   async execute(params: JTAGPayload): Promise<ListResult> {
     const listParams = params as ListParams;
 
-    // console.log(`📋 SERVER: Listing available commands`);
+    // Get commands from CommandDaemon
+    const availableCommands = this.commander.commands;
+    const commandSignatures: CommandSignature[] = [];
 
-    try {
-      // Get commands from CommandDaemon
-      const availableCommands = this.commander.commands;
-      const commandSignatures: CommandSignature[] = [];
+    // Convert CommandDaemon commands to CommandSignature format
+    for (const [commandName, command] of availableCommands.entries()) {
+      // Get command metadata from generated schemas
+      const metadata = this.extractCommandMetadata(commandName);
 
-      // Convert CommandDaemon commands to CommandSignature format
-      for (const [commandName, command] of availableCommands.entries()) {
-        // Get user-facing parameters (exclude framework injection params)
-        const userParams = this.extractUserFacingParams(commandName);
+      const signature: CommandSignature = {
+        name: commandName,
+        description: metadata.description,
+        params: metadata.params,
+        returns: metadata.returns
+      };
 
-        const signature: CommandSignature = {
-          name: commandName,
-          description: userParams.description || `${commandName} command`,
-          params: userParams.params,
-          returns: {
-            success: { type: 'boolean', description: 'Operation success status' }
-          }
-        };
-
-        commandSignatures.push(signature);
-      }
-
-      return createListResultFromParams(listParams, {
-        success: true,
-        commands: commandSignatures,
-        totalCount: commandSignatures.length
-      });
-
-    } catch (error) {
-      console.error(`❌ SERVER: Failed to list commands:`, error);
-
-      return createListResultFromParams(listParams, {
-        success: false,
-        commands: [],
-        totalCount: 0,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
+      commandSignatures.push(signature);
     }
+
+    return createListResultFromParams(listParams, {
+      success: true,
+      commands: commandSignatures,
+      totalCount: commandSignatures.length
+    });
   }
 
   /**
-   * Extract user-facing parameters for a command from generated schemas
+   * Extract complete command metadata from generated schemas
    *
-   * Framework params that are auto-injected and should NOT be exposed to tools:
+   * Framework params that are auto-injected and should NOT be exposed:
    * - context (JTAGContext)
    * - sessionId (UUID)
    * - backend (JTAGEnvironment)
+   * - contextId (UUID)
    */
-  private extractUserFacingParams(commandName: string): {
+  private extractCommandMetadata(commandName: string): {
     description: string;
     params: Record<string, { type: string; required: boolean; description?: string }>;
+    returns: Record<string, { type: string; description?: string }>;
   } {
     // Try to find command in generated schemas
     if (ListServerCommand.generatedSchemas) {
-      // Normalize command name: code/read → code-read (generator uses kebab-case from file paths)
-      const normalizedName = commandName.replace(/\//g, '-');
       const schema = ListServerCommand.generatedSchemas.commands.find(
-        cmd => cmd.name === commandName || cmd.name === normalizedName
+        cmd => cmd.name === commandName
       );
 
       if (schema) {
@@ -139,15 +123,32 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
 
         return {
           description: schema.description,
-          params: userParams
+          params: userParams,
+          returns: this.getReturnTypeForCommand(commandName)
         };
       }
     }
 
-    // Fallback for commands not in generated schemas (or if schemas failed to load)
+    // Fallback for commands not in generated schemas
     return {
       description: `${commandName} command`,
-      params: {}
+      params: {},
+      returns: { success: { type: 'boolean', description: 'Operation success status' } }
+    };
+  }
+
+  /**
+   * Get return type for a command
+   * TODO: Schema generator should extract return types from TypeScript CommandResult types
+   * For now, return CommandResult base type
+   */
+  private getReturnTypeForCommand(commandName: string): Record<string, { type: string; description?: string }> {
+    // All commands extend CommandResult which has these base properties
+    return {
+      success: { type: 'boolean', description: 'Whether command executed successfully' },
+      error: { type: 'string', description: 'Error message if success=false' },
+      timestamp: { type: 'string', description: 'ISO 8601 timestamp' },
+      sessionId: { type: 'string', description: 'Session that executed command' }
     };
   }
 }

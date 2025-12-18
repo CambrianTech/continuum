@@ -14,10 +14,13 @@ import type { DaemonBase, DaemonEntry } from '../../../../daemons/command-daemon
 import { SERVER_DAEMONS } from '../../../../server/generated';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { generateUUID } from '../../types/CrossPlatformUUID';
+import { CommandRouterServer } from '@shared/ipc/archive-worker/CommandRouterServer';
 
 export class JTAGSystemServer extends JTAGSystem {
+  private commandRouter: CommandRouterServer | null = null;
+
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
-  
+
   protected override createDaemon(entry: DaemonEntry, context: JTAGContext, router: JTAGRouterDynamicServer): DaemonBase | null {
     // All daemon classes now use consistent (context, router) constructor pattern
     return new entry.daemonClass(context, router);
@@ -160,15 +163,19 @@ export class JTAGSystemServer extends JTAGSystem {
 
     // 3. Create server system instance with config
     const system = new JTAGSystemServer(context, router, config);
-    
+
+    // 3.5. Set static instance BEFORE daemon setup so PersonaUsers can use local router
+    JTAGSystemServer.instance = system;
+    console.log(`✅ JTAGSystemServer.instance SET at ${new Date().toISOString()}`);
+
     // 4. Setup daemons directly (no delegation needed)
     await system.setupDaemons();
 
     // 5. Setup cross-context transport
     await system.setupTransports();
-    
+
     // 6. Session handling is now done via SessionDaemon through router messages
-    
+
     // Emit transport ready event
     router.eventManager.events.emit(SYSTEM_EVENTS.TRANSPORT_READY, {
       context,
@@ -177,9 +184,16 @@ export class JTAGSystemServer extends JTAGSystem {
     });
     console.log(`🔗 JTAG System: Transport ready event emitted`);
 
-    JTAGSystemServer.instance = system;
+    // 7. Start CommandRouterServer for Rust worker bidirectional communication
+    try {
+      system.commandRouter = new CommandRouterServer('/tmp/jtag-command-router.sock');
+      await system.commandRouter.start();
+      console.log(`🦀 JTAG System: Command Router ready for Rust workers`);
+    } catch (error) {
+      console.warn(`⚠️  JTAG System: Command Router failed to start (Rust workers will not work):`, error);
+    }
 
-    // 7. Register this process in the ProcessRegistry to prevent cleanup false positives
+    // 8. Register this process in the ProcessRegistry to prevent cleanup false positives
     await system.registerSystemProcess();
     
     console.log(`✅ JTAG System: Connected server successfully`);
@@ -196,6 +210,26 @@ export class JTAGSystemServer extends JTAGSystem {
     console.log(`🎉 JTAG System: System ready event emitted`);
 
     return system;
+  }
+
+  /**
+   * Override shutdown to cleanup CommandRouterServer
+   */
+  override async shutdown(): Promise<void> {
+    console.log(`🔄 JTAG System Server: Shutting down...`);
+
+    // Stop CommandRouterServer
+    if (this.commandRouter) {
+      try {
+        await this.commandRouter.stop();
+        console.log(`🦀 JTAG System Server: Command Router stopped`);
+      } catch (error) {
+        console.warn(`⚠️  JTAG System Server: Error stopping Command Router:`, error);
+      }
+    }
+
+    // Call base shutdown
+    await super.shutdown();
   }
 
 }

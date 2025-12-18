@@ -1,0 +1,342 @@
+/// Archive Worker - Rust Worker for Database Archiving
+///
+/// BREAKTHROUGH ARCHITECTURE: Bidirectional Communication
+/// - TypeScript → Rust: Queue archive tasks
+/// - Rust → TypeScript: Execute Commands.execute() for data operations
+///
+/// This proves Rust workers can be FIRST-CLASS CITIZENS in the JTAG system.
+///
+/// Usage: cargo run --release -- /tmp/archive-worker.sock
+mod command_client;
+mod messages;
+
+use messages::{ArchiveRequest, ArchiveResponse, ArchiveTask};
+use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Instant;
+
+// ============================================================================
+// Debug Logging
+// ============================================================================
+
+fn debug_log(msg: &str) {
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let log_msg = format!("[{}] {}\n", timestamp, msg);
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/archive-worker-debug.log")
+    {
+        let _ = file.write_all(log_msg.as_bytes());
+        let _ = file.flush();
+    }
+}
+
+// ============================================================================
+// Shared State
+// ============================================================================
+
+struct WorkerState {
+    task_queue: VecDeque<ArchiveTask>,
+    tasks_completed: usize,
+    start_time: Instant,
+}
+
+impl WorkerState {
+    fn new() -> Self {
+        Self {
+            task_queue: VecDeque::new(),
+            tasks_completed: 0,
+            start_time: Instant::now(),
+        }
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+fn main() -> std::io::Result<()> {
+    debug_log("========================================");
+    debug_log(&format!(
+        "ARCHIVE WORKER STARTING - PID: {}",
+        std::process::id()
+    ));
+    debug_log("========================================");
+
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        debug_log("ERROR: Missing socket path argument");
+        eprintln!("Usage: {} <socket-path>", args[0]);
+        eprintln!("Example: {} /tmp/archive-worker.sock", args[0]);
+        std::process::exit(1);
+    }
+
+    let socket_path = &args[1];
+    debug_log(&format!("Socket path: {}", socket_path));
+
+    // Remove socket file if it exists
+    if Path::new(socket_path).exists() {
+        debug_log("Removing existing socket file");
+        std::fs::remove_file(socket_path)?;
+    }
+
+    println!("🦀 Archive Worker starting...");
+    println!("📡 Listening on: {}", socket_path);
+
+    // Create shared state
+    let state = Arc::new(Mutex::new(WorkerState::new()));
+
+    // Create task queue channel
+    let (task_tx, task_rx) = mpsc::channel::<ArchiveTask>();
+    debug_log("Created task queue channel");
+
+    // Spawn worker threads (3 threads for concurrent archiving)
+    // Workers share the receiver via Arc<Mutex<>>
+    let task_rx = Arc::new(Mutex::new(task_rx));
+    let num_workers = 3;
+    for worker_id in 0..num_workers {
+        let rx = task_rx.clone();
+        let state_clone = state.clone();
+
+        thread::spawn(move || {
+            debug_log(&format!("[Worker-{}] Started", worker_id));
+            println!("🔥 Worker thread {} started", worker_id);
+
+            loop {
+                // Try to receive task from shared receiver
+                let task = {
+                    let rx_lock = rx.lock().unwrap();
+                    match rx_lock.try_recv() {
+                        Ok(task) => task,
+                        Err(mpsc::TryRecvError::Empty) => {
+                            // No tasks, sleep briefly
+                            drop(rx_lock);
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            debug_log(&format!("[Worker-{}] Channel closed", worker_id));
+                            break;
+                        }
+                    }
+                };
+
+                debug_log(&format!(
+                    "[Worker-{}] Processing task: {}",
+                    worker_id, task.task_id
+                ));
+
+                // Process archive task (SKELETON - just sleeps for now)
+                match process_archive_task(&task) {
+                    Ok(rows_archived) => {
+                        debug_log(&format!(
+                            "[Worker-{}] Task {} complete: {} rows",
+                            worker_id, task.task_id, rows_archived
+                        ));
+
+                        // Update completed count
+                        let mut state = state_clone.lock().unwrap();
+                        state.tasks_completed += 1;
+                    }
+                    Err(e) => {
+                        debug_log(&format!(
+                            "[Worker-{}] Task {} failed: {}",
+                            worker_id, task.task_id, e
+                        ));
+                    }
+                }
+            }
+
+            debug_log(&format!("[Worker-{}] Exiting", worker_id));
+        });
+    }
+
+    println!("✅ {} worker threads ready", num_workers);
+
+    // Bind socket
+    debug_log("Binding to socket...");
+    let listener = UnixListener::bind(socket_path)?;
+    debug_log("Socket bound successfully");
+
+    println!("✅ Ready to accept connections");
+
+    // Accept connections
+    let mut conn_count = 0;
+    for stream in listener.incoming() {
+        conn_count += 1;
+        debug_log(&format!(">>> INCOMING CONNECTION #{}", conn_count));
+
+        match stream {
+            Ok(stream) => {
+                println!("\n🔗 New connection from TypeScript");
+                debug_log(&format!("Connection #{} accepted", conn_count));
+
+                let task_tx_clone = task_tx.clone();
+                let state_clone = state.clone();
+
+                // Handle connection in separate thread
+                thread::spawn(move || {
+                    if let Err(e) = handle_connection(stream, task_tx_clone, state_clone) {
+                        debug_log(&format!("Connection error: {}", e));
+                    }
+                });
+            }
+            Err(e) => {
+                debug_log(&format!("Connection error: {}", e));
+                eprintln!("❌ Connection error: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Connection Handler
+// ============================================================================
+
+fn handle_connection(
+    stream: UnixStream,
+    task_tx: mpsc::Sender<ArchiveTask>,
+    state: Arc<Mutex<WorkerState>>,
+) -> std::io::Result<()> {
+    debug_log("handle_connection: START");
+
+    let mut reader = BufReader::new(&stream);
+    let mut writer = stream.try_clone()?;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line)?;
+
+        if bytes_read == 0 {
+            debug_log("Client disconnected (EOF)");
+            break;
+        }
+
+        debug_log(&format!("Received message: {}", line.trim()));
+
+        // Parse request
+        let request: ArchiveRequest = match serde_json::from_str(&line) {
+            Ok(req) => req,
+            Err(e) => {
+                debug_log(&format!("Failed to parse request: {}", e));
+                continue;
+            }
+        };
+
+        // Handle request
+        let response = handle_request(request, &task_tx, &state)?;
+
+        // Send response
+        let response_json = serde_json::to_string(&response)?;
+        writeln!(writer, "{}", response_json)?;
+        writer.flush()?;
+
+        debug_log(&format!("Sent response: {}", response_json));
+    }
+
+    debug_log("handle_connection: COMPLETE");
+    Ok(())
+}
+
+// ============================================================================
+// Request Handler
+// ============================================================================
+
+fn handle_request(
+    request: ArchiveRequest,
+    task_tx: &mpsc::Sender<ArchiveTask>,
+    state: &Arc<Mutex<WorkerState>>,
+) -> std::io::Result<ArchiveResponse> {
+    match request {
+        ArchiveRequest::Archive {
+            task_id,
+            collection,
+            source_handle,
+            dest_handle,
+            max_rows,
+            batch_size,
+        } => {
+            debug_log(&format!("Queuing task: {}", task_id));
+
+            let task = ArchiveTask {
+                task_id: task_id.clone(),
+                collection,
+                source_handle,
+                dest_handle,
+                max_rows,
+                batch_size,
+            };
+
+            // Queue task
+            task_tx.send(task).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::Other, format!("Queue error: {}", e))
+            })?;
+
+            // Update queue (just track task ID as string, not full task)
+            let mut state = state.lock().unwrap();
+            let queue_position = state.task_queue.len() + 1;
+
+            Ok(ArchiveResponse::Queued {
+                task_id,
+                queue_position,
+            })
+        }
+
+        ArchiveRequest::Ping => {
+            let state = state.lock().unwrap();
+            let uptime = state.start_time.elapsed().as_secs();
+
+            Ok(ArchiveResponse::Pong {
+                uptime_seconds: uptime,
+                queue_size: state.task_queue.len(),
+                tasks_completed: state.tasks_completed,
+            })
+        }
+
+        ArchiveRequest::Status => {
+            let state = state.lock().unwrap();
+
+            Ok(ArchiveResponse::Status {
+                queue_size: state.task_queue.len(),
+                active_tasks: 0, // TODO: Track active tasks
+                completed_tasks: state.tasks_completed,
+            })
+        }
+    }
+}
+
+// ============================================================================
+// Archive Task Processor (SKELETON)
+// ============================================================================
+
+fn process_archive_task(task: &ArchiveTask) -> std::io::Result<usize> {
+    debug_log(&format!(
+        "Processing archive task: {} ({} → {})",
+        task.collection, task.source_handle, task.dest_handle
+    ));
+
+    // SKELETON: Just simulate work for now
+    // Next step: Use CommandClient to call data/list, data/create, data/delete
+    println!(
+        "📦 Archiving {} (batch size: {})",
+        task.collection, task.batch_size
+    );
+
+    // Simulate processing time
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Return fake row count
+    let rows_archived = 10;
+    debug_log(&format!("Archived {} rows (simulated)", rows_archived));
+
+    Ok(rows_archived)
+}

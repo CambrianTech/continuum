@@ -12,7 +12,7 @@ import type { UserCreateResult } from '../../commands/user/create/shared/UserCre
 const execAsync = promisify(exec);
 
 /**
- * Create a record via JTAG data/create command with proper shell escaping
+ * Create a record via JTAG ${DATA_COMMANDS.CREATE} command with proper shell escaping
  */
 export async function createRecord(
   collection: string,
@@ -22,7 +22,7 @@ export async function createRecord(
   userId?: string
 ): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
 
   try {
     const result = await execAsync(cmd);
@@ -63,7 +63,7 @@ export async function createStateRecord(
   displayName?: string
 ): Promise<boolean> {
   const dataArg = JSON.stringify(data).replace(/'/g, `'\"'\"'`);
-  const cmd = `./jtag data/create --collection=${collection} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
 
   try {
     const result = await execAsync(cmd);
@@ -104,7 +104,7 @@ export async function updatePersonaProfile(
     shortDescription: profile.bio
   };
   const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/update --collection=users --id=${userId} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
     const { stdout } = await execAsync(cmd);
@@ -130,7 +130,7 @@ export async function updatePersonaConfig(userId: string, config: any): Promise<
   const configArg = JSON.stringify(config).replace(/'/g, `'"'"'`);
   const updateData = { personaConfig: config };
   const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag data/update --collection=users --id=${userId} --data='${dataArg}'`;
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
 
   try {
     const { stdout } = await execAsync(cmd);
@@ -200,7 +200,7 @@ export async function createUserViaCommand(
  */
 export async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity | null> {
   try {
-    const { stdout } = await execAsync(`./jtag data/list --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
     const response = JSON.parse(stdout);
 
     if (response.success && response.items && response.items.length > 0) {
@@ -227,7 +227,7 @@ export async function seedRecords<T extends { id: string; displayName?: string }
   getDisplayName?: (record: T) => string,
   getUserId?: (record: T) => string
 ): Promise<void> {
-  console.log(`📝 Creating ${records.length} ${collection} records via data/create...`);
+  console.log(`📝 Creating ${records.length} ${collection} records via ${DATA_COMMANDS.CREATE}...`);
 
   let successCount = 0;
   for (const record of records) {

@@ -4,17 +4,22 @@
  * Follows working data create pattern with strong typing
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
 /**
  * Data Delete Parameters
  */
-export interface DataDeleteParams extends JTAGPayload {
+export interface DataDeleteParams extends CommandParams {
   readonly collection: string;
   readonly id: UUID;
   readonly format?: 'json' | 'yaml' | 'table';
+  /** Optional database handle for multi-database operations (defaults to 'default') */
+  readonly dbHandle?: DbHandle;
+  /** Suppress CRUD events for this operation (for internal operations like archiving) */
+  readonly suppressEvents?: boolean;
 }
 
 /**

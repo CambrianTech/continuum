@@ -5,17 +5,16 @@
  */
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/shared/Commands';
-import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { Events } from '../../../system/core/shared/Events';
 import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
-import type { ContentOpenParams, ContentOpenResult } from '../../../commands/content/open/shared/ContentOpenTypes';
 
 export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID; // Sync with ChatWidget's default

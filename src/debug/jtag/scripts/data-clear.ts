@@ -32,7 +32,7 @@ for (const collection of collections) {
   try {
     // Run truncate command (must run from project root)
     const projectRoot = join(__dirname, '..');
-    const result = execSync(`./jtag data/truncate --collection=${collection}`, {
+    const result = execSync(`./jtag ${DATA_COMMANDS.TRUNCATE} --collection=${collection}`, {
       encoding: 'utf-8',
       cwd: projectRoot,
       timeout: 30000  // 30 second timeout - fail loudly if hangs
@@ -50,7 +50,7 @@ for (const collection of collections) {
 
     // CRITICAL: Verify deletion actually happened
     console.log(`   🔍 Verifying actual deletion...`);
-    const listResult = execSync(`./jtag data/list --collection=${collection}`, {
+    const listResult = execSync(`./jtag ${DATA_COMMANDS.LIST} --collection=${collection}`, {
       encoding: 'utf-8',
       cwd: projectRoot,
       timeout: 30000  // 30 second timeout - fail loudly if hangs

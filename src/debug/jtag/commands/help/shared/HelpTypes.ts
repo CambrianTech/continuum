@@ -5,14 +5,14 @@
  * Returns both structured data and human-readable help text.
  */
 
-import type { JTAGContext, JTAGPayload, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { CommandSignature } from '../../list/shared/ListTypes';
 
 /**
  * Help command parameters
  */
-export interface HelpParams extends JTAGPayload {
+export interface HelpParams extends CommandParams {
   readonly context: JTAGContext;
   readonly sessionId: UUID;
 

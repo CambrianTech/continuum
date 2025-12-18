@@ -21,7 +21,6 @@ import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import { Commands } from '../../core/shared/Commands';
-import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
@@ -108,6 +107,7 @@ import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSou
 import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
 import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBody';
 import { SystemPaths } from '../../core/config/SystemPaths';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -1041,7 +1041,7 @@ export class PersonaUser extends AIUser {
 
     try {
       // Query the sender's UserEntity to check their type
-      const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<UserEntity>>('data/read', {
+      const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.USERS,
         id: senderId,
         context: this.client.context,

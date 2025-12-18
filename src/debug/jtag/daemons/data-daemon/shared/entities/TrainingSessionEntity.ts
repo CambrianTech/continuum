@@ -135,7 +135,7 @@ export class TrainingSessionEntity extends BaseEntity {
    *
    * Use this handle with data/list to fetch training examples:
    * ```typescript
-   * const examples = await Commands.execute('data/list', {
+   * const examples = await Commands.execute(DATA_COMMANDS.LIST, {
    *   dbHandle: session.datasetHandle,
    *   collection: 'training_examples'
    * });

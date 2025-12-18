@@ -5,10 +5,10 @@
  * Should be called when done with pagination
  */
 
-import type { JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface DataQueryCloseParams extends JTAGPayload {
+export interface DataQueryCloseParams extends CommandParams {
   readonly queryHandle: UUID;
   readonly collection: string; // Required by BaseDataParams
   readonly backend: JTAGEnvironment; // Required by BaseDataParams

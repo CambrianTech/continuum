@@ -45,8 +45,8 @@ const CHAT_INTERACTIONS = {
     console.log(`💬 PROPER CHAT: Sending message to room ${roomId} via JTAG command`);
     
     try {
-      // Use proper chat/send-message command (not DOM manipulation!)
-      const result = await client.commands['chat/send-message']({
+      // Use proper chat/send command (not DOM manipulation!)
+      const result = await client.commands['collaboration/chat/send']({
         roomId: roomId,
         content: message,
         senderId: 'test-user',
@@ -137,7 +137,7 @@ async function runBrowserIntegrationTests(): Promise<void> {
   
   try {
     // Connect to JTAG system (same as ./jtag screenshot)
-    const { getActivePorts } = require('../../examples/shared/ExampleConfig');
+    const { getActivePorts } = require('../../examples/server/ExampleConfigServer');
     const activePorts = await getActivePorts();
     const websocketPort = activePorts.websocket_server;
     const serverUrl = `ws://localhost:${websocketPort}`;

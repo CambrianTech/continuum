@@ -789,7 +789,7 @@ npm start  # Wait 90 seconds
   --adapterId="code-sentinel-lora"
 
 # 5. Test it
-./jtag chat/send --room="dev-updates" \
+./jtag collaboration/chat/send --room="dev-updates" \
   --message="@code-sentinel analyze PR #169"
 
 # 6. Enable continuous learning

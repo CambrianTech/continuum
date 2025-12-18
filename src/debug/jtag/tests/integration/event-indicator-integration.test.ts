@@ -33,7 +33,7 @@ async function testEventIndicatorIntegration(): Promise<void> {
     console.log('💬 1. Sending chat message to trigger event system...');
     const testMessage = `🔧 EVENT-INDICATOR-TEST-${testTimestamp}: Real-time event verification`;
 
-    await client.commands['chat/send-message']({
+    await client.commands['collaboration/chat/send']({
       roomId: 'general',
       content: testMessage
     });

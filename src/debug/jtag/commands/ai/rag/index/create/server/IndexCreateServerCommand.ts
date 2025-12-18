@@ -12,6 +12,7 @@ import type { DataCreateResult } from '../../../../../data/create/shared/DataCre
 import type { EmbeddingGenerateResult } from '../../../../embedding/generate/shared/EmbeddingGenerateTypes';
 import { CodeIndexEntity } from '../../../../../../system/data/entities/CodeIndexEntity';
 import { Commands } from '../../../../../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class IndexCreateServerCommand extends IndexCreateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -85,7 +86,7 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
       }
 
       // Store in database using Commands.execute
-      const result = await Commands.execute('data/create', {
+      const result = await Commands.execute(DATA_COMMANDS.CREATE, {
         collection: CodeIndexEntity.collection,
         data: entry,
         context: this.context,

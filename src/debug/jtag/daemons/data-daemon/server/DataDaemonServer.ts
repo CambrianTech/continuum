@@ -17,6 +17,7 @@ import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 // import { Events } from '../../../system/core/shared/Events';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
+import { getDatabasePath, getDatabaseDir } from '../../../system/config/ServerConfig';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -38,7 +39,7 @@ export class DataDaemonServer extends DataDaemonBase {
       backend: 'sqlite',
       namespace: context.uuid, // Use context UUID as namespace
       options: {
-        basePath: DATABASE_PATHS.DATA_DIR,
+        basePath: getDatabaseDir(),  // Expand $HOME in path
         databaseName: DATABASE_FILES.SQLITE_FILENAME,
         foreignKeys: false  // Disable foreign key constraints to avoid constraint violations
       },
@@ -83,6 +84,10 @@ export class DataDaemonServer extends DataDaemonBase {
 
     this.log.info('Data daemon server initialized with SQLite backend');
 
+    // Register database handles for multi-database operations (archiving, etc.)
+    await this.registerDatabaseHandles();
+    this.log.info('Database handles registered');
+
     // Initialize CodeDaemon for code/read operations
     const { initializeCodeDaemon } = await import('../../code-daemon/server/CodeDaemonServer');
     await initializeCodeDaemon(this.context);
@@ -92,6 +97,11 @@ export class DataDaemonServer extends DataDaemonBase {
     const { SystemDaemon } = await import('../../system-daemon/shared/SystemDaemon');
     await SystemDaemon.initialize(this.context);
     this.log.info('System daemon initialized');
+
+    // Initialize governance notifications (vote events → chat messages)
+    const { initializeGovernanceNotifications } = await import('../../../system/governance/GovernanceNotifications');
+    initializeGovernanceNotifications();
+    this.log.info('Governance notifications initialized');
 
     // Emit system ready event so other daemons can proceed with initialization
     const { Events } = await import('../../../system/core/shared/Events');
@@ -112,6 +122,69 @@ export class DataDaemonServer extends DataDaemonBase {
       this.log.error('Failed to initialize entity registry:', error);
       throw error;
     }
+  }
+
+  /**
+   * Register database handles for multi-database operations
+   * Creates 'primary' (main DB) and 'archive' (archive DB) handles
+   */
+  private async registerDatabaseHandles(): Promise<void> {
+    const { DatabaseHandleRegistry } = await import('./DatabaseHandleRegistry');
+    const { DATABASE_PATHS } = await import('../../../system/data/config/DatabaseConfig');
+    const fs = await import('fs');
+    const path = await import('path');
+
+    const registry = DatabaseHandleRegistry.getInstance();
+
+    // Register 'primary' handle pointing to main database
+    // Note: emitEvents=false for archive operations to prevent UI spam during bulk moves
+    const primaryDbPath = getDatabasePath();  // Expand $HOME in path
+    this.log.info(`Registering 'primary' handle: ${primaryDbPath}`);
+
+    const primaryHandle = await registry.open('sqlite', {
+      filename: primaryDbPath
+    }, { emitEvents: false });
+
+    // Register alias so archive code can use 'primary' instead of UUID
+    registry.registerAlias('primary', primaryHandle);
+
+    // Create archive directory if it doesn't exist
+    const archiveDir = path.join(path.dirname(primaryDbPath), 'archive');
+    if (!fs.existsSync(archiveDir)) {
+      fs.mkdirSync(archiveDir, { recursive: true });
+      this.log.info(`Created archive directory: ${archiveDir}`);
+    }
+
+    // Find or create active archive file
+    // Use source database name with -NNN suffix (e.g., database-001.sqlite)
+    const sourceDbName = path.basename(primaryDbPath, '.sqlite');
+    const archiveFiles = fs.readdirSync(archiveDir)
+      .filter((f: string) => f.startsWith(`${sourceDbName}-`) && f.endsWith('.sqlite'))
+      .sort()
+      .reverse(); // Most recent first
+
+    let archiveDbPath: string;
+
+    if (archiveFiles.length > 0) {
+      // Use most recent archive file
+      archiveDbPath = path.join(archiveDir, archiveFiles[0]);
+      this.log.info(`Using existing archive file: ${archiveDbPath}`);
+    } else {
+      // Create first archive file
+      archiveDbPath = path.join(archiveDir, `${sourceDbName}-001.sqlite`);
+      this.log.info(`Creating new archive file: ${archiveDbPath}`);
+    }
+
+    // Register 'archive' handle with event suppression
+    // Archive operations should not emit events to prevent UI spam
+    const archiveHandle = await registry.open('sqlite', {
+      filename: archiveDbPath
+    }, { emitEvents: false });
+
+    // Register alias so archive code can use 'archive' instead of UUID
+    registry.registerAlias('archive', archiveHandle);
+
+    this.log.info(`Registered 'archive' handle: ${archiveDbPath} (emitEvents=false)`);
   }
   
   /**

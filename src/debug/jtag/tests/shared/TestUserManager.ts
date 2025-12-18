@@ -95,7 +95,7 @@ export class TestUserManager {
       throw new Error(`User ${userName} not found`);
     }
 
-    await user.client.commands['chat/send-message']({
+    await user.client.commands['collaboration/chat/send']({
       roomId,
       content,
       messageContext: { role: user.role }

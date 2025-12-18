@@ -39,6 +39,10 @@ export class DataCreateServerCommand extends DataCreateCommand {
       const registry = DatabaseHandleRegistry.getInstance();
       const adapter = registry.getAdapter(dbHandle);
 
+      // Get emitEvents preference from handle metadata
+      const metadata = registry.getMetadata(dbHandle);
+      const shouldEmitEvents = metadata?.emitEvents ?? true;
+
       // Create temporary DataDaemon instance with the specific adapter
       const tempDaemon = new DataDaemon({
         strategy: 'sql',
@@ -54,14 +58,13 @@ export class DataCreateServerCommand extends DataCreateCommand {
         source: 'data-create-command'
       };
 
-      entity = await tempDaemon.create(collection, params.data, operationContext);
-
-      // Emit event manually since we're not using the global DataDaemon
-      const eventName = BaseEntity.getEventName(collection, 'created');
-      await Events.emit(this.context, eventName, entity);
+      // Use handle's emitEvents preference (can be overridden by params.suppressEvents)
+      const suppressEvents = params.suppressEvents ?? !shouldEmitEvents;
+      entity = await tempDaemon.create(collection, params.data, operationContext, suppressEvents);
     } else {
       // Default operation: use DataDaemon (backward compatible)
       // Events are emitted by DataDaemon.store() via universal Events system
+      // TODO: Pass suppressEvents flag to DataDaemon.store()
       entity = await DataDaemon.store(collection, params.data);
     }
 

@@ -5,7 +5,7 @@
  * Uses multi-database handle system for isolation.
  */
 
-import type { JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
@@ -13,7 +13,7 @@ import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHa
 /**
  * Training Import Parameters
  */
-export interface TrainingImportParams extends JTAGPayload {
+export interface TrainingImportParams extends CommandParams {
   /** Path to JSONL file (absolute or relative to datasets/parsed/) */
   readonly jsonlPath: string;
 

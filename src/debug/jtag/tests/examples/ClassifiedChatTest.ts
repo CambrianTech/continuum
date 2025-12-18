@@ -18,7 +18,7 @@ import { TestUserManager } from '../shared/TestUserManager';
   description: 'Multi-user chat with database persistence and real-time events',
   timeout: 60000,
   requiresSystem: true,
-  dependencies: ['chat/send-message', 'data/list', 'events-daemon']
+  dependencies: ['collaboration/chat/send', 'data/list', 'events-daemon']
 })
 export class MultiUserChatTest {
   

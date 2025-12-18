@@ -2,7 +2,7 @@
  * Data List-Handles Command - Shared Types
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
@@ -14,7 +14,7 @@ import type {
 /**
  * Data List-Handles Parameters
  */
-export interface DataListHandlesParams extends JTAGPayload {
+export interface DataListHandlesParams extends CommandParams {
   // No additional parameters needed
 }
 

@@ -108,7 +108,7 @@ class CLIToBrowserIntegrationTest {
     
     try {
       const result = this.executeJTAGCommand(
-        `chat/send-message --message="${this.testMessage}" --userId="integration_test_user" --roomId="general"`
+        `collaboration/chat/send --message="${this.testMessage}" --userId="integration_test_user" --roomId="general"`
       );
       
       const success = result.success && result.messageId;

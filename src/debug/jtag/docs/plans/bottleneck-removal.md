@@ -1505,7 +1505,7 @@ npx vitest tests/integration/blob-migration-e2e.test.ts
 
 # 3. Manual verification
 npm start
-./jtag chat/send --room="general" --message="Test" --media="data:image/png;base64,..."
+./jtag collaboration/chat/send --room="general" --message="Test" --media="data:image/png;base64,..."
 ./jtag data/list --collection=chat_messages --limit=1
 # Should show blobId instead of base64
 

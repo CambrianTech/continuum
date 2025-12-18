@@ -70,7 +70,15 @@ export class TransportFactoryServer extends TransportFactoryBase {
     
     // ✅ Type-safe adapter creation - TypeScript enforces ITransportAdapter interface
     const adapter = new adapterEntry.adapterClass(adapterConfig);
-    
+
+    // Set event system on transport if available (enables TRANSPORT_EVENTS emission)
+    if (config.eventSystem && 'setEventSystem' in adapter && typeof adapter.setEventSystem === 'function') {
+      adapter.setEventSystem(config.eventSystem);
+      console.log(`🔔 Server Factory: Event system configured for ${adapterEntry.className}`);
+    } else if (!config.eventSystem) {
+      console.warn(`⚠️ Server Factory: No eventSystem in config for ${adapterEntry.className} - transport events will NOT be emitted`);
+    }
+
     // ✅ Type-safe connection - all adapters implement ITransportAdapter.connect()
     if (adapter.connect) {
       // Universal adapter pattern with connect() method

@@ -10,7 +10,7 @@
  * - Maximizes code reuse across SQL/JSON/MongoDB adapters
  */
 
-import type { SqliteRawExecutor } from '../SqliteRawExecutor';
+import type { SqlExecutor } from '../SqlExecutor';
 import { VectorSearchAdapterBase, type VectorStorageOperations, type StoredVector } from '../VectorSearchAdapterBase';
 import type {
   VectorSearchAdapter,
@@ -35,7 +35,7 @@ export class SqliteVectorSearchManager implements VectorSearchAdapter {
   private vectorSearchBase: VectorSearchAdapterBase;
 
   constructor(
-    private executor: SqliteRawExecutor,
+    private executor: SqlExecutor,
     private storageAdapter: DataStorageAdapter
   ) {
     // Initialize VectorSearchAdapterBase with composition pattern

@@ -71,7 +71,6 @@ import { inspect } from 'util';
 import { SystemPaths } from '../config/SystemPaths';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
-import { LoggerDaemonClient } from '../../../shared/ipc/logger/LoggerDaemonClient';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -115,7 +114,6 @@ class LoggerClass {
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
   public workerClient: LoggerWorkerClient | null = null;  // Rust worker client (when USE_RUST_LOGGER enabled) - public so ComponentLogger can access
   public useRustLogger: boolean = USE_RUST_LOGGER;   // Toggle for Rust logger - public so ComponentLogger can access
-  public daemonClient: LoggerDaemonClient = new LoggerDaemonClient();  // IPC client for LoggerDaemon - public so ComponentLogger can access
 
   private constructor() {
     // Default: INFO for development, WARN for production
@@ -438,34 +436,7 @@ class ComponentLogger {
       .replace(/^\//, '')                   // Remove leading slash
       .replace(/\.log$/, '');               // Remove .log extension
 
-    // PREFERRED PATH: TS → IPC → LoggerDaemonProcess → LoggerDaemonCore → Rust worker
-    // (Writes headers automatically + forwards to Rust)
-    if (this.logger.daemonClient.isConnected()) {
-      console.log(`[Logger] Using IPC path for ${this.component}:${category}`);
-      this.logger.daemonClient.sendLog(
-        this.component,
-        category,
-        level,
-        message,
-        args.length > 0 ? args : []
-      ).catch((err) => {
-        // IPC failed - try direct Rust worker as fallback
-        if (this.logger?.workerClient) {
-          this.logger.workerClient.writeLog({
-            category,
-            level,
-            component: this.component,
-            message,
-            args: args.length > 0 ? args : undefined
-          }).catch(() => {
-            // Both paths failed - Rust unavailable, NO TypeScript fallback
-          });
-        }
-      });
-      return;
-    }
-
-    // FALLBACK PATH: TS → Rust worker (direct, generates headers in Rust)
+    // Direct path: TS → Rust worker (via Unix socket)
     if (this.logger.workerClient) {
       this.logger.workerClient.writeLog({
         category,

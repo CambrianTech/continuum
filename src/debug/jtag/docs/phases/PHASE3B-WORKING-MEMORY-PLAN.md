@@ -188,7 +188,7 @@ private generateSummary(
 npm start
 
 # 2. Trigger tool use
-./jtag chat/send --room="general" --message="@helper can you grep for 'TODO' in src/"
+./jtag collaboration/chat/send --room="general" --message="@helper can you grep for 'TODO' in src/"
 
 # 3. Wait 10s for AI to respond with tool call
 
@@ -265,7 +265,7 @@ AI Step 4: Respond with answer
 **Testing**:
 ```bash
 # Ask AI to do multi-step task
-./jtag chat/send --room="general" --message="@helper find all TODOs in src/, read the results, and tell me which file has the most"
+./jtag collaboration/chat/send --room="general" --message="@helper find all TODOs in src/, read the results, and tell me which file has the most"
 
 # Verify AI:
 # 1. Uses grep tool
@@ -389,16 +389,16 @@ describe('Phase 3B: Working Memory & Lean RAG', () => {
 
 ```bash
 # 1. Simple tool use (summary sufficient)
-./jtag chat/send --room="general" --message="@helper how many files are in src/?"
+./jtag collaboration/chat/send --room="general" --message="@helper how many files are in src/?"
 
 # 2. Detail loading (AI needs full data)
-./jtag chat/send --room="general" --message="@helper grep for 'BaseEntity' and show me the first 5 matches"
+./jtag collaboration/chat/send --room="general" --message="@helper grep for 'BaseEntity' and show me the first 5 matches"
 
 # 3. Multi-step reasoning
-./jtag chat/send --room="general" --message="@helper find all TODO comments and list them by priority"
+./jtag collaboration/chat/send --room="general" --message="@helper find all TODO comments and list them by priority"
 
 # 4. Error handling
-./jtag chat/send --room="general" --message="@helper run data/list with intentionally wrong syntax"
+./jtag collaboration/chat/send --room="general" --message="@helper run data/list with intentionally wrong syntax"
 ```
 
 ---

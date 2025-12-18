@@ -93,7 +93,7 @@ class RealChatFunctionalityValidator {
           const messageStart = Date.now();
           
           try {
-            const result = await user.client.commands['chat/send-message']({
+            const result = await user.client.commands['collaboration/chat/send']({
               roomId: this.testRoomId,
               content: {
                 text: `Hello from ${user.name}! Testing multi-user chat simultaneously.`,
@@ -242,7 +242,7 @@ class RealChatFunctionalityValidator {
       
       // Step 3: Active chatting in room
       console.log('💬 Step 3: Active chatting in room...');
-      const chatResult = await controlUser.client.commands['chat/send-message']({
+      const chatResult = await controlUser.client.commands['collaboration/chat/send']({
         roomId: this.testRoomId,
         content: {
           text: 'Testing room lifecycle - active chat phase!',
@@ -507,7 +507,7 @@ class RealChatFunctionalityValidator {
         
         try {
           // Send message and measure delivery time
-          const deliveryResult = await sender.client.commands['chat/send-message']({
+          const deliveryResult = await sender.client.commands['collaboration/chat/send']({
             roomId: this.testRoomId,
             content: {
               text: `Real-time event test message ${i + 1}`,
@@ -570,7 +570,7 @@ class RealChatFunctionalityValidator {
       
       try {
         // Test message from one client to another
-        const crossEnvResult = await receiver.client.commands['chat/send-message']({
+        const crossEnvResult = await receiver.client.commands['collaboration/chat/send']({
           roomId: this.testRoomId,
           content: {
             text: 'Cross-environment routing test',

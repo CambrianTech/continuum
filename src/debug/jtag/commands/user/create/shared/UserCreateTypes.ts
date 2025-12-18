@@ -10,7 +10,7 @@
  * PersonaUser.create(), AgentUser.create(), or HumanUser.create()
  */
 
-import type { JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { UserEntity, UserCapabilities } from '../../../../system/data/entities/UserEntity';
@@ -51,7 +51,7 @@ export interface ModelConfig {
  * User create command parameters
  * These are the "recipe ingredients" for user creation
  */
-export interface UserCreateParams extends JTAGPayload {
+export interface UserCreateParams extends CommandParams {
   // Required
   readonly type: UserType;
   readonly displayName: string;

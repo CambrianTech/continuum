@@ -60,6 +60,7 @@ export interface WorkerClientConfig {
   reconnectDelay?: number;   // Delay before reconnect attempt in ms (default: 1000)
   maxReconnectAttempts?: number; // Max reconnect attempts (default: 3)
   userId?: string;           // Optional default userId for all requests
+  maxQueueSize?: number;     // Max buffered messages when disconnected (default: 1000)
 }
 
 /**
@@ -81,6 +82,17 @@ interface PendingRequest<TRes> {
   timeoutId: NodeJS.Timeout;
 }
 
+/**
+ * Queued message waiting for connection.
+ */
+interface QueuedMessage<TReq> {
+  type: string;
+  payload: TReq;
+  userId?: string;
+  resolve: (response: WorkerResponse<any>) => void;
+  reject: (error: Error) => void;
+}
+
 // ============================================================================
 // WorkerClient Class
 // ============================================================================
@@ -97,6 +109,7 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
   private buffer: string = '';
   private pendingRequests: Map<string, PendingRequest<TRes>> = new Map();
   private reconnectAttempts: number = 0;
+  private messageQueue: QueuedMessage<TReq>[] = [];
 
   // Configuration
   protected readonly socketPath: string;
@@ -104,6 +117,7 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
   protected readonly reconnectDelay: number;
   protected readonly maxReconnectAttempts: number;
   protected readonly defaultUserId?: string;
+  protected readonly maxQueueSize: number;
 
   constructor(config: WorkerClientConfig) {
     logSession++;
@@ -116,6 +130,7 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
     this.reconnectDelay = config.reconnectDelay ?? 1000;
     this.maxReconnectAttempts = config.maxReconnectAttempts ?? 3;
     this.defaultUserId = config.userId;
+    this.maxQueueSize = config.maxQueueSize ?? 1000;
 
     debugLog(`<<< CONSTRUCTOR END`);
   }
@@ -165,6 +180,10 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
         this.reconnectAttempts = 0;
         this.setupSocketHandlers();
         debugLog('setupSocketHandlers() complete');
+
+        // Flush queued messages
+        this.flushQueue();
+
         resolve();
       });
 
@@ -197,6 +216,14 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
       pending.reject(new Error('Client disconnected'));
       this.pendingRequests.delete(requestId);
     }
+
+    // Reject all queued messages
+    debugLog(`Rejecting ${this.messageQueue.length} queued messages`);
+    for (const msg of this.messageQueue) {
+      msg.reject(new Error('Client disconnected before message could be sent'));
+    }
+    this.messageQueue = [];
+
     debugLog(`<<< DISCONNECT complete`);
   }
 
@@ -221,11 +248,13 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
   /**
    * Send a request to the Rust worker and wait for response.
    *
+   * If not connected, queues the message for later delivery (when connection establishes).
+   *
    * @param type - Message type (e.g., 'write-log')
    * @param payload - Worker-specific payload
    * @param userId - Optional userId for this request (overrides default)
    * @returns Promise resolving to worker response
-   * @throws {Error} if not connected, timeout, or worker returns error
+   * @throws {Error} if queue is full, timeout, or worker returns error
    */
   async send(
     type: string,
@@ -235,8 +264,8 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
     debugLog(`send() called - type: ${type}, connected: ${this.isConnected()}`);
 
     if (!this.isConnected()) {
-      debugLog(`send() failed - not connected (state: ${this.connectionState})`);
-      throw new Error('Worker client not connected');
+      debugLog(`send() not connected - queueing message (state: ${this.connectionState})`);
+      return this.queueMessage(type, payload, userId);
     }
 
     const request: WorkerRequest<TReq> = {
@@ -376,6 +405,58 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
       console.log('WorkerClient: Reconnected successfully');
     } catch (err) {
       console.error('WorkerClient: Reconnect failed:', err);
+    }
+  }
+
+  // ============================================================================
+  // Message Queue
+  // ============================================================================
+
+  /**
+   * Queue a message for later delivery when connection establishes.
+   * Returns a promise that resolves when the message is eventually sent.
+   */
+  private queueMessage(
+    type: string,
+    payload: TReq,
+    userId?: string
+  ): Promise<WorkerResponse<TRes>> {
+    return new Promise((resolve, reject) => {
+      if (this.messageQueue.length >= this.maxQueueSize) {
+        debugLog(`Queue full (${this.messageQueue.length}/${this.maxQueueSize}), rejecting message`);
+        reject(new Error(`Worker message queue full (${this.maxQueueSize} messages)`));
+        return;
+      }
+
+      debugLog(`Queuing message - type: ${type}, queue size: ${this.messageQueue.length + 1}`);
+      this.messageQueue.push({
+        type,
+        payload,
+        userId,
+        resolve,
+        reject
+      });
+    });
+  }
+
+  /**
+   * Flush all queued messages after connection establishes.
+   * Sends messages in FIFO order.
+   */
+  private flushQueue(): void {
+    if (this.messageQueue.length === 0) {
+      return;
+    }
+
+    debugLog(`Flushing ${this.messageQueue.length} queued messages`);
+    const queuedMessages = [...this.messageQueue];
+    this.messageQueue = [];
+
+    for (const msg of queuedMessages) {
+      debugLog(`Sending queued message - type: ${msg.type}`);
+      this.send(msg.type, msg.payload, msg.userId)
+        .then(msg.resolve)
+        .catch(msg.reject);
     }
   }
 }

@@ -84,7 +84,7 @@ function executeCommand(commandStr: string): any {
 function deleteEntity(collection: string, id: string, displayInfo: string): boolean {
   try {
     console.log(`   🗑️  Deleting ${displayInfo}...`);
-    const result = executeCommand(`data/delete --collection=${collection} --id=${id}`);
+    const result = executeCommand(`${DATA_COMMANDS.DELETE} --collection=${collection} --id=${id}`);
 
     if (result.success) {
       console.log(`   ✅ Deleted successfully`);
@@ -140,7 +140,7 @@ async function cleanupTestEntities(deleteMode: boolean): Promise<void> {
 
     // Check test users - use verbose=false to reduce payload size
     console.log('\n📋 Checking users...');
-    const usersResult = executeCommand(`data/list --collection=${UserEntity.collection} --limit=100 --verbose=false`);
+    const usersResult = executeCommand(`${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --limit=100 --verbose=false`);
 
     if (usersResult.success && Array.isArray(usersResult.items)) {
       console.log(`   Found ${usersResult.items.length} users (first 100)`);
@@ -174,7 +174,7 @@ async function cleanupTestEntities(deleteMode: boolean): Promise<void> {
 
     // Check test rooms - use verbose=false to reduce payload size
     console.log('\n📋 Checking rooms...');
-    const roomsResult = executeCommand(`data/list --collection=${RoomEntity.collection} --limit=100 --verbose=false`);
+    const roomsResult = executeCommand(`${DATA_COMMANDS.LIST} --collection=${RoomEntity.collection} --limit=100 --verbose=false`);
 
     if (roomsResult.success && Array.isArray(roomsResult.items)) {
       console.log(`   Found ${roomsResult.items.length} rooms (first 100)`);

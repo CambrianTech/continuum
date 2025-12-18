@@ -7,7 +7,7 @@
  */
 
 import { DataStorageAdapter } from '../shared/DataStorageAdapter';
-import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
+import { getFieldMetadata, hasFieldMetadata, getCompositeIndexes, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
 
 /**
  * SQL dialect identifier
@@ -153,6 +153,7 @@ export abstract class SqlStorageAdapterBase extends DataStorageAdapter {
 
   /**
    * Generate CREATE INDEX SQL statements from entity field metadata
+   * Includes both single-column and composite (multi-column) indexes
    */
   protected generateCreateIndexSql(
     collectionName: string,
@@ -164,12 +165,29 @@ export abstract class SqlStorageAdapterBase extends DataStorageAdapter {
     const fieldMetadata = getFieldMetadata(entityClass);
     const indexes: string[] = [];
 
+    // Single-column indexes from field decorators
     for (const [fieldName, metadata] of fieldMetadata.entries()) {
       if (metadata.options?.index) {
         const columnName = fieldNameMapper(fieldName);
         const indexName = `idx_${tableName}_${columnName}`;
         indexes.push(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(${columnName})`);
       }
+    }
+
+    // Composite (multi-column) indexes from @CompositeIndex decorator
+    const compositeIndexes = getCompositeIndexes(entityClass);
+    for (const compositeIndex of compositeIndexes) {
+      const columnNames = compositeIndex.fields.map(f => fieldNameMapper(f));
+
+      // Apply direction to last column if specified
+      const lastIdx = columnNames.length - 1;
+      if (compositeIndex.direction) {
+        columnNames[lastIdx] = `${columnNames[lastIdx]} ${compositeIndex.direction}`;
+      }
+
+      const uniqueClause = compositeIndex.unique ? 'UNIQUE ' : '';
+      const sql = `CREATE ${uniqueClause}INDEX IF NOT EXISTS ${compositeIndex.name} ON ${tableName}(${columnNames.join(', ')})`;
+      indexes.push(sql);
     }
 
     return indexes;

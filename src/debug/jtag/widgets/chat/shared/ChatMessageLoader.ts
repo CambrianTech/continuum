@@ -6,7 +6,7 @@
  */
 
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
-import type { DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { LoadResult } from '../../shared/InfiniteScrollTypes';
 
 // Constants
@@ -32,7 +32,7 @@ export class ChatMessageLoader {
   ): Promise<LoadResult<ChatMessageEntity>> {
     console.log('📚 ChatMessageLoader: Loading messages', { roomId, cursor, pageSize });
 
-    const result = await this.executeCommand('data/list', {
+    const result = await this.executeCommand(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: { roomId },
       orderBy: [{ field: 'timestamp', direction: 'desc' }],

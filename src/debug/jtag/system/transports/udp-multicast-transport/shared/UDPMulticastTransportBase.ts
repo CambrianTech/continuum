@@ -52,7 +52,7 @@ export abstract class UDPMulticastTransportBase extends TransportBase implements
       capabilities: config.capabilities || [NodeCapability.FILE_OPERATIONS],
       multicastAddress: config.multicastAddress || UDP_MULTICAST_DEFAULTS.MULTICAST_ADDRESS,
       multicastPort: config.multicastPort || UDP_MULTICAST_DEFAULTS.MULTICAST_PORT,
-      unicastPort: config.unicastPort || (9000 + Math.floor(Math.random() * 1000)),
+      unicastPort: config.unicastPort || (10000 + Math.floor(Math.random() * 1000)), // Use 10000+ range to avoid conflict with HTTP/WS ports
       ttl: config.ttl || UDP_MULTICAST_DEFAULTS.TTL,
       discoveryInterval: config.discoveryInterval || UDP_MULTICAST_DEFAULTS.DISCOVERY_INTERVAL,
       heartbeatInterval: config.heartbeatInterval || UDP_MULTICAST_DEFAULTS.HEARTBEAT_INTERVAL,

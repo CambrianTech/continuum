@@ -9,9 +9,17 @@
  */
 
 import { BaseEntity } from './BaseEntity';
-import { TextField, NumberField, BooleanField } from '../decorators/FieldDecorators';
+import { TextField, NumberField, BooleanField, Archive } from '../decorators/FieldDecorators';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
+@Archive({
+  sourceHandle: 'primary',
+  destHandle: 'archive',
+  maxRows: 50000,
+  rowsPerArchive: 5000,
+  maxArchiveFileRows: 500000,
+  orderByField: 'createdAt'
+})
 export class AIGenerationEntity extends BaseEntity {
   // Single source of truth for collection name
   static readonly collection = 'ai_generations';
