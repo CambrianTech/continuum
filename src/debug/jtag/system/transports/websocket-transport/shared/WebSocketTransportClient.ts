@@ -315,6 +315,12 @@ export abstract class WebSocketTransportClient extends TransportBase {
       return;
     }
 
+    // Don't spam console during reconnection attempts - user already notified
+    if (this.isReconnecting && context === 'connection') {
+      // Silent during reconnection polling - no need to log every failed attempt
+      return;
+    }
+
     // For connection errors, check if it's a "server down" situation
     const isConnectionFailed = error.message.includes('Connection failed') ||
                               error.message.includes('ECONNREFUSED') ||
@@ -456,7 +462,11 @@ export abstract class WebSocketTransportClient extends TransportBase {
       console.log(`✅ ${this.name || 'websocket'}: Reconnection successful`);
       this.reconnectAttempt = 0; // Reset on successful reconnect
     } catch (error) {
-      console.error(`❌ ${this.name || 'websocket'}: Reconnection attempt ${this.reconnectAttempt} failed:`, error);
+      // Only log on FIRST failure, then stay silent during polling
+      if (this.reconnectAttempt === 0) {
+        console.log(`🔴 ${this.name || 'websocket'}: Connection lost, attempting to reconnect...`);
+      }
+
       this.isReconnecting = false; // Reset to stop queueing messages
 
       // Schedule another attempt
@@ -467,11 +477,11 @@ export abstract class WebSocketTransportClient extends TransportBase {
       if (this.reconnectAttempt < (this.config.reconnectAttempts || 0)) {
         delay = this.config.reconnectDelay! * Math.pow(2, this.reconnectAttempt);
         this.reconnectAttempt++;
-        console.log(`🔄 ${this.name || 'websocket'}: Scheduling retry ${this.reconnectAttempt}/${this.config.reconnectAttempts} in ${delay}ms...`);
+        // Silent during fast retries - user already knows we're reconnecting
       } else {
         // After fast attempts, keep trying every 10 seconds until server comes back
         delay = 10000; // 10 seconds
-        console.log(`🔄 ${this.name || 'websocket'}: Polling for server every ${delay/1000}s...`);
+        // Silent during polling - no need to spam console every 10s
       }
 
       this.reconnectTimeout = setTimeout(async () => {

@@ -10,6 +10,7 @@ import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversation/shared/CognitionEventTypes';
 import { OrbStateManager, type ConnectionStatus, type HealthState } from './OrbStateManager';
+import { TRANSPORT_EVENTS } from '../../system/transports/shared/TransportEvents';
 
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: ConnectionStatus = 'initializing';
@@ -35,7 +36,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🎭 ContinuumEmoter: Initializing...');
 
-    await this.startHealthMonitoring();
+    this.subscribeToTransportEvents();  // Listen for instant connection state changes
     this.subscribeToAIEvents();
     this.subscribeToCognitionEvents();
     this.subscribeToEmotionEvents();
@@ -223,30 +224,25 @@ export class ContinuumEmoterWidget extends BaseWidget {
   }
 
   /**
-   * Start monitoring system health
+   * Subscribe to transport events for instant connection state updates
    */
-  private async startHealthMonitoring(): Promise<void> {
-    // Initial health check
-    await this.checkSystemHealth();
+  private subscribeToTransportEvents(): void {
+    console.log('🎭 ContinuumEmoter: Subscribing to transport events...');
 
-    // Check every 5 seconds
-    this.healthCheckInterval = setInterval(async () => {
-      await this.checkSystemHealth();
-    }, 5000);
-  }
-
-  /**
-   * Check system health using ping command
-   */
-  private async checkSystemHealth(): Promise<void> {
-    try {
-      // Use ping command to check server connection
-      await Commands.execute('ping');
-      this.updateStatus('connected', 'healthy');
-    } catch (error) {
-      // Silently update status - being disconnected is normal, not an error to spam
+    // Listen for instant disconnection
+    Events.subscribe(TRANSPORT_EVENTS.DISCONNECTED, () => {
+      console.log('🔴 ContinuumEmoter: Received DISCONNECTED event');
       this.updateStatus('disconnected', 'error');
-    }
+    });
+
+    // Listen for instant reconnection
+    Events.subscribe(TRANSPORT_EVENTS.CONNECTED, () => {
+      console.log('🟢 ContinuumEmoter: Received CONNECTED event');
+      this.updateStatus('connected', 'healthy');
+    });
+
+    // Start with assumption of connected (will be corrected by first DISCONNECTED if needed)
+    this.updateStatus('connected', 'healthy');
   }
 
   /**
