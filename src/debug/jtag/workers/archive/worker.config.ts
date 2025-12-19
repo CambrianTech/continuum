@@ -14,7 +14,7 @@ export default {
     '.continuum/jtag/data/archive/database-001.sqlite'
   ],
   description: 'Archive worker for moving old data to cold storage using Commands.execute()',
-  enabled: true
+  enabled: false
 } as const;
 
 export type ArchiveWorkerConfig = typeof import('./worker.config').default;

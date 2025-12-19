@@ -1,677 +1,867 @@
-/// RustDataDaemon - Adapter-Aware Concurrent Data Layer
+/// Data Worker Test - Real SQLite Implementation
 ///
-/// ARCHITECTURE:
-/// - Single coordinator for all database adapters
-/// - Adapter-specific concurrency strategies (SQLite queue, Postgres pool)
-/// - Handle-based API (like textureId from graphics APIs)
-/// - Prevents lock contention through proper coordination
+/// PURPOSE: Test concurrent database operations with Rust adapter
+/// Uses SEPARATE test databases in .continuum/jtag/test-dbs
 ///
-/// FLOW:
-/// 1. TypeScript DataDaemon → Unix socket → RustDataDaemon
-/// 2. RustDataDaemon routes to correct adapter with correct strategy
-/// 3. SQLite: Single writer queue (serialized writes, parallel reads)
-/// 4. Postgres: Connection pool (full concurrency)
-/// 5. Return results via Unix socket
+/// Implements:
+/// - ping: Health check
+/// - open-database: Opens SQLite database
+/// - create-record: Creates a record
+/// - read-record: Reads a record by ID
 
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::{fs, thread};
-use ts_rs::TS;
 use uuid::Uuid;
 
+// Generated entity types from TypeScript decorators
+mod entities;
+
 // ============================================================================
-// Core Types (ts-rs exported for TypeScript)
+// Utility Functions
 // ============================================================================
 
-/// Opaque handle to a database adapter (like textureId)
-/// Serialized as UUID string in JSON
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AdapterHandle(Uuid);
+/// Convert camelCase to snake_case for SQL column names
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut prev_is_lower = false;
 
-impl AdapterHandle {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 && prev_is_lower {
+                result.push('_');
+            }
+            result.push(ch.to_lowercase().next().unwrap());
+            prev_is_lower = false;
+        } else {
+            result.push(ch);
+            prev_is_lower = ch.is_lowercase();
+        }
     }
+
+    result
 }
 
-/// Adapter type (determines concurrency strategy)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-#[serde(rename_all = "lowercase")]
-pub enum AdapterType {
-    Sqlite,
-    Postgres,
-    Json,
+// ============================================================================
+// JTAGProtocol Types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct JTAGRequest {
+    id: String,
+    #[serde(rename = "type")]
+    msg_type: String,
+    timestamp: String,
+    payload: Value,
+    #[serde(rename = "userId")]
+    user_id: Option<String>,
 }
 
-/// Adapter configuration
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-pub struct AdapterConfig {
-    adapter_type: AdapterType,
-    connection_string: String,
-    #[ts(skip)]
-    options: Option<HashMap<String, Value>>,
+#[derive(Debug, Serialize)]
+struct JTAGResponse {
+    id: String,
+    #[serde(rename = "type")]
+    msg_type: String,
+    timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<Value>,
+    #[serde(rename = "requestId")]
+    request_id: String,
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
+
+// ============================================================================
+// Database Handle Registry
+// ============================================================================
+
+struct DatabaseHandle {
+    connection: Connection,
+    path: String,
+    opened_at: String,
+}
+
+type HandleRegistry = Arc<Mutex<HashMap<String, DatabaseHandle>>>;
 
 // ============================================================================
 // Request/Response Types
 // ============================================================================
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "command")]
-enum Request {
-    #[serde(rename = "ping")]
-    Ping,
-
-    #[serde(rename = "adapter/open")]
-    AdapterOpen { config: AdapterConfig },
-
-    #[serde(rename = "adapter/close")]
-    AdapterClose { handle: AdapterHandle },
-
-    #[serde(rename = "data/list")]
-    DataList {
-        handle: AdapterHandle,
-        collection: String,
-        limit: Option<usize>,
-        offset: Option<usize>,
-        filter: Option<Value>,
-        order_by: Option<Vec<OrderBy>>,
-    },
-
-    #[serde(rename = "data/create")]
-    DataCreate {
-        handle: AdapterHandle,
-        collection: String,
-        data: Value,
-    },
-
-    #[serde(rename = "data/delete")]
-    DataDelete {
-        handle: AdapterHandle,
-        collection: String,
-        id: String,
-    },
+#[derive(Debug, Deserialize)]
+struct OpenDatabaseRequest {
+    filename: String,
+    #[serde(rename = "adapterType")]
+    adapter_type: String,
+    #[serde(rename = "storageType")]
+    storage_type: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-pub struct OrderBy {
+#[derive(Debug, Serialize)]
+struct OpenDatabaseResponse {
+    handle: String,
+    #[serde(rename = "storageType")]
+    storage_type: String,
+    #[serde(rename = "pragmaMode")]
+    pragma_mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRecordRequest {
+    handle: String,
+    collection: String,
+    record: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadRecordRequest {
+    handle: String,
+    collection: String,
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnsureSchemaRequest {
+    handle: String,
+    collection: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryRecordsRequest {
+    handle: String,
+    query: QueryRequest,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryRequest {
+    collection: String,
+    filter: Option<serde_json::Value>,  // Universal filter (will parse per field)
+    sort: Option<Vec<SortField>>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SortField {
     field: String,
-    direction: String, // "asc" | "desc"
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "status")]
-enum Response {
-    #[serde(rename = "ok")]
-    Ok { data: Value },
-
-    #[serde(rename = "error")]
-    Error { message: String },
-
-    #[serde(rename = "pong")]
-    Pong { uptime_seconds: u64 },
+    direction: String,  // "asc" or "desc"
 }
 
 // ============================================================================
-// Concurrency Strategy Trait
+// Main Worker
 // ============================================================================
 
-trait ConcurrencyStrategy: Send + Sync {
-    /// Execute read operation (can be parallel)
-    fn execute_read(&self, query: &str) -> Result<Value, String>;
+fn main() {
+    let socket_path = "/tmp/jtag-data-daemon-worker.sock";
 
-    /// Execute write operation (adapter-specific queueing)
-    fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String>;
-
-    /// Close adapter and cleanup resources
-    fn close(&self) -> Result<(), String>;
-}
-
-// ============================================================================
-// Storage Detection
-// ============================================================================
-
-#[derive(Debug, Clone, Copy)]
-enum StorageType {
-    InternalSSD,
-    ExternalSSD,
-    SDCard,
-    HDD,
-    Unknown,
-}
-
-/// Detect storage type by sampling system characteristics
-fn detect_storage_type(path: &Path) -> StorageType {
-    // Get absolute path
-    let abs_path = match fs::canonicalize(path) {
-        Ok(p) => p,
-        Err(_) => return StorageType::Unknown,
-    };
-
-    let path_str = abs_path.to_string_lossy();
-
-    // Check if on external volume (macOS specific)
-    if path_str.starts_with("/Volumes/") {
-        // Use diskutil to check if removable
-        let volume_name = path_str
-            .strip_prefix("/Volumes/")
-            .and_then(|s| s.split('/').next())
-            .unwrap_or("");
-
-        if let Ok(output) = Command::new("diskutil")
-            .args(&["info", &format!("/Volumes/{}", volume_name)])
-            .output()
-        {
-            let info = String::from_utf8_lossy(&output.stdout);
-
-            // Check for removable media
-            if info.contains("Removable Media:") && info.contains("Removable") {
-                return StorageType::SDCard;
-            }
-
-            // Check for SSD
-            if info.contains("Solid State:") && info.contains("Yes") {
-                return StorageType::ExternalSSD;
-            }
-
-            // Assume HDD if not SSD
-            return StorageType::HDD;
-        }
-
-        // Default to SD card for /Volumes if detection fails (conservative)
-        return StorageType::SDCard;
+    // Remove old socket if exists
+    if Path::new(socket_path).exists() {
+        fs::remove_file(socket_path).expect("Failed to remove old socket");
     }
 
-    // Internal drive
-    StorageType::InternalSSD
-}
-
-/// Get optimized SQLite pragmas based on storage type and workload
-fn get_sqlite_pragmas(storage: StorageType, multi_writer: bool) -> String {
-    match storage {
-        StorageType::InternalSSD => {
-            // Fast internal SSD - can use WAL safely
-            if multi_writer {
-                "PRAGMA journal_mode=WAL; \
-                 PRAGMA synchronous=NORMAL; \
-                 PRAGMA temp_store=MEMORY; \
-                 PRAGMA busy_timeout=5000;".to_string()
-            } else {
-                "PRAGMA journal_mode=WAL; \
-                 PRAGMA synchronous=NORMAL; \
-                 PRAGMA temp_store=MEMORY; \
-                 PRAGMA locking_mode=EXCLUSIVE; \
-                 PRAGMA busy_timeout=5000;".to_string()
-            }
-        }
-        StorageType::ExternalSSD => {
-            // External SSD - WAL OK but more conservative
-            "PRAGMA journal_mode=WAL; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA wal_autocheckpoint=1000; \
-             PRAGMA temp_store=MEMORY; \
-             PRAGMA busy_timeout=5000;".to_string()
-        }
-        StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
-            // SD card / HDD / Unknown - NO WAL (reliability over concurrency)
-            "PRAGMA journal_mode=DELETE; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA temp_store=MEMORY; \
-             PRAGMA locking_mode=EXCLUSIVE; \
-             PRAGMA busy_timeout=5000;".to_string()
-        }
-    }
-}
-
-// ============================================================================
-// SQLite Strategy: Single Writer Queue + Storage-Aware Configuration
-// ============================================================================
-
-struct SqliteStrategy {
-    connection_path: String,
-    storage_type: StorageType,
-    writer_queue: Arc<Mutex<VecDeque<WriteOperation>>>,
-    connection: Arc<Mutex<rusqlite::Connection>>,
-}
-
-struct WriteOperation {
-    query: String,
-    params: Value,
-}
-
-impl SqliteStrategy {
-    fn new(connection_path: String) -> Result<Self, String> {
-        // Detect storage type by sampling system
-        let storage_type = detect_storage_type(Path::new(&connection_path));
-
-        println!("🔍 Detected storage type: {:?} for {}", storage_type, connection_path);
-
-        // Check for WAL artifacts before opening
-        let wal_path = format!("{}-wal", connection_path);
-        let shm_path = format!("{}-shm", connection_path);
-        let has_wal_artifacts = Path::new(&wal_path).exists() || Path::new(&shm_path).exists();
-
-        // Open connection
-        let conn = rusqlite::Connection::open(&connection_path)
-            .map_err(|e| format!("Failed to open SQLite: {}", e))?;
-
-        // If switching FROM WAL to DELETE mode, checkpoint first
-        if has_wal_artifacts && matches!(storage_type, StorageType::SDCard | StorageType::HDD | StorageType::Unknown) {
-            println!("⚠️  Found WAL artifacts, checkpointing before mode switch...");
-
-            // Checkpoint and truncate WAL (force cleanup)
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .map_err(|e| format!("Failed to checkpoint WAL: {}", e))?;
-        }
-
-        // Configure based on detected storage (assume single-writer for now)
-        let pragmas = get_sqlite_pragmas(storage_type, false);
-        conn.execute_batch(&pragmas)
-            .map_err(|e| format!("Failed to configure SQLite: {}", e))?;
-
-        // Verify WAL files are gone if we switched to DELETE mode
-        if has_wal_artifacts && matches!(storage_type, StorageType::SDCard | StorageType::HDD | StorageType::Unknown) {
-            if Path::new(&wal_path).exists() || Path::new(&shm_path).exists() {
-                println!("⚠️  Warning: WAL artifacts still present after mode switch");
-            } else {
-                println!("✅ WAL artifacts cleaned up successfully");
-            }
-        }
-
-        let mode_desc = match storage_type {
-            StorageType::InternalSSD => "WAL mode - internal SSD optimized",
-            StorageType::ExternalSSD => "WAL mode - external SSD optimized",
-            _ => "DELETE mode - SD card/HDD reliable",
-        };
-
-        println!("✅ SQLite adapter opened: {} ({})", connection_path, mode_desc);
-
-        Ok(Self {
-            connection_path,
-            storage_type,
-            writer_queue: Arc::new(Mutex::new(VecDeque::new())),
-            connection: Arc::new(Mutex::new(conn)),
-        })
-    }
-
-    /// Process write queue serially (prevents lock contention)
-    fn process_write_queue(&self, op: WriteOperation) -> Result<Value, String> {
-        let mut queue = self.writer_queue.lock().unwrap();
-        queue.push_back(op);
-
-        // Process all queued writes serially
-        let mut results = Vec::new();
-        while let Some(write_op) = queue.pop_front() {
-            let conn = self.connection.lock().unwrap();
-
-            // Execute write (simplified - would need proper query building)
-            let rows_affected = conn.execute(&write_op.query, [])
-                .map_err(|e| format!("SQLite write failed: {}", e))?;
-
-            results.push(json!({ "rows_affected": rows_affected }));
-        }
-
-        Ok(json!({ "results": results }))
-    }
-}
-
-impl ConcurrencyStrategy for SqliteStrategy {
-    fn execute_read(&self, query: &str) -> Result<Value, String> {
-        // Reads can run in parallel (WAL mode allows this)
-        let conn = self.connection.lock().unwrap();
-
-        let mut stmt = conn.prepare(query)
-            .map_err(|e| format!("Failed to prepare query: {}", e))?;
-
-        let column_count = stmt.column_count();
-
-        // Get column names before query_map (to avoid borrowing issues)
-        let column_names: Vec<String> = (0..column_count)
-            .map(|i| stmt.column_name(i).unwrap_or("unknown").to_string())
-            .collect();
-
-        let mut rows = Vec::new();
-
-        let row_iter = stmt.query_map([], |row| {
-            let mut row_data = serde_json::Map::new();
-            for (i, column_name) in column_names.iter().enumerate() {
-                let value: Result<String, _> = row.get(i);
-                if let Ok(v) = value {
-                    row_data.insert(column_name.clone(), json!(v));
-                }
-            }
-            Ok(Value::Object(row_data))
-        }).map_err(|e| format!("Query execution failed: {}", e))?;
-
-        for row in row_iter {
-            rows.push(row.map_err(|e| format!("Row parse error: {}", e))?);
-        }
-
-        Ok(json!({ "items": rows, "count": rows.len() }))
-    }
-
-    fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String> {
-        // Queue write for serial processing
-        self.process_write_queue(WriteOperation {
-            query: query.to_string(),
-            params: params.clone(),
-        })
-    }
-
-    fn close(&self) -> Result<(), String> {
-        // Process any remaining writes before closing
-        let queue_size = self.writer_queue.lock().unwrap().len();
-        if queue_size > 0 {
-            println!("⚠️  Closing SQLite adapter with {} pending writes", queue_size);
-        }
-
-        // Checkpoint WAL if using WAL mode (ensure data persistence)
-        if matches!(self.storage_type, StorageType::InternalSSD | StorageType::ExternalSSD) {
-            let conn = self.connection.lock().unwrap();
-            println!("📝 Checkpointing WAL before close...");
-
-            // TRUNCATE mode: checkpoint and delete WAL files
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .map_err(|e| format!("Failed to checkpoint WAL on close: {}", e))?;
-
-            println!("✅ WAL checkpointed successfully");
-        }
-
-        println!("✅ SQLite adapter closed: {}", self.connection_path);
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Postgres Strategy: Connection Pool (Full Concurrency)
-// ============================================================================
-
-struct PostgresStrategy {
-    // TODO: Implement connection pool with deadpool-postgres
-    // For now, placeholder
-}
-
-impl ConcurrencyStrategy for PostgresStrategy {
-    fn execute_read(&self, _query: &str) -> Result<Value, String> {
-        Err("Postgres strategy not yet implemented".to_string())
-    }
-
-    fn execute_write(&self, _query: &str, _params: &Value) -> Result<Value, String> {
-        Err("Postgres strategy not yet implemented".to_string())
-    }
-
-    fn close(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-// ============================================================================
-// JSON Strategy: File-Level Locking
-// ============================================================================
-
-struct JsonStrategy {
-    base_path: PathBuf,
-    file_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
-}
-
-impl JsonStrategy {
-    fn new(base_path: String) -> Result<Self, String> {
-        Ok(Self {
-            base_path: PathBuf::from(base_path),
-            file_locks: Arc::new(Mutex::new(HashMap::new())),
-        })
-    }
-}
-
-impl ConcurrencyStrategy for JsonStrategy {
-    fn execute_read(&self, query: &str) -> Result<Value, String> {
-        // Read JSON file with file-level lock
-        let file_path = self.base_path.join(query);
-
-        let locks = self.file_locks.lock().unwrap();
-        let file_lock = locks.get(&file_path)
-            .ok_or_else(|| "File not found".to_string())?;
-
-        let _guard = file_lock.lock().unwrap();
-
-        let content = fs::read_to_string(&file_path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
-
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse JSON: {}", e))
-    }
-
-    fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String> {
-        // Write JSON file with file-level lock
-        let file_path = self.base_path.join(query);
-
-        let mut locks = self.file_locks.lock().unwrap();
-        let file_lock = locks.entry(file_path.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(())));
-
-        let _guard = file_lock.lock().unwrap();
-
-        let content = serde_json::to_string_pretty(params)
-            .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
-
-        fs::write(&file_path, content)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
-
-        Ok(json!({ "success": true }))
-    }
-
-    fn close(&self) -> Result<(), String> {
-        println!("✅ JSON adapter closed");
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Adapter Registry
-// ============================================================================
-
-struct AdapterRegistry {
-    adapters: Arc<Mutex<HashMap<AdapterHandle, (AdapterType, Box<dyn ConcurrencyStrategy>)>>>,
-}
-
-impl AdapterRegistry {
-    fn new() -> Self {
-        Self {
-            adapters: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn register(&self, adapter_type: AdapterType, strategy: Box<dyn ConcurrencyStrategy>) -> AdapterHandle {
-        let handle = AdapterHandle::new();
-        let mut adapters = self.adapters.lock().unwrap();
-        adapters.insert(handle, (adapter_type.clone(), strategy));
-
-        println!("📝 Registered adapter: {:?} with handle {:?}", adapter_type, handle);
-        handle
-    }
-
-    fn get(&self, handle: AdapterHandle) -> Result<Arc<Mutex<Box<dyn ConcurrencyStrategy>>>, String> {
-        let adapters = self.adapters.lock().unwrap();
-        let (_, strategy) = adapters.get(&handle)
-            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
-
-        // FIXME: This is a hack - we need to return a reference properly
-        Err("TODO: Fix adapter borrowing".to_string())
-    }
-
-    fn close(&self, handle: AdapterHandle) -> Result<(), String> {
-        let mut adapters = self.adapters.lock().unwrap();
-        if let Some((adapter_type, strategy)) = adapters.remove(&handle) {
-            strategy.close()?;
-            println!("🗑️  Closed adapter: {:?} with handle {:?}", adapter_type, handle);
-            Ok(())
-        } else {
-            Err(format!("Adapter not found: {:?}", handle))
-        }
-    }
-}
-
-// ============================================================================
-// RustDataDaemon - Main Coordinator
-// ============================================================================
-
-struct RustDataDaemon {
-    registry: Arc<AdapterRegistry>,
-}
-
-impl RustDataDaemon {
-    fn new() -> Self {
-        Self {
-            registry: Arc::new(AdapterRegistry::new()),
-        }
-    }
-
-    fn handle_request(&self, request: Request) -> Response {
-        match request {
-            Request::Ping => Response::Pong { uptime_seconds: 0 },
-
-            Request::AdapterOpen { config } => {
-                match self.open_adapter(config) {
-                    Ok(handle) => Response::Ok {
-                        data: json!({ "handle": handle })
-                    },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
-
-            Request::AdapterClose { handle } => {
-                match self.registry.close(handle) {
-                    Ok(_) => Response::Ok {
-                        data: json!({ "closed": true })
-                    },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
-
-            Request::DataList { handle, collection, limit, offset, filter, order_by } => {
-                // TODO: Build proper query and route to adapter
-                Response::Error {
-                    message: "DataList not yet implemented".to_string()
-                }
-            }
-
-            Request::DataCreate { handle, collection, data } => {
-                // TODO: Route to adapter with write strategy
-                Response::Error {
-                    message: "DataCreate not yet implemented".to_string()
-                }
-            }
-
-            Request::DataDelete { handle, collection, id } => {
-                // TODO: Route to adapter with write strategy
-                Response::Error {
-                    message: "DataDelete not yet implemented".to_string()
-                }
-            }
-        }
-    }
-
-    fn open_adapter(&self, config: AdapterConfig) -> Result<AdapterHandle, String> {
-        let strategy: Box<dyn ConcurrencyStrategy> = match config.adapter_type {
-            AdapterType::Sqlite => {
-                Box::new(SqliteStrategy::new(config.connection_string)?)
-            }
-            AdapterType::Postgres => {
-                Box::new(PostgresStrategy {})
-            }
-            AdapterType::Json => {
-                Box::new(JsonStrategy::new(config.connection_string)?)
-            }
-        };
-
-        let handle = self.registry.register(config.adapter_type, strategy);
-        Ok(handle)
-    }
-}
-
-// ============================================================================
-// Connection Handler (Same pattern as ArchiveWorker)
-// ============================================================================
-
-fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io::Result<()> {
-    let mut reader = BufReader::new(&stream);
-    let mut writer = stream.try_clone()?;
-
-    loop {
-        let mut line = String::new();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 { break; }
-
-        let request: Request = match serde_json::from_str(&line) {
-            Ok(req) => req,
-            Err(e) => {
-                eprintln!("Parse error: {}", e);
-                continue;
-            }
-        };
-
-        let response = daemon.handle_request(request);
-
-        let response_json = serde_json::to_string(&response)?;
-        writeln!(writer, "{}", response_json)?;
-        writer.flush()?;
-    }
-
-    Ok(())
-}
-
-// ============================================================================
-// Main Entry Point
-// ============================================================================
-
-fn main() -> std::io::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <worker-socket>", args[0]);
-        eprintln!("Example: {} /tmp/jtag-data-daemon.sock", args[0]);
-        std::process::exit(1);
-    }
-
-    let worker_socket = &args[1];
-
-    // Remove socket if exists
-    if fs::metadata(worker_socket).is_ok() {
-        fs::remove_file(worker_socket)?;
-    }
-
-    println!("🦀 RustDataDaemon starting...");
-    println!("📡 Worker socket: {}", worker_socket);
-
-    let daemon = Arc::new(RustDataDaemon::new());
-    println!("✅ RustDataDaemon ready\n");
-
-    // Bind socket
-    let listener = UnixListener::bind(worker_socket)?;
-    println!("✅ Listening for connections\n");
+    // Bind Unix socket
+    let listener = UnixListener::bind(socket_path).expect("Failed to bind socket");
+    println!("🦀 Data worker (TEST) listening on {}", socket_path);
+
+    // Create handle registry
+    let registry: HandleRegistry = Arc::new(Mutex::new(HashMap::new()));
 
     // Accept connections
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let daemon_clone = daemon.clone();
-                thread::spawn(move || {
-                    if let Err(e) = handle_connection(stream, daemon_clone) {
-                        eprintln!("Connection error: {}", e);
-                    }
-                });
+                println!("📡 New connection");
+                let registry_clone = Arc::clone(&registry);
+                thread::spawn(move || handle_client(stream, registry_clone));
             }
-            Err(e) => eprintln!("Accept error: {}", e),
+            Err(err) => {
+                eprintln!("❌ Connection error: {}", err);
+            }
+        }
+    }
+}
+
+fn handle_client(stream: UnixStream, registry: HandleRegistry) {
+    let mut reader = BufReader::new(stream.try_clone().expect("Failed to clone stream"));
+    let mut writer = stream;
+
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                println!("📡 Client disconnected");
+                break;
+            }
+            Ok(_) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                // Parse request
+                let request: JTAGRequest = match serde_json::from_str(line) {
+                    Ok(req) => req,
+                    Err(err) => {
+                        eprintln!("❌ Failed to parse request: {} - {}", err, line);
+                        continue;
+                    }
+                };
+
+                println!("📥 Request: {} - {}", request.msg_type, request.id);
+
+                // Handle message
+                let response = handle_message(request, &registry);
+
+                // Send response (newline-delimited JSON)
+                let response_json = serde_json::to_string(&response).expect("Failed to serialize response");
+                if let Err(err) = writeln!(writer, "{}", response_json) {
+                    eprintln!("❌ Failed to write response: {}", err);
+                    break;
+                }
+
+                println!("📤 Response: {} - success={}", response.request_id, response.success);
+            }
+            Err(err) => {
+                eprintln!("❌ Read error: {}", err);
+                break;
+            }
+        }
+    }
+}
+
+fn handle_message(request: JTAGRequest, registry: &HandleRegistry) -> JTAGResponse {
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let response_id = Uuid::new_v4().to_string();
+
+    match request.msg_type.as_str() {
+        "ping" => handle_ping(request, response_id, timestamp),
+        "open-database" => handle_open_database(request, response_id, timestamp, registry),
+        "ensure-schema" => handle_ensure_schema(request, response_id, timestamp, registry),
+        "create-record" => handle_create_record(request, response_id, timestamp, registry),
+        "read-record" => handle_read_record(request, response_id, timestamp, registry),
+        "query-records" => handle_query_records(request, response_id, timestamp, registry),
+        _ => JTAGResponse {
+            id: response_id,
+            msg_type: request.msg_type.clone(),
+            timestamp,
+            payload: None,
+            request_id: request.id,
+            success: false,
+            error: Some(format!("Unknown message type: {}", request.msg_type)),
+        },
+    }
+}
+
+fn handle_ping(request: JTAGRequest, response_id: String, timestamp: String) -> JTAGResponse {
+    let payload = serde_json::json!({
+        "uptimeMs": 12345,
+        "activeHandles": 0,
+        "totalHandles": 0
+    });
+
+    JTAGResponse {
+        id: response_id,
+        msg_type: request.msg_type,
+        timestamp,
+        payload: Some(payload),
+        request_id: request.id,
+        success: true,
+        error: None,
+    }
+}
+
+fn handle_open_database(
+    request: JTAGRequest,
+    response_id: String,
+    timestamp: String,
+    registry: &HandleRegistry,
+) -> JTAGResponse {
+    // Parse payload
+    let open_req: OpenDatabaseRequest = match serde_json::from_value(request.payload) {
+        Ok(req) => req,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Invalid payload: {}", err)),
+            };
+        }
+    };
+
+    println!("   📂 Opening database: {}", open_req.filename);
+
+    // Ensure directory exists
+    if let Some(parent) = Path::new(&open_req.filename).parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Failed to create directory: {}", err)),
+            };
         }
     }
 
-    Ok(())
+    // Open SQLite connection
+    let connection = match Connection::open(&open_req.filename) {
+        Ok(conn) => conn,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Failed to open database: {}", err)),
+            };
+        }
+    };
+
+    // Enable WAL mode
+    if let Err(err) = connection.execute("PRAGMA journal_mode=WAL", []) {
+        eprintln!("⚠️ Failed to enable WAL mode: {}", err);
+    }
+
+    // Generate handle
+    let handle = Uuid::new_v4().to_string();
+
+    // Store in registry
+    let db_handle = DatabaseHandle {
+        connection,
+        path: open_req.filename.clone(),
+        opened_at: timestamp.clone(),
+    };
+
+    registry.lock().unwrap().insert(handle.clone(), db_handle);
+
+    println!("   ✅ Database opened: handle={}", handle);
+
+    let response = OpenDatabaseResponse {
+        handle,
+        storage_type: "internal-ssd".to_string(),
+        pragma_mode: "WAL".to_string(),
+    };
+
+    JTAGResponse {
+        id: response_id,
+        msg_type: request.msg_type,
+        timestamp,
+        payload: Some(serde_json::to_value(response).unwrap()),
+        request_id: request.id,
+        success: true,
+        error: None,
+    }
+}
+
+fn handle_create_record(
+    request: JTAGRequest,
+    response_id: String,
+    timestamp: String,
+    registry: &HandleRegistry,
+) -> JTAGResponse {
+    // Parse payload
+    let create_req: CreateRecordRequest = match serde_json::from_value(request.payload) {
+        Ok(req) => req,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Invalid payload: {}", err)),
+            };
+        }
+    };
+
+    // Get connection
+    let mut reg = registry.lock().unwrap();
+    let db_handle = match reg.get_mut(&create_req.handle) {
+        Some(h) => h,
+        None => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Database handle not found: {}", create_req.handle)),
+            };
+        }
+    };
+
+    // NOTE: Schema already created by TypeScript side - don't recreate it!
+    // The TypeScript SqliteStorageAdapter creates relational columns, not JSON blobs
+
+    // Extract fields from record for dynamic INSERT
+    let record_obj = match create_req.record.as_object() {
+        Some(obj) => obj,
+        None => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some("Record must be a JSON object".to_string()),
+            };
+        }
+    };
+
+    // Build dynamic INSERT statement based on fields in record
+    // Filter out metadata fields and convert camelCase to snake_case
+    let mut columns: Vec<String> = Vec::new();
+    let mut column_keys: Vec<String> = Vec::new();
+
+    for key in record_obj.keys() {
+        // Skip metadata fields that aren't database columns
+        if key == "collection" || key == "metadata" {
+            continue;
+        }
+        column_keys.push(key.clone());
+        columns.push(to_snake_case(key));
+    }
+
+    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{}", i)).collect();
+
+    let insert_sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        create_req.collection,
+        columns.join(", "),
+        placeholders.join(", ")
+    );
+
+    // Build params array
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    for col_key in &column_keys {
+        let value = &record_obj[col_key];
+        // Convert JSON values to SQL params
+        match value {
+            Value::String(s) => params_vec.push(Box::new(s.clone())),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    params_vec.push(Box::new(i));
+                } else if let Some(f) = n.as_f64() {
+                    params_vec.push(Box::new(f));
+                } else {
+                    params_vec.push(Box::new(n.to_string()));
+                }
+            },
+            Value::Bool(b) => params_vec.push(Box::new(*b as i64)),
+            Value::Null => params_vec.push(Box::new(rusqlite::types::Null)),
+            _ => params_vec.push(Box::new(value.to_string())), // JSON objects/arrays as strings
+        }
+    }
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
+
+    if let Err(err) = db_handle.connection.execute(&insert_sql, &params_refs[..]) {
+        return JTAGResponse {
+            id: response_id,
+            msg_type: request.msg_type,
+            timestamp,
+            payload: None,
+            request_id: request.id,
+            success: false,
+            error: Some(format!("Failed to insert record: {}", err)),
+        };
+    }
+
+    let record_id = record_obj.get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    println!("   ✅ Record created: {}/{}", create_req.collection, record_id);
+
+    JTAGResponse {
+        id: response_id,
+        msg_type: request.msg_type,
+        timestamp,
+        payload: Some(serde_json::json!({ "record": create_req.record })),
+        request_id: request.id,
+        success: true,
+        error: None,
+    }
+}
+
+fn handle_read_record(
+    request: JTAGRequest,
+    response_id: String,
+    timestamp: String,
+    registry: &HandleRegistry,
+) -> JTAGResponse {
+    // Parse payload
+    let read_req: ReadRecordRequest = match serde_json::from_value(request.payload) {
+        Ok(req) => req,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Invalid payload: {}", err)),
+            };
+        }
+    };
+
+    // Get connection
+    let reg = registry.lock().unwrap();
+    let db_handle = match reg.get(&read_req.handle) {
+        Some(h) => h,
+        None => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Database handle not found: {}", read_req.handle)),
+            };
+        }
+    };
+
+    // Query all columns from record (relational schema, not JSON blob)
+    let query_sql = format!(
+        "SELECT * FROM {} WHERE id = ?1",
+        read_req.collection
+    );
+
+    let record: Value = match db_handle.connection.query_row(&query_sql, params![read_req.id], |row| {
+        // Build JSON object from all columns
+        let mut obj = serde_json::Map::new();
+
+        // Get column count
+        let col_count = row.as_ref().column_count();
+
+        // Iterate through all columns and build JSON
+        for i in 0..col_count {
+            let col_name = row.as_ref().column_name(i).unwrap_or("unknown").to_string();
+
+            // Try to get value as different types
+            let value: Value = if let Ok(s) = row.get::<_, String>(i) {
+                Value::String(s)
+            } else if let Ok(i64_val) = row.get::<_, i64>(i) {
+                serde_json::json!(i64_val)
+            } else if let Ok(f64_val) = row.get::<_, f64>(i) {
+                serde_json::json!(f64_val)
+            } else if let Ok(bool_val) = row.get::<_, bool>(i) {
+                Value::Bool(bool_val)
+            } else {
+                // NULL or unsupported type
+                Value::Null
+            };
+
+            obj.insert(col_name, value);
+        }
+
+        Ok(Value::Object(obj))
+    }) {
+        Ok(data) => data,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Record not found: {}", read_req.id)),
+            };
+        }
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Failed to query record: {}", err)),
+            };
+        }
+    };
+
+    println!("   ✅ Record read: {}/{}", read_req.collection, read_req.id);
+
+    JTAGResponse {
+        id: response_id,
+        msg_type: request.msg_type,
+        timestamp,
+        payload: Some(serde_json::json!({ "record": record })),
+        request_id: request.id,
+        success: true,
+        error: None,
+    }
+}
+
+fn handle_ensure_schema(
+    request: JTAGRequest,
+    response_id: String,
+    timestamp: String,
+    registry: &HandleRegistry,
+) -> JTAGResponse {
+    // Parse payload
+    let ensure_req: EnsureSchemaRequest = match serde_json::from_value(request.payload) {
+        Ok(req) => req,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Invalid payload: {}", err)),
+            };
+        }
+    };
+
+    // OPTIMIZATION: Tables are already managed by TypeScript migrations
+    // Just return success immediately - no need to check or create anything
+    // This avoids potential slowdowns from schema mismatches (JSON blob vs relational)
+
+    println!("   ✅ Schema ensured (no-op): {}", ensure_req.collection);
+
+    JTAGResponse {
+        id: response_id,
+        msg_type: request.msg_type,
+        timestamp,
+        payload: Some(serde_json::json!({ "exists": true })),
+        request_id: request.id,
+        success: true,
+        error: None,
+    }
+}
+
+fn handle_query_records(
+    request: JTAGRequest,
+    response_id: String,
+    timestamp: String,
+    registry: &HandleRegistry,
+) -> JTAGResponse {
+    // Parse payload
+    let query_req: QueryRecordsRequest = match serde_json::from_value(request.payload) {
+        Ok(req) => req,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Invalid payload: {}", err)),
+            };
+        }
+    };
+
+    // Get connection
+    let reg = registry.lock().unwrap();
+    let db_handle = match reg.get(&query_req.handle) {
+        Some(h) => h,
+        None => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Database handle not found: {}", query_req.handle)),
+            };
+        }
+    };
+
+    // Build SQL query - use SELECT * for relational schema
+    let mut sql = format!("SELECT * FROM {}", query_req.query.collection);
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<String> = Vec::new();
+
+    // Build WHERE clause from filter (use actual column names, not json_extract)
+    if let Some(filter_value) = &query_req.query.filter {
+        if let Some(filter_obj) = filter_value.as_object() {
+            for (field, value) in filter_obj {
+                // Convert camelCase field to snake_case column
+                let column_name = to_snake_case(field);
+
+                // For now, just handle simple equality (string values)
+                if let Some(str_val) = value.as_str() {
+                    conditions.push(format!("{} = ?", column_name));
+                    params.push(str_val.to_string());
+                } else if let Some(num_val) = value.as_i64() {
+                    conditions.push(format!("{} = ?", column_name));
+                    params.push(num_val.to_string());
+                } else if let Some(bool_val) = value.as_bool() {
+                    conditions.push(format!("{} = ?", column_name));
+                    params.push(if bool_val { "1" } else { "0" }.to_string());
+                }
+                // TODO: Add operator support ($gt, $lt, $gte, $lte, $in, etc.)
+            }
+        }
+    }
+
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+
+    // Add ORDER BY - use actual column names
+    if let Some(sort_fields) = &query_req.query.sort {
+        if !sort_fields.is_empty() {
+            sql.push_str(" ORDER BY ");
+            let sort_clauses: Vec<String> = sort_fields
+                .iter()
+                .map(|s| {
+                    let dir = if s.direction == "desc" { "DESC" } else { "ASC" };
+                    format!("{} {}", to_snake_case(&s.field), dir)
+                })
+                .collect();
+            sql.push_str(&sort_clauses.join(", "));
+        }
+    }
+
+    // Add LIMIT (skip negative values - they mean "no limit")
+    if let Some(limit) = query_req.query.limit {
+        if limit > 0 {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+    }
+
+    // Add OFFSET
+    if let Some(offset) = query_req.query.offset {
+        sql.push_str(&format!(" OFFSET {}", offset));
+    }
+
+    println!("   🔍 Query SQL: {}", sql);
+    println!("   📊 Params: {:?}", params);
+
+    // Execute query
+    let mut stmt = match db_handle.connection.prepare(&sql) {
+        Ok(s) => s,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Failed to prepare query: {}", err)),
+            };
+        }
+    };
+
+    // Convert params to rusqlite params
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params
+        .iter()
+        .map(|p| p as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = match stmt.query(&param_refs[..]) {
+        Ok(r) => r,
+        Err(err) => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Failed to execute query: {}", err)),
+            };
+        }
+    };
+
+    // Collect results - build JSON from all columns
+    // Pre-allocate with expected capacity to avoid reallocations
+    // Handle negative limit (means "no limit") by using reasonable default capacity
+    let capacity = match query_req.query.limit {
+        Some(limit) if limit > 0 => limit as usize,
+        _ => 100, // Default capacity for unlimited or negative limit
+    };
+    let mut records: Vec<serde_json::Value> = Vec::with_capacity(capacity);
+
+    while let Ok(Some(row)) = rows.next() {
+        // Build JSON object from all columns using ValueRef for efficiency
+        let mut obj = serde_json::Map::new();
+
+        let col_count = row.as_ref().column_count();
+
+        for i in 0..col_count {
+            let col_name = row.as_ref().column_name(i).unwrap_or("unknown").to_string();
+
+            // Use ValueRef to get type directly - much faster than trying each type
+            let value: Value = match row.get_ref(i) {
+                Ok(rusqlite::types::ValueRef::Null) => Value::Null,
+                Ok(rusqlite::types::ValueRef::Integer(i)) => serde_json::json!(i),
+                Ok(rusqlite::types::ValueRef::Real(f)) => serde_json::json!(f),
+                Ok(rusqlite::types::ValueRef::Text(t)) => {
+                    Value::String(String::from_utf8_lossy(t).to_string())
+                }
+                Ok(rusqlite::types::ValueRef::Blob(b)) => {
+                    // For blobs, try to convert to UTF-8 string, otherwise hex encode
+                    match std::str::from_utf8(b) {
+                        Ok(s) => Value::String(s.to_string()),
+                        Err(_) => {
+                            // Hex encode for binary data
+                            let hex: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
+                            Value::String(format!("0x{}", hex))
+                        }
+                    }
+                }
+                Err(_) => Value::Null,
+            };
+
+            obj.insert(col_name, value);
+        }
+
+        let data = Value::Object(obj);
+
+        // Build record with metadata (similar to TypeScript format)
+        records.push(serde_json::json!({
+            "id": data.get("id").unwrap_or(&serde_json::Value::Null),
+            "collection": query_req.query.collection,
+            "data": data,
+            "metadata": {
+                "createdAt": data.get("createdAt").unwrap_or(&serde_json::Value::Null),
+                "updatedAt": data.get("updatedAt").unwrap_or(&serde_json::Value::Null),
+                "version": data.get("version").unwrap_or(&serde_json::json!(0))
+            }
+        }));
+    }
+
+    println!("   ✅ Query returned {} records", records.len());
+
+    JTAGResponse {
+        id: response_id,
+        msg_type: request.msg_type,
+        timestamp,
+        payload: Some(serde_json::json!({
+            "records": records,
+            "totalCount": records.len(),
+            "queryTime": 0  // TODO: Add actual timing
+        })),
+        request_id: request.id,
+        success: true,
+        error: None,
+    }
 }

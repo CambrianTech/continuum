@@ -57,10 +57,16 @@ export class RustAdapter extends DataStorageAdapter {
   private workerHandle: string | null = null;  // Rust worker's handle ID
   private workerClient: DataWorkerClient | null = null;  // Client for Rust worker
 
+  constructor() {
+    super();
+    console.log('🦀 RustAdapter CONSTRUCTOR called');
+  }
+
   /**
    * Initialize connection to Rust worker and open database handle
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
+    console.log('🦀 RustAdapter.initialize() called with config:', JSON.stringify(config, null, 2));
     if (this.isInitialized) {
       log.debug('Already initialized, skipping');
       return;
@@ -72,7 +78,7 @@ export class RustAdapter extends DataStorageAdapter {
     try {
       // Create DataWorkerClient
       this.workerClient = new DataWorkerClient({
-        socketPath: (config.options?.socketPath as string) || '/tmp/jtag-data-worker.sock',
+        socketPath: (config.options?.socketPath as string) || '/tmp/jtag-data-daemon-worker.sock',
         timeout: 10000
       });
 

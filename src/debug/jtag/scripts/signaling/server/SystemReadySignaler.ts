@@ -301,6 +301,9 @@ export class SystemReadySignaler {
   }
 
   private async writeSignalFile(signal: SystemReadySignal): Promise<void> {
+    // Ensure parent directory exists before writing (handle race conditions)
+    await fs.mkdir(this.signalDir, { recursive: true });
+
     const tempFile = `${this.readyFile}.tmp`;
     await fs.writeFile(tempFile, JSON.stringify(signal, null, 2));
     await fs.rename(tempFile, this.readyFile);

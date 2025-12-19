@@ -34,13 +34,18 @@ export class DataDaemonServer extends DataDaemonBase {
     this.log = Logger.create(className, `daemons/${className}`);
 
     // Create storage configuration - SQLite-based for proper data storage
+    const dbDir = getDatabaseDir();
+    const dbPath = `${dbDir}/${DATABASE_FILES.SQLITE_FILENAME}`;
+
     const storageConfig: StorageStrategyConfig = {
       strategy: 'sql',
-      backend: 'sqlite',
+      backend: 'rust',  // TESTING: create-record with relational columns (read/query still TODO)
       namespace: context.uuid, // Use context UUID as namespace
       options: {
-        basePath: getDatabaseDir(),  // Expand $HOME in path
+        basePath: dbDir,  // Expand $HOME in path
         databaseName: DATABASE_FILES.SQLITE_FILENAME,
+        filename: dbPath,  // Full path for Rust adapter
+        socketPath: '/tmp/jtag-data-daemon-worker.sock',  // Rust worker socket (for future rust backend)
         foreignKeys: false  // Disable foreign key constraints to avoid constraint violations
       },
       features: {

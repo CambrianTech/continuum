@@ -12,7 +12,7 @@ export default {
     '.continuum/jtag/data/database.sqlite'
   ],
   description: 'Data daemon worker for WAL cleanup and fast SQLite operations',
-  enabled: false  // Not ready yet
+  enabled: true  // PRODUCTION READY - tested ping, open, create, read
 } as const;
 
 export type DataDaemonWorkerConfig = typeof import('./worker.config').default;
