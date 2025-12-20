@@ -13,6 +13,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 deadpool-postgres = "0.14"
 tokio-postgres = "0.7"
 chrono = "0.4"
+async-trait = "0.1"
+hex = "0.4"
 
 [[bin]]
 name = "data-daemon-worker"

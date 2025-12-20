@@ -9,7 +9,6 @@
 /// - create-record: Creates a record
 /// - read-record: Reads a record by ID
 
-use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -22,6 +21,10 @@ use uuid::Uuid;
 
 // Generated entity types from TypeScript decorators
 mod entities;
+
+// Storage adapters (trait-based architecture)
+mod storage;
+use storage::{StorageAdapter, SqliteAdapter};
 
 // ============================================================================
 // Utility Functions
@@ -83,7 +86,7 @@ struct JTAGResponse {
 // ============================================================================
 
 struct DatabaseHandle {
-    connection: Connection,
+    adapter: Box<dyn StorageAdapter>,
     path: String,
     opened_at: String,
 }
@@ -147,7 +150,7 @@ struct QueryRequest {
     offset: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct SortField {
     field: String,
     direction: String,  // "asc" or "desc"
@@ -315,25 +318,27 @@ fn handle_open_database(
         }
     }
 
-    // Open SQLite connection
-    let connection = match Connection::open(&open_req.filename) {
-        Ok(conn) => conn,
-        Err(err) => {
-            return JTAGResponse {
-                id: response_id,
-                msg_type: request.msg_type,
-                timestamp,
-                payload: None,
-                request_id: request.id,
-                success: false,
-                error: Some(format!("Failed to open database: {}", err)),
-            };
-        }
-    };
+    // Create SqliteAdapter and initialize it
+    let mut adapter = SqliteAdapter::new();
+    let config = serde_json::json!({
+        "filename": open_req.filename
+    });
 
-    // Enable WAL mode
-    if let Err(err) = connection.execute("PRAGMA journal_mode=WAL", []) {
-        eprintln!("⚠️ Failed to enable WAL mode: {}", err);
+    // Initialize adapter (async but we're in sync context - use tokio block)
+    let init_result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(adapter.initialize(config));
+
+    if let Err(err) = init_result {
+        return JTAGResponse {
+            id: response_id,
+            msg_type: request.msg_type,
+            timestamp,
+            payload: None,
+            request_id: request.id,
+            success: false,
+            error: Some(format!("Failed to initialize adapter: {}", err)),
+        };
     }
 
     // Generate handle
@@ -341,7 +346,7 @@ fn handle_open_database(
 
     // Store in registry
     let db_handle = DatabaseHandle {
-        connection,
+        adapter: Box::new(adapter),
         path: open_req.filename.clone(),
         opened_at: timestamp.clone(),
     };
@@ -389,9 +394,9 @@ fn handle_create_record(
         }
     };
 
-    // Get connection
-    let mut reg = registry.lock().unwrap();
-    let db_handle = match reg.get_mut(&create_req.handle) {
+    // Get adapter from registry
+    let reg = registry.lock().unwrap();
+    let db_handle = match reg.get(&create_req.handle) {
         Some(h) => h,
         None => {
             return JTAGResponse {
@@ -406,13 +411,16 @@ fn handle_create_record(
         }
     };
 
-    // NOTE: Schema already created by TypeScript side - don't recreate it!
-    // The TypeScript SqliteStorageAdapter creates relational columns, not JSON blobs
+    println!("   📝 Creating record via adapter: {}", create_req.collection);
 
-    // Extract fields from record for dynamic INSERT
-    let record_obj = match create_req.record.as_object() {
-        Some(obj) => obj,
-        None => {
+    // Call adapter.create() (async but we're in sync context - use tokio block)
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(db_handle.adapter.create(&create_req.collection, create_req.record.clone()));
+
+    let record = match result {
+        Ok(r) => r,
+        Err(err) => {
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -420,71 +428,12 @@ fn handle_create_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some("Record must be a JSON object".to_string()),
+                error: Some(format!("Failed to create record: {}", err)),
             };
         }
     };
 
-    // Build dynamic INSERT statement based on fields in record
-    // Filter out metadata fields and convert camelCase to snake_case
-    let mut columns: Vec<String> = Vec::new();
-    let mut column_keys: Vec<String> = Vec::new();
-
-    for key in record_obj.keys() {
-        // Skip metadata fields that aren't database columns
-        if key == "collection" || key == "metadata" {
-            continue;
-        }
-        column_keys.push(key.clone());
-        columns.push(to_snake_case(key));
-    }
-
-    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{}", i)).collect();
-
-    let insert_sql = format!(
-        "INSERT INTO {} ({}) VALUES ({})",
-        create_req.collection,
-        columns.join(", "),
-        placeholders.join(", ")
-    );
-
-    // Build params array
-    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    for col_key in &column_keys {
-        let value = &record_obj[col_key];
-        // Convert JSON values to SQL params
-        match value {
-            Value::String(s) => params_vec.push(Box::new(s.clone())),
-            Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    params_vec.push(Box::new(i));
-                } else if let Some(f) = n.as_f64() {
-                    params_vec.push(Box::new(f));
-                } else {
-                    params_vec.push(Box::new(n.to_string()));
-                }
-            },
-            Value::Bool(b) => params_vec.push(Box::new(*b as i64)),
-            Value::Null => params_vec.push(Box::new(rusqlite::types::Null)),
-            _ => params_vec.push(Box::new(value.to_string())), // JSON objects/arrays as strings
-        }
-    }
-
-    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
-
-    if let Err(err) = db_handle.connection.execute(&insert_sql, &params_refs[..]) {
-        return JTAGResponse {
-            id: response_id,
-            msg_type: request.msg_type,
-            timestamp,
-            payload: None,
-            request_id: request.id,
-            success: false,
-            error: Some(format!("Failed to insert record: {}", err)),
-        };
-    }
-
-    let record_id = record_obj.get("id")
+    let record_id = record.get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     println!("   ✅ Record created: {}/{}", create_req.collection, record_id);
@@ -493,7 +442,7 @@ fn handle_create_record(
         id: response_id,
         msg_type: request.msg_type,
         timestamp,
-        payload: Some(serde_json::json!({ "record": create_req.record })),
+        payload: Some(serde_json::json!({ "record": record })),
         request_id: request.id,
         success: true,
         error: None,
@@ -522,7 +471,7 @@ fn handle_read_record(
         }
     };
 
-    // Get connection
+    // Get adapter from registry
     let reg = registry.lock().unwrap();
     let db_handle = match reg.get(&read_req.handle) {
         Some(h) => h,
@@ -539,44 +488,16 @@ fn handle_read_record(
         }
     };
 
-    // Query all columns from record (relational schema, not JSON blob)
-    let query_sql = format!(
-        "SELECT * FROM {} WHERE id = ?1",
-        read_req.collection
-    );
+    println!("   📖 Reading record via adapter: {}/{}", read_req.collection, read_req.id);
 
-    let record: Value = match db_handle.connection.query_row(&query_sql, params![read_req.id], |row| {
-        // Build JSON object from all columns
-        let mut obj = serde_json::Map::new();
+    // Call adapter.read() (async but we're in sync context - use tokio block)
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(db_handle.adapter.read(&read_req.collection, &read_req.id));
 
-        // Get column count
-        let col_count = row.as_ref().column_count();
-
-        // Iterate through all columns and build JSON
-        for i in 0..col_count {
-            let col_name = row.as_ref().column_name(i).unwrap_or("unknown").to_string();
-
-            // Try to get value as different types
-            let value: Value = if let Ok(s) = row.get::<_, String>(i) {
-                Value::String(s)
-            } else if let Ok(i64_val) = row.get::<_, i64>(i) {
-                serde_json::json!(i64_val)
-            } else if let Ok(f64_val) = row.get::<_, f64>(i) {
-                serde_json::json!(f64_val)
-            } else if let Ok(bool_val) = row.get::<_, bool>(i) {
-                Value::Bool(bool_val)
-            } else {
-                // NULL or unsupported type
-                Value::Null
-            };
-
-            obj.insert(col_name, value);
-        }
-
-        Ok(Value::Object(obj))
-    }) {
-        Ok(data) => data,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
+    let record = match result {
+        Ok(Some(r)) => r,
+        Ok(None) => {
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -595,7 +516,7 @@ fn handle_read_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to query record: {}", err)),
+                error: Some(format!("Failed to read record: {}", err)),
             };
         }
     };
@@ -635,20 +556,54 @@ fn handle_ensure_schema(
         }
     };
 
-    // OPTIMIZATION: Tables are already managed by TypeScript migrations
-    // Just return success immediately - no need to check or create anything
-    // This avoids potential slowdowns from schema mismatches (JSON blob vs relational)
+    // Get adapter from registry
+    let reg = registry.lock().unwrap();
+    let db_handle = match reg.get(&ensure_req.handle) {
+        Some(h) => h,
+        None => {
+            return JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Database handle not found: {}", ensure_req.handle)),
+            };
+        }
+    };
 
-    println!("   ✅ Schema ensured (no-op): {}", ensure_req.collection);
+    println!("   🔧 Ensuring schema via adapter: {}", ensure_req.collection);
 
-    JTAGResponse {
-        id: response_id,
-        msg_type: request.msg_type,
-        timestamp,
-        payload: Some(serde_json::json!({ "exists": true })),
-        request_id: request.id,
-        success: true,
-        error: None,
+    // Call adapter.ensure_schema() (async but we're in sync context - use tokio block)
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(db_handle.adapter.ensure_schema(&ensure_req.collection, None));
+
+    match result {
+        Ok(_) => {
+            println!("   ✅ Schema ensured: {}", ensure_req.collection);
+            JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: Some(serde_json::json!({ "exists": true })),
+                request_id: request.id,
+                success: true,
+                error: None,
+            }
+        }
+        Err(err) => {
+            JTAGResponse {
+                id: response_id,
+                msg_type: request.msg_type,
+                timestamp,
+                payload: None,
+                request_id: request.id,
+                success: false,
+                error: Some(format!("Failed to ensure schema: {}", err)),
+            }
+        }
     }
 }
 
@@ -674,7 +629,18 @@ fn handle_query_records(
         }
     };
 
-    // Get connection
+    // Build query JSON for adapter
+    let query_json = serde_json::json!({
+        "collection": query_req.query.collection,
+        "filter": query_req.query.filter,
+        "sort": query_req.query.sort,
+        "limit": query_req.query.limit,
+        "offset": query_req.query.offset
+    });
+
+    println!("   🔍 Query via adapter: {:?}", query_json);
+
+    // Get adapter from registry
     let reg = registry.lock().unwrap();
     let db_handle = match reg.get(&query_req.handle) {
         Some(h) => h,
@@ -691,92 +657,12 @@ fn handle_query_records(
         }
     };
 
-    // Build SQL query - use SELECT * for relational schema
-    let mut sql = format!("SELECT * FROM {}", query_req.query.collection);
-    let mut conditions: Vec<String> = Vec::new();
-    let mut params: Vec<String> = Vec::new();
+    // Call adapter.query() (async but we're in sync context - use tokio block)
+    let records = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(db_handle.adapter.query(query_json));
 
-    // Build WHERE clause from filter (use actual column names, not json_extract)
-    if let Some(filter_value) = &query_req.query.filter {
-        if let Some(filter_obj) = filter_value.as_object() {
-            for (field, value) in filter_obj {
-                // Convert camelCase field to snake_case column
-                let column_name = to_snake_case(field);
-
-                // For now, just handle simple equality (string values)
-                if let Some(str_val) = value.as_str() {
-                    conditions.push(format!("{} = ?", column_name));
-                    params.push(str_val.to_string());
-                } else if let Some(num_val) = value.as_i64() {
-                    conditions.push(format!("{} = ?", column_name));
-                    params.push(num_val.to_string());
-                } else if let Some(bool_val) = value.as_bool() {
-                    conditions.push(format!("{} = ?", column_name));
-                    params.push(if bool_val { "1" } else { "0" }.to_string());
-                }
-                // TODO: Add operator support ($gt, $lt, $gte, $lte, $in, etc.)
-            }
-        }
-    }
-
-    if !conditions.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conditions.join(" AND "));
-    }
-
-    // Add ORDER BY - use actual column names
-    if let Some(sort_fields) = &query_req.query.sort {
-        if !sort_fields.is_empty() {
-            sql.push_str(" ORDER BY ");
-            let sort_clauses: Vec<String> = sort_fields
-                .iter()
-                .map(|s| {
-                    let dir = if s.direction == "desc" { "DESC" } else { "ASC" };
-                    format!("{} {}", to_snake_case(&s.field), dir)
-                })
-                .collect();
-            sql.push_str(&sort_clauses.join(", "));
-        }
-    }
-
-    // Add LIMIT (skip negative values - they mean "no limit")
-    if let Some(limit) = query_req.query.limit {
-        if limit > 0 {
-            sql.push_str(&format!(" LIMIT {}", limit));
-        }
-    }
-
-    // Add OFFSET
-    if let Some(offset) = query_req.query.offset {
-        sql.push_str(&format!(" OFFSET {}", offset));
-    }
-
-    println!("   🔍 Query SQL: {}", sql);
-    println!("   📊 Params: {:?}", params);
-
-    // Execute query
-    let mut stmt = match db_handle.connection.prepare(&sql) {
-        Ok(s) => s,
-        Err(err) => {
-            return JTAGResponse {
-                id: response_id,
-                msg_type: request.msg_type,
-                timestamp,
-                payload: None,
-                request_id: request.id,
-                success: false,
-                error: Some(format!("Failed to prepare query: {}", err)),
-            };
-        }
-    };
-
-    // Convert params to rusqlite params
-    let param_refs: Vec<&dyn rusqlite::ToSql> = params
-        .iter()
-        .map(|p| p as &dyn rusqlite::ToSql)
-        .collect();
-
-    let mut rows = match stmt.query(&param_refs[..]) {
+    let records = match records {
         Ok(r) => r,
         Err(err) => {
             return JTAGResponse {
@@ -786,68 +672,10 @@ fn handle_query_records(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to execute query: {}", err)),
+                error: Some(format!("Query failed: {}", err)),
             };
         }
     };
-
-    // Collect results - build JSON from all columns
-    // Pre-allocate with expected capacity to avoid reallocations
-    // Handle negative limit (means "no limit") by using reasonable default capacity
-    let capacity = match query_req.query.limit {
-        Some(limit) if limit > 0 => limit as usize,
-        _ => 100, // Default capacity for unlimited or negative limit
-    };
-    let mut records: Vec<serde_json::Value> = Vec::with_capacity(capacity);
-
-    while let Ok(Some(row)) = rows.next() {
-        // Build JSON object from all columns using ValueRef for efficiency
-        let mut obj = serde_json::Map::new();
-
-        let col_count = row.as_ref().column_count();
-
-        for i in 0..col_count {
-            let col_name = row.as_ref().column_name(i).unwrap_or("unknown").to_string();
-
-            // Use ValueRef to get type directly - much faster than trying each type
-            let value: Value = match row.get_ref(i) {
-                Ok(rusqlite::types::ValueRef::Null) => Value::Null,
-                Ok(rusqlite::types::ValueRef::Integer(i)) => serde_json::json!(i),
-                Ok(rusqlite::types::ValueRef::Real(f)) => serde_json::json!(f),
-                Ok(rusqlite::types::ValueRef::Text(t)) => {
-                    Value::String(String::from_utf8_lossy(t).to_string())
-                }
-                Ok(rusqlite::types::ValueRef::Blob(b)) => {
-                    // For blobs, try to convert to UTF-8 string, otherwise hex encode
-                    match std::str::from_utf8(b) {
-                        Ok(s) => Value::String(s.to_string()),
-                        Err(_) => {
-                            // Hex encode for binary data
-                            let hex: String = b.iter().map(|byte| format!("{:02x}", byte)).collect();
-                            Value::String(format!("0x{}", hex))
-                        }
-                    }
-                }
-                Err(_) => Value::Null,
-            };
-
-            obj.insert(col_name, value);
-        }
-
-        let data = Value::Object(obj);
-
-        // Build record with metadata (similar to TypeScript format)
-        records.push(serde_json::json!({
-            "id": data.get("id").unwrap_or(&serde_json::Value::Null),
-            "collection": query_req.query.collection,
-            "data": data,
-            "metadata": {
-                "createdAt": data.get("createdAt").unwrap_or(&serde_json::Value::Null),
-                "updatedAt": data.get("updatedAt").unwrap_or(&serde_json::Value::Null),
-                "version": data.get("version").unwrap_or(&serde_json::json!(0))
-            }
-        }));
-    }
 
     println!("   ✅ Query returned {} records", records.len());
 

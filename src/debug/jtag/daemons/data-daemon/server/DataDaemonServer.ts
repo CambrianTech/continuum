@@ -18,6 +18,7 @@ import { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { RouterRegistry } from '../../../system/core/shared/RouterRegistry';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { getDatabasePath, getDatabaseDir } from '../../../system/config/ServerConfig';
+import { SecretManager } from '../../../system/secrets/SecretManager';
 
 /**
  * Data Daemon Server - JTAG Server Integration
@@ -37,9 +38,13 @@ export class DataDaemonServer extends DataDaemonBase {
     const dbDir = getDatabaseDir();
     const dbPath = `${dbDir}/${DATABASE_FILES.SQLITE_FILENAME}`;
 
+    // Read DATA_DAEMON_TYPE from config.env (rust | sqlite)
+    const secrets = SecretManager.getInstance();
+    const backend = secrets.get('DATA_DAEMON_TYPE') || 'sqlite';  // Default to SQLite
+
     const storageConfig: StorageStrategyConfig = {
       strategy: 'sql',
-      backend: 'rust',  // TESTING: create-record with relational columns (read/query still TODO)
+      backend: backend as 'rust' | 'sqlite',  // Controlled by DATA_DAEMON_TYPE env var
       namespace: context.uuid, // Use context UUID as namespace
       options: {
         basePath: dbDir,  // Expand $HOME in path
