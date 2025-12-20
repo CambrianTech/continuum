@@ -186,6 +186,34 @@ export class SqliteQueryExecutor {
   }
 
   /**
+   * Count records matching query without fetching data
+   *
+   * Efficient COUNT(*) query - no SELECT *, no ORDER BY, no LIMIT
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    try {
+      log.debug(`Counting ${query.collection}`, query);
+
+      const entityClass = ENTITY_REGISTRY.get(query.collection);
+
+      if (entityClass && hasFieldMetadata(entityClass)) {
+        // Use entity-specific table
+        return await this.countFromEntityTable(query, entityClass);
+      } else {
+        // Use simple entity table (fallback)
+        return await this.countFromSimpleEntityTable(query);
+      }
+
+    } catch (error: any) {
+      log.error(`Count failed for ${query.collection}:`, error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Query from entity-specific table with proper column mapping
    */
   private async queryFromEntityTable<T extends RecordData>(query: StorageQuery, entityClass: EntityConstructor): Promise<StorageResult<DataRecord<T>[]>> {
@@ -276,6 +304,40 @@ export class SqliteQueryExecutor {
         totalCount: records.length,
         queryTime: 0 // TODO: Add timing
       }
+    };
+  }
+
+  /**
+   * Count from entity-specific table with proper column mapping
+   */
+  private async countFromEntityTable(query: StorageQuery, entityClass: EntityConstructor): Promise<StorageResult<number>> {
+    const { sql, params } = this.buildCountQuery(query, entityClass);
+    const rows = await this.executor.runSql(sql, params);
+
+    const count = rows.length > 0 ? (rows[0].count as number) : 0;
+
+    log.debug(`Entity count returned ${count} for ${query.collection}`);
+
+    return {
+      success: true,
+      data: count
+    };
+  }
+
+  /**
+   * Count from simple entity table (JSON data column)
+   */
+  private async countFromSimpleEntityTable(query: StorageQuery): Promise<StorageResult<number>> {
+    const { sql, params } = this.buildSimpleCountQuery(query);
+    const rows = await this.executor.runSql(sql, params);
+
+    const count = rows.length > 0 ? (rows[0].count as number) : 0;
+
+    log.debug(`Simple entity count returned ${count} for ${query.collection}`);
+
+    return {
+      success: true,
+      data: count
     };
   }
 
@@ -470,6 +532,170 @@ export class SqliteQueryExecutor {
         params.push(query.offset);
       }
     }
+
+    return { sql, params };
+  }
+
+  /**
+   * Build COUNT(*) SQL query for entity-specific tables
+   *
+   * Uses same WHERE clause as SELECT but:
+   * - COUNT(*) instead of SELECT *
+   * - No ORDER BY (irrelevant for counting)
+   * - No LIMIT/OFFSET (want total count)
+   */
+  private buildCountQuery(query: StorageQuery, entityClass: EntityConstructor): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const tableName = SqlNamingConverter.toTableName(query.collection);
+    let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
+
+    // Build WHERE clause from filters (same logic as buildEntitySelectQuery)
+    const whereClauses: string[] = [];
+
+    // Universal filters with operators
+    if (query.filter) {
+      for (const [field, filter] of Object.entries(query.filter)) {
+        const columnName = SqlNamingConverter.toSnakeCase(field);
+
+        if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
+          // Handle operators like { $gt: value, $in: [...] }
+          for (const [operator, value] of Object.entries(filter)) {
+            switch (operator) {
+              case '$eq':
+                whereClauses.push(`${columnName} = ?`);
+                params.push(value);
+                break;
+              case '$ne':
+                whereClauses.push(`${columnName} != ?`);
+                params.push(value);
+                break;
+              case '$gt':
+                whereClauses.push(`${columnName} > ?`);
+                params.push(value);
+                break;
+              case '$gte':
+                whereClauses.push(`${columnName} >= ?`);
+                params.push(value);
+                break;
+              case '$lt':
+                whereClauses.push(`${columnName} < ?`);
+                params.push(value);
+                break;
+              case '$lte':
+                whereClauses.push(`${columnName} <= ?`);
+                params.push(value);
+                break;
+              case '$in':
+                if (Array.isArray(value) && value.length > 0) {
+                  const placeholders = value.map(() => '?').join(',');
+                  whereClauses.push(`${columnName} IN (${placeholders})`);
+                  params.push(...value);
+                }
+                break;
+              case '$nin':
+                if (Array.isArray(value) && value.length > 0) {
+                  const placeholders = value.map(() => '?').join(',');
+                  whereClauses.push(`${columnName} NOT IN (${placeholders})`);
+                  params.push(...value);
+                }
+                break;
+              case '$exists':
+                if (value) {
+                  whereClauses.push(`${columnName} IS NOT NULL`);
+                } else {
+                  whereClauses.push(`${columnName} IS NULL`);
+                }
+                break;
+              case '$regex':
+                whereClauses.push(`${columnName} REGEXP ?`);
+                params.push(value);
+                break;
+              case '$contains':
+                whereClauses.push(`${columnName} LIKE ?`);
+                params.push(`%${value}%`);
+                break;
+            }
+          }
+        } else {
+          // Direct value implies $eq
+          whereClauses.push(`${columnName} = ?`);
+          params.push(filter);
+        }
+      }
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    }
+
+    // Add time range filter
+    if (query.timeRange) {
+      const timeFilters: string[] = [];
+      if (query.timeRange.start) {
+        timeFilters.push('created_at >= ?');
+        params.push(query.timeRange.start);
+      }
+      if (query.timeRange.end) {
+        timeFilters.push('created_at <= ?');
+        params.push(query.timeRange.end);
+      }
+      if (timeFilters.length > 0) {
+        if (whereClauses.length > 0) {
+          sql += ' AND ' + timeFilters.join(' AND ');
+        } else {
+          sql += ' WHERE ' + timeFilters.join(' AND ');
+        }
+      }
+    }
+
+    // Add cursor-based pagination filter (before counting)
+    if (query.cursor) {
+      const cursorColumn = SqlNamingConverter.toSnakeCase(query.cursor.field);
+      const operator = query.cursor.direction === 'after' ? '>' : '<';
+      const cursorCondition = `${cursorColumn} ${operator} ?`;
+
+      // Add to WHERE clause or create one
+      if (whereClauses.length > 0) {
+        sql += ` AND ${cursorCondition}`;
+      } else {
+        sql += ` WHERE ${cursorCondition}`;
+      }
+
+      params.push(query.cursor.value);
+    }
+
+    // No ORDER BY - irrelevant for counting
+    // No LIMIT/OFFSET - want total count
+
+    return { sql, params };
+  }
+
+  /**
+   * Build COUNT(*) SQL query for simple entity tables
+   */
+  private buildSimpleCountQuery(query: StorageQuery): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const tableName = SqlNamingConverter.toTableName(query.collection);
+    let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
+
+    // Add time range filter
+    if (query.timeRange) {
+      const timeFilters: string[] = [];
+      if (query.timeRange.start) {
+        timeFilters.push('created_at >= ?');
+        params.push(query.timeRange.start);
+      }
+      if (query.timeRange.end) {
+        timeFilters.push('created_at <= ?');
+        params.push(query.timeRange.end);
+      }
+      if (timeFilters.length > 0) {
+        sql += ' WHERE ' + timeFilters.join(' AND ');
+      }
+    }
+
+    // No ORDER BY - irrelevant for counting
+    // No LIMIT/OFFSET - want total count
 
     return { sql, params };
   }

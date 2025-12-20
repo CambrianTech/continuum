@@ -621,13 +621,13 @@ export class DataDaemon {
     }];
     const pageSize = params.pageSize ?? paginationConfig.defaultPageSize;
 
-    // Get total count
+    // Get total count using efficient COUNT(*) query
     const countQuery: StorageQuery = {
       collection: params.collection,
       filter: params.filter
     };
-    const countResult = await this.adapter.query(countQuery);
-    const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
+    const countResult = await this.adapter.count(countQuery);
+    const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
     // Open query handle
     const handle = this.paginatedQueryManager.openQuery({

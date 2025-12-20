@@ -215,6 +215,41 @@ export class RustAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Count records matching query without fetching data
+   *
+   * TODO: Implement in Rust worker for efficiency
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    if (!this.isInitialized || !this.workerClient || !this.workerHandle) {
+      return {
+        success: false,
+        error: 'Rust adapter not initialized or worker not available - use adapter: "sqlite"'
+      };
+    }
+
+    // Fallback: use query() and count results (inefficient)
+    // TODO: Add count() to Rust worker for efficient COUNT(*) query
+    try {
+      const result = await this.query(query);
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error
+        };
+      }
+      return {
+        success: true,
+        data: result.data?.length ?? 0
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
+  /**
    * Update record - delegates to Rust worker
    */
   async update<T extends RecordData>(

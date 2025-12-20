@@ -208,7 +208,62 @@ export class MemoryStorageAdapter extends DataStorageAdapter {
       };
     }
   }
-  
+
+  /**
+   * Count records matching query without fetching data
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    try {
+      const collectionMap = this.collections.get(query.collection);
+      if (!collectionMap) {
+        return {
+          success: true,
+          data: 0
+        };
+      }
+
+      let records = Array.from(collectionMap.values());
+
+      // Apply filters
+      if (query.filter) {
+        records = records.filter(record => this.matchesFilters(record, query.filter));
+      }
+
+      // Apply time range filter
+      if (query.timeRange) {
+        records = records.filter(record => {
+          const recordTime = record.metadata.createdAt;
+          const start = query.timeRange!.start;
+          const end = query.timeRange!.end;
+
+          if (start && recordTime < start) return false;
+          if (end && recordTime > end) return false;
+          return true;
+        });
+      }
+
+      // Apply tag filter
+      if (query.tags && query.tags.length > 0) {
+        records = records.filter(record => {
+          const recordTags = record.metadata.tags || [];
+          return query.tags!.some(tag => recordTags.includes(tag));
+        });
+      }
+
+      // Return count - no pagination, no sorting needed for count
+      return {
+        success: true,
+        data: records.length
+      };
+
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   /**
    * Update record in memory
    */

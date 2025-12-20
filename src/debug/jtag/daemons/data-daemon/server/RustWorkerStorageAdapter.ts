@@ -318,6 +318,23 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Count records matching query - fallback implementation
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    const result = await this.query(query);
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error
+      };
+    }
+    return {
+      success: true,
+      data: result.metadata?.totalCount ?? result.data?.length ?? 0
+    };
+  }
+
+  /**
    * Update record
    */
   async update<T extends RecordData>(

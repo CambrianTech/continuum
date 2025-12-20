@@ -160,6 +160,17 @@ export abstract class DataStorageAdapter {
   abstract query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>>;
 
   /**
+   * Count records matching query without fetching data
+   *
+   * Efficient alternative to query() when only totalCount is needed.
+   * SQL adapters use COUNT(*), NoSQL adapters use count operations.
+   *
+   * @param query - Query with collection and optional filter
+   * @returns StorageResult with count as data
+   */
+  abstract count(query: StorageQuery): Promise<StorageResult<number>>;
+
+  /**
    * Update an existing record
    */
   abstract update<T extends RecordData>(collection: string, id: UUID, data: Partial<T>, incrementVersion?: boolean): Promise<StorageResult<DataRecord<T>>>;

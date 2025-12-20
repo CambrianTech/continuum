@@ -319,6 +319,14 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
   }
 
   /**
+   * Count records matching query without fetching data
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    await this.ensureSchema(query.collection);
+    return this.queryExecutor.count(query);
+  }
+
+  /**
    * Update an existing record
    */
   async update<T extends RecordData>(

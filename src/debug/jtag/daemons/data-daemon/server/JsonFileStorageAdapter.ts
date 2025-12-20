@@ -237,6 +237,23 @@ export class JsonFileStorageAdapter extends DataStorageAdapter {
     }
   }
 
+  /**
+   * Count records matching query - fallback implementation
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    const result = await this.query(query);
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error
+      };
+    }
+    return {
+      success: true,
+      data: result.data?.length ?? 0
+    };
+  }
+
   async update<T extends RecordData>(collection: string, id: UUID, data: Partial<T>, incrementVersion = true): Promise<StorageResult<DataRecord<T>>> {
     try {
       const records = await this.loadCollection<T>(collection);

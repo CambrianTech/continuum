@@ -320,6 +320,17 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     return this.queryExecutor.query<T>(query);
   }
 
+  /**
+   * Count records matching query without fetching data
+   *
+   * Efficient COUNT(*) query - no SELECT *, no ORDER BY, no LIMIT
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    // Ensure schema exists before counting (prevents "no such table" errors)
+    await this.ensureSchema(query.collection);
+    return this.queryExecutor.count(query);
+  }
+
 
   // Removed relational query methods - cross-cutting concerns
 
