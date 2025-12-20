@@ -146,10 +146,24 @@ impl StorageAdapter for SqliteAdapter {
         // Build SQL query
         let mut sql = format!("SELECT * FROM {}", collection);
 
-        // Add filters (simplified - no params for now)
+        // Build params from filter
+        let mut filter_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        // Add filters with actual parameter values
         if let Some(filter) = query.get("filter").and_then(|f| f.as_object()) {
             let conditions: Vec<String> = filter.iter()
-                .map(|(field, _value)| format!("{} = ?", to_snake_case(field)))
+                .map(|(field, value)| {
+                    // Store param value for query execution
+                    match value {
+                        Value::String(s) => filter_params.push(Box::new(s.clone())),
+                        Value::Number(n) if n.is_i64() => filter_params.push(Box::new(n.as_i64().unwrap())),
+                        Value::Number(n) if n.is_f64() => filter_params.push(Box::new(n.as_f64().unwrap())),
+                        Value::Bool(b) => filter_params.push(Box::new(*b as i64)),
+                        Value::Null => filter_params.push(Box::new(rusqlite::types::Null)),
+                        _ => {} // Skip unsupported types
+                    }
+                    format!("{} = ?", to_snake_case(field))
+                })
                 .collect();
             if !conditions.is_empty() {
                 sql.push_str(" WHERE ");
@@ -194,7 +208,12 @@ impl StorageAdapter for SqliteAdapter {
                 .map(|s| s.to_string())
                 .collect();
 
-            let rows: Result<Vec<serde_json::Map<String, Value>>, _> = stmt.query_map([], |row| {
+            // Convert params to slice of trait objects
+            let param_refs: Vec<&dyn rusqlite::ToSql> = filter_params.iter()
+                .map(|p| &**p as &dyn rusqlite::ToSql)
+                .collect();
+
+            let rows: Result<Vec<serde_json::Map<String, Value>>, _> = stmt.query_map(&param_refs[..], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col_name) in column_names.iter().enumerate() {
                     let value: Value = match row.get_ref(i)? {
