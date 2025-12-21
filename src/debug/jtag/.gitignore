@@ -44,3 +44,4 @@ Cargo.lock
 # Rust backup files
 **/*.rs.bk
 **/*.rs.bk.*
+workers/data/continuum.db*

@@ -81,7 +81,12 @@ export class RustAdapter extends DataStorageAdapter {
     this.config = config;
 
     const socketPath = (config.options?.socketPath as string) || '/tmp/jtag-data-daemon-worker.sock';
-    const dbFilename = (config.options?.filename as string) || '/Users/joel/.continuum/data/database.sqlite';
+    const dbFilename = config.options?.filename as string;
+
+    // DataDaemon MUST provide the path - Rust should never have default path logic
+    if (!dbFilename) {
+      throw new Error('RustAdapter: No filename provided in config - DataDaemon must calculate path from config.env');
+    }
 
     // Retry logic: 6 attempts with exponential backoff (total ~15 seconds)
     // Attempts: 100ms, 200ms, 500ms, 1000ms, 2000ms, 5000ms

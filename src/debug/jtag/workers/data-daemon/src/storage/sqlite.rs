@@ -282,7 +282,9 @@ impl StorageAdapter for SqliteAdapter {
                         rusqlite::types::ValueRef::Integer(n) => serde_json::json!(n),
                         rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
                         rusqlite::types::ValueRef::Text(t) => {
-                            Value::String(String::from_utf8_lossy(t).to_string())
+                            let text = String::from_utf8_lossy(t).to_string();
+                            // Try to parse as JSON first (for JSON columns like reactions, content, metadata)
+                            serde_json::from_str(&text).unwrap_or(Value::String(text))
                         }
                         rusqlite::types::ValueRef::Blob(b) => {
                             Value::String(format!("0x{}", hex::encode(b)))

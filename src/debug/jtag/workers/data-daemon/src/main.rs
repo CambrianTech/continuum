@@ -133,6 +133,7 @@ struct ReadRecordRequest {
 struct EnsureSchemaRequest {
     handle: String,
     collection: String,
+    schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -585,9 +586,10 @@ fn handle_ensure_schema(
     println!("   🔧 Ensuring schema via adapter: {}", ensure_req.collection);
 
     // Call adapter.ensure_schema() (async but we're in sync context - use tokio block)
+    // Pass schema metadata from TypeScript decorators
     let result = tokio::runtime::Runtime::new()
         .unwrap()
-        .block_on(db_handle.adapter.ensure_schema(&ensure_req.collection, None));
+        .block_on(db_handle.adapter.ensure_schema(&ensure_req.collection, ensure_req.schema));
 
     match result {
         Ok(_) => {

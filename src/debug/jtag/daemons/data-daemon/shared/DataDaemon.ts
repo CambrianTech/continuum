@@ -27,6 +27,9 @@ import type {
 // Import entity registry for proper entity instantiation during validation
 import { getRegisteredEntity } from '../server/SqliteStorageAdapter';
 
+// Import field metadata for schema generation
+import { getFieldMetadata, hasFieldMetadata } from '../../../system/data/decorators/FieldDecorators';
+
 // Import universal events for automatic event emission
 import { Events } from '../../../system/core/shared/Events';
 import { getDataEventName, DATA_EVENTS } from '../../../system/core/shared/EventConstants';
@@ -561,8 +564,20 @@ export class DataDaemon {
       return; // Already ensured this session
     }
 
-    // Delegate to adapter (adapter knows table names, column names, SQL)
-    const result = await this.adapter.ensureSchema(collection);
+    // Extract field metadata from entity decorators to pass to adapter
+    let schema: unknown = undefined;
+    const EntityClass = getRegisteredEntity(collection);
+    if (EntityClass && hasFieldMetadata(EntityClass)) {
+      const fieldMetadata = getFieldMetadata(EntityClass);
+      const fields = Array.from(fieldMetadata.entries()).map(([name, metadata]) => ({
+        name,
+        fieldType: metadata.fieldType
+      }));
+      schema = { fields };
+    }
+
+    // Delegate to adapter with decorator metadata
+    const result = await this.adapter.ensureSchema(collection, schema);
     if (!result.success) {
       throw new Error(`Failed to ensure schema for ${collection}: ${result.error}`);
     }
