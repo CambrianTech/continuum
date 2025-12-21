@@ -252,6 +252,59 @@ impl StorageAdapter for SqliteAdapter {
         Ok(result)
     }
 
+    async fn count(&self, query: Value) -> Result<i64, Box<dyn Error>> {
+        let collection = query.get("collection")
+            .and_then(|c| c.as_str())
+            .ok_or("Missing collection in query")?
+            .to_string();
+
+        // Build COUNT(*) SQL query
+        let mut sql = format!("SELECT COUNT(*) FROM {}", collection);
+
+        // Build params from filter (reuse logic from query() method)
+        let mut filter_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        // Add filters with actual parameter values
+        if let Some(filter) = query.get("filter").and_then(|f| f.as_object()) {
+            let conditions: Vec<String> = filter.iter()
+                .map(|(field, value)| {
+                    // Store param value for query execution
+                    match value {
+                        Value::String(s) => filter_params.push(Box::new(s.clone())),
+                        Value::Number(n) if n.is_i64() => filter_params.push(Box::new(n.as_i64().unwrap())),
+                        Value::Number(n) if n.is_f64() => filter_params.push(Box::new(n.as_f64().unwrap())),
+                        Value::Bool(b) => filter_params.push(Box::new(*b as i64)),
+                        Value::Null => filter_params.push(Box::new(rusqlite::types::Null)),
+                        _ => {} // Skip unsupported types
+                    }
+                    format!("{} = ?", to_snake_case(field))
+                })
+                .collect();
+            if !conditions.is_empty() {
+                sql.push_str(" WHERE ");
+                sql.push_str(&conditions.join(" AND "));
+            }
+        }
+
+        // Execute count query - scope the lock
+        let count = {
+            let conn_guard = self.connection.lock().unwrap();
+            let conn = conn_guard.as_ref().ok_or("Not initialized")?;
+
+            // Convert params to slice of trait objects
+            let param_refs: Vec<&dyn rusqlite::ToSql> = filter_params.iter()
+                .map(|p| &**p as &dyn rusqlite::ToSql)
+                .collect();
+
+            // Execute COUNT(*) query - returns single i64
+            let count: i64 = conn.query_row(&sql, &param_refs[..], |row| row.get(0))?;
+
+            count
+        };
+
+        Ok(count)
+    }
+
     async fn update(&self, collection: &str, id: &str, data: Value) -> Result<Value, Box<dyn Error>> {
         todo!("Implement update")
     }

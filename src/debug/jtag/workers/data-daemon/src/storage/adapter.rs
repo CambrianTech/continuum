@@ -18,6 +18,12 @@ pub trait StorageAdapter: Send + Sync {
     /// Query records with filters
     async fn query(&self, query: Value) -> Result<Vec<Value>, Box<dyn Error>>;
 
+    /// Count records matching query without fetching data
+    ///
+    /// Efficient COUNT(*) query - no SELECT *, no ORDER BY, no LIMIT
+    /// Returns total count of records matching the filter
+    async fn count(&self, query: Value) -> Result<i64, Box<dyn Error>>;
+
     /// Update a record
     async fn update(&self, collection: &str, id: &str, data: Value) -> Result<Value, Box<dyn Error>>;
 

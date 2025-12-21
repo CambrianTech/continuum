@@ -250,15 +250,15 @@ time ./jtag data/query-open --collection=chat_messages \
 ## Implementation Order
 
 1. ✅ **Document the problem** (this file)
-2. Add `count()` to DataStorageAdapter interface (TypeScript)
-3. Implement `count()` in SqliteStorageAdapter (TypeScript)
-4. Test TypeScript implementation with production data
-5. Add `count()` to StorageAdapter trait (Rust)
-6. Implement `count()` in SqliteAdapter (Rust)
-7. Test Rust implementation with production data
-8. Update DataDaemon.openPaginatedQuery() to use count()
-9. Verify cursor commands work fast with both backends
-10. Add data/count CLI command for manual testing
+2. ✅ Add `count()` to DataStorageAdapter interface (TypeScript)
+3. ✅ Implement `count()` in SqliteStorageAdapter (TypeScript)
+4. ✅ Test TypeScript implementation with production data
+5. ✅ Add `count()` to StorageAdapter trait (Rust)
+6. ✅ Implement `count()` in SqliteAdapter (Rust)
+7. ⏳ Test Rust implementation with production data (ready for testing)
+8. ✅ Update DataDaemon.openPaginatedQuery() to use count()
+9. ⏳ Verify cursor commands work fast with both backends
+10. ⏳ Add data/count CLI command for manual testing
 
 ## Conclusion
 
