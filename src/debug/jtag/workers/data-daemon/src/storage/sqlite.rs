@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use rusqlite::{Connection, Result as SqliteResult};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -9,6 +9,12 @@ use super::adapter::StorageAdapter;
 /// SQLite Storage Adapter
 pub struct SqliteAdapter {
     connection: Arc<Mutex<Option<Connection>>>,
+}
+
+impl Default for SqliteAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SqliteAdapter {
@@ -58,7 +64,7 @@ impl StorageAdapter for SqliteAdapter {
             columns.push(to_snake_case(key));
         }
 
-        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{}", i)).collect();
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
 
         let insert_sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
@@ -102,7 +108,7 @@ impl StorageAdapter for SqliteAdapter {
         let conn_guard = self.connection.lock().unwrap();
         let conn = conn_guard.as_ref().ok_or("Not initialized")?;
 
-        let query_sql = format!("SELECT * FROM {} WHERE id = ?1", collection);
+        let query_sql = format!("SELECT * FROM {collection} WHERE id = ?1");
 
         let result = conn.query_row(&query_sql, [id], |row| {
             // Build JSON object from all columns
@@ -117,7 +123,9 @@ impl StorageAdapter for SqliteAdapter {
                     rusqlite::types::ValueRef::Integer(n) => serde_json::json!(n),
                     rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
                     rusqlite::types::ValueRef::Text(t) => {
-                        Value::String(String::from_utf8_lossy(t).to_string())
+                        let text = String::from_utf8_lossy(t).to_string();
+                        // Try to parse as JSON first (for JSON columns like reactions, content, metadata)
+                        serde_json::from_str(&text).unwrap_or(Value::String(text))
                     }
                     rusqlite::types::ValueRef::Blob(b) => {
                         Value::String(format!("0x{}", hex::encode(b)))
@@ -138,13 +146,17 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn query(&self, query: Value) -> Result<Vec<Value>, Box<dyn Error>> {
+        println!("   🗄️  SqliteAdapter.query(): START");
+
         let collection = query.get("collection")
             .and_then(|c| c.as_str())
             .ok_or("Missing collection in query")?
             .to_string();
 
+        println!("      Collection: {collection}");
+
         // Build SQL query
-        let mut sql = format!("SELECT * FROM {}", collection);
+        let mut sql = format!("SELECT * FROM {collection}");
 
         // Build params from filter
         let mut filter_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -152,17 +164,59 @@ impl StorageAdapter for SqliteAdapter {
         // Add filters with actual parameter values
         if let Some(filter) = query.get("filter").and_then(|f| f.as_object()) {
             let conditions: Vec<String> = filter.iter()
-                .map(|(field, value)| {
-                    // Store param value for query execution
-                    match value {
-                        Value::String(s) => filter_params.push(Box::new(s.clone())),
-                        Value::Number(n) if n.is_i64() => filter_params.push(Box::new(n.as_i64().unwrap())),
-                        Value::Number(n) if n.is_f64() => filter_params.push(Box::new(n.as_f64().unwrap())),
-                        Value::Bool(b) => filter_params.push(Box::new(*b as i64)),
-                        Value::Null => filter_params.push(Box::new(rusqlite::types::Null)),
-                        _ => {} // Skip unsupported types
-                    }
-                    format!("{} = ?", to_snake_case(field))
+                .filter_map(|(field, value)| {
+                    let sql_operator = match value {
+                        Value::Object(obj) => {
+                            // Handle operator objects like {"$lte": value}
+                            if let Some((op_str, op_value)) = obj.iter().next() {
+                                let sql_op = match op_str.as_str() {
+                                    "$lt" => "<",
+                                    "$lte" => "<=",
+                                    "$gt" => ">",
+                                    "$gte" => ">=",
+                                    "$ne" => "!=",
+                                    _ => return None,
+                                };
+
+                                // Push the operator's value as parameter
+                                match op_value {
+                                    Value::String(s) => filter_params.push(Box::new(s.clone())),
+                                    Value::Number(n) if n.is_i64() => filter_params.push(Box::new(n.as_i64().unwrap())),
+                                    Value::Number(n) if n.is_f64() => filter_params.push(Box::new(n.as_f64().unwrap())),
+                                    Value::Bool(b) => filter_params.push(Box::new(*b as i64)),
+                                    Value::Null => filter_params.push(Box::new(rusqlite::types::Null)),
+                                    _ => return None,
+                                }
+
+                                sql_op
+                            } else {
+                                return None;
+                            }
+                        },
+                        Value::String(s) => {
+                            filter_params.push(Box::new(s.clone()));
+                            "="
+                        },
+                        Value::Number(n) if n.is_i64() => {
+                            filter_params.push(Box::new(n.as_i64().unwrap()));
+                            "="
+                        },
+                        Value::Number(n) if n.is_f64() => {
+                            filter_params.push(Box::new(n.as_f64().unwrap()));
+                            "="
+                        },
+                        Value::Bool(b) => {
+                            filter_params.push(Box::new(*b as i64));
+                            "="
+                        },
+                        Value::Null => {
+                            filter_params.push(Box::new(rusqlite::types::Null));
+                            "="
+                        },
+                        _ => return None,
+                    };
+
+                    Some(format!("{} {} ?", to_snake_case(field), sql_operator))
                 })
                 .collect();
             if !conditions.is_empty() {
@@ -189,21 +243,27 @@ impl StorageAdapter for SqliteAdapter {
         // Add LIMIT
         if let Some(limit) = query.get("limit").and_then(|l| l.as_i64()) {
             if limit > 0 {
-                sql.push_str(&format!(" LIMIT {}", limit));
+                sql.push_str(&format!(" LIMIT {limit}"));
             }
         }
 
         // Add OFFSET
         if let Some(offset) = query.get("offset").and_then(|o| o.as_i64()) {
-            sql.push_str(&format!(" OFFSET {}", offset));
+            sql.push_str(&format!(" OFFSET {offset}"));
         }
+
+        println!("      🔧 Final SQL: {sql}");
+        println!("      🔧 Params: {} params", filter_params.len());
 
         // Execute query - scope the lock
         let records = {
+            println!("      🔒 Acquiring connection lock...");
             let conn_guard = self.connection.lock().unwrap();
             let conn = conn_guard.as_ref().ok_or("Not initialized")?;
 
+            println!("      🔧 Preparing statement...");
             let mut stmt = conn.prepare(&sql)?;
+            println!("      ✅ Statement prepared");
             let column_names: Vec<String> = stmt.column_names().iter()
                 .map(|s| s.to_string())
                 .collect();
@@ -213,6 +273,7 @@ impl StorageAdapter for SqliteAdapter {
                 .map(|p| &**p as &dyn rusqlite::ToSql)
                 .collect();
 
+            println!("      🚀 Executing query...");
             let rows: Result<Vec<serde_json::Map<String, Value>>, _> = stmt.query_map(&param_refs[..], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col_name) in column_names.iter().enumerate() {
@@ -249,17 +310,22 @@ impl StorageAdapter for SqliteAdapter {
             })
         }).collect();
 
+        println!("   🗄️  SqliteAdapter.query(): END - {} records", result.len());
         Ok(result)
     }
 
     async fn count(&self, query: Value) -> Result<i64, Box<dyn Error>> {
+        println!("   📊 SqliteAdapter.count(): START");
+
         let collection = query.get("collection")
             .and_then(|c| c.as_str())
             .ok_or("Missing collection in query")?
             .to_string();
 
+        println!("      Collection: {collection}");
+
         // Build COUNT(*) SQL query
-        let mut sql = format!("SELECT COUNT(*) FROM {}", collection);
+        let mut sql = format!("SELECT COUNT(*) FROM {collection}");
 
         // Build params from filter (reuse logic from query() method)
         let mut filter_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -267,17 +333,59 @@ impl StorageAdapter for SqliteAdapter {
         // Add filters with actual parameter values
         if let Some(filter) = query.get("filter").and_then(|f| f.as_object()) {
             let conditions: Vec<String> = filter.iter()
-                .map(|(field, value)| {
-                    // Store param value for query execution
-                    match value {
-                        Value::String(s) => filter_params.push(Box::new(s.clone())),
-                        Value::Number(n) if n.is_i64() => filter_params.push(Box::new(n.as_i64().unwrap())),
-                        Value::Number(n) if n.is_f64() => filter_params.push(Box::new(n.as_f64().unwrap())),
-                        Value::Bool(b) => filter_params.push(Box::new(*b as i64)),
-                        Value::Null => filter_params.push(Box::new(rusqlite::types::Null)),
-                        _ => {} // Skip unsupported types
-                    }
-                    format!("{} = ?", to_snake_case(field))
+                .filter_map(|(field, value)| {
+                    let sql_operator = match value {
+                        Value::Object(obj) => {
+                            // Handle operator objects like {"$lte": value}
+                            if let Some((op_str, op_value)) = obj.iter().next() {
+                                let sql_op = match op_str.as_str() {
+                                    "$lt" => "<",
+                                    "$lte" => "<=",
+                                    "$gt" => ">",
+                                    "$gte" => ">=",
+                                    "$ne" => "!=",
+                                    _ => return None,
+                                };
+
+                                // Push the operator's value as parameter
+                                match op_value {
+                                    Value::String(s) => filter_params.push(Box::new(s.clone())),
+                                    Value::Number(n) if n.is_i64() => filter_params.push(Box::new(n.as_i64().unwrap())),
+                                    Value::Number(n) if n.is_f64() => filter_params.push(Box::new(n.as_f64().unwrap())),
+                                    Value::Bool(b) => filter_params.push(Box::new(*b as i64)),
+                                    Value::Null => filter_params.push(Box::new(rusqlite::types::Null)),
+                                    _ => return None,
+                                }
+
+                                sql_op
+                            } else {
+                                return None;
+                            }
+                        },
+                        Value::String(s) => {
+                            filter_params.push(Box::new(s.clone()));
+                            "="
+                        },
+                        Value::Number(n) if n.is_i64() => {
+                            filter_params.push(Box::new(n.as_i64().unwrap()));
+                            "="
+                        },
+                        Value::Number(n) if n.is_f64() => {
+                            filter_params.push(Box::new(n.as_f64().unwrap()));
+                            "="
+                        },
+                        Value::Bool(b) => {
+                            filter_params.push(Box::new(*b as i64));
+                            "="
+                        },
+                        Value::Null => {
+                            filter_params.push(Box::new(rusqlite::types::Null));
+                            "="
+                        },
+                        _ => return None,
+                    };
+
+                    Some(format!("{} {} ?", to_snake_case(field), sql_operator))
                 })
                 .collect();
             if !conditions.is_empty() {
@@ -286,8 +394,12 @@ impl StorageAdapter for SqliteAdapter {
             }
         }
 
+        println!("      🔧 Final SQL: {sql}");
+        println!("      🔧 Params: {} params", filter_params.len());
+
         // Execute count query - scope the lock
         let count = {
+            println!("      🔒 Acquiring connection lock...");
             let conn_guard = self.connection.lock().unwrap();
             let conn = conn_guard.as_ref().ok_or("Not initialized")?;
 
@@ -297,23 +409,102 @@ impl StorageAdapter for SqliteAdapter {
                 .collect();
 
             // Execute COUNT(*) query - returns single i64
+            println!("      🚀 Executing COUNT(*) query...");
             let count: i64 = conn.query_row(&sql, &param_refs[..], |row| row.get(0))?;
+            println!("      ✅ COUNT(*) returned: {count}");
 
             count
         };
 
+        println!("   📊 SqliteAdapter.count(): END - count={count}");
         Ok(count)
     }
 
     async fn update(&self, collection: &str, id: &str, data: Value) -> Result<Value, Box<dyn Error>> {
-        todo!("Implement update")
+        let conn_guard = self.connection.lock().unwrap();
+        let conn = conn_guard.as_ref().ok_or("Not initialized")?;
+
+        // Extract fields from data object
+        let obj = data.as_object().ok_or("Data must be an object")?;
+
+        // Build SET clause
+        let set_clauses: Vec<String> = obj.keys()
+            .filter(|k| *k != "id") // Don't update id field
+            .map(|field| format!("{} = ?", to_snake_case(field)))
+            .collect();
+
+        if set_clauses.is_empty() {
+            return Err("No fields to update".into());
+        }
+
+        let sql = format!(
+            "UPDATE {} SET {} WHERE id = ? RETURNING *",
+            collection,
+            set_clauses.join(", ")
+        );
+
+        // Build params (values + id at end)
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for field in obj.keys() {
+            if field != "id" {
+                if let Some(value) = obj.get(field) {
+                    match value {
+                        Value::String(s) => params.push(Box::new(s.clone())),
+                        Value::Number(n) if n.is_i64() => params.push(Box::new(n.as_i64().unwrap())),
+                        Value::Number(n) if n.is_f64() => params.push(Box::new(n.as_f64().unwrap())),
+                        Value::Bool(b) => params.push(Box::new(*b as i64)),
+                        Value::Null => params.push(Box::new(rusqlite::types::Null)),
+                        _ => continue,
+                    }
+                }
+            }
+        }
+        params.push(Box::new(id.to_string()));
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter()
+            .map(|p| &**p as &dyn rusqlite::ToSql)
+            .collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+        let column_names: Vec<String> = stmt.column_names().iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let updated = stmt.query_row(&param_refs[..], |row| {
+            let mut obj = serde_json::Map::new();
+            for (i, col_name) in column_names.iter().enumerate() {
+                let value: Value = match row.get_ref(i)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => serde_json::json!(n),
+                    rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        let text = String::from_utf8_lossy(t).to_string();
+                        // Try to parse as JSON first (for JSON columns like reactions, content, metadata)
+                        serde_json::from_str(&text).unwrap_or(Value::String(text))
+                    }
+                    rusqlite::types::ValueRef::Blob(b) => {
+                        Value::String(format!("0x{}", hex::encode(b)))
+                    }
+                };
+                obj.insert(col_name.clone(), value);
+            }
+            Ok(Value::Object(obj))
+        })?;
+
+        Ok(updated)
     }
 
     async fn delete(&self, collection: &str, id: &str) -> Result<bool, Box<dyn Error>> {
-        todo!("Implement delete")
+        let conn_guard = self.connection.lock().unwrap();
+        let conn = conn_guard.as_ref().ok_or("Not initialized")?;
+
+        let sql = format!("DELETE FROM {collection} WHERE id = ?");
+        let rows_affected = conn.execute(&sql, [&id])?;
+
+        Ok(rows_affected > 0)
     }
 
-    async fn ensure_schema(&self, collection: &str, schema: Option<Value>) -> Result<bool, Box<dyn Error>> {
+    async fn ensure_schema(&self, _collection: &str, _schema: Option<Value>) -> Result<bool, Box<dyn Error>> {
         // Tables are managed by TypeScript - no-op
         Ok(true)
     }
@@ -338,7 +529,7 @@ impl StorageAdapter for SqliteAdapter {
         let conn = conn_guard.as_ref().ok_or("Not initialized")?;
 
         let count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM {}", collection),
+            &format!("SELECT COUNT(*) FROM {collection}"),
             [],
             |row| row.get(0)
         )?;

@@ -91,6 +91,11 @@ impl LoggerClient {
         self
     }
 
+    /// Log a debug message.
+    pub fn debug(&mut self, message: &str) {
+        self.log_internal(LogLevel::Debug, message);
+    }
+
     /// Log an info message.
     pub fn info(&mut self, message: &str) {
         self.log_internal(LogLevel::Info, message);

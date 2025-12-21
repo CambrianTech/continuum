@@ -64,54 +64,98 @@ export class RustAdapter extends DataStorageAdapter {
 
   /**
    * Initialize connection to Rust worker and open database handle
+   * Retries with exponential backoff if worker not ready
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
     console.log('🦀 RustAdapter.initialize() called with config:', JSON.stringify(config, null, 2));
+    console.log('🦀 RustAdapter: Step 1 - Check if initialized');
     if (this.isInitialized) {
+      console.log('🦀 RustAdapter: Already initialized, skipping');
       log.debug('Already initialized, skipping');
       return;
     }
 
-    log.info('🦀 Initializing Rust adapter (experimental)...');
+    console.log('🦀 RustAdapter: Step 2 - About to call log.info');
+    log.info('🦀 Initializing Rust adapter (experimental) with retry logic...');
+    console.log('🦀 RustAdapter: Step 3 - Setting config');
     this.config = config;
 
-    try {
-      // Create DataWorkerClient
-      this.workerClient = new DataWorkerClient({
-        socketPath: (config.options?.socketPath as string) || '/tmp/jtag-data-daemon-worker.sock',
-        timeout: 10000
-      });
+    const socketPath = (config.options?.socketPath as string) || '/tmp/jtag-data-daemon-worker.sock';
+    const dbFilename = (config.options?.filename as string) || '/Users/joel/.continuum/data/database.sqlite';
 
-      // Connect to Rust worker
-      await this.workerClient.connect();
+    // Retry logic: 6 attempts with exponential backoff (total ~15 seconds)
+    // Attempts: 100ms, 200ms, 500ms, 1000ms, 2000ms, 5000ms
+    const retryDelays = [100, 200, 500, 1000, 2000, 5000];
+    let lastError: Error | null = null;
 
-      // Open database handle
-      const openResult = await this.workerClient.openDatabase({
-        filename: (config.options?.filename as string) || '/Users/joel/.continuum/data/database.sqlite',
-        adapterType: 'sqlite',
-        storageType: (config.options?.storageType as 'auto-detect' | undefined) || 'auto-detect'
-      });
+    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = retryDelays[attempt - 1];
+          console.log(`🦀 RustAdapter: Retry attempt ${attempt + 1}/${retryDelays.length} after ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
 
-      this.workerHandle = openResult.handle;
+        // Create DataWorkerClient
+        console.log(`🦀 RustAdapter: Creating worker client for socket: ${socketPath}`);
+        this.workerClient = new DataWorkerClient({
+          socketPath,
+          timeout: 10000
+        });
 
-      log.info(`✅ Rust adapter initialized - handle: ${this.workerHandle}`);
-      log.info(`   Storage type: ${openResult.storageType}`);
-      log.info(`   Pragma mode: ${openResult.pragmaMode}`);
-      log.info(`   Pool size: ${openResult.poolSize}`);
+        // Connect to Rust worker
+        console.log('🦀 RustAdapter: Calling workerClient.connect()...');
+        await this.workerClient.connect();
+        console.log('🦀 RustAdapter: ✅ Connected to worker');
 
-      this.isInitialized = true;
-    } catch (error) {
-      // Graceful degradation - Rust worker not available
-      log.warn('⚠️  Rust worker not available - connection failed');
-      log.warn(`   Error: ${error instanceof Error ? error.message : String(error)}`);
-      log.warn('⚠️  RustAdapter will return "not yet implemented" errors');
-      log.warn('⚠️  Use adapter: "sqlite" for production workloads');
+        // Open database handle
+        console.log(`🦀 RustAdapter: Opening database: ${dbFilename}`);
+        const openResult = await this.workerClient.openDatabase({
+          filename: dbFilename,
+          adapterType: 'sqlite',
+          storageType: (config.options?.storageType as 'auto-detect' | undefined) || 'auto-detect'
+        });
+        console.log(`🦀 RustAdapter: ✅ Database opened, handle: ${openResult.handle}`);
 
-      // Mark as initialized but non-functional
-      this.isInitialized = true;
-      this.workerClient = null;
-      this.workerHandle = null;
+        this.workerHandle = openResult.handle;
+
+        log.info(`✅ Rust adapter initialized - handle: ${this.workerHandle} (attempt ${attempt + 1})`);
+        log.info(`   Storage type: ${openResult.storageType}`);
+        log.info(`   Pragma mode: ${openResult.pragmaMode}`);
+        log.info(`   Pool size: ${openResult.poolSize}`);
+
+        this.isInitialized = true;
+        return; // SUCCESS - exit retry loop
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.log(`🦀 RustAdapter: ❌ Attempt ${attempt + 1}/${retryDelays.length} failed: ${lastError.message}`);
+
+        // Clean up failed client
+        if (this.workerClient) {
+          try {
+            await this.workerClient.disconnect();
+          } catch {
+            // Ignore disconnect errors
+          }
+          this.workerClient = null;
+        }
+
+        // Continue to next retry attempt
+      }
     }
+
+    // All retries exhausted - graceful degradation
+    console.log('🦀 RustAdapter: ❌ All retry attempts exhausted');
+    console.log(`🦀 RustAdapter: Last error: ${lastError?.message}`);
+    log.warn('⚠️  Rust worker not available after retries - connection failed');
+    log.warn(`   Last error: ${lastError?.message}`);
+    log.warn('⚠️  RustAdapter will return "not yet implemented" errors');
+    log.warn('⚠️  Use adapter: "sqlite" for production workloads');
+
+    // Mark as initialized but non-functional
+    this.isInitialized = true;
+    this.workerClient = null;
+    this.workerHandle = null;
   }
 
   /**
@@ -217,7 +261,7 @@ export class RustAdapter extends DataStorageAdapter {
   /**
    * Count records matching query without fetching data
    *
-   * TODO: Implement in Rust worker for efficiency
+   * Delegates to Rust worker for efficient COUNT(*) query execution.
    */
   async count(query: StorageQuery): Promise<StorageResult<number>> {
     if (!this.isInitialized || !this.workerClient || !this.workerHandle) {
@@ -227,19 +271,18 @@ export class RustAdapter extends DataStorageAdapter {
       };
     }
 
-    // Fallback: use query() and count results (inefficient)
-    // TODO: Add count() to Rust worker for efficient COUNT(*) query
     try {
-      const result = await this.query(query);
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error
-        };
-      }
+      const response = await this.workerClient.countRecords({
+        handle: this.workerHandle,
+        query
+      });
+
       return {
         success: true,
-        data: result.data?.length ?? 0
+        data: response.count,
+        metadata: {
+          queryTime: response.queryTime
+        }
       };
     } catch (error) {
       return {

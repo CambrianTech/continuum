@@ -1,13 +1,16 @@
-/// Data Worker Test - Real SQLite Implementation
+/// Data Worker - ORM Backend for JTAG System
 ///
-/// PURPOSE: Test concurrent database operations with Rust adapter
-/// Uses SEPARATE test databases in .continuum/jtag/test-dbs
+/// PURPOSE: Provide high-performance ORM layer for data operations
+/// Receives StorageQuery from TypeScript, translates to SQL, executes via rusqlite
 ///
 /// Implements:
 /// - ping: Health check
 /// - open-database: Opens SQLite database
+/// - ensure-schema: Creates table schemas
 /// - create-record: Creates a record
 /// - read-record: Reads a record by ID
+/// - query-records: ORM query with filters, sort, cursor
+/// - count-records: Efficient COUNT(*) queries
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,6 +28,7 @@ mod entities;
 // Storage adapters (trait-based architecture)
 mod storage;
 use storage::{StorageAdapter, SqliteAdapter};
+
 
 // ============================================================================
 // Utility Functions
@@ -148,12 +152,20 @@ struct QueryRequest {
     sort: Option<Vec<SortField>>,
     limit: Option<i64>,
     offset: Option<i64>,
+    cursor: Option<CursorField>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SortField {
     field: String,
     direction: String,  // "asc" or "desc"
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CursorField {
+    field: String,
+    value: serde_json::Value,
+    direction: String,  // "after" or "before"
 }
 
 // ============================================================================
@@ -164,7 +176,7 @@ fn main() {
     // Read socket path from command-line argument (passed by start-workers.sh)
     let args: Vec<String> = std::env::args().collect();
     let socket_path = if args.len() > 1 {
-        args[1].as_str()
+        &args[1]
     } else {
         "/tmp/jtag-data-daemon-worker.sock"  // Fallback
     };
@@ -176,7 +188,7 @@ fn main() {
 
     // Bind Unix socket
     let listener = UnixListener::bind(socket_path).expect("Failed to bind socket");
-    println!("🦀 Data worker (TEST) listening on {}", socket_path);
+    println!("🦀 Data worker listening on {socket_path}");
 
     // Create handle registry
     let registry: HandleRegistry = Arc::new(Mutex::new(HashMap::new()));
@@ -185,18 +197,22 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                println!("📡 New connection");
+                println!("New connection");
                 let registry_clone = Arc::clone(&registry);
                 thread::spawn(move || handle_client(stream, registry_clone));
             }
             Err(err) => {
-                eprintln!("❌ Connection error: {}", err);
+                println!("Connection error: {err}");
             }
         }
     }
 }
 
 fn handle_client(stream: UnixStream, registry: HandleRegistry) {
+    // Logger for connection lifecycle (rust-worker category)
+
+
+
     let mut reader = BufReader::new(stream.try_clone().expect("Failed to clone stream"));
     let mut writer = stream;
 
@@ -204,7 +220,7 @@ fn handle_client(stream: UnixStream, registry: HandleRegistry) {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => {
-                println!("📡 Client disconnected");
+                println!("Client disconnected");
                 break;
             }
             Ok(_) => {
@@ -217,27 +233,33 @@ fn handle_client(stream: UnixStream, registry: HandleRegistry) {
                 let request: JTAGRequest = match serde_json::from_str(line) {
                     Ok(req) => req,
                     Err(err) => {
-                        eprintln!("❌ Failed to parse request: {} - {}", err, line);
+                        println!("Failed to parse request: {err} - {line}");
                         continue;
                     }
                 };
 
-                println!("📥 Request: {} - {}", request.msg_type, request.id);
+                // Log request with timestamp and user info for audit trail
+                println!("Request: {} - {} (timestamp: {}, user: {})",
+                    request.msg_type,
+                    request.id,
+                    request.timestamp,
+                    request.user_id.as_deref().unwrap_or("anonymous")
+                );
 
                 // Handle message
                 let response = handle_message(request, &registry);
 
                 // Send response (newline-delimited JSON)
                 let response_json = serde_json::to_string(&response).expect("Failed to serialize response");
-                if let Err(err) = writeln!(writer, "{}", response_json) {
-                    eprintln!("❌ Failed to write response: {}", err);
+                if let Err(err) = writeln!(writer, "{response_json}") {
+                    println!("Failed to write response: {err}");
                     break;
                 }
 
-                println!("📤 Response: {} - success={}", response.request_id, response.success);
+                println!("Response: {} - success={}", response.request_id, response.success);
             }
             Err(err) => {
-                eprintln!("❌ Read error: {}", err);
+                println!("Read error: {err}");
                 break;
             }
         }
@@ -247,8 +269,6 @@ fn handle_client(stream: UnixStream, registry: HandleRegistry) {
 fn handle_message(request: JTAGRequest, registry: &HandleRegistry) -> JTAGResponse {
     let timestamp = chrono::Utc::now().to_rfc3339();
     let response_id = Uuid::new_v4().to_string();
-
-    println!("🔧 Received message type: {}", request.msg_type);
 
     match request.msg_type.as_str() {
         "ping" => handle_ping(request, response_id, timestamp),
@@ -293,6 +313,7 @@ fn handle_open_database(
     response_id: String,
     timestamp: String,
     registry: &HandleRegistry,
+    
 ) -> JTAGResponse {
     // Parse payload
     let open_req: OpenDatabaseRequest = match serde_json::from_value(request.payload) {
@@ -305,12 +326,17 @@ fn handle_open_database(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
 
-    println!("   📂 Opening database: {}", open_req.filename);
+    // Log configuration for debugging (adapter_type and storage_type are protocol fields)
+    logger.info(&format!("Opening database: {} (adapter: {}, storage: {:?})",
+        open_req.filename,
+        open_req.adapter_type,
+        open_req.storage_type
+    ));
 
     // Ensure directory exists
     if let Some(parent) = Path::new(&open_req.filename).parent() {
@@ -322,7 +348,7 @@ fn handle_open_database(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to create directory: {}", err)),
+                error: Some(format!("Failed to create directory: {err}")),
             };
         }
     }
@@ -346,23 +372,27 @@ fn handle_open_database(
             payload: None,
             request_id: request.id,
             success: false,
-            error: Some(format!("Failed to initialize adapter: {}", err)),
+            error: Some(format!("Failed to initialize adapter: {err}")),
         };
     }
 
     // Generate handle
     let handle = Uuid::new_v4().to_string();
 
-    // Store in registry
+    // Store in registry with metadata for lifecycle tracking
     let db_handle = DatabaseHandle {
         adapter: Box::new(adapter),
         path: open_req.filename.clone(),
         opened_at: timestamp.clone(),
     };
 
-    registry.lock().unwrap().insert(handle.clone(), db_handle);
+    logger.info(&format!("Database opened: handle={}, path={}, opened_at={}",
+        handle,
+        db_handle.path,
+        db_handle.opened_at
+    ));
 
-    println!("   ✅ Database opened: handle={}", handle);
+    registry.lock().unwrap().insert(handle.clone(), db_handle);
 
     let response = OpenDatabaseResponse {
         handle,
@@ -386,6 +416,7 @@ fn handle_create_record(
     response_id: String,
     timestamp: String,
     registry: &HandleRegistry,
+    
 ) -> JTAGResponse {
     // Parse payload
     let create_req: CreateRecordRequest = match serde_json::from_value(request.payload) {
@@ -398,7 +429,7 @@ fn handle_create_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -420,7 +451,7 @@ fn handle_create_record(
         }
     };
 
-    println!("   📝 Creating record via adapter: {}", create_req.collection);
+    println!("Creating record via adapter: {}", create_req.collection);
 
     // Call adapter.create() (async but we're in sync context - use tokio block)
     let result = tokio::runtime::Runtime::new()
@@ -437,7 +468,7 @@ fn handle_create_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to create record: {}", err)),
+                error: Some(format!("Failed to create record: {err}")),
             };
         }
     };
@@ -445,7 +476,7 @@ fn handle_create_record(
     let record_id = record.get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    println!("   ✅ Record created: {}/{}", create_req.collection, record_id);
+    println!("Record created: {}/{}", create_req.collection, record_id);
 
     JTAGResponse {
         id: response_id,
@@ -463,6 +494,7 @@ fn handle_read_record(
     response_id: String,
     timestamp: String,
     registry: &HandleRegistry,
+    
 ) -> JTAGResponse {
     // Parse payload
     let read_req: ReadRecordRequest = match serde_json::from_value(request.payload) {
@@ -475,7 +507,7 @@ fn handle_read_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -497,7 +529,7 @@ fn handle_read_record(
         }
     };
 
-    println!("   📖 Reading record via adapter: {}/{}", read_req.collection, read_req.id);
+    println!("Reading record via adapter: {}/{}", read_req.collection, read_req.id);
 
     // Call adapter.read() (async but we're in sync context - use tokio block)
     let result = tokio::runtime::Runtime::new()
@@ -525,12 +557,12 @@ fn handle_read_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to read record: {}", err)),
+                error: Some(format!("Failed to read record: {err}")),
             };
         }
     };
 
-    println!("   ✅ Record read: {}/{}", read_req.collection, read_req.id);
+    println!("Record read: {}/{}", read_req.collection, read_req.id);
 
     JTAGResponse {
         id: response_id,
@@ -548,6 +580,7 @@ fn handle_ensure_schema(
     response_id: String,
     timestamp: String,
     registry: &HandleRegistry,
+    
 ) -> JTAGResponse {
     // Parse payload
     let ensure_req: EnsureSchemaRequest = match serde_json::from_value(request.payload) {
@@ -560,7 +593,7 @@ fn handle_ensure_schema(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -582,7 +615,7 @@ fn handle_ensure_schema(
         }
     };
 
-    println!("   🔧 Ensuring schema via adapter: {}", ensure_req.collection);
+    println!("Ensuring schema via adapter: {}", ensure_req.collection);
 
     // Call adapter.ensure_schema() (async but we're in sync context - use tokio block)
     let result = tokio::runtime::Runtime::new()
@@ -591,7 +624,7 @@ fn handle_ensure_schema(
 
     match result {
         Ok(_) => {
-            println!("   ✅ Schema ensured: {}", ensure_req.collection);
+            println!("Schema ensured: {}", ensure_req.collection);
             JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -610,7 +643,7 @@ fn handle_ensure_schema(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to ensure schema: {}", err)),
+                error: Some(format!("Failed to ensure schema: {err}")),
             }
         }
     }
@@ -621,18 +654,19 @@ fn handle_query_records(
     response_id: String,
     timestamp: String,
     registry: &HandleRegistry,
+    
 ) -> JTAGResponse {
-    println!("🔍 handle_query_records: START");
+    println!("handle_query_records: START");
 
     // Parse payload
-    println!("   📦 Raw payload: {}", serde_json::to_string_pretty(&request.payload).unwrap_or_else(|_| "failed to serialize".to_string()));
+    println!("Raw payload: {}", serde_json::to_string_pretty(&request.payload).unwrap_or_else(|_| "failed to serialize".to_string()));
     let query_req: QueryRecordsRequest = match serde_json::from_value(request.payload) {
         Ok(req) => {
-            println!("   ✅ Parsed query request");
+            println!("Parsed query request");
             req
         },
         Err(err) => {
-            println!("   ❌ Failed to parse payload: {}", err);
+            println!("Failed to parse payload: {err}");
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -640,7 +674,7 @@ fn handle_query_records(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -651,22 +685,23 @@ fn handle_query_records(
         "filter": query_req.query.filter,
         "sort": query_req.query.sort,
         "limit": query_req.query.limit,
-        "offset": query_req.query.offset
+        "offset": query_req.query.offset,
+        "cursor": query_req.query.cursor
     });
 
-    println!("   🔍 Query: collection={}, filter={:?}, limit={:?}",
-        query_req.query.collection, query_req.query.filter, query_req.query.limit);
+    logger.debug(&format!("Query: collection={}, filter={:?}, limit={:?}",
+        query_req.query.collection, query_req.query.filter, query_req.query.limit));
 
     // Get adapter from registry
-    println!("   🔧 Getting adapter from registry for handle: {}", query_req.handle);
+    println!("Getting adapter from registry for handle: {}", query_req.handle);
     let reg = registry.lock().unwrap();
     let db_handle = match reg.get(&query_req.handle) {
         Some(h) => {
-            println!("   ✅ Found database handle");
+            println!("Found database handle");
             h
         },
         None => {
-            println!("   ❌ Database handle not found: {}", query_req.handle);
+            println!("Database handle not found: {}", query_req.handle);
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -680,7 +715,7 @@ fn handle_query_records(
     };
 
     // Call adapter.query() (async but we're in sync context - use tokio block)
-    println!("   🚀 Calling adapter.query()...");
+    println!("Calling adapter.query()...");
     let start = std::time::Instant::now();
     let records = tokio::runtime::Runtime::new()
         .unwrap()
@@ -689,12 +724,12 @@ fn handle_query_records(
     let records = match records {
         Ok(r) => {
             let elapsed = start.elapsed();
-            println!("   ✅ Query succeeded in {:?}, returned {} records", elapsed, r.len());
+            println!("Query succeeded in {:?}, returned {} records", elapsed, r.len());
             r
         },
         Err(err) => {
             let elapsed = start.elapsed();
-            println!("   ❌ Query failed after {:?}: {}", elapsed, err);
+            println!("Query failed after {elapsed:?}: {err}");
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -702,12 +737,12 @@ fn handle_query_records(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Query failed: {}", err)),
+                error: Some(format!("Query failed: {err}")),
             };
         }
     };
 
-    println!("🔍 handle_query_records: END (success)");
+    println!("handle_query_records: END (success)");
 
     JTAGResponse {
         id: response_id,
@@ -729,17 +764,18 @@ fn handle_count_records(
     response_id: String,
     timestamp: String,
     registry: &HandleRegistry,
+    
 ) -> JTAGResponse {
-    println!("📊 handle_count_records: START");
+    println!("handle_count_records: START");
 
     // Parse payload (same structure as QueryRecordsRequest)
     let query_req: QueryRecordsRequest = match serde_json::from_value(request.payload) {
         Ok(req) => {
-            println!("   ✅ Parsed count request");
+            println!("Parsed count request");
             req
         },
         Err(err) => {
-            println!("   ❌ Failed to parse payload: {}", err);
+            println!("Failed to parse payload: {err}");
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -747,7 +783,7 @@ fn handle_count_records(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -758,19 +794,19 @@ fn handle_count_records(
         "filter": query_req.query.filter
     });
 
-    println!("   📊 Count: collection={}, filter={:?}",
-        query_req.query.collection, query_req.query.filter);
+    logger.debug(&format!("Count: collection={}, filter={:?}",
+        query_req.query.collection, query_req.query.filter));
 
     // Get adapter from registry
-    println!("   🔧 Getting adapter from registry for handle: {}", query_req.handle);
+    println!("Getting adapter from registry for handle: {}", query_req.handle);
     let reg = registry.lock().unwrap();
     let db_handle = match reg.get(&query_req.handle) {
         Some(h) => {
-            println!("   ✅ Found database handle");
+            println!("Found database handle");
             h
         },
         None => {
-            println!("   ❌ Database handle not found: {}", query_req.handle);
+            println!("Database handle not found: {}", query_req.handle);
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -784,7 +820,7 @@ fn handle_count_records(
     };
 
     // Call adapter.count() (async but we're in sync context - use tokio block)
-    println!("   🚀 Calling adapter.count()...");
+    println!("Calling adapter.count()...");
     let start = std::time::Instant::now();
     let count = tokio::runtime::Runtime::new()
         .unwrap()
@@ -793,12 +829,12 @@ fn handle_count_records(
     let count = match count {
         Ok(c) => {
             let elapsed = start.elapsed();
-            println!("   ✅ Count succeeded in {:?}, count={}", elapsed, c);
+            println!("Count succeeded in {elapsed:?}, count={c}");
             c
         },
         Err(err) => {
             let elapsed = start.elapsed();
-            println!("   ❌ Count failed after {:?}: {}", elapsed, err);
+            println!("Count failed after {elapsed:?}: {err}");
             return JTAGResponse {
                 id: response_id,
                 msg_type: request.msg_type,
@@ -806,12 +842,12 @@ fn handle_count_records(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Count failed: {}", err)),
+                error: Some(format!("Count failed: {err}")),
             };
         }
     };
 
-    println!("📊 handle_count_records: END (success, count={})", count);
+    println!("handle_count_records: END (success, count={count})");
 
     JTAGResponse {
         id: response_id,

@@ -85,8 +85,13 @@ const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 async fn count(&self, query: Value) -> Result<i64, Box<dyn Error>>;
 ```
 
-### 2. SqliteAdapter Implementation
-**File**: `workers/data-daemon/src/storage/sqlite.rs:255`
+### 2. Message Handler
+**File**: `workers/data-daemon/src/main.rs:254,720`
+
+Added "count-records" handler to handle_message() dispatcher that calls adapter.count() and returns count result.
+
+### 3. SqliteAdapter Implementation
+**File**: `workers/data-daemon/src/storage/sqlite.rs:267`
 
 ```rust
 async fn count(&self, query: Value) -> Result<i64, Box<dyn Error>> {
@@ -136,6 +141,14 @@ async fn count(&self, query: Value) -> Result<i64, Box<dyn Error>> {
 ```
 
 **Compilation Status**: ✅ SUCCESS (with warnings only, no errors)
+
+### 4. TypeScript Client Integration
+**Files**:
+- `shared/ipc/data-worker/DataWorkerMessageTypes.ts` - Added CountRecordsRequest/Response types
+- `shared/ipc/data-worker/DataWorkerClient.ts:207` - Added countRecords() method
+- `daemons/data-daemon/server/RustAdapter.ts:222` - Updated count() to call workerClient.countRecords()
+
+**Integration**: RustAdapter now calls Rust worker's efficient COUNT(*) instead of fallback query().length
 
 ---
 
@@ -202,16 +215,19 @@ npm start
 - `daemons/data-daemon/server/managers/SqliteQueryExecutor.ts` - Implemented count() with SQL generation
 - `daemons/data-daemon/server/SqliteStorageAdapter.ts` - Added count() delegation
 - `daemons/data-daemon/server/MemoryStorageAdapter.ts` - Implemented count() efficiently
-- `daemons/data-daemon/server/RustAdapter.ts` - Added count() fallback
+- `daemons/data-daemon/server/RustAdapter.ts:222` - Calls workerClient.countRecords() (efficient)
 - `daemons/data-daemon/server/FileStorageAdapter.ts` - Added count() fallback
 - `daemons/data-daemon/server/JsonFileStorageAdapter.ts` - Added count() fallback
 - `daemons/data-daemon/server/RustStorageAdapter.ts` - Added count() delegation
 - `daemons/data-daemon/server/RustWorkerStorageAdapter.ts` - Added count() fallback
 - `daemons/data-daemon/shared/DataDaemon.ts` - Updated openPaginatedQuery() to use count()
+- `shared/ipc/data-worker/DataWorkerMessageTypes.ts` - Added CountRecordsRequest/Response types
+- `shared/ipc/data-worker/DataWorkerClient.ts` - Added countRecords() method
 
 ### Rust
 - `workers/data-daemon/src/storage/adapter.rs` - Added count() to trait
-- `workers/data-daemon/src/storage/sqlite.rs` - Implemented count() with efficient SQL
+- `workers/data-daemon/src/storage/sqlite.rs:267` - Implemented count() with efficient SQL + logging
+- `workers/data-daemon/src/main.rs:254,720` - Added "count-records" handler with logging
 
 ### Documentation
 - `workers/data-daemon/EFFICIENT-COUNT-DESIGN.md` - Design document

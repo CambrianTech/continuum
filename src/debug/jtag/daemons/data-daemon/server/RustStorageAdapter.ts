@@ -84,13 +84,13 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
 
-  // Rust-backed executor (replaces SqliteRawExecutor)
+  // Rust-backed executor (ORM bridge to Rust worker)
   private executor!: RustSqliteExecutor;
   private transactionManager!: SqliteTransactionManager;
 
-  // Manager classes (same as SqliteStorageAdapter)
+  // Manager classes
+  // NOTE: queryExecutor NOT used - we use ORM pattern via executor.queryRecords()
   private schemaManager!: SqliteSchemaManager;
-  private queryExecutor!: SqliteQueryExecutor;
   private writeManager!: SqliteWriteManager;
   private vectorSearchManager!: SqliteVectorSearchManager;
 
@@ -127,8 +127,8 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
     const dbPath = options.filename || getDatabasePath();
     log.info(`Using database path: ${dbPath}`);
 
-    // Socket path to Rust worker
-    const socketPath = options.socketPath || '/tmp/data-worker.sock';
+    // Socket path to Rust worker (matches workers-config.json)
+    const socketPath = options.socketPath || '/tmp/jtag-data-daemon-worker.sock';
     log.info(`Using Rust worker socket: ${socketPath}`);
 
     // Ensure directory exists with proper permissions
@@ -240,10 +240,8 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
     );
     log.debug('Schema manager initialized');
 
-    // Initialize query executor
-    log.debug('Initializing query executor');
-    this.queryExecutor = new SqliteQueryExecutor(this.executor);
-    log.debug('Query executor initialized');
+    // NOTE: No SqliteQueryExecutor - we use ORM pattern via executor.queryRecords()
+    // This is the CORRECT abstraction: send StorageQuery, not raw SQL
 
     // Initialize write manager
     log.debug('Initializing write manager');
@@ -304,26 +302,111 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
 
   /**
    * Read a single record by ID
+   *
+   * ORM PATTERN: Sends read-record message to Rust worker.
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     await this.ensureSchema(collection);
-    return this.queryExecutor.read<T>(collection, id);
+
+    try {
+      // Send ORM read to Rust worker (NOT raw SQL!)
+      const record = await this.executor.readRecord(collection, id);
+
+      if (!record) {
+        return {
+          success: false,
+          error: `Record not found: ${collection}/${id}`
+        };
+      }
+
+      // Wrap in DataRecord format
+      const dataRecord: DataRecord<T> = {
+        id: record.id,
+        collection,
+        data: record.data as T,
+        metadata: {
+          createdAt: record.created_at,
+          updatedAt: record.updated_at,
+          version: record.version
+        }
+      };
+
+      return {
+        success: true,
+        data: dataRecord
+      };
+    } catch (error: any) {
+      log.error(`ORM read failed for ${collection}/${id}:`, error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
    * Query records with complex filters
+   *
+   * ORM PATTERN: Sends high-level StorageQuery to Rust worker.
+   * Rust worker translates filter operators to SQL WHERE clauses.
+   * Clean separation: TypeScript = application logic, Rust = storage logic.
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     await this.ensureSchema(query.collection);
-    return this.queryExecutor.query<T>(query);
+
+    try {
+      // Send ORM query to Rust worker (NOT raw SQL!)
+      const records = await this.executor.queryRecords(query);
+
+      // Rust worker returns raw data - wrap in DataRecord format
+      const dataRecords: DataRecord<T>[] = records.map(record => ({
+        id: record.id,
+        collection: query.collection,
+        data: record.data as T,
+        metadata: {
+          createdAt: record.created_at,
+          updatedAt: record.updated_at,
+          version: record.version
+        }
+      }));
+
+      return {
+        success: true,
+        data: dataRecords
+      };
+    } catch (error: any) {
+      log.error(`ORM query failed for ${query.collection}:`, error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
    * Count records matching query without fetching data
+   *
+   * ORM PATTERN: Sends high-level StorageQuery to Rust worker.
+   * Much more efficient than fetching all records - translates to COUNT(*) SQL.
    */
   async count(query: StorageQuery): Promise<StorageResult<number>> {
     await this.ensureSchema(query.collection);
-    return this.queryExecutor.count(query);
+
+    try {
+      // Send ORM count to Rust worker (NOT raw SQL!)
+      const count = await this.executor.countRecords(query);
+
+      return {
+        success: true,
+        data: count
+      };
+    } catch (error: any) {
+      log.error(`ORM count failed for ${query.collection}:`, error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
@@ -724,9 +807,35 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
 
   /**
    * Explain query execution (dry-run)
+   *
+   * ORM PATTERN: Shows the high-level query structure sent to Rust worker.
+   * Rust worker translates this to SQL internally.
    */
   async explainQuery(query: StorageQuery): Promise<QueryExplanation> {
-    return this.queryExecutor.explainQuery(query);
+    // In ORM pattern, we don't generate SQL in TypeScript
+    // Return explanation of the ORM query structure
+    const executionPlan = [
+      `ORM Query Pattern (Rust-translated):`,
+      `  Collection: ${query.collection}`,
+      `  Filter: ${query.filter ? JSON.stringify(query.filter) : 'none'}`,
+      `  Sort: ${query.sort ? JSON.stringify(query.sort) : 'none'}`,
+      `  Limit: ${query.limit || 'none'}`,
+      `  Cursor: ${query.cursor ? JSON.stringify(query.cursor) : 'none'}`,
+      ``,
+      `This query is sent to Rust worker as JSON.`,
+      `Rust worker translates filter operators to SQL WHERE clauses.`,
+      `SQL generation happens in Rust adapter (single source of truth).`
+    ].join('\n');
+
+    return {
+      query,
+      translatedQuery: 'ORM query (translated to SQL in Rust worker)',
+      parameters: query.filter ? [query.filter] : [],
+      estimatedRows: 0,
+      executionPlan,
+      adapterType: 'RustStorageAdapter (ORM)',
+      timestamp: new Date().toISOString()
+    };
   }
 
   // ============================================================================

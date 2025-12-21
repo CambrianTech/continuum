@@ -20,7 +20,7 @@ async fn test_count_production_database() {
         "collection": "chat_messages"
     })).await.expect("Count all failed");
 
-    println!("Total chat_messages: {}", count_all);
+    println!("Total chat_messages: {count_all}");
     assert!(count_all > 0, "Should have at least some messages");
 
     // Test 2: Count with filter (specific room)
@@ -31,7 +31,7 @@ async fn test_count_production_database() {
         }
     })).await.expect("Count filtered failed");
 
-    println!("Filtered chat_messages: {}", count_filtered);
+    println!("Filtered chat_messages: {count_filtered}");
     assert!(count_filtered > 0, "Should have messages in that room");
     assert!(count_filtered < count_all, "Filtered count should be less than total");
 
@@ -43,7 +43,7 @@ async fn test_count_production_database() {
         }
     })).await.expect("Count empty failed");
 
-    println!("Non-existent room messages: {}", count_empty);
+    println!("Non-existent room messages: {count_empty}");
     assert_eq!(count_empty, 0, "Non-existent room should have 0 messages");
 
     adapter.close().await.ok();

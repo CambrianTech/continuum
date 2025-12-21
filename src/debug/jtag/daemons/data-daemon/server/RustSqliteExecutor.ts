@@ -1,23 +1,27 @@
 /**
- * RustSqliteExecutor - Rust Worker SQL Execution Bridge
+ * RustSqliteExecutor - Rust Worker ORM Bridge
  *
- * Replaces SqliteRawExecutor with Rust-backed SQL execution.
- * Provides identical interface but routes SQL to Rust worker for:
- * - Faster execution via rusqlite
- * - Concurrent query handling
- * - Connection pooling
+ * Proper ORM abstraction: Sends high-level StorageQuery to Rust worker.
+ * Rust worker translates to SQL internally (clean separation of concerns).
  *
  * Architecture:
- *   TypeScript (DataDaemon) → builds SQL from decorators
- *   RustSqliteExecutor → sends SQL to Rust worker
- *   Rust Worker → executes SQL via rusqlite
- *   RustSqliteExecutor → receives rows, returns to TypeScript
+ *   TypeScript (Application) → StorageQuery { collection, filter, sort, limit }
+ *   RustSqliteExecutor → sends query-records message
+ *   Rust Worker → translates to SQL, executes via rusqlite
+ *   RustSqliteExecutor → receives DataRecords, returns to TypeScript
+ *
+ * Benefits:
+ * - Storage-agnostic application layer (could swap to MongoDB, REST, etc.)
+ * - SQL generation in ONE place (Rust adapter)
+ * - Type-safe queries
+ * - Concurrent query handling via Rust worker
  */
 
 import * as net from 'net';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger } from '../../../system/core/logging/Logger';
 import type { SqlExecutor } from './SqlExecutor';
+import type { StorageQuery } from '../shared/DataStorageAdapter';
 
 const log = Logger.create('RustSqliteExecutor', 'sql');
 
@@ -66,6 +70,40 @@ interface SqlExecuteResult {
   lastInsertId?: number;
 }
 
+// ORM-level payload types (proper abstraction)
+interface QueryRecordsPayload {
+  handle: string;
+  query: {
+    collection: string;
+    filter?: Record<string, any>;
+    sort?: Array<{ field: string; direction: string }>;
+    limit?: number;
+    offset?: number;
+    cursor?: {
+      field: string;
+      value: any;
+      direction: 'after' | 'before';
+    };
+  };
+}
+
+interface QueryRecordsResult {
+  records: any[];
+  totalCount?: number;
+}
+
+interface CountRecordsPayload {
+  handle: string;
+  query: {
+    collection: string;
+    filter?: Record<string, any>;
+  };
+}
+
+interface CountRecordsResult {
+  count: number;
+}
+
 // ============================================================================
 // Rust SQL Executor
 // ============================================================================
@@ -91,6 +129,8 @@ export class RustSqliteExecutor implements SqlExecutor {
   /**
    * Execute SQL query (SELECT) and return all rows
    * Replacement for SqliteRawExecutor.runSql()
+   *
+   * NOTE: This is legacy/transitional - should use queryRecords() for ORM queries
    */
   async runSql(sql: string, params: any[] = []): Promise<any[]> {
     const payload: SqlQueryPayload = {
@@ -107,6 +147,8 @@ export class RustSqliteExecutor implements SqlExecutor {
   /**
    * Execute SQL statement (INSERT, UPDATE, DELETE) and return result metadata
    * Replacement for SqliteRawExecutor.runStatement()
+   *
+   * NOTE: This is legacy/transitional - should use create/update/delete methods for ORM operations
    */
   async runStatement(sql: string, params: any[] = []): Promise<{ lastID?: number; changes: number }> {
     log.debug('Executing SQL:', { sql: sql.trim(), params });
@@ -127,6 +169,86 @@ export class RustSqliteExecutor implements SqlExecutor {
 
     log.debug('Statement success:', returnValue);
     return returnValue;
+  }
+
+  /**
+   * Query records using ORM pattern (proper abstraction)
+   *
+   * Sends high-level StorageQuery to Rust worker, which:
+   * 1. Translates filter operators to SQL WHERE clauses
+   * 2. Translates sort to SQL ORDER BY
+   * 3. Executes via rusqlite connection pool
+   * 4. Returns raw data records
+   *
+   * This is the CORRECT abstraction - storage-agnostic application layer.
+   */
+  async queryRecords(query: StorageQuery): Promise<any[]> {
+    const payload: QueryRecordsPayload = {
+      handle: this.dbHandle || 'default',
+      query: {
+        collection: query.collection,
+        filter: query.filter,
+        sort: query.sort,
+        limit: query.limit,
+        offset: query.offset,
+        cursor: query.cursor,
+      },
+    };
+
+    log.debug('ORM query:', {
+      collection: query.collection,
+      filter: query.filter,
+      cursor: query.cursor,
+      limit: query.limit
+    });
+
+    const result = await this.sendMessage<QueryRecordsPayload, QueryRecordsResult>('query-records', payload);
+
+    log.debug(`ORM query returned ${result.records.length} records`);
+    return result.records;
+  }
+
+  /**
+   * Count records using ORM pattern (proper abstraction)
+   *
+   * Sends high-level StorageQuery to Rust worker, which translates to COUNT(*) SQL.
+   * Much more efficient than fetching all records and counting in TypeScript.
+   */
+  async countRecords(query: StorageQuery): Promise<number> {
+    const payload: CountRecordsPayload = {
+      handle: this.dbHandle || 'default',
+      query: {
+        collection: query.collection,
+        filter: query.filter,
+      },
+    };
+
+    log.debug('ORM count:', { collection: query.collection, filter: query.filter });
+
+    const result = await this.sendMessage<CountRecordsPayload, CountRecordsResult>('count-records', payload);
+
+    log.debug(`ORM count returned ${result.count}`);
+    return result.count;
+  }
+
+  /**
+   * Read single record by ID using ORM pattern
+   *
+   * Simple ID lookup - sends to Rust worker's read-record handler.
+   */
+  async readRecord(collection: string, id: string): Promise<any> {
+    const payload = {
+      handle: this.dbHandle || 'default',
+      collection,
+      id,
+    };
+
+    log.debug('ORM read:', { collection, id });
+
+    const result = await this.sendMessage<any, { record: any }>('read-record', payload);
+
+    log.debug('ORM read success');
+    return result.record;
   }
 
   // ==========================================================================

@@ -49,6 +49,8 @@ import type {
   ReadRecordResponse,
   QueryRecordsRequest,
   QueryRecordsResponse,
+  CountRecordsRequest,
+  CountRecordsResponse,
   UpdateRecordRequest,
   UpdateRecordResponse,
   DeleteRecordRequest,
@@ -190,6 +192,24 @@ export class DataWorkerClient extends WorkerClient<unknown, unknown> {
   ): Promise<QueryRecordsResponse<T>> {
     const response = await this.send('query-records', request, userId);
     return response.payload as QueryRecordsResponse<T>;
+  }
+
+  /**
+   * Count records matching query without fetching data.
+   *
+   * Efficient alternative to queryRecords when only totalCount is needed.
+   *
+   * @param request - Count request with handle and StorageQuery
+   * @param userId - Optional userId context
+   * @returns Promise with count result
+   * @throws {WorkerError} if count fails
+   */
+  async countRecords(
+    request: CountRecordsRequest,
+    userId?: string
+  ): Promise<CountRecordsResponse> {
+    const response = await this.send('count-records', request, userId);
+    return response.payload as CountRecordsResponse;
   }
 
   /**

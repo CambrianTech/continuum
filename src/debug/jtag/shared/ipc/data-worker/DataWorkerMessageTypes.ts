@@ -129,6 +129,22 @@ export interface QueryRecordsResponse<T extends RecordData = RecordData> {
 }
 
 /**
+ * Request to count records matching query without fetching data
+ */
+export interface CountRecordsRequest {
+  handle: string;                            // Database handle
+  query: StorageQuery;                       // Query with filters (no sorting/pagination)
+}
+
+/**
+ * Response with count result
+ */
+export interface CountRecordsResponse {
+  count: number;                             // Total matching records
+  queryTime?: number;                        // Query execution time in ms
+}
+
+/**
  * Request to update a record
  */
 export interface UpdateRecordRequest<T extends RecordData = RecordData> {

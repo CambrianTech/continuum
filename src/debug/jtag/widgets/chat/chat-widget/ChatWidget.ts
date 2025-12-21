@@ -494,6 +494,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     this.roomMembers.clear();
 
+    // Check if members exists and is an array
+    if (!this.currentRoom.members || !Array.isArray(this.currentRoom.members)) {
+      console.warn(`⚠️ ChatWidget: Room has no members array, skipping member load`);
+      return;
+    }
+
     // Load each member's user entity
     for (const member of this.currentRoom.members) {
       try {

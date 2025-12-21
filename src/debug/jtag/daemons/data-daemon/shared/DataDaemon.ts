@@ -269,7 +269,22 @@ export class DataDaemon {
 
     return result;
   }
-  
+
+  /**
+   * Count records matching query without fetching data - efficient COUNT(*) query
+   */
+  async count(
+    query: StorageQuery,
+    _context: DataOperationContext
+  ): Promise<StorageResult<number>> {
+    await this.ensureInitialized();
+
+    // Ensure schema exists before counting (prevents "no such table" errors)
+    await this.ensureSchema(query.collection);
+
+    return await this.adapter.count(query);
+  }
+
   /**
    * Update record - SQL UPDATE or NoSQL updateOne
    */
@@ -794,6 +809,24 @@ export class DataDaemon {
     }
 
     return await DataDaemon.sharedInstance.query<T>(query, DataDaemon.context);
+  }
+
+  /**
+   * Count records matching query without fetching data - CLEAN INTERFACE
+   *
+   * Uses efficient COUNT(*) SQL query instead of fetching all records.
+   * Significantly faster for large collections.
+   *
+   * @example
+   * const result = await DataDaemon.count({ collection: 'chat_messages', filter: { roomId: 'abc' } });
+   * const totalMessages = result.success ? result.data : 0;
+   */
+  static async count(query: StorageQuery): Promise<StorageResult<number>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    return await DataDaemon.sharedInstance.count(query, DataDaemon.context);
   }
 
   /**
