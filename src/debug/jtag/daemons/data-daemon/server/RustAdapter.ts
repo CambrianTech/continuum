@@ -218,6 +218,9 @@ export class RustAdapter extends DataStorageAdapter {
         };
       }
 
+      log.info(`RustAdapter.read() response.record keys: ${JSON.stringify(Object.keys(response.record))}`);
+      log.info(`RustAdapter.read() response.record: ${JSON.stringify(response.record).substring(0, 500)}`);
+
       return {
         success: true,
         data: response.record
@@ -246,6 +249,11 @@ export class RustAdapter extends DataStorageAdapter {
         handle: this.workerHandle,
         query
       });
+
+      if (response.records && response.records.length > 0) {
+        log.info(`RustAdapter.query() first record keys: ${JSON.stringify(Object.keys(response.records[0]))}`);
+        log.info(`RustAdapter.query() first record: ${JSON.stringify(response.records[0]).substring(0, 500)}`);
+      }
 
       return {
         success: true,

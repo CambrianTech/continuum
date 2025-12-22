@@ -307,7 +307,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     // Ensure schema exists before reading (prevents "no such table" errors)
     await this.ensureSchema(collection);
-    return this.queryExecutor.read<T>(collection, id);
+    const result = await this.queryExecutor.read<T>(collection, id);
+    if (result.success && result.data) {
+      log.info(`SqliteStorageAdapter.read() result.data keys: ${JSON.stringify(Object.keys(result.data))}`);
+      log.info(`SqliteStorageAdapter.read() result.data.data keys: ${JSON.stringify(Object.keys(result.data.data || {}))}`);
+    }
+    return result;
   }
 
 

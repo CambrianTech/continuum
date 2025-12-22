@@ -120,6 +120,9 @@ export class SqliteQueryExecutor {
       }
     };
 
+    log.info(`TS read() returning record keys: ${JSON.stringify(Object.keys(record))}`);
+    log.info(`TS read() record.data keys: ${JSON.stringify(Object.keys(record.data || {}))}`);
+
     return {
       success: true,
       data: record
@@ -152,6 +155,9 @@ export class SqliteQueryExecutor {
         version: row.version
       }
     };
+
+    log.info(`TS read(simple) returning record keys: ${JSON.stringify(Object.keys(record))}`);
+    log.info(`TS read(simple) record.data keys: ${JSON.stringify(Object.keys(record.data || {}))}`);
 
     return {
       success: true,
