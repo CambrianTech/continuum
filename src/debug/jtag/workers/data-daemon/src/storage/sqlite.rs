@@ -111,12 +111,13 @@ impl StorageAdapter for SqliteAdapter {
         let query_sql = format!("SELECT * FROM {collection} WHERE id = ?1");
 
         let result = conn.query_row(&query_sql, [id], |row| {
-            // Build JSON object from all columns
+            // Build JSON object from all columns, converting snake_case to camelCase
             let mut obj = serde_json::Map::new();
             let col_count = row.as_ref().column_count();
 
             for i in 0..col_count {
                 let col_name = row.as_ref().column_name(i).unwrap_or("unknown").to_string();
+                let camel_name = to_camel_case(&col_name);
 
                 let value: Value = match row.get_ref(i)? {
                     rusqlite::types::ValueRef::Null => Value::Null,
@@ -132,7 +133,7 @@ impl StorageAdapter for SqliteAdapter {
                     }
                 };
 
-                obj.insert(col_name, value);
+                obj.insert(camel_name, value);
             }
 
             Ok(Value::Object(obj))
@@ -277,6 +278,7 @@ impl StorageAdapter for SqliteAdapter {
             let rows: Result<Vec<serde_json::Map<String, Value>>, _> = stmt.query_map(&param_refs[..], |row| {
                 let mut obj = serde_json::Map::new();
                 for (i, col_name) in column_names.iter().enumerate() {
+                    let camel_name = to_camel_case(col_name);
                     let value: Value = match row.get_ref(i)? {
                         rusqlite::types::ValueRef::Null => Value::Null,
                         rusqlite::types::ValueRef::Integer(n) => serde_json::json!(n),
@@ -290,7 +292,7 @@ impl StorageAdapter for SqliteAdapter {
                             Value::String(format!("0x{}", hex::encode(b)))
                         }
                     };
-                    obj.insert(col_name.clone(), value);
+                    obj.insert(camel_name, value);
                 }
                 Ok(obj)
             })?.collect();
@@ -305,8 +307,8 @@ impl StorageAdapter for SqliteAdapter {
                 "collection": &collection,
                 "data": obj,
                 "metadata": {
-                    "createdAt": obj.get("created_at").cloned(),
-                    "updatedAt": obj.get("updated_at").cloned(),
+                    "createdAt": obj.get("createdAt").cloned(),
+                    "updatedAt": obj.get("updatedAt").cloned(),
                     "version": obj.get("version").cloned().unwrap_or(serde_json::json!(1))
                 }
             })
@@ -563,6 +565,22 @@ fn to_snake_case(s: &str) -> String {
         } else {
             result.push(ch);
             prev_is_lower = ch.is_lowercase();
+        }
+    }
+    result
+}
+
+fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(ch.to_uppercase().next().unwrap());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
         }
     }
     result
