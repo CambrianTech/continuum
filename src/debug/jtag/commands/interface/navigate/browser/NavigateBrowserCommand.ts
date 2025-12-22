@@ -31,17 +31,22 @@ export class NavigateBrowserCommand extends NavigateCommand {
    * Browser does ONE thing: navigate to URL
    */
   async execute(params: NavigateParams): Promise<NavigateResult> {
-    console.log(`🌐 BROWSER: Navigating to ${params.url}`);
+    const url = params.url ?? window.location.href;
+    console.log(`🌐 BROWSER: Navigating to ${url}`);
 
     try {
       const startTime = Date.now();
       
       // Simple browser navigation
-      window.location.href = params.url;
+      if (url == window.location.href) {
+        window.location.reload();
+      } else {
+        window.location.href = url;
+      }
       
       // Wait for load if requested
       if (params.waitForSelector) {
-        await this.waitForElement(params.waitForSelector, params.timeout || 5000);
+        await this.waitForElement(params.waitForSelector, params.timeout ?? 5000);
       }
       
       const loadTime = Date.now() - startTime;

@@ -684,13 +684,18 @@ export class SystemOrchestrator extends EventEmitter {
       return true;
     }
 
+    // CRITICAL FIX: Browser only launches AFTER server ready milestone
+    const browserUrl = options.browserUrl ?? await this.getDefaultBrowserUrl();
+
     // Check if browser is already connected using ping
     try {
       const { stdout } = await execAsync('./jtag ping');
       const pingResponse = JSON.parse(stdout);
 
       if (pingResponse.success && pingResponse.browser) {
-        console.log('⏭️ Browser already connected - skipping launch');
+        console.log('⏭️ Browser already connected - skipping launch, refreshing browser');
+        execAsync(`./jtag interface/navigate url=${browserUrl}`);
+
         await milestoneEmitter.completeMilestone(
           SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
           this.currentEntryPoint
@@ -703,9 +708,6 @@ export class SystemOrchestrator extends EventEmitter {
     }
 
     console.debug('🌐 Launching browser...');
-
-    // CRITICAL FIX: Browser only launches AFTER server ready milestone
-    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
 
     try {
       spawn('open', [browserUrl], {

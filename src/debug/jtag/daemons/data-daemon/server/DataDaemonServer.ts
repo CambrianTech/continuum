@@ -250,7 +250,15 @@ export class DataDaemonServer extends DataDaemonBase {
    */
   protected async handleRead(payload: DataOperationPayload): Promise<StorageResult<DataRecord<any>>> {
     const context = this.createDataContext('data-daemon-server');
-    return await this.dataDaemon.read(payload.collection!, payload.id!, context);
+    const result = await this.dataDaemon.read(payload.collection!, payload.id!, context);
+
+    // DEBUG: Log what DataDaemon returns
+    if (result.success && result.data) {
+      this.log.info(`DataDaemonServer.handleRead() result.data keys: ${JSON.stringify(Object.keys(result.data))}`);
+      this.log.info(`DataDaemonServer.handleRead() result.data.data: ${result.data.data ? 'exists' : 'undefined'}`);
+    }
+
+    return result;
   }
   
   /**

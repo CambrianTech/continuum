@@ -86,17 +86,18 @@ jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r wo
 
   # Wait for socket to be created with increased timeout for macOS
   # macOS can be slow with filesystem operations, especially on external drives
-  for i in {1..20}; do
+  TIMEOUT=20
+  for i in $(seq 1 $TIMEOUT); do
     if [ -S "$socket" ]; then
       echo -e "${GREEN}✅ ${name}-worker started (PID: $WORKER_PID)${NC}"
       break
     fi
     if [ $i -eq 20 ]; then
-      echo -e "${RED}❌ ${name}-worker failed to start (socket not created after 10s)${NC}"
+      echo -e "${RED}❌ ${name}-worker failed to start (socket not created after ${TIMEOUT}s)${NC}"
       echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/rust-worker.log${NC}"
       exit 1
     fi
-    sleep 0.5
+    sleep 1.0
   done
 done
 
