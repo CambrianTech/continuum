@@ -1,10 +1,15 @@
 /**
  * HumanUser - Represents a human user (browser or test client)
  *
+ * Per CONTINUUM-STATE-ARCHITECTURE.md:
+ * - Humans get persistent home directories like personas
+ * - State persists per-project via SQLite (open tabs, preferences)
+ * - Same .continuum structure as other user types
+ *
  * Follows ARCHITECTURE-RULES.md:
  * - Clean inheritance from BaseUser
  * - Environment-agnostic (shared directory)
- * - Storage backend injected (no hardcoded localStorage)
+ * - SQLite storage for persistence (server-side)
  */
 
 import { BaseUser } from './BaseUser';
@@ -19,6 +24,7 @@ import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * HumanUser class for human users
@@ -38,11 +44,12 @@ export class HumanUser extends BaseUser {
   }
 
   /**
-   * HumanUsers don't have persistent home directories on the server
-   * They maintain state in-memory during their session
+   * Implementation of abstract homeDirectory getter from BaseUser
+   * HumanUsers live in the 'users/' directory with persistent state
+   * Returns ABSOLUTE path via SystemPaths - THE SINGLE SOURCE OF TRUTH
    */
   get homeDirectory(): string {
-    throw new Error('HumanUser does not have a home directory - humans maintain session state in-memory only');
+    return SystemPaths.users.dir(this.entity.uniqueId);
   }
 
   /**
@@ -100,8 +107,17 @@ export class HumanUser extends BaseUser {
       }
     }
 
-    // STEP 5: Create HumanUser instance (in-memory)
-    const storage = new MemoryStateBackend();
+    // STEP 5: Create HumanUser instance with SQLite storage (persistent)
+    // Use SQLite on server, Memory in browser
+    let storage: IUserStateStorage;
+    if (typeof window === 'undefined') {
+      // Server environment - use SQLite for persistence
+      const { SQLiteStateBackend } = require('../storage/server/SQLiteStateBackend');
+      storage = new SQLiteStateBackend(SystemPaths.users.state(params.uniqueId));
+    } else {
+      // Browser environment - use memory (browser state handled separately)
+      storage = new MemoryStateBackend();
+    }
     return new HumanUser(storedEntity, storedState, storage);
   }
 

@@ -1,9 +1,14 @@
 /**
  * AgentUser - External AI portal connections (Claude, GPT, etc.)
  *
+ * Per CONTINUUM-STATE-ARCHITECTURE.md:
+ * - Agents get persistent home directories like personas
+ * - State persists per-project via SQLite
+ * - Same .continuum structure as other user types
+ *
  * Follows ARCHITECTURE-RULES.md:
  * - Clean inheritance from AIUser
- * - Ephemeral state (in-memory storage)
+ * - SQLite storage for persistence (server-side)
  */
 
 import { AIUser } from './AIUser';
@@ -18,6 +23,7 @@ import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
+import { SystemPaths } from '../../core/config/SystemPaths';
 
 /**
  * AgentUser class for external AI agents
@@ -29,11 +35,12 @@ export class AgentUser extends AIUser {
   }
 
   /**
-   * AgentUsers don't have persistent home directories on the server
-   * They connect externally and maintain state in-memory only
+   * Implementation of abstract homeDirectory getter from BaseUser
+   * AgentUsers live in the 'agents/' directory with persistent state
+   * Returns ABSOLUTE path via SystemPaths - THE SINGLE SOURCE OF TRUTH
    */
   get homeDirectory(): string {
-    throw new Error('AgentUser does not have a home directory - agents are ephemeral and maintain no server-side files');
+    return SystemPaths.agents.dir(this.entity.uniqueId);
   }
 
   /**
@@ -81,8 +88,17 @@ export class AgentUser extends AIUser {
       userState
     );
 
-    // STEP 3: Create AgentUser instance (ephemeral, in-memory)
-    const storage = new MemoryStateBackend();
+    // STEP 3: Create AgentUser instance with SQLite storage (persistent)
+    // Use SQLite on server, Memory in browser (though agents are typically server-only)
+    let storage: IUserStateStorage;
+    if (typeof window === 'undefined') {
+      // Server environment - use SQLite for persistence
+      const { SQLiteStateBackend } = require('../storage/server/SQLiteStateBackend');
+      storage = new SQLiteStateBackend(SystemPaths.agents.state(params.uniqueId));
+    } else {
+      // Browser environment - fallback to memory (shouldn't happen for agents)
+      storage = new MemoryStateBackend();
+    }
     return new AgentUser(storedEntity, storedState, storage);
   }
 

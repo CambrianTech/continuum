@@ -96,6 +96,32 @@ export interface ContinuumPaths {
     /** Get persona long-term memory database (Hippocampus) */
     longterm: (uniqueId: string) => string;
   };
+
+  /** Human user storage (like personas, but for humans) */
+  users: {
+    root: string;
+    /** Get user directory (by uniqueId) - the human's $HOME */
+    dir: (uniqueId: string) => string;
+    /** Get user data directory (all databases) */
+    data: (uniqueId: string) => string;
+    /** Get user logs directory */
+    logs: (uniqueId: string) => string;
+    /** Get user state database */
+    state: (uniqueId: string) => string;
+  };
+
+  /** Agent storage (external AI agents like Claude Code, GPT, etc.) */
+  agents: {
+    root: string;
+    /** Get agent directory (by uniqueId) - the agent's $HOME */
+    dir: (uniqueId: string) => string;
+    /** Get agent data directory (all databases) */
+    data: (uniqueId: string) => string;
+    /** Get agent logs directory */
+    logs: (uniqueId: string) => string;
+    /** Get agent state database */
+    state: (uniqueId: string) => string;
+  };
 }
 
 /**
@@ -186,6 +212,46 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
       longterm: (uniqueId: string): string => {
         // Hippocampus long-term memory in data/ subdirectory
         return path.join(baseRoot, 'personas', uniqueId, 'data', 'longterm.db');
+      }
+    },
+
+    users: {
+      root: path.join(baseRoot, 'users'),
+
+      dir: (uniqueId: string): string => {
+        return path.join(baseRoot, 'users', uniqueId);
+      },
+
+      data: (uniqueId: string): string => {
+        return path.join(baseRoot, 'users', uniqueId, 'data');
+      },
+
+      logs: (uniqueId: string): string => {
+        return path.join(baseRoot, 'users', uniqueId, 'logs');
+      },
+
+      state: (uniqueId: string): string => {
+        return path.join(baseRoot, 'users', uniqueId, 'data', 'state.db');
+      }
+    },
+
+    agents: {
+      root: path.join(baseRoot, 'agents'),
+
+      dir: (uniqueId: string): string => {
+        return path.join(baseRoot, 'agents', uniqueId);
+      },
+
+      data: (uniqueId: string): string => {
+        return path.join(baseRoot, 'agents', uniqueId, 'data');
+      },
+
+      logs: (uniqueId: string): string => {
+        return path.join(baseRoot, 'agents', uniqueId, 'logs');
+      },
+
+      state: (uniqueId: string): string => {
+        return path.join(baseRoot, 'agents', uniqueId, 'data', 'state.db');
       }
     }
   };

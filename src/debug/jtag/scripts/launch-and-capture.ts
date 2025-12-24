@@ -616,12 +616,37 @@ async function main(): Promise<void> {
         const instanceConfig = loadInstanceConfigForContext();
         const wsPort = instanceConfig.ports.websocket_server;
         const httpPort = instanceConfig.ports.http_server;
-        
+
         console.log('');
         console.log('🎯 SERVER STATUS: Running and responsive');
         console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
         console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
-        
+
+        // Refresh browser to ensure it has latest code
+        console.log('🔄 Refreshing browser to sync with latest build...');
+        try {
+          const refreshResult = await new Promise<{ success: boolean }>((resolve) => {
+            exec('./jtag interface/navigate', { timeout: 5000 }, (error, stdout) => {
+              if (error) {
+                console.log('⚠️ Browser refresh skipped (browser may not be connected)');
+                resolve({ success: false });
+              } else {
+                try {
+                  const result = JSON.parse(stdout);
+                  if (result.success) {
+                    console.log('✅ Browser refreshed');
+                  }
+                  resolve(result);
+                } catch {
+                  resolve({ success: false });
+                }
+              }
+            });
+          });
+        } catch {
+          // Browser refresh is best-effort, don't fail startup
+        }
+
         if (behavior.showCommands) {
           console.log('');
           console.log('💡 DEVELOPMENT COMMANDS:');
@@ -630,7 +655,7 @@ async function main(): Promise<void> {
           console.log('   npm test                          # Run tests (uses existing server)');
           console.log(`   tmux kill-session -t ${sessionName}    # Stop server`);
         }
-        
+
         console.log('');
         console.log('✅ No action needed - server already running perfectly!');
         process.exit(0);

@@ -46,11 +46,14 @@ export class ContentTabsWidget extends BaseWidget {
     const styles = `
       .content-tabs-container {
         display: flex;
-        gap: 4px;
-        align-items: center;
+        gap: 0;
+        align-items: flex-end;
         flex: 1;
         overflow-x: auto;
         overflow-y: hidden;
+        /* Extend tabs below the header border to overlap it */
+        margin-bottom: -1px;
+        padding-bottom: 1px;
       }
 
       .content-tabs-container::-webkit-scrollbar {
@@ -68,33 +71,38 @@ export class ContentTabsWidget extends BaseWidget {
 
       .content-tab {
         padding: 8px 16px;
-        background: rgba(0, 10, 15, 0.8);
+        background: rgba(15, 20, 25, 0.6);
         border: 1px solid rgba(0, 212, 255, 0.2);
-        border-radius: 4px 4px 0 0;
-        color: rgba(0, 212, 255, 0.7);
+        border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+        border-radius: 6px 6px 0 0;
+        color: rgba(0, 212, 255, 0.6);
         font-size: 13px;
         font-weight: 500;
         cursor: pointer;
         white-space: nowrap;
         user-select: none;
-        transition: all 0.2s ease;
+        transition: all 0.15s ease;
         display: flex;
         align-items: center;
         gap: 8px;
+        margin-right: 2px;
+        position: relative;
       }
 
       .content-tab:hover {
-        background: rgba(0, 10, 15, 0.9);
+        background: rgba(15, 20, 25, 0.8);
         border-color: rgba(0, 212, 255, 0.4);
         color: rgba(0, 212, 255, 0.9);
       }
 
       .content-tab.active {
-        background: rgba(0, 10, 15, 1);
-        border-color: #00d4ff;
+        /* Active tab connects to content below */
+        background: rgba(15, 20, 25, 0.95);
+        border-color: rgba(0, 212, 255, 0.4);
+        border-bottom-color: transparent;
         color: #00d4ff;
-        border-bottom: 2px solid #00d4ff;
         font-weight: 600;
+        z-index: 1;
       }
 
       .tab-close {

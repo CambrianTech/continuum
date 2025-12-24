@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-24T14:02:23.454Z",
+  "generated": "2025-12-24T19:33:19.488Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1437,7 +1437,7 @@
       "params": {
         "url": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "url parameter"
         },
         "timeout": {

@@ -18,12 +18,14 @@
 .content-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 12px 20px;
+  align-items: flex-end;
+  padding: 8px 20px 0 20px;
   border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.15));
   background: var(--surface-secondary, rgba(10, 15, 20, 0.8));
   flex-shrink: 0;
   backdrop-filter: blur(10px);
+  position: relative;
+  z-index: 0;
 }
 
 .content-tabs {

@@ -25,7 +25,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface NavigateParams extends CommandParams {
-  readonly url: string;
+  readonly url?: string;  // Optional - if not provided, triggers location.reload()
   readonly timeout?: number;
   readonly waitForSelector?: string;
   readonly target?: '_blank' | '_self' | '_parent' | '_top' | string;
