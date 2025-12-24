@@ -338,6 +338,38 @@ const deployment = {
 // They handle the complexity so users don't have to
 ```
 
+**One-Time Setup** - the only manual step:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    USER'S ONLY MANUAL WORK                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1. Sign up for accounts (AWS, GCP, Apple Developer, Google Play)   │
+│  2. Add payment method                                               │
+│  3. Generate API keys/credentials                                    │
+│  4. Paste into config.env                                            │
+│                                                                      │
+│  That's it. Forever.                                                 │
+│                                                                      │
+│  Everything else - Dockerfiles, deployments, scaling, SSL,          │
+│  domains, monitoring, updates - the AI handles.                     │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+# First time: "I want to deploy to AWS"
+Persona: "I see you don't have AWS credentials yet. Here's how to set up:
+          1. Go to aws.amazon.com and create an account
+          2. Add a payment method in Billing
+          3. Go to IAM → Security Credentials → Create Access Key
+          4. Paste the key into your config.env
+
+          Want me to walk you through it step by step?"
+
+# After setup: "Deploy to AWS"
+Persona: "Done. Your app is live at app.yourdomain.com"
+```
+
 ### Why This Architecture
 
 **Separation of concerns:**
