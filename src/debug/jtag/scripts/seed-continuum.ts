@@ -9,6 +9,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { USER_IDS, ROOM_IDS, MESSAGE_IDS, USER_CONFIG, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
+import { stringToUUID } from '../system/core/types/CrossPlatformUUID';
 import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 import { UserEntity } from '../system/data/entities/UserEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
@@ -790,10 +791,12 @@ async function seedViaJTAG() {
 
     userMap['humanUser'] = humanUser;
 
-    // Step 2: Check if this is first run (need to create rooms)
-    const isFirstRun = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+    // Step 2: Check if rooms exist (create if missing)
+    const { stdout: roomsOutput } = await execAsync(`./jtag data/list --collection=rooms --limit=1`);
+    const roomsResult = JSON.parse(roomsOutput);
+    const needsRooms = !roomsResult.items || roomsResult.items.length === 0;
 
-    if (isFirstRun) {
+    if (needsRooms) {
       // Create and persist rooms BEFORE creating other users
       console.log('🏗️ Creating rooms before other users (for auto-join to work)...');
 
@@ -824,7 +827,7 @@ async function seedViaJTAG() {
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
       const pantheonRoom = createRoom(
-        'pantheon-room-id',  // ID for pantheon
+        ROOM_IDS.PANTHEON,
         'pantheon',
         'Pantheon',
         'Elite discussion room for top-tier SOTA AI models',
@@ -837,7 +840,7 @@ async function seedViaJTAG() {
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
       const devUpdatesRoom = createRoom(
-        'dev-updates-room-id',  // ID for dev-updates
+        ROOM_IDS.DEV_UPDATES,
         'dev-updates',
         'Dev Updates',
         'GitHub PRs, CI/CD, and development activity notifications',
@@ -905,8 +908,8 @@ async function seedViaJTAG() {
     const teacherPersona = userMap[PERSONA_UNIQUE_IDS.TEACHER];
     const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
 
-    // If not first run, rooms and messages already exist
-    if (!isFirstRun) {
+    // If rooms already existed, just report what we did
+    if (!needsRooms) {
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
@@ -995,8 +998,8 @@ async function seedViaJTAG() {
         'system'  // senderType
       ),
       createMessage(
-        'pantheon-welcome-msg-id',
-        'pantheon-room-id',
+        stringToUUID('pantheon-welcome-msg'),
+        ROOM_IDS.PANTHEON,
         humanUser.id,
         systemIdentity.displayName,
         'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
