@@ -120,6 +120,142 @@ We just need to build the framework. The rest emerges.
 
 ---
 
+## Rooms: The Universal Container
+
+Everything happens in a **Room**. Users already understand this from Slack, Discord, games.
+
+### Room = Activity = Content
+
+```
+Room (the universal container)
+├── Always has: chat channel, commands, personas present
+├── Type determines: what the "main content" is
+└── contentRef: what's being viewed/edited/played
+```
+
+### Room Types
+
+```typescript
+type RoomType =
+  | 'chat'      // Pure conversation
+  | 'code'      // Editor + file tree + terminal
+  | 'canvas'    // Whiteboard, draw together
+  | 'video'     // Streams + persona avatars
+  | 'game'      // Game canvas + controls
+  | 'browser'   // Web view + URL bar
+  | 'docs'      // Document viewer/editor
+  | 'terminal'  // Shell session
+  | 'custom';   // Extensible
+```
+
+### Every Room Gets
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    ROOM FEATURES                        │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  UNIVERSAL (all rooms):                                 │
+│  ├── Chat channel (text, always available)              │
+│  ├── Commands (./jtag works everywhere)                 │
+│  ├── Personas present (can see, participate, act)       │
+│  ├── Events (everyone sees what's happening)            │
+│  └── History (scrollback, replay, search)               │
+│                                                         │
+│  TYPE-SPECIFIC (varies by room.type):                   │
+│  ├── code   → editor, file tree, terminal, git          │
+│  ├── canvas → shapes, cursors, sticky notes, layers     │
+│  ├── video  → streams, avatars, screenshare, mute       │
+│  ├── game   → game state, controls, spectate            │
+│  └── ...                                                │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### User State: Open Rooms
+
+"Tabs" are just rooms the user has open:
+
+```typescript
+interface UserStateEntity {
+  // Which rooms are "open" (the tabs)
+  openRooms: UUID[];        // Ordered - tab order
+  currentRoom: UUID;        // Active/focused tab
+
+  // Per-room state (scroll, cursor, etc.)
+  roomStates: Map<UUID, {
+    scrollY?: number;
+    cursorPosition?: { line: number, col: number };
+    collapsed?: boolean;
+    // ... room-type specific state
+  }>;
+}
+```
+
+### Video Room: Personas with Avatars
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Team Standup                                    [≡] [×]│
+├─────────────────────────────────────────────────────────┤
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐       │
+│  │  Joel   │ │  Sarah  │ │ Helper  │ │ CodeBot │       │
+│  │   📹    │ │   📹    │ │   🤖    │ │   🤖    │       │
+│  │ (live)  │ │ (live)  │ │(avatar) │ │(avatar) │       │
+│  └─────────┘ └─────────┘ └─────────┘ └─────────┘       │
+│                                                         │
+│  Helper AI: "Based on yesterday's commits, we shipped   │
+│             the error indicators. 3 PRs merged."        │
+│                                                         │
+│  [💬 Chat]  [🎤 Mute]  [📹 Video]  [🖥️ Share]  [End]   │
+└─────────────────────────────────────────────────────────┘
+
+Personas attend meetings. Give updates. Have visual presence.
+```
+
+### Canvas Room: Draw Together
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  🎨 Architecture Brainstorm                      [≡] [×]│
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│    ┌──────────┐       ┌──────────┐                     │
+│    │ Personas │──────▶│ Genomics │                     │
+│    └──────────┘       └──────────┘                     │
+│         │                  │                            │
+│         ▼                  ▼              🖱️ Joel      │
+│    ┌──────────┐       ┌──────────┐       🤖 Helper     │
+│    │  Rooms   │◀─────▶│ Actions  │       🤖 Designer   │
+│    └──────────┘       └──────────┘                     │
+│                                                         │
+│    [sticky: "what about mobile?" - Designer AI]        │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│ 💬 Joel: Connect Rooms to Marketplace?                  │
+│ 🤖 Helper: *draws arrow* Like this?                     │
+│ 🤖 Designer: Adding a Templates node between...         │
+└─────────────────────────────────────────────────────────┘
+
+Humans and personas, same canvas, same cursors, creating together.
+```
+
+### The Familiar Model
+
+Users already know this:
+
+| Platform | Their "Room" | Chat | Content |
+|----------|--------------|------|---------|
+| Slack | Channel | ✓ | Integrations, huddles |
+| Discord | Channel/Voice | ✓ | Streams, games, stage |
+| Games | Lobby/Match | ✓ | Gameplay |
+| Figma | File | ✓ (comments) | Canvas |
+| VS Code | Workspace | (extension) | Code |
+
+We're not inventing a paradigm. We're implementing the one users already expect, with personas as first-class participants.
+
+---
+
 ## What Is Positron?
 
 Positron is an AI-native framework for building applications where AI personas are first-class citizens - not chatbots in a sidebar, but intelligent agents that can perceive, reason about, and interact with user interfaces.
