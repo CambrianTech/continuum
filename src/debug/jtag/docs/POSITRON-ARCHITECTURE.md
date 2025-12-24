@@ -383,6 +383,159 @@ positron.addIntegration(new VSCodeAdapter());
 // - Navigate VSCode, read/edit files
 ```
 
+## Persona Customization & Fine-Tuning
+
+The killer feature for adoption: **anyone can create a living entity for their website**.
+
+### Self-Service Persona Creation
+
+```typescript
+// Business owner creates a persona for their site
+const myPersona = await Positron.createPersona({
+  name: 'ShopHelper',
+  baseModel: 'llama-3-8b',           // Runs locally or via API
+  personality: {
+    tone: 'friendly-professional',
+    verbosity: 'concise',
+    proactivity: 'helpful-not-pushy'
+  },
+  knowledge: {
+    embeddings: './product-catalog.json',  // RAG over products
+    documents: './help-docs/',              // Support articles
+    faqs: './faqs.json'                     // Common questions
+  },
+  permissions: {
+    canNavigate: true,      // Can click links, buttons
+    canFillForms: false,    // Can't enter user data
+    canCheckout: false,     // Can't complete purchases
+    canSuggest: true        // Can recommend products
+  }
+});
+```
+
+### Fine-Tuning Pipeline
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                 PERSONA FINE-TUNING                     │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  1. COLLECT                                             │
+│     - Chat transcripts with customers                   │
+│     - Successful support resolutions                    │
+│     - Product descriptions, FAQs                        │
+│     - Brand voice examples                              │
+│                                                         │
+│  2. CURATE                                              │
+│     - Filter high-quality interactions                  │
+│     - Remove PII automatically                          │
+│     - Format for training                               │
+│                                                         │
+│  3. TRAIN                                               │
+│     - LoRA fine-tuning (small, efficient)               │
+│     - Domain-specific adapter weights                   │
+│     - Personality alignment                             │
+│                                                         │
+│  4. DEPLOY                                              │
+│     - Hot-swap adapter into running persona             │
+│     - A/B test against baseline                         │
+│     - Monitor quality metrics                           │
+│                                                         │
+│  5. ITERATE                                             │
+│     - Continuous learning from new interactions         │
+│     - Feedback loop from user ratings                   │
+│     - Automatic retraining triggers                     │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Living Entities
+
+Personas aren't static - they evolve with the business:
+
+```typescript
+// Persona learns from every interaction
+persona.on('interaction:complete', async (interaction) => {
+  // Was this helpful?
+  if (interaction.userRating >= 4) {
+    await persona.memory.reinforce(interaction);
+  }
+
+  // Did user struggle?
+  if (interaction.frustrationSignals > 0) {
+    await persona.memory.flagForReview(interaction);
+  }
+
+  // New product mentioned?
+  if (interaction.unknownEntities.length > 0) {
+    await persona.requestKnowledgeUpdate(interaction.unknownEntities);
+  }
+});
+
+// Automatic retraining when enough new data
+persona.on('training:threshold', async () => {
+  const newAdapter = await persona.genome.trainIncremental({
+    newData: persona.memory.getRecentPositive(1000),
+    baseAdapter: persona.genome.currentAdapter
+  });
+
+  // A/B test before full deployment
+  await persona.genome.enableABTest(newAdapter, { trafficPercent: 10 });
+});
+```
+
+### Marketplace Vision
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              POSITRON PERSONA MARKETPLACE               │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  BASE PERSONAS                                          │
+│  ├── E-Commerce Assistant    ★★★★☆  $29/mo             │
+│  ├── SaaS Onboarding Guide   ★★★★★  $49/mo             │
+│  ├── Technical Support       ★★★★☆  $39/mo             │
+│  └── Restaurant Concierge    ★★★☆☆  $19/mo             │
+│                                                         │
+│  DOMAIN ADAPTERS (LoRA)                                 │
+│  ├── Legal Compliance        ★★★★★  $99/mo             │
+│  ├── Healthcare HIPAA        ★★★★☆  $149/mo            │
+│  ├── Financial Services      ★★★★☆  $129/mo            │
+│  └── Education K-12          ★★★★★  $59/mo             │
+│                                                         │
+│  PERSONALITY PACKS                                      │
+│  ├── Formal Corporate        FREE                       │
+│  ├── Casual Friendly         FREE                       │
+│  ├── Gen-Z Vibes            $9/mo                      │
+│  └── Custom Voice Clone      $199 one-time             │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Privacy & Control
+
+Site owners maintain full control:
+
+```typescript
+const persona = await Positron.createPersona({
+  // ... config ...
+
+  privacy: {
+    dataResidency: 'eu',              // Where data is stored
+    retentionDays: 30,                // Auto-delete old data
+    piiHandling: 'redact',            // Never store PII
+    trainingConsent: 'explicit',      // User must opt-in to training
+  },
+
+  boundaries: {
+    neverDiscuss: ['competitor-x', 'lawsuits'],
+    alwaysEscalateTo: ['billing-disputes', 'legal-questions'],
+    maxActionsPerSession: 10,         // Prevent runaway automation
+    requireConfirmation: ['purchases', 'account-changes'],
+  }
+});
+```
+
 ## Roadmap
 
 ### Phase 1: Foundation (Current)
