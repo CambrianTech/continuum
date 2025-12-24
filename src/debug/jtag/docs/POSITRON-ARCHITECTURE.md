@@ -572,6 +572,330 @@ const persona = await Positron.createPersona({
 - [ ] Training data sharing
 - [ ] Community integrations
 
+## What's Possible: Real-World Examples
+
+### E-Commerce: The Shopping Companion
+
+```typescript
+// User lands on product page, seems confused
+persona.on('user:dwell', async ({ duration, element }) => {
+  if (duration > 30000 && element.matches('.product-specs')) {
+    // They've been staring at specs for 30 seconds
+    await persona.suggest({
+      message: "These specs can be confusing! Want me to explain what matters for your use case?",
+      actions: [
+        { label: "Yes, help me decide", action: 'explain-specs' },
+        { label: "Compare with similar products", action: 'show-comparison' }
+      ]
+    });
+  }
+});
+
+// User asks about a product
+// Persona: "The Sony WH-1000XM5 has 30-hour battery life. Based on your
+//          browsing history, you seem to care about comfort for long flights.
+//          These have the best comfort ratings in this price range.
+//          Want me to add them to your cart?"
+// [Add to Cart] [Show Reviews] [Compare Options]
+```
+
+### SaaS Onboarding: The Setup Wizard That Actually Helps
+
+```typescript
+// New user signs up, persona watches their journey
+persona.on('user:signup', async (user) => {
+  // Start gentle onboarding
+  await persona.guide({
+    goal: 'complete-first-project',
+    style: 'supportive-not-annoying',
+    checkpoints: [
+      { step: 'create-workspace', hint: "Let's create your first workspace" },
+      { step: 'invite-team', hint: "Projects are better with teammates" },
+      { step: 'first-task', hint: "Try creating a task to see how it works" }
+    ]
+  });
+});
+
+// User gets stuck on integration setup
+// Persona notices they've clicked "Connect Slack" 3 times without success
+persona.on('user:repeated-action', async ({ action, count }) => {
+  if (action === 'connect-slack' && count >= 3) {
+    await persona.intervene({
+      message: "Slack integration can be tricky! The most common issue is permissions. Let me walk you through it.",
+      action: async () => {
+        await persona.execute('interface/screenshot');
+        await persona.execute('interface/highlight', { selector: '.slack-permissions-note' });
+        await persona.sendMessage("See this note? You need to be a Slack admin. Want me to draft an email to your IT team?");
+      }
+    });
+  }
+});
+```
+
+### Customer Support: The Tireless Agent
+
+```typescript
+// Persona handles support chat
+persona.on('support:message', async (ticket) => {
+  // Check knowledge base first
+  const relevantDocs = await persona.memory.search(ticket.message, { type: 'support-docs' });
+
+  if (relevantDocs.confidence > 0.85) {
+    // High confidence answer
+    await persona.reply({
+      message: relevantDocs.summary,
+      sources: relevantDocs.links,
+      followUp: "Did this solve your issue?"
+    });
+  } else if (relevantDocs.confidence > 0.5) {
+    // Partial match - try to help but offer escalation
+    await persona.reply({
+      message: `Based on your question, this might help: ${relevantDocs.summary}`,
+      actions: [
+        { label: "This helped!", action: 'resolve' },
+        { label: "Not quite right", action: 'escalate-human' }
+      ]
+    });
+  } else {
+    // Unknown issue - gather info for human
+    await persona.investigate({
+      questions: [
+        "What were you trying to do when this happened?",
+        "Can you share a screenshot?",
+        "What browser/device are you using?"
+      ],
+      onComplete: (answers) => persona.escalate({ ticket, answers, priority: 'medium' })
+    });
+  }
+});
+
+// Persona learns from resolved tickets
+persona.on('ticket:resolved', async (ticket) => {
+  if (ticket.resolvedBy === 'human' && ticket.customerSatisfaction >= 4) {
+    // Human solved it well - learn from this
+    await persona.memory.learn({
+      question: ticket.originalMessage,
+      answer: ticket.resolution,
+      category: ticket.category
+    });
+  }
+});
+```
+
+### Healthcare: The Patient Navigator
+
+```typescript
+// HIPAA-compliant persona for healthcare portal
+const healthPersona = await Positron.createPersona({
+  name: 'CareGuide',
+  compliance: ['HIPAA', 'SOC2'],
+  privacy: {
+    neverStore: ['diagnosis', 'medications', 'SSN'],
+    alwaysEncrypt: true,
+    auditLog: true
+  }
+});
+
+// Help patient find the right form
+// Persona: "I see you're looking for the insurance pre-authorization form.
+//          Based on your procedure type (knee surgery), you'll need Form PA-204.
+//          Want me to pre-fill the parts I can from your profile?"
+// [Yes, pre-fill] [Download blank] [Talk to billing]
+
+// Guide through appointment booking
+healthPersona.on('user:intent', async ({ intent }) => {
+  if (intent === 'book-appointment') {
+    const availability = await healthPersona.execute('api/get-availability');
+    const preferences = await healthPersona.memory.get('user-preferences');
+
+    await healthPersona.guide({
+      message: "Let's find you an appointment. I remember you prefer morning slots with Dr. Chen.",
+      options: availability.filter(slot =>
+        slot.time < '12:00' && slot.provider === preferences.preferredDoctor
+      ).slice(0, 3)
+    });
+  }
+});
+```
+
+### Education: The Adaptive Tutor
+
+```typescript
+// Persona adapts to student's learning style
+const tutorPersona = await Positron.createPersona({
+  name: 'StudyBuddy',
+  pedagogy: {
+    assessLearningStyle: true,  // Visual, auditory, kinesthetic
+    trackMastery: true,          // Spaced repetition
+    encourageGrowthMindset: true
+  }
+});
+
+// Student struggling with concept
+tutorPersona.on('exercise:failed', async ({ student, concept, attempts }) => {
+  if (attempts >= 3) {
+    const learningStyle = await tutorPersona.memory.get(`${student.id}:learning-style`);
+
+    if (learningStyle === 'visual') {
+      await tutorPersona.teach({
+        concept,
+        method: 'diagram',
+        message: "Let me show you this differently. Here's a visual breakdown..."
+      });
+    } else if (learningStyle === 'kinesthetic') {
+      await tutorPersona.teach({
+        concept,
+        method: 'interactive',
+        message: "Let's try a hands-on approach. Drag these pieces to build the equation..."
+      });
+    }
+  }
+});
+
+// Celebrate progress
+tutorPersona.on('mastery:achieved', async ({ student, concept }) => {
+  await tutorPersona.celebrate({
+    message: `You've mastered ${concept}! Remember when this seemed impossible? That's growth.`,
+    nextStep: await tutorPersona.recommend({ student, after: concept })
+  });
+});
+```
+
+### Developer Tools: The Pair Programmer
+
+```typescript
+// Persona integrated into IDE/code editor
+const devPersona = await Positron.createPersona({
+  name: 'CodeBuddy',
+  capabilities: {
+    readFiles: true,
+    suggestEdits: true,
+    runTests: true,
+    gitOperations: true
+  }
+});
+
+// Developer writes a function, persona reviews
+devPersona.on('file:saved', async ({ file, diff }) => {
+  if (diff.linesChanged > 10) {
+    const review = await devPersona.review({
+      code: diff.content,
+      context: await devPersona.execute('code/get-context', { file }),
+      checks: ['bugs', 'security', 'performance', 'style']
+    });
+
+    if (review.issues.length > 0) {
+      await devPersona.suggest({
+        message: `Found ${review.issues.length} potential issues in your changes`,
+        inline: review.issues.map(i => ({
+          line: i.line,
+          message: i.description,
+          fix: i.suggestedFix
+        }))
+      });
+    }
+  }
+});
+
+// Developer asks for help
+// "How do I add authentication to this Express route?"
+// Persona: *reads current code, understands patterns used*
+// "I see you're using passport.js in other routes. Here's how to add it here:
+//  [shows code diff in context]
+//  Want me to apply this change?"
+// [Apply] [Modify] [Explain More]
+```
+
+### Real Estate: The Property Matchmaker
+
+```typescript
+// Persona helps find perfect home
+const realEstatePersona = await Positron.createPersona({
+  name: 'HomeHelper',
+  knowledge: {
+    listings: './mls-feed.json',
+    neighborhoods: './neighborhood-data.json',
+    schools: './school-ratings.json'
+  }
+});
+
+// User browsing listings
+realEstatePersona.on('listing:viewed', async ({ listing, user, duration }) => {
+  // Track preferences implicitly
+  await realEstatePersona.memory.update(`${user.id}:preferences`, {
+    priceRange: { viewed: listing.price },
+    style: { viewed: listing.style },
+    features: { liked: listing.features }
+  });
+});
+
+// After several views, persona understands preferences
+// Persona: "I've noticed you keep coming back to Craftsman-style homes
+//          with big yards. There's a new listing in Maple Heights that
+//          just came on market - hasn't been seen by many yet.
+//          3BR Craftsman, 0.4 acre lot, just under your budget.
+//          Want to see it before the open house?"
+// [Show Me] [Schedule Tour] [Save for Later]
+
+// Virtual tour guidance
+realEstatePersona.on('virtual-tour:started', async ({ listing }) => {
+  await realEstatePersona.guide({
+    message: "I'll walk you through this property. Notice anything you want to know more about, just ask!",
+    hotspots: [
+      { area: 'kitchen', note: "Recently renovated - new appliances 2023" },
+      { area: 'backyard', note: "South-facing - great for gardens" },
+      { area: 'basement', note: "Finished, could be 4th bedroom or office" }
+    ]
+  });
+});
+```
+
+### Restaurant: The Digital Host
+
+```typescript
+// Persona as restaurant concierge
+const hostPersona = await Positron.createPersona({
+  name: 'TableHost',
+  knowledge: {
+    menu: './menu.json',
+    allergens: './allergen-info.json',
+    reviews: './recent-reviews.json',
+    availability: 'realtime-api'
+  }
+});
+
+// Customer browsing menu
+// "What's good here? I'm vegetarian and allergic to nuts."
+// Persona: *filters menu, reads reviews*
+// "Great choices for you! Our Mushroom Risotto is the #1 vegetarian dish
+//  (4.8 stars, 200+ reviews). The Roasted Cauliflower Steak is our chef's
+//  favorite. Both are nut-free. Want me to reserve a table for tonight?"
+// [See Full Veggie Menu] [Book Table] [Call Restaurant]
+
+// Handles reservation with context
+hostPersona.on('reservation:request', async ({ party, preferences }) => {
+  const availability = await hostPersona.execute('api/check-tables', {
+    partySize: party.size,
+    date: preferences.date
+  });
+
+  const bestTable = await hostPersona.recommend({
+    options: availability,
+    criteria: [
+      preferences.occasion === 'anniversary' ? 'romantic-corner' : null,
+      party.hasKids ? 'near-restrooms' : null,
+      preferences.quieter ? 'away-from-bar' : null
+    ].filter(Boolean)
+  });
+
+  await hostPersona.confirm({
+    message: `Perfect! I've reserved Table ${bestTable.number} for ${party.size} at ${preferences.time}. It's ${bestTable.description}. See you then!`,
+    addToCalendar: true,
+    reminder: '2-hours-before'
+  });
+});
+```
+
 ## Philosophy
 
 **"The best AI interface is no interface."**
