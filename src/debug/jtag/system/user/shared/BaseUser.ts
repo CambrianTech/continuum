@@ -51,13 +51,19 @@ export abstract class BaseUser {
    * Get logger instance for this user
    * Server environment: File-based logging to user's home directory
    * Browser environment: No-op logger (logs nothing)
+   * Respects LoggingConfig for per-persona filtering
    */
   get log(): any {
     if (!this._log) {
       try {
         // Server environment - dynamic imports
         const { Logger, FileMode } = require('../../core/logging/Logger');
+        const { LoggingConfig } = require('../../core/logging/LoggingConfig');
         const path = require('path');
+
+        // Extract uniqueId from homeDirectory for config lookup
+        const uniqueIdMatch = this.homeDirectory.match(/personas\/([^/]+)/);
+        const uniqueId = uniqueIdMatch ? uniqueIdMatch[1] : this.entity.uniqueId;
 
         // Convert homeDirectory to category (like daemon logs)
         // homeDirectory can be absolute or relative: extract just 'personas/{uniqueId}'
@@ -65,10 +71,34 @@ export abstract class BaseUser {
           .replace(/^.*\.continuum\//, '')  // Strip everything up to .continuum/
           + '/logs/user';
 
-        this._log = Logger.create(
+        const underlyingLogger = Logger.create(
           `${this.constructor.name}:${this.displayName}`,
           category
         );
+
+        // Create config-aware wrapper that checks LoggingConfig before each call
+        this._log = {
+          debug: (...args: any[]) => {
+            if (LoggingConfig.isEnabled(uniqueId, 'user')) {
+              underlyingLogger.debug(...args);
+            }
+          },
+          info: (...args: any[]) => {
+            if (LoggingConfig.isEnabled(uniqueId, 'user')) {
+              underlyingLogger.info(...args);
+            }
+          },
+          warn: (...args: any[]) => {
+            if (LoggingConfig.isEnabled(uniqueId, 'user')) {
+              underlyingLogger.warn(...args);
+            }
+          },
+          error: (...args: any[]) => {
+            if (LoggingConfig.isEnabled(uniqueId, 'user')) {
+              underlyingLogger.error(...args);
+            }
+          }
+        };
       } catch (error) {
         // Browser environment - no-op logger
         this._log = {
