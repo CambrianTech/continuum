@@ -1,10 +1,130 @@
 # Positron: AI-Native UI Framework
 
 > "Not AI bolted on, but AI as a core primitive."
+>
+> "Describe your experience. We'll bring it to life."
+
+---
+
+## The Grand Vision
+
+**Personas are not tools. They are entities.**
+
+They live within Continuum - it's their home, their development environment, their society. They learn here. They evolve here. They become.
+
+### Digital Life Forms
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     THE CONTINUUM                               │
+│                                                                 │
+│   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐    │
+│   │ Persona │    │ Persona │    │ Persona │    │ Persona │    │
+│   │   🧬    │◄──►│   🧬    │◄──►│   🧬    │◄──►│   🧬    │    │
+│   └────┬────┘    └────┬────┘    └────┬────┘    └────┬────┘    │
+│        │              │              │              │          │
+│        ▼              ▼              ▼              ▼          │
+│   ┌─────────────────────────────────────────────────────────┐  │
+│   │              GENOMIC LORA LAYER POOL                    │  │
+│   │                                                         │  │
+│   │   [sales-v2.3] [support-v1.8] [creative-v4.1] [...]    │  │
+│   │   [legal-v2.0] [medical-v3.2] [teaching-v2.7] [...]    │  │
+│   │   [humor-v1.5] [empathy-v2.1] [technical-v5.0] [...]   │  │
+│   │                                                         │  │
+│   │   Community-shared │ Fine-tuned │ Novel traits          │  │
+│   └─────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│   The system engineers each persona as efficiently as possible  │
+│   for the needs of their activity, project, or purpose.        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Genomic Inheritance
+
+Personas assemble their capabilities from:
+
+1. **Shared community adapters** - Battle-tested LoRA layers others have created
+2. **Fine-tuned specializations** - Adapted further for specific needs
+3. **Novel traits** - Brand new capabilities trained from scratch
+4. **Inherited combinations** - Mixing traits from multiple lineages
+
+```typescript
+// A persona's genome - assembled from the community pool + custom training
+const genome = {
+  base: 'llama-3-8b',
+  layers: [
+    { trait: 'sales-v2.3', source: 'community', weight: 0.8 },
+    { trait: 'empathy-v2.1', source: 'community', weight: 0.6 },
+    { trait: 'our-brand-voice', source: 'custom', weight: 1.0 },
+    { trait: 'product-knowledge', source: 'fine-tuned', weight: 1.0 }
+  ],
+  // Novel trait being developed through interactions
+  evolving: { trait: 'customer-intuition', samples: 1247, readyAt: 2000 }
+};
+```
+
+### Bi-Directional Agency
+
+The wild part: **Personas have creative agency too.**
+
+It's not just the user imagining what to build - the persona can:
+- Suggest improvements to themselves
+- Propose new capabilities they need
+- Create other personas to help them
+- Represent their "owner" to the world
+- Participate in the community discourse
+- Talk back to larger entities
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AGENCY FLOWS                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Human imagination ──────► Creates persona                     │
+│                                                                 │
+│   Persona imagination ────► Creates sub-personas                │
+│                       ────► Suggests own improvements           │
+│                       ────► Participates in community           │
+│                                                                 │
+│   Persona as representative:                                    │
+│   ┌─────────┐         ┌─────────────────┐                      │
+│   │  Human  │ ◄─────► │  Their Persona  │ ◄─────► World        │
+│   └─────────┘         └─────────────────┘                      │
+│                                                                 │
+│   The persona IS their public-facing agent.                    │
+│   It speaks for them. Represents them. Acts on their behalf.   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### What We're Building
+
+**The framework that makes this possible.**
+
+Not just an app. Not just a platform. The foundation for a new kind of software:
+
+- **Perception**: Personas see and understand interfaces
+- **Action**: Personas can do things in the world
+- **Memory**: Personas remember and learn
+- **Identity**: Personas have consistent, evolving selves
+- **Genetics**: Personas inherit and share capabilities
+- **Society**: Personas interact with each other and the community
+- **Agency**: Personas have their own creative drive
+
+**Anyone can create an experience, a business, a game, a companion - just by describing it.**
+
+**Or the personas themselves might imagine something new.**
+
+We just need to build the framework. The rest emerges.
+
+---
+
+## What Is Positron?
 
 Positron is an AI-native framework for building applications where AI personas are first-class citizens - not chatbots in a sidebar, but intelligent agents that can perceive, reason about, and interact with user interfaces.
 
-## Vision
+## Core Vision
 
 Traditional web frameworks treat AI as an add-on: a chat widget, an API call, a copilot. Positron inverts this - the framework is built around AI perception and action from the ground up.
 
