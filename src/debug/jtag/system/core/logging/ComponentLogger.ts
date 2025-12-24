@@ -185,6 +185,7 @@ export class ComponentLogger {
 
   /**
    * End a timer and log the duration with call stack
+   * Logs to both component log AND dedicated timing log (JSON format)
    *
    * @example
    * log.timeEnd('db-query');
@@ -203,7 +204,31 @@ export class ComponentLogger {
     this.timers.delete(label);
 
     const stack = this.getCallStack(2);
+
+    // Human-readable to component log
     this.info(`⏱️ ${label}: ${ms}ms\n    @ ${stack}`);
+
+    // Machine-readable to timing log
+    this.writeTimingEvent(label, duration, stack);
+  }
+
+  /**
+   * Write structured timing event to dedicated timing log
+   * Format: JSON lines for easy parsing by AIs
+   */
+  private writeTimingEvent(label: string, durationMs: number, stack: string): void {
+    if (!this.parentLogger) return;
+
+    const event = {
+      ts: new Date().toISOString(),
+      component: this.component,
+      label,
+      ms: Math.round(durationMs * 100) / 100,
+      stack: stack.split('\n    ').slice(0, 3)  // Top 3 frames
+    };
+
+    const timingLogPath = this.parentLogger.logDir + '/timing/events.jsonl';
+    this.parentLogger.queueMessage(timingLogPath, JSON.stringify(event) + '\n');
   }
 
   /**
@@ -284,6 +309,7 @@ export class ComponentLogger {
       const duration = performance.now() - start;
       const ms = duration.toFixed(2);
       this.info(`⏱️ ${label}: ${ms}ms\n    @ ${stack}`);
+      this.writeTimingEvent(label, duration, stack);
     }
   }
 
@@ -300,6 +326,7 @@ export class ComponentLogger {
       const duration = performance.now() - start;
       const ms = duration.toFixed(2);
       this.info(`⏱️ ${label}: ${ms}ms\n    @ ${stack}`);
+      this.writeTimingEvent(label, duration, stack);
     }
   }
 
