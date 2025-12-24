@@ -438,6 +438,7 @@ Open source → Developers try it → Some contribute back → Platform improves
 ### Development
 - **[CLAUDE.md](CLAUDE.md)** — Essential development guide (READ FIRST)
 - **[GETTING-STARTED.md](GETTING-STARTED.md)** — Detailed setup walkthrough
+- **[CONFIGURATION.md](docs/CONFIGURATION.md)** — API keys, providers, and settings
 - **[UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md)** — Commands and Events architecture
 
 ### Deep Dives
