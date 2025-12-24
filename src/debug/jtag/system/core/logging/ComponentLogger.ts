@@ -90,12 +90,22 @@ export class ComponentLogger {
       return;
     }
 
-    // Extract category from logFilePath using effectiveLogDir (for custom logRoot like persona dirs)
-    const logDir = this.effectiveLogDir || this.parentLogger.logDir;
-    const category = this.logFilePath
-      .replace(logDir, '')
-      .replace(/^\//, '')
-      .replace(/\.log$/, '');
+    // Extract category from logFilePath
+    // For Rust worker: category must be relative to .continuum/ so it can route correctly
+    // - Persona logs: "personas/helper/logs/soul" → .continuum/personas/helper/logs/soul.log
+    // - System logs: "daemons/LoggerDaemon" → .continuum/jtag/logs/system/daemons/LoggerDaemon.log
+    let category: string;
+    const continuumMatch = this.logFilePath.match(/\.continuum\/(.+)\.log$/);
+    if (continuumMatch) {
+      category = continuumMatch[1];
+    } else {
+      // Fallback: extract relative to effectiveLogDir
+      const logDir = this.effectiveLogDir || this.parentLogger.logDir;
+      category = this.logFilePath
+        .replace(logDir, '')
+        .replace(/^\//, '')
+        .replace(/\.log$/, '');
+    }
 
     if (this.parentLogger.workerClient) {
       this.parentLogger.workerClient.writeLog({
