@@ -542,6 +542,331 @@ End User Experience:
 
 You create in one, people experience in the other.
 
+### First Product: Enterprise AI Voice (Replacing Legacy IVRs)
+
+**The opportunity**: 1000+ existing enterprise clients with legacy IVRs, ready to upgrade.
+
+These aren't cold leads - they're **existing contracts** with multi-million dollar brands you'd recognize. They already have:
+- Legacy IVR systems (outdated, rigid, hated by callers)
+- Years of call transcripts (training gold)
+- Established phone numbers and call volumes
+- Budget already allocated for phone systems
+
+**The problem with their current IVRs**:
+- "Press 1 for sales, press 2 for support, press 3 to repeat..."
+- Costs $10k+ to set up custom IVR
+- Takes weeks of professional services
+- Changes require vendor involvement
+
+**The solution**: Voice rooms with trained personas.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    IVR AS A VOICE ROOM                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Customer calls: +1-800-MYBIZ                                       │
+│                      │                                               │
+│                      ▼                                               │
+│   ┌────────────────────────────────────────────────────────────┐    │
+│   │  Voice Room: "MyBiz Support Line"                          │    │
+│   │                                                             │    │
+│   │  Persona: support-agent                                     │    │
+│   │  ├── Trained on: business hours, services, pricing, FAQs   │    │
+│   │  ├── Can: answer questions, book appointments, take orders  │    │
+│   │  ├── Can: route to human when needed                        │    │
+│   │  └── Speaks: English, Spanish (configured)                  │    │
+│   │                                                             │    │
+│   │  Caller: "Yeah I need to reschedule my appointment"        │    │
+│   │  Persona: "Of course! I see you have an appointment         │    │
+│   │           Thursday at 2pm. When works better for you?"      │    │
+│   │                                                             │    │
+│   └────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│   No "press 1 for..."                                               │
+│   Just talk.                                                         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Setup for a business owner**:
+
+```
+Owner: "I need a phone system for my dental practice"
+
+Continuum: "Let me set that up. A few questions:
+           - What are your hours?
+           - What services do you offer?
+           - Do you want it to book appointments directly?
+           - Should it transfer to staff for emergencies?"
+
+Owner: [Answers questions, maybe uploads existing FAQ doc]
+
+Continuum: "Done. Your AI receptionist is live at (555) 123-4567.
+           Try calling it to test."
+
+Owner: [Calls, talks to their AI receptionist, amazed]
+
+Continuum: "Want to deploy this to your existing business number?
+           I can port it over or set up forwarding."
+```
+
+**Technical flow**:
+
+```typescript
+// Voice room configuration
+const dentalIVR = await continuum.createRoom({
+  type: 'voice',
+  name: 'Smile Dental Reception',
+  persona: {
+    base: 'receptionist-v2',
+    training: {
+      documents: ['./services.pdf', './faq.md'],
+      examples: ['./call-transcripts/*.txt'],
+      customRules: [
+        'Always confirm appointment changes by reading back the new time',
+        'For emergencies, transfer to on-call dentist immediately',
+        'Speak slowly and clearly for elderly patients'
+      ]
+    }
+  },
+  integrations: {
+    calendar: 'google-calendar',      // For booking
+    crm: 'hubspot',                   // Customer lookup
+    phone: 'twilio',                  // Voice infrastructure
+    sms: 'twilio'                     // Confirmation texts
+  },
+  routing: {
+    afterHours: 'voicemail',
+    emergency: 'on-call-transfer',
+    frustrated: 'human-escalation'
+  }
+});
+
+// Deploy to phone number
+await continuum.deploy({
+  room: dentalIVR.id,
+  target: { type: 'phone', provider: 'twilio', number: '+15551234567' }
+});
+```
+
+**Scaling to 1000 businesses**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    1000 BUSINESSES, ONE PLATFORM                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Each business gets:                                                │
+│   ├── Their own voice room                                          │
+│   ├── Their own trained persona                                     │
+│   ├── Their own phone number                                        │
+│   ├── Their own dashboard (call logs, analytics, training)         │
+│   └── Their own integrations (calendar, CRM, etc.)                  │
+│                                                                      │
+│   Platform provides:                                                 │
+│   ├── Shared base personas (receptionist, support, sales)          │
+│   ├── Industry templates (dental, legal, restaurant, etc.)         │
+│   ├── Voice infrastructure (Twilio, Vonage, etc.)                  │
+│   ├── Training pipeline (fine-tuning on their data)                │
+│   └── Analytics & improvement suggestions                           │
+│                                                                      │
+│   Economics:                                                         │
+│   ├── $99-299/mo per business                                       │
+│   ├── Usage-based for high volume                                   │
+│   ├── Replaces: $500-2000/mo traditional IVR + receptionist        │
+│   └── 1000 businesses = $100k-300k MRR                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Why this wins**:
+
+| Traditional IVR | AI Voice Room |
+|-----------------|---------------|
+| "Press 1, 2, 3..." | Natural conversation |
+| Weeks to set up | Minutes |
+| $10k+ setup | $0 setup |
+| Changes = vendor ticket | Owner edits anytime |
+| Rigid scripts | Learns and adapts |
+| Frustrates callers | Delights callers |
+| 9-5 receptionist | 24/7 availability |
+
+**The Training Advantage: Years of Call Transcripts**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    TRAINING DATA GOLD MINE                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Existing call recordings from each enterprise client:             │
+│                                                                      │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  Brand X (retail): 2.3M calls over 5 years                  │   │
+│   │  ├── Customer questions patterns                             │   │
+│   │  ├── Successful resolution examples                          │   │
+│   │  ├── Escalation triggers                                     │   │
+│   │  ├── Brand voice & terminology                               │   │
+│   │  └── Seasonal patterns (holiday rush, sales events)          │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│   Fine-tuning pipeline:                                              │
+│                                                                      │
+│   Raw Calls ──► Transcribe ──► Filter Quality ──► Train LoRA        │
+│       │             │               │                  │             │
+│       │             │               │                  ▼             │
+│       │             │               │         Persona speaks like    │
+│       │             │               │         their best human reps  │
+│       │             │               │                                │
+│       │             ▼               ▼                                │
+│       │        Speech-to-text   Remove PII                          │
+│       │        with speaker     Keep patterns                        │
+│       │        diarization      Grade by outcome                     │
+│       │                                                              │
+│       ▼                                                              │
+│   Existing recordings = instant training data                        │
+│   No cold start problem                                              │
+│   Day 1 the AI sounds like their brand                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Natural representatives, not robots**:
+
+```typescript
+// Each brand gets a persona fine-tuned on THEIR voice
+const brandXPersona = await trainPersona({
+  base: 'customer-service-v3',
+
+  // Train on their actual successful calls
+  trainingData: {
+    transcripts: 'gs://brand-x/call-recordings/*.wav',
+    filterBy: {
+      customerSatisfaction: '>= 4',  // Only learn from good calls
+      resolution: 'first-call',       // Calls that resolved quickly
+      noEscalation: true              // Didn't need human help
+    }
+  },
+
+  // Learn their specific patterns
+  learn: {
+    brandVoice: true,        // How they greet, close, phrase things
+    productKnowledge: true,  // Their specific products/services
+    policies: true,          // Returns, warranties, procedures
+    escalationTriggers: true // When to get a human
+  },
+
+  // Compliance
+  compliance: {
+    piiHandling: 'redact-in-training',
+    recordingConsent: 'already-obtained',  // They already record calls
+    dataResidency: 'us-east-1'
+  }
+});
+
+// Result: An AI that sounds like Brand X's best representative
+// Not generic. Not robotic. Genuinely their voice.
+```
+
+**Deployment Options: Web Dashboard OR Plug Into Their Systems**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    TWO WAYS TO DEPLOY                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   OPTION A: Our Platform (Turnkey)                                   │
+│   ─────────────────────────────────                                  │
+│   • Web dashboard for management                                     │
+│   • We handle voice infrastructure                                   │
+│   • Phone numbers provisioned by us                                  │
+│   • Analytics, training, updates all included                        │
+│   • Zero infrastructure for them to manage                           │
+│                                                                      │
+│   OPTION B: Persona Plugin (Into Their Existing Systems)            │
+│   ────────────────────────────────────────────────────              │
+│   • Export trained persona as API/SDK                                │
+│   • Plugs into: Twilio, Genesys, Five9, Cisco, Avaya               │
+│   • Their existing phone numbers, their infrastructure              │
+│   • We provide the brain, they provide the pipes                    │
+│   • Enterprise IT stays in control                                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+```typescript
+// Option A: Full platform
+const deployment = await continuum.deploy({
+  room: brandXVoiceRoom.id,
+  target: { type: 'phone', provider: 'twilio', number: '+18005551234' }
+});
+
+// Option B: Export persona for their call center
+const personaPlugin = await brandXPersona.export({
+  format: 'api',  // or 'twilio-function', 'genesys-bot', 'five9-ivr'
+
+  // Expose as API endpoint they can call
+  endpoint: {
+    type: 'rest',
+    auth: 'api-key',
+    rateLimit: '1000/min'
+  },
+
+  // Or as a drop-in for their platform
+  integration: {
+    platform: 'genesys-cloud',
+    botType: 'dialogflow-replacement',
+    handoffTo: 'existing-agents'  // Route to their human agents when needed
+  }
+});
+
+// They call our API from their existing system:
+// POST https://api.continuum.ai/v1/voice/brand-x/respond
+// { "transcript": "I need to return an item", "context": {...} }
+//
+// Response:
+// { "response": "I'd be happy to help with that return...",
+//   "action": "lookup_order", "confidence": 0.94 }
+```
+
+**Why both options matter**:
+
+| Concern | Turnkey (Option A) | Plugin (Option B) |
+|---------|-------------------|-------------------|
+| **Speed** | Live in days | 2-4 weeks integration |
+| **Control** | We manage everything | Their IT controls |
+| **Existing systems** | Replace them | Keep them |
+| **Enterprise preference** | SMB, startups | Large enterprise |
+| **Pricing** | Per-minute | Per-API-call |
+
+**Migration path for each enterprise**:
+
+```
+Week 1: Connect to existing call recordings, start training
+Week 2: Shadow mode - AI listens, suggests responses, learns
+Week 3: Pilot - Handle 10% of calls, humans handle rest
+Week 4: Expand - 50% of calls, monitor quality
+Week 5: Full deployment - AI handles majority, humans for exceptions
+
+Zero disruption. Same phone numbers. Gradual rollout.
+Customers don't even notice the switch (except it's better now).
+```
+
+**Industry templates ready to go**:
+
+```typescript
+const templates = {
+  'retail': { base: 'retail-service', features: ['orders', 'returns', 'store-locator'] },
+  'telecom': { base: 'tech-support', features: ['billing', 'outages', 'plan-changes'] },
+  'banking': { base: 'financial-service', features: ['balance', 'transfers', 'fraud-alert'] },
+  'insurance': { base: 'claims-handler', features: ['policy-lookup', 'claims-intake', 'coverage'] },
+  'healthcare': { base: 'hipaa-compliant', features: ['appointments', 'refills', 'triage'] },
+  'travel': { base: 'hospitality', features: ['reservations', 'changes', 'upgrades'] },
+  'utilities': { base: 'service-dispatch', features: ['outages', 'billing', 'service-start'] },
+  'government': { base: 'public-service', features: ['info-lookup', 'appointments', 'status'] }
+};
+```
+
 ### Easy for Anyone
 
 The whole point is abstraction:
