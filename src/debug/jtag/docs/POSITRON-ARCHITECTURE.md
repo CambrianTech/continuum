@@ -852,6 +852,135 @@ Zero disruption. Same phone numbers. Gradual rollout.
 Customers don't even notice the switch (except it's better now).
 ```
 
+**Infrastructure: Continuum on AWS**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PRODUCTION INFRASTRUCTURE                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│                         AWS REGION (us-east-1)                       │
+│                                                                      │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │                    LOAD BALANCER (ALB)                       │   │
+│   │         ┌──────────┬──────────┬──────────┐                  │   │
+│   │         ▼          ▼          ▼          ▼                  │   │
+│   │   ┌──────────┐┌──────────┐┌──────────┐┌──────────┐         │   │
+│   │   │Continuum ││Continuum ││Continuum ││Continuum │         │   │
+│   │   │Container ││Container ││Container ││Container │         │   │
+│   │   │  (ECS)   ││  (ECS)   ││  (ECS)   ││  (ECS)   │         │   │
+│   │   └────┬─────┘└────┬─────┘└────┬─────┘└────┬─────┘         │   │
+│   │        │           │           │           │                │   │
+│   │        └───────────┴─────┬─────┴───────────┘                │   │
+│   │                          ▼                                   │   │
+│   │              ┌─────────────────────┐                        │   │
+│   │              │   Shared Services   │                        │   │
+│   │              ├─────────────────────┤                        │   │
+│   │              │ • RDS (PostgreSQL)  │  ◄── Persona configs   │   │
+│   │              │ • S3 (call logs)    │  ◄── Training data     │   │
+│   │              │ • ElastiCache       │  ◄── Session state     │   │
+│   │              │ • SQS (job queues)  │  ◄── Training jobs     │   │
+│   │              └─────────────────────┘                        │   │
+│   │                          │                                   │   │
+│   │                          ▼                                   │   │
+│   │              ┌─────────────────────┐                        │   │
+│   │              │   GPU Instances     │                        │   │
+│   │              │   (Inference/Train) │                        │   │
+│   │              │                     │                        │   │
+│   │              │ • g5.xlarge (LLM)   │  ◄── Real-time voice   │   │
+│   │              │ • p4d (training)    │  ◄── LoRA fine-tuning  │   │
+│   │              └─────────────────────┘                        │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│   External:                                                          │
+│   ├── Twilio/Vonage (voice infrastructure)                          │
+│   ├── Enterprise APIs (CRM, calendar, etc.)                         │
+│   └── Monitoring (DataDog, CloudWatch)                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+```typescript
+// Docker Compose for local dev / single-instance
+services:
+  continuum:
+    image: continuum/voice:latest
+    environment:
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - DATABASE_URL=postgres://...
+      - REDIS_URL=redis://...
+      - MODEL_ENDPOINT=http://inference:8080
+    ports:
+      - "3000:3000"  # Web dashboard
+      - "8080:8080"  # Voice API
+
+  inference:
+    image: continuum/inference:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    volumes:
+      - ./models:/models  # LoRA adapters
+
+// ECS Task Definition for production
+const taskDef = {
+  family: 'continuum-voice',
+  containerDefinitions: [{
+    name: 'continuum',
+    image: 'continuum/voice:latest',
+    cpu: 2048,
+    memory: 4096,
+    portMappings: [{ containerPort: 3000 }, { containerPort: 8080 }]
+  }],
+  // Auto-scaling based on call volume
+  scalingPolicy: {
+    targetTrackingScaling: {
+      targetValue: 70,
+      predefinedMetricType: 'ECSServiceAverageCPUUtilization'
+    }
+  }
+};
+```
+
+**Scaling for 1000 businesses**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    MULTI-TENANT ARCHITECTURE                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Each Continuum container handles multiple tenants (businesses)    │
+│                                                                      │
+│   Container 1:                                                       │
+│   ├── Brand A voice room                                            │
+│   ├── Brand B voice room                                            │
+│   └── Brand C voice room                                            │
+│                                                                      │
+│   Container 2:                                                       │
+│   ├── Brand D voice room                                            │
+│   ├── Brand E voice room                                            │
+│   └── Brand F voice room                                            │
+│                                                                      │
+│   Load balancer routes by:                                           │
+│   ├── Phone number → tenant lookup → container affinity             │
+│   └── Session stickiness for ongoing calls                          │
+│                                                                      │
+│   Scaling triggers:                                                  │
+│   ├── Calls per second > threshold → add containers                 │
+│   ├── GPU utilization > 80% → add inference nodes                   │
+│   └── Training queue depth → spin up training instances             │
+│                                                                      │
+│   Isolation:                                                         │
+│   ├── Each brand's data in separate S3 prefix                       │
+│   ├── LoRA adapters loaded per-brand                                │
+│   └── Logs/metrics tagged by tenant                                 │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
 **Industry templates ready to go**:
 
 ```typescript
