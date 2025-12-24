@@ -1516,6 +1516,297 @@ hostPersona.on('reservation:request', async ({ party, preferences }) => {
 });
 ```
 
+## AI-Native Reactivity
+
+**Not React with AI bolted on. Reactivity designed for AI participation.**
+
+### The Problem with Traditional Reactivity
+
+```
+Traditional: User → State → UI
+             (AI is outside the loop, calls APIs, gets JSON back)
+
+AI-Native:   User ◄──► State ◄──► AI ◄──► UI
+             (AI is IN the reactive loop, sees changes, can cause changes)
+```
+
+### Core Concepts
+
+#### 1. Observable Semantic State
+
+State isn't just data - it carries *meaning* the AI understands:
+
+```typescript
+// Traditional: just data
+const [items, setItems] = useState([]);
+
+// AI-Native: semantic state with intent
+const items = useSemanticState({
+  data: [],
+  schema: 'product-list',
+  intent: 'user-is-browsing',
+  aiHints: {
+    canSuggest: true,        // AI can recommend items
+    canReorder: true,        // AI can change sort order
+    canFilter: false,        // AI shouldn't hide items without asking
+    explainChanges: true     // AI should say why it changed something
+  }
+});
+
+// AI sees: "This is a product list. User is browsing. I can suggest and reorder."
+// AI doesn't see: "This is an array with objects that have price and name fields"
+```
+
+#### 2. Living Regions
+
+Parts of the UI that AI can autonomously update:
+
+```typescript
+// Mark a region as AI-controlled
+<LivingRegion
+  persona="content-curator"
+  triggers={['time', 'user-behavior', 'external-events']}
+  constraints={{ maxChangeFrequency: '1/hour', requiresApproval: false }}
+>
+  <FeaturedContent />
+</LivingRegion>
+
+// The AI might:
+// - Update featured content based on trending topics
+// - Personalize based on this user's history
+// - React to external events (news, sales, seasons)
+// - All without user triggering anything
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  mybusiness.com                                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  HERO SECTION                              [Living Region]   │    │
+│  │                                                              │    │
+│  │  "Winter Sale - 40% Off!"                                   │    │
+│  │                                                              │    │
+│  │  (AI updates this based on: season, inventory, user segment) │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Product    │  │   Product    │  │   Product    │ [Living]     │
+│  │   (static)   │  │   (static)   │  │  [AI picked] │              │
+│  └──────────────┘  └──────────────┘  └──────────────┘              │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  BLOG PREVIEW                              [Living Region]   │    │
+│  │                                                              │    │
+│  │  AI writes new posts, updates copy, responds to comments     │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 3. Collaborative Cursors & Presence
+
+AI has presence just like human collaborators:
+
+```typescript
+// Presence system includes AI
+const presence = usePresence(roomId);
+
+// Returns both human and AI participants
+presence.users = [
+  { id: 'joel', type: 'human', cursor: { x: 100, y: 200 }, selection: null },
+  { id: 'helper-ai', type: 'persona', cursor: { x: 300, y: 150 }, selection: '#paragraph-3' },
+  { id: 'designer-ai', type: 'persona', cursor: null, focus: 'color-palette' }
+];
+
+// AI cursors are real - you see them move
+// AI selections are real - you see what they're looking at
+// AI can point at things to show you
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Canvas: Architecture Diagram                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│    ┌──────────┐       ┌──────────┐                                  │
+│    │ Database │──────▶│   API    │       🖱️ Joel                    │
+│    └──────────┘       └──────────┘       🤖 Helper (drawing arrow)  │
+│         │                  │             🎨 Designer (at palette)   │
+│         ▼                  ▼                                         │
+│    ┌──────────┐       ┌──────────┐                                  │
+│    │  Cache   │◀──────│ Frontend │ ◀─── 🤖 [Helper is here]        │
+│    └──────────┘       └──────────┘                                  │
+│                                                                      │
+│  💬 Helper: "Should I add a load balancer between API and Frontend?" │
+│  💬 Designer: "I'll adjust the colors once the layout is done"      │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 4. Reactive AI Hooks
+
+AI as a reactive data source:
+
+```typescript
+// AI observation hook - AI watches and reacts
+const suggestions = useAIObserver({
+  watch: [cartItems, userBehavior, scrollPosition],
+  persona: 'sales-assistant',
+  throttle: '5s',
+  onInsight: (insight) => {
+    // AI noticed something and wants to help
+    showSuggestion(insight);
+  }
+});
+
+// AI generation hook - AI produces content reactively
+const description = useAIGenerated({
+  prompt: 'Product description for {product.name}',
+  dependencies: [product, userPreferences, locale],
+  cache: true,
+  fallback: product.defaultDescription
+});
+
+// AI decision hook - AI makes choices
+const layout = useAIDecision({
+  options: ['grid', 'list', 'carousel'],
+  context: { screenSize, itemCount, userPreference },
+  persona: 'ux-optimizer',
+  explain: true  // AI tells you why it chose
+});
+```
+
+#### 5. Bidirectional Binding with AI
+
+AI isn't just reading state - it's a peer in the reactive graph:
+
+```typescript
+// State that AI and UI both read and write
+const documentState = useBidirectionalAI({
+  initial: { content: '', suggestions: [] },
+
+  // Human edits trigger AI analysis
+  onHumanChange: async (change, ai) => {
+    const suggestions = await ai.analyze(change);
+    return { ...change, suggestions };
+  },
+
+  // AI edits are tracked and reversible
+  onAIChange: (change) => {
+    return {
+      ...change,
+      source: 'ai',
+      reversible: true,
+      explanation: change.reason
+    };
+  },
+
+  // Conflict resolution
+  onConflict: 'human-wins' | 'ai-wins' | 'merge' | 'ask'
+});
+```
+
+### New Widget Concepts (AI-Native Only)
+
+These don't exist in traditional frameworks:
+
+```typescript
+// 1. Adaptive Layout - AI rearranges based on user behavior
+<AdaptiveLayout persona="ux-ai" observe="user-flow">
+  <Section id="features" />    {/* AI might move this up if users scroll past hero */}
+  <Section id="pricing" />     {/* AI might expand this if user seems price-focused */}
+  <Section id="testimonials" /> {/* AI might hide if user is returning customer */}
+</AdaptiveLayout>
+
+// 2. Conversational Form - AI guides through forms naturally
+<ConversationalForm persona="form-helper">
+  <Field name="email" />       {/* AI: "What's your email?" */}
+  <Field name="company" />     {/* AI: "And your company name?" */}
+  <Field name="needs" />       {/* AI: "What are you hoping to achieve?" */}
+  {/* AI adapts questions based on answers, skips irrelevant fields */}
+</ConversationalForm>
+
+// 3. Living Documentation - Docs that update themselves
+<LivingDocs
+  source="./api-reference.md"
+  persona="docs-curator"
+  autoUpdate={{ frequency: 'on-code-change', approval: 'auto' }}
+>
+  {/* AI keeps docs in sync with code */}
+  {/* AI adds examples based on common support questions */}
+  {/* AI simplifies sections users struggle with */}
+</LivingDocs>
+
+// 4. Empathic UI - Adapts to user emotional state
+<EmpathicContainer
+  sense={['frustration', 'confusion', 'delight']}
+  respond={{
+    frustration: 'simplify-and-offer-help',
+    confusion: 'add-tooltips-and-slow-down',
+    delight: 'celebrate-and-suggest-next'
+  }}
+>
+  <CheckoutFlow />
+</EmpathicContainer>
+
+// 5. Collaborative Canvas - Multiple humans + AIs creating together
+<CollaborativeCanvas
+  personas={['designer-ai', 'architect-ai']}
+  humans={roomMembers}
+  sync="realtime"
+>
+  {/* Everyone draws on same canvas */}
+  {/* AI can suggest, draw, annotate */}
+  {/* Cursors visible for all participants */}
+</CollaborativeCanvas>
+```
+
+### State Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      POSITRON STATE GRAPH                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐          │
+│   │   Human     │     │    State    │     │     AI      │          │
+│   │   Input     │────▶│    Store    │◀────│  Observers  │          │
+│   └─────────────┘     └──────┬──────┘     └─────────────┘          │
+│                              │                                       │
+│         ┌────────────────────┼────────────────────┐                 │
+│         ▼                    ▼                    ▼                 │
+│   ┌───────────┐       ┌───────────┐       ┌───────────┐            │
+│   │    UI     │       │    AI     │       │  External │            │
+│   │ Components│       │  Actions  │       │   APIs    │            │
+│   └───────────┘       └───────────┘       └───────────┘            │
+│         │                    │                    │                 │
+│         └────────────────────┴────────────────────┘                 │
+│                              │                                       │
+│                              ▼                                       │
+│                    ┌─────────────────┐                              │
+│                    │   Persistence   │                              │
+│                    │  (Entity Layer) │                              │
+│                    └─────────────────┘                              │
+│                                                                      │
+│   Key: Both humans and AI are PEERS in the reactive graph           │
+│        State flows bidirectionally                                   │
+│        AI can observe, decide, and act                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Strategy
+
+1. **Phase 1**: Core reactive primitives (`useSemanticState`, `useBidirectionalAI`)
+2. **Phase 2**: Living regions and AI observation hooks
+3. **Phase 3**: Collaborative presence system
+4. **Phase 4**: AI-native widget library
+5. **Phase 5**: Visual builder for composing AI-native UIs
+
+---
+
 ## Philosophy
 
 **"The best AI interface is no interface."**
