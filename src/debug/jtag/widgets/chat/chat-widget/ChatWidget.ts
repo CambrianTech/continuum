@@ -567,8 +567,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         // Get AI status emoji (thinking, generating, etc.) for subtle indication
         const statusEmoji = this.aiStatusIndicator.getStatusEmoji(user.id) || '';
 
+        // Check if this persona has an error status (clickable for diagnosis)
+        const hasError = statusEmoji === '❌' || statusEmoji === '💸' || statusEmoji === '⏳';
+        const clickableClass = hasError ? 'clickable-error' : '';
+
         return `
-          <div class="member-chip" title="${displayName} (${role})">
+          <div class="member-chip ${clickableClass}"
+               title="${displayName} (${role})${hasError ? ' - Click to view error' : ''}"
+               data-persona-id="${user.id}"
+               data-has-error="${hasError}">
             ${roleIcon}
             <span class="member-name">${displayName}</span>
             ${statusEmoji ? `<span class="member-status">${statusEmoji}</span>` : ''}
@@ -604,8 +611,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const headerElement = this.shadowRoot.querySelector('.entity-list-header');
       if (headerElement) {
         headerElement.innerHTML = this.renderHeader();
-        // Reattach error toggle handler after header update
+        // Reattach handlers after header update
         this.setupErrorToggleHandler();
+        this.setupMemberClickHandlers();
       }
       this.headerUpdateTimeout = undefined;
     }, 0) as unknown as number;
@@ -619,14 +627,30 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (!toggleButton) return;
 
     toggleButton.addEventListener('click', () => {
-      this.errorsHidden = !this.errorsHidden;
+      this.toggleErrorPanel();
+    });
+  }
 
-      // Update container visibility
-      if (this.aiStatusContainer) {
-        this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
-      }
+  /**
+   * Toggle the error panel visibility (shared logic for button and member clicks)
+   */
+  private toggleErrorPanel(forceShow: boolean = false): void {
+    const toggleButton = this.shadowRoot?.getElementById('errorToggle');
 
-      // Update button visual state
+    // If forceShow is true, always show; otherwise toggle
+    if (forceShow && !this.errorsHidden) {
+      return; // Already showing, nothing to do
+    }
+
+    this.errorsHidden = forceShow ? false : !this.errorsHidden;
+
+    // Update container visibility
+    if (this.aiStatusContainer) {
+      this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
+    }
+
+    // Update button visual state
+    if (toggleButton) {
       if (this.errorsHidden) {
         toggleButton.classList.remove('pressed');
         toggleButton.setAttribute('title', `Show errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
@@ -634,6 +658,35 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         toggleButton.classList.add('pressed');
         toggleButton.setAttribute('title', `Hide errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
       }
+    }
+  }
+
+  /**
+   * Setup click handlers for member chips (click-to-diagnose)
+   * When a persona with an error is clicked, shows the error panel
+   */
+  private setupMemberClickHandlers(): void {
+    const memberChips = this.shadowRoot?.querySelectorAll('.member-chip[data-has-error="true"]');
+    if (!memberChips) return;
+
+    memberChips.forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const personaId = chip.getAttribute('data-persona-id');
+        console.log(`🔍 ChatWidget: Clicked persona ${personaId} for diagnosis`);
+
+        // Show the error panel
+        this.toggleErrorPanel(true);
+
+        // Highlight the specific persona's error in the status container
+        if (personaId && this.aiStatusContainer) {
+          const errorElement = this.aiStatusContainer.querySelector(`[data-persona-id="${personaId}"]`);
+          if (errorElement) {
+            // Add flash animation for attention
+            errorElement.classList.add('flash-highlight');
+            setTimeout(() => errorElement.classList.remove('flash-highlight'), 1000);
+          }
+        }
+      });
     });
   }
 
