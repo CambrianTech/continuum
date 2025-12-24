@@ -273,23 +273,30 @@ class LoggerClass implements ParentLogger {
    *
    * @param component - Component name (e.g., 'ArchiveDaemonServer')
    * @param category - Optional override (if not provided, inferred from component name)
+   * @param logRoot - Optional log root directory (overrides default system log dir)
+   *                  Use for persona logs that go to persona home directories
    *
    * Examples:
    *   Logger.create('ArchiveDaemonServer')     → daemons/ArchiveDaemonServer.log
    *   Logger.create('SqliteStorageAdapter')   → adapters/SqliteStorageAdapter.log
    *   Logger.create('DataWorker')             → workers/DataWorker.log
    *   Logger.create('MyComponent', 'custom')  → custom.log (explicit override)
+   *   Logger.create('Hippocampus', 'logs/hippocampus', '/path/to/persona/home')
+   *                                           → /path/to/persona/home/logs/hippocampus.log
    */
-  create(component: string, category?: LogCategory): ComponentLogger {
+  create(component: string, category?: LogCategory, logRoot?: string): ComponentLogger {
     // Auto-infer category from component name if not provided
     const resolvedCategory = category ?? inferCategory(component);
+
+    // Use custom logRoot if provided (for persona logs), otherwise use system logDir
+    const effectiveLogDir = logRoot || this.logDir;
 
     // When using Rust logger, DO NOT open TypeScript file streams (they truncate files!)
     if (resolvedCategory && !this.useRustLogger) {
       this.getFileStream(resolvedCategory);  // Sets up queue/stream for TypeScript logging
     }
 
-    const logFile = resolvedCategory ? path.join(this.logDir, `${resolvedCategory}.log`) : undefined;
+    const logFile = resolvedCategory ? path.join(effectiveLogDir, `${resolvedCategory}.log`) : undefined;
     return new ComponentLogger(component, this.config, logFile, this);
   }
 
