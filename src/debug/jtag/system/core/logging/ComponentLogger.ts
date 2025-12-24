@@ -90,21 +90,35 @@ export class ComponentLogger {
       return;
     }
 
-    // Extract category from logFilePath
-    // For Rust worker: category must be relative to .continuum/ so it can route correctly
-    // - Persona logs: "personas/helper/logs/soul" → .continuum/personas/helper/logs/soul.log
-    // - System logs: "daemons/LoggerDaemon" → .continuum/jtag/logs/system/daemons/LoggerDaemon.log
+    // Extract category from logFilePath for Rust worker routing
+    //
+    // Rust worker (file_manager.rs) routes based on category prefix:
+    // - If category starts with "personas/" → .continuum/{category}.log (direct)
+    // - Otherwise → {log_dir}/{category}.log where log_dir = .continuum/jtag/logs/system
+    //
+    // So we need different extraction:
+    // - Persona logs: extract relative to .continuum/  → "personas/helper/logs/soul"
+    // - System logs:  extract relative to .continuum/jtag/logs/system/ → "daemons/LoggerDaemon"
     let category: string;
-    const continuumMatch = this.logFilePath.match(/\.continuum\/(.+)\.log$/);
-    if (continuumMatch) {
-      category = continuumMatch[1];
+
+    // Check if this is a persona log (path contains personas/)
+    const personaMatch = this.logFilePath.match(/\.continuum\/(personas\/.+)\.log$/);
+    if (personaMatch) {
+      // Persona log: extract relative to .continuum/
+      category = personaMatch[1];
     } else {
-      // Fallback: extract relative to effectiveLogDir
-      const logDir = this.effectiveLogDir || this.parentLogger.logDir;
-      category = this.logFilePath
-        .replace(logDir, '')
-        .replace(/^\//, '')
-        .replace(/\.log$/, '');
+      // System log: extract relative to .continuum/jtag/logs/system/
+      const systemMatch = this.logFilePath.match(/\.continuum\/jtag\/logs\/system\/(.+)\.log$/);
+      if (systemMatch) {
+        category = systemMatch[1];
+      } else {
+        // Fallback: extract relative to effectiveLogDir
+        const logDir = this.effectiveLogDir || this.parentLogger.logDir;
+        category = this.logFilePath
+          .replace(logDir, '')
+          .replace(/^\//, '')
+          .replace(/\.log$/, '');
+      }
     }
 
     if (this.parentLogger.workerClient) {
