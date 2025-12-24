@@ -852,6 +852,59 @@ Zero disruption. Same phone numbers. Gradual rollout.
 Customers don't even notice the switch (except it's better now).
 ```
 
+**Customer Experience: Meet Your Persona (Face-to-Face)**
+
+Customers train their AI by talking to it - in a video room:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Training Session - Brand X Rep                          [≡] [×]    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   ┌───────────────────────┐    ┌───────────────────────┐            │
+│   │                       │    │      🤖 Avatar        │            │
+│   │   Customer (webcam)   │    │                       │            │
+│   │                       │    │   "Ready to practice  │            │
+│   │                       │    │    some scenarios?"   │            │
+│   └───────────────────────┘    └───────────────────────┘            │
+│                                                                      │
+│   Customer: "Pretend you're handling an angry warranty call"       │
+│   Persona: *role-plays the call*                                    │
+│   Customer: "No, we DO cover that. Let me explain..."              │
+│   Persona: "Got it. Want to try again?"                            │
+│                                                                      │
+│   THAT CONVERSATION = TRAINING DATA                                 │
+│   Corrections improve the persona immediately                       │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+This works TODAY - it's just another room type:
+
+```typescript
+const trainingRoom = await continuum.createRoom({
+  type: 'video',
+  participants: [
+    { type: 'human', id: customerId, video: true },
+    { type: 'persona', id: brandRep.id, avatar: true, voice: true }
+  ],
+  features: {
+    rolePlay: true,
+    corrections: true,        // Mistakes become training
+    recordForTraining: true
+  }
+});
+```
+
+**Customer workspace rooms**:
+- `chat` - Quick questions with persona
+- `video` - Face-to-face training sessions
+- `audio-playback` - Review actual calls
+- `dashboard` - Analytics and metrics
+- `docs` - Edit knowledge base
+
+They're not configuring software. They're **onboarding an employee**.
+
 **Infrastructure: Continuum on AWS**
 
 ```
