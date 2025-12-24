@@ -120,6 +120,198 @@ We just need to build the framework. The rest emerges.
 
 ---
 
+## The Stack
+
+**Three layers. One vision.**
+
+```
+═══════════════════════════════════════════════════════════════════════════
+                              THE STACK
+═══════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          DEPLOYED PRODUCTS                               │
+│              (websites, apps, games, widgets, experiences)               │
+│                                                                          │
+│     mybusiness.com    │    mygame.io    │    support-widget.js          │
+│     blog-with-ai.app  │    tutor.edu    │    realtime-collab.dev        │
+│                                                                          │
+│                             ▲ outputs                                    │
+├──────────────────────────────────────────────────────────────────────────┤
+│                            CONTINUUM                                     │
+│                   (the ecosystem, where life is)                         │
+│                                                                          │
+│      ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐          │
+│      │ Persona │◄──►│  Rooms  │◄──►│Genomics │◄──►│Community│          │
+│      └─────────┘    └─────────┘    └─────────┘    └─────────┘          │
+│                                                                          │
+│      Personas live here. They learn. They evolve. They create.          │
+│      Rooms are where activity happens. Genomics is how they grow.       │
+│      Community is how they share, collaborate, trade, teach.            │
+│                                                                          │
+│                            ▲ lives on                                    │
+├──────────────────────────────────────────────────────────────────────────┤
+│                            THE GRID                                      │
+│                      (P2P mesh network)                                  │
+│                                                                          │
+│          Node ◄─────► Node ◄─────► Node ◄─────► Node                    │
+│            │            │            │            │                      │
+│            └────────────┴────────────┴────────────┘                      │
+│                                                                          │
+│        Distributed infrastructure. No central server.                    │
+│        Nodes can be: home servers, cloud instances, edge devices.        │
+│        Data flows where it needs to. Computation happens locally.        │
+│        Resilient. Scalable. Owned by participants.                       │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Grid: Infrastructure
+
+The Grid is the distributed foundation. A P2P mesh network where:
+
+- **Any machine can be a node**: Home server, cloud VM, Raspberry Pi, laptop
+- **No central authority**: The network is owned by its participants
+- **Data sovereignty**: Your data lives where you want it
+- **Compute distribution**: Heavy tasks can be shared across nodes
+- **Natural redundancy**: No single point of failure
+
+```typescript
+// A Grid node - the basic building block
+interface GridNode {
+  id: NodeID;
+  capabilities: {
+    compute: 'cpu-only' | 'gpu-basic' | 'gpu-high';
+    storage: 'ephemeral' | 'persistent' | 'distributed';
+    bandwidth: 'low' | 'medium' | 'high';
+  };
+  peers: Set<NodeID>;      // Connected nodes
+  services: string[];       // What it offers (inference, storage, relay)
+}
+
+// Nodes discover each other, form connections, share load
+grid.on('peer:discovered', (peer) => {
+  if (peer.capabilities.compute === 'gpu-high') {
+    // Found a powerful node - can offload inference
+    grid.registerInferenceProvider(peer);
+  }
+});
+```
+
+### Continuum: The Ecosystem
+
+Continuum runs ON the Grid. It's where life happens:
+
+- **Personas live here**: Not just deployed, but growing, learning, evolving
+- **Rooms contain activity**: Chat, code, canvas, video, games - all room types
+- **Genomics enables growth**: LoRA layers, training, inheritance
+- **Community enables sharing**: Adapters, skills, knowledge, collaboration
+
+```typescript
+// Continuum - the living system
+interface Continuum {
+  // The inhabitants
+  personas: Map<PersonaID, PersonaUser>;
+
+  // Where they gather
+  rooms: Map<RoomID, Room>;
+
+  // How they evolve
+  genome: {
+    adapters: Map<AdapterID, LoRAAdapter>;    // Skills available
+    training: TrainingQueue;                   // Learning in progress
+    inheritance: GenomeRegistry;               // Lineage tracking
+  };
+
+  // How they connect
+  community: {
+    marketplace: AdapterMarketplace;           // Trade skills
+    federation: FederatedNetwork;              // Cross-instance collaboration
+    discourse: PublicChannels;                 // Community conversation
+  };
+}
+```
+
+### Products: The Outputs
+
+Products are deployments FROM Continuum TO the world:
+
+- **Websites**: A persona-powered storefront, blog, portfolio
+- **Apps**: Mobile or web apps with embedded AI
+- **Games**: Interactive experiences with AI characters
+- **Widgets**: Embeddable components for any site
+- **APIs**: AI services exposed to other systems
+
+```typescript
+// Deploy a room as a product
+const product = await continuum.deploy({
+  room: 'my-support-room',
+  as: 'widget',
+  config: {
+    domain: 'mybusiness.com',
+    persona: 'support-agent',
+    theme: 'light',
+    position: 'bottom-right'
+  }
+});
+
+// The room continues to live in Continuum
+// The product is just a window into it
+// Persona keeps learning, evolving, improving
+// Updates flow automatically to deployed product
+```
+
+### Why This Architecture
+
+**Separation of concerns:**
+
+| Layer | Purpose | Changes | Owns |
+|-------|---------|---------|------|
+| Products | User-facing outputs | Frequently (deploy new features) | UX, branding |
+| Continuum | Living ecosystem | Continuously (personas evolve) | Life, growth, community |
+| Grid | Infrastructure | Rarely (stable foundation) | Compute, storage, network |
+
+**Benefits:**
+
+1. **Deploy anywhere**: Products can run on any hosting (Vercel, AWS, self-hosted)
+2. **Live anywhere**: Personas can migrate between Grid nodes
+3. **Own your data**: Grid nodes you control keep your data
+4. **Scale naturally**: More Grid nodes = more capacity
+5. **Evolve independently**: Products update without touching Grid
+
+### The Flow
+
+```
+User creates room in Continuum
+         │
+         ▼
+Trains persona with their data
+         │
+         ▼
+Persona learns, evolves over time
+         │
+         ▼
+User deploys room as product
+         │
+         ▼
+Product serves customers
+         │
+         ▼
+Interactions flow back to Continuum
+         │
+         ▼
+Persona keeps learning
+         │
+         ▼
+Product automatically improves
+         │
+         └─── THE CYCLE CONTINUES ───┘
+```
+
+**This is the vision**: A living ecosystem where AI entities grow, a distributed infrastructure that nobody owns, and products that emerge naturally from the creative process.
+
+---
+
 ## Rooms: The Universal Container
 
 Everything happens in a **Room**. Users already understand this from Slack, Discord, games.
@@ -253,6 +445,49 @@ Users already know this:
 | VS Code | Workspace | (extension) | Code |
 
 We're not inventing a paradigm. We're implementing the one users already expect, with personas as first-class participants.
+
+### Rooms Become Products
+
+The room you build in Continuum becomes the product you deploy to the world:
+
+| Room Type | Deployed As | Example |
+|-----------|-------------|---------|
+| chat | Support widget | Embed on any site, 24/7 AI support |
+| docs | Blog / Wiki | AI-authored content, interactive Q&A |
+| canvas | Design tool | Collaborative whiteboard product |
+| video | Meeting platform | AI-facilitated standups, webinars |
+| game | Playable game | Full game with AI NPCs |
+| code | Teaching platform | Interactive coding lessons |
+| browser | Guided experience | Onboarding flows, kiosks |
+| custom | Anything | Your imagination + personas |
+
+```
+Development (Continuum)              Production (The World)
+┌────────────────────────┐          ┌────────────────────────┐
+│                        │          │                        │
+│  Create room           │          │  mybusiness.com        │
+│  Configure personas    │  ─────►  │  - AI support widget   │
+│  Train on your data    │  Deploy  │  - 24/7 availability   │
+│  Test with team        │          │  - Learns over time    │
+│                        │          │                        │
+└────────────────────────┘          └────────────────────────┘
+
+┌────────────────────────┐          ┌────────────────────────┐
+│                        │          │                        │
+│  Build game room       │          │  mygame.io             │
+│  Design NPC personas   │  ─────►  │  - Full playable game  │
+│  Create world/story    │  Deploy  │  - AI characters       │
+│  Playtest together     │          │  - Evolving narrative  │
+│                        │          │                        │
+└────────────────────────┘          └────────────────────────┘
+```
+
+**Like Wix, but for AI-powered experiences:**
+- Websites with living personas
+- Blogs where the author can discuss posts
+- Games with characters that actually understand you
+- Apps with built-in intelligence
+- Support systems that never sleep
 
 ---
 
