@@ -112,7 +112,7 @@ async function checkSystemFailures(sessionName?: string): Promise<{ failures: st
     
     // Check system logs for critical failures
     try {
-      const { stdout: errorLogs } = await execAsync('tail -20 .continuum/jtag/system/logs/npm-start.log 2>/dev/null | grep -i "error\\|failed\\|crash" || echo ""');
+      const { stdout: errorLogs } = await execAsync('tail -20 .continuum/jtag/logs/system/npm-start.log 2>/dev/null | grep -i "error\\|failed\\|crash" || echo ""');
       if (errorLogs.trim().length > 0) {
         const errorLines = errorLogs.split('\n').filter(line => line.trim());
         if (errorLines.length > 3) { // More than 3 recent errors suggests system failure
@@ -186,7 +186,7 @@ async function waitForSystemReady(timeoutSeconds: number = 45): Promise<void> {
       console.log('💥 System crashed - aborting startup wait');
       console.log('🔍 Failure reasons:');
       readiness.failures.forEach(failure => console.log(`  - ${failure}`));
-      console.log('🛠️  Check logs: .continuum/jtag/system/logs/npm-start.log');
+      console.log('🛠️  Check logs: .continuum/jtag/logs/system/npm-start.log');
       console.log('🛠️  Try: npm run system:stop && npm run system:start');
       process.exit(1);
     }

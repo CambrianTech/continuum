@@ -402,7 +402,7 @@ class AutonomousTestSuite {
       
       // Check startup logs
       console.log('\n📋 Checking system startup logs...');
-      const startupCheck = await this.executeCommand('tail -20 .continuum/jtag/system/logs/npm-start.log 2>/dev/null || echo "No startup logs found"');
+      const startupCheck = await this.executeCommand('tail -20 .continuum/jtag/logs/system/npm-start.log 2>/dev/null || echo "No startup logs found"');
       console.log(startupCheck);
       
     } catch (error: any) {

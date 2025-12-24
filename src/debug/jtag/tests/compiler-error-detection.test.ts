@@ -137,7 +137,7 @@ async function showAICommands() {
     },
     {
       name: 'Check startup logs',
-      command: 'tail -20 .continuum/jtag/system/logs/npm-start.log',
+      command: 'tail -20 .continuum/jtag/logs/system/npm-start.log',
       purpose: 'See why system startup may be failing'
     }
   ];

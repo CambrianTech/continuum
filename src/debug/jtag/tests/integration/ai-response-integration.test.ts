@@ -102,10 +102,10 @@ async function testAIResponseIntegration(): Promise<void> {
     console.error('=========================================');
     console.error(error instanceof Error ? error.message : String(error));
     console.error('\n💡 Debugging tips:');
-    console.error('   1. Check UserDaemon created PersonaUsers: grep "UserDaemon: Registered" .continuum/jtag/system/logs/npm-start.log');
-    console.error('   2. Check event subscriptions: grep "Subscribing to chat events" .continuum/jtag/system/logs/npm-start.log');
+    console.error('   1. Check UserDaemon created PersonaUsers: grep "UserDaemon: Registered" .continuum/jtag/logs/system/npm-start.log');
+    console.error('   2. Check event subscriptions: grep "Subscribing to chat events" .continuum/jtag/logs/system/npm-start.log');
     console.error('   3. Check ThoughtStream: grep "ThoughtStream" .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log');
-    console.error('   4. Check for errors: grep "ERROR" .continuum/jtag/system/logs/npm-start.log\n');
+    console.error('   4. Check for errors: grep "ERROR" .continuum/jtag/logs/system/npm-start.log\n');
 
     throw error;
   } finally {

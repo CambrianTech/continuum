@@ -645,7 +645,7 @@ export class TestResultsMarkdownGenerator {
       sections.push(`❌ DETAILED FAILURE BREAKDOWN:`);
       sections.push(`🔍 Recommended Next Steps:`);
       sections.push(`   1. Run specific failing tests with detailed output`);
-      sections.push(`   2. Check system logs: .continuum/jtag/system/logs/`);
+      sections.push(`   2. Check system logs: .continuum/jtag/logs/system/`);
       sections.push(`   3. Verify system health: npm run agent:quick`);
       sections.push(`   4. Use profile-specific commands for focused testing`);
       sections.push(``);

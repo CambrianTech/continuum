@@ -297,7 +297,7 @@ export class DiagnosticsLogger {
 
   private async getRecentErrors(): Promise<string[]> {
     const logPaths = [
-      '.continuum/jtag/system/logs/npm-start.log',
+      '.continuum/jtag/logs/system/npm-start.log',
       'examples/test-bench/.continuum/jtag/currentUser/logs/server.log'
     ];
     

@@ -73,7 +73,7 @@ export interface PersonaUserForToolExecutor {
 }
 
 export class PersonaToolExecutor {
-  private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/system/logs/cognition.log');
+  private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/logs/system/cognition.log');
 
   private persona: PersonaUserForToolExecutor;
   private toolRegistry: ToolRegistry;

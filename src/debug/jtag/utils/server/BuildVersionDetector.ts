@@ -251,7 +251,7 @@ export class BuildVersionDetector {
       }
       
       // Fallback: check log files
-      const logFile = '.continuum/jtag/system/logs/npm-start.log';
+      const logFile = '.continuum/jtag/logs/system/npm-start.log';
       if (fs.existsSync(logFile)) {
         const stats = fs.statSync(logFile);
         return stats.mtime.getTime();

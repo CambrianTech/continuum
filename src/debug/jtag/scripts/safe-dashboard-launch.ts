@@ -64,7 +64,7 @@ async function safeDashboardLaunch(): Promise<void> {
   
   // Now tail the npm logs directly (Ctrl+C exits npm start safely)
   const fs = require('fs');
-  const logFile = '.continuum/jtag/system/logs/npm-start.log';
+  const logFile = '.continuum/jtag/logs/system/npm-start.log';
   
   try {
     // Make sure log file exists
@@ -87,7 +87,7 @@ async function safeDashboardLaunch(): Promise<void> {
     
   } catch (error) {
     console.error('❌ Log tail failed:', error instanceof Error ? error.message : String(error));
-    console.log('💡 Manual logs: tail -f .continuum/jtag/system/logs/npm-start.log');
+    console.log('💡 Manual logs: tail -f .continuum/jtag/logs/system/npm-start.log');
   }
 }
 

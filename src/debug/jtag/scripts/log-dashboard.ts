@@ -52,7 +52,7 @@ interface LogEvent {
 const CONFIG: DashboardConfig = {
   sessionName: 'jtag-test',  // Use same session as main system
   logFiles: {
-    npm: '.continuum/jtag/system/logs/npm-start.log',
+    npm: '.continuum/jtag/logs/system/npm-start.log',
     browser: 'examples/test-bench/.continuum/jtag/currentUser/logs/browser-console-log.log',
     server: 'examples/test-bench/.continuum/jtag/currentUser/logs/server-console-log.log',
     system: '.continuum/jtag/signals/system-ready.json'

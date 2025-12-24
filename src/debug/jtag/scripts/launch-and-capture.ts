@@ -76,7 +76,7 @@ const MONITORING_CONFIG: MonitoringConfig = {
 } as const;
 
 // Prepare paths
-const logDir = path.resolve('.continuum/jtag/system/logs');
+const logDir = path.resolve('.continuum/jtag/logs/system');
 const logFile = path.join(logDir, 'npm-start.log');
 const pidFile = path.join(logDir, 'npm-start.pid');
 
