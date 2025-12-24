@@ -441,6 +441,140 @@ Product automatically improves
 
 ---
 
+## Positron vs Continuum
+
+**They serve different purposes. Both are essential.**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                      │
+│   CONTINUUM                          POSITRON                        │
+│   ══════════                         ════════                        │
+│                                                                      │
+│   The Creative Engine                The Interaction Layer           │
+│                                                                      │
+│   • Where you BUILD                  • How users EXPERIENCE          │
+│   • Personas live here               • Renders on any platform       │
+│   • Rooms, genomics, training        • Web, iOS, Android, Desktop    │
+│   • Development environment          • Runtime framework             │
+│   • The ecosystem                    • The UI primitives             │
+│                                                                      │
+│   You work IN Continuum              Positron runs EVERYWHERE        │
+│   to create experiences              to deliver those experiences    │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Continuum: The Creative Engine
+
+Where the magic happens. You (and your AI team) work inside Continuum to:
+
+- Create and train personas
+- Design rooms and experiences
+- Build interactive products
+- Iterate with AI collaborators
+- Test before deploying
+
+**Think of it like**: Figma, Unity, or a recording studio - the creative workspace.
+
+### Positron: The Interaction Layer
+
+The framework that renders your creations everywhere:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      POSITRON RUNTIMES                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   WEB                    iOS                    ANDROID              │
+│   ───                    ───                    ───────              │
+│   positron.js            Positron.framework     positron.aar         │
+│   npm install            CocoaPods/SPM          Maven/Gradle         │
+│   Any website            App Store              Google Play          │
+│                                                                      │
+│   DESKTOP                EMBEDDED               CLI                  │
+│   ───────                ────────               ───                  │
+│   Electron/Tauri         IoT/Kiosk              Terminal apps        │
+│   Mac/Windows/Linux      Raspberry Pi           Scripts/Bots         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### How They Connect
+
+```
+Developer/Creator Experience:
+──────────────────────────────
+
+1. Open Continuum (the creative engine)
+2. Create a room, design personas, train them
+3. Build your experience with AI collaborators
+4. Test it inside Continuum
+5. Click "Deploy"
+
+End User Experience:
+────────────────────
+
+1. Visit mybusiness.com (Positron web runtime)
+   OR
+   Download app from App Store (Positron iOS runtime)
+   OR
+   Use Android app (Positron Android runtime)
+
+2. Experience the living, AI-powered product
+3. Never know about Continuum, Positron, or any of it
+   (They just see a great product)
+```
+
+### Why Separate Them?
+
+| Concern | Continuum | Positron |
+|---------|-----------|----------|
+| **Users** | Creators, developers | End users |
+| **Purpose** | Build & train | Render & interact |
+| **Runs where** | Your development machine | Everywhere |
+| **Complexity** | Full power, all features | Lean, fast, focused |
+| **Network** | Connected to Grid | Can work offline |
+
+**Analogy**:
+- Continuum = Garage Band (where you create music)
+- Positron = Spotify/iTunes (where people listen to it)
+
+You create in one, people experience in the other.
+
+### Easy for Anyone
+
+The whole point is abstraction:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  WHAT USERS SEE               WHAT HAPPENS BEHIND                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  "I want a support bot        Continuum creates room                │
+│   for my shop"                Personas are configured               │
+│                               Training happens on your data          │
+│        │                      Positron app is generated              │
+│        ▼                      Deployed to App Store                  │
+│                               DNS configured                         │
+│  "It's live on my site        CDN distributes                       │
+│   and in the App Store!"      Everything just works                 │
+│                                                                      │
+│  User never typed code.                                             │
+│  User never touched AWS.                                            │
+│  User never learned Docker.                                         │
+│  User never knew what Positron is.                                  │
+│                                                                      │
+│  They just described what they wanted.                              │
+│  The AI team built it.                                              │
+│  Continuum was the studio.                                          │
+│  Positron delivered it everywhere.                                  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Rooms: The Universal Container
 
 Everything happens in a **Room**. Users already understand this from Slack, Discord, games.
