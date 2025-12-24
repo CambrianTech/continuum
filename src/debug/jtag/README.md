@@ -429,6 +429,7 @@ Open source → Developers try it → Some contribute back → Platform improves
 
 ### Architecture & Vision
 - **[CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md)** — Grand vision, The Stack, Rooms, Deployment
+- **[AI-ALIGNMENT-PHILOSOPHY.md](docs/AI-ALIGNMENT-PHILOSOPHY.md)** — Safety through evolutionary citizenship
 - **[POSITRON-ARCHITECTURE.md](docs/POSITRON-ARCHITECTURE.md)** — AI-native UI framework
 - **[CONTINUUM-BUSINESS-MODEL.md](docs/CONTINUUM-BUSINESS-MODEL.md)** — Open source business model
 

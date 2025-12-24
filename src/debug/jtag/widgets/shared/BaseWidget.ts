@@ -189,10 +189,18 @@ export abstract class BaseWidget extends HTMLElement {
         return;
       }
 
+      // Get userId - works for both BaseUser instances (getter) and plain objects (JSON deserialized)
+      // Plain objects from WebSocket have { entity: { id: ... } }, not .id getter
+      const userId = currentUser.id ?? (currentUser as any).entity?.id;
+      if (!userId) {
+        console.warn('⚠️ BaseWidget: User has no id (neither getter nor entity.id)');
+        return;
+      }
+
       // Load user state
       const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.USER_STATES,
-        filter: { userId: currentUser.id },
+        filter: { userId },
         limit: 1
       });
 
