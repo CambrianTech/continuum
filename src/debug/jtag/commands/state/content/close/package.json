@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/state/content/close",
+  "version": "1.0.0",
+  "description": "Close a content item (remove from user's open tabs). Handles currentItemId reassignment if closing the active tab.",
+  "main": "server/StateContentCloseServerCommand.ts",
+  "types": "shared/StateContentCloseTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/StateContentCloseIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "state/content/close"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

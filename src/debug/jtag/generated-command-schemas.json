@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-24T19:33:19.488Z",
+  "generated": "2025-12-24T20:55:34.662Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -522,6 +522,38 @@
           "type": "boolean",
           "required": false,
           "description": "statusOnly parameter"
+        }
+      }
+    },
+    {
+      "name": "state/content/switch",
+      "description": "State Content Switch Command - Shared Types\n *\n * Switch to an existing open content item (set as current/highlighted tab).\n * Does NOT add to openItems - use content/open for that.",
+      "params": {
+        "userId": {
+          "type": "string",
+          "required": true,
+          "description": "userId parameter"
+        },
+        "contentItemId": {
+          "type": "string",
+          "required": true,
+          "description": "contentItemId parameter"
+        }
+      }
+    },
+    {
+      "name": "state/content/close",
+      "description": "State Content Close Command - Shared Types\n *\n * Close a content item (remove from user's open tabs). Handles currentItemId reassignment if closing the active tab.",
+      "params": {
+        "userId": {
+          "type": "string",
+          "required": true,
+          "description": "userId parameter"
+        },
+        "contentItemId": {
+          "type": "string",
+          "required": true,
+          "description": "contentItemId parameter"
         }
       }
     },

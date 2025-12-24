@@ -1,0 +1,43 @@
+{
+  "name": "state/content/switch",
+  "description": "Switch to an existing open content item (set as current/highlighted tab). Does NOT add to openItems - use content/open for that.",
+  "params": [
+    {
+      "name": "userId",
+      "type": "UUID",
+      "optional": false,
+      "description": "User ID whose content state to modify"
+    },
+    {
+      "name": "contentItemId",
+      "type": "UUID",
+      "optional": false,
+      "description": "ID of the content item to switch to (must already be in openItems)"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether the switch operation succeeded"
+    },
+    {
+      "name": "currentItemId",
+      "type": "UUID",
+      "description": "Current item ID after switching"
+    },
+    {
+      "name": "error",
+      "type": "string | undefined",
+      "description": "Error message if operation failed (e.g., item not found in openItems)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Switch to an existing open tab",
+      "command": "./jtag state/content/switch --userId=\"abc-123\" --contentItemId=\"xyz-789\"",
+      "expectedResult": "{ success: true, currentItemId: \"xyz-789\" }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

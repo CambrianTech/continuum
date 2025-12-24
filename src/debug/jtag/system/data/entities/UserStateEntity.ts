@@ -202,15 +202,29 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Add a new content item to the user's open tabs
+   * Deduplicates by entityId (e.g., roomId) - clicking same room twice moves it to front
    */
   addContentItem(item: Omit<ContentItem, 'lastAccessedAt'>): void {
+    // Check if this entity is already open (by entityId, not content item id)
+    const existingItem = this.contentState.openItems.find(
+      existing => existing.entityId === item.entityId && existing.type === item.type
+    );
+
+    if (existingItem) {
+      // Already open - just switch to it (move to front, update timestamp)
+      existingItem.lastAccessedAt = new Date();
+      this.contentState.openItems = this.contentState.openItems.filter(i => i.id !== existingItem.id);
+      this.contentState.openItems.unshift(existingItem);
+      this.contentState.currentItemId = existingItem.id;
+      this.contentState.lastUpdatedAt = new Date();
+      return;
+    }
+
+    // New content - create item with timestamp
     const contentItem: ContentItem = {
       ...item,
       lastAccessedAt: new Date()
     };
-
-    // Remove if already exists (move to front)
-    this.contentState.openItems = this.contentState.openItems.filter(existing => existing.id !== item.id);
 
     // Add to front
     this.contentState.openItems.unshift(contentItem);

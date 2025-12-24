@@ -1,0 +1,48 @@
+{
+  "name": "state/content/close",
+  "description": "Close a content item (remove from user's open tabs). Handles currentItemId reassignment if closing the active tab.",
+  "params": [
+    {
+      "name": "userId",
+      "type": "UUID",
+      "optional": false,
+      "description": "User ID whose content state to modify"
+    },
+    {
+      "name": "contentItemId",
+      "type": "UUID",
+      "optional": false,
+      "description": "ID of the content item to close"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether the close operation succeeded"
+    },
+    {
+      "name": "openItemsCount",
+      "type": "number",
+      "description": "Number of open items after closing"
+    },
+    {
+      "name": "currentItemId",
+      "type": "UUID | undefined",
+      "description": "New current item ID after closing (may change if closed item was active)"
+    },
+    {
+      "name": "error",
+      "type": "string | undefined",
+      "description": "Error message if operation failed"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Close a specific tab by content item ID",
+      "command": "./jtag state/content/close --userId=\"abc-123\" --contentItemId=\"xyz-789\"",
+      "expectedResult": "{ success: true, openItemsCount: 2, currentItemId: \"new-current-id\" }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

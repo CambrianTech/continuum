@@ -9,7 +9,10 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
+import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import { COMMANDS } from '../../shared/generated-command-constants';
+import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
@@ -75,15 +78,85 @@ export class MainWidget extends BaseWidget {
     // Listen to tab events from content-tabs-widget
     this.addEventListener('tab-clicked', ((event: CustomEvent) => {
       const tabId = event.detail.tabId;
-      console.log('📋 MainPanel: Tab clicked event received:', tabId);
-      // Future: Handle tab navigation/switching
+      this.handleTabClick(tabId);
     }) as EventListener);
 
     this.addEventListener('tab-closed', ((event: CustomEvent) => {
       const tabId = event.detail.tabId;
-      console.log('📋 MainPanel: Tab close event received:', tabId);
-      // Future: Handle tab closing
+      this.handleTabClose(tabId);
     }) as EventListener);
+  }
+
+  /**
+   * Handle tab click - switch to that room/content
+   */
+  private handleTabClick(tabId: string): void {
+    // Find the content item by tabId
+    const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
+    if (!contentItem) {
+      console.warn(`⚠️ MainPanel: Tab not found: ${tabId}`);
+      return;
+    }
+
+    // Already the current tab? Skip
+    if (this.userState?.contentState?.currentItemId === tabId) {
+      return;
+    }
+
+    // Update local state immediately (optimistic UI)
+    if (this.userState?.contentState) {
+      this.userState.contentState.currentItemId = tabId;
+    }
+
+    // Update tab highlighting immediately
+    this.updateContentTabs();
+
+    // Emit room selected event to switch chat content
+    Events.emit(UI_EVENTS.ROOM_SELECTED, {
+      roomId: contentItem.entityId,
+      roomName: contentItem.title
+    });
+
+    console.log(`📋 MainPanel: Switched to tab "${contentItem.title}"`);
+  }
+
+  /**
+   * Handle tab close - remove from openItems
+   */
+  private async handleTabClose(tabId: string): Promise<void> {
+    const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
+    if (!contentItem) return;
+
+    // Remove from local state immediately (optimistic UI)
+    if (this.userState?.contentState) {
+      this.userState.contentState.openItems = this.userState.contentState.openItems.filter(item => item.id !== tabId);
+
+      // If we closed the current tab, switch to the first remaining tab
+      if (this.userState.contentState.currentItemId === tabId) {
+        const firstItem = this.userState.contentState.openItems[0];
+        if (firstItem) {
+          this.userState.contentState.currentItemId = firstItem.id;
+          Events.emit(UI_EVENTS.ROOM_SELECTED, {
+            roomId: firstItem.entityId,
+            roomName: firstItem.title
+          });
+        }
+      }
+    }
+
+    // Update tabs immediately
+    this.updateContentTabs();
+
+    // Persist to server in background (don't await)
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
+        userId: userId as UUID,
+        contentItemId: tabId as UUID
+      }).catch(err => console.error('Failed to persist tab close:', err));
+    }
+
+    console.log(`📋 MainPanel: Closed tab "${contentItem.title}"`);
   }
 
   private openThemeTab(): void {
@@ -357,23 +430,47 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
-   * Subscribe to content events (opened, closed, switched)
+   * Subscribe to content events (opened, closed, switched) and room selection
    */
   private subscribeToContentEvents(): void {
+    // Helper to refresh tabs
+    const refreshTabs = async (source: string) => {
+      try {
+        console.log(`📋 MainPanel: Refreshing tabs from ${source}...`);
+        await this.loadUserContext();
+        await this.updateContentTabs();
+        console.log(`✅ MainPanel: Tabs refreshed from ${source}, now ${this.userState?.contentState?.openItems?.length} items`);
+      } catch (error) {
+        console.error(`❌ MainPanel: Error refreshing tabs from ${source}:`, error);
+      }
+    };
+
     // Listen for content:opened events from content/open command
-    Events.subscribe('content:opened', async () => {
-      console.log('📋 MainPanel: Received content:opened event, refreshing tabs');
-
-      // Reload userState from database to get fresh openItems
-      await this.loadUserContext();
-
-      // Refresh tabs display with new data
-      await this.updateContentTabs();
-
-      console.log('✅ MainPanel: Tabs refreshed after content opened');
+    Events.subscribe('content:opened', (eventData: unknown) => {
+      console.log('📋 MainPanel: Received content:opened event!', eventData);
+      refreshTabs('content:opened');
     });
 
-    console.log('🔗 MainPanel: Subscribed to content events');
+    // Also listen for content:closed and content:switched
+    Events.subscribe('content:closed', () => {
+      console.log('📋 MainPanel: Received content:closed event');
+      refreshTabs('content:closed');
+    });
+
+    Events.subscribe('content:switched', () => {
+      console.log('📋 MainPanel: Received content:switched event');
+      refreshTabs('content:switched');
+    });
+
+    // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup
+    // RoomListWidget emits this and it definitely works (sidebar highlights change)
+    Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
+      console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
+      // Small delay to let the content/open command complete first
+      setTimeout(() => refreshTabs('ROOM_SELECTED'), 100);
+    });
+
+    console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
   }
 
   /**

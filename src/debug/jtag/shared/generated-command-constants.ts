@@ -142,6 +142,8 @@ export const COMMANDS = {
   SESSION_DESTROY: 'session/destroy',
   SESSION_GET_ID: 'session/get-id',
   SESSION_GET_USER: 'session/get-user',
+  STATE_CONTENT_CLOSE: 'state/content/close',
+  STATE_CONTENT_SWITCH: 'state/content/switch',
   SYSTEM_DAEMONS: 'system/daemons',
   THEME_GET: 'theme/get',
   THEME_LIST: 'theme/list',
