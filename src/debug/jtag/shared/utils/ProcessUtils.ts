@@ -36,8 +36,8 @@ export async function execAsync(
     });
     
     return {
-      stdout: result.stdout,
-      stderr: result.stderr,
+      stdout: result.stdout?.toString() ?? '',
+      stderr: result.stderr?.toString() ?? '',
       success: true,
       duration: Date.now() - startTime
     };
