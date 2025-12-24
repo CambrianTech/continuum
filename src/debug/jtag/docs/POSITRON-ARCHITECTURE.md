@@ -299,6 +299,45 @@ await continuum.deploy({
 // Credentials come from config.env - no hardcoding
 ```
 
+**AI Handles the DevOps** - users never touch infrastructure:
+
+```
+User: "Deploy my support bot to AWS"
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  Persona (behind the scenes):                                        │
+│                                                                      │
+│  1. Generate Dockerfile optimized for the room type                  │
+│  2. Build container with all dependencies                            │
+│  3. Push to ECR (Elastic Container Registry)                         │
+│  4. Create ECS task definition                                       │
+│  5. Set up load balancer, SSL, domain                                │
+│  6. Configure auto-scaling rules                                     │
+│  7. Deploy and verify health checks                                  │
+│  8. Report: "Your support bot is live at support.mybiz.com"         │
+│                                                                      │
+│  User didn't write a Dockerfile.                                     │
+│  User didn't configure Kubernetes.                                   │
+│  User didn't touch AWS console.                                      │
+│  User just said what they wanted.                                    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+```typescript
+// The AI generates and manages all of this
+const deployment = {
+  dockerfile: persona.generate('dockerfile', { roomType: 'chat', runtime: 'node' }),
+  compose: persona.generate('docker-compose', { services: ['app', 'redis'] }),
+  k8s: persona.generate('kubernetes', { replicas: 3, autoscale: true }),
+  terraform: persona.generate('terraform', { provider: 'aws', region: 'us-east-1' })
+};
+
+// Personas understand infrastructure
+// They've seen millions of Dockerfiles
+// They know the best practices
+// They handle the complexity so users don't have to
+```
+
 ### Why This Architecture
 
 **Separation of concerns:**
