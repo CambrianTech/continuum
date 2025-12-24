@@ -261,6 +261,44 @@ const product = await continuum.deploy({
 // Updates flow automatically to deployed product
 ```
 
+**Deployment Targets** - just config values like any other:
+
+```bash
+# ~/.continuum/config.env - your deployment credentials
+
+# Cloud hosting
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+GCP_SERVICE_ACCOUNT_KEY=...
+VERCEL_TOKEN=...
+
+# App stores
+APPLE_DEVELOPER_ID=...
+APPLE_APP_STORE_CONNECT_KEY=...
+GOOGLE_PLAY_SERVICE_ACCOUNT=...
+ANDROID_KEYSTORE_PASSWORD=...
+
+# CDN / Distribution
+CLOUDFLARE_API_TOKEN=...
+FASTLY_API_KEY=...
+```
+
+```typescript
+// Deploy to multiple targets with one command
+await continuum.deploy({
+  room: 'my-game',
+  targets: [
+    { type: 'web', host: 'vercel', domain: 'mygame.io' },
+    { type: 'ios', appId: 'com.mygame.app' },
+    { type: 'android', packageName: 'io.mygame.app' },
+    { type: 'widget', cdn: 'cloudflare' }
+  ]
+});
+
+// Same room, same persona, deployed everywhere
+// Credentials come from config.env - no hardcoding
+```
+
 ### Why This Architecture
 
 **Separation of concerns:**
