@@ -117,21 +117,23 @@ export class PersonaSoul {
       genomeLogger
     );
 
-    // PersonaGenomeManager(personaId, displayName, entityGetter, clientGetter)
-    this.genomeManager = new PersonaGenomeManager(
-      personaUser.id,
-      personaUser.displayName,
-      () => personaUser.entity,
-      () => personaUser.client
-    );
-
     // TrainingDataAccumulator(personaId, displayName, trainingLogger?)
     const trainingLogger = (message: string) => {
       this.logger.enqueueLog('training.log', message);
     };
+
+    // PersonaGenomeManager(personaId, displayName, entityGetter, clientGetter, logger)
+    this.genomeManager = new PersonaGenomeManager(
+      personaUser.id,
+      personaUser.displayName,
+      () => personaUser.entity,
+      () => personaUser.client,
+      trainingLogger  // Use training.log for genome manager too (related to training)
+    );
+
     this.trainingAccumulator = new TrainingDataAccumulator(personaUser.id, personaUser.displayName, trainingLogger);
 
-    // PersonaTrainingManager(personaId, displayName, trainingAccumulator, stateGetter, saveStateCallback)
+    // PersonaTrainingManager(personaId, displayName, trainingAccumulator, stateGetter, saveStateCallback, logger)
     this.trainingManager = new PersonaTrainingManager(
       personaUser.id,
       personaUser.displayName,
@@ -140,7 +142,8 @@ export class PersonaSoul {
       async () => {
         await personaUser.saveState();
         return { success: true };
-      }
+      },
+      trainingLogger  // Pass training logger
     );
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface

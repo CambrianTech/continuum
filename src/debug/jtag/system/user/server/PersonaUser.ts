@@ -103,6 +103,8 @@ import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/Persona
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
 import { PersonaLogger } from './modules/PersonaLogger';
+import { setToolDefinitionsLogger } from './modules/PersonaToolDefinitions';
+import { setPeerReviewLogger } from './modules/cognition/PeerReviewManager';
 import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
 import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
 import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBody';
@@ -315,6 +317,15 @@ export class PersonaUser extends AIUser {
 
     // Initialize logger FIRST - other subsystems need it
     this.logger = new PersonaLogger(this);
+
+    // Wire up module-level loggers (these are singleton modules, not per-persona)
+    // Use cognition.log for tool definitions and peer review (both are cognition-related)
+    setToolDefinitionsLogger((message: string) => {
+      this.logger.enqueueLog('cognition.log', message);
+    });
+    setPeerReviewLogger((message: string) => {
+      this.logger.enqueueLog('cognition.log', message);
+    });
 
     // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
     // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters

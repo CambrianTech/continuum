@@ -138,10 +138,11 @@ export class ComponentLogger {
 
   /**
    * Write raw pre-formatted message to log file
+   * Adds newline automatically to ensure each entry is on its own line
    */
   writeRaw(message: string): void {
     if (this.logFilePath && this.parentLogger) {
-      this.parentLogger.queueMessage(this.logFilePath, message);
+      this.parentLogger.queueMessage(this.logFilePath, message + '\n');
     }
   }
 
