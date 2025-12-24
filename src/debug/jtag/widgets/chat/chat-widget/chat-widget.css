@@ -81,6 +81,16 @@
   border-color: var(--border-subtle-hover, rgba(255, 255, 255, 0.25));
 }
 
+/* Clickable status personas - shows status panel on click */
+.member-chip.clickable-status {
+  cursor: pointer;
+}
+
+.member-chip.clickable-status:hover {
+  background: var(--accent-primary-hover, rgba(100, 200, 255, 0.15));
+  border-color: var(--accent-primary, rgba(100, 200, 255, 0.4));
+}
+
 /* Clickable error personas - shows diagnostic info on click */
 .member-chip.clickable-error {
   cursor: pointer;

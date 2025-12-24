@@ -569,15 +569,18 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         // Get AI status emoji (thinking, generating, etc.) for subtle indication
         const statusEmoji = this.aiStatusIndicator.getStatusEmoji(user.id) || '';
 
-        // Check if this persona has an error status (clickable for diagnosis)
+        // Check status type for styling and click behavior
         const hasError = statusEmoji === '❌' || statusEmoji === '💸' || statusEmoji === '⏳';
-        const clickableClass = hasError ? 'clickable-error' : '';
+        const hasStatus = statusEmoji !== '';
+        const clickableClass = hasError ? 'clickable-error' : hasStatus ? 'clickable-status' : '';
+        const clickHint = hasError ? ' - Click to view error' : hasStatus ? ' - Click to view status' : '';
 
         return `
           <div class="member-chip ${clickableClass}"
-               title="${displayName} (${role})${hasError ? ' - Click to view error' : ''}"
+               title="${displayName} (${role})${clickHint}"
                data-persona-id="${user.id}"
-               data-has-error="${hasError}">
+               data-has-error="${hasError}"
+               data-has-status="${hasStatus}">
             ${roleIcon}
             <span class="member-name">${displayName}</span>
             ${statusEmoji ? `<span class="member-status">${statusEmoji}</span>` : ''}
@@ -667,27 +670,29 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Setup click handlers for member chips (click-to-diagnose)
-   * When a persona with an error is clicked, shows the error panel
+   * When a persona with any status is clicked, shows the status panel
    */
   private setupMemberClickHandlers(): void {
-    const memberChips = this.shadowRoot?.querySelectorAll('.member-chip[data-has-error="true"]');
+    // Handle clicks on personas with ANY status (error or active)
+    const memberChips = this.shadowRoot?.querySelectorAll('.member-chip[data-has-status="true"]');
     if (!memberChips) return;
 
     memberChips.forEach((chip) => {
       chip.addEventListener('click', () => {
         const personaId = chip.getAttribute('data-persona-id');
-        console.log(`🔍 ChatWidget: Clicked persona ${personaId} for diagnosis`);
+        const hasError = chip.getAttribute('data-has-error') === 'true';
+        console.log(`🔍 ChatWidget: Clicked persona ${personaId} (error=${hasError})`);
 
-        // Show the error panel
+        // Show the status panel
         this.toggleErrorPanel(true);
 
-        // Highlight the specific persona's error in the status container
+        // Highlight the specific persona's status in the container (if visible)
         if (personaId && this.aiStatusContainer) {
-          const errorElement = this.aiStatusContainer.querySelector(`[data-persona-id="${personaId}"]`);
-          if (errorElement) {
+          const statusElement = this.aiStatusContainer.querySelector(`[data-persona-id="${personaId}"]`);
+          if (statusElement) {
             // Add flash animation for attention
-            errorElement.classList.add('flash-highlight');
-            setTimeout(() => errorElement.classList.remove('flash-highlight'), 1000);
+            statusElement.classList.add('flash-highlight');
+            setTimeout(() => statusElement.classList.remove('flash-highlight'), 1000);
           }
         }
       });
