@@ -403,7 +403,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         ${this.renderHeader()}
 
         <!-- AI Status Indicators Container (sticky above messages) -->
-        <div class="ai-status-container" id="aiStatusContainer"></div>
+        <div class="ai-status-container" id="aiStatusContainer">
+          <div class="ai-status-summary" id="aiStatusSummary"></div>
+        </div>
 
         <div class="entity-list-body messages-container">
           <!-- EntityScroller will populate this container -->
@@ -567,8 +569,18 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         // Get AI status emoji (thinking, generating, etc.) for subtle indication
         const statusEmoji = this.aiStatusIndicator.getStatusEmoji(user.id) || '';
 
+        // Check status type for styling and click behavior
+        const hasError = statusEmoji === '❌' || statusEmoji === '💸' || statusEmoji === '⏳';
+        const hasStatus = statusEmoji !== '';
+        const clickableClass = hasError ? 'clickable-error' : hasStatus ? 'clickable-status' : '';
+        const clickHint = hasError ? ' - Click to view error' : hasStatus ? ' - Click to view status' : '';
+
         return `
-          <div class="member-chip" title="${displayName} (${role})">
+          <div class="member-chip ${clickableClass}"
+               title="${displayName} (${role})${clickHint}"
+               data-persona-id="${user.id}"
+               data-has-error="${hasError}"
+               data-has-status="${hasStatus}">
             ${roleIcon}
             <span class="member-name">${displayName}</span>
             ${statusEmoji ? `<span class="member-status">${statusEmoji}</span>` : ''}
@@ -604,9 +616,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const headerElement = this.shadowRoot.querySelector('.entity-list-header');
       if (headerElement) {
         headerElement.innerHTML = this.renderHeader();
-        // Reattach error toggle handler after header update
+        // Reattach handlers after header update
         this.setupErrorToggleHandler();
+        this.setupMemberClickHandlers();
       }
+      // Update the compact status summary line
+      this.updateStatusSummary();
       this.headerUpdateTimeout = undefined;
     }, 0) as unknown as number;
   }
@@ -619,14 +634,30 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (!toggleButton) return;
 
     toggleButton.addEventListener('click', () => {
-      this.errorsHidden = !this.errorsHidden;
+      this.toggleErrorPanel();
+    });
+  }
 
-      // Update container visibility
-      if (this.aiStatusContainer) {
-        this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
-      }
+  /**
+   * Toggle the error panel visibility (shared logic for button and member clicks)
+   */
+  private toggleErrorPanel(forceShow: boolean = false): void {
+    const toggleButton = this.shadowRoot?.getElementById('errorToggle');
 
-      // Update button visual state
+    // If forceShow is true, always show; otherwise toggle
+    if (forceShow && !this.errorsHidden) {
+      return; // Already showing, nothing to do
+    }
+
+    this.errorsHidden = forceShow ? false : !this.errorsHidden;
+
+    // Update container visibility
+    if (this.aiStatusContainer) {
+      this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
+    }
+
+    // Update button visual state
+    if (toggleButton) {
       if (this.errorsHidden) {
         toggleButton.classList.remove('pressed');
         toggleButton.setAttribute('title', `Show errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
@@ -634,7 +665,56 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         toggleButton.classList.add('pressed');
         toggleButton.setAttribute('title', `Hide errors ${this.aiStatusIndicator.getErrorCount() > 0 ? `(${this.aiStatusIndicator.getErrorCount()})` : ''}`);
       }
+    }
+  }
+
+  /**
+   * Setup click handlers for member chips (click-to-diagnose)
+   * When a persona with any status is clicked, shows the status panel
+   */
+  private setupMemberClickHandlers(): void {
+    // Handle clicks on personas with ANY status (error or active)
+    const memberChips = this.shadowRoot?.querySelectorAll('.member-chip[data-has-status="true"]');
+    if (!memberChips) return;
+
+    memberChips.forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const personaId = chip.getAttribute('data-persona-id');
+        const hasError = chip.getAttribute('data-has-error') === 'true';
+        console.log(`🔍 ChatWidget: Clicked persona ${personaId} (error=${hasError})`);
+
+        // Show the status panel
+        this.toggleErrorPanel(true);
+
+        // Highlight the specific persona's status in the container (if visible)
+        if (personaId && this.aiStatusContainer) {
+          const statusElement = this.aiStatusContainer.querySelector(`[data-persona-id="${personaId}"]`);
+          if (statusElement) {
+            // Add flash animation for attention
+            statusElement.classList.add('flash-highlight');
+            setTimeout(() => statusElement.classList.remove('flash-highlight'), 1000);
+          }
+        }
+      });
     });
+  }
+
+  /**
+   * Update the compact status summary line
+   * Shows: "✍️ Helper, Teacher · 🤔 CodeReview · ❌ Fireworks"
+   */
+  private updateStatusSummary(): void {
+    const summaryElement = this.shadowRoot?.getElementById('aiStatusSummary');
+    if (!summaryElement) return;
+
+    const summary = this.aiStatusIndicator.getFormattedSummary();
+    if (summary) {
+      summaryElement.textContent = summary;
+      summaryElement.style.display = 'block';
+    } else {
+      summaryElement.textContent = '';
+      summaryElement.style.display = 'none';
+    }
   }
 
   /**

@@ -1,0 +1,42 @@
+{
+  "name": "@continuum/jtag-command-comms-test",
+  "version": "1.0.0",
+  "description": "JTAG Comms Test Command - THROWAWAY test for daemon communication pattern",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "config": {
+    "category": "development"
+  },
+  "environmentTestConfig": {
+    "environments": ["server"],
+    "commandName": "comms-test",
+    "testParams": {
+      "message": "test-echo"
+    },
+    "expectedFields": [
+      "success",
+      "echo",
+      "message"
+    ],
+    "performanceThresholdMs": 50,
+    "testScenarios": [
+      {
+        "name": "basic-echo",
+        "description": "Basic echo test",
+        "params": {
+          "message": "hello"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo 'Run tests via parent JTAG test system'"
+  },
+  "keywords": [
+    "jtag",
+    "daemon",
+    "testing",
+    "throwaway"
+  ]
+}

@@ -93,7 +93,7 @@ describe('AI Compiler Error Detection', () => {
       // the AI should be guided to check TypeScript compilation
       
       const logPaths = [
-        '.continuum/jtag/system/logs/npm-start.log',
+        '.continuum/jtag/logs/system/npm-start.log',
         '.continuum/jtag/signals/system-ready.json'
       ];
       

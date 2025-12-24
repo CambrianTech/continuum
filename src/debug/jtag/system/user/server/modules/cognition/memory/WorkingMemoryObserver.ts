@@ -9,7 +9,11 @@ import type { WorkingMemoryEntry } from './InMemoryCognitionStorage';
 import { WorkingMemoryManager } from './WorkingMemoryManager';
 
 export class WorkingMemoryObserver {
-  constructor(private workingMemory: WorkingMemoryManager) {}
+  private log: (message: string) => void;
+
+  constructor(private workingMemory: WorkingMemoryManager, logger?: (message: string) => void) {
+    this.log = logger || (() => {});
+  }
 
   /**
    * Get recent thoughts (non-blocking)
@@ -25,7 +29,7 @@ export class WorkingMemoryObserver {
         includePrivate: true // Observer can see private thoughts
       });
     } catch (error) {
-      console.error(`❌ [WorkingMemoryObserver] Error getting recent thoughts:`, error);
+      this.log(`❌ Error getting recent thoughts: ${error}`);
       return [];
     }
   }
@@ -46,7 +50,7 @@ export class WorkingMemoryObserver {
         includePrivate: true
       });
     } catch (error) {
-      console.error(`❌ [WorkingMemoryObserver] Error getting important thoughts:`, error);
+      this.log(`❌ Error getting important thoughts: ${error}`);
       return [];
     }
   }
@@ -67,7 +71,7 @@ export class WorkingMemoryObserver {
         includePrivate: true
       });
     } catch (error) {
-      console.error(`❌ [WorkingMemoryObserver] Error getting domain thoughts:`, error);
+      this.log(`❌ Error getting domain thoughts: ${error}`);
       return [];
     }
   }
@@ -81,7 +85,7 @@ export class WorkingMemoryObserver {
       const capacity = await this.workingMemory.getCapacity(domain);
       return capacity.used / capacity.max;
     } catch (error) {
-      console.error(`❌ [WorkingMemoryObserver] Error getting memory pressure:`, error);
+      this.log(`❌ Error getting memory pressure: ${error}`);
       return 0;
     }
   }

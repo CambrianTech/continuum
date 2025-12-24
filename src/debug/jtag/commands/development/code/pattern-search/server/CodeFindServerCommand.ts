@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
-import minimatch from 'minimatch';
+import { minimatch } from 'minimatch';
 
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';

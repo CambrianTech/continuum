@@ -31,6 +31,7 @@ import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import { Logger, FileMode } from '../../../../../core/logging/Logger';
 import type { ComponentLogger } from '../../../../../core/logging/Logger';
+import { LoggingConfig } from '../../../../../core/logging/LoggingConfig';
 
 export type Subsystem = 'mind' | 'body' | 'soul' | 'cns';
 
@@ -60,6 +61,8 @@ export class SubsystemLogger {
   private readonly personaId: UUID;
   private readonly uniqueId: string;
   private readonly logger: ComponentLogger;
+  private readonly logRoot: string;
+  private readonly logRootIsLogsDir: boolean;  // true if logRoot is already the logs directory
 
   constructor(
     subsystem: Subsystem,
@@ -71,13 +74,24 @@ export class SubsystemLogger {
     this.personaId = personaId;
     this.uniqueId = uniqueId;
 
-    // Determine log category (like daemon logs: 'daemons/UserDaemonServer')
-    // Persona logs use: 'personas/{uniqueId}/logs/{subsystem}'
-    const category = `personas/${uniqueId}/logs/${subsystem}`;
-
-    // Create logger using core Logger system (works like daemon logs)
     const componentName = `${uniqueId}:${subsystem}`;
-    this.logger = Logger.create(componentName, category);
+
+    // When config.logDir is provided, it's already the logs directory
+    // so category is just the subsystem name. Otherwise, we default to
+    // persona home and add logs/ prefix to category.
+    if (config.logDir) {
+      // config.logDir IS the logs directory - use it as logRoot, subsystem as category
+      this.logRootIsLogsDir = true;
+      this.logRoot = path.isAbsolute(config.logDir)
+        ? config.logDir
+        : path.join(SystemPaths.root, config.logDir);
+      this.logger = Logger.create(componentName, subsystem, this.logRoot);
+    } else {
+      // Default: persona home directory, with logs/ prefix in category
+      this.logRootIsLogsDir = false;
+      this.logRoot = path.join(SystemPaths.root, 'personas', uniqueId);
+      this.logger = Logger.create(componentName, `logs/${subsystem}`, this.logRoot);
+    }
   }
 
   // Delegate all logging methods to ComponentLogger
@@ -128,14 +142,20 @@ export class SubsystemLogger {
    * @param message - Log message to write
    */
   enqueueLog(fileName: string, message: string): void {
-    // Convert filename to category (like daemon logs)
-    const category = `personas/${this.uniqueId}/logs/${fileName.replace(/\.log$/, '')}`;
+    const baseName = fileName.replace(/\.log$/, '');
 
-    // Create a ComponentLogger for this file and write the raw message
-    const fileLogger = Logger.create(
-      `${this.uniqueId}:${fileName.replace('.log', '')}`,
-      category
-    );
+    // Check if logging is enabled for this persona + category
+    if (!LoggingConfig.isEnabled(this.uniqueId, baseName)) {
+      return; // Early exit - logging disabled for this persona/category
+    }
+
+    const componentName = `${this.uniqueId}:${baseName}`;
+
+    // If logRoot is already the logs directory, don't add logs/ prefix
+    const category = this.logRootIsLogsDir ? baseName : `logs/${baseName}`;
+
+    // Create a ComponentLogger for this file using the same logRoot as this logger
+    const fileLogger = Logger.create(componentName, category, this.logRoot);
     fileLogger.writeRaw(message + '\n');
   }
 }

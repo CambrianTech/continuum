@@ -393,7 +393,7 @@ export class SystemMetricsCollector {
   private async checkBuildStatus(): Promise<BuildStatus> {
     try {
       // Check if TypeScript build completed successfully
-      const startupLog = '.continuum/jtag/system/logs/npm-start.log';
+      const startupLog = '.continuum/jtag/logs/system/npm-start.log';
       const { stdout } = await execAsync(`tail -150 ${startupLog} 2>/dev/null | grep -E "(build|tsc|Build|esbuild|npm run|Error|error|Could not resolve)" | tail -15 || echo ""`);
       
       // Only flag as build failure if we have RECENT/FINAL build failures

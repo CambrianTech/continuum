@@ -40,7 +40,7 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
     // Low priority background process
     super(persona, { priority: 'low', name: 'MemoryConsolidation' });
 
-    this.longTermMemory = new LongTermMemoryStore(persona.id);
+    this.longTermMemory = new LongTermMemoryStore(persona.id, (msg) => this.log(msg));
 
     // Default options
     this.options = {
@@ -87,7 +87,7 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
         await this.activate(patterns.context!);
       }
     } catch (error) {
-      console.error(`❌ [${this.name}] Tick error:`, error);
+      this.log(`❌ Tick error: ${error}`);
     }
   }
 
@@ -152,7 +152,7 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
   }
 
   private async consolidate(reason: string): Promise<void> {
-    console.log(`💾 [${this.name}] Consolidation triggered: ${reason}`);
+    this.log(`💾 Consolidation triggered: ${reason}`);
 
     // Get high-importance memories from persona (direct access)
     const candidates = await this.persona.workingMemory.recall({
@@ -185,11 +185,11 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
     // Clear from working memory
     await this.persona.workingMemory.clearBatch(candidates.map(c => c.id));
 
-    console.log(`💾 [${this.name}] Consolidated ${batch.length} memories`);
+    this.log(`💾 Consolidated ${batch.length} memories`);
   }
 
   private async activate(contextEmbedding: number[]): Promise<void> {
-    console.log(`🔗 [${this.name}] Activation triggered`);
+    this.log(`🔗 Activation triggered`);
 
     // Find similar in long-term
     const relevant = await this.longTermMemory.findSimilar(contextEmbedding, {
@@ -216,7 +216,7 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
       });
     }
 
-    console.log(`🔗 [${this.name}] Activated ${relevant.length} memories`);
+    this.log(`🔗 Activated ${relevant.length} memories`);
   }
 
   private async matchesLongTermPatterns(embeddings: number[][]): Promise<boolean> {

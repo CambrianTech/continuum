@@ -146,7 +146,7 @@ async function testAIDecisionReportIntegration(): Promise<void> {
     console.error('   1. Check DecisionEntity table: ./jtag data/list --collection=decisions --limit=5');
     console.error('   2. Run report manually: ./jtag ai/report/decisions --limit=5 --verbose=true');
     console.error('   3. Check AI decisions log: .continuum/jtag/sessions/system/00000000-0000-0000-0000-000000000000/logs/ai-decisions.log');
-    console.error('   4. Check for errors: grep "ERROR" .continuum/jtag/system/logs/npm-start.log\n');
+    console.error('   4. Check for errors: grep "ERROR" .continuum/jtag/logs/system/npm-start.log\n');
 
     throw error;
   } finally {

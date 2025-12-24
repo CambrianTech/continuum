@@ -125,9 +125,10 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
         return path.join(baseRoot, 'personas', uniqueId, 'logs', `${subsystem}.log`);
       },
 
+      // System logs - all under logs/system/ with subdirectories
       system: path.join(baseRoot, 'jtag', 'logs', 'system'),
-      sql: path.join(baseRoot, 'jtag', 'system', 'logs', 'sql.log'),
-      errors: path.join(baseRoot, 'jtag', 'system', 'logs', 'errors.log')
+      sql: path.join(baseRoot, 'jtag', 'logs', 'system', 'data', 'sql.log'),
+      errors: path.join(baseRoot, 'jtag', 'logs', 'system', 'core', 'errors.log')
     },
 
     sessions: {

@@ -25,13 +25,18 @@ import {
  * - Emitting training lifecycle events
  */
 export class PersonaTrainingManager {
+  private log: (message: string) => void;
+
   constructor(
     private readonly personaId: UUID,
     private readonly displayName: string,
     private readonly trainingAccumulator: TrainingDataAccumulator,
     private readonly getState: () => UserStateEntity,
-    private readonly saveState: () => Promise<{ success: boolean; error?: string }>
-  ) {}
+    private readonly saveState: () => Promise<{ success: boolean; error?: string }>,
+    logger?: (message: string) => void
+  ) {
+    this.log = logger || (() => {});
+  }
 
   /**
    * PHASE 7.5.1: Check training readiness and trigger micro-tuning
@@ -56,7 +61,7 @@ export class PersonaTrainingManager {
           const bufferSize = this.trainingAccumulator.getBufferSize(domain);
           const threshold = this.trainingAccumulator.getBatchThreshold(domain);
 
-          console.log(`🧬 ${this.displayName}: Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
+          this.log(`🧬 Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
 
           const provider = 'unsloth'; // Default provider
           const estimatedTime = bufferSize * 25; // 25ms per example estimate
@@ -89,11 +94,11 @@ export class PersonaTrainingManager {
           // Consume training data from buffer
           const examples = await this.trainingAccumulator.consumeTrainingData(domain);
 
-          console.log(`📊 ${this.displayName}: Consumed ${examples.length} examples for ${domain} training`);
+          this.log(`📊 Consumed ${examples.length} examples for ${domain} training`);
 
           // TODO Phase 7.5.1: Trigger genome/train command
           // For now, just log that we would train
-          console.log(`🚀 ${this.displayName}: Would train ${domain} adapter with ${examples.length} examples`);
+          this.log(`🚀 Would train ${domain} adapter with ${examples.length} examples`);
 
           // Clear learning state
           state.learningState.isLearning = false;
@@ -128,7 +133,7 @@ export class PersonaTrainingManager {
         }
       }
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Error checking training readiness:`, error);
+      this.log(`❌ Error checking training readiness: ${error}`);
     }
   }
 }

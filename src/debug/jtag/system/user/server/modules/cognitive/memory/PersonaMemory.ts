@@ -43,20 +43,22 @@ export class PersonaMemory {
   private personaId: UUID;
   private displayName: string;
   public genome: PersonaGenome;
+  private log: (message: string) => void;
 
   constructor(
     personaId: UUID,
     displayName: string,
     genomeConfig: PersonaGenomeConfig,
     client?: JTAGClient,
-    genomeLogger?: (message: string) => void
+    logger?: (message: string) => void
   ) {
     this.personaId = personaId;
     this.displayName = displayName;
     this.client = client;
+    this.log = logger || (() => {});
 
-    // Initialize genome (skill adapters)
-    this.genome = new PersonaGenome(genomeConfig, genomeLogger);
+    // Initialize genome (skill adapters) - pass logger
+    this.genome = new PersonaGenome(genomeConfig, logger);
   }
 
   /**
@@ -68,7 +70,7 @@ export class PersonaMemory {
    */
   async storeRAGContext(roomId: UUID, context: PersonaRAGContext): Promise<void> {
     if (!this.client) {
-      console.warn(`⚠️  PersonaMemory ${this.displayName}: Cannot store RAG context - no client`);
+      this.log(`⚠️ Cannot store RAG context - no client`);
       return;
     }
 
@@ -85,7 +87,7 @@ export class PersonaMemory {
    */
   async loadRAGContext(roomId: UUID): Promise<PersonaRAGContext | null> {
     if (!this.client) {
-      console.warn(`⚠️  PersonaMemory ${this.displayName}: Cannot load RAG context - no client`);
+      this.log(`⚠️ Cannot load RAG context - no client`);
       return null;
     }
 
@@ -121,7 +123,7 @@ export class PersonaMemory {
       timestampStr = new Date(message.timestamp).toISOString();
     } else {
       // Fallback to current time if timestamp is invalid
-      console.warn(`⚠️ PersonaMemory: Invalid timestamp type for message ${message.id}, using current time`);
+      this.log(`⚠️ Invalid timestamp type for message ${message.id}, using current time`);
       timestampStr = new Date().toISOString();
     }
 
@@ -162,7 +164,7 @@ export class PersonaMemory {
    */
   async clearRoomMemory(roomId: UUID): Promise<void> {
     // For now, just log (actual clearing will happen when artifact storage is implemented)
-    console.log(`🗑️  PersonaMemory ${this.displayName}: Clearing memory for room ${roomId}`);
+    this.log(`🗑️ Clearing memory for room ${roomId}`);
     // TODO: Delete artifact when artifacts daemon is implemented
   }
 

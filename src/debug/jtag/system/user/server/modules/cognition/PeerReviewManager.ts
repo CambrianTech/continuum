@@ -38,6 +38,24 @@ import {
 const activeSessions = new Map<UUID, Map<UUID, PeerReviewSession>>();
 
 /**
+ * Module-level logger - set via setPeerReviewLogger()
+ */
+let moduleLogger: ((message: string) => void) | null = null;
+
+/**
+ * Set logger for PeerReviewManager (non-blocking file logging)
+ */
+export function setPeerReviewLogger(logger: (message: string) => void): void {
+  moduleLogger = logger;
+}
+
+function log(message: string): void {
+  if (moduleLogger) {
+    moduleLogger(message);
+  }
+}
+
+/**
  * Get or create peer review session for a message
  */
 function getOrCreateSession(roomId: UUID, messageId: UUID): PeerReviewSession {
@@ -85,9 +103,9 @@ export async function declareProposal(
   session.proposals.push(fullProposal);
   session.outcome.proposalsSubmitted++;
 
-  console.log(`📝 [PeerReview] Proposal declared by ${fullProposal.proposerName} (${session.proposals.length} total)`);
-  console.log(`   Inference: ${fullProposal.inferenceDuration}ms, Confidence: ${fullProposal.confidence.toFixed(2)}`);
-  console.log(`   Context changes: ${fullProposal.currentContext.newMessagesSinceInference} new messages`);
+  log(`📝 Proposal declared by ${fullProposal.proposerName} (${session.proposals.length} total)`);
+  log(`   Inference: ${fullProposal.inferenceDuration}ms, Confidence: ${fullProposal.confidence.toFixed(2)}`);
+  log(`   Context changes: ${fullProposal.currentContext.newMessagesSinceInference} new messages`);
 
   return fullProposal;
 }
@@ -110,16 +128,16 @@ export async function submitRatings(ratings: ProposalRating[]): Promise<void> {
   const firstRating = ratings[0];
   const firstProposal = await getProposal(firstRating.proposalId);
   if (!firstProposal) {
-    console.error(`❌ [PeerReview] Cannot find proposal ${firstRating.proposalId}`);
+    log(`❌ Cannot find proposal ${firstRating.proposalId}`);
     return;
   }
 
   const session = getOrCreateSession(firstProposal.roomId, firstProposal.respondingToId);
   session.ratings.push(...ratings);
 
-  console.log(`⭐ [PeerReview] ${firstRating.reviewerName} rated ${ratings.length} proposals`);
+  log(`⭐ ${firstRating.reviewerName} rated ${ratings.length} proposals`);
   for (const rating of ratings) {
-    console.log(`   Proposal ${rating.proposalId.slice(0, 8)}: score=${rating.score.toFixed(2)}, shouldPost=${rating.shouldPost}`);
+    log(`   Proposal ${rating.proposalId.slice(0, 8)}: score=${rating.score.toFixed(2)}, shouldPost=${rating.shouldPost}`);
   }
 }
 
@@ -177,16 +195,15 @@ export async function makeDecisions(
   session.outcome.totalDuration = session.completedAt - session.startedAt;
 
   // Log outcome
-  console.log(`\n🎯 [PeerReview] Session complete for message ${messageId.slice(0, 8)}`);
-  console.log(`   Proposals: ${session.outcome.proposalsSubmitted} submitted, ${session.outcome.proposalsPosted} posted, ${session.outcome.proposalsRejected} rejected`);
-  console.log(`   Duration: ${session.outcome.totalDuration}ms`);
+  log(`🎯 Session complete for message ${messageId.slice(0, 8)}`);
+  log(`   Proposals: ${session.outcome.proposalsSubmitted} submitted, ${session.outcome.proposalsPosted} posted, ${session.outcome.proposalsRejected} rejected`);
+  log(`   Duration: ${session.outcome.totalDuration}ms`);
 
   for (const decision of decisions) {
     const proposal = session.proposals.find(p => p.proposalId === decision.proposalId)!;
     const status = decision.shouldPost ? '✅ POST' : '❌ REJECT';
-    console.log(`   ${status} | ${proposal.proposerName} | Score: ${decision.weightedAvgScore.toFixed(2)} | ${decision.reasoning}`);
+    log(`   ${status} | ${proposal.proposerName} | Score: ${decision.weightedAvgScore.toFixed(2)} | ${decision.reasoning}`);
   }
-  console.log('');
 
   return decisions;
 }

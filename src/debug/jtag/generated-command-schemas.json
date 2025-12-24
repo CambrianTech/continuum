@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-18T06:38:54.473Z",
+  "generated": "2025-12-24T14:02:23.454Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2844,6 +2844,37 @@
           "type": "number",
           "required": false,
           "description": "duration parameter"
+        }
+      }
+    },
+    {
+      "name": "comms-test",
+      "description": "Comms Test Command Types - Database Testing Edition",
+      "params": {
+        "mode": {
+          "type": "string",
+          "required": true,
+          "description": "mode parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "dbCount": {
+          "type": "number",
+          "required": false,
+          "description": "dbCount parameter"
+        },
+        "testDir": {
+          "type": "string",
+          "required": false,
+          "description": "testDir parameter"
+        },
+        "operations": {
+          "type": "number",
+          "required": false,
+          "description": "operations parameter"
         }
       }
     },

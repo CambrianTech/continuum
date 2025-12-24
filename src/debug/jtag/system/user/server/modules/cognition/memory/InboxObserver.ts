@@ -8,7 +8,11 @@
 import type { PersonaInbox, QueueItem } from '../../PersonaInbox';
 
 export class InboxObserver {
-  constructor(private inbox: PersonaInbox) {}
+  private log: (message: string) => void;
+
+  constructor(private inbox: PersonaInbox, logger?: (message: string) => void) {
+    this.log = logger || (() => {});
+  }
 
   /**
    * Peek at recent inbox items (non-blocking)
@@ -23,7 +27,7 @@ export class InboxObserver {
       const items = await this.inbox.peek(limit);
       return items;
     } catch (error) {
-      console.error(`❌ [InboxObserver] Error peeking inbox:`, error);
+      this.log(`❌ Error peeking inbox: ${error}`);
       return [];
     }
   }
@@ -37,7 +41,7 @@ export class InboxObserver {
       const items = await this.inbox.peek(1000); // Peek all
       return items.length;
     } catch (error) {
-      console.error(`❌ [InboxObserver] Error getting inbox depth:`, error);
+      this.log(`❌ Error getting inbox depth: ${error}`);
       return 0;
     }
   }

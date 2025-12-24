@@ -61,6 +61,7 @@ export const COMMANDS = {
   COLLABORATION_DECISION_VIEW: 'collaboration/decision/view',
   COLLABORATION_DECISION_VOTE: 'collaboration/decision/vote',
   COLLABORATION_WALL: 'collaboration/wall',
+  COMMS_TEST: 'comms-test',
   CONTINUUM_EMOTION: 'continuum/emotion',
   CONTINUUM_SET: 'continuum/set',
   DATA: 'data',

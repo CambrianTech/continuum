@@ -60,15 +60,12 @@ export abstract class PersonaSubprocess<T = void> {
    */
   async start(): Promise<void> {
     if (this.running) {
-      console.warn(`⚠️ [${this.name}] Already running`);
+      this.log(`⚠️ Already running`);
       return;
     }
 
     this.running = true;
-    console.log(`▶️ [${this.name}] Started (priority: ${this.priority})`);
-
-    // Auto-log start event
-    this.log(`Started (priority: ${this.priority})`);
+    this.log(`▶️ Started (priority: ${this.priority})`);
 
     // Start service loop (non-blocking)
     setImmediate(() => this.serviceLoop());
@@ -81,10 +78,7 @@ export abstract class PersonaSubprocess<T = void> {
     if (!this.running) return;
 
     this.running = false;
-    console.log(`⏹️ [${this.name}] Stopping...`);
-
-    // Auto-log stop event
-    this.log('Stopped');
+    this.log(`⏹️ Stopping...`);
   }
 
   /**
@@ -173,13 +167,13 @@ export abstract class PersonaSubprocess<T = void> {
         const waitTime = this.getWaitTime();
         await this.sleep(waitTime);
       } catch (error) {
-        console.error(`❌ [${this.name}] Error in service loop:`, error);
+        this.log(`❌ Error in service loop: ${error}`);
         // Back off on error
         await this.sleep(1000);
       }
     }
 
-    console.log(`⏹️ [${this.name}] Stopped`);
+    this.log(`⏹️ Stopped`);
   }
 
   /**

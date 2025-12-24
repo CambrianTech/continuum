@@ -13,9 +13,12 @@
  * - Consistent behavior with all other system logs
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { PersonaContinuousSubprocess } from './PersonaSubprocess';
 import type { PersonaUser } from '../PersonaUser';
 import { Logger, FileMode, type ComponentLogger } from '../../../core/logging/Logger';
+import { LoggingConfig } from '../../../core/logging/LoggingConfig';
 
 interface LoggerMap {
   [fileName: string]: ComponentLogger;
@@ -32,6 +35,7 @@ interface LoggerMap {
  */
 export class PersonaLogger extends PersonaContinuousSubprocess {
   private loggers: LoggerMap = {};
+  private logsDir: string;
 
   constructor(persona: PersonaUser) {
     // Highest priority - logging should be fast and responsive
@@ -39,6 +43,38 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
       priority: 'highest',
       name: 'PersonaLogger'
     });
+
+    // Compute logs directory path
+    this.logsDir = path.join(persona.homeDirectory, 'logs');
+
+    // Clean all log files at startup (CLEAN mode)
+    this.cleanLogDirectory();
+  }
+
+  /**
+   * Clean all log files in persona's logs directory at startup
+   * This ensures fresh logs per session even for log categories
+   * that might not be written to during the session.
+   */
+  private cleanLogDirectory(): void {
+    try {
+      if (!fs.existsSync(this.logsDir)) {
+        // No logs directory yet - will be created on first write
+        return;
+      }
+
+      const files = fs.readdirSync(this.logsDir);
+      for (const file of files) {
+        if (file.endsWith('.log')) {
+          const filePath = path.join(this.logsDir, file);
+          // Truncate to empty (synchronous since this is startup)
+          fs.writeFileSync(filePath, '', 'utf-8');
+        }
+      }
+    } catch (error) {
+      // Non-fatal - logging will still work, just won't be cleaned
+      console.warn(`[PersonaLogger:${this.persona.displayName}] Failed to clean logs:`, error);
+    }
   }
 
   /**
@@ -48,11 +84,23 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
    * @param message - Pre-formatted log message (already has timestamp, etc.)
    */
   enqueueLog(fileName: string, message: string): void {
+    // Extract category from fileName (e.g., 'cognition.log' -> 'cognition')
+    const category = fileName.replace(/\.log$/, '');
+
+    // Check if logging is enabled for this persona + category
+    const isEnabled = LoggingConfig.isEnabled(this.persona.displayName, category);
+    // DEBUG: Uncomment to trace logging config decisions
+    // console.log(`[PersonaLogger] ${this.persona.displayName}:${category} enabled=${isEnabled}`);
+    if (!isEnabled) {
+      return; // Early exit - logging disabled for this persona/category
+    }
+
     // Get or create logger for this file
     if (!this.loggers[fileName]) {
-      const category = this.getLogCategory(fileName);
-      const componentName = `${this.persona.displayName}:${fileName.replace('.log', '')}`;
-      this.loggers[fileName] = Logger.create(componentName, category);
+      const logCategory = `logs/${category}`;
+      const componentName = `${this.persona.displayName}:${category}`;
+      // Use persona's home directory as logRoot (not system log dir)
+      this.loggers[fileName] = Logger.create(componentName, logCategory, this.persona.homeDirectory);
     }
 
     // Write directly (Logger.ts handles queuing and async writes)
@@ -67,20 +115,6 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
     // Nothing to do here
   }
 
-  /**
-   * Get log category for a given file name (works like daemon logs)
-   *
-   * Format: personas/{name}-{id}/logs/{subprocess}
-   * Example: personas/grok-aff84949/logs/hippocampus
-   *
-   * The Rust worker will construct the full path: .continuum/{category}.log
-   */
-  private getLogCategory(fileName: string): string {
-    // Strip everything up to .continuum/ and extract just 'personas/{id}'
-    // homeDirectory can be absolute or relative
-    const category = this.persona.homeDirectory.replace(/^.*\.continuum\//, '');
-    return `${category}/logs/${fileName.replace(/\.log$/, '')}`;
-  }
 
   /**
    * Emergency log (fallback to console)

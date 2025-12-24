@@ -81,6 +81,28 @@
   border-color: var(--border-subtle-hover, rgba(255, 255, 255, 0.25));
 }
 
+/* Clickable status personas - shows status panel on click */
+.member-chip.clickable-status {
+  cursor: pointer;
+}
+
+.member-chip.clickable-status:hover {
+  background: var(--accent-primary-hover, rgba(100, 200, 255, 0.15));
+  border-color: var(--accent-primary, rgba(100, 200, 255, 0.4));
+}
+
+/* Clickable error personas - shows diagnostic info on click */
+.member-chip.clickable-error {
+  cursor: pointer;
+  border-color: var(--color-error, rgba(255, 100, 100, 0.4));
+  background: rgba(255, 100, 100, 0.1);
+}
+
+.member-chip.clickable-error:hover {
+  background: rgba(255, 100, 100, 0.2);
+  border-color: var(--color-error, rgba(255, 100, 100, 0.6));
+}
+
 .member-name {
   white-space: nowrap;
 }
@@ -433,6 +455,22 @@
   overflow-y: auto;
 }
 
+/* Compact status summary line */
+.ai-status-summary {
+  font-size: 0.8125rem;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+  padding: 0.25rem 0;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-status-summary:empty {
+  display: none;
+}
+
 .ai-status-indicator {
   display: flex;
   align-items: center;
@@ -548,6 +586,45 @@
   color: #dc3545;
   font-weight: 500;
   user-select: text;
+}
+
+/* Insufficient funds status (💸) */
+.ai-status-funds {
+  background: rgba(255, 193, 7, 0.15);
+  border-left: 3px solid #ffc107;
+}
+
+.ai-status-funds .ai-status-text {
+  color: #ffc107;
+  font-weight: 500;
+}
+
+/* Rate limited status (⏳) */
+.ai-status-rate-limited {
+  background: rgba(255, 152, 0, 0.15);
+  border-left: 3px solid #ff9800;
+}
+
+.ai-status-rate-limited .ai-status-text {
+  color: #ff9800;
+  font-weight: 500;
+}
+
+/* Flash highlight animation for click-to-diagnose */
+.flash-highlight {
+  animation: flash-attention 1s ease-out;
+}
+
+@keyframes flash-attention {
+  0%, 100% {
+    box-shadow: none;
+  }
+  25%, 75% {
+    box-shadow: 0 0 12px 4px rgba(255, 255, 100, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 20px 8px rgba(255, 255, 100, 0.8);
+  }
 }
 
 /* Close button for all statuses */

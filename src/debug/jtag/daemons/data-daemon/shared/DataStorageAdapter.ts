@@ -241,7 +241,7 @@ export abstract class DataStorageAdapter {
  * Storage Adapter Configuration
  */
 export interface StorageAdapterConfig {
-  readonly type: 'file' | 'memory' | 'sqlite' | 'postgres' | 'mongodb' | 'network';
+  readonly type: 'file' | 'memory' | 'sqlite' | 'postgres' | 'mongodb' | 'network' | 'rust';
   readonly namespace: string; // Instead of sessionId - more generic
   readonly options?: RecordData;
 }

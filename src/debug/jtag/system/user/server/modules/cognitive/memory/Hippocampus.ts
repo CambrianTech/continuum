@@ -151,8 +151,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       // EXFAT FIX: Detect corrupted database and recover by deleting and retrying
       if (errorMsg.includes('SQLITE_CORRUPT')) {
-        this.log(`⚠️ Detected corrupted database, attempting recovery...`);
-        console.warn(`⚠️ [Hippocampus] Corrupted database detected at ${dbPath}, deleting and recreating...`);
+        this.log(`⚠️ Detected corrupted database at ${dbPath}, attempting recovery...`);
 
         try {
           // Delete corrupted database
@@ -181,14 +180,12 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           this.log('✅ LTM database recovered and initialized successfully');
           return;
         } catch (recoveryError) {
-          this.log(`ERROR: Recovery failed: ${recoveryError}`);
-          console.error(`❌ [Hippocampus] Recovery failed:`, recoveryError);
+          this.log(`❌ Recovery failed: ${recoveryError}`);
         }
       }
 
       // If not corruption or recovery failed, log and continue in STM-only mode
-      this.log(`ERROR: Failed to initialize LTM database: ${error}`);
-      console.error(`❌ [Hippocampus] Failed to initialize database:`, error);
+      this.log(`❌ Failed to initialize LTM database: ${error}`);
       // Continue without LTM (STM-only mode)
     }
   }
@@ -388,8 +385,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
           }
         } catch (error) {
           failedCount++;
-          this.log(`ERROR: Failed to store memory ${memory.id}: ${error}`);
-          console.error(`❌ [Hippocampus] Insert failed for memory ${memory.id}:`, error);
+          this.log(`❌ Failed to store memory ${memory.id}: ${error}`);
         }
       }
 
@@ -411,8 +407,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
         consolidationCount: this.metrics.consolidationCount + consolidatedIds.length
       };
     } catch (error) {
-      this.log(`ERROR: Consolidation failed: ${error}`);
-      console.error(`❌ [Hippocampus] Consolidation failed:`, error);
+      this.log(`❌ Consolidation failed: ${error}`);
     }
   }
 

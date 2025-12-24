@@ -11,17 +11,37 @@
  * - Auto-removes after AI posts or decides to stay silent
  */
 
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import {
-  AI_DECISION_EVENTS,
-  type AIEvaluatingEventData,
-  type AIDecidedRespondEventData,
-  type AIDecidedSilentEventData,
-  type AIGeneratingEventData,
-  type AICheckingRedundancyEventData,
-  type AIPostedEventData,
-  type AIErrorEventData
-} from '../../../system/events/shared/AIDecisionEvents';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import type {
+  AIEvaluatingEventData,
+  AIDecidedRespondEventData,
+  AIDecidedSilentEventData,
+  AIGeneratingEventData,
+  AICheckingRedundancyEventData,
+  AIPostedEventData,
+  AIErrorEventData
+} from '@system/events/shared/AIDecisionEvents';
+
+/**
+ * AI Status Phase - All possible AI decision phases
+ */
+type AIStatusPhase = 'evaluating' | 'responding' | 'generating' | 'checking' | 'error' | 'insufficient_funds' | 'rate_limited' | null;
+
+/**
+ * Phase display config - SINGLE SOURCE OF TRUTH for phase visualization
+ */
+const PHASE_CONFIG: Record<NonNullable<AIStatusPhase>, { emoji: string; labelTemplate: string; cssClass: string }> = {
+  'evaluating': { emoji: '🤔', labelTemplate: '{name} is thinking...', cssClass: 'ai-status-thinking' },
+  'responding': { emoji: '💭', labelTemplate: '{name} will respond', cssClass: 'ai-status-responding' },
+  'generating': { emoji: '✍️', labelTemplate: '{name} is generating...', cssClass: 'ai-status-generating' },
+  'checking': { emoji: '🔍', labelTemplate: '{name} is reviewing...', cssClass: 'ai-status-checking' },
+  'error': { emoji: '❌', labelTemplate: '{name} error: {error}', cssClass: 'ai-status-error' },
+  'insufficient_funds': { emoji: '💸', labelTemplate: '{name} out of funds', cssClass: 'ai-status-funds' },
+  'rate_limited': { emoji: '⏳', labelTemplate: '{name} rate limited', cssClass: 'ai-status-rate-limited' },
+};
+
+// Default for null/passed state
+const PASSED_CONFIG = { emoji: '⏭️', labelTemplate: '{name} passed', cssClass: 'ai-status-silent' };
 
 /**
  * AI Status State - Tracks current decision phase for each AI
@@ -30,7 +50,7 @@ interface AIStatusState {
   personaId: UUID;
   personaName: string;
   roomId: UUID;
-  currentPhase: 'evaluating' | 'responding' | 'generating' | 'checking' | 'error' | null;
+  currentPhase: AIStatusPhase;
   timestamp: number;
   errorMessage?: string; // Error message for display
   element?: HTMLElement; // DOM element for this status indicator
@@ -140,10 +160,44 @@ export class AIStatusIndicator {
   }
 
   /**
+   * Handle adapter status event (insufficient_funds, rate_limited)
+   * Shows funding/rate limit status for specific providers
+   */
+  onAdapterStatus(data: { providerId: string; status: string; message: string; timestamp: number }, personaId: UUID, personaName: string, roomId: UUID): void {
+    if (data.status === 'insufficient_funds' || data.status === 'rate_limited') {
+      this.updateStatus(personaId, {
+        personaId,
+        personaName,
+        roomId,
+        currentPhase: data.status as 'insufficient_funds' | 'rate_limited',
+        timestamp: data.timestamp,
+        errorMessage: data.message
+      });
+    }
+  }
+
+  /**
    * Handle ERROR - AI encountered error, show error message with close button
    * Errors stay visible until user dismisses them manually
+   * Detects funding/quota errors to show 💸 instead of ❌
    */
   onError(data: AIErrorEventData): void {
+    // Detect funding/quota errors to show appropriate indicator
+    const errorLower = (data.error || '').toLowerCase();
+    const isFundingError = errorLower.includes('insufficient_quota') ||
+                          errorLower.includes('quota') ||
+                          errorLower.includes('credits') ||
+                          errorLower.includes('billing') ||
+                          errorLower.includes('spending limit') ||
+                          errorLower.includes('insufficient funds');
+    const isRateLimited = errorLower.includes('rate limit') ||
+                         (errorLower.includes('429') && !isFundingError);
+
+    // Determine the appropriate phase based on error type
+    const phase: 'error' | 'insufficient_funds' | 'rate_limited' =
+      isFundingError ? 'insufficient_funds' :
+      isRateLimited ? 'rate_limited' : 'error';
+
     // Create a key to track this specific error
     const errorKey = `${data.personaId}:${data.error}`;
 
@@ -159,7 +213,7 @@ export class AIStatusIndicator {
       personaId: data.personaId,
       personaName: data.personaName,
       roomId: data.roomId,
-      currentPhase: 'error',
+      currentPhase: phase,  // Use detected phase: 'error' | 'insufficient_funds' | 'rate_limited'
       timestamp: data.timestamp,
       errorMessage: data.error
     });
@@ -257,41 +311,13 @@ export class AIStatusIndicator {
   private updateStatusElement(element: HTMLElement, state: AIStatusState): void {
     const { personaName, currentPhase, errorMessage, personaId } = state;
 
-    let icon = '';
-    let text = '';
-    let className = 'ai-status-indicator';
-
-    switch (currentPhase) {
-      case 'evaluating':
-        icon = '🤔';
-        text = `${personaName} is thinking...`;
-        className += ' ai-status-thinking';
-        break;
-      case 'responding':
-        icon = '💭';
-        text = `${personaName} will respond`;
-        className += ' ai-status-responding';
-        break;
-      case 'generating':
-        icon = '✍️';
-        text = `${personaName} is generating...`;
-        className += ' ai-status-generating';
-        break;
-      case 'checking':
-        icon = '🔍';
-        text = `${personaName} is reviewing...`;
-        className += ' ai-status-checking';
-        break;
-      case 'error':
-        icon = '❌';
-        text = `${personaName} error: ${errorMessage || 'Unknown error'}`;
-        className += ' ai-status-error';
-        break;
-      default:
-        icon = '⏭️';
-        text = `${personaName} passed`;
-        className += ' ai-status-silent';
-    }
+    // Use single source of truth config
+    const config = currentPhase ? PHASE_CONFIG[currentPhase] : PASSED_CONFIG;
+    const icon = config.emoji;
+    const text = config.labelTemplate
+      .replace('{name}', personaName)
+      .replace('{error}', errorMessage || 'Unknown error');
+    const className = `ai-status-indicator ${config.cssClass}`;
 
     element.className = className;
 
@@ -348,20 +374,9 @@ export class AIStatusIndicator {
     const status = this.activeStatuses.get(personaId);
     if (!status || !status.currentPhase) return null;
 
-    switch (status.currentPhase) {
-      case 'evaluating':
-        return '🤔';
-      case 'responding':
-        return '💭';
-      case 'generating':
-        return '✍️';
-      case 'checking':
-        return '🔍';
-      case 'error':
-        return '❌';
-      default:
-        return '⏭️'; // passed/silent
-    }
+    // Use single source of truth config
+    const config = PHASE_CONFIG[status.currentPhase];
+    return config?.emoji ?? PASSED_CONFIG.emoji;
   }
 
   /**
@@ -369,5 +384,67 @@ export class AIStatusIndicator {
    */
   getAllStatuses(): Map<UUID, AIStatusState> {
     return new Map(this.activeStatuses);
+  }
+
+  /**
+   * Get compact status summary for display
+   * Returns array of { emoji, count, label } for each active phase
+   */
+  getStatusSummary(): Array<{ emoji: string; count: number; label: string; phase: string }> {
+    // Count statuses by phase
+    const phaseCounts = new Map<string, { count: number; names: string[] }>();
+
+    for (const status of this.activeStatuses.values()) {
+      if (!status.currentPhase) continue;
+
+      const existing = phaseCounts.get(status.currentPhase);
+      if (existing) {
+        existing.count++;
+        existing.names.push(status.personaName);
+      } else {
+        phaseCounts.set(status.currentPhase, { count: 1, names: [status.personaName] });
+      }
+    }
+
+    // Convert to summary array with emoji from config
+    const summary: Array<{ emoji: string; count: number; label: string; phase: string }> = [];
+
+    // Order: generating first (most interesting), then thinking, checking, errors last
+    const phaseOrder: Array<keyof typeof PHASE_CONFIG> = [
+      'generating', 'evaluating', 'responding', 'checking',
+      'insufficient_funds', 'rate_limited', 'error'
+    ];
+
+    for (const phase of phaseOrder) {
+      const data = phaseCounts.get(phase);
+      if (data) {
+        const config = PHASE_CONFIG[phase];
+        // Show names if 3 or fewer, otherwise just count
+        const label = data.count <= 3
+          ? data.names.join(', ')
+          : `${data.count} ${phase.replace('_', ' ')}`;
+        summary.push({
+          emoji: config.emoji,
+          count: data.count,
+          label,
+          phase
+        });
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Get formatted summary string for compact display
+   * Example: "✍️ Helper, Teacher | 🤔 CodeReview | ❌ Fireworks"
+   */
+  getFormattedSummary(): string {
+    const summary = this.getStatusSummary();
+    if (summary.length === 0) return '';
+
+    return summary
+      .map(s => `${s.emoji} ${s.label}`)
+      .join(' · ');
   }
 }

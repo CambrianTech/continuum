@@ -7,6 +7,7 @@ import type {
   ModelInfo
 } from './AIProviderTypesV2';
 import { Logger, FileMode, type ComponentLogger } from '../../../system/core/logging/Logger';
+import { LoggingConfig } from '../../../system/core/logging/LoggingConfig';
 import { Events } from '../../../system/core/shared/Events';
 import * as path from 'path';
 
@@ -44,8 +45,8 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private circuitBreakerResetTime: number = 0;
   private readonly circuitBreakerCooldown: number = 30000; // 30s cooldown before retry
 
-  // Base layer timeout - adapters get this for FREE
-  protected readonly baseTimeout: number = 30000; // 30s hard timeout for any adapter
+  // Base layer timeout - adapters get this for FREE (can override in subclass)
+  protected baseTimeout: number = 30000; // 30s default, Ollama overrides to 60s
 
   // Logger cache for persona-specific adapters logs
   private personaLoggers: Map<string, ComponentLogger> = new Map();
@@ -56,11 +57,21 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
    * Otherwise writes to shared adapter log file
    *
    * Uses Logger.ts for all logging (respects CLEAN mode for fresh logs per session)
+   * Respects LoggingConfig for per-persona log filtering
    */
   protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: any[]): void {
     if (request?.personaContext) {
-      // Get or create logger for this persona's adapters.log (works like daemon logs)
+      // Extract uniqueId from logDir path (e.g., ".continuum/personas/helper/..." -> "helper")
       const logDir = request.personaContext.logDir;
+      const uniqueIdMatch = logDir.match(/personas\/([^/]+)/);
+      const uniqueId = uniqueIdMatch ? uniqueIdMatch[1] : request.personaContext.displayName;
+
+      // Check if logging is enabled for this persona + adapters category
+      if (!LoggingConfig.isEnabled(uniqueId, 'adapters')) {
+        return; // Early exit - logging disabled for this persona
+      }
+
+      // Get or create logger for this persona's adapters.log (works like daemon logs)
       // Convert path to category: strip everything up to .continuum/
       const category = logDir.replace(/^.*\.continuum\//, '') + '/logs/adapters';
 
@@ -76,7 +87,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
       const logger = this.personaLoggers.get(category)!;
       logger[level](message, ...args);
     } else {
-      // No persona context - write to shared adapter log
+      // No persona context - write to shared adapter log (system-level, always enabled)
       const systemLogger = Logger.create('AIProviderAdapter', 'adapters');
       systemLogger[level](message, ...args);
     }

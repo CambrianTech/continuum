@@ -104,6 +104,42 @@ export class DataDaemon {
   // Track which collections have had their schema ensured (generic caching at daemon level)
   private ensuredSchemas: Set<string> = new Set();
 
+  // Per-collection adapter registry - allows different storage backends per collection
+  // Example: logging_config uses JSON file, users uses SQLite
+  private static collectionAdapters: Map<string, DataStorageAdapter> = new Map();
+
+  /**
+   * Register a custom adapter for a specific collection
+   *
+   * This allows different collections to use different storage backends:
+   * - logging_config -> SingleJsonFileAdapter (editable JSON file)
+   * - users -> SqliteStorageAdapter (SQLite database)
+   *
+   * @param collection - Collection name
+   * @param adapter - Storage adapter instance (must be initialized)
+   */
+  static registerCollectionAdapter(collection: string, adapter: DataStorageAdapter): void {
+    DataDaemon.collectionAdapters.set(collection, adapter);
+    console.log(`📁 DataDaemon: Registered custom adapter for collection '${collection}'`);
+  }
+
+  /**
+   * Get adapter for a collection (custom or default)
+   */
+  private getAdapterForCollection(collection: string): DataStorageAdapter {
+    return DataDaemon.collectionAdapters.get(collection) || this.adapter;
+  }
+
+  /**
+   * Static version - get adapter for collection using sharedInstance
+   */
+  private static getAdapterForCollectionStatic(collection: string): DataStorageAdapter {
+    const customAdapter = DataDaemon.collectionAdapters.get(collection);
+    if (customAdapter) return customAdapter;
+    if (!DataDaemon.sharedInstance) throw new Error('DataDaemon not initialized');
+    return DataDaemon.sharedInstance.adapter;
+  }
+
   constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter) {
     this.config = config;
     this.adapter = adapter;
@@ -141,8 +177,14 @@ export class DataDaemon {
   ): Promise<T> {
     await this.ensureInitialized();
 
+    // Get adapter for this collection (may be custom adapter like JSON file)
+    const adapter = this.getAdapterForCollection(collection);
+
     // Ensure schema exists (orchestrate table creation via adapter)
-    await this.ensureSchema(collection);
+    // Skip for custom adapters (they handle their own schema)
+    if (adapter === this.adapter) {
+      await this.ensureSchema(collection);
+    }
 
     // Validate context and data
     const validationResult = this.validateOperation(collection, data, context);
@@ -175,7 +217,7 @@ export class DataDaemon {
       }
     };
 
-    const result = await this.adapter.create(record);
+    const result = await adapter.create(record);
     if (result.success && result.data) {
       const entity = result.data.data;
 
@@ -202,10 +244,16 @@ export class DataDaemon {
   ): Promise<StorageResult<DataRecord<T>>> {
     await this.ensureInitialized();
 
-    // Ensure schema exists before reading (prevents "no such table" errors)
-    await this.ensureSchema(collection);
+    // Get adapter for this collection (may be custom adapter like JSON file)
+    const adapter = this.getAdapterForCollection(collection);
 
-    const result = await this.adapter.read<T>(collection, id);
+    // Ensure schema exists before reading (prevents "no such table" errors)
+    // Skip for custom adapters (they handle their own schema)
+    if (adapter === this.adapter) {
+      await this.ensureSchema(collection);
+    }
+
+    const result = await adapter.read<T>(collection, id);
 
     // Deserialize entity at the boundary (create new object to avoid readonly mutation)
     if (result.success && result.data) {
@@ -251,10 +299,16 @@ export class DataDaemon {
   ): Promise<StorageResult<DataRecord<T>[]>> {
     await this.ensureInitialized();
 
-    // Ensure schema exists before querying (prevents "no such table" errors)
-    await this.ensureSchema(query.collection);
+    // Get adapter for this collection (may be custom adapter like JSON file)
+    const adapter = this.getAdapterForCollection(query.collection);
 
-    const result = await this.adapter.query<T>(query);
+    // Ensure schema exists before querying (prevents "no such table" errors)
+    // Skip for custom adapters (they handle their own schema)
+    if (adapter === this.adapter) {
+      await this.ensureSchema(query.collection);
+    }
+
+    const result = await adapter.query<T>(query);
 
     // Deserialize entities at the boundary (create new array to avoid readonly mutation)
     if (result.success && result.data) {
@@ -282,10 +336,13 @@ export class DataDaemon {
   ): Promise<T> {
     await this.ensureInitialized();
 
+    // Get adapter for this collection (may be custom adapter like JSON file)
+    const adapter = this.getAdapterForCollection(collection);
+
     // Read existing entity to merge with partial update
     // TODO: Performance optimization - Consider adding skipValidation flag for trusted internal updates,
     // or only validating fields that are actually being updated rather than the entire merged entity
-    const readResult = await this.adapter.read(collection, id);
+    const readResult = await adapter.read(collection, id);
     if (!readResult.success || !readResult.data?.data) {
       throw new Error(`Entity not found for update: ${collection}/${id}`);
     }
@@ -303,7 +360,7 @@ export class DataDaemon {
     }
 
     // Validation passed - proceed with update
-    const result = await this.adapter.update<T>(collection, id, data, incrementVersion);
+    const result = await adapter.update<T>(collection, id, data, incrementVersion);
     if (result.success && result.data) {
       const entity = result.data.data;
 
@@ -329,11 +386,14 @@ export class DataDaemon {
   ): Promise<StorageResult<boolean>> {
     await this.ensureInitialized();
 
+    // Get adapter for this collection (may be custom adapter like JSON file)
+    const adapter = this.getAdapterForCollection(collection);
+
     // Read entity before deletion for event emission
-    const readResult = await this.adapter.read(collection, id);
+    const readResult = await adapter.read(collection, id);
     const entity = readResult.data?.data;
 
-    const result = await this.adapter.delete(collection, id);
+    const result = await adapter.delete(collection, id);
 
     // Emit deleted event if deletion was successful and we have the entity data
     if (result.success && entity && DataDaemon.jtagContext) {

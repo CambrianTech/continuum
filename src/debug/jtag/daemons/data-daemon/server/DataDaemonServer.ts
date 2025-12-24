@@ -84,6 +84,10 @@ export class DataDaemonServer extends DataDaemonBase {
 
     this.log.info('Data daemon server initialized with SQLite backend');
 
+    // Register custom JSON file adapters for config collections
+    // This allows data/read and data/update to work with JSON files
+    await this.registerJsonFileAdapters();
+
     // Register database handles for multi-database operations (archiving, etc.)
     await this.registerDatabaseHandles();
     this.log.info('Database handles registered');
@@ -122,6 +126,34 @@ export class DataDaemonServer extends DataDaemonBase {
       this.log.error('Failed to initialize entity registry:', error);
       throw error;
     }
+  }
+
+  /**
+   * Register JSON file adapters for config collections
+   *
+   * This allows collections like 'logging_config' to use JSON files
+   * instead of SQLite, enabling both:
+   * - Command access: ./jtag data/read --collection=logging_config
+   * - Manual editing: vim .continuum/logging.json
+   */
+  private async registerJsonFileAdapters(): Promise<void> {
+    const { SingleJsonFileAdapter } = await import('./SingleJsonFileAdapter');
+
+    // Register logging_config collection -> .continuum/logging.json
+    const loggingAdapter = new SingleJsonFileAdapter();
+    await loggingAdapter.initialize({
+      type: 'file' as any,  // Use 'file' type, actual behavior determined by adapter class
+      namespace: 'logging',
+      options: {
+        filePath: '.continuum/logging.json',
+        collection: 'logging_config',
+        singletonId: 'singleton',
+        prettyPrint: true
+      }
+    });
+    DataDaemon.registerCollectionAdapter('logging_config', loggingAdapter);
+
+    this.log.info('Registered JSON file adapters: logging_config');
   }
 
   /**

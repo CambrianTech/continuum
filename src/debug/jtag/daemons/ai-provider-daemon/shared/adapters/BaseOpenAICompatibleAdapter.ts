@@ -526,6 +526,34 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
         if (!response.ok) {
           const errorBody = await response.text();
+
+          // Detect specific error types for status reporting
+          const statusCode = response.status;
+          const errorLower = errorBody.toLowerCase();
+
+          if (statusCode === 402 || statusCode === 429 ||
+              errorLower.includes('insufficient_quota') ||
+              errorLower.includes('quota') ||
+              errorLower.includes('credits') ||
+              errorLower.includes('billing') ||
+              errorLower.includes('spending limit')) {
+
+            // Determine specific status
+            const isRateLimited = statusCode === 429 && !errorLower.includes('quota') && !errorLower.includes('credits');
+            const status = isRateLimited ? 'rate_limited' : 'insufficient_funds';
+
+            // Emit status event for UI (widgets can show 💰❌ or ⏳)
+            const { Events } = await import('@system/core/shared/Events');
+            await Events.emit('system:adapter:status', {
+              providerId: this.providerId,
+              status,
+              message: `${this.providerName}: ${statusCode === 429 ? 'Rate limited or quota exhausted' : 'Insufficient funds/quota'}`,
+              timestamp: Date.now(),
+            });
+
+            this.log(null, 'error', `💰 ${this.providerName}: ${status} - ${errorBody.slice(0, 200)}`);
+          }
+
           throw new Error(`HTTP ${response.status}: ${errorBody}`);
         }
 

@@ -10,6 +10,8 @@ import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
 
+type LogFn = (message: string) => void;
+
 export interface LongTermMemoryEntry {
   id: UUID;
   personaId: UUID;
@@ -40,9 +42,11 @@ export class LongTermMemoryStore {
   private readonly storePath: string;
   private memories: LongTermMemoryEntry[] = [];
   private loaded: boolean = false;
+  private readonly log: LogFn;
 
-  constructor(personaId: UUID) {
+  constructor(personaId: UUID, logger?: LogFn) {
     this.personaId = personaId;
+    this.log = logger || (() => {});
 
     // Per-persona storage path
     // TODO: Use PATHS constant from system/shared/Constants.ts
@@ -73,7 +77,7 @@ export class LongTermMemoryStore {
     // Persist to disk
     await this.persist();
 
-    console.log(`💾 [LongTermMemory] Appended ${batch.length} memories for ${this.personaId}`);
+    this.log(`💾 Appended ${batch.length} memories for ${this.personaId}`);
   }
 
   /**
@@ -106,8 +110,8 @@ export class LongTermMemoryStore {
     // Limit results
     const results = filtered.slice(0, options.limit);
 
-    console.log(
-      `🔍 [LongTermMemory] Found ${results.length} similar memories (threshold: ${options.threshold})`
+    this.log(
+      `🔍 Found ${results.length} similar memories (threshold: ${options.threshold})`
     );
 
     return results.map(item => item.memory);
@@ -179,7 +183,7 @@ export class LongTermMemoryStore {
   async clear(): Promise<void> {
     this.memories = [];
     await this.persist();
-    console.log(`🗑️ [LongTermMemory] Cleared all memories for ${this.personaId}`);
+    this.log(`🗑️ Cleared all memories for ${this.personaId}`);
   }
 
   // ==================== Private Methods ====================
@@ -194,12 +198,12 @@ export class LongTermMemoryStore {
       if (fs.existsSync(this.storePath)) {
         const data = fs.readFileSync(this.storePath, 'utf-8');
         this.memories = JSON.parse(data);
-        console.log(
-          `📖 [LongTermMemory] Loaded ${this.memories.length} memories for ${this.personaId}`
+        this.log(
+          `📖 Loaded ${this.memories.length} memories for ${this.personaId}`
         );
       }
     } catch (error) {
-      console.error(`❌ [LongTermMemory] Error loading memories:`, error);
+      this.log(`❌ Error loading memories: ${error}`);
       this.memories = [];
     }
 
@@ -214,7 +218,7 @@ export class LongTermMemoryStore {
       const data = JSON.stringify(this.memories, null, 2);
       fs.writeFileSync(this.storePath, data, 'utf-8');
     } catch (error) {
-      console.error(`❌ [LongTermMemory] Error persisting memories:`, error);
+      this.log(`❌ Error persisting memories: ${error}`);
     }
   }
 
