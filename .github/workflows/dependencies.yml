@@ -4,36 +4,38 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'package.json'
-      - 'package-lock.json'
-      - 'packages/*/package.json'
+      - 'src/debug/jtag/package.json'
+      - 'src/debug/jtag/package-lock.json'
   pull_request:
     branches: [ main ]
     paths:
-      - 'package.json'
-      - 'package-lock.json'
-      - 'packages/*/package.json'
+      - 'src/debug/jtag/package.json'
+      - 'src/debug/jtag/package-lock.json'
   schedule:
     - cron: '0 0 * * 0'  # Run weekly on Sunday at midnight
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/debug/jtag
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
         cache: 'npm'
-    
+        cache-dependency-path: src/debug/jtag/package-lock.json
+
     - name: Install dependencies
       run: npm ci
-    
+
     - name: Audit dependencies
-      run: npm audit --production --audit-level=high
-    
+      run: npm audit --omit=dev --audit-level=high
+
     - name: Check for outdated dependencies
       run: npm outdated || true

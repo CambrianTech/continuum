@@ -3,36 +3,33 @@ name: Validate Continuum Config
 on:
   pull_request:
     paths:
-      - 'schema/**'
-      - 'templates/**'
-      - 'examples/**'
+      - 'src/debug/jtag/**'
 
 jobs:
   validate:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/debug/jtag
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
         cache: 'npm'
-    
+        cache-dependency-path: src/debug/jtag/package-lock.json
+
     - name: Install dependencies
-      run: |
-        npm ci
-        cd src/debug/jtag && npm ci
+      run: npm ci
 
     - name: Validate JTAG System
       run: |
-        # Validate TypeScript compilation for critical development systems
-        # (screenshots, AI chats, CRUD operations)
-        cd src/debug/jtag
         npm run build:ts
         echo "✅ TypeScript compilation passed"
-        echo "✅ Critical development systems validated (screenshots, AI chats, CRUD)"
+        echo "✅ Critical development systems validated"
         echo ""
         echo "Note: Full integration tests (browser + system deployment)"
         echo "are validated by the precommit hook locally before commits."

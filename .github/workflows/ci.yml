@@ -7,55 +7,11 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [20.x]
-
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: npm ci || npm install
-      
-    # Set environment variables for testing
-    - name: Set Jest env variables
-      run: |
-        echo "JEST_WORKER_ID=1" >> $GITHUB_ENV
-        echo "NODE_OPTIONS=--experimental-vm-modules" >> $GITHUB_ENV
-    
-    - name: Lint
-      run: npm run lint || echo "Linting failed but continuing"
-    
-    # Skip build/test for documentation-only PRs
-    - name: Check if documentation-only PR
-      id: check_pr
-      run: |
-        # Check if PR only modifies documentation files
-        if git diff --name-only origin/main..HEAD | grep -qvE '\.(md|txt|yml|yaml)$'; then
-          echo "skip_build=false" >> $GITHUB_OUTPUT
-        else
-          echo "skip_build=true" >> $GITHUB_OUTPUT
-        fi
-      
-    - name: Build 
-      if: steps.check_pr.outputs.skip_build != 'true'
-      run: npm run build
-    
-    - name: Test
-      if: steps.check_pr.outputs.skip_build != 'true'  
-      run: npm test
-
-  validation:
-    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/debug/jtag
 
     steps:
     - uses: actions/checkout@v4
@@ -65,20 +21,32 @@ jobs:
       with:
         node-version: '20'
         cache: 'npm'
+        cache-dependency-path: src/debug/jtag/package-lock.json
 
     - name: Install dependencies
-      run: |
-        npm ci
-        cd src/debug/jtag && npm ci
+      run: npm ci
 
-    - name: Validate JTAG System (TypeScript + Integration Tests)
+    - name: TypeScript compilation
       run: |
-        cd src/debug/jtag
-        # Run TypeScript compilation
         npm run build:ts
         echo "✅ TypeScript compilation passed"
 
-        # Note: Full integration tests require browser + system deployment
-        # Those are validated by the precommit hook locally
-        # CI validates compilation only to prevent breaking commits
-        echo "✅ CI validation complete - local precommit hook validates full system"
+    # Skip full tests for documentation-only PRs
+    - name: Check if documentation-only PR
+      id: check_pr
+      working-directory: .
+      run: |
+        if git diff --name-only origin/main..HEAD | grep -qvE '\.(md|txt|yml|yaml)$'; then
+          echo "skip_tests=false" >> $GITHUB_OUTPUT
+        else
+          echo "skip_tests=true" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run tests
+      if: steps.check_pr.outputs.skip_tests != 'true'
+      run: |
+        npm run test:crud
+        echo "✅ CRUD tests passed"
+
+    - name: Validation complete
+      run: echo "✅ CI validation complete - local precommit hook validates full system"
