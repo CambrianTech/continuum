@@ -40,7 +40,8 @@ export class ComponentLogger {
     private component: string,
     private config: LoggerConfig,
     private logFilePath?: string,
-    private parentLogger?: ParentLogger
+    private parentLogger?: ParentLogger,
+    private effectiveLogDir?: string  // For correct category extraction with custom logRoot
   ) {}
 
   private shouldLog(level: LogLevel): boolean {
@@ -89,9 +90,10 @@ export class ComponentLogger {
       return;
     }
 
-    // Extract category from logFilePath
+    // Extract category from logFilePath using effectiveLogDir (for custom logRoot like persona dirs)
+    const logDir = this.effectiveLogDir || this.parentLogger.logDir;
     const category = this.logFilePath
-      .replace(this.parentLogger.logDir, '')
+      .replace(logDir, '')
       .replace(/^\//, '')
       .replace(/\.log$/, '');
 

@@ -67,6 +67,7 @@ export interface ToolResult {
 export interface PersonaUserForToolExecutor {
   readonly id: UUID;
   readonly displayName: string;
+  readonly homeDirectory: string;
   readonly entity: {
     readonly uniqueId: string;
   };
@@ -85,9 +86,13 @@ export class PersonaToolExecutor {
     this.toolRegistry = ToolRegistry.getInstance();
     this.formatAdapters = getToolFormatAdapters();
 
-    // Per-persona tools.log in their own directory (works like daemon logs)
-    const category = `personas/${this.persona.entity.uniqueId}/logs/tools`;
-    this.log = Logger.create(`PersonaToolExecutor:${this.persona.displayName}`, category);
+    // Per-persona tools.log in their home directory
+    const category = 'logs/tools';
+    this.log = Logger.create(
+      `PersonaToolExecutor:${this.persona.displayName}`,
+      category,
+      this.persona.homeDirectory
+    );
   }
 
   /**

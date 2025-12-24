@@ -221,13 +221,18 @@ class LoggerClass implements ParentLogger {
 
     // Lazy initialization if stream doesn't exist (Rust worker fallback case)
     if (!queue || !stream) {
-      // Extract category from logFile path
-      const category = logFile
-        .replace(this.logDir, '')
-        .replace(/^\//, '')
-        .replace(/\.log$/, '');
-
-      this.getFileStream(category);
+      // Check if logFile is within our system logDir
+      if (logFile.startsWith(this.logDir)) {
+        // Standard system log - extract category and use getFileStream
+        const category = logFile
+          .replace(this.logDir, '')
+          .replace(/^\//, '')
+          .replace(/\.log$/, '');
+        this.getFileStream(category);
+      } else {
+        // Custom log path (e.g., persona logs) - create stream directly
+        this.createStreamForPath(logFile);
+      }
       queue = this.logQueues.get(logFile);
       stream = this.fileStreams.get(logFile);
     }
@@ -243,6 +248,38 @@ class LoggerClass implements ParentLogger {
     if (queue.length >= this.MAX_QUEUE_SIZE) {
       this.flushQueue(logFile);
     }
+  }
+
+  /**
+   * Create a file stream directly for a custom path (not relative to logDir)
+   * Used for persona logs and other logs that live outside system log directory
+   */
+  private createStreamForPath(logFile: string): void {
+    if (!this.config.enableFileLogging) {
+      return;
+    }
+
+    if (this.fileStreams.has(logFile)) {
+      return;
+    }
+
+    // Create directory if needed
+    const logFileDir = path.dirname(logFile);
+    if (!fs.existsSync(logFileDir)) {
+      fs.mkdirSync(logFileDir, { recursive: true, mode: 0o755 });
+    }
+
+    // Use configured file mode
+    let flags = 'a';
+    if (this.defaultFileMode === FileMode.CLEAN && !this.cleanedFiles.has(logFile)) {
+      flags = 'w';
+      this.cleanedFiles.add(logFile);
+    }
+
+    const stream = fs.createWriteStream(logFile, { flags, mode: 0o644 });
+    this.fileStreams.set(logFile, stream);
+    this.logQueues.set(logFile, []);
+    this.startFlushTimer(logFile);
   }
 
   /**
@@ -297,7 +334,7 @@ class LoggerClass implements ParentLogger {
     }
 
     const logFile = resolvedCategory ? path.join(effectiveLogDir, `${resolvedCategory}.log`) : undefined;
-    return new ComponentLogger(component, this.config, logFile, this);
+    return new ComponentLogger(component, this.config, logFile, this, effectiveLogDir);
   }
 
   /**
