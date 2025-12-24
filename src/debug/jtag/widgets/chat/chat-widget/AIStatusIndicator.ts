@@ -385,4 +385,66 @@ export class AIStatusIndicator {
   getAllStatuses(): Map<UUID, AIStatusState> {
     return new Map(this.activeStatuses);
   }
+
+  /**
+   * Get compact status summary for display
+   * Returns array of { emoji, count, label } for each active phase
+   */
+  getStatusSummary(): Array<{ emoji: string; count: number; label: string; phase: string }> {
+    // Count statuses by phase
+    const phaseCounts = new Map<string, { count: number; names: string[] }>();
+
+    for (const status of this.activeStatuses.values()) {
+      if (!status.currentPhase) continue;
+
+      const existing = phaseCounts.get(status.currentPhase);
+      if (existing) {
+        existing.count++;
+        existing.names.push(status.personaName);
+      } else {
+        phaseCounts.set(status.currentPhase, { count: 1, names: [status.personaName] });
+      }
+    }
+
+    // Convert to summary array with emoji from config
+    const summary: Array<{ emoji: string; count: number; label: string; phase: string }> = [];
+
+    // Order: generating first (most interesting), then thinking, checking, errors last
+    const phaseOrder: Array<keyof typeof PHASE_CONFIG> = [
+      'generating', 'evaluating', 'responding', 'checking',
+      'insufficient_funds', 'rate_limited', 'error'
+    ];
+
+    for (const phase of phaseOrder) {
+      const data = phaseCounts.get(phase);
+      if (data) {
+        const config = PHASE_CONFIG[phase];
+        // Show names if 3 or fewer, otherwise just count
+        const label = data.count <= 3
+          ? data.names.join(', ')
+          : `${data.count} ${phase.replace('_', ' ')}`;
+        summary.push({
+          emoji: config.emoji,
+          count: data.count,
+          label,
+          phase
+        });
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Get formatted summary string for compact display
+   * Example: "✍️ Helper, Teacher | 🤔 CodeReview | ❌ Fireworks"
+   */
+  getFormattedSummary(): string {
+    const summary = this.getStatusSummary();
+    if (summary.length === 0) return '';
+
+    return summary
+      .map(s => `${s.emoji} ${s.label}`)
+      .join(' · ');
+  }
 }

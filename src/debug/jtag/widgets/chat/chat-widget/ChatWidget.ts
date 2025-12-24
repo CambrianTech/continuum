@@ -403,7 +403,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         ${this.renderHeader()}
 
         <!-- AI Status Indicators Container (sticky above messages) -->
-        <div class="ai-status-container" id="aiStatusContainer"></div>
+        <div class="ai-status-container" id="aiStatusContainer">
+          <div class="ai-status-summary" id="aiStatusSummary"></div>
+        </div>
 
         <div class="entity-list-body messages-container">
           <!-- EntityScroller will populate this container -->
@@ -615,6 +617,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.setupErrorToggleHandler();
         this.setupMemberClickHandlers();
       }
+      // Update the compact status summary line
+      this.updateStatusSummary();
       this.headerUpdateTimeout = undefined;
     }, 0) as unknown as number;
   }
@@ -688,6 +692,24 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         }
       });
     });
+  }
+
+  /**
+   * Update the compact status summary line
+   * Shows: "✍️ Helper, Teacher · 🤔 CodeReview · ❌ Fireworks"
+   */
+  private updateStatusSummary(): void {
+    const summaryElement = this.shadowRoot?.getElementById('aiStatusSummary');
+    if (!summaryElement) return;
+
+    const summary = this.aiStatusIndicator.getFormattedSummary();
+    if (summary) {
+      summaryElement.textContent = summary;
+      summaryElement.style.display = 'block';
+    } else {
+      summaryElement.textContent = '';
+      summaryElement.style.display = 'none';
+    }
   }
 
   /**
