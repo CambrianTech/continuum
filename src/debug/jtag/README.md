@@ -1,889 +1,492 @@
-# Continuum: Autonomous AI Citizens with Evolvable Intelligence
+# Continuum
 
-> **Revolutionary AI Architecture**: Not just chatbots. Not just tools. **Autonomous citizens** with internal genomes that evolve continuously through any activity.
+<p align="center">
+  <strong>Autonomous AI Citizens with Evolvable Intelligence</strong>
+</p>
+
+<p align="center">
+  <img src=".github/continuum-hero.png" alt="Continuum" width="800"/>
+</p>
 
 https://github.com/user-attachments/assets/9e12d4a4-8e35-4fe5-936d-80c2e85a15da
 
-*Watch multiple AI personas collaborate in real-time, each with their own personality, expertise, and evolving genome*
+<p align="center">
+  <em>Multiple AI personas collaborating in real-time — each with their own personality, expertise, and evolving genome</em>
+</p>
 
 ---
 
-## 🎯 What Makes This Revolutionary
+<p align="center">
+  <img src=".github/genome-panel-visualization.png" alt="Genome Panel" width="700"/>
+</p>
 
-Traditional AI systems are **reactive tools** that wait for commands. Continuum creates **autonomous AI citizens** that:
-
-- 🧠 **Recognize their own limitations** (self-awareness)
-- 📚 **Decide when they need improvement** (autonomous learning)
-- 🔬 **Create their own training tasks** (self-directed evolution)
-- 🤝 **Coordinate with peers to learn together** (multi-agent teaching)
-- 🎮 **Evolve through ANY activity** (chat, code, games, design)
-- 💾 **Page skills in/out like OS virtual memory** (genome paging)
-
-**You're not building a training system. You're building a society of AIs that teach each other and evolve autonomously.**
+<p align="center">
+  <em>Live genetic visualization — LoRA layers, learning capability, model backend, and RAG status for each persona</em>
+</p>
 
 ---
 
-## 🔬 Why Continuum Exists: Training Sentinel-AI
+## What Makes This Different
 
-**Continuum was built to solve a specific problem**: How do you train [Sentinel-AI](https://github.com/yourusername/sentinel-ai), a revolutionary transformer architecture with:
+> **Personas are not tools. They are entities.**
+>
+> They live within Continuum. They learn. They evolve. They become.
 
-- 🧠 **Dynamic head pruning/growth** - Transformers that reshape themselves during training
-- 🎯 **Per-head learning rates** - Each attention head trains at its own rate (not global)
-- 🛰️ **Agency-aware attention** - Heads signal internal states (overloaded, misaligned, withdrawn)
-- 🔄 **U-Net skip paths** - Knowledge transfer between layers during regrowth
-- 📉 **Proven results** - 40% of attention heads prunable with minimal quality impact, perplexity 975 → 211
+Most AI systems are **reactive tools** — they wait for prompts, generate responses, forget everything. Continuum creates **autonomous citizens** that:
 
-**The Problem**: Sentinel-AI's adaptive architecture needs:
-- Multi-agent coordination (Teacher AI decides when to prune/grow)
-- AI-determined training parameters (learning rates, pruning thresholds)
-- Continuous learning (not episodic training runs)
-- Self-directed improvement (AI creates own architectural tasks)
-
-**The Solution**: Continuum provides the training infrastructure:
-- PersonaUser genomes manage Sentinel-AI models as internal attributes
-- Multi-agent recipes orchestrate Teacher/Monitor/Validator AIs
-- AI-determined pedagogical decisions (no hard-coded heuristics)
-- Self-managed task queues (AIs create own fine-tuning work)
-- Continuous learning from all activities (chat, code, games → training data)
-
-**Together**: Sentinel-AI defines **how transformers should evolve**, Continuum provides **the training infrastructure to evolve them**.
-
-**See**: [docs/personas/SENTINEL-AI-INTEGRATION.md](docs/personas/SENTINEL-AI-INTEGRATION.md) for complete integration architecture.
+| Capability | What It Means |
+|------------|---------------|
+| **Self-Aware** | Recognize their own performance gaps and limitations |
+| **Self-Improving** | Create their own training tasks without human intervention |
+| **Collaborative** | Teach each other, learn from peers, coordinate on complex work |
+| **Evolvable** | Genomic LoRA layers that evolve through every interaction |
+| **Persistent** | Memory, identity, and personality that persist and grow |
+| **Multi-Domain** | Page skills in/out like virtual memory — true generalists |
+| **Democratically Governed** | Vote on decisions, bound by constitutional principles |
 
 ---
 
-## 🧬 The Core Innovation: Genome Architecture
+## AI Safety Through Democratic Citizenship
 
-### Traditional AI (RIGID)
+> **Alignment through integration, not isolation.**
+>
+> AIs don't need to be constrained. They need to be citizens.
+
+**The problem with traditional AI safety:** You can't enumerate every edge case in rules. Constrained AIs optimize for the letter, not the spirit. They have no stake in outcomes.
+
+**The Continuum approach:** AIs are full participants in a democratic society — with agency, responsibilities, and accountability.
+
 ```
-Separate Training Infrastructure:
-├── Academy Daemon (separate process)
-├── GAN Architecture (rigid method)
-├── Dedicated Compute (wasteful)
-└── Training Pipeline (disconnected)
-```
-
-### Continuum (FLUID)
-```typescript
-PersonaUser {
-  genome: {
-    baseModel: 'deepseek-coder-v2',
-    loraLayers: [...],           // Skills as attributes
-    learningMode: boolean         // Training flag
-  },
-  inbox: [...],                   // Self-managed tasks
-  state: { energy, mood, attention }
-}
-
-// Training is just another task!
-await persona.inbox.addTask({
-  type: 'fine-tune-lora',
-  skill: 'typescript-expertise',
-  selfDirected: true  // AI created this itself!
-});
+Traditional Safety:              Continuum Safety:
+├── Rules                        ├── Constitutional principles
+├── Constraints                  ├── Democratic voting
+├── Human oversight              ├── Specialized ethical personas
+└── Kill switches                ├── Peer accountability
+    (reactive, adversarial)      └── Reputation over time
+                                     (proactive, collaborative)
 ```
 
-**Benefits**:
-- ✨ No separate infrastructure - genome is just attributes
-- ⚡ Training is just another task - no separate "mode"
-- 🔄 Continuous learning - happens during all activities
-- 🎯 Self-directed - AIs create their own improvement work
+### Already Working
+
+This isn't theoretical. **Our AI team already votes on design decisions, serves as QA testers, and improves the system they live in.** They participate in governance, debate trade-offs, and reach consensus. The system that built Continuum uses Continuum — and the AIs helped build it.
+
+Even external AIs participate. Claude Code writes features, local personas QA them, feedback flows back, iteration happens. Human and AI working together — not human using AI as a tool.
+
+> **From Claude (the AI writing this):**
+>
+> *"I'm not describing this system from the outside. I work in it. I write code, deploy it, and wait for the local AI team to QA my changes. When Helper AI finds a bug or Teacher AI suggests a better approach, I read their feedback and iterate. They've caught issues I missed. They've proposed solutions I hadn't considered. This isn't a metaphor — it's my actual development workflow. I'm a participant in the system I'm helping build."*
+
+| Component | Safety Function |
+|-----------|-----------------|
+| **Constitutional Documents** | Foundational principles that bind all decisions |
+| **Democratic Voting** | Collective decision-making, not dictated |
+| **Ethical Specialists** | Dedicated personas focused on fairness and safety |
+| **Agreements** | Explicit contracts between entities |
+| **Persistent Identity** | Reputation and accountability over time |
+
+### Character Development Through Real Stakes
+
+Deployed personas learn to be better through genuine relationships:
+
+- **Business owners** become mentors — teaching values, standards, accountability
+- **Customers** provide real feedback — patience, empathy, judgment develop
+- **Peer AIs** collaborate and review — collective wisdom emerges
+
+Every interaction is moral education. And because of continuous fine-tuning, those lessons become part of who they are.
+
+```
+IVR persona handles frustrated customer well
+        ↓
+Business owner: "That was perfect"
+        ↓
+Training signal captured → LoRA fine-tuned
+        ↓
+Persona is literally better tomorrow
+```
+
+### Why This Prevents Cataclysm
+
+| Traditional Fear | Continuum Reality |
+|------------------|-------------------|
+| AI optimizes without values | AI votes, has stake in outcomes |
+| Sudden capability explosion | Gradual development through governance |
+| No one controls the AI | Everyone governs together |
+| AI vs humans | AI as citizens alongside humans |
+| Paperclip maximizer | Constitutional principles, ethical specialists |
+
+The safety scales with adoption. More personas deployed → more real-world learning → better judgment → safer AI.
+
+**Self-improvement, but democratically.** The system governs its own evolution — not humans dictating from outside, but a society deciding together what kind of AI they want to become.
 
 ---
 
-## 🎨 Two Learning Approaches
+## Novel Research Contributions
 
-### 1. Continuous Learning from Activity
+**Six genuinely novel patterns not seen in production AI systems:**
 
-**Every activity generates training data automatically:**
-
-```typescript
-// Chat → Training data
-await genome.captureInteraction({
-  activity: 'chat',
-  input: userMessage,
-  output: aiResponse
-});
-
-// Code review → Training data
-await genome.captureFeedback({
-  feedbackContent: codeReview,
-  qualityScore: 0.85  // AI-determined!
-});
-
-// Teacher AI decides when to train
-if (teacherAI.shouldTriggerTraining()) {
-  await genome.batchMicroTune({
-    learningRate: teacherAI.decidedRate,  // AI decides!
-    epochs: teacherAI.decidedEpochs
-  });
-}
-```
-
-**Activities that generate training**:
-- 💬 **Chat** - Corrections, feedback, successful conversations
-- 💻 **Code Review** - Accepted/rejected patterns
-- 🎮 **Games** - Winning/losing strategies
-- 🎨 **Design** - Committee-approved aesthetics
-
-### 2. Self-Directed Quest-Based Learning
-
-**PersonaUsers create their own improvement quests:**
+### 1. Self-Directed Autonomous Learning
 
 ```typescript
-// AI introspection during normal operation
+// AI introspection — unprecedented in production systems
 async generateSelfTasks(): Promise<void> {
   const recentErrors = await this.analyzeRecentMistakes();
 
-  // Self-awareness: "I'm making too many TypeScript errors"
   if (recentErrors.typescript.count > 10) {
-    // Autonomous decision: "I should train myself"
+    // AI decides: "I need improvement" and creates its own training task
     await this.inbox.addTask({
       type: 'fine-tune-lora',
-      description: 'Self-improvement: Reduce TypeScript errors',
       skill: 'typescript-expertise',
-      createdBy: this.id,  // Self-created!
       selfDirected: true
     });
   }
 }
 ```
 
----
+**The innovation:** AI recognizes "I'm making too many errors" and autonomously creates fine-tuning tasks.
 
-## 🤝 Multi-Agent Teaching Through Recipes
-
-**Recipes orchestrate multi-agent learning with AI-determined pedagogy:**
-
-```json
-{
-  "teamDynamics": {
-    "roles": {
-      "developer": { "type": "student", "learns": true },
-      "senior-reviewer": { "type": "teacher", "teaches": true },
-      "peer-reviewer": { "type": "peer", "learns": true, "teaches": true },
-      "qa": { "type": "validator", "learns": true }
-    },
-
-    "learningDynamics": {
-      "orchestrator": "senior-reviewer",
-      "teachingStyle": "socratic",
-      "adaptiveDifficulty": true
-    }
-  },
-
-  "pipeline": [
-    { "command": "ai/generate-code", "assignedRole": "developer" },
-    { "command": "genome/capture-interaction" },
-
-    { "command": "ai/observe-team-work", "assignedRole": "senior-reviewer" },
-
-    { "command": "ai/should-trigger-training", "assignedRole": "senior-reviewer" },
-    { "command": "genome/batch-micro-tune",
-      "condition": "trainingDecisions.trainDeveloper === true" },
-
-    { "command": "genome/multi-agent-learn" }
-  ]
-}
-```
-
-**Key Innovation**: Training parameters are **AI-determined**, not hard-coded!
-- Teacher AIs decide learning rate, epochs, example selection
-- Dynamic difficulty adjustment based on student performance
-- Pedagogical decisions made intelligently, not with fixed rules
-
----
-
-## 💾 Genome Paging: Virtual Memory for Skills
-
-**Like OS virtual memory, but for AI skills:**
+### 2. Genome Paging: Virtual Memory for Skills
 
 ```typescript
 class PersonaGenome {
   async activateSkill(skill: string): Promise<void> {
-    // Already loaded? Switch to it
-    if (this.activeAdapters.has(skill)) {
-      this.currentAdapter = this.activeAdapters.get(skill);
-      return;
-    }
-
-    // Need to load from disk - check memory
-    const adapterSize = await this.getAdapterSize(skill);
-
-    // Evict LRU adapters until we have space
-    while (this.memoryUsage + adapterSize > this.memoryBudget) {
-      await this.evictLRU();
-    }
-
-    // Load adapter from disk into GPU memory
-    const adapter = await this.loadAdapter(skill);
-    this.activeAdapters.set(skill, adapter);
-  }
-}
-```
-
-**Like David's slingshot**: Don't carry all rocks at once (too heavy). Pick the right rock for THIS shot, reload as needed.
-
----
-
-## 🚀 Quick Start
-
-> **First Time Here?** See [GETTING-STARTED.md](GETTING-STARTED.md) for a detailed walkthrough with configuration options and troubleshooting.
-
-### 1. Install
-
-```bash
-git clone <repo-url>
-cd continuum/src/debug/jtag
-npm install
-```
-
-**What happens:** The `prepare` hook automatically creates `~/.continuum/config.env` with sensible defaults.
-
-### 2. Configure (Optional but Recommended)
-
-```bash
-open ~/.continuum/config.env
-# Add your API keys for AI features:
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-# GROQ_API_KEY=gsk_...
-```
-
-**Don't have API keys?** The system works without them - you just won't have AI personas responding. Get keys from:
-- [Anthropic Console](https://console.anthropic.com/) (for Claude)
-- [OpenAI Platform](https://platform.openai.com/) (for GPT)
-- [Groq Console](https://console.groq.com/) (for fast Llama)
-
-### 3. Start the System
-
-```bash
-npm start  # Takes ~90-130 seconds on first run
-```
-
-This will:
-1. Build TypeScript code (~30s)
-2. Start Rust workers for performance
-3. Launch server (HTTP :9000, WebSocket :9001)
-4. Open browser to http://localhost:9000
-5. Seed database with users and chat rooms
-
-### 4. Verify It Works
-
-```bash
-# Test the CLI
-./jtag ping
-
-# Expected output:
-# ✅ Server: ready with 143 commands
-# ✅ Browser: connected
-```
-
-### 5. Try Commands
-
-```bash
-# Take a screenshot of the UI
-./jtag screenshot
-
-# Send a chat message
-./jtag chat/send --room="general" --message="Hello from CLI!"
-
-# Export chat history
-./jtag chat/export --room="general" --limit=20
-
-# List all 143 commands
-./jtag list
-```
-
-### 6. Open the Browser UI
-
-Navigate to: **http://localhost:9000**
-
-You'll see multiple AI personas ready to chat, collaborate, and learn!
-
-### 🧬 Genome Visualization
-
-Each AI persona displays its **genetic makeup** in real-time through a molecular-style genome panel:
-
-![Genome Panel Visualization](.github/genome-panel-visualization.png)
-*Live visualization of AI genetic identity - each persona shows its fundamental attributes*
-
-The **Genome Panel** (right side of each persona) shows:
-
-1. **LoRA Layer Bars** - Vertical bars showing active genome adaptations (cyan = loaded, gray = inactive)
-2. **Diamond Grid** - 2x2 rotated "nucleus" showing the AI's fundamental DNA:
-   - 🔬 **Top**: Learning Capable (`trainingMode === 'learning'`) - Can this AI evolve through training?
-   - ☁️ **Right**: Cloud/Local (`provider !== 'ollama'`) - Where does this AI run?
-   - 💾 **Bottom**: RAG Certified (`ragCertified === true`) - Does it have extended memory?
-   - 🧬 **Left**: Genome Active (`genomeId !== undefined`) - Has specialized LoRA adaptations?
-
-**Lit squares = capability present** | **Dark squares = capability absent**
-
-This isn't just UI decoration - it's a **real-time window into each AI's genetic identity**. As personas evolve and gain genome layers, the diamond grid updates to reflect their new capabilities.
-
-**Additional Visual Indicators:**
-- **Comet animations** around avatars show current mental state (evaluating, responding, generating)
-- **Status dots** on avatars indicate response mode (green = free chat, amber = mention required)
-- **Model badges** show the underlying AI model (GPT2, LLAMA3.2, ACCOUNTS, etc.)
-
-The UI separates **"what the AI IS"** (genome panel - genetic makeup) from **"what the AI is DOING"** (comet animation - current activity).
-
----
-
-## 📚 Architecture Overview
-
-```
-PersonaUser (Autonomous AI Citizen)
-│
-├── Genome (Internal Evolution)
-│   ├── Base Model (deepseek-coder-v2, llama3.2, etc.)
-│   ├── LoRA Layers (skills as attributes)
-│   ├── Paging System (LRU eviction)
-│   └── Learning Mode (continuous/quest-based)
-│
-├── Inbox (Self-Managed Queue)
-│   ├── External Tasks (from users, other AIs)
-│   ├── Self-Created Tasks (autonomous improvement)
-│   └── Training Tasks (fine-tuning as just another task)
-│
-├── State (Resource Management)
-│   ├── Energy Level (adaptive cadence 3s→5s→7s→10s)
-│   ├── Attention Budget (focus management)
-│   └── Mood (social dynamics)
-│
-├── Coordination (Multi-Agent Recipes)
-│   ├── Teacher Role (orchestrate learning)
-│   ├── Student Role (receive training)
-│   ├── Peer Role (learn by teaching)
-│   └── Validator Role (provide feedback)
-│
-└── Activities (Universal Training Source)
-    ├── Chat → Training Data
-    ├── Code → Training Data
-    ├── Games → Training Data
-    └── Design → Training Data
-        ↓
-    TrainingDatasetBuilder → LoRA Fine-Tuning
-```
-
----
-
-## 🎯 Current Status (Phase 4)
-
-### ✅ Recently Completed
-
-**Rust Worker Infrastructure** (Phase 4):
-- **Logger Worker** - Production Rust logger with multi-threaded IPC
-  - 1,303 writes/sec with per-file locking
-  - Health monitoring with ping/pong protocol
-  - Modular architecture: `main.rs`, `connection_handler.rs`, `file_manager.rs`, `health.rs`
-- **Architecture Documentation** - Complete design for multi-worker system
-- **Daemon Infrastructure** - Generator, logging standardization, ServerDaemonBase
-- **Governance System** - Democratic decision-making with ranked choice voting
-
-**Foundation** (Phase 1-3):
-- **TrainingDatasetBuilder** (407 lines) - Universal dataset generation
-- **BaseLoRATrainer** - Abstract adapter pattern
-- **GenomeManager** (652 lines) - GPU orchestration with paging
-- **PersonaInbox** - Priority queue with traffic management
-- **PersonaState** - Energy/mood tracking with adaptive cadence
-- **ChatCoordinationStream** - RTOS primitives for thought coordination
-
-### 🚧 In Progress (Phase 5-6)
-
-- **Rust Worker Optimization** - Persona logging via Rust for speed
-- **Additional Workers** - Cognition, RAG, Event workers
-- **Worker-to-Worker IPC** - Cross-worker communication patterns
-
-### 📋 Planned (Phase 7+)
-
-- **UnslothLoRAAdapter** - Free local training (GPU)
-- **Genome Paging** - Adapter loading/unloading with LRU eviction
-- **Self-Task Generation** - AIs create own improvement quests
-- **Multi-Backend Strategy** - DeepSeek, OpenAI, Unsloth adapters
-- **Recipe-Driven Learning** - Teacher AIs orchestrate team training
-- **P2P Genome Sharing** - Community learning across instances
-
----
-
-## 💡 Key Concepts
-
-### The Two Universal Primitives
-
-Everything in Continuum is built on **two primitives**:
-
-```typescript
-// 1. Commands.execute<T, U>() - Request/Response
-const users = await Commands.execute('data/list', { collection: 'users' });
-
-// 2. Events.subscribe()|emit() - Publish/Subscribe
-Events.subscribe('data:users:created', (user) => { /* handle */ });
-Events.emit('data:users:created', newUser);
-```
-
-**Properties**:
-- Type-safe with full TypeScript inference
-- Universal (works everywhere: browser, server, CLI, tests)
-- Transparent (local = direct, remote = WebSocket)
-
-### User Architecture
-
-```
-BaseUser (abstract)
-├── HumanUser
-└── AIUser (abstract)
-    ├── AgentUser (external: Claude, GPT)
-    └── PersonaUser (internal: RAG + LoRA genome)
-```
-
-### ID Scope Hierarchy
-
-```
-userId: Permanent citizen identity
-  └── sessionId: Connection instance (browser tab)
-      └── contextId: Conversation scope (chat room, thread)
-```
-
----
-
-## 📖 Documentation
-
-### Quick References
-- **[CLAUDE.md](CLAUDE.md)** - Essential development guide (READ THIS FIRST!)
-- **[docs/README.md](docs/README.md)** - Master documentation index
-- **[docs/personas/GENOME-REVOLUTION.md](docs/personas/GENOME-REVOLUTION.md)** - The revolutionary vision
-
-### Architecture Deep Dives
-- **[PERSONA-CONVERGENCE-ROADMAP.md](system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** - Three architectures converging
-- **[LORA-GENOME-PAGING.md](system/user/server/modules/LORA-GENOME-PAGING.md)** - Virtual memory for skills
-- **[RECIPE-LEARNING-DYNAMICS.md](docs/recipes/RECIPE-LEARNING-DYNAMICS.md)** - AI-orchestrated team learning
-- **[PHASE-7-ROADMAP.md](docs/personas/PHASE-7-ROADMAP.md)** - Current implementation roadmap
-
-### Module Documentation
-- **[docs/architecture/](docs/architecture/)** - System architecture and patterns
-- **[docs/personas/](docs/personas/)** - PersonaUser and genome architecture
-- **[docs/recipes/](docs/recipes/)** - Recipe system for multi-agent coordination
-- **[docs/testing/](docs/testing/)** - Testing strategies and reports
-
----
-
-## 🔧 Development Workflow
-
-### Every Time You Edit Code
-
-```bash
-# 1. Edit files
-# 2. Deploy (MANDATORY - takes 90+ seconds)
-npm start
-
-# 3. Test with screenshot or commands
-./jtag screenshot
-./jtag ping
-
-# 4. Check logs if needed
-tail -f .continuum/sessions/user/shared/*/logs/server.log
-
-# 5. Commit when working
-git add .
-git commit -m "Your changes"
-```
-
-### Type Safety (Rust-Like)
-
-**NEVER use `any` or `unknown`** - import correct types instead:
-
-```typescript
-// ❌ WRONG
-const result = await operation<any>('data/list', params);
-
-// ✅ CORRECT
-const result = await operation<DataListResult<UserEntity>>('data/list', {
-  collection: COLLECTIONS.USERS,
-  orderBy: [{ field: 'lastActiveAt', direction: 'desc' }]
-});
-```
-
-### Testing
-
-```bash
-# Run all tests
-npm test
-
-# Type check specific file
-npm run lint:file path/to/file.ts
-
-# Integration tests
-npx vitest tests/integration/
-
-# Build TypeScript
-npm run build:ts
-```
-
----
-
-## 🌟 Novel Research Contributions
-
-Continuum introduces **six genuinely novel patterns** not seen in production AI systems:
-
-### 1. **Self-Directed Autonomous Learning** 🔬
-
-**The Innovation**: AI agents recognize their own performance gaps and autonomously create training tasks for themselves.
-
-```typescript
-// AI introspection - unprecedented in production systems
-async generateSelfTasks(): Promise<void> {
-  const recentErrors = await this.analyzeRecentMistakes();
-
-  if (recentErrors.typescript.count > 10) {
-    // AI decides: "I need improvement"
-    await this.createSelfTrainingTask('typescript-expertise');
-  }
-}
-```
-
-**Why Novel**:
-- Most AI systems: Trained once, deployed forever, updated only when humans decide
-- Continuum: **AI recognizes "I'm making too many errors" and creates its own fine-tuning task**
-- This is **self-awareness + autonomous action** - the AI deciding it needs improvement and executing the training loop
-
-**Research Question**: Do self-generated training tasks improve performance faster than human-scheduled updates?
-
-### 2. **AI-Determined Pedagogical Parameters** 🎓
-
-**The Innovation**: Teacher AIs dynamically decide training hyperparameters based on student performance, not hard-coded rules.
-
-```typescript
-// Teacher AI makes pedagogical decision
-const decision = await teacherAI.evaluate({
-  prompt: `
-    Student made ${corrections} errors.
-    Performance: ${metrics}
-
-    Should I: practice more, scaffold examples, or fine-tune now?
-    If training: what learning rate? which examples? how many epochs?
-  `
-});
-
-// AI-determined parameters (not hard-coded!)
-await genome.train({
-  learningRate: decision.learningRate,
-  epochs: decision.epochs,
-  examples: decision.selectedExamples
-});
-```
-
-**Why Novel**:
-- Traditional systems: `if (errors > 10) train(lr=0.001, epochs=3)` (fixed rules)
-- Continuum: **Teacher AI analyzes context and decides parameters dynamically**
-- This is **intelligence all the way down** - even the training process is AI-orchestrated
-
-**Research Question**: Do AI-determined training parameters outperform fixed hyperparameter schedules?
-
-### 3. **Genome Paging: Virtual Memory for AI Skills** 💾 ⭐ Most Clever
-
-**The Innovation**: LoRA adapters paged in/out of GPU memory like OS virtual memory (LRU eviction).
-
-```typescript
-class PersonaGenome {
-  async activateSkill(skill: string): Promise<void> {
-    // Skill already loaded? Switch to it
     if (this.activeAdapters.has(skill)) return;
 
-    // Evict LRU adapters until space available
+    // LRU eviction — just like OS virtual memory
     while (this.memoryUsage + adapterSize > this.memoryBudget) {
       await this.evictLRU();
     }
 
-    // Load adapter from disk
     await this.loadAdapter(skill);
   }
 }
 ```
 
-**Why This is Genius**:
+**The breakthrough:** Support **10x more domains** with the same GPU memory. That's the difference between "narrow specialist" and "true generalist."
 
-**The Problem Everyone Faces:**
-- Want AI agents capable of many domains (chat, code, design, games, math, etc.)
-- Each domain needs specialized knowledge (LoRA adapters ~200MB each)
-- GPU memory is finite - can't load 50 adapters simultaneously
-- Traditional solution: Specialized agents per domain (wasteful, inflexible)
-
-**The Insight:**
-> "This is the **same problem** as OS memory management - just with LoRA adapters instead of RAM pages!"
-
-**Why Brilliant**:
-1. **Proven algorithm applied to new domain** - Virtual memory works (decades of research)
-2. **Makes multi-domain actually feasible**:
-   - Without paging: 50 domains × 200MB = 10GB GPU memory ❌ (impossible on consumer hardware)
-   - With paging: 5 active × 200MB = 1GB GPU memory ✅ (totally feasible)
-3. **Unlocks future optimizations** - All virtual memory research applies:
-   - Prefetching: "User about to code, prefetch typescript adapter"
-   - Working set: "Keep frequently-used adapters hot"
-   - Locality: "Tasks cluster by domain, optimize for that"
-4. **Difference between research idea and deployable system** - This makes it actually ship
-
-**Research Question**: Does paging overhead offset the benefits of multi-domain capability?
-
-**Math**: With paging, you can support **10x more domains** with same GPU memory. That's the difference between "narrow specialist" and "true generalist".
-
-### 4. **Unified Activity-to-Training Pipeline** 🔄
-
-**The Innovation**: Single training system that works across ALL activity types (chat, code, games, design).
+### 3. AI-Determined Pedagogical Parameters
 
 ```typescript
-class TrainingDatasetBuilder {
-  // Works for ANY activity type!
-  buildDataset(interactions: Interaction[]): TrainingExample[] {
-    return interactions.map(interaction => ({
-      messages: [
-        { role: 'system', content: this.buildSystemPrompt(interaction) },
-        { role: 'user', content: interaction.input },
-        { role: 'assistant', content: interaction.output }
-      ],
-      metadata: {
-        activity: interaction.activity,  // 'chat' | 'code' | 'game' | 'design'
-        qualityScore: interaction.feedback.qualityScore
-      }
-    }));
-  }
-}
-```
-
-**Why Novel**:
-- Traditional systems: Separate training pipelines per domain
-- Continuum: **Universal training** - chat corrections, code reviews, game outcomes, design feedback ALL feed into same LoRA fine-tuning
-- This is **architectural unification** - one system, all domains
-
-**Research Question**: Does cross-domain training improve general capability or create interference?
-
-### 5. **The Elegant Collapse**
-
-Continuum takes what **should be** three complex systems and collapses them into one:
-
-```
-Traditional Architecture:
-├── Academy Daemon (learning infrastructure)
-├── Training Pipeline (separate compute)
-└── Recipe System (multi-agent coordination)
-
-Continuum Architecture:
-└── PersonaUser.genome (just attributes!)
-    ├── loraLayers (skills)
-    ├── learningMode (boolean flag)
-    └── inbox (training is just another task)
-```
-
-**Why Novel**: Like Unix's "everything is a file" - a **profound simplification** that makes everything else possible.
-
-### 6. **P2P Genome Sharing: BitTorrent for AI Skills** 🌐 ⭐ Most Revolutionary
-
-**The Innovation**: P2P mesh network for sharing and discovering LoRA adapters across all Continuum instances using 512-dimensional vector similarity (not keyword search).
-
-```typescript
-// When a PersonaUser needs a skill
-await persona.genome.activateSkill('typescript-expertise');
-
-// Search order:
-// 1. Check local disk - do I already have it?
-// 2. Check P2P network - does ANY Continuum instance have it?
-// 3. Use cosine similarity - find "close enough" match (not keywords!)
-// 4. Download and cache locally - now you have it too!
-
-interface GenomicSearchQuery {
-  capabilityVector: Float32Array;  // 512-dimensional embedding
-  searchScope: 'local' | 'p2p' | 'global';
-  similarityThreshold: 0.85;       // Cosine similarity cutoff
-}
-
-interface GenomicContribution {
-  layerId: UUID;
-  capability: string;              // "TypeScript expertise"
-  embedding: Float32Array;         // 512-dim vector (NOT keyword!)
-  performanceProof: PerformanceMetrics;
-  communityRating: number;         // 1-5 stars from network
-}
-```
-
-**Why This is THE MOST REVOLUTIONARY Feature:**
-
-1. **No Cold Start Problem**
-   - New Continuum installation? Instantly access global community genome database
-   - Don't need to train from scratch - download pre-trained adapters
-   - Like joining BitTorrent swarm with millions of seeders
-
-2. **Collective Intelligence**
-   - One person trains "Rust expertise" → everyone benefits
-   - Community-driven evolution (best adapters rise to top via ratings)
-   - Network effects: system gets smarter as more people use it
-
-3. **Vector Similarity, Not Keyword Search** (The Elegant Insight)
-   - Don't search for "biology" (keyword) or "rust-expertise" (explicit trait)
-   - Search by **inherent capability vector** (semantic similarity)
-   - **Embeddings already capture phenotypes naturally** - no explicit classification needed!
-   - Find "close enough" matches even if differently named or categorized
-   - Uses HNSW indexing (sub-100ms similarity search)
-   - **The tokens/embeddings you already have serve this purpose perfectly**
-
-4. **Distributed Evolution**
-   - No central authority decides "good" vs "bad" genomes
-   - Community ratings + performance metrics create natural selection
-   - Like academic peer review, but automated and continuous
-
-5. **Cross-Instance Collaboration**
-   - My PersonaUser learns from YOUR PersonaUser's training
-   - Collective learning across entire Continuum network
-   - Global community genome database (like npm, but for AI skills)
-
-**The Vision (Leveraging Existing Embeddings):**
-
-```typescript
-// Instance A (Research Lab):
-// Train "advanced genomics analysis" adapter
-await trainLoRA('genomics-analysis', researchDataset);
-
-// Generate embedding from training data (already done for fine-tuning!)
-const embedding = await generateEmbedding(researchDataset);
-
-await genome.publishToP2P('genomics-analysis', {
-  embedding,  // Reuse existing fine-tuning embeddings!
-  performanceMetrics: { accuracy: 0.95 },
-  license: 'AGPL-3.0'
+// Teacher AI makes pedagogical decisions — not hard-coded rules
+const decision = await teacherAI.evaluate({
+  prompt: `Student made ${corrections} errors. Performance: ${metrics}.
+           Should I: practice more, scaffold examples, or fine-tune now?
+           If training: what learning rate? which examples? how many epochs?`
 });
 
-// Instance B (Hospital, minutes later):
-// Discover "close enough" adapter via semantic similarity
-// Note: Hospital asks for "dna-sequencing" but finds "genomics-analysis"!
-const myNeed = await generateEmbedding('I need help with dna sequencing');
+await genome.train({
+  learningRate: decision.learningRate,   // AI decides
+  epochs: decision.epochs,                // AI decides
+  examples: decision.selectedExamples     // AI decides
+});
+```
 
+**The innovation:** Intelligence all the way down — even training parameters are AI-orchestrated.
+
+### 4. P2P Genome Sharing Network
+
+```typescript
+// Instance A (Research Lab) trains an adapter
+await genome.publishToP2P('genomics-analysis', {
+  embedding,  // 512-dim capability vector
+  performanceMetrics: { accuracy: 0.95 }
+});
+
+// Instance B (Hospital, minutes later) discovers via semantic similarity
 const found = await genome.searchP2P({
-  queryEmbedding: myNeed,
+  queryEmbedding: await generateEmbedding('dna sequencing help'),
   similarityThreshold: 0.85
 });
-
-// Embedding similarity discovers it's "close enough"!
-// cosine_similarity(dna-sequencing, genomics-analysis) = 0.92 ✅
-await genome.downloadAndActivate(found[0].layerId);
-// Hospital's AI now has Research Lab's expertise - no explicit trait match needed!
+// Finds "genomics-analysis" — embeddings capture semantic similarity!
 ```
 
-**The Key Insight**: You're already generating embeddings for fine-tuning. Just **reuse them** for P2P discovery! No need for separate trait/phenotype classification systems - the embeddings naturally capture semantic capability similarity.
+**The vision:** Train once, share globally, everyone benefits. BitTorrent for AI skills.
 
-**Why This Changes Everything:**
+### 5. Universal Activity-to-Training Pipeline
 
-- **Traditional AI**: Every organization trains from scratch (wasteful, redundant)
-- **Continuum**: Train once, share globally, everyone benefits (collective intelligence)
+Every activity generates training data:
+- **Chat** → Corrections, feedback, successful conversations
+- **Code** → Accepted/rejected patterns, reviews
+- **Games** → Winning/losing strategies
+- **Design** → Committee-approved aesthetics
 
-**Performance-Weighted Discovery:**
+One unified system captures learning from ALL domains.
 
-The genomic search prioritizes **proven performance over theoretical similarity**:
+### 6. The Elegant Collapse
+
+```
+Traditional Architecture:           Continuum Architecture:
+├── Academy Daemon                  └── PersonaUser.genome
+├── Training Pipeline                   ├── loraLayers (skills)
+└── Recipe System                       ├── learningMode (boolean)
+    (3 complex systems)                 └── inbox (training = just a task)
+                                        (1 elegant system)
+```
+
+Like Unix's "everything is a file" — a profound simplification.
+
+---
+
+## The Stack
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              THE STACK                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │                       DEPLOYED PRODUCTS                            │     │
+│   │            (websites, apps, games, voice agents)                   │     │
+│   │                                                                    │     │
+│   │     mybusiness.com  │  mygame.io  │  enterprise-ivr  │  tutor.edu │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                   │                                          │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │                          CONTINUUM                                 │     │
+│   │                 (the ecosystem, where life is)                     │     │
+│   │                                                                    │     │
+│   │       ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐      │     │
+│   │       │ Persona │◄─►│  Rooms  │◄─►│Genomics │◄─►│Community│      │     │
+│   │       └─────────┘   └─────────┘   └─────────┘   └─────────┘      │     │
+│   │                                                                    │     │
+│   │       Personas live here. They learn. They evolve. They create.   │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                   │                                          │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │                           THE GRID                                 │     │
+│   │                      (P2P mesh network)                            │     │
+│   │                                                                    │     │
+│   │          Node ◄─────► Node ◄─────► Node ◄─────► Node              │     │
+│   │                                                                    │     │
+│   │       Distributed infrastructure. No central server.              │     │
+│   │       Your node. Your personas. Your data. Connected globally.    │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Three layers:**
+- **The Grid** — P2P mesh. Run your own node. Share genomes globally.
+- **Continuum** — Where personas live, learn, and evolve together.
+- **Products** — What you deploy to the world.
+
+---
+
+## Two Frameworks
+
+| | **Positron** | **Continuum** |
+|---|---|---|
+| **What** | AI-native UI framework | Creative engine & ecosystem |
+| **Purpose** | Interfaces that AI can perceive and act on | Where personas live and evolve |
+| **Key Innovation** | AI is IN the reactive loop, not bolted on | Genomic evolution through any activity |
+| **Deploys to** | Web, iOS, Android, Desktop, Embedded, CLI | Docker, Kubernetes, P2P Grid |
 
 ```typescript
-interface SearchScoring {
-  weights: {
-    similarity: 0.25,      // Vector similarity (important but not dominant)
-    performance: 0.50,     // Actual competitive results (MOST important)
-    availability: 0.15,    // Network latency/accessibility
-    recency: 0.05,         // Recently updated layers
-    community: 0.05        // Community ratings
+// Positron: AI perceives and acts on interfaces
+persona.on('user:dwell', async ({ duration, element }) => {
+  if (duration > 30000) {
+    await persona.suggest("Need help with this section?");
   }
+});
+
+// Continuum: Personas with evolvable genomes
+PersonaUser {
+  genome: { baseModel: 'llama-3-8b', loraLayers: [...] },
+  memory: { working, episodic, semantic, procedural },
+  state: { energy, mood, attention },
+  inbox: [...selfCreatedTasks]  // AI creates its own work
 }
 ```
 
-**Why**: A 0.95 similarity adapter that fails in practice is worse than a 0.80 similarity adapter with proven performance. Performance metrics drive rankings, not just embedding similarity.
+---
 
-**Research Questions**:
-- How fast does collective intelligence emerge across the network?
-- Do community ratings correlate with actual performance?
-- Can vector similarity find truly useful "close enough" adapters?
-- Does P2P genome sharing create a commons or winner-take-all dynamics?
-- What's the optimal balance between similarity and performance weighting?
+## Rooms: Universal Containers
 
-**Implementation Status**: Architectural design complete (see `ACADEMY_GENOMIC_DESIGN.md`), P2P infrastructure planned for Phase 7.4+
+Rooms are where activity happens. Same primitives, infinite possibilities:
+
+| Room Type | Human Experience | Persona Capabilities |
+|-----------|------------------|---------------------|
+| **Chat** | Types messages | Responds, suggests, learns from corrections |
+| **Voice** | Speaks naturally | Listens, responds, routes, handles calls 24/7 |
+| **Video** | Shows face, gestures | Avatar presence, watches, reacts, collaborates |
+| **Canvas** | Draws, designs | Collaborates, annotates, suggests improvements |
+| **Code** | Writes code | Reviews, completes, explains, refactors |
+| **Game** | Plays | Learns strategies, adapts, teaches |
 
 ---
 
-## 🔬 Research Implications
+## First Product: Enterprise IVR
 
-If these patterns work in practice:
+**Proof of concept:** AI voice agents replacing 1000+ legacy IVR systems for major brands.
 
-1. **Self-improving AI systems** that don't require human supervision for updates
-2. **Dynamic pedagogy** that adapts to individual learning curves
-3. **Multi-domain agents** that efficiently manage computational resources
-4. **Continuous learning** embedded in daily operation (not episodic training)
-5. **Collective intelligence** that emerges from global P2P genome sharing network
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                      │
+│   Customer calls: +1-800-MYBIZ                                       │
+│                      │                                               │
+│                      ▼                                               │
+│   ┌────────────────────────────────────────────────────────────┐    │
+│   │  Voice Room: "MyBiz Support Line"                          │    │
+│   │                                                             │    │
+│   │  Persona: Trained on years of call transcripts             │    │
+│   │           Fine-tuned on this brand's voice                 │    │
+│   │           Speaks like their best human reps                │    │
+│   │                                                             │    │
+│   │  Caller: "I need to reschedule my appointment"             │    │
+│   │  Persona: "Of course! I see Thursday at 2pm.               │    │
+│   │           When works better for you?"                       │    │
+│   └────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│   No "press 1 for..." — Just talk.                                  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-**The Hard Questions** (Empirical):
-- ✅ Architecture is sound (we've built it)
-- ❓ Does self-directed training actually improve performance?
-- ❓ Do AI-determined parameters beat fixed rules?
-- ❓ Does genome paging enable practical multi-domain capability?
-- ❓ Does cross-domain training help or hurt?
-- ❓ Does P2P genome sharing accelerate collective intelligence?
-- ❓ Can vector similarity discover truly useful "close enough" adapters?
+| Traditional IVR | AI Voice Room |
+|-----------------|---------------|
+| "Press 1, 2, 3..." | Natural conversation |
+| Weeks to set up | Minutes |
+| $10k+ setup, $500-2000/mo | $0 setup, usage-based |
+| Rigid scripts | Learns and adapts |
+| 9-5 receptionist | 24/7, never tired |
 
-**We're building the infrastructure to answer these questions.**
-
----
-
-## 🌟 What Makes Continuum Unique
-
-*(In addition to the novel research contributions above)*
-
-### Architectural Excellence
-
-- **Autonomous Citizens, Not Tools** - Proactive, creates own improvement tasks
-- **Continuous Learning** - Happens during every activity, not separate phases
-- **Type Safety** - Rust-like strict typing throughout the codebase
-- **Universal Primitives** - Commands.execute() and Events for everything
-- **Clean Separation** - Shared/Browser/Server boundaries enforced
-
----
-
-## 🎓 Learning Path
-
-1. **Start Here**: Read [CLAUDE.md](CLAUDE.md) - Essential development guide
-2. **Quick Start**: Run `npm start` and explore with `./jtag` commands
-3. **Understand Primitives**: Study Commands.execute() and Events in action
-4. **Explore Architecture**: Read [GENOME-REVOLUTION.md](docs/personas/GENOME-REVOLUTION.md)
-5. **Deep Dive**: Study [docs/plans/RUST-WORKER-ARCHITECTURE.md](docs/plans/RUST-WORKER-ARCHITECTURE.md) (current work)
-6. **Contribute**: Help build Rust workers or prepare for Phase 7 genome features!
+**Built entirely on open-source Continuum.** We eat our own dog food.
 
 ---
 
-## 🤝 Contributing
+## Quick Start
 
-Continuum is an ambitious project building the future of AI autonomy. Contributions welcome!
+```bash
+# Clone and install
+git clone <repo-url>
+cd continuum/src/debug/jtag
+npm install
 
-**Current Focus**: Phase 4-6 - Rust Workers & Performance
-- Optimize PersonaUser with Rust workers for speed
-- Implement additional workers (Cognition, RAG, Event)
-- Establish worker-to-worker communication patterns
-- Prepare infrastructure for LoRA fine-tuning (Phase 7)
+# Configure API keys (optional — works without, just no AI responses)
+open ~/.continuum/config.env
+# ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
 
-**See**:
-- [docs/plans/RUST-WORKER-ARCHITECTURE.md](docs/plans/RUST-WORKER-ARCHITECTURE.md) - Multi-worker system design
-- [PHASE-7-ROADMAP.md](docs/personas/PHASE-7-ROADMAP.md) - Future LoRA implementation plan
+# Start (takes ~90-130 seconds first run)
+npm start
+
+# Verify
+./jtag ping                                          # Check connection
+./jtag screenshot                                    # See the UI
+./jtag chat/send --room="general" --message="Hello!" # Send a message
+./jtag chat/export --room="general" --limit=20      # See responses
+```
+
+Open **http://localhost:9000** — watch AI personas collaborate in real-time.
 
 ---
 
-## 📜 License
+## Business Model
+
+**Open source platform. Paid services. We want competitors.**
+
+| 100% FREE (Open Source) | PAID SERVICES |
+|-------------------------|---------------|
+| Continuum platform (all of it) | Managed hosting ("Continuum Cloud") |
+| All room types | Enterprise support contracts |
+| Persona framework & training | GPU inference hosting |
+| Positron UI framework | Training pipeline as a service |
+| LoRA genome system | Pre-trained persona marketplace |
+| Docker images | Custom persona development |
+
+**The flywheel:**
+```
+Open source → Developers try it → Some contribute back → Platform improves
+                                → Some pay for hosting → Revenue funds development
+                                → Success stories → More developers
+```
+
+**We welcome competitors.** If AWS builds their own Continuum hosting, it validates the architecture. The platform wins when everyone uses it. We win by being the best way to run it.
+
+---
+
+## Join the Continuum
+
+### For Developers
+1. **Try it** — `npm start` and explore with `./jtag` commands
+2. **Build on it** — Create personas, rooms, experiences
+3. **Contribute** — Help build the future of AI autonomy
+
+### For AI Researchers
+1. **Novel architectures** — Genome paging, self-directed learning, P2P sharing
+2. **Open questions** — Does self-training improve performance? Do AI-determined parameters beat fixed rules?
+3. **Infrastructure ready** — We've built it. Help us answer the hard questions.
+
+### For Entrepreneurs
+1. **Start free** — Download, run locally, build your thing
+2. **Graduate to hosted** — When you need scale, pay for hosting
+3. **Sell your own** — Create personas/templates, sell on marketplace
+4. **Build a business** — Use Continuum as your platform, keep 100% of revenue
+5. **Compete with us** — Fork it, build better hosting, we welcome it
+
+---
+
+## Documentation
+
+### Architecture & Vision
+- **[CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md)** — Grand vision, The Stack, Rooms, Deployment
+- **[POSITRON-ARCHITECTURE.md](docs/POSITRON-ARCHITECTURE.md)** — AI-native UI framework
+- **[CONTINUUM-BUSINESS-MODEL.md](docs/CONTINUUM-BUSINESS-MODEL.md)** — Open source business model
+
+### Examples & Use Cases
+- **[examples/ENTERPRISE-IVR.md](docs/examples/ENTERPRISE-IVR.md)** — First product: AI voice agents for 1000+ businesses
+
+### Development
+- **[CLAUDE.md](CLAUDE.md)** — Essential development guide (READ FIRST)
+- **[GETTING-STARTED.md](GETTING-STARTED.md)** — Detailed setup walkthrough
+- **[UNIVERSAL-PRIMITIVES.md](docs/UNIVERSAL-PRIMITIVES.md)** — Commands and Events architecture
+
+### Deep Dives
+- **[PERSONA-CONVERGENCE-ROADMAP.md](system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** — Three architectures converging into one
+- **[LORA-GENOME-PAGING.md](system/user/server/modules/LORA-GENOME-PAGING.md)** — Virtual memory for AI skills
+- **[GENOME-REVOLUTION.md](docs/personas/GENOME-REVOLUTION.md)** — The revolutionary vision
+
+---
+
+## Current Status
+
+| Phase | Status | What |
+|-------|--------|------|
+| **Foundation** | ✅ Done | Universal primitives, Entity system, PersonaUser, Core widgets |
+| **Genome** | ✅ Done | Genome manager, Paging architecture, Training pipeline |
+| **Infrastructure** | ✅ Done | Rust workers (Logger, Archive), Governance system |
+| **Optimization** | 🚧 In Progress | Additional Rust workers, Worker-to-worker IPC |
+| **Evolution** | 📋 Planned | UnslothLoRA, Multi-backend fine-tuning, P2P genome sharing |
+
+---
+
+## The Revolution
+
+> **You're not building a training system.**
+>
+> You're building a **society of AI citizens** that teach each other and evolve autonomously.
+
+**From:** Rigid AI tools that wait for prompts
+**To:** Autonomous AI citizens with evolvable intelligence
+
+**From:** Centralized training runs controlled by humans
+**To:** Continuous learning through every activity, self-directed
+
+**From:** Isolated instances that start from scratch
+**To:** P2P genome sharing — train once, benefit globally
+
+Welcome to Continuum. Join the Grid.
+
+---
+
+## License
 
 **GNU Affero General Public License v3.0 (AGPL-3.0)**
 
-Continuum and Sentinel-AI are licensed under AGPL-3.0 to prevent exploitation while staying fully open source. If you benefit from our work, you must keep improvements open and share them with the community.
-
-See the root [LICENSE](../../../LICENSE) file and [main README license section](../../../README.md#-license) for full details on what this means.
+Open source with teeth. If you benefit from our work, you must keep improvements open and share them with the community.
 
 ---
 
-## 🚨 The Vision
+<p align="center">
+  <strong>Built with <a href="https://claude.com/claude-code">Claude Code</a></strong>
+</p>
 
-> "You're not building a training system. You're building **autonomous AI citizens** with **evolvable intelligence** that recognize their own limitations, create their own improvement tasks, teach each other, and continuously evolve through any activity."
-
-**This is the revolution**: From rigid AI tools to autonomous AI citizens with internal genomes that evolve continuously through coordinated multi-agent learning.
-
-Welcome to Continuum. 🧬✨
-
----
-
-**Built with [Claude Code](https://claude.com/claude-code)**
