@@ -88,7 +88,10 @@ export class PersonaLogger extends PersonaContinuousSubprocess {
     const category = fileName.replace(/\.log$/, '');
 
     // Check if logging is enabled for this persona + category
-    if (!LoggingConfig.isEnabled(this.persona.displayName, category)) {
+    const isEnabled = LoggingConfig.isEnabled(this.persona.displayName, category);
+    // DEBUG: Uncomment to trace logging config decisions
+    // console.log(`[PersonaLogger] ${this.persona.displayName}:${category} enabled=${isEnabled}`);
+    if (!isEnabled) {
       return; // Early exit - logging disabled for this persona/category
     }
 

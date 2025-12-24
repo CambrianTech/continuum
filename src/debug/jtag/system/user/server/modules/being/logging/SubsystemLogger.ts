@@ -31,6 +31,7 @@ import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import { Logger, FileMode } from '../../../../../core/logging/Logger';
 import type { ComponentLogger } from '../../../../../core/logging/Logger';
+import { LoggingConfig } from '../../../../../core/logging/LoggingConfig';
 
 export type Subsystem = 'mind' | 'body' | 'soul' | 'cns';
 
@@ -142,6 +143,12 @@ export class SubsystemLogger {
    */
   enqueueLog(fileName: string, message: string): void {
     const baseName = fileName.replace(/\.log$/, '');
+
+    // Check if logging is enabled for this persona + category
+    if (!LoggingConfig.isEnabled(this.uniqueId, baseName)) {
+      return; // Early exit - logging disabled for this persona/category
+    }
+
     const componentName = `${this.uniqueId}:${baseName}`;
 
     // If logRoot is already the logs directory, don't add logs/ prefix
