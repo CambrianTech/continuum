@@ -98,6 +98,25 @@ let lastRefreshTime = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
+ * Module-level logger - can be set via setToolDefinitionsLogger()
+ */
+let moduleLogger: ((message: string) => void) | null = null;
+
+/**
+ * Set the logger for PersonaToolDefinitions module
+ */
+export function setToolDefinitionsLogger(logger: (message: string) => void): void {
+  moduleLogger = logger;
+}
+
+function log(message: string): void {
+  if (moduleLogger) {
+    moduleLogger(message);
+  }
+  // Silent if no logger set - this is initialization-time code
+}
+
+/**
  * Refresh tool definitions from Commands system
  * Queries 'list' command to discover ALL available commands dynamically
  *
@@ -108,13 +127,13 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  */
 export async function refreshToolDefinitions(): Promise<void> {
   try {
-    console.log('[PersonaToolDefinitions] Refreshing tool cache from Commands system...');
+    log('Refreshing tool cache from Commands system...');
 
     // Query list command to discover all available commands
     const result = await Commands.execute('list', {}) as unknown as ListResult;
 
     if (!result.success || !result.commands) {
-      console.error('[PersonaToolDefinitions] Failed to refresh tools:', result.error);
+      log(`❌ Failed to refresh tools: ${result.error}`);
       return;
     }
 
@@ -123,9 +142,9 @@ export async function refreshToolDefinitions(): Promise<void> {
     toolCache = result.commands.map((cmd: CommandSignature) => convertCommandToTool(cmd));
 
     lastRefreshTime = Date.now();
-    console.log(`[PersonaToolDefinitions] Refreshed ${toolCache.length} tools from Commands system`);
+    log(`Refreshed ${toolCache.length} tools from Commands system`);
   } catch (error) {
-    console.error('[PersonaToolDefinitions] Error refreshing tools:', error);
+    log(`❌ Error refreshing tools: ${error}`);
   }
 }
 
@@ -188,7 +207,7 @@ export function getAllToolDefinitions(): ToolDefinition[] {
   if (toolCache.length === 0 || (Date.now() - lastRefreshTime) > CACHE_TTL_MS) {
     // Trigger async refresh in background (first call may return empty, subsequent calls will have tools)
     refreshToolDefinitions().catch(err => {
-      console.error('[PersonaToolDefinitions] Auto-refresh failed:', err);
+      log(`❌ Auto-refresh failed: ${err}`);
     });
   }
   return toolCache;

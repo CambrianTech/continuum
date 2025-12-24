@@ -25,12 +25,17 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class PersonaGenomeManager {
+  private log: (message: string) => void;
+
   constructor(
     private readonly personaId: UUID,
     private readonly personaName: string,
     private readonly getEntity: () => UserEntity,
-    private readonly getClient: () => JTAGClient | undefined
-  ) {}
+    private readonly getClient: () => JTAGClient | undefined,
+    logger?: (message: string) => void
+  ) {
+    this.log = logger || (() => {});
+  }
 
   /**
    * Get genome for this persona (Phase 1.2)
@@ -44,7 +49,7 @@ export class PersonaGenomeManager {
 
     const client = this.getClient();
     if (!client) {
-      console.warn(`⚠️  PersonaUser ${this.personaName}: Cannot load genome - no client`);
+      this.log(`⚠️ Cannot load genome - no client`);
       return null;
     }
 
@@ -58,14 +63,14 @@ export class PersonaGenomeManager {
       });
 
       if (!result.success || !result.found || !result.data) {
-        console.warn(`⚠️  PersonaUser ${this.personaName}: Genome ${entity.genomeId} not found`);
+        this.log(`⚠️ Genome ${entity.genomeId} not found`);
         return null;
       }
 
       return result.data;
 
     } catch (error) {
-      console.error(`❌ PersonaUser ${this.personaName}: Error loading genome:`, error);
+      this.log(`❌ Error loading genome: ${error}`);
       return null;
     }
   }
@@ -77,7 +82,7 @@ export class PersonaGenomeManager {
   async setGenome(genomeId: UUID): Promise<boolean> {
     const client = this.getClient();
     if (!client) {
-      console.warn(`⚠️  PersonaUser ${this.personaName}: Cannot set genome - no client`);
+      this.log(`⚠️ Cannot set genome - no client`);
       return false;
     }
 
@@ -97,14 +102,14 @@ export class PersonaGenomeManager {
       });
 
       if (!result.success) {
-        console.error(`❌ PersonaUser ${this.personaName}: Failed to update genome: ${result.error}`);
+        this.log(`❌ Failed to update genome: ${result.error}`);
         return false;
       }
 
       return true;
 
     } catch (error) {
-      console.error(`❌ PersonaUser ${this.personaName}: Error setting genome:`, error);
+      this.log(`❌ Error setting genome: ${error}`);
       return false;
     }
   }

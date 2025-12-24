@@ -53,15 +53,17 @@ export class SelfTaskGenerator {
   private personaId: UUID;
   private displayName: string;
   private config: SelfTaskGeneratorConfig;
+  private log: (message: string) => void;
 
   // Track when we last created each task type
   private lastMemoryReview: number = 0;
   private lastSkillAudit: number = 0;
 
-  constructor(personaId: UUID, displayName: string, config?: Partial<SelfTaskGeneratorConfig>) {
+  constructor(personaId: UUID, displayName: string, config?: Partial<SelfTaskGeneratorConfig>, logger?: (message: string) => void) {
     this.personaId = personaId;
     this.displayName = displayName;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.log = logger || (() => {});
   }
 
   /**
@@ -125,7 +127,7 @@ export class SelfTaskGenerator {
 
     const validation = task.validate();
     if (!validation.success) {
-      console.error(`❌ ${this.displayName}: Failed to create memory review task:`, validation.error);
+      this.log(`❌ Failed to create memory review task: ${validation.error}`);
       return null;
     }
 
@@ -150,7 +152,7 @@ export class SelfTaskGenerator {
 
     const validation = task.validate();
     if (!validation.success) {
-      console.error(`❌ ${this.displayName}: Failed to create skill audit task:`, validation.error);
+      this.log(`❌ Failed to create skill audit task: ${validation.error}`);
       return null;
     }
 
@@ -210,7 +212,7 @@ export class SelfTaskGenerator {
 
       return resumeTasks;
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Error detecting unfinished work:`, error);
+      this.log(`❌ Error detecting unfinished work: ${error}`);
       return [];
     }
   }
@@ -272,7 +274,7 @@ export class SelfTaskGenerator {
 
       return learningTasks;
     } catch (error) {
-      console.error(`❌ ${this.displayName}: Error detecting learning opportunities:`, error);
+      this.log(`❌ Error detecting learning opportunities: ${error}`);
       return [];
     }
   }

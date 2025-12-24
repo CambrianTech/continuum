@@ -15,6 +15,8 @@ import { InboxObserver } from './InboxObserver';
 import { WorkingMemoryObserver } from './WorkingMemoryObserver';
 import type { PersonaInbox, QueueItem } from '../../PersonaInbox';
 
+type LogFn = (message: string) => void;
+
 export interface TriggerState {
   shouldConsolidate: boolean;
   shouldActivate: boolean;
@@ -60,6 +62,7 @@ export class MemoryConsolidationWorker {
   private readonly workingMemory: WorkingMemoryManager;
   private readonly longTermMemory: LongTermMemoryStore;
   private running: boolean = false;
+  private readonly log: LogFn;
 
   // Observers (non-blocking peek)
   private inboxObserver: InboxObserver | null = null;
@@ -71,11 +74,13 @@ export class MemoryConsolidationWorker {
   constructor(
     personaId: UUID,
     inbox: PersonaInbox,
-    options: ConsolidationOptions = {}
+    options: ConsolidationOptions = {},
+    logger?: LogFn
   ) {
     this.personaId = personaId;
     this.workingMemory = new WorkingMemoryManager(personaId);
     this.longTermMemory = new LongTermMemoryStore(personaId);
+    this.log = logger || (() => {});  // No-op if no logger provided
 
     // Set up observers (peek at activity, don't block)
     this.inboxObserver = new InboxObserver(inbox);
@@ -96,12 +101,12 @@ export class MemoryConsolidationWorker {
    */
   async start(): Promise<void> {
     if (this.running) {
-      console.warn(`⚠️ [MemoryWorker] Already running for persona ${this.personaId}`);
+      this.log(`⚠️ Already running`);
       return;
     }
 
     this.running = true;
-    console.log(`🧠 [MemoryWorker] Started for persona ${this.personaId}`);
+    this.log(`🧠 Started`);
 
     // Run in background (non-blocking)
     // In a true multi-threaded environment, this would be a worker thread
@@ -131,12 +136,12 @@ export class MemoryConsolidationWorker {
         // 4. Sleep briefly (non-blocking, yields to other operations)
         await this.sleep(100); // 100ms
       } catch (error) {
-        console.error(`❌ [MemoryWorker] Error in service loop:`, error);
+        this.log(`❌ Error in service loop: ${error}`);
         await this.sleep(1000); // Back off on error
       }
     }
 
-    console.log(`🛑 [MemoryWorker] Stopped for persona ${this.personaId}`);
+    this.log(`🛑 Stopped`);
   }
 
   /**
@@ -235,7 +240,7 @@ export class MemoryConsolidationWorker {
    * Consolidate to long-term when pattern emerges
    */
   private async consolidate(reason: string): Promise<void> {
-    console.log(`💾 [MemoryWorker] Consolidation triggered: ${reason}`);
+    this.log(`💾 Consolidation triggered: ${reason}`);
 
     try {
       // 1. Get high-importance working memories
@@ -246,7 +251,7 @@ export class MemoryConsolidationWorker {
       });
 
       if (candidates.length === 0) {
-        console.log(`💾 [MemoryWorker] No candidates for consolidation`);
+        this.log(`💾 No candidates for consolidation`);
         return;
       }
 
@@ -272,9 +277,9 @@ export class MemoryConsolidationWorker {
       // 3. Clear consolidated from working memory
       await this.workingMemory.clearBatch(candidates.map(c => c.id));
 
-      console.log(`💾 [MemoryWorker] Consolidated ${batch.length} memories`);
+      this.log(`💾 Consolidated ${batch.length} memories`);
     } catch (error) {
-      console.error(`❌ [MemoryWorker] Consolidation failed:`, error);
+      this.log(`❌ Consolidation failed: ${error}`);
     }
   }
 
@@ -282,7 +287,7 @@ export class MemoryConsolidationWorker {
    * Activate relevant long-term memories
    */
   private async activate(contextEmbedding: number[]): Promise<void> {
-    console.log(`🔗 [MemoryWorker] Activation triggered`);
+    this.log(`🔗 Activation triggered`);
 
     try {
       // 1. Find similar in long-term (cosine similarity)
@@ -292,7 +297,7 @@ export class MemoryConsolidationWorker {
       });
 
       if (relevant.length === 0) {
-        console.log(`🔗 [MemoryWorker] No relevant memories to activate`);
+        this.log(`🔗 No relevant memories to activate`);
         return;
       }
 
@@ -314,9 +319,9 @@ export class MemoryConsolidationWorker {
         });
       }
 
-      console.log(`🔗 [MemoryWorker] Activated ${relevant.length} memories`);
+      this.log(`🔗 Activated ${relevant.length} memories`);
     } catch (error) {
-      console.error(`❌ [MemoryWorker] Activation failed:`, error);
+      this.log(`❌ Activation failed: ${error}`);
     }
   }
 
@@ -530,7 +535,7 @@ export class MemoryConsolidationWorker {
    */
   async stop(): Promise<void> {
     this.running = false;
-    console.log(`🛑 [MemoryWorker] Stopping for persona ${this.personaId}`);
+    this.log(`🛑 Stopping`);
   }
 
   /**
