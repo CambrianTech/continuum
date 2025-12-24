@@ -359,7 +359,15 @@ export interface UsageMetrics {
 }
 
 export interface HealthStatus {
-  status: 'healthy' | 'degraded' | 'unhealthy';
+  /**
+   * Adapter health status:
+   * - healthy: Working normally
+   * - degraded: Slow but functional
+   * - unhealthy: Not responding
+   * - insufficient_funds: API quota/credits exhausted (💰❌)
+   * - rate_limited: Too many requests (⏳)
+   */
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'insufficient_funds' | 'rate_limited';
   apiAvailable: boolean;
   responseTime: number;
   errorRate: number;

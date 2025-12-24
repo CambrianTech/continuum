@@ -45,8 +45,8 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private circuitBreakerResetTime: number = 0;
   private readonly circuitBreakerCooldown: number = 30000; // 30s cooldown before retry
 
-  // Base layer timeout - adapters get this for FREE
-  protected readonly baseTimeout: number = 30000; // 30s hard timeout for any adapter
+  // Base layer timeout - adapters get this for FREE (can override in subclass)
+  protected baseTimeout: number = 30000; // 30s default, Ollama overrides to 60s
 
   // Logger cache for persona-specific adapters logs
   private personaLoggers: Map<string, ComponentLogger> = new Map();

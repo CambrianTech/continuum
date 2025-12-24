@@ -93,7 +93,7 @@ class OllamaRequestQueue {
   private activeRequests = 0;
   private readonly maxConcurrent: number;
   private activeRequestIds: Set<string> = new Set();
-  private readonly QUEUE_TIMEOUT = 15000; // 15 seconds max wait time in queue
+  private readonly QUEUE_TIMEOUT = 45000; // 45 seconds max wait time in queue (increased from 15s for multiple personas)
   private readonly ACTIVE_TIMEOUT = 60000; // 60 seconds max execution time for active requests (increased from 30s due to model load)
   private log: (message: string) => void;
   private onQueueTimeout?: (waitTime: number) => Promise<void>;  // Callback when queue timeout occurs
@@ -269,6 +269,10 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
 
   constructor(config?: Partial<ProviderConfiguration>) {
     super();
+
+    // Override base class timeout - Ollama needs 60s for large contexts (13k+ tokens)
+    this.baseTimeout = 60000;
+
     this.config = {
       apiEndpoint: 'http://localhost:11434',
       timeout: 60000, // 60s - increased from 30s to handle large prompts with llama3.2:3b
