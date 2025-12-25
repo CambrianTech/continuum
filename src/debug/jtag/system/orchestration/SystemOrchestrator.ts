@@ -690,7 +690,22 @@ export class SystemOrchestrator extends EventEmitter {
       const pingResponse = JSON.parse(stdout);
 
       if (pingResponse.success && pingResponse.browser) {
-        console.log('⏭️ Browser already connected - skipping launch');
+        console.log('🔄 Browser already connected - triggering reload to pick up new code');
+
+        // Navigate to root to reload with new code
+        try {
+          await execAsync('./jtag interface/navigate --path="/"');
+          console.log('✅ Browser reloaded');
+        } catch (navError) {
+          console.warn('⚠️ Could not navigate browser, trying page reload');
+          // Fallback: try to execute a reload in the browser
+          try {
+            await execAsync('./jtag development/exec --code="location.reload()"');
+          } catch (reloadError) {
+            console.warn('⚠️ Browser reload failed - may need manual refresh');
+          }
+        }
+
         await milestoneEmitter.completeMilestone(
           SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
           this.currentEntryPoint
