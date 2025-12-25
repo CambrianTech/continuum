@@ -22,13 +22,14 @@ export class ContentOpenBrowserCommand extends ContentOpenCommand {
 
     // If successful, emit content:opened locally for browser widgets to respond
     if (result.success) {
-      const event: ContentOpenedEvent = {
+      const event: ContentOpenedEvent & { setAsCurrent?: boolean } = {
         contentItemId: result.contentItemId,
         contentType: params.contentType,
         entityId: params.entityId,
         title: params.title,
         userId: params.userId,
-        currentItemId: result.currentItemId
+        currentItemId: result.currentItemId,
+        setAsCurrent: params.setAsCurrent
       };
 
       console.log('📋 ContentOpenBrowserCommand: Emitting content:opened locally', event);

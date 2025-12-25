@@ -275,7 +275,10 @@ export class MainWidget extends BaseWidget {
     const widgetTag = getWidgetForType(contentType);
 
     // Create widget element with entity context if needed
-    let widgetHtml = `<${widgetTag}></${widgetTag}>`;
+    // Pass entityId as a data attribute so widgets can access it
+    let widgetHtml = entityId
+      ? `<${widgetTag} data-entity-id="${entityId}"></${widgetTag}>`
+      : `<${widgetTag}></${widgetTag}>`;
 
     contentView.innerHTML = widgetHtml;
 
@@ -509,6 +512,17 @@ export class MainWidget extends BaseWidget {
     Events.subscribe('content:opened', (eventData: unknown) => {
       console.log('📋 MainPanel: Received content:opened event!', eventData);
       refreshTabs('content:opened');
+
+      // If content was opened with setAsCurrent, switch to it
+      const data = eventData as { contentType?: string; entityId?: string; setAsCurrent?: boolean };
+      if (data?.setAsCurrent && data?.contentType) {
+        console.log(`📋 MainPanel: Switching to new ${data.contentType} content`);
+        this.switchContentView(data.contentType, data.entityId);
+
+        // Update URL
+        const newPath = buildContentPath(data.contentType, data.entityId);
+        this.updateUrl(newPath);
+      }
     });
 
     // Also listen for content:closed and content:switched
@@ -517,9 +531,20 @@ export class MainWidget extends BaseWidget {
       refreshTabs('content:closed');
     });
 
-    Events.subscribe('content:switched', () => {
-      console.log('📋 MainPanel: Received content:switched event');
+    Events.subscribe('content:switched', (eventData: unknown) => {
+      console.log('📋 MainPanel: Received content:switched event', eventData);
       refreshTabs('content:switched');
+
+      // Switch to the new content view
+      const data = eventData as { contentType?: string; entityId?: string };
+      if (data?.contentType) {
+        console.log(`📋 MainPanel: Switching view to ${data.contentType}`);
+        this.switchContentView(data.contentType, data.entityId);
+
+        // Update URL
+        const newPath = buildContentPath(data.contentType, data.entityId);
+        this.updateUrl(newPath);
+      }
     });
 
     // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup

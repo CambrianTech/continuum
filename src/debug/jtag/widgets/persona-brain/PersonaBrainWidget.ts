@@ -147,9 +147,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
           ${this.renderBrainSVG()}
         </div>
 
-        <div class="module-details">
-          ${this.selectedModule ? this.renderModuleDetails() : this.renderModuleOverview()}
-        </div>
+        ${this.selectedModule ? `<div class="module-details">${this.renderModuleDetails()}</div>` : ''}
 
         <div class="brain-stats">
           ${this.renderStats()}
@@ -160,9 +158,9 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
   private renderBrainSVG(): string {
     return `
-      <svg viewBox="0 0 300 320" class="brain-svg" xmlns="http://www.w3.org/2000/svg">
-        <!-- Background glow -->
+      <svg viewBox="0 0 600 500" class="brain-svg" xmlns="http://www.w3.org/2000/svg">
         <defs>
+          <!-- Glow filters -->
           <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
             <feMerge>
@@ -177,75 +175,115 @@ export class PersonaBrainWidget extends BasePanelWidget {
               <feMergeNode in="SourceGraphic"/>
             </feMerge>
           </filter>
+          <!-- Brain texture gradient -->
+          <linearGradient id="brainGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:rgba(0,40,50,0.95)"/>
+            <stop offset="100%" style="stop-color:rgba(0,20,30,0.98)"/>
+          </linearGradient>
         </defs>
 
-        <!-- MIND - Upper cortex (two hemispheres) -->
+        <!-- Large brain outline (side profile) - centered -->
+        <path class="brain-outline" d="
+          M150 200
+          C 130 140, 180 70, 280 50
+          C 380 30, 480 60, 520 120
+          C 550 170, 555 220, 545 270
+          C 535 320, 500 370, 440 400
+          L 400 415
+          C 370 430, 330 445, 300 445
+          L 295 480
+          L 275 480
+          L 270 445
+          C 200 445, 150 420, 120 380
+          C 90 340, 90 280, 120 230
+          C 100 210, 110 190, 150 200
+          Z"
+          fill="url(#brainGrad)" stroke="rgba(0,212,255,0.4)" stroke-width="2"/>
+
+        <!-- Brain surface texture (gyri/folds) -->
+        <g class="brain-folds" opacity="0.25">
+          <path d="M180 120 Q220 100 270 115 Q320 105 360 120" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+          <path d="M370 90 Q420 75 470 95 Q500 85 520 110" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+          <path d="M160 180 Q200 165 250 180 Q290 170 330 185" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+          <path d="M350 160 Q400 145 450 165 Q490 155 520 180" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+          <path d="M140 250 Q180 235 220 250" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+          <path d="M470 240 Q510 225 540 250" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+          <path d="M200 300 Q250 285 300 305 Q340 295 380 310" fill="none" stroke="rgba(0,212,255,0.6)" stroke-width="1.5"/>
+        </g>
+
+        <!-- MIND module box (top left, outside brain) -->
         <g class="brain-module module-mind ${this.getModuleClass('mind')}" data-module="mind">
-          <!-- Left hemisphere -->
-          <path d="M70 60 L70 30 L100 20 L130 30 L130 60 L120 70 L80 70 Z"
-                class="module-shape"/>
-          <!-- Right hemisphere -->
-          <path d="M170 60 L170 30 L200 20 L230 30 L230 60 L220 70 L180 70 Z"
-                class="module-shape"/>
-          <!-- Connection between hemispheres -->
-          <path d="M130 50 L170 50" class="module-connection"/>
-          <!-- Circuit traces -->
-          <path d="M85 40 L95 40 L95 55 M105 35 L115 35 L115 50" class="circuit-trace"/>
-          <path d="M185 40 L195 40 L195 55 M205 35 L215 35 L215 50" class="circuit-trace"/>
-          <text x="150" y="45" class="module-label">MIND</text>
+          <rect x="20" y="30" width="100" height="70" rx="6" class="module-shape module-fill"/>
+          <text x="70" y="55" class="module-label">MIND</text>
+          <text x="70" y="75" class="module-sublabel">Cognition</text>
+          <!-- Circuit connection to brain -->
+          <path d="M120 65 L160 65 L200 100" class="circuit-connection" fill="none"/>
+          <circle cx="200" cy="100" r="4" class="connection-node"/>
         </g>
 
-        <!-- SOUL - Central core -->
+        <!-- SOUL module box (top right, outside brain) -->
         <g class="brain-module module-soul ${this.getModuleClass('soul')}" data-module="soul">
-          <rect x="115" y="80" width="70" height="50" rx="8" class="module-shape"/>
-          <!-- Inner glow pattern -->
-          <circle cx="150" cy="105" r="12" class="soul-core"/>
-          <path d="M138 95 L145 105 L138 115 M162 95 L155 105 L162 115" class="soul-pulse"/>
-          <text x="150" y="108" class="module-label">SOUL</text>
+          <rect x="480" y="30" width="100" height="70" rx="6" class="module-shape module-fill"/>
+          <text x="530" y="55" class="module-label">SOUL</text>
+          <text x="530" y="75" class="module-sublabel">Values</text>
+          <!-- Circuit connection to brain -->
+          <path d="M480 65 L440 65 L400 100" class="circuit-connection" fill="none"/>
+          <circle cx="400" cy="100" r="4" class="connection-node"/>
         </g>
 
-        <!-- HIPPOCAMPUS - Memory center -->
+        <!-- HIPPOCAMPUS module box (left side, outside brain) -->
         <g class="brain-module module-hippocampus ${this.getModuleClass('hippocampus')}" data-module="hippocampus">
-          <path d="M90 145 L90 170 L120 185 L150 185 L180 185 L210 170 L210 145 L180 140 L150 135 L120 140 Z"
-                class="module-shape"/>
-          <!-- Memory cells pattern -->
-          <rect x="105" y="150" width="8" height="8" rx="1" class="memory-cell"/>
-          <rect x="120" y="155" width="8" height="8" rx="1" class="memory-cell"/>
-          <rect x="135" y="150" width="8" height="8" rx="1" class="memory-cell"/>
-          <rect x="150" y="155" width="8" height="8" rx="1" class="memory-cell"/>
-          <rect x="165" y="150" width="8" height="8" rx="1" class="memory-cell"/>
-          <rect x="180" y="155" width="8" height="8" rx="1" class="memory-cell"/>
-          <text x="150" y="175" class="module-label">HIPPOCAMPUS</text>
-          <text x="150" y="195" class="module-stat">${this.moduleStats.hippocampus.memoryCount} memories</text>
+          <rect x="10" y="200" width="110" height="90" rx="6" class="module-shape module-fill"/>
+          <text x="65" y="230" class="module-label">HIPPO</text>
+          <text x="65" y="250" class="module-sublabel">Memory</text>
+          <text x="65" y="275" class="module-stat">${this.moduleStats.hippocampus.memoryCount}</text>
+          <!-- Circuit connection to brain -->
+          <path d="M120 245 L150 245 L180 260" class="circuit-connection" fill="none"/>
+          <circle cx="180" cy="260" r="4" class="connection-node"/>
         </g>
 
-        <!-- BODY - Lower processing -->
+        <!-- BODY module box (right side, outside brain) -->
         <g class="brain-module module-body ${this.getModuleClass('body')}" data-module="body">
-          <path d="M120 205 L130 200 L170 200 L180 205 L180 235 L165 245 L135 245 L120 235 Z"
-                class="module-shape"/>
-          <!-- Tool connectors -->
-          <circle cx="135" cy="220" r="5" class="tool-port"/>
-          <circle cx="150" cy="215" r="5" class="tool-port"/>
-          <circle cx="165" cy="220" r="5" class="tool-port"/>
-          <text x="150" y="238" class="module-label">BODY</text>
+          <rect x="480" y="200" width="110" height="90" rx="6" class="module-shape module-fill"/>
+          <text x="535" y="230" class="module-label">BODY</text>
+          <text x="535" y="250" class="module-sublabel">Tools</text>
+          <text x="535" y="275" class="module-stat">${this.moduleStats.body.toolsAvailable}</text>
+          <!-- Circuit connection to brain -->
+          <path d="M480 245 L450 245 L420 260" class="circuit-connection" fill="none"/>
+          <circle cx="420" cy="260" r="4" class="connection-node"/>
         </g>
 
-        <!-- CNS - Spinal connection -->
+        <!-- CNS module box (bottom center, outside brain) -->
         <g class="brain-module module-cns ${this.getModuleClass('cns')}" data-module="cns">
-          <path d="M145 250 L145 290 L150 300 L155 290 L155 250" class="module-shape cns-spine"/>
-          <!-- Data lines -->
-          <line x1="147" y1="260" x2="147" y2="280" class="data-line"/>
-          <line x1="150" y1="255" x2="150" y2="285" class="data-line"/>
-          <line x1="153" y1="260" x2="153" y2="280" class="data-line"/>
-          <text x="150" y="315" class="module-label">CNS</text>
+          <rect x="245" y="420" width="110" height="70" rx="6" class="module-shape module-fill"/>
+          <text x="300" y="445" class="module-label">CNS</text>
+          <text x="300" y="465" class="module-sublabel">Integration</text>
+          <!-- Circuit connection up to brain stem -->
+          <path d="M300 420 L300 395 L285 380" class="circuit-connection" fill="none"/>
+          <circle cx="285" cy="380" r="4" class="connection-node"/>
         </g>
 
-        <!-- Connection lines between modules -->
-        <g class="connections">
-          <path d="M150 70 L150 80" class="connection-line"/>
-          <path d="M150 130 L150 135" class="connection-line"/>
-          <path d="M150 185 L150 200" class="connection-line"/>
-          <path d="M150 245 L150 250" class="connection-line"/>
+        <!-- Internal brain regions (subtle highlights inside brain) -->
+        <g opacity="0.4">
+          <!-- Frontal area glow -->
+          <ellipse cx="220" cy="150" rx="60" ry="50" fill="rgba(0,212,255,0.1)" class="brain-region region-mind"/>
+          <!-- Limbic area glow -->
+          <ellipse cx="320" cy="250" rx="50" ry="40" fill="rgba(0,212,255,0.1)" class="brain-region region-soul"/>
+          <!-- Temporal area glow -->
+          <ellipse cx="200" cy="300" rx="45" ry="35" fill="rgba(0,212,255,0.1)" class="brain-region region-hippo"/>
+          <!-- Cerebellum area glow -->
+          <ellipse cx="450" cy="300" rx="50" ry="45" fill="rgba(0,212,255,0.1)" class="brain-region region-body"/>
+          <!-- Brain stem area glow -->
+          <ellipse cx="300" cy="400" rx="30" ry="40" fill="rgba(0,212,255,0.1)" class="brain-region region-cns"/>
+        </g>
+
+        <!-- Internal connection network -->
+        <g class="neural-network" opacity="0.5">
+          <path d="M220 150 Q270 200 320 250" fill="none" class="neural-path"/>
+          <path d="M320 250 L200 300" fill="none" class="neural-path"/>
+          <path d="M320 250 L450 300" fill="none" class="neural-path"/>
+          <path d="M320 250 L300 400" fill="none" class="neural-path"/>
+          <path d="M220 150 Q260 280 300 400" fill="none" class="neural-path"/>
         </g>
       </svg>
     `;
@@ -480,11 +518,12 @@ const PERSONA_BRAIN_STYLES = `
     display: flex;
     justify-content: center;
     padding: 20px;
+    flex: 1;
   }
 
   .brain-svg {
     width: 100%;
-    max-width: 300px;
+    max-width: 700px;
     height: auto;
   }
 
@@ -536,7 +575,16 @@ const PERSONA_BRAIN_STYLES = `
   }
 
   .module-label {
-    fill: rgba(255, 255, 255, 0.7);
+    fill: rgba(255, 255, 255, 0.9);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    text-anchor: middle;
+    pointer-events: none;
+  }
+
+  .module-sublabel {
+    fill: rgba(255, 255, 255, 0.5);
     font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
     text-anchor: middle;
@@ -545,10 +593,46 @@ const PERSONA_BRAIN_STYLES = `
 
   .module-stat {
     fill: #00d4ff;
-    font-size: 8px;
+    font-size: 12px;
+    font-weight: 600;
     font-family: 'JetBrains Mono', monospace;
     text-anchor: middle;
     pointer-events: none;
+  }
+
+  /* Circuit connections from modules to brain */
+  .circuit-connection {
+    stroke: rgba(0, 212, 255, 0.5);
+    stroke-width: 2;
+    stroke-dasharray: 8 4;
+    animation: data-pulse 2s linear infinite;
+  }
+
+  .connection-node {
+    fill: #00d4ff;
+    stroke: rgba(0, 212, 255, 0.8);
+    stroke-width: 2;
+  }
+
+  @keyframes data-pulse {
+    0% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -24; }
+  }
+
+  /* Neural paths inside brain */
+  .neural-path {
+    stroke: rgba(0, 212, 255, 0.3);
+    stroke-width: 2;
+    stroke-dasharray: 4 4;
+  }
+
+  /* Brain region highlights */
+  .brain-region {
+    transition: all 0.3s ease;
+  }
+
+  .brain-module:hover ~ .brain-region {
+    fill: rgba(0, 212, 255, 0.2);
   }
 
   .circuit-trace {
