@@ -536,26 +536,20 @@ export class MainWidget extends BaseWidget {
       this.openThemeTab();
     });
 
-    // Listen to settings-clicked event - opens Settings room (collaborative config with AI)
+    // Listen to settings-clicked event - opens Settings tab with integrated AI chat
     this.addEventListener('settings-clicked', () => {
-      console.log('⚙️ MainPanel: Settings button clicked - opening Settings room');
-      // Settings is a room with AI assistants to help configure
-      const settingsRoomId = DEFAULT_ROOMS.SETTINGS;
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: settingsRoomId,
-        roomName: 'Settings'
-      });
+      console.log('⚙️ MainPanel: Settings button clicked - opening Settings tab');
+      // Opens settings-widget with embedded chat for AI assistance
+      // The Settings room (DEFAULT_ROOMS.SETTINGS) provides the chat backend
+      this.openContentTab('settings', 'Settings');
     });
 
-    // Listen to help-clicked event - opens Help room (collaborative help with AI)
+    // Listen to help-clicked event - opens Help tab with integrated AI chat
     this.addEventListener('help-clicked', () => {
-      console.log('❓ MainPanel: Help button clicked - opening Help room');
-      // Help is a room with AI assistants, not a static page
-      const helpRoomId = DEFAULT_ROOMS.HELP;
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: helpRoomId,
-        roomName: 'Help'
-      });
+      console.log('❓ MainPanel: Help button clicked - opening Help tab');
+      // Opens help-widget with embedded chat for AI assistance
+      // The Help room (DEFAULT_ROOMS.HELP) provides the chat backend
+      this.openContentTab('help', 'Help');
     });
 
     console.log('🔗 MainPanel: Header controls listeners registered');
