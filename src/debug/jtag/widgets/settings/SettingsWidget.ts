@@ -16,6 +16,9 @@ interface ConfigEntry {
   value: string;
   isSecret: boolean;
   description?: string;
+  provider: string;
+  category: 'local' | 'cloud';
+  isConfigured?: boolean;
 }
 
 export class SettingsWidget extends BaseWidget {
@@ -54,14 +57,16 @@ export class SettingsWidget extends BaseWidget {
 
   private getDefaultConfigEntries(): ConfigEntry[] {
     return [
-      { key: 'ANTHROPIC_API_KEY', value: '', isSecret: true, description: 'Claude API key for AI features' },
-      { key: 'OPENAI_API_KEY', value: '', isSecret: true, description: 'OpenAI API key (optional)' },
-      { key: 'GROQ_API_KEY', value: '', isSecret: true, description: 'Groq API key for fast inference' },
-      { key: 'TOGETHER_API_KEY', value: '', isSecret: true, description: 'Together.ai API key' },
-      { key: 'FIREWORKS_API_KEY', value: '', isSecret: true, description: 'Fireworks.ai API key' },
-      { key: 'XAI_API_KEY', value: '', isSecret: true, description: 'xAI/Grok API key' },
-      { key: 'DEEPSEEK_API_KEY', value: '', isSecret: true, description: 'DeepSeek API key' },
-      { key: 'OLLAMA_HOST', value: 'http://localhost:11434', isSecret: false, description: 'Ollama server URL (free local AI)' },
+      // Local AI - Free, runs on your machine
+      { key: 'OLLAMA_HOST', value: 'http://localhost:11434', isSecret: false, provider: 'Ollama', category: 'local', description: 'Local AI server - completely free, private, no API key needed' },
+      // Cloud Providers - Paid, need API keys
+      { key: 'ANTHROPIC_API_KEY', value: '', isSecret: true, provider: 'Anthropic', category: 'cloud', description: 'Claude models - best for complex reasoning' },
+      { key: 'OPENAI_API_KEY', value: '', isSecret: true, provider: 'OpenAI', category: 'cloud', description: 'GPT models - widely compatible' },
+      { key: 'GROQ_API_KEY', value: '', isSecret: true, provider: 'Groq', category: 'cloud', description: 'Ultra-fast inference' },
+      { key: 'DEEPSEEK_API_KEY', value: '', isSecret: true, provider: 'DeepSeek', category: 'cloud', description: 'Cost-effective reasoning' },
+      { key: 'XAI_API_KEY', value: '', isSecret: true, provider: 'xAI', category: 'cloud', description: 'Grok models' },
+      { key: 'TOGETHER_API_KEY', value: '', isSecret: true, provider: 'Together', category: 'cloud', description: 'Open-source model hosting' },
+      { key: 'FIREWORKS_API_KEY', value: '', isSecret: true, provider: 'Fireworks', category: 'cloud', description: 'Fast open-source models' },
     ];
   }
 
@@ -260,6 +265,54 @@ export class SettingsWidget extends BaseWidget {
         text-decoration: underline;
       }
 
+      .status-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 10px;
+      }
+
+      .status-configured {
+        background: rgba(0, 255, 100, 0.15);
+        color: #00ff64;
+      }
+
+      .status-not-set {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      .provider-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+
+      .provider-name {
+        font-size: 14px;
+        font-weight: 500;
+        color: #00d4ff;
+      }
+
+      .section-intro {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.6);
+        margin-bottom: 16px;
+        line-height: 1.5;
+      }
+
+      .local-highlight {
+        background: rgba(0, 255, 100, 0.1);
+        border-color: rgba(0, 255, 100, 0.3);
+      }
+
+      .local-highlight .section-title {
+        color: #00ff64;
+      }
+
       @media (max-width: 768px) {
         .settings-layout {
           flex-direction: column;
@@ -272,21 +325,38 @@ export class SettingsWidget extends BaseWidget {
       }
     `;
 
-    const entriesHtml = this.configEntries.map(entry => `
-      <div class="config-entry">
-        <div class="config-label">
-          <span class="config-key">${entry.key}</span>
-          ${entry.description ? `<span class="config-description">${entry.description}</span>` : ''}
+    // Separate local and cloud entries
+    const localEntries = this.configEntries.filter(e => e.category === 'local');
+    const cloudEntries = this.configEntries.filter(e => e.category === 'cloud');
+
+    const renderEntry = (entry: ConfigEntry) => {
+      const isConfigured = entry.isSecret ? !!entry.value : true;
+      const statusClass = isConfigured ? 'status-configured' : 'status-not-set';
+      const statusText = isConfigured ? '✓ Configured' : '○ Not set';
+
+      return `
+        <div class="config-entry">
+          <div class="provider-header">
+            <span class="provider-name">${entry.provider}</span>
+            <span class="status-indicator ${statusClass}">${statusText}</span>
+          </div>
+          <div class="config-label">
+            <span class="config-key">${entry.key}</span>
+            <span class="config-description">${entry.description || ''}</span>
+          </div>
+          <input
+            type="${entry.isSecret ? 'password' : 'text'}"
+            class="config-input"
+            data-key="${entry.key}"
+            value="${entry.value}"
+            placeholder="${entry.isSecret ? 'Enter API key...' : 'Enter URL...'}"
+          />
         </div>
-        <input
-          type="${entry.isSecret ? 'password' : 'text'}"
-          class="config-input"
-          data-key="${entry.key}"
-          value="${entry.value}"
-          placeholder="${entry.isSecret ? 'Enter API key...' : 'Enter value...'}"
-        />
-      </div>
-    `).join('');
+      `;
+    };
+
+    const localEntriesHtml = localEntries.map(renderEntry).join('');
+    const cloudEntriesHtml = cloudEntries.map(renderEntry).join('');
 
     const template = this.isLoading ? `
       <div class="settings-layout">
@@ -302,18 +372,30 @@ export class SettingsWidget extends BaseWidget {
         <div class="settings-main">
           <div class="settings-container">
             <div class="settings-header">
-              <h1 class="settings-title">Settings</h1>
-              <p class="settings-subtitle">Configure API keys and preferences</p>
+              <h1 class="settings-title">AI Providers</h1>
+              <p class="settings-subtitle">Connect AI services to power your assistants</p>
             </div>
 
             <div class="info-box">
-              <strong>Free AI:</strong> Ollama runs locally at no cost.
-              <a href="https://ollama.ai" target="_blank">Download Ollama</a> to get started without API keys.
+              <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
+              or connect cloud providers for more powerful models. You can use multiple providers.
+            </div>
+
+            <div class="settings-section local-highlight">
+              <h2 class="section-title">Local AI (Free)</h2>
+              <p class="section-intro">
+                Runs on your machine. No API key required. Private and unlimited.
+                <a href="https://ollama.ai" target="_blank">Download Ollama</a> if not installed.
+              </p>
+              ${localEntriesHtml}
             </div>
 
             <div class="settings-section">
-              <h2 class="section-title">API Keys</h2>
-              ${entriesHtml}
+              <h2 class="section-title">Cloud Providers (Paid)</h2>
+              <p class="section-intro">
+                Requires API keys from each provider. More powerful models, usage-based pricing.
+              </p>
+              ${cloudEntriesHtml}
             </div>
 
             <div class="save-section">
@@ -348,8 +430,8 @@ export class SettingsWidget extends BaseWidget {
     this.assistantPanel = new AssistantPanel(container, {
       roomId: DEFAULT_ROOMS.SETTINGS as UUID,
       roomName: 'settings',
-      placeholder: 'Ask about settings or API keys...',
-      greeting: "Hi! I can help you configure your API keys and settings. What would you like to know?"
+      placeholder: 'Ask about providers, pricing, or setup...',
+      greeting: "I can help you choose and configure AI providers. Ask me about:\n• Which provider is best for your needs\n• How to get API keys\n• Troubleshooting connections\n• Comparing costs and capabilities"
     });
   }
 
