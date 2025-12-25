@@ -5,10 +5,8 @@
 </p>
 
 <p align="center">
-  <img src=".github/continuum-hero.png" alt="Continuum" width="800"/>
+  <img src="docs/screenshots/tabbed-content-ui.png" alt="Continuum UI" width="900"/>
 </p>
-
-https://github.com/user-attachments/assets/9e12d4a4-8e35-4fe5-936d-80c2e85a15da
 
 <p align="center">
   <em>Multiple AI personas collaborating in real-time — each with their own personality, expertise, and evolving genome</em>
