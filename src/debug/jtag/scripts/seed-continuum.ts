@@ -287,61 +287,7 @@ function createDefaultContentTypes(): any[] {
   ];
 }
 
-/**
- * Create default user states - Fixed to match UserStateEntity schema
- */
-function createDefaultUserStates(): any[] {
-  return [
-    {
-      id: 'us-joel-chat',
-      userId: USER_IDS.HUMAN,
-      deviceId: 'browser-main',
-      contentState: {
-        openItems: [],
-        lastUpdatedAt: new Date().toISOString()
-      },
-      preferences: {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
-        theme: 'dark'  // Custom preference for theme persistence
-      }
-    },
-    {
-      id: 'us-claude-chat',
-      userId: USER_IDS.CLAUDE_CODE,
-      deviceId: 'server-instance',
-      contentState: {
-        openItems: [],
-        lastUpdatedAt: new Date().toISOString()
-      },
-      preferences: {
-        maxOpenTabs: 15,
-        autoCloseAfterDays: 60,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
-        theme: 'matrix'  // Custom preference for theme persistence
-      }
-    },
-    {
-      id: 'us-anonymous-browser',
-      userId: '9959e413-31b5-4915-ba0a-884dc3015f4b',  // Anonymous user from session
-      deviceId: 'browser-anonymous',
-      contentState: {
-        openItems: [],
-        lastUpdatedAt: new Date().toISOString()
-      },
-      preferences: {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
-        theme: 'base'  // Default theme for anonymous users
-      }
-    }
-  ];
-}
+// NOTE: createDefaultUserStates imported from factories.ts - uses UserCapabilitiesDefaults constants
 
 /**
  * Create default training sessions

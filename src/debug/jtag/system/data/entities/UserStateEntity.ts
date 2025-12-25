@@ -35,6 +35,7 @@ import {
   ForeignKeyField
 } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
+import { USER_PREFERENCES_DEFAULTS } from '../../user/config/UserCapabilitiesDefaults';
 
 /**
  * UserState Entity - Per-user dynamic content state
@@ -121,12 +122,8 @@ export class UserStateEntity extends BaseEntity {
       openItems: [],
       lastUpdatedAt: new Date()
     };
-    this.preferences = {
-      maxOpenTabs: 10,
-      autoCloseAfterDays: 30,
-      rememberScrollPosition: true,
-      syncAcrossDevices: true
-    };
+    // Use agent defaults as reasonable fallback (overridden by user type on creation)
+    this.preferences = { ...USER_PREFERENCES_DEFAULTS.agent };
     this.roomReadState = {};
     this.learningState = {
       isLearning: false
@@ -193,8 +190,8 @@ export class UserStateEntity extends BaseEntity {
       return { success: false, error: 'UserState preferences.maxOpenTabs must be a number' };
     }
 
-    if (this.preferences.maxOpenTabs < 1 || this.preferences.maxOpenTabs > 50) {
-      return { success: false, error: 'UserState preferences.maxOpenTabs must be between 1 and 50' };
+    if (this.preferences.maxOpenTabs < 1 || this.preferences.maxOpenTabs > 200) {
+      return { success: false, error: 'UserState preferences.maxOpenTabs must be between 1 and 200' };
     }
 
     return { success: true };
@@ -202,7 +199,8 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Add a new content item to the user's open tabs
-   * Deduplicates by entityId (e.g., roomId) - clicking same room twice moves it to front
+   * Deduplicates by entityId (e.g., roomId) - clicking same room just switches focus
+   * Tabs maintain insertion order - like VSCode, not MRU
    */
   addContentItem(item: Omit<ContentItem, 'lastAccessedAt'>): void {
     // Check if this entity is already open (by entityId, not content item id)
@@ -211,10 +209,8 @@ export class UserStateEntity extends BaseEntity {
     );
 
     if (existingItem) {
-      // Already open - just switch to it (move to front, update timestamp)
+      // Already open - just switch to it (NO reordering, just update timestamp and focus)
       existingItem.lastAccessedAt = new Date();
-      this.contentState.openItems = this.contentState.openItems.filter(i => i.id !== existingItem.id);
-      this.contentState.openItems.unshift(existingItem);
       this.contentState.currentItemId = existingItem.id;
       this.contentState.lastUpdatedAt = new Date();
       return;
@@ -226,12 +222,12 @@ export class UserStateEntity extends BaseEntity {
       lastAccessedAt: new Date()
     };
 
-    // Add to front
-    this.contentState.openItems.unshift(contentItem);
+    // Add to END (append) - maintains insertion order
+    this.contentState.openItems.push(contentItem);
 
-    // Enforce max tabs limit
-    if (this.contentState.openItems.length > this.preferences.maxOpenTabs) {
-      this.contentState.openItems = this.contentState.openItems.slice(0, this.preferences.maxOpenTabs);
+    // Enforce max tabs limit - remove oldest (from start) if over limit
+    while (this.contentState.openItems.length > this.preferences.maxOpenTabs) {
+      this.contentState.openItems.shift();
     }
 
     // Set as current item
@@ -259,6 +255,7 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Switch focus to a specific content item
+   * Maintains insertion order - like VSCode, not MRU
    */
   setCurrentContent(itemId: UUID): boolean {
     const item = this.contentState.openItems.find(item => item.id === itemId);
@@ -266,12 +263,8 @@ export class UserStateEntity extends BaseEntity {
       return false;
     }
 
-    // Update last accessed time
+    // Update last accessed time (NO reordering - tabs stay in place)
     item.lastAccessedAt = new Date();
-
-    // Move to front of array for recency ordering
-    this.contentState.openItems = this.contentState.openItems.filter(i => i.id !== itemId);
-    this.contentState.openItems.unshift(item);
 
     // Set as current
     this.contentState.currentItemId = itemId;

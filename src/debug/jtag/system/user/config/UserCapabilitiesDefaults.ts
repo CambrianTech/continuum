@@ -60,19 +60,19 @@ export const USER_PREFERENCES_DEFAULTS: Record<'human' | 'agent' | 'persona', {
   syncAcrossDevices: boolean;
 }> = {
   human: {
-    maxOpenTabs: 10,        // Humans: many tabs
+    maxOpenTabs: 100,       // Humans: unlimited practical use
     autoCloseAfterDays: 30, // Long retention
     rememberScrollPosition: true,
     syncAcrossDevices: true // Humans sync across devices
   },
   agent: {
-    maxOpenTabs: 3,        // Agents: minimal tabs
-    autoCloseAfterDays: 1, // Short retention
+    maxOpenTabs: 50,        // Agents: plenty of tabs
+    autoCloseAfterDays: 7,  // Week retention
     rememberScrollPosition: false,
     syncAcrossDevices: false
   },
   persona: {
-    maxOpenTabs: 5,        // Personas: moderate tabs
+    maxOpenTabs: 50,        // Personas: plenty of tabs
     autoCloseAfterDays: 7, // Keep state for a week
     rememberScrollPosition: true,
     syncAcrossDevices: false  // Personas don't sync across devices

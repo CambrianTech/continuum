@@ -358,16 +358,14 @@ export class JTAGClientBrowser extends JTAGClient {
 
         // Import UserStateEntity to create proper entity instance
         const { UserStateEntity } = await import('../../../data/entities/UserStateEntity');
+        const { getDefaultPreferencesForType } = await import('../../../user/config/UserCapabilitiesDefaults');
+
         const newUserState = new UserStateEntity();
         newUserState.id = this.userStateId;
         newUserState.userId = identity.userId;
         newUserState.deviceId = identity.deviceId;
-        newUserState.preferences = {
-          maxOpenTabs: 10,
-          autoCloseAfterDays: 30,
-          rememberScrollPosition: true,
-          syncAcrossDevices: false
-        };
+        // Use single source of truth - default to human preferences for browser users
+        newUserState.preferences = getDefaultPreferencesForType('human');
         newUserState.contentState = {
           openItems: [],
           lastUpdatedAt: new Date()

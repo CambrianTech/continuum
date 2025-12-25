@@ -15,6 +15,7 @@
 
 import type { UUID } from '../types/CrossPlatformUUID';
 import { stringToUUID } from '../types/CrossPlatformUUID';
+import { getDefaultPreferencesForType } from '../../user/config/UserCapabilitiesDefaults';
 
 export interface LocalStateData {
   userId: UUID;
@@ -202,16 +203,17 @@ export class LocalStorageStateManager {
 
   /**
    * Initialize state for a new user/session
+   * Uses UserCapabilitiesDefaults for single source of truth
    */
   static initializeState(): LocalStateData {
+    // Default to human preferences (anonymous browser users are treated as humans)
+    const defaultPrefs = getDefaultPreferencesForType('human');
+
     const initialState: LocalStateData = {
       userId: this.getAnonymousUserId(),
       theme: 'base',
       preferences: {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true
+        ...defaultPrefs
       },
       contentState: {
         openItems: [],
