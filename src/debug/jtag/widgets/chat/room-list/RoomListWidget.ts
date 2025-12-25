@@ -78,8 +78,16 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
         throw new Error(`Failed to load rooms: ${result?.error ?? 'Unknown error'}`);
       }
 
+      // Filter out 'system' tagged rooms (Help, Settings, etc.)
+      // These are accessible via dedicated buttons, not the rooms list
+      // Client-side filter - room lists are small, SQLite doesn't support array queries
+      const visibleRooms = result.items.filter(room => {
+        const tags = room.tags ?? [];
+        return !tags.includes('system');
+      });
+
       return {
-        items: result.items,
+        items: visibleRooms,
         hasMore: false, // Room lists are typically small, no pagination needed
         nextCursor: undefined
       };

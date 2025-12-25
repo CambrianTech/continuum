@@ -13,6 +13,7 @@ import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import { COMMANDS } from '../../shared/generated-command-constants';
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
+import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
@@ -535,10 +536,15 @@ export class MainWidget extends BaseWidget {
       this.openThemeTab();
     });
 
-    // Listen to settings-clicked event
+    // Listen to settings-clicked event - opens Settings room (collaborative config with AI)
     this.addEventListener('settings-clicked', () => {
-      console.log('⚙️ MainPanel: Settings button clicked from header controls');
-      this.openContentTab('settings', 'Settings');
+      console.log('⚙️ MainPanel: Settings button clicked - opening Settings room');
+      // Settings is a room with AI assistants to help configure
+      const settingsRoomId = DEFAULT_ROOMS.SETTINGS;
+      Events.emit(UI_EVENTS.ROOM_SELECTED, {
+        roomId: settingsRoomId,
+        roomName: 'Settings'
+      });
     });
 
     // Listen to help-clicked event - opens Help room (collaborative help with AI)
@@ -735,6 +741,17 @@ export class MainWidget extends BaseWidget {
     // Update URL
     const newPath = buildContentPath(contentType);
     this.updateUrl(newPath);
+
+    // PERSIST to database - singletons like settings have no entityId
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+        userId: userId as UUID,
+        contentType: contentType as ContentType,
+        title: title,
+        setAsCurrent: true
+      }).catch(err => console.error(`Failed to persist ${contentType} tab:`, err));
+    }
 
     console.log(`📋 MainPanel: Opened new ${contentType} tab`);
   }
