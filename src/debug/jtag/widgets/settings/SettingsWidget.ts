@@ -1,12 +1,15 @@
 /**
- * SettingsWidget - Configuration editor for config.env
+ * SettingsWidget - Configuration editor with AI assistance
  *
  * Allows users to view and edit API keys and other settings.
+ * Includes embedded AI assistant for help with configuration.
  * Changes are persisted to ~/.continuum/config.env
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-// import { Commands } from '../../system/core/shared/Commands';  // TODO: Use for config save
+import { AssistantPanel } from '../shared/AssistantPanel';
+import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 interface ConfigEntry {
   key: string;
@@ -19,11 +22,12 @@ export class SettingsWidget extends BaseWidget {
   private configEntries: ConfigEntry[] = [];
   private isLoading = true;
   private saveStatus: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
+  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
       widgetName: 'SettingsWidget',
-      template: undefined,  // Inline template
+      template: undefined,
       styles: undefined,
       enableAI: false,
       enableDatabase: false,
@@ -42,7 +46,6 @@ export class SettingsWidget extends BaseWidget {
     this.renderWidget();
 
     // TODO: Load actual config from server via system/config/list command
-    // For now, show default entries
     this.configEntries = this.getDefaultConfigEntries();
 
     this.isLoading = false;
@@ -67,13 +70,28 @@ export class SettingsWidget extends BaseWidget {
       :host {
         display: block;
         height: 100%;
+        overflow: hidden;
+      }
+
+      .settings-layout {
+        display: grid;
+        grid-template-columns: 1fr 350px;
+        height: 100%;
+        gap: 0;
+      }
+
+      .settings-main {
         overflow-y: auto;
+        padding: 24px;
+      }
+
+      .settings-assistant {
+        border-left: 1px solid rgba(0, 212, 255, 0.2);
+        height: 100%;
       }
 
       .settings-container {
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 24px;
+        max-width: 600px;
       }
 
       .settings-header {
@@ -236,6 +254,18 @@ export class SettingsWidget extends BaseWidget {
       .info-box a:hover {
         text-decoration: underline;
       }
+
+      @media (max-width: 900px) {
+        .settings-layout {
+          grid-template-columns: 1fr;
+          grid-template-rows: 1fr 300px;
+        }
+
+        .settings-assistant {
+          border-left: none;
+          border-top: 1px solid rgba(0, 212, 255, 0.2);
+        }
+      }
     `;
 
     const entriesHtml = this.configEntries.map(entry => `
@@ -255,39 +285,68 @@ export class SettingsWidget extends BaseWidget {
     `).join('');
 
     const template = this.isLoading ? `
-      <div class="settings-container">
-        <div class="loading">Loading configuration...</div>
+      <div class="settings-layout">
+        <div class="settings-main">
+          <div class="settings-container">
+            <div class="loading">Loading configuration...</div>
+          </div>
+        </div>
+        <div class="settings-assistant" id="assistant-container"></div>
       </div>
     ` : `
-      <div class="settings-container">
-        <div class="settings-header">
-          <h1 class="settings-title">Settings</h1>
-          <p class="settings-subtitle">Configure API keys and preferences</p>
-        </div>
+      <div class="settings-layout">
+        <div class="settings-main">
+          <div class="settings-container">
+            <div class="settings-header">
+              <h1 class="settings-title">Settings</h1>
+              <p class="settings-subtitle">Configure API keys and preferences</p>
+            </div>
 
-        <div class="info-box">
-          <strong>Free AI:</strong> Ollama runs locally at no cost.
-          <a href="https://ollama.ai" target="_blank">Download Ollama</a> to get started without API keys.
-        </div>
+            <div class="info-box">
+              <strong>Free AI:</strong> Ollama runs locally at no cost.
+              <a href="https://ollama.ai" target="_blank">Download Ollama</a> to get started without API keys.
+            </div>
 
-        <div class="settings-section">
-          <h2 class="section-title">API Keys</h2>
-          ${entriesHtml}
-        </div>
+            <div class="settings-section">
+              <h2 class="section-title">API Keys</h2>
+              ${entriesHtml}
+            </div>
 
-        <div class="save-section">
-          ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
-          ${this.saveStatus === 'error' ? '<span class="status-message status-error">Failed to save</span>' : ''}
-          <button class="btn btn-secondary" id="reset-btn">Reset</button>
-          <button class="btn btn-primary" id="save-btn">Save Changes</button>
+            <div class="save-section">
+              ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
+              ${this.saveStatus === 'error' ? '<span class="status-message status-error">Failed to save</span>' : ''}
+              <button class="btn btn-secondary" id="reset-btn">Reset</button>
+              <button class="btn btn-primary" id="save-btn">Save Changes</button>
+            </div>
+          </div>
         </div>
+        <div class="settings-assistant" id="assistant-container"></div>
       </div>
     `;
 
     this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
 
-    // Add event listeners
+    // Setup event listeners
     this.setupEventListeners();
+
+    // Initialize assistant panel
+    this.initializeAssistant();
+  }
+
+  private initializeAssistant(): void {
+    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
+    if (!container) return;
+
+    // Clean up old instance
+    this.assistantPanel?.destroy();
+
+    // Create new assistant panel connected to Settings room
+    this.assistantPanel = new AssistantPanel(container, {
+      roomId: DEFAULT_ROOMS.SETTINGS as UUID,
+      roomName: 'settings',
+      placeholder: 'Ask about settings or API keys...',
+      greeting: "Hi! I can help you configure your API keys and settings. What would you like to know?"
+    });
   }
 
   private setupEventListeners(): void {
@@ -319,7 +378,6 @@ export class SettingsWidget extends BaseWidget {
 
     try {
       // TODO: Implement system/config/save command
-      // For now, just log the values that would be saved
       const config: Record<string, string> = {};
       for (const entry of this.configEntries) {
         if (entry.value) {
@@ -342,6 +400,7 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this.assistantPanel?.destroy();
     console.log('Settings: Cleanup complete');
   }
 }

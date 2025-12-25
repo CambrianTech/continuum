@@ -1,11 +1,14 @@
 /**
- * HelpWidget - Onboarding and documentation
+ * HelpWidget - Onboarding and documentation with AI assistance
  *
  * Helps new users get started with Continuum.
- * AI-assisted onboarding using free Ollama models.
+ * Includes embedded AI assistant for contextual help.
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import { AssistantPanel } from '../shared/AssistantPanel';
+import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 interface HelpSection {
   id: string;
@@ -16,6 +19,7 @@ interface HelpSection {
 
 export class HelpWidget extends BaseWidget {
   private activeSection: string = 'getting-started';
+  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
@@ -151,13 +155,13 @@ export class HelpWidget extends BaseWidget {
         overflow: hidden;
       }
 
-      .help-container {
-        display: flex;
+      .help-layout {
+        display: grid;
+        grid-template-columns: 220px 1fr 350px;
         height: 100%;
       }
 
       .help-sidebar {
-        width: 220px;
         background: rgba(10, 15, 20, 0.95);
         border-right: 1px solid rgba(0, 212, 255, 0.2);
         padding: 16px 0;
@@ -208,10 +212,8 @@ export class HelpWidget extends BaseWidget {
       }
 
       .help-content {
-        flex: 1;
         padding: 32px;
         overflow-y: auto;
-        max-width: 800px;
       }
 
       .help-content h3 {
@@ -276,6 +278,51 @@ export class HelpWidget extends BaseWidget {
       .help-content td:first-child {
         width: 150px;
       }
+
+      .help-assistant {
+        border-left: 1px solid rgba(0, 212, 255, 0.2);
+        height: 100%;
+      }
+
+      @media (max-width: 1100px) {
+        .help-layout {
+          grid-template-columns: 180px 1fr 300px;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .help-layout {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto 1fr 300px;
+        }
+
+        .help-sidebar {
+          border-right: none;
+          border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+          display: flex;
+          overflow-x: auto;
+          padding: 8px;
+        }
+
+        .sidebar-title {
+          display: none;
+        }
+
+        .nav-item {
+          white-space: nowrap;
+          padding: 8px 12px;
+        }
+
+        .nav-item.active {
+          border-left: none;
+          border-bottom: 2px solid #00d4ff;
+        }
+
+        .help-assistant {
+          border-left: none;
+          border-top: 1px solid rgba(0, 212, 255, 0.2);
+        }
+      }
     `;
 
     const navItems = sections.map(s => `
@@ -286,7 +333,7 @@ export class HelpWidget extends BaseWidget {
     `).join('');
 
     const template = `
-      <div class="help-container">
+      <div class="help-layout">
         <div class="help-sidebar">
           <div class="sidebar-title">Help Topics</div>
           ${navItems}
@@ -294,11 +341,29 @@ export class HelpWidget extends BaseWidget {
         <div class="help-content">
           ${activeContent}
         </div>
+        <div class="help-assistant" id="assistant-container"></div>
       </div>
     `;
 
     this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
     this.setupEventListeners();
+    this.initializeAssistant();
+  }
+
+  private initializeAssistant(): void {
+    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
+    if (!container) return;
+
+    // Clean up old instance
+    this.assistantPanel?.destroy();
+
+    // Create new assistant panel connected to Help room
+    this.assistantPanel = new AssistantPanel(container, {
+      roomId: DEFAULT_ROOMS.HELP as UUID,
+      roomName: 'help',
+      placeholder: 'Ask for help...',
+      greeting: "Hi! I'm here to help you get started with Continuum. What would you like to know?"
+    });
   }
 
   private setupEventListeners(): void {
@@ -314,6 +379,7 @@ export class HelpWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this.assistantPanel?.destroy();
     console.log('Help: Cleanup complete');
   }
 }
