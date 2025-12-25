@@ -42,7 +42,9 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         ROOM_UNIQUE_IDS.GENERAL,
         ROOM_UNIQUE_IDS.ACADEMY,
         ROOM_UNIQUE_IDS.DEV_UPDATES,
-        ROOM_UNIQUE_IDS.HELP
+        ROOM_UNIQUE_IDS.HELP,
+        ROOM_UNIQUE_IDS.THEME,     // System room for ThemeWidget assistant
+        ROOM_UNIQUE_IDS.SETTINGS   // System room for SettingsWidget assistant
       ]
     },
     // SOTA PersonaUsers also join Pantheon (elite multi-provider collaboration)

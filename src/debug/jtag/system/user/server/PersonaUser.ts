@@ -34,6 +34,7 @@ import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import { getDataEventName } from '../../core/shared/EventConstants';
 import { TaskEntity } from '../../data/entities/TaskEntity';
 import { taskEntityToInboxTask } from './modules/QueueItemTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
@@ -817,18 +818,38 @@ export class PersonaUser extends AIUser {
   /**
    * Handle room update event
    * Updates membership tracking when this persona is added/removed from a room
+   * CRITICAL: Also subscribes to chat events for newly added rooms
    */
   private async handleRoomUpdate(roomEntity: RoomEntity): Promise<void> {
     const isMember = roomEntity.members.some((m: { userId: UUID }) => m.userId === this.id);
     const wasInRoom = this.myRoomIds.has(roomEntity.id);
 
     if (isMember && !wasInRoom) {
-      // Added to room
+      // Added to room - update membership AND subscribe to chat events
       this.myRoomIds.add(roomEntity.id);
+      this.subscribeToRoomChatEvents(roomEntity.id);
+      this.log.info(`🚪 ${this.displayName}: Joined room ${roomEntity.name} (${roomEntity.id.slice(0,8)}) - now listening`);
     } else if (!isMember && wasInRoom) {
       // Removed from room
       this.myRoomIds.delete(roomEntity.id);
+      this.log.info(`🚪 ${this.displayName}: Left room ${roomEntity.name} (${roomEntity.id.slice(0,8)})`);
     }
+  }
+
+  /**
+   * Subscribe to chat events for a single room
+   * Used both during initialization and when dynamically added to a room
+   */
+  private subscribeToRoomChatEvents(roomId: string): void {
+    const eventName = getDataEventName(COLLECTIONS.CHAT_MESSAGES, 'created');
+    const handler = this.handleChatMessage.bind(this);
+
+    Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
+      this.log.debug(`🔔 ${this.displayName}: Event for room ${roomId.slice(0,8)}`);
+      await handler(messageData);
+    }, { where: { roomId } }, `${this.id}_${roomId}`);
+
+    this.log.info(`📡 ${this.displayName}: Subscribed to chat events for room ${roomId.slice(0,8)}`);
   }
 
   /**

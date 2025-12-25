@@ -10,7 +10,9 @@ export const ROOM_UNIQUE_IDS = {
   SUPPORT: 'support',
   PANTHEON: 'pantheon',
   DEV_UPDATES: 'dev-updates',
-  HELP: 'help'
+  HELP: 'help',
+  THEME: 'theme',
+  SETTINGS: 'settings'
 } as const;
 
 export type RoomUniqueId = typeof ROOM_UNIQUE_IDS[keyof typeof ROOM_UNIQUE_IDS];

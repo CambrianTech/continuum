@@ -8,6 +8,7 @@
 
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
+import { getDataEventName } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 export interface AssistantPanelConfig {
@@ -38,6 +39,8 @@ export class AssistantPanel {
   private isLoading = false;
   private unsubscribe?: () => void;
 
+  private actualRoomId: string | null = null;
+
   constructor(container: HTMLElement, config: AssistantPanelConfig) {
     this.container = container;
     this.config = {
@@ -48,7 +51,59 @@ export class AssistantPanel {
     };
     this.render();
     this.setupEventListeners();
-    this.loadRecentMessages();
+    this.initializeRoom();
+  }
+
+  private async initializeRoom(): Promise<void> {
+    // Look up actual room ID by uniqueId (roomName)
+    try {
+      const result = await (Commands as any).execute('data/list', {
+        collection: 'rooms',
+        filter: { uniqueId: this.config.roomName },
+        limit: 1
+      });
+      if (result?.success && result.items?.[0]) {
+        this.actualRoomId = result.items[0].id;
+        console.log(`AssistantPanel: Found room '${this.config.roomName}' with id ${this.actualRoomId}`);
+
+        // Subscribe to chat message creation events and filter by room ID
+        const eventName = getDataEventName('chat_messages', 'created');
+        console.log(`AssistantPanel: Subscribing to ${eventName} for room ${this.actualRoomId}`);
+
+        this.unsubscribe = Events.subscribe(eventName, (eventData: any) => {
+          try {
+            // Extract entity from command response structure
+            const entity = eventData?.data?.data || eventData?.data || eventData;
+
+            // Only process messages for this room
+            if (entity.roomId !== this.actualRoomId) {
+              return; // Skip messages from other rooms
+            }
+
+            // Extract message content (may be {text, media} or direct string)
+            const content = typeof entity.content === 'object'
+              ? entity.content.text
+              : entity.content;
+
+            console.log(`AssistantPanel: New message from ${entity.senderName}: ${content?.substring(0, 50)}...`);
+
+            this.addMessage({
+              id: entity.id || Date.now().toString(),
+              content: content || '',
+              authorName: entity.senderName || entity.authorDisplayName || 'AI',
+              authorType: entity.senderType === 'human' ? 'human' : 'ai',
+              timestamp: new Date()
+            });
+          } catch (err) {
+            console.error('AssistantPanel: Error processing message event:', err);
+          }
+        });
+
+        this.loadRecentMessages();
+      }
+    } catch (err) {
+      console.error('AssistantPanel: Failed to find room:', err);
+    }
   }
 
   private render(): void {
@@ -245,24 +300,17 @@ export class AssistantPanel {
       }
     });
 
-    // Subscribe to chat messages for this room
-    this.unsubscribe = Events.subscribe(`chat:${this.config.roomId}:message`, (data: any) => {
-      this.addMessage({
-        id: data.id || Date.now().toString(),
-        content: data.content,
-        authorName: data.authorName || 'AI',
-        authorType: data.authorType || 'ai',
-        timestamp: new Date()
-      });
-    });
+    // Event subscription moved to initializeRoom() after room lookup
   }
 
   private async loadRecentMessages(): Promise<void> {
+    if (!this.actualRoomId) return; // Wait for room lookup
+
     try {
-      // Use any type since we're in a lightweight widget context
+      // Use actual room ID from database lookup
       const result = await (Commands as any).execute('data/list', {
         collection: 'chat_messages',
-        filter: { roomId: this.config.roomId },
+        filter: { roomId: this.actualRoomId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: this.config.maxMessages
       });
@@ -271,11 +319,13 @@ export class AssistantPanel {
         // Reverse to show oldest first
         const messages = result.items.reverse();
         for (const msg of messages) {
+          // Handle content.text structure or direct string
+          const content = typeof msg.content === 'object' ? msg.content.text : msg.content;
           this.addMessage({
             id: msg.id,
-            content: msg.content,
-            authorName: msg.authorDisplayName || msg.authorName || 'Unknown',
-            authorType: msg.authorType === 'human' ? 'human' : 'ai',
+            content: content || '',
+            authorName: msg.senderName || msg.authorDisplayName || msg.authorName || 'Unknown',
+            authorType: msg.senderType === 'human' ? 'human' : 'ai',
             timestamp: new Date(msg.timestamp)
           }, false); // Don't scroll for initial load
         }
