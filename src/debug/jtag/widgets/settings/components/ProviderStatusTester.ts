@@ -41,7 +41,6 @@ export class ProviderStatusTester {
   }
 
   async testKey(params: TestKeyParams, configKey: string): Promise<ProviderTestResult> {
-    // Set testing status
     this.testResults.set(configKey, { status: 'testing' });
     this.onUpdate();
 

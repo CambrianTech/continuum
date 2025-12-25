@@ -145,6 +145,7 @@ export class SettingsWidget extends BaseWidget {
             </div>
 
             <div class="save-section">
+              <span class="storage-note">Stored locally in config.env</span>
               ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
               ${this.saveStatus === 'error' ? '<span class="status-message status-error">Fix errors before saving</span>' : ''}
               <button class="btn btn-secondary" id="reset-btn">Reset</button>

@@ -121,10 +121,18 @@ export const SETTINGS_STYLES = `
   .save-section {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
     gap: 12px;
     margin-top: 24px;
     padding-top: 16px;
     border-top: 1px solid rgba(0, 212, 255, 0.2);
+  }
+
+  .storage-note {
+    margin-right: auto;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.4);
+    font-family: monospace;
   }
 
   .btn {
