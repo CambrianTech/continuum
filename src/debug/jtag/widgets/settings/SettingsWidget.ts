@@ -92,6 +92,10 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
+    // Preserve scroll position before re-render
+    const scrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    const scrollTop = scrollContainer?.scrollTop || 0;
+
     const localEntries = this.configEntries.filter(e => e.category === 'local');
     const cloudEntries = this.configEntries.filter(e => e.category === 'cloud');
 
@@ -161,13 +165,24 @@ export class SettingsWidget extends BaseWidget {
     this.shadowRoot!.innerHTML = `<style>${SETTINGS_STYLES}</style>${template}`;
     this.setupEventListeners();
     this.initializeAssistant();
+
+    // Restore scroll position after re-render
+    const newScrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    if (newScrollContainer && scrollTop > 0) {
+      newScrollContainer.scrollTop = scrollTop;
+    }
   }
 
   private initializeAssistant(): void {
     const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
     if (!container) return;
 
-    this.assistantPanel?.destroy();
+    // Only create AssistantPanel once - don't recreate on every render
+    if (this.assistantPanel) {
+      // Re-attach to the new container element (DOM was replaced)
+      container.appendChild(this.assistantPanel['container']);
+      return;
+    }
 
     this.assistantPanel = new AssistantPanel(container, {
       roomId: DEFAULT_ROOMS.SETTINGS as UUID,
