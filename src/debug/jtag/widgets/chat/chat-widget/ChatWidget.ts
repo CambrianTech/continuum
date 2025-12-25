@@ -254,7 +254,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     console.log(`📨 ChatWidget: Enabled ChatMessage event subscriptions for real-time updates`);
 
-    // Load initial room data (General room by default)
+    // Load current room from UserState (not just default to General)
+    // This handles the case where user clicks a room tab and a new ChatWidget is created
+    await this.loadCurrentRoomFromUserState();
+
+    // Load initial room data
     if (this.currentRoomId) {
       await this.loadRoomData(this.currentRoomId);
       this.updateHeader();
@@ -282,6 +286,89 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.scroller?.refresh()
       ]).then(() => {
         // Update header again with correct message count after refresh completes
+        this.updateHeader();
+      });
+    });
+
+    // Listen for content:opened events (from content/open command or tab switching)
+    // This handles when user opens a chat room via command or clicks a tab
+    Events.subscribe('content:opened', async (eventData: { contentType: string; entityId: string; title: string }) => {
+      // Only handle chat content types
+      if (eventData.contentType !== 'chat' || !eventData.entityId) {
+        console.log(`📨 ChatWidget: Ignoring content:opened for ${eventData.contentType}`);
+        return;
+      }
+
+      // Skip if already on this room
+      if (eventData.entityId === this.currentRoomId) {
+        console.log(`📨 ChatWidget: Already on room ${eventData.title}, skipping`);
+        return;
+      }
+
+      console.log(`🏠 ChatWidget: Content opened - switching to "${eventData.title}" (${eventData.entityId})`);
+      this.currentRoomId = eventData.entityId as UUID;
+      this.currentRoomName = eventData.title || 'Chat';
+
+      // Reset counters for new room
+      this.totalMessageCount = 0;
+      this.loadedMessageCount = 0;
+
+      // Clear AI status indicators for previous room
+      this.aiStatusIndicator.clearAll();
+
+      // Update header immediately to show new room name
+      this.updateHeader();
+
+      // Load room data and refresh messages
+      Promise.all([
+        this.loadRoomData(this.currentRoomId),
+        this.scroller?.refresh()
+      ]).then(() => {
+        this.updateHeader();
+      });
+    });
+
+    // Listen for content:switched events (from state/content/switch command or tab clicks)
+    // Event includes full details: contentType, entityId, title
+    Events.subscribe('content:switched', async (eventData: {
+      contentItemId: string;
+      userId: string;
+      currentItemId: string;
+      contentType?: string;
+      entityId?: string;
+      title?: string;
+    }) => {
+      // Only handle chat content types
+      if (eventData.contentType !== 'chat' || !eventData.entityId) {
+        console.log(`📨 ChatWidget: Ignoring content:switched - not a chat (type=${eventData.contentType})`);
+        return;
+      }
+
+      // Skip if already on this room
+      if (eventData.entityId === this.currentRoomId) {
+        console.log(`📨 ChatWidget: Already on room ${eventData.title}, skipping`);
+        return;
+      }
+
+      console.log(`🏠 ChatWidget: Content switched - switching to "${eventData.title}" (${eventData.entityId})`);
+      this.currentRoomId = eventData.entityId as UUID;
+      this.currentRoomName = eventData.title || 'Chat';
+
+      // Reset counters for new room
+      this.totalMessageCount = 0;
+      this.loadedMessageCount = 0;
+
+      // Clear AI status indicators for previous room
+      this.aiStatusIndicator.clearAll();
+
+      // Update header immediately to show new room name
+      this.updateHeader();
+
+      // Load room data and refresh messages
+      Promise.all([
+        this.loadRoomData(this.currentRoomId),
+        this.scroller?.refresh()
+      ]).then(() => {
         this.updateHeader();
       });
     });
@@ -514,6 +601,56 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     console.log(`✅ ChatWidget: Loaded ${this.roomMembers.size} member details`);
+  }
+
+  /**
+   * Load current room from UserState's currentContentItem
+   * This is called on init to handle tab switching - when a new ChatWidget is created
+   * after tab click, it needs to know which room to display (not just default to General)
+   */
+  private async loadCurrentRoomFromUserState(): Promise<void> {
+    try {
+      // Get current user's ID from session
+      const sessionResult = await Commands.execute<any, any>('session/get-user', {});
+      if (!sessionResult?.success || !sessionResult.userId) {
+        console.log('📨 ChatWidget: No user session, using default General room');
+        return;
+      }
+
+      // Query UserState to get current content item
+      const listResult = await Commands.execute<DataListParams<any>, DataListResult<any>>(DATA_COMMANDS.LIST, {
+        collection: 'user_states',
+        filter: { userId: sessionResult.userId },
+        limit: 1
+      });
+
+      if (!listResult?.success || !listResult.items?.length) {
+        console.log('📨 ChatWidget: No UserState found, using default General room');
+        return;
+      }
+
+      const userState = listResult.items[0];
+      const currentItemId = userState.contentState?.currentItemId;
+      const openItems = userState.contentState?.openItems || [];
+
+      // Find the current content item
+      const currentItem = openItems.find((item: any) => item.id === currentItemId);
+      if (!currentItem) {
+        console.log('📨 ChatWidget: No current content item, using default General room');
+        return;
+      }
+
+      // Only use if it's a chat type with an entityId (room ID)
+      if (currentItem.type === 'chat' && currentItem.entityId) {
+        console.log(`📨 ChatWidget: Loading room from UserState: "${currentItem.title}" (${currentItem.entityId})`);
+        this.currentRoomId = currentItem.entityId as UUID;
+        this.currentRoomName = currentItem.title || 'Chat';
+      } else {
+        console.log(`📨 ChatWidget: Current content is "${currentItem.type}", not a chat room`);
+      }
+    } catch (error) {
+      console.warn('⚠️ ChatWidget: Error loading from UserState, using default:', error);
+    }
   }
 
   /**

@@ -47,9 +47,24 @@ export const DEFAULT_USERS = {
 export const DEFAULT_ROOMS = {
   GENERAL: stringToUUID('General') as UUID,
   ACADEMY: stringToUUID('Academy') as UUID,
+  PANTHEON: stringToUUID('Pantheon') as UUID,
+  DEV_UPDATES: stringToUUID('Dev Updates') as UUID,
+  HELP: stringToUUID('Help') as UUID,
+  SETTINGS: stringToUUID('Settings') as UUID,
+  THEME: stringToUUID('Theme') as UUID,
   SUPPORT: stringToUUID('Support') as UUID,
   AI_TRAINING: stringToUUID('AI Training') as UUID
 } as const;
+
+/**
+ * System rooms - utility rooms that don't show in the main rooms list
+ * but are accessible via dedicated UI buttons (Settings, Help, etc.)
+ */
+export const SYSTEM_ROOM_IDS = new Set([
+  DEFAULT_ROOMS.HELP,
+  DEFAULT_ROOMS.SETTINGS,
+  DEFAULT_ROOMS.THEME
+]);
 
 /**
  * Default Message Entity IDs - Deterministic UUIDs based on message content keys

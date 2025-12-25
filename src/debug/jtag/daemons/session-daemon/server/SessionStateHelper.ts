@@ -74,7 +74,7 @@ export class SessionStateHelper {
     }
 
     // Only return entityId if current content is a chat room
-    if (currentItem.type === 'chat') {
+    if (currentItem.type === 'chat' && currentItem.entityId) {
       return currentItem.entityId;
     }
 

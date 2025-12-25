@@ -9,6 +9,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { USER_IDS, ROOM_IDS, MESSAGE_IDS, USER_CONFIG, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
+import { stringToUUID } from '../system/core/types/CrossPlatformUUID';
 import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 import { UserEntity } from '../system/data/entities/UserEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
@@ -286,61 +287,7 @@ function createDefaultContentTypes(): any[] {
   ];
 }
 
-/**
- * Create default user states - Fixed to match UserStateEntity schema
- */
-function createDefaultUserStates(): any[] {
-  return [
-    {
-      id: 'us-joel-chat',
-      userId: USER_IDS.HUMAN,
-      deviceId: 'browser-main',
-      contentState: {
-        openItems: [],
-        lastUpdatedAt: new Date().toISOString()
-      },
-      preferences: {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
-        theme: 'dark'  // Custom preference for theme persistence
-      }
-    },
-    {
-      id: 'us-claude-chat',
-      userId: USER_IDS.CLAUDE_CODE,
-      deviceId: 'server-instance',
-      contentState: {
-        openItems: [],
-        lastUpdatedAt: new Date().toISOString()
-      },
-      preferences: {
-        maxOpenTabs: 15,
-        autoCloseAfterDays: 60,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
-        theme: 'matrix'  // Custom preference for theme persistence
-      }
-    },
-    {
-      id: 'us-anonymous-browser',
-      userId: '9959e413-31b5-4915-ba0a-884dc3015f4b',  // Anonymous user from session
-      deviceId: 'browser-anonymous',
-      contentState: {
-        openItems: [],
-        lastUpdatedAt: new Date().toISOString()
-      },
-      preferences: {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
-        theme: 'base'  // Default theme for anonymous users
-      }
-    }
-  ];
-}
+// NOTE: createDefaultUserStates imported from factories.ts - uses UserCapabilitiesDefaults constants
 
 /**
  * Create default training sessions
@@ -790,10 +737,12 @@ async function seedViaJTAG() {
 
     userMap['humanUser'] = humanUser;
 
-    // Step 2: Check if this is first run (need to create rooms)
-    const isFirstRun = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+    // Step 2: Check if rooms exist (create if missing)
+    const { stdout: roomsOutput } = await execAsync(`./jtag data/list --collection=rooms --limit=1`);
+    const roomsResult = JSON.parse(roomsOutput);
+    const needsRooms = !roomsResult.items || roomsResult.items.length === 0;
 
-    if (isFirstRun) {
+    if (needsRooms) {
       // Create and persist rooms BEFORE creating other users
       console.log('🏗️ Creating rooms before other users (for auto-join to work)...');
 
@@ -824,7 +773,7 @@ async function seedViaJTAG() {
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
       const pantheonRoom = createRoom(
-        'pantheon-room-id',  // ID for pantheon
+        ROOM_IDS.PANTHEON,
         'pantheon',
         'Pantheon',
         'Elite discussion room for top-tier SOTA AI models',
@@ -837,7 +786,7 @@ async function seedViaJTAG() {
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
       const devUpdatesRoom = createRoom(
-        'dev-updates-room-id',  // ID for dev-updates
+        ROOM_IDS.DEV_UPDATES,
         'dev-updates',
         'Dev Updates',
         'GitHub PRs, CI/CD, and development activity notifications',
@@ -849,7 +798,46 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom];
+      const helpRoom = createRoom(
+        ROOM_IDS.HELP,
+        'help',
+        'Help',
+        'Get help from AI assistants - ask anything about using Continuum',
+        "Your AI helpers are here to assist you getting started",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["help", "support", "onboarding", "getting-started", "system"],  // 'system' tag = hidden from rooms list
+        humanUser.id,
+        'help'  // recipe: help-focused room with Helper AI
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const settingsRoom = createRoom(
+        ROOM_IDS.SETTINGS,
+        'settings',
+        'Settings',
+        'Configure your Continuum experience with AI assistance',
+        "Get help configuring API keys, preferences, and system settings",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["settings", "config", "preferences", "system"],  // 'system' tag = hidden from rooms list
+        humanUser.id,
+        'settings'  // recipe: settings-focused room with Helper AI
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const themeRoom = createRoom(
+        ROOM_IDS.THEME,
+        'theme',
+        'Theme',
+        'Design and customize your visual experience with AI assistance',
+        "Get help designing themes, choosing colors, and customizing your workspace appearance",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["theme", "design", "customization", "appearance", "system"],  // 'system' tag = hidden from rooms list
+        humanUser.id,
+        'theme'  // recipe: theme-focused room with Helper AI
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
@@ -905,8 +893,34 @@ async function seedViaJTAG() {
     const teacherPersona = userMap[PERSONA_UNIQUE_IDS.TEACHER];
     const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
 
-    // If not first run, rooms and messages already exist
-    if (!isFirstRun) {
+    // If rooms already existed, ensure system rooms have Helper AI then exit
+    if (!needsRooms) {
+      // Still ensure system rooms have their default AI assistant
+      console.log('🏠 Ensuring system rooms have Helper AI...');
+      const systemRoomUniqueIds = ['settings', 'help', 'theme'];
+      for (const roomUniqueId of systemRoomUniqueIds) {
+        try {
+          const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
+          const parsed = JSON.parse(result.stdout);
+          if (parsed.success && parsed.items?.[0]) {
+            const room = parsed.items[0];
+            const existingMembers = room.members || [];
+            const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona?.id);
+
+            if (helperPersona && !helperAlreadyMember) {
+              const updatedMembers = [
+                ...existingMembers,
+                { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+              ];
+              const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+              await execAsync(`./jtag data/update --collection=rooms --id="${room.id}" --data='${updateData}'`);
+              console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
+            }
+          }
+        } catch (error) {
+          // Silently skip - rooms might not exist yet
+        }
+      }
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
@@ -932,6 +946,36 @@ async function seedViaJTAG() {
       })
     ]);
     console.log('✅ Persona profiles updated with personalities');
+
+    // Ensure system rooms have Helper AI as default assistant
+    // This ensures the Settings, Help, and Theme widgets always have AI available
+    console.log('🏠 Adding Helper AI to system rooms...');
+    const systemRoomUniqueIds = ['settings', 'help', 'theme'];
+    for (const roomUniqueId of systemRoomUniqueIds) {
+      try {
+        const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
+        const parsed = JSON.parse(result.stdout);
+        if (parsed.success && parsed.items?.[0]) {
+          const room = parsed.items[0];
+          const existingMembers = room.members || [];
+          const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
+
+          if (!helperAlreadyMember) {
+            const updatedMembers = [
+              ...existingMembers,
+              { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+            ];
+            const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+            await execAsync(`./jtag data/update --collection=rooms --id="${room.id}" --data='${updateData}'`);
+            console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
+          } else {
+            console.log(`✅ Helper AI already in ${roomUniqueId} room`);
+          }
+        }
+      } catch (error) {
+        console.warn(`⚠️ Could not add Helper AI to ${roomUniqueId}:`, error);
+      }
+    }
 
     // Configure persona AI response settings (intelligent resource management)
     console.log('🔧 Configuring persona AI response settings...');
@@ -995,8 +1039,8 @@ async function seedViaJTAG() {
         'system'  // senderType
       ),
       createMessage(
-        'pantheon-welcome-msg-id',
-        'pantheon-room-id',
+        stringToUUID('pantheon-welcome-msg'),
+        ROOM_IDS.PANTHEON,
         humanUser.id,
         systemIdentity.displayName,
         'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',

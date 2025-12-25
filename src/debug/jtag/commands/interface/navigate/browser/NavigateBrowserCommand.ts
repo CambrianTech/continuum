@@ -28,25 +28,31 @@ import { NavigateCommand } from '../shared/NavigateCommand';
 export class NavigateBrowserCommand extends NavigateCommand {
   
   /**
-   * Browser does ONE thing: navigate to URL
+   * Browser navigation - navigates to URL or reloads if no URL provided
    */
   async execute(params: NavigateParams): Promise<NavigateResult> {
-    console.log(`🌐 BROWSER: Navigating to ${params.url}`);
+    const isReload = !params.url;
+    console.log(isReload ? '🔄 BROWSER: Reloading page' : `🌐 BROWSER: Navigating to ${params.url}`);
 
     try {
       const startTime = Date.now();
-      
-      // Simple browser navigation
-      window.location.href = params.url;
-      
+
+      if (isReload) {
+        // No URL provided - reload current page
+        window.location.reload();
+      } else {
+        // Navigate to specified URL
+        window.location.href = params.url;
+      }
+
       // Wait for load if requested
       if (params.waitForSelector) {
         await this.waitForElement(params.waitForSelector, params.timeout || 5000);
       }
-      
+
       const loadTime = Date.now() - startTime;
-      console.log(`✅ BROWSER: Navigated in ${loadTime}ms`);
-      
+      console.log(`✅ BROWSER: ${isReload ? 'Reloaded' : 'Navigated'} in ${loadTime}ms`);
+
       return createNavigateResult(params.context, params.sessionId, {
         success: true,
         url: window.location.href,
@@ -55,11 +61,11 @@ export class NavigateBrowserCommand extends NavigateCommand {
       });
 
     } catch (error: any) {
-      console.error(`❌ BROWSER: Navigation failed:`, error.message);
+      console.error(`❌ BROWSER: ${isReload ? 'Reload' : 'Navigation'} failed:`, error.message);
       const navError = error instanceof Error ? new ValidationError('url', error.message, { cause: error }) : new ValidationError('url', String(error));
       return createNavigateResult(params.context, params.sessionId, {
         success: false,
-        url: params.url,
+        url: params.url || window.location.href,
         error: navError
       });
     }

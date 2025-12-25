@@ -12,7 +12,7 @@ import type { ContentType } from '@system/data/entities/UserStateEntity';
 export interface ContentOpenParams extends CommandParams {
   readonly userId: UUID;             // User ID (REQUIRED - infrastructure should inject from session)
   readonly contentType: ContentType;
-  readonly entityId: UUID;           // ID of the room/document/etc being opened
+  readonly entityId?: UUID;          // ID of the room/document/etc being opened (optional for singletons like settings)
   readonly title: string;             // Display title for the tab
   readonly subtitle?: string;         // Optional subtitle
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
@@ -31,7 +31,7 @@ export interface ContentOpenResult extends CommandResult {
 export interface ContentOpenedEvent {
   readonly contentItemId: UUID;
   readonly contentType: ContentType;
-  readonly entityId: UUID;
+  readonly entityId?: UUID;          // Optional for singletons like settings
   readonly title: string;
   readonly userId: UUID;
   readonly currentItemId?: UUID;

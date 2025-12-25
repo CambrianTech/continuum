@@ -9,13 +9,13 @@
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // Content state types for dynamic content management
-export type ContentType = 'chat' | 'document' | 'user-profile' | 'system-config' | 'widget-debug' | 'data-explorer' | 'browser';
+export type ContentType = 'chat' | 'document' | 'user-profile' | 'system-config' | 'widget-debug' | 'data-explorer' | 'browser' | 'settings' | 'help' | 'theme' | 'persona';
 export type ContentPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface ContentItem {
   id: UUID;
   type: ContentType;
-  entityId: UUID;           // ID of the entity being displayed (roomId, userId, etc.)
+  entityId?: UUID;          // ID of the entity being displayed (roomId, userId, etc.) - optional for singleton content like settings
   title: string;            // Display title for the tab/content
   subtitle?: string;        // Optional subtitle or status
   lastAccessedAt: Date;
@@ -35,6 +35,7 @@ import {
   ForeignKeyField
 } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
+import { USER_PREFERENCES_DEFAULTS } from '../../user/config/UserCapabilitiesDefaults';
 
 /**
  * UserState Entity - Per-user dynamic content state
@@ -121,12 +122,8 @@ export class UserStateEntity extends BaseEntity {
       openItems: [],
       lastUpdatedAt: new Date()
     };
-    this.preferences = {
-      maxOpenTabs: 10,
-      autoCloseAfterDays: 30,
-      rememberScrollPosition: true,
-      syncAcrossDevices: true
-    };
+    // Use agent defaults as reasonable fallback (overridden by user type on creation)
+    this.preferences = { ...USER_PREFERENCES_DEFAULTS.agent };
     this.roomReadState = {};
     this.learningState = {
       isLearning: false
@@ -170,11 +167,11 @@ export class UserStateEntity extends BaseEntity {
 
     // Validate each content item
     for (const item of this.contentState.openItems) {
-      if (!item.id || !item.type || !item.entityId || !item.title) {
-        return { success: false, error: 'UserState contentItem must have id, type, entityId, and title' };
+      if (!item.id || !item.type || !item.title) {
+        return { success: false, error: 'UserState contentItem must have id, type, and title' };
       }
 
-      const validTypes: ContentType[] = ['chat', 'document', 'user-profile', 'system-config', 'widget-debug', 'data-explorer', 'browser'];
+      const validTypes: ContentType[] = ['chat', 'document', 'user-profile', 'system-config', 'widget-debug', 'data-explorer', 'browser', 'settings', 'help', 'theme', 'persona'];
       if (!validTypes.includes(item.type)) {
         return { success: false, error: `UserState contentItem type must be one of: ${validTypes.join(', ')}` };
       }
@@ -193,8 +190,8 @@ export class UserStateEntity extends BaseEntity {
       return { success: false, error: 'UserState preferences.maxOpenTabs must be a number' };
     }
 
-    if (this.preferences.maxOpenTabs < 1 || this.preferences.maxOpenTabs > 50) {
-      return { success: false, error: 'UserState preferences.maxOpenTabs must be between 1 and 50' };
+    if (this.preferences.maxOpenTabs < 1 || this.preferences.maxOpenTabs > 200) {
+      return { success: false, error: 'UserState preferences.maxOpenTabs must be between 1 and 200' };
     }
 
     return { success: true };
@@ -202,22 +199,35 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Add a new content item to the user's open tabs
+   * Deduplicates by entityId (e.g., roomId) - clicking same room just switches focus
+   * Tabs maintain insertion order - like VSCode, not MRU
    */
   addContentItem(item: Omit<ContentItem, 'lastAccessedAt'>): void {
+    // Check if this entity is already open (by entityId, not content item id)
+    const existingItem = this.contentState.openItems.find(
+      existing => existing.entityId === item.entityId && existing.type === item.type
+    );
+
+    if (existingItem) {
+      // Already open - just switch to it (NO reordering, just update timestamp and focus)
+      existingItem.lastAccessedAt = new Date();
+      this.contentState.currentItemId = existingItem.id;
+      this.contentState.lastUpdatedAt = new Date();
+      return;
+    }
+
+    // New content - create item with timestamp
     const contentItem: ContentItem = {
       ...item,
       lastAccessedAt: new Date()
     };
 
-    // Remove if already exists (move to front)
-    this.contentState.openItems = this.contentState.openItems.filter(existing => existing.id !== item.id);
+    // Add to END (append) - maintains insertion order
+    this.contentState.openItems.push(contentItem);
 
-    // Add to front
-    this.contentState.openItems.unshift(contentItem);
-
-    // Enforce max tabs limit
-    if (this.contentState.openItems.length > this.preferences.maxOpenTabs) {
-      this.contentState.openItems = this.contentState.openItems.slice(0, this.preferences.maxOpenTabs);
+    // Enforce max tabs limit - remove oldest (from start) if over limit
+    while (this.contentState.openItems.length > this.preferences.maxOpenTabs) {
+      this.contentState.openItems.shift();
     }
 
     // Set as current item
@@ -245,6 +255,7 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Switch focus to a specific content item
+   * Maintains insertion order - like VSCode, not MRU
    */
   setCurrentContent(itemId: UUID): boolean {
     const item = this.contentState.openItems.find(item => item.id === itemId);
@@ -252,12 +263,8 @@ export class UserStateEntity extends BaseEntity {
       return false;
     }
 
-    // Update last accessed time
+    // Update last accessed time (NO reordering - tabs stay in place)
     item.lastAccessedAt = new Date();
-
-    // Move to front of array for recency ordering
-    this.contentState.openItems = this.contentState.openItems.filter(i => i.id !== itemId);
-    this.contentState.openItems.unshift(item);
 
     // Set as current
     this.contentState.currentItemId = itemId;

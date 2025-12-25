@@ -41,6 +41,7 @@ import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { JTAGMessageTypes } from '../../types/JTAGTypes';
 import type { JTAGPayload, JTAGContext, JTAGMessage } from '../../types/JTAGTypes';
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
+import type { EventBridgePayload } from '../../../../daemons/events-daemon/shared/EventsDaemon';
 import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/ConsoleDaemon';
 import { Events } from '../../shared/Events';
 import { startConnectionMonitoring } from './ConnectionMonitor';
@@ -132,38 +133,61 @@ export class JTAGClientBrowser extends JTAGClient {
 
   /**
    * Override event message handling to trigger local subscriptions
-   * This makes Events.subscribe() work consistently for remote browser clients
+   *
+   * CRITICAL: This makes Events.subscribe() work consistently for remote browser clients.
+   * Events from server arrive via WebSocket and must be dispatched to:
+   * 1. DOM events (for widget subscriptions via document.addEventListener)
+   * 2. Internal subscription Maps (wildcard, elegant, exact-match patterns)
+   *
+   * This unified approach ensures Events.emit() on server triggers Events.subscribe() in browser.
    */
   async handleTransportMessage(message: JTAGMessage): Promise<JTAGResponsePayload> {
     // Handle event messages - trigger local subscriptions
     if (JTAGMessageTypes.isEvent(message)) {
-      console.log(`📥 JTAGClientBrowser: Received event message, triggering local subscriptions`);
+      // Type-safe payload extraction
+      const payload = message.payload as EventBridgePayload;
 
-      // Extract event name and data from payload (EventBridgePayload structure)
-      const payload = message.payload as any;
-      const eventName = payload?.eventName;
-      const eventData = payload?.data;
-
-      if (eventName && eventData !== undefined) {
-        // Trigger local subscriptions (wildcard, elegant, exact-match)
-        Events.checkWildcardSubscriptions(eventName, eventData);
-        console.log(`✅ JTAGClientBrowser: Triggered local subscriptions for ${eventName}`);
-      } else {
-        console.warn(`⚠️ JTAGClientBrowser: Event message missing eventName or data`, payload);
+      // Validate event bridge payload structure
+      if (payload.type !== 'event-bridge' || !payload.eventName) {
+        console.warn(`⚠️ JTAGClientBrowser: Invalid event bridge payload`, payload);
+        return this.createEventAcknowledgment();
       }
 
-      // Still return acknowledgment (clients don't route to other clients)
-      return {
-        success: true,
-        delegated: true,
-        timestamp: new Date().toISOString(),
-        context: this.context,
-        sessionId: this.sessionId
-      } as JTAGResponsePayload;
+      const eventName = payload.eventName;
+      const eventData = payload.data;
+
+      console.log(`📥 JTAGClientBrowser: Received event '${eventName}' via WebSocket`);
+
+      // 1. Dispatch DOM event for widget subscriptions (Events.subscribe uses document.addEventListener in browser)
+      const domEvent = new CustomEvent(eventName, {
+        detail: eventData,
+        bubbles: true
+      });
+      document.dispatchEvent(domEvent);
+
+      // 2. Trigger internal subscription Maps (wildcard, elegant, exact-match patterns)
+      Events.checkWildcardSubscriptions(eventName, eventData);
+
+      console.log(`✅ JTAGClientBrowser: Dispatched '${eventName}' to DOM and internal subscribers`);
+
+      return this.createEventAcknowledgment();
     }
 
     // For all other messages, delegate to base class
     return super.handleTransportMessage(message);
+  }
+
+  /**
+   * Create standardized event acknowledgment response
+   */
+  private createEventAcknowledgment(): JTAGResponsePayload {
+    return {
+      success: true,
+      delegated: true,
+      timestamp: new Date().toISOString(),
+      context: this.context,
+      sessionId: this.sessionId
+    } as JTAGResponsePayload;
   }
   
   protected async getLocalSystem(): Promise<JTAGSystem | null> {
@@ -334,16 +358,14 @@ export class JTAGClientBrowser extends JTAGClient {
 
         // Import UserStateEntity to create proper entity instance
         const { UserStateEntity } = await import('../../../data/entities/UserStateEntity');
+        const { getDefaultPreferencesForType } = await import('../../../user/config/UserCapabilitiesDefaults');
+
         const newUserState = new UserStateEntity();
         newUserState.id = this.userStateId;
         newUserState.userId = identity.userId;
         newUserState.deviceId = identity.deviceId;
-        newUserState.preferences = {
-          maxOpenTabs: 10,
-          autoCloseAfterDays: 30,
-          rememberScrollPosition: true,
-          syncAcrossDevices: false
-        };
+        // Use single source of truth - default to human preferences for browser users
+        newUserState.preferences = getDefaultPreferencesForType('human');
         newUserState.contentState = {
           openItems: [],
           lastUpdatedAt: new Date()

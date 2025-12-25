@@ -3,39 +3,21 @@
  *
  * Reusable functions to create clean, type-safe data structures
  * for seeding the database.
+ *
+ * IMPORTANT: Use constants from UserCapabilitiesDefaults.ts for single source of truth
  */
+
+import {
+  getDefaultCapabilitiesForType,
+  getDefaultPreferencesForType
+} from '../../system/user/config/UserCapabilitiesDefaults';
 
 /**
  * Create user capabilities based on user type
+ * Uses single source of truth from UserCapabilitiesDefaults
  */
-export function createUserCapabilities(type: 'human' | 'agent'): any {
-  const baseCapabilities = {
-    canSendMessages: true,
-    canReceiveMessages: true,
-    canTrain: false,
-  };
-
-  if (type === 'human') {
-    return {
-      ...baseCapabilities,
-      canCreateRooms: true,
-      canInviteOthers: true,
-      canModerate: true,
-      autoResponds: false,
-      providesContext: false,
-      canAccessPersonas: true,
-    };
-  } else { // agent
-    return {
-      ...baseCapabilities,
-      canCreateRooms: true,
-      canInviteOthers: true,
-      canModerate: true,
-      autoResponds: true,
-      providesContext: true,
-      canAccessPersonas: false,
-    };
-  }
+export function createUserCapabilities(type: 'human' | 'agent' | 'persona'): any {
+  return getDefaultCapabilitiesForType(type);
 }
 
 /**
@@ -182,8 +164,12 @@ export function createDefaultContentTypes(): any[] {
 
 /**
  * Create default user states - Fixed to match UserStateEntity schema
+ * Uses single source of truth from UserCapabilitiesDefaults
  */
 export function createDefaultUserStates(humanUserId: string, claudeUserId: string): any[] {
+  const humanPrefs = getDefaultPreferencesForType('human');
+  const agentPrefs = getDefaultPreferencesForType('agent');
+
   return [
     {
       id: 'us-joel-chat',
@@ -194,10 +180,7 @@ export function createDefaultUserStates(humanUserId: string, claudeUserId: strin
         lastUpdatedAt: new Date().toISOString()
       },
       preferences: {
-        maxOpenTabs: 10,
-        autoCloseAfterDays: 30,
-        rememberScrollPosition: true,
-        syncAcrossDevices: true,
+        ...humanPrefs,
         theme: 'dark'  // Custom preference for theme persistence
       }
     },
@@ -210,10 +193,7 @@ export function createDefaultUserStates(humanUserId: string, claudeUserId: strin
         lastUpdatedAt: new Date().toISOString()
       },
       preferences: {
-        maxOpenTabs: 15,
-        autoCloseAfterDays: 60,
-        rememberScrollPosition: true,
-        syncAcrossDevices: false,
+        ...agentPrefs,
         theme: 'dark'
       }
     }

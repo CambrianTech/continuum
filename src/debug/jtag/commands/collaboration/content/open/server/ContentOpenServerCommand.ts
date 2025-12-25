@@ -84,7 +84,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
         currentItemId: userState.contentState.currentItemId
       };
 
-      await Events.emit('content:opened', event);
+      await Events.emit(this.context, 'content:opened', event);
 
       // 7. Return success result
       return transformPayload(params, {

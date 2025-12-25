@@ -34,7 +34,7 @@ export class ClickBrowserCommand extends ClickCommand {
    * Handles both regular selectors and widget selectors (with shadow DOM traversal)
    */
   async execute(params: ClickParams): Promise<ClickResult> {
-    console.log(`👆 BROWSER: Clicking ${params.selector}`);
+    console.log(`👆 BROWSER: Clicking ${params.selector}${params.text ? ` (text: "${params.text}")` : ''}`);
 
     try {
       let element: Element | null = null;
@@ -51,8 +51,16 @@ export class ClickBrowserCommand extends ClickCommand {
 
         element = widgetRef.element;
 
+        // If text parameter provided, find element containing that text in shadow DOM
+        if (params.text && widgetRef.shadowRoot) {
+          clickTarget = this.findElementByText(widgetRef.shadowRoot, params.text);
+          if (!clickTarget) {
+            throw new Error(`Element with text "${params.text}" not found inside ${params.selector}`);
+          }
+          console.log(`🎯 BROWSER: Found element with text "${params.text}" inside widget`);
+        }
         // If shadowRoot and innerSelector provided, find element inside widget's shadow DOM
-        if (params.shadowRoot && params.innerSelector && widgetRef.shadowRoot) {
+        else if (params.shadowRoot && params.innerSelector && widgetRef.shadowRoot) {
           clickTarget = widgetRef.shadowRoot.querySelector(params.innerSelector);
           if (!clickTarget) {
             throw new Error(`Inner element not found: ${params.innerSelector} inside ${params.selector}`);
@@ -67,13 +75,23 @@ export class ClickBrowserCommand extends ClickCommand {
         if (!element) {
           throw new Error(`Element not found: ${params.selector}`);
         }
-        clickTarget = element;
+
+        // If text parameter provided, find child element with that text
+        if (params.text) {
+          clickTarget = this.findElementByText(element, params.text);
+          if (!clickTarget) {
+            throw new Error(`Element with text "${params.text}" not found inside ${params.selector}`);
+          }
+        } else {
+          clickTarget = element;
+        }
       }
 
-      // Click the target element
+      // Click the target element - use native click() for better compatibility
+      console.log(`🎯 BROWSER: Clicking element:`, clickTarget.tagName, (clickTarget as HTMLElement).className);
       (clickTarget as HTMLElement).click();
 
-      console.log(`✅ BROWSER: Clicked ${params.selector}${params.innerSelector ? ` -> ${params.innerSelector}` : ''}`);
+      console.log(`✅ BROWSER: Clicked ${params.selector}${params.text ? ` (text: "${params.text}")` : params.innerSelector ? ` -> ${params.innerSelector}` : ''}`);
 
       return createClickResult(params.context, params.sessionId, {
         success: true,
@@ -91,5 +109,63 @@ export class ClickBrowserCommand extends ClickCommand {
         error: clickError
       });
     }
+  }
+
+  /**
+   * Find a clickable element containing the specified text
+   * Returns the clickable parent (like .content-tab) rather than inner text spans
+   */
+  private findElementByText(root: Element | ShadowRoot, text: string): Element | null {
+    // Get all elements that could be clickable
+    const candidates = Array.from(root.querySelectorAll('*'));
+
+    for (const el of candidates) {
+      // Check if this element's direct text content matches
+      const childNodes = Array.from(el.childNodes);
+      const directText = childNodes
+        .filter((node: ChildNode) => node.nodeType === Node.TEXT_NODE)
+        .map((node: ChildNode) => (node as Text).textContent?.trim() || '')
+        .join('');
+
+      if (directText === text || el.textContent?.trim() === text) {
+        // If this is a span/label inside a clickable container, return the container
+        const parent = el.parentElement;
+        if (parent) {
+          // Check if parent is the actual clickable element (has data-tab-id, is a button, etc)
+          if ((parent as HTMLElement).dataset?.tabId ||
+              parent.classList.contains('content-tab') ||
+              parent.classList.contains('room-item') ||
+              parent.tagName.toLowerCase() === 'button') {
+            console.log(`🎯 BROWSER: Found text "${text}" in child, returning parent:`, parent.tagName, parent.className);
+            return parent;
+          }
+        }
+
+        // Prefer elements that look clickable
+        const tagName = el.tagName.toLowerCase();
+        if (['button', 'a', 'div', 'li'].includes(tagName) ||
+            el.classList.contains('tab') ||
+            el.classList.contains('content-tab') ||
+            el.classList.contains('room-item') ||
+            (el as HTMLElement).dataset?.tabId ||
+            (el as HTMLElement).onclick !== null) {
+          return el;
+        }
+      }
+    }
+
+    // Second pass: find any element containing the text
+    for (const el of candidates) {
+      if (el.textContent?.trim() === text) {
+        // Again, prefer parent if it's clickable
+        const parent = el.parentElement;
+        if (parent && ((parent as HTMLElement).dataset?.tabId || parent.classList.contains('content-tab'))) {
+          return parent;
+        }
+        return el;
+      }
+    }
+
+    return null;
   }
 }

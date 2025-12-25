@@ -1,13 +1,14 @@
 /**
  * Content Open Command - Browser Implementation
  *
- * Browser stub - delegates all logic to server.
+ * Delegates to server, then emits content:opened locally for browser widgets.
  */
 
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
-import type { ContentOpenParams, ContentOpenResult } from '../shared/ContentOpenTypes';
+import type { ContentOpenParams, ContentOpenResult, ContentOpenedEvent } from '../shared/ContentOpenTypes';
 import { ContentOpenCommand } from '../shared/ContentOpenCommand';
+import { Events } from '@system/core/shared/Events';
 
 export class ContentOpenBrowserCommand extends ContentOpenCommand {
 
@@ -17,6 +18,23 @@ export class ContentOpenBrowserCommand extends ContentOpenCommand {
 
   protected async executeContentCommand(params: ContentOpenParams): Promise<ContentOpenResult> {
     // Delegate to server
-    return await this.remoteExecute(params);
+    const result = await this.remoteExecute(params) as ContentOpenResult;
+
+    // If successful, emit content:opened locally for browser widgets to respond
+    if (result.success) {
+      const event: ContentOpenedEvent = {
+        contentItemId: result.contentItemId,
+        contentType: params.contentType,
+        entityId: params.entityId,
+        title: params.title,
+        userId: params.userId,
+        currentItemId: result.currentItemId
+      };
+
+      console.log('📋 ContentOpenBrowserCommand: Emitting content:opened locally', event);
+      Events.emit('content:opened', event);
+    }
+
+    return result;
   }
 }

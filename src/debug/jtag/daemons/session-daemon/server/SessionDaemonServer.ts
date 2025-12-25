@@ -101,24 +101,38 @@ export class SessionDaemonServer extends SessionDaemon {
 
   /**
    * Load sessions from per-project metadata file
+   * IMPORTANT: User objects must be reconstructed from database, not from stale JSON
    */
   private async loadSessionsFromFile(): Promise<void> {
     try {
       const metadataPath = this.getSessionsMetadataPath();
       const metadataContent = await fs.readFile(metadataPath, 'utf-8');
       const metadata = JSON.parse(metadataContent);
-      
+
       if (metadata.sessions && Array.isArray(metadata.sessions)) {
         // Filter out bootstrap sessions that should never be shared
-        const validSessions = metadata.sessions.filter((session: SessionMetadata) => 
+        const validSessions = metadata.sessions.filter((session: SessionMetadata) =>
           !isBootstrapSession(session.sessionId)
         );
-        
-        this.sessions = validSessions.map((session: SessionMetadata) => ({
-          ...session,
-          created: new Date(session.created),
-          lastActive: new Date(session.lastActive)
-        }));
+
+        // Reconstruct sessions with proper user objects from database
+        this.sessions = [];
+        for (const session of validSessions) {
+          try {
+            // Reconstruct user from database (not stale JSON) to get proper BaseUser instance
+            const user = await this.getUserById(session.userId);
+
+            this.sessions.push({
+              ...session,
+              created: new Date(session.created),
+              lastActive: new Date(session.lastActive),
+              user: user // Fresh user with entity, state, and proper getters
+            });
+          } catch (error) {
+            // User might have been deleted - skip this session
+            this.log.warn(`Failed to load user for session ${session.sessionId}: ${error}`);
+          }
+        }
 
         // Silently filter bootstrap sessions - routine cleanup, no logging needed
       }
@@ -403,6 +417,15 @@ export class SessionDaemonServer extends SessionDaemon {
           const existingSession = this.sessions.find(s => s.isShared && s.isActive);
           if (existingSession) {
             this.log.info(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
+
+            // IMPORTANT: Reload user from database to get fresh state (not stale cached version)
+            // This ensures browser gets current contentState, preferences, etc.
+            try {
+              existingSession.user = await this.getUserById(existingSession.userId);
+            } catch (error) {
+              this.log.warn(`Failed to refresh user for session: ${error}`);
+            }
+
             return createPayload(params.context, existingSession.sessionId, {
               success: true,
               timestamp: new Date().toISOString(),

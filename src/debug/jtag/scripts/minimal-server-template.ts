@@ -58,7 +58,9 @@ class MinimalServer {
       } else if (url === '/favicon.ico') {
         this.serve404(res);
       } else {
-        this.serve404(res);
+        // SPA fallback: serve the main HTML for client-side routing
+        // This allows routes like /settings, /help, /chat/academy to work
+        this.serveUniversalDemo(res);
       }
     } catch (error) {
       console.error('🚨 Request handling failed:', error);

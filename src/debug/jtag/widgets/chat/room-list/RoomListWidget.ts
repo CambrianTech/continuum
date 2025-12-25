@@ -7,6 +7,7 @@
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { ContentOpenParams, ContentOpenResult } from '../../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -77,8 +78,16 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
         throw new Error(`Failed to load rooms: ${result?.error ?? 'Unknown error'}`);
       }
 
+      // Filter out 'system' tagged rooms (Help, Settings, etc.)
+      // These are accessible via dedicated buttons, not the rooms list
+      // Client-side filter - room lists are small, SQLite doesn't support array queries
+      const visibleRooms = result.items.filter(room => {
+        const tags = room.tags ?? [];
+        return !tags.includes('system');
+      });
+
       return {
-        items: result.items,
+        items: visibleRooms,
         hasMore: false, // Room lists are typically small, no pagination needed
         nextCursor: undefined
       };
@@ -108,6 +117,15 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   protected override async onWidgetInitialize(): Promise<void> {
     await super.onWidgetInitialize();
     this.setupEventListeners();
+
+    // Listen for room selection from tab clicks (so sidebar stays in sync)
+    Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
+      const newRoomId = data.roomId as UUID;
+      if (newRoomId !== this.currentRoomId) {
+        this.updateRoomHighlighting(this.currentRoomId, newRoomId);
+        this.currentRoomId = newRoomId;
+      }
+    });
 
     // Auto-select General room on startup
     setTimeout(() => {
@@ -173,36 +191,45 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
      * 5. The chat message list widget also receives the event and re-renders to show messages for the new room.
      * 
     **/
-  private selectRoom(roomId: UUID): void {
-    // Early exit - prevent unnecessary work if already in this room
-    if (this.currentRoomId === roomId) {
-      console.log(`🔄 RoomListWidget: Already in room "${roomId}", ignoring selection`);
-      return;
-    }
-
-    console.log(`🎯 RoomListWidget: Room selection requested: "${roomId}"`);
-
+  private async selectRoom(roomId: UUID): Promise<void> {
     // Find room entity for the selected room by id
     const roomEntity = this.scroller?.entities().find(room => room.id === roomId);
-
     if (!roomEntity) {
       console.error(`❌ RoomListWidget: Room not found: "${roomId}"`);
       return;
     }
 
-    // Update visual highlighting with CSS only (no redraw needed)
-    this.updateRoomHighlighting(this.currentRoomId, roomId);
+    const roomName = roomEntity.displayName || roomEntity.name;
+    const isReselection = this.currentRoomId === roomId;
 
-    // Update local state
-    this.currentRoomId = roomId;
+    // OPTIMISTIC UI: Update visuals immediately before server round-trip
+    if (!isReselection) {
+      this.updateRoomHighlighting(this.currentRoomId, roomId);
+      this.currentRoomId = roomId;
+    }
 
-    // Emit room selection event for ChatWidget to listen to
-    Events.emit(UI_EVENTS.ROOM_SELECTED, {
-      roomId: roomId,
-      roomName: roomEntity.displayName || roomEntity.name
+    // Emit room selection IMMEDIATELY so ChatWidget switches fast
+    Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId, roomName });
+
+    // Emit content:opened for MainWidget tab update (optimistic)
+    Events.emit('content:opened', {
+      contentType: 'chat',
+      entityId: roomId,
+      title: roomName
     });
 
-    console.log(`✅ RoomListWidget: Room changed to "${roomEntity.displayName || roomEntity.name}" (${roomId})`);
+    // Persist to server in BACKGROUND (don't block UI)
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+        userId,
+        contentType: 'chat',
+        entityId: roomId,
+        title: roomName,
+        subtitle: roomEntity.topic,
+        setAsCurrent: true
+      }).catch(err => console.error('Failed to persist room open:', err));
+    }
   }
 
   /**

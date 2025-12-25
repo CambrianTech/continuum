@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/ai/key/test",
+  "version": "1.0.0",
+  "description": "Test an API key before saving it. Makes a minimal API call to verify the key is valid and has sufficient permissions.",
+  "main": "server/AiKeyTestServerCommand.ts",
+  "types": "shared/AiKeyTestTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AiKeyTestIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "ai/key/test"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
