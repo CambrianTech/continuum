@@ -12,6 +12,7 @@ import { Events } from '../../system/core/shared/Events';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import { COMMANDS } from '../../shared/generated-command-constants';
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
+import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
@@ -147,6 +148,8 @@ export class MainWidget extends BaseWidget {
    * Uses tab data passed from ContentTabsWidget (no userState lookup needed)
    */
   private handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): void {
+    console.log('🔥 MainWidget.handleTabClick CALLED with:', tabData);
+
     const { tabId, label, entityId, contentType } = tabData;
 
     console.log(`📋 MainPanel.handleTabClick: tabId="${tabId}", entityId="${entityId}", type="${contentType}"`);
@@ -170,7 +173,18 @@ export class MainWidget extends BaseWidget {
 
     // Already the current tab? Skip
     if (this.userState?.contentState?.currentItemId === tabId) {
+      console.log('📋 MainPanel: Tab already current, skipping');
       return;
+    }
+
+    // IMPORTANT: Persist to database FIRST, before any events that might refresh from DB
+    const userId = this.userState?.userId;
+    if (userId) {
+      // Fire and forget - but do it BEFORE emitting events
+      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+        userId: userId as UUID,
+        contentItemId: tabId as UUID
+      }).catch(err => console.error('Failed to persist tab switch:', err));
     }
 
     // Update local state immediately (optimistic UI)
