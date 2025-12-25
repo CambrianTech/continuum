@@ -270,6 +270,15 @@ export const SETTINGS_STYLES = `
     line-height: 1.5;
   }
 
+  .section-intro a {
+    color: #00ff64;
+    text-decoration: none;
+  }
+
+  .section-intro a:hover {
+    text-decoration: underline;
+  }
+
   .local-highlight {
     background: rgba(0, 255, 100, 0.1);
     border-color: rgba(0, 255, 100, 0.3);

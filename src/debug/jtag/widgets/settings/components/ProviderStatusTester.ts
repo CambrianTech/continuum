@@ -18,6 +18,8 @@ export interface ProviderTestResult {
 export interface TestKeyParams {
   provider: string;
   key: string;
+  /** If true, use stored key from config.env instead of provided key */
+  useStored?: boolean;
 }
 
 export class ProviderStatusTester {
@@ -47,7 +49,8 @@ export class ProviderStatusTester {
     try {
       const result = await Commands.execute('ai/key/test', {
         provider: params.provider,
-        key: params.key
+        key: params.key,
+        useStored: params.useStored
       } as any) as any;
 
       const testResult: ProviderTestResult = result?.valid

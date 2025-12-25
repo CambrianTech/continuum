@@ -61,7 +61,8 @@ export class SettingsWidget extends BaseWidget {
           description: p.description,
           isConfigured: p.isConfigured,
           getKeyUrl: p.getKeyUrl,
-          billingUrl: p.billingUrl
+          billingUrl: p.billingUrl,
+          maskedKey: p.maskedKey
         }));
       } else {
         this.configEntries = this.getDefaultConfigEntries();
@@ -91,6 +92,10 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
+    // Preserve scroll position before re-render
+    const scrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    const scrollTop = scrollContainer?.scrollTop || 0;
+
     const localEntries = this.configEntries.filter(e => e.category === 'local');
     const cloudEntries = this.configEntries.filter(e => e.category === 'cloud');
 
@@ -160,13 +165,24 @@ export class SettingsWidget extends BaseWidget {
     this.shadowRoot!.innerHTML = `<style>${SETTINGS_STYLES}</style>${template}`;
     this.setupEventListeners();
     this.initializeAssistant();
+
+    // Restore scroll position after re-render
+    const newScrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    if (newScrollContainer && scrollTop > 0) {
+      newScrollContainer.scrollTop = scrollTop;
+    }
   }
 
   private initializeAssistant(): void {
     const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
     if (!container) return;
 
-    this.assistantPanel?.destroy();
+    // Only create AssistantPanel once - don't recreate on every render
+    if (this.assistantPanel) {
+      // Re-attach to the new container element (DOM was replaced)
+      container.appendChild(this.assistantPanel['container']);
+      return;
+    }
 
     this.assistantPanel = new AssistantPanel(container, {
       roomId: DEFAULT_ROOMS.SETTINGS as UUID,
@@ -215,21 +231,26 @@ export class SettingsWidget extends BaseWidget {
 
   private async handleTestClick(provider: string, configKey: string): Promise<void> {
     const input = this.shadowRoot?.querySelector(`input[data-key="${configKey}"]`) as HTMLInputElement;
-    const keyValue = this.pendingChanges.get(configKey) || input?.value;
+    const newValue = this.pendingChanges.get(configKey) || input?.value;
+    const entry = this.configEntries.find(e => e.key === configKey);
 
-    if (!keyValue || keyValue.startsWith('••••')) {
-      const entry = this.configEntries.find(e => e.key === configKey);
-      if (!entry?.isConfigured) {
-        this.tester.clearResult(configKey);
-        // Show error in UI
-        await this.tester.testKey({ provider, key: '' }, configKey);
-        return;
-      }
+    // If user entered a new value, test that
+    if (newValue && !newValue.startsWith('sk-...') && !newValue.startsWith('gsk_...')) {
+      console.log(`Testing new key for ${configKey}`);
+      await this.tester.testKey({ provider, key: newValue }, configKey);
+      return;
     }
 
-    if (keyValue) {
-      await this.tester.testKey({ provider, key: keyValue }, configKey);
+    // If already configured, test the stored key (pass empty to use server-side key)
+    if (entry?.isConfigured) {
+      console.log(`Testing stored key for ${configKey}`);
+      await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      return;
     }
+
+    // Not configured and no new value - show error
+    console.log(`No key to test for ${configKey}`);
+    await this.tester.testKey({ provider, key: '' }, configKey);
   }
 
   private async saveConfig(): Promise<void> {

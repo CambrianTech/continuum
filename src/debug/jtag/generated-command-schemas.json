@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-25T06:09:58.859Z",
+  "generated": "2025-12-25T17:55:14.418Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4102,6 +4102,11 @@
           "type": "string",
           "required": true,
           "description": "key parameter"
+        },
+        "useStored": {
+          "type": "boolean",
+          "required": false,
+          "description": "useStored parameter"
         }
       }
     },
