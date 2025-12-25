@@ -893,8 +893,34 @@ async function seedViaJTAG() {
     const teacherPersona = userMap[PERSONA_UNIQUE_IDS.TEACHER];
     const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
 
-    // If rooms already existed, just report what we did
+    // If rooms already existed, ensure system rooms have Helper AI then exit
     if (!needsRooms) {
+      // Still ensure system rooms have their default AI assistant
+      console.log('🏠 Ensuring system rooms have Helper AI...');
+      const systemRoomUniqueIds = ['settings', 'help', 'theme'];
+      for (const roomUniqueId of systemRoomUniqueIds) {
+        try {
+          const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
+          const parsed = JSON.parse(result.stdout);
+          if (parsed.success && parsed.items?.[0]) {
+            const room = parsed.items[0];
+            const existingMembers = room.members || [];
+            const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona?.id);
+
+            if (helperPersona && !helperAlreadyMember) {
+              const updatedMembers = [
+                ...existingMembers,
+                { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+              ];
+              const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+              await execAsync(`./jtag data/update --collection=rooms --id="${room.id}" --data='${updateData}'`);
+              console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
+            }
+          }
+        } catch (error) {
+          // Silently skip - rooms might not exist yet
+        }
+      }
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
@@ -920,6 +946,36 @@ async function seedViaJTAG() {
       })
     ]);
     console.log('✅ Persona profiles updated with personalities');
+
+    // Ensure system rooms have Helper AI as default assistant
+    // This ensures the Settings, Help, and Theme widgets always have AI available
+    console.log('🏠 Adding Helper AI to system rooms...');
+    const systemRoomUniqueIds = ['settings', 'help', 'theme'];
+    for (const roomUniqueId of systemRoomUniqueIds) {
+      try {
+        const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
+        const parsed = JSON.parse(result.stdout);
+        if (parsed.success && parsed.items?.[0]) {
+          const room = parsed.items[0];
+          const existingMembers = room.members || [];
+          const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
+
+          if (!helperAlreadyMember) {
+            const updatedMembers = [
+              ...existingMembers,
+              { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+            ];
+            const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+            await execAsync(`./jtag data/update --collection=rooms --id="${room.id}" --data='${updateData}'`);
+            console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
+          } else {
+            console.log(`✅ Helper AI already in ${roomUniqueId} room`);
+          }
+        }
+      } catch (error) {
+        console.warn(`⚠️ Could not add Helper AI to ${roomUniqueId}:`, error);
+      }
+    }
 
     // Configure persona AI response settings (intelligent resource management)
     console.log('🔧 Configuring persona AI response settings...');
