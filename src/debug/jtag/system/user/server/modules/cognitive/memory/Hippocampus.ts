@@ -412,21 +412,35 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   }
 
   /**
-   * Calculate recent conversation activity (messages per minute)
-   * Estimates from working memory size as proxy
+   * Calculate recent activity level (messages per minute equivalent)
+   * Aggregates working memory usage across all domains
    */
   private async calculateActivityLevel(): Promise<number> {
     try {
-      // Get working memory capacity usage
-      const capacity = await this.persona.mind?.workingMemory?.getCapacity('chat');
+      // Aggregate activity across all domains
+      const domains = ['chat', 'game', 'ui', 'browsing', 'code'];
+      let totalUsed = 0;
+      let domainsChecked = 0;
 
-      if (!capacity) {
-        return 1.0;  // Default to moderate activity if mind/workingMemory not available
+      for (const domain of domains) {
+        try {
+          const capacity = await this.persona.mind?.workingMemory?.getCapacity(domain);
+          if (capacity) {
+            totalUsed += capacity.used;
+            domainsChecked++;
+          }
+        } catch {
+          // Domain not configured - skip
+        }
+      }
+
+      if (domainsChecked === 0) {
+        return 1.0;  // Default to moderate activity if no domains available
       }
 
       // Rough heuristic: working memory size indicates recent activity
       // If working memory is 40/100, estimate ~4 msg/min over last 10 min
-      const estimatedRate = capacity.used / 10.0;
+      const estimatedRate = totalUsed / 10.0;
 
       return Math.max(0.1, estimatedRate);  // Minimum 0.1 to avoid division by zero
     } catch (error) {
@@ -453,15 +467,40 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Get memory system statistics
    */
   public async getStats(): Promise<MemoryStats> {
-    // Get working memory size (source of consolidation)
-    const workingMemorySize = this.persona.mind?.workingMemory
-      ? (await this.persona.mind.workingMemory.getCapacity('chat')).used  // TODO: aggregate all domains
-      : 0;
+    // Aggregate working memory size across all domains
+    let workingMemorySize = 0;
+    const domains = ['chat', 'game', 'ui', 'browsing', 'code'];
+    for (const domain of domains) {
+      try {
+        const capacity = await this.persona.mind?.workingMemory?.getCapacity(domain);
+        if (capacity) {
+          workingMemorySize += capacity.used;
+        }
+      } catch {
+        // Domain not configured
+      }
+    }
+
+    // Query actual LTM count from database
+    let ltmCount = 0;
+    if (this.memoryDbHandle) {
+      try {
+        const result = await Commands.execute(DATA_COMMANDS.LIST, {
+          dbHandle: this.memoryDbHandle,
+          collection: 'memories',
+          filter: { personaId: this.persona.id },
+          limit: 0  // Just get count
+        } as any) as any;
+        ltmCount = result.totalCount || result.items?.length || 0;
+      } catch (error) {
+        this.log(`WARN: Could not get LTM count: ${error}`);
+      }
+    }
 
     return {
       stmSize: workingMemorySize, // WorkingMemory acts as STM
       stmMaxSize: 100, // WorkingMemory max capacity
-      ltmCount: 0, // TODO: Query LTM count from database
+      ltmCount,
       consolidationCount: this.metrics.consolidationCount,
       lastConsolidation: this.metrics.lastConsolidation || undefined
     };

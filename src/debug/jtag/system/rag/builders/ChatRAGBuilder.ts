@@ -450,17 +450,16 @@ ${toolRegistry.generateToolDocumentation()}`;
         return [];
       }
 
-      // Access Hippocampus through PersonaUser
-      // Type assertion needed because BaseUser doesn't expose hippocampus
-      const persona = personaUser as any;
-      if (!persona.hippocampus) {
-        this.log(`⚠️ ChatRAGBuilder: PersonaUser ${personaId.slice(0, 8)} has no Hippocampus`);
+      // Check if this user has memory recall capability (duck-typing)
+      // PersonaUser exposes recallMemories() as public interface to Hippocampus
+      if (!('recallMemories' in personaUser) || typeof (personaUser as any).recallMemories !== 'function') {
+        this.log(`⚠️ ChatRAGBuilder: User ${personaId.slice(0, 8)} has no recallMemories method`);
         return [];
       }
 
-      // Recall recent important memories
-      // Filter by room context and importance threshold
-      const memories = await persona.hippocampus.recall({
+      // Recall recent important memories using public interface
+      const recallableUser = personaUser as { recallMemories: (params: any) => Promise<any[]> };
+      const memories = await recallableUser.recallMemories({
         minImportance: 0.6,  // Only recall important memories
         limit: maxMemories,
         since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()  // Last 7 days
