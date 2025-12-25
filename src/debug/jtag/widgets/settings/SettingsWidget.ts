@@ -125,7 +125,7 @@ export class SettingsWidget extends BaseWidget {
             <div class="info-box">
               <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
               or connect cloud providers for more powerful models. You can use multiple providers.
-              <span class="storage-note">Keys stored in <code>~/.continuum/config.env</code></span>
+              <span class="storage-note">Keys stored in <code>~/.continuum/config.env</code> <button class="btn-refresh" id="refresh-btn" title="Reload from file">↻</button></span>
             </div>
 
             <div class="settings-section local-highlight">
@@ -179,9 +179,11 @@ export class SettingsWidget extends BaseWidget {
   private setupEventListeners(): void {
     const saveBtn = this.shadowRoot?.querySelector('#save-btn');
     const resetBtn = this.shadowRoot?.querySelector('#reset-btn');
+    const refreshBtn = this.shadowRoot?.querySelector('#refresh-btn');
 
     saveBtn?.addEventListener('click', () => this.saveConfig());
     resetBtn?.addEventListener('click', () => this.loadConfig());
+    refreshBtn?.addEventListener('click', () => this.loadConfig());
 
     // Track input changes
     this.shadowRoot?.querySelectorAll('.config-input').forEach(input => {

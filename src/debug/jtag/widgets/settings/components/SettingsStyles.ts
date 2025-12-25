@@ -143,6 +143,23 @@ export const SETTINGS_STYLES = `
     user-select: all;
   }
 
+  .btn-refresh {
+    background: none;
+    border: none;
+    color: rgba(0, 212, 255, 0.6);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 4px;
+    margin-left: 4px;
+    border-radius: 3px;
+    transition: all 0.2s ease;
+  }
+
+  .btn-refresh:hover {
+    color: #00d4ff;
+    background: rgba(0, 212, 255, 0.1);
+  }
+
   .btn {
     padding: 10px 20px;
     border-radius: 6px;
