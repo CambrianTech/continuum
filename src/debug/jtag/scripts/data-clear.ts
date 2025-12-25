@@ -10,6 +10,7 @@
 
 import { execSync } from 'child_process';
 import { join } from 'path';
+import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 
 // Import entity collection constants (no magic strings!)
 const ENTITY_DIR = join(__dirname, '../system/data/entities');
@@ -18,10 +19,14 @@ console.log('🧹 Clearing database tables via JTAG...');
 console.log('📍 Using entity collection constants from:', ENTITY_DIR);
 
 // Collection names from entity constants
+// NOTE: Users are NOT cleared to preserve persona UUIDs!
+// Persona longterm.db files are stored per-persona and reference the user's UUID.
+// If we clear users and reseed, they get NEW UUIDs, orphaning all their memories.
+// This was the root cause of the "orphaned memories" bug (2905 memories unreachable).
 const collections = [
   'chat_messages',  // ChatMessageEntity.collection
-  'rooms',          // RoomEntity.collection
-  'users'           // UserEntity.collection
+  'rooms'           // RoomEntity.collection
+  // 'users' - INTENTIONALLY EXCLUDED to preserve persona UUIDs and their memories
 ];
 
 let hadErrors = false;
