@@ -17,6 +17,8 @@ export interface AiKeyTestParams extends CommandParams {
   provider: string;
   // API key to test (will NOT be stored)
   key: string;
+  // If true, use the stored key from config.env instead of the provided key
+  useStored?: boolean;
 }
 
 /**

@@ -216,21 +216,26 @@ export class SettingsWidget extends BaseWidget {
 
   private async handleTestClick(provider: string, configKey: string): Promise<void> {
     const input = this.shadowRoot?.querySelector(`input[data-key="${configKey}"]`) as HTMLInputElement;
-    const keyValue = this.pendingChanges.get(configKey) || input?.value;
+    const newValue = this.pendingChanges.get(configKey) || input?.value;
+    const entry = this.configEntries.find(e => e.key === configKey);
 
-    if (!keyValue || keyValue.startsWith('••••')) {
-      const entry = this.configEntries.find(e => e.key === configKey);
-      if (!entry?.isConfigured) {
-        this.tester.clearResult(configKey);
-        // Show error in UI
-        await this.tester.testKey({ provider, key: '' }, configKey);
-        return;
-      }
+    // If user entered a new value, test that
+    if (newValue && !newValue.startsWith('sk-...') && !newValue.startsWith('gsk_...')) {
+      console.log(`Testing new key for ${configKey}`);
+      await this.tester.testKey({ provider, key: newValue }, configKey);
+      return;
     }
 
-    if (keyValue) {
-      await this.tester.testKey({ provider, key: keyValue }, configKey);
+    // If already configured, test the stored key (pass empty to use server-side key)
+    if (entry?.isConfigured) {
+      console.log(`Testing stored key for ${configKey}`);
+      await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      return;
     }
+
+    // Not configured and no new value - show error
+    console.log(`No key to test for ${configKey}`);
+    await this.tester.testKey({ provider, key: '' }, configKey);
   }
 
   private async saveConfig(): Promise<void> {
