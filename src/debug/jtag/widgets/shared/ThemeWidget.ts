@@ -12,12 +12,10 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
-import { THEME_COMMANDS } from '../../commands/theme/shared/ThemeCommandConstants';
 import { ThemeDiscoveryService } from './themes/ThemeDiscoveryService';
 import { ThemeRegistry } from './themes/ThemeTypes';
 import type { DataListResult, DataListParams } from '../../commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
-import type { ThemeSetParams, ThemeSetResult } from '../../commands/theme/set/shared/ThemeSetTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
@@ -507,18 +505,8 @@ export class ThemeWidget extends BaseWidget {
         const themeName = (card as HTMLElement).dataset.theme;
         if (themeName && themeName !== this.currentTheme) {
           console.log(`🎨 ThemeWidget: Theme card clicked - switching to '${themeName}'`);
-
-          // Use the actual JTAG theme/set command for proper theme switching
-          try {
-            await Commands.execute<ThemeSetParams, ThemeSetResult>(THEME_COMMANDS.SET, {
-              themeName: themeName
-            });
-            console.log(`✅ ThemeWidget: Successfully applied theme '${themeName}' via CommandDaemon`);
-          } catch (error) {
-            console.error(`❌ ThemeWidget: Failed to apply theme '${themeName}':`, error);
-            // Try fallback method
-            await this.setTheme(themeName);
-          }
+          // Use setTheme directly - it handles CSS loading, persistence to localStorage AND UserState
+          await this.setTheme(themeName);
         }
       });
     });
