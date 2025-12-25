@@ -80,6 +80,23 @@ export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
     requiresEntity: false,
     defaultTitle: 'Browser',
   },
+
+  // System diagnostics and persona logs
+  diagnostics: {
+    widget: 'diagnostics-widget',
+    displayName: 'Diagnostics',
+    pathPrefix: '/diagnostics',
+    requiresEntity: false,
+    defaultTitle: 'System Diagnostics',
+  },
+
+  // Individual log viewer (opened from diagnostics)
+  'diagnostics-log': {
+    widget: 'log-viewer-widget',
+    displayName: 'Log',
+    pathPrefix: '/log',
+    requiresEntity: true,  // Needs log file path
+  },
 };
 
 /**
