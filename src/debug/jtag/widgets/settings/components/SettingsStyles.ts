@@ -129,10 +129,18 @@ export const SETTINGS_STYLES = `
   }
 
   .storage-note {
-    margin-right: auto;
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.4);
-    font-family: monospace;
+    display: block;
+    margin-top: 8px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .storage-note code {
+    color: rgba(0, 212, 255, 0.8);
+    background: rgba(0, 212, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    user-select: all;
   }
 
   .btn {
