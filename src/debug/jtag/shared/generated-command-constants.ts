@@ -34,6 +34,7 @@ export const COMMANDS = {
   AI_MODEL_FIND: 'ai/model/find',
   AI_MODEL_LIST: 'ai/model/list',
   AI_MUTE: 'ai/mute',
+  AI_PROVIDERS_STATUS: 'ai/providers/status',
   AI_RAG_INDEX_CODEBASE: 'ai/rag/index-codebase',
   AI_RAG_INDEX_CREATE: 'ai/rag/index/create',
   AI_RAG_INSPECT: 'ai/rag/inspect',

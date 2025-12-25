@@ -10,6 +10,7 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { AssistantPanel } from '../shared/AssistantPanel';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../system/core/shared/Commands';
 
 interface ConfigEntry {
   key: string;
@@ -19,6 +20,8 @@ interface ConfigEntry {
   provider: string;
   category: 'local' | 'cloud';
   isConfigured?: boolean;
+  getKeyUrl?: string;
+  billingUrl?: string;
 }
 
 export class SettingsWidget extends BaseWidget {
@@ -48,8 +51,31 @@ export class SettingsWidget extends BaseWidget {
     this.isLoading = true;
     this.renderWidget();
 
-    // TODO: Load actual config from server via system/config/list command
-    this.configEntries = this.getDefaultConfigEntries();
+    // Get actual provider status from server (checks ~/.continuum/config.env)
+    try {
+      const result = await Commands.execute('ai/providers/status', {}) as any;
+
+      if (result?.providers) {
+        // Map server response to config entries
+        this.configEntries = result.providers.map((p: any) => ({
+          key: p.key,
+          value: '', // Never expose actual values to browser
+          isSecret: p.category === 'cloud',
+          provider: p.provider,
+          category: p.category,
+          description: p.description,
+          isConfigured: p.isConfigured,
+          getKeyUrl: p.getKeyUrl,
+          billingUrl: p.billingUrl
+        }));
+      } else {
+        // Fallback to defaults if command fails
+        this.configEntries = this.getDefaultConfigEntries();
+      }
+    } catch (error) {
+      console.warn('Settings: Failed to load provider status, using defaults:', error);
+      this.configEntries = this.getDefaultConfigEntries();
+    }
 
     this.isLoading = false;
     this.renderWidget();
@@ -313,6 +339,32 @@ export class SettingsWidget extends BaseWidget {
         color: #00ff64;
       }
 
+      .provider-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .provider-links {
+        display: flex;
+        gap: 8px;
+      }
+
+      .provider-link {
+        font-size: 11px;
+        color: #00d4ff;
+        text-decoration: none;
+        padding: 2px 8px;
+        border: 1px solid rgba(0, 212, 255, 0.3);
+        border-radius: 4px;
+        transition: all 0.2s ease;
+      }
+
+      .provider-link:hover {
+        background: rgba(0, 212, 255, 0.1);
+        border-color: rgba(0, 212, 255, 0.5);
+      }
+
       @media (max-width: 768px) {
         .settings-layout {
           flex-direction: column;
@@ -330,15 +382,28 @@ export class SettingsWidget extends BaseWidget {
     const cloudEntries = this.configEntries.filter(e => e.category === 'cloud');
 
     const renderEntry = (entry: ConfigEntry) => {
-      const isConfigured = entry.isSecret ? !!entry.value : true;
+      const isConfigured = entry.isConfigured ?? false;
       const statusClass = isConfigured ? 'status-configured' : 'status-not-set';
       const statusText = isConfigured ? '✓ Configured' : '○ Not set';
+
+      // Build action links
+      const links: string[] = [];
+      if (entry.getKeyUrl) {
+        links.push(`<a href="${entry.getKeyUrl}" target="_blank" class="provider-link">${entry.category === 'local' ? 'Download' : 'Get Key'}</a>`);
+      }
+      if (entry.billingUrl && isConfigured) {
+        links.push(`<a href="${entry.billingUrl}" target="_blank" class="provider-link">Billing</a>`);
+      }
+      const linksHtml = links.length > 0 ? `<span class="provider-links">${links.join(' ')}</span>` : '';
 
       return `
         <div class="config-entry">
           <div class="provider-header">
             <span class="provider-name">${entry.provider}</span>
-            <span class="status-indicator ${statusClass}">${statusText}</span>
+            <div class="provider-actions">
+              ${linksHtml}
+              <span class="status-indicator ${statusClass}">${statusText}</span>
+            </div>
           </div>
           <div class="config-label">
             <span class="config-key">${entry.key}</span>
@@ -349,7 +414,7 @@ export class SettingsWidget extends BaseWidget {
             class="config-input"
             data-key="${entry.key}"
             value="${entry.value}"
-            placeholder="${entry.isSecret ? 'Enter API key...' : 'Enter URL...'}"
+            placeholder="${isConfigured ? '••••••••••••••••' : (entry.isSecret ? 'Enter API key...' : 'Enter URL...')}"
           />
         </div>
       `;

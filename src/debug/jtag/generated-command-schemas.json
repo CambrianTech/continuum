@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-25T01:27:30.151Z",
+  "generated": "2025-12-25T05:17:30.230Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3253,7 +3253,7 @@
         },
         "entityId": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "entityId parameter"
         },
         "title": {
@@ -3950,6 +3950,11 @@
           "description": "tags parameter"
         }
       }
+    },
+    {
+      "name": "ai/providers/status",
+      "description": "AI Providers Status - Check which API keys are configured\n *\n * Returns status for each provider WITHOUT exposing actual key values.\n * Safe to call from browser - only returns boolean status.",
+      "params": {}
     },
     {
       "name": "ai/mute",
