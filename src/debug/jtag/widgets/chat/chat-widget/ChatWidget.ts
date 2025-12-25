@@ -328,6 +328,51 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       });
     });
 
+    // Listen for content:switched events (from state/content/switch command or tab clicks)
+    // Event includes full details: contentType, entityId, title
+    Events.subscribe('content:switched', async (eventData: {
+      contentItemId: string;
+      userId: string;
+      currentItemId: string;
+      contentType?: string;
+      entityId?: string;
+      title?: string;
+    }) => {
+      // Only handle chat content types
+      if (eventData.contentType !== 'chat' || !eventData.entityId) {
+        console.log(`📨 ChatWidget: Ignoring content:switched - not a chat (type=${eventData.contentType})`);
+        return;
+      }
+
+      // Skip if already on this room
+      if (eventData.entityId === this.currentRoomId) {
+        console.log(`📨 ChatWidget: Already on room ${eventData.title}, skipping`);
+        return;
+      }
+
+      console.log(`🏠 ChatWidget: Content switched - switching to "${eventData.title}" (${eventData.entityId})`);
+      this.currentRoomId = eventData.entityId as UUID;
+      this.currentRoomName = eventData.title || 'Chat';
+
+      // Reset counters for new room
+      this.totalMessageCount = 0;
+      this.loadedMessageCount = 0;
+
+      // Clear AI status indicators for previous room
+      this.aiStatusIndicator.clearAll();
+
+      // Update header immediately to show new room name
+      this.updateHeader();
+
+      // Load room data and refresh messages
+      Promise.all([
+        this.loadRoomData(this.currentRoomId),
+        this.scroller?.refresh()
+      ]).then(() => {
+        this.updateHeader();
+      });
+    });
+
     // Subscribe to AI decision events for real-time thinking/responding indicators
     // Note: We subscribe globally and filter by room ID in handlers
     //console.log(`🤖 ChatWidget: Subscribing to AI decision events`);

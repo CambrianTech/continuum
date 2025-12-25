@@ -49,6 +49,7 @@ export const DEFAULT_ROOMS = {
   ACADEMY: stringToUUID('Academy') as UUID,
   PANTHEON: stringToUUID('Pantheon') as UUID,
   DEV_UPDATES: stringToUUID('Dev Updates') as UUID,
+  HELP: stringToUUID('Help') as UUID,
   SUPPORT: stringToUUID('Support') as UUID,
   AI_TRAINING: stringToUUID('AI Training') as UUID
 } as const;

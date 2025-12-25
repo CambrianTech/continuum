@@ -852,7 +852,20 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom];
+      const helpRoom = createRoom(
+        ROOM_IDS.HELP,
+        'help',
+        'Help',
+        'Get help from AI assistants - ask anything about using Continuum',
+        "Your AI helpers are here to assist you getting started",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["help", "support", "onboarding", "getting-started"],
+        humanUser.id,
+        'help'  // recipe: help-focused room with Helper AI
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);

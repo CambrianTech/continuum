@@ -70,17 +70,29 @@ export class StateContentSwitchServerCommand extends CommandBase<StateContentSwi
         data: userState
       });
 
-      // 4. Emit content:switched event for widgets to respond to
+      // 4. Get content item details for the event
+      const contentItem = userState.contentState.openItems.find(
+        item => item.id === params.contentItemId
+      );
+
+      // 5. Emit content:switched event with full details for widgets
       await Events.emit(this.context, 'content:switched', {
         contentItemId: params.contentItemId,
         userId: params.userId,
-        currentItemId: userState.contentState.currentItemId
+        currentItemId: userState.contentState.currentItemId,
+        // Include content item details so widgets don't need to look them up
+        contentType: contentItem?.type,
+        entityId: contentItem?.entityId,
+        title: contentItem?.title
       });
 
-      // 5. Return success result
+      // 6. Return success result with content item details for browser-side event
       return transformPayload(params, {
         success: true,
-        currentItemId: userState.contentState.currentItemId!
+        currentItemId: userState.contentState.currentItemId!,
+        contentType: contentItem?.type,
+        entityId: contentItem?.entityId,
+        title: contentItem?.title
       });
 
     } catch (error) {

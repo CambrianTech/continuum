@@ -13,6 +13,9 @@ import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import { COMMANDS } from '../../shared/generated-command-constants';
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
+import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import { getWidgetForType, buildContentPath, parseContentPath } from './shared/ContentTypeRegistry';
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
@@ -46,10 +49,43 @@ export class MainWidget extends BaseWidget {
     // Listen for content:opened events to refresh tabs
     this.subscribeToContentEvents();
 
+    // Setup URL routing (back/forward navigation)
+    this.setupUrlRouting();
+
     // PHASE 3BIS: Track tab visibility for temperature
     this.setupVisibilityTracking();
 
     console.log('✅ MainPanel: Main panel initialized');
+  }
+
+  /**
+   * Setup URL-based routing for bookmarks and back/forward
+   */
+  private setupUrlRouting(): void {
+    // Handle browser back/forward
+    window.addEventListener('popstate', (event) => {
+      const path = event.state?.path || window.location.pathname;
+      this.navigateToPath(path);
+    });
+
+    // Initialize from current URL
+    const initialPath = window.location.pathname;
+    if (initialPath && initialPath !== '/') {
+      this.currentPath = initialPath;
+      // Parse and load the content
+      const { type, entityId } = parseContentPath(initialPath);
+      console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
+
+      // Switch to the content view based on URL
+      // Delay slightly to let the DOM render first
+      setTimeout(() => {
+        this.switchContentView(type, entityId);
+        // For chat, emit ROOM_SELECTED so ChatWidget loads the room
+        if (type === 'chat' && entityId) {
+          Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '' });
+        }
+      }, 100);
+    }
   }
 
   protected async renderWidget(): Promise<void> {
@@ -75,27 +111,61 @@ export class MainWidget extends BaseWidget {
   }
 
   private setupEventListeners(): void {
-    // Listen to tab events from content-tabs-widget
+    // Tab click data includes entityId and contentType so we don't need userState lookup
+    type TabClickData = {
+      tabId: string;
+      label?: string;
+      entityId?: string;
+      contentType?: string;
+    };
+
+    // Listen to tab events from content-tabs-widget via DOM events
     this.addEventListener('tab-clicked', ((event: CustomEvent) => {
-      const tabId = event.detail.tabId;
-      this.handleTabClick(tabId);
+      const tabData: TabClickData = event.detail;
+      console.log('📋 MainWidget: Received tab-clicked DOM event:', tabData.tabId);
+      this.handleTabClick(tabData);
     }) as EventListener);
 
     this.addEventListener('tab-closed', ((event: CustomEvent) => {
       const tabId = event.detail.tabId;
       this.handleTabClose(tabId);
     }) as EventListener);
+
+    // Also listen via Events system (more reliable across shadow DOM)
+    Events.subscribe('tabs:clicked', (data: TabClickData) => {
+      console.log('📋 MainWidget: Received tabs:clicked event:', data.tabId);
+      this.handleTabClick(data);
+    });
+
+    Events.subscribe('tabs:close', (data: { tabId: string }) => {
+      this.handleTabClose(data.tabId);
+    });
   }
 
   /**
-   * Handle tab click - switch to that room/content
+   * Handle tab click - switch to that content
+   * Uses tab data passed from ContentTabsWidget (no userState lookup needed)
    */
-  private handleTabClick(tabId: string): void {
-    // Find the content item by tabId
-    const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
-    if (!contentItem) {
-      console.warn(`⚠️ MainPanel: Tab not found: ${tabId}`);
-      return;
+  private handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): void {
+    const { tabId, label, entityId, contentType } = tabData;
+
+    console.log(`📋 MainPanel.handleTabClick: tabId="${tabId}", entityId="${entityId}", type="${contentType}"`);
+
+    // If missing entityId, try to look up from userState as fallback
+    let resolvedEntityId = entityId;
+    let resolvedContentType = contentType;
+
+    if (!resolvedEntityId || !resolvedContentType) {
+      console.warn(`⚠️ MainPanel: Tab missing entityId/contentType, looking up in userState...`);
+      const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
+      if (contentItem) {
+        resolvedEntityId = contentItem.entityId;
+        resolvedContentType = contentItem.type;
+        console.log(`📋 MainPanel: Found in userState - entityId="${resolvedEntityId}", type="${resolvedContentType}"`);
+      } else {
+        console.error(`❌ MainPanel: Tab not found in userState either:`, tabId);
+        return;
+      }
     }
 
     // Already the current tab? Skip
@@ -108,16 +178,53 @@ export class MainWidget extends BaseWidget {
       this.userState.contentState.currentItemId = tabId;
     }
 
-    // Update tab highlighting immediately
+    // Update tab highlighting
     this.updateContentTabs();
 
-    // Emit room selected event to switch chat content
-    Events.emit(UI_EVENTS.ROOM_SELECTED, {
-      roomId: contentItem.entityId,
-      roomName: contentItem.title
-    });
+    // Switch content view to the correct widget type
+    this.switchContentView(resolvedContentType, resolvedEntityId);
 
-    console.log(`📋 MainPanel: Switched to tab "${contentItem.title}"`);
+    // Update URL (bookmarkable)
+    const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
+    this.updateUrl(newPath);
+
+    // Emit appropriate event based on content type
+    if (resolvedContentType === 'chat') {
+      Events.emit(UI_EVENTS.ROOM_SELECTED, {
+        roomId: resolvedEntityId,
+        roomName: label || 'Chat'
+      });
+    }
+
+    console.log(`📋 MainPanel: Switched to ${resolvedContentType} tab "${label}"`);
+  }
+
+  /**
+   * Switch content view to render the appropriate widget
+   * NOTE: Does NOT emit ROOM_SELECTED - caller is responsible for that to avoid loops
+   */
+  private switchContentView(contentType: string, entityId?: string): void {
+    const contentView = this.shadowRoot?.querySelector('.content-view');
+    if (!contentView) return;
+
+    const widgetTag = getWidgetForType(contentType);
+
+    // Create widget element with entity context if needed
+    let widgetHtml = `<${widgetTag}></${widgetTag}>`;
+
+    contentView.innerHTML = widgetHtml;
+
+    console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}`);
+  }
+
+  /**
+   * Update browser URL without full page reload
+   */
+  private updateUrl(path: string): void {
+    if (this.currentPath !== path) {
+      this.currentPath = path;
+      window.history.pushState({ path }, '', path);
+    }
   }
 
   /**
@@ -417,13 +524,18 @@ export class MainWidget extends BaseWidget {
     // Listen to settings-clicked event
     this.addEventListener('settings-clicked', () => {
       console.log('⚙️ MainPanel: Settings button clicked from header controls');
-      // Future: Open settings panel
+      this.openContentTab('settings', 'Settings');
     });
 
-    // Listen to help-clicked event
+    // Listen to help-clicked event - opens Help room (collaborative help with AI)
     this.addEventListener('help-clicked', () => {
-      console.log('❓ MainPanel: Help button clicked from header controls');
-      // Future: Open help panel
+      console.log('❓ MainPanel: Help button clicked - opening Help room');
+      // Help is a room with AI assistants, not a static page
+      const helpRoomId = DEFAULT_ROOMS.HELP;
+      Events.emit(UI_EVENTS.ROOM_SELECTED, {
+        roomId: helpRoomId,
+        roomName: 'Help'
+      });
     });
 
     console.log('🔗 MainPanel: Header controls listeners registered');
@@ -466,6 +578,15 @@ export class MainWidget extends BaseWidget {
     // RoomListWidget emits this and it definitely works (sidebar highlights change)
     Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
       console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
+
+      // Update URL for room selection (bookmarkable deep links)
+      const newPath = buildContentPath('chat', data.roomId);
+      this.updateUrl(newPath);
+
+      // Ensure chat widget is displayed (in case we were on settings/help)
+      // Safe now - switchContentView no longer emits ROOM_SELECTED
+      this.switchContentView('chat', data.roomId);
+
       // Small delay to let the content/open command complete first
       setTimeout(() => refreshTabs('ROOM_SELECTED'), 100);
     });
@@ -500,14 +621,18 @@ export class MainWidget extends BaseWidget {
     const tabs = [];
 
     if (this.userState?.contentState?.openItems) {
-      // Map content items to tab format
+      // Map content items to tab format with full data for click handling
       for (const item of this.userState.contentState.openItems) {
-        tabs.push({
+        const tabData = {
           id: item.id,
           label: item.title,
           active: item.id === this.userState.contentState.currentItemId,
-          closeable: true
-        });
+          closeable: true,
+          entityId: item.entityId,
+          contentType: item.type
+        };
+        console.log('📋 MainWidget.updateContentTabs: Creating tab:', tabData.label, 'entityId:', tabData.entityId, 'type:', tabData.contentType);
+        tabs.push(tabData);
       }
     } else {
       // Fallback: show current room as single tab if userState not loaded yet
@@ -549,6 +674,55 @@ export class MainWidget extends BaseWidget {
   switchToPage(pageName: string): void {
     console.log(`📄 MainPanel: Switching to page: ${pageName}`);
     // Will update the content view to show different widgets
+  }
+
+  /**
+   * Open a content tab (e.g., settings, help) or switch to it if already open
+   */
+  private openContentTab(contentType: string, title: string): void {
+    // Check if tab already exists
+    const existingTab = this.userState?.contentState?.openItems?.find(
+      item => item.type === contentType
+    );
+
+    if (existingTab) {
+      // Tab exists - just switch to it with full data
+      this.handleTabClick({
+        tabId: existingTab.id,
+        label: existingTab.title,
+        entityId: existingTab.entityId,
+        contentType: existingTab.type
+      });
+      return;
+    }
+
+    // Create new tab in local state with all required properties
+    const newTabId = `${contentType}-${Date.now()}` as UUID;
+    const newTab = {
+      id: newTabId,
+      type: contentType as ContentType,
+      title: title,
+      lastAccessedAt: new Date(),
+      priority: 'normal' as ContentPriority
+    };
+
+    // Add to openItems (optimistic UI)
+    if (this.userState?.contentState) {
+      this.userState.contentState.openItems.push(newTab);
+      this.userState.contentState.currentItemId = newTabId;
+    }
+
+    // Update tabs UI
+    this.updateContentTabs();
+
+    // Switch to the new content view
+    this.switchContentView(contentType);
+
+    // Update URL
+    const newPath = buildContentPath(contentType);
+    this.updateUrl(newPath);
+
+    console.log(`📋 MainPanel: Opened new ${contentType} tab`);
   }
 }
 

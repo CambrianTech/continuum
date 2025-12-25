@@ -26,6 +26,12 @@ export interface StateContentSwitchResult extends CommandResult {
   readonly success: boolean;
   /** Current item ID after switching */
   readonly currentItemId: UUID;
+  /** Content type of the switched item (for browser-side event emission) */
+  readonly contentType?: string;
+  /** Entity ID (e.g., room UUID for chat content) */
+  readonly entityId?: string;
+  /** Title of the content item */
+  readonly title?: string;
   /** Error message if operation failed (e.g., item not found in openItems) */
   readonly error?: string;
 }

@@ -13,6 +13,10 @@ export interface TabInfo {
   label: string;
   active: boolean;
   closeable?: boolean;
+  /** Entity ID (e.g., room UUID for chat content) */
+  entityId?: string;
+  /** Content type (e.g., 'chat', 'settings') */
+  contentType?: string;
 }
 
 export class ContentTabsWidget extends BaseWidget {
@@ -168,31 +172,45 @@ export class ContentTabsWidget extends BaseWidget {
   }
 
   /**
-   * Setup event listeners for tabs
+   * Setup event listeners for tabs using event delegation
    */
   private setupEventListeners(): void {
-    // Tab click handlers
-    this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
-      tab.addEventListener('click', (event) => {
-        const target = event.target as HTMLElement;
+    // Use event delegation on the container for better reliability
+    const container = this.shadowRoot?.querySelector('.content-tabs-container');
+    if (!container) {
+      console.warn('📋 ContentTabsWidget: No container found for event delegation');
+      return;
+    }
 
-        // Check if close button was clicked
-        if (target.classList.contains('tab-close') || target.hasAttribute('data-close-tab')) {
-          const tabId = target.getAttribute('data-close-tab') ||
-                       (target.parentElement as HTMLElement)?.dataset.tabId;
-          if (tabId) {
-            this.handleTabClose(tabId);
-          }
-          event.stopPropagation();
-          return;
-        }
+    console.log('📋 ContentTabsWidget.setupEventListeners: Using event delegation on container');
 
-        // Handle tab selection
-        const tabId = (tab as HTMLElement).dataset.tabId;
+    container.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+      console.log('📋 ContentTabsWidget: Click in container, target:', target.tagName, target.className);
+
+      // Find the closest .content-tab ancestor
+      const tabElement = target.closest('.content-tab') as HTMLElement;
+      if (!tabElement) {
+        console.log('📋 ContentTabsWidget: Click was not on a tab');
+        return;
+      }
+
+      const tabId = tabElement.dataset.tabId;
+      console.log('📋 ContentTabsWidget: Found tab element with id:', tabId);
+
+      // Check if close button was clicked
+      if (target.classList.contains('tab-close') || target.hasAttribute('data-close-tab')) {
         if (tabId) {
-          this.handleTabClick(tabId);
+          this.handleTabClose(tabId);
         }
-      });
+        event.stopPropagation();
+        return;
+      }
+
+      // Handle tab selection
+      if (tabId) {
+        this.handleTabClick(tabId);
+      }
     });
   }
 
@@ -200,16 +218,30 @@ export class ContentTabsWidget extends BaseWidget {
    * Handle tab click
    */
   private handleTabClick(tabId: string): void {
-    console.log('📋 ContentTabsWidget: Tab clicked:', tabId);
+    // Find the full tab data
+    const tab = this.tabs.find(t => t.id === tabId);
+    if (!tab) {
+      console.warn('📋 ContentTabsWidget: Tab not found:', tabId);
+      return;
+    }
 
-    // Emit event for parent widget to handle navigation
-    Events.emit('tabs:clicked', { tabId });
+    console.log('📋 ContentTabsWidget: Tab clicked:', tabId, 'entityId:', tab.entityId, 'type:', tab.contentType);
 
-    // Also dispatch DOM event
+    // Emit event with full tab data for parent widget
+    const tabData = {
+      tabId: tab.id,
+      label: tab.label,
+      entityId: tab.entityId,
+      contentType: tab.contentType
+    };
+
+    Events.emit('tabs:clicked', tabData);
+
+    // Also dispatch DOM event with full tab data
     this.dispatchEvent(new CustomEvent('tab-clicked', {
       bubbles: true,
       composed: true,
-      detail: { tabId }
+      detail: tabData
     }));
   }
 

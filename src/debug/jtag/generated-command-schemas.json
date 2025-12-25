@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-24T21:08:31.550Z",
+  "generated": "2025-12-25T00:59:42.384Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1538,6 +1538,11 @@
           "type": "string",
           "required": false,
           "description": "innerSelector parameter"
+        },
+        "text": {
+          "type": "string",
+          "required": false,
+          "description": "text parameter"
         }
       }
     },

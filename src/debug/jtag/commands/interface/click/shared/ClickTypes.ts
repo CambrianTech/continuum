@@ -30,6 +30,7 @@ export interface ClickParams extends CommandParams {
   readonly timeout?: number;
   readonly shadowRoot?: boolean;  // For clicking elements inside widget shadow DOMs
   readonly innerSelector?: string;  // Selector for element inside widget's shadow root
+  readonly text?: string;  // Find element containing this text (searches in shadow DOM for widgets)
 }
 
 export const createClickParams = (

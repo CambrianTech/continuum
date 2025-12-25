@@ -9,13 +9,13 @@
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // Content state types for dynamic content management
-export type ContentType = 'chat' | 'document' | 'user-profile' | 'system-config' | 'widget-debug' | 'data-explorer' | 'browser';
+export type ContentType = 'chat' | 'document' | 'user-profile' | 'system-config' | 'widget-debug' | 'data-explorer' | 'browser' | 'settings' | 'help' | 'theme' | 'persona';
 export type ContentPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface ContentItem {
   id: UUID;
   type: ContentType;
-  entityId: UUID;           // ID of the entity being displayed (roomId, userId, etc.)
+  entityId?: UUID;          // ID of the entity being displayed (roomId, userId, etc.) - optional for singleton content like settings
   title: string;            // Display title for the tab/content
   subtitle?: string;        // Optional subtitle or status
   lastAccessedAt: Date;
@@ -170,11 +170,11 @@ export class UserStateEntity extends BaseEntity {
 
     // Validate each content item
     for (const item of this.contentState.openItems) {
-      if (!item.id || !item.type || !item.entityId || !item.title) {
-        return { success: false, error: 'UserState contentItem must have id, type, entityId, and title' };
+      if (!item.id || !item.type || !item.title) {
+        return { success: false, error: 'UserState contentItem must have id, type, and title' };
       }
 
-      const validTypes: ContentType[] = ['chat', 'document', 'user-profile', 'system-config', 'widget-debug', 'data-explorer', 'browser'];
+      const validTypes: ContentType[] = ['chat', 'document', 'user-profile', 'system-config', 'widget-debug', 'data-explorer', 'browser', 'settings', 'help', 'theme', 'persona'];
       if (!validTypes.includes(item.type)) {
         return { success: false, error: `UserState contentItem type must be one of: ${validTypes.join(', ')}` };
       }
