@@ -68,30 +68,35 @@ export class SettingsWidget extends BaseWidget {
   protected async renderWidget(): Promise<void> {
     const styles = `
       :host {
-        display: block;
+        display: flex;
+        width: 100%;
         height: 100%;
         overflow: hidden;
       }
 
       .settings-layout {
-        display: grid;
-        grid-template-columns: 1fr 350px;
+        display: flex;
+        flex: 1;
+        width: 100%;
         height: 100%;
         gap: 0;
       }
 
       .settings-main {
+        flex: 1;
         overflow-y: auto;
         padding: 24px;
+        min-width: 0;
       }
 
       .settings-assistant {
-        border-left: 1px solid rgba(0, 212, 255, 0.2);
+        flex-shrink: 0;
         height: 100%;
+        display: flex;
       }
 
       .settings-container {
-        max-width: 600px;
+        width: 100%;
       }
 
       .settings-header {
@@ -255,15 +260,14 @@ export class SettingsWidget extends BaseWidget {
         text-decoration: underline;
       }
 
-      @media (max-width: 900px) {
+      @media (max-width: 768px) {
         .settings-layout {
-          grid-template-columns: 1fr;
-          grid-template-rows: 1fr 300px;
+          flex-direction: column;
         }
 
         .settings-assistant {
-          border-left: none;
-          border-top: 1px solid rgba(0, 212, 255, 0.2);
+          height: 300px;
+          flex-shrink: 0;
         }
       }
     `;
