@@ -76,30 +76,35 @@ export class ThemeWidget extends BaseWidget {
 
     const styles = `
       :host {
-        display: block;
+        display: flex;
+        width: 100%;
         height: 100%;
         overflow: hidden;
       }
 
       .theme-layout {
-        display: grid;
-        grid-template-columns: 1fr 350px;
+        display: flex;
+        flex: 1;
+        width: 100%;
         height: 100%;
         gap: 0;
       }
 
       .theme-main {
+        flex: 1;
         overflow-y: auto;
-        padding: 24px;
+        padding: 20px 24px;
+        min-width: 0;
       }
 
       .theme-assistant {
-        border-left: 1px solid rgba(0, 212, 255, 0.2);
+        flex-shrink: 0;
         height: 100%;
+        display: flex;
       }
 
       .theme-container {
-        max-width: 600px;
+        width: 100%;
       }
 
       .theme-header {
@@ -219,15 +224,14 @@ export class ThemeWidget extends BaseWidget {
         color: rgba(255, 255, 255, 0.8);
       }
 
-      @media (max-width: 900px) {
+      @media (max-width: 768px) {
         .theme-layout {
-          grid-template-columns: 1fr;
-          grid-template-rows: 1fr 300px;
+          flex-direction: column;
         }
 
         .theme-assistant {
-          border-left: none;
-          border-top: 1px solid rgba(0, 212, 255, 0.2);
+          height: 300px;
+          flex-shrink: 0;
         }
       }
     `;

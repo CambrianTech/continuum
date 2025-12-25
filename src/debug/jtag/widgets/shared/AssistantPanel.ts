@@ -22,6 +22,12 @@ export interface AssistantPanelConfig {
   greeting?: string;
   /** Maximum messages to show */
   maxMessages?: number;
+  /** Panel title (default: "AI Assistant") */
+  title?: string;
+  /** Start collapsed */
+  startCollapsed?: boolean;
+  /** Panel width when expanded */
+  width?: string;
 }
 
 interface ChatMessage {
@@ -37,6 +43,7 @@ export class AssistantPanel {
   private config: AssistantPanelConfig;
   private messages: ChatMessage[] = [];
   private isLoading = false;
+  private isCollapsed = false;
   private unsubscribe?: () => void;
 
   private actualRoomId: string | null = null;
@@ -47,11 +54,39 @@ export class AssistantPanel {
       placeholder: 'Ask the AI assistant...',
       greeting: 'Hi! How can I help you?',
       maxMessages: 20,
+      title: 'AI Assistant',
+      startCollapsed: false,
+      width: '320px',
       ...config
     };
+    this.isCollapsed = this.config.startCollapsed || false;
     this.render();
     this.setupEventListeners();
     this.initializeRoom();
+  }
+
+  /** Toggle panel collapsed state */
+  toggle(): void {
+    this.isCollapsed = !this.isCollapsed;
+    const panel = this.container.querySelector('.assistant-panel') as HTMLElement;
+    if (panel) {
+      panel.classList.toggle('collapsed', this.isCollapsed);
+    }
+    // Update toggle button icon - » means "collapse", « means "expand"
+    const toggleBtn = this.container.querySelector('.toggle-btn');
+    if (toggleBtn) {
+      toggleBtn.textContent = this.isCollapsed ? '«' : '»';
+    }
+  }
+
+  /** Expand the panel */
+  expand(): void {
+    if (this.isCollapsed) this.toggle();
+  }
+
+  /** Collapse the panel */
+  collapse(): void {
+    if (!this.isCollapsed) this.toggle();
   }
 
   private async initializeRoom(): Promise<void> {
@@ -107,35 +142,90 @@ export class AssistantPanel {
   }
 
   private render(): void {
+    const width = this.config.width || '320px';
+
+    // Apply critical styles directly to container so it fills its parent
+    // This ensures AssistantPanel works in any context (ThemeWidget, SettingsWidget, etc.)
+    this.container.style.display = 'flex';
+    this.container.style.height = '100%';
+    this.container.style.flexShrink = '0';
+
     this.container.innerHTML = `
       <style>
         .assistant-panel {
           display: flex;
           flex-direction: column;
           height: 100%;
-          background: rgba(10, 15, 20, 0.95);
-          border: 1px solid rgba(0, 212, 255, 0.2);
-          border-radius: 8px;
+          width: ${width};
+          background: rgba(10, 15, 20, 0.98);
+          border-left: 1px solid rgba(0, 212, 255, 0.3);
+          transition: width 0.3s ease, opacity 0.3s ease;
           overflow: hidden;
         }
 
+        .assistant-panel.collapsed {
+          width: 48px;
+        }
+
+        .assistant-panel.collapsed .assistant-content,
+        .assistant-panel.collapsed .assistant-input-area,
+        .assistant-panel.collapsed .assistant-title-text {
+          opacity: 0;
+          pointer-events: none;
+        }
+
         .assistant-header {
-          padding: 12px 16px;
-          background: rgba(0, 212, 255, 0.1);
+          padding: 12px;
+          background: linear-gradient(180deg, rgba(0, 212, 255, 0.15) 0%, rgba(0, 212, 255, 0.05) 100%);
           border-bottom: 1px solid rgba(0, 212, 255, 0.2);
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 10px;
+          min-height: 48px;
+          flex-shrink: 0;
+        }
+
+        .toggle-btn {
+          width: 24px;
+          height: 24px;
+          background: rgba(0, 212, 255, 0.2);
+          border: 1px solid rgba(0, 212, 255, 0.3);
+          border-radius: 4px;
+          color: #00d4ff;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 10px;
+          transition: all 0.2s ease;
+          flex-shrink: 0;
+        }
+
+        .toggle-btn:hover {
+          background: rgba(0, 212, 255, 0.3);
+          border-color: #00d4ff;
         }
 
         .assistant-icon {
           font-size: 18px;
+          flex-shrink: 0;
         }
 
-        .assistant-title {
-          font-size: 14px;
+        .assistant-title-text {
+          font-size: 13px;
           font-weight: 600;
           color: #00d4ff;
+          white-space: nowrap;
+          overflow: hidden;
+          transition: opacity 0.2s ease;
+        }
+
+        .assistant-content {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          transition: opacity 0.2s ease;
         }
 
         .assistant-messages {
@@ -144,29 +234,49 @@ export class AssistantPanel {
           padding: 12px;
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 10px;
+        }
+
+        .assistant-messages::-webkit-scrollbar {
+          width: 6px;
+        }
+
+        .assistant-messages::-webkit-scrollbar-track {
+          background: rgba(0, 0, 0, 0.2);
+        }
+
+        .assistant-messages::-webkit-scrollbar-thumb {
+          background: rgba(0, 212, 255, 0.3);
+          border-radius: 3px;
+        }
+
+        .assistant-messages::-webkit-scrollbar-thumb:hover {
+          background: rgba(0, 212, 255, 0.5);
         }
 
         .assistant-message {
-          padding: 10px 14px;
+          padding: 10px 12px;
           border-radius: 8px;
-          font-size: 13px;
+          font-size: 12px;
           line-height: 1.5;
-          max-width: 90%;
+          max-width: 95%;
+          word-wrap: break-word;
         }
 
         .assistant-message.ai {
-          background: rgba(0, 212, 255, 0.1);
-          border: 1px solid rgba(0, 212, 255, 0.2);
+          background: rgba(0, 212, 255, 0.08);
+          border: 1px solid rgba(0, 212, 255, 0.15);
           color: rgba(255, 255, 255, 0.9);
           align-self: flex-start;
+          border-radius: 8px 8px 8px 2px;
         }
 
         .assistant-message.human {
-          background: rgba(100, 150, 200, 0.2);
-          border: 1px solid rgba(100, 150, 200, 0.3);
+          background: rgba(100, 150, 200, 0.15);
+          border: 1px solid rgba(100, 150, 200, 0.25);
           color: rgba(255, 255, 255, 0.9);
           align-self: flex-end;
+          border-radius: 8px 8px 2px 8px;
         }
 
         .assistant-message.system {
@@ -175,13 +285,16 @@ export class AssistantPanel {
           color: rgba(255, 200, 100, 0.9);
           align-self: center;
           font-style: italic;
+          font-size: 11px;
         }
 
         .message-author {
-          font-size: 11px;
+          font-size: 10px;
           font-weight: 600;
           color: rgba(0, 212, 255, 0.7);
           margin-bottom: 4px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
         }
 
         .assistant-input-area {
@@ -189,65 +302,78 @@ export class AssistantPanel {
           border-top: 1px solid rgba(0, 212, 255, 0.2);
           display: flex;
           gap: 8px;
+          background: rgba(0, 10, 15, 0.5);
+          flex-shrink: 0;
+          transition: opacity 0.2s ease;
         }
 
         .assistant-input {
           flex: 1;
-          padding: 10px 14px;
+          padding: 10px 12px;
           background: rgba(0, 10, 15, 0.8);
-          border: 1px solid rgba(0, 212, 255, 0.3);
+          border: 1px solid rgba(0, 212, 255, 0.25);
           border-radius: 6px;
           color: white;
-          font-size: 13px;
+          font-size: 12px;
           resize: none;
+          transition: border-color 0.2s ease;
         }
 
         .assistant-input:focus {
           outline: none;
           border-color: #00d4ff;
+          box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.1);
         }
 
         .assistant-input::placeholder {
-          color: rgba(255, 255, 255, 0.4);
+          color: rgba(255, 255, 255, 0.35);
         }
 
         .assistant-send {
-          padding: 10px 16px;
-          background: linear-gradient(135deg, #00d4ff, #0099cc);
+          padding: 10px 14px;
+          background: linear-gradient(135deg, #00d4ff, #0088cc);
           border: none;
           border-radius: 6px;
           color: white;
-          font-weight: 500;
+          font-weight: 600;
+          font-size: 12px;
           cursor: pointer;
           transition: all 0.2s ease;
+          flex-shrink: 0;
         }
 
         .assistant-send:hover {
           background: linear-gradient(135deg, #00e5ff, #00aadd);
+          transform: translateY(-1px);
+        }
+
+        .assistant-send:active {
+          transform: translateY(0);
         }
 
         .assistant-send:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+          transform: none;
         }
 
         .loading-indicator {
           display: flex;
           align-items: center;
           gap: 8px;
-          padding: 8px 14px;
+          padding: 8px 12px;
           color: rgba(0, 212, 255, 0.7);
-          font-size: 12px;
+          font-size: 11px;
         }
 
         .loading-dots {
           display: flex;
-          gap: 4px;
+          gap: 3px;
         }
 
         .loading-dots span {
-          width: 6px;
-          height: 6px;
+          width: 5px;
+          height: 5px;
           border-radius: 50%;
           background: #00d4ff;
           animation: bounce 1.4s infinite ease-in-out;
@@ -262,27 +388,32 @@ export class AssistantPanel {
         }
       </style>
 
-      <div class="assistant-panel">
+      <div class="assistant-panel ${this.isCollapsed ? 'collapsed' : ''}">
         <div class="assistant-header">
+          <button class="toggle-btn" id="toggle-panel" title="Toggle panel">
+            ${this.isCollapsed ? '«' : '»'}
+          </button>
           <span class="assistant-icon">🤖</span>
-          <span class="assistant-title">AI Assistant</span>
+          <span class="assistant-title-text">${this.config.title}</span>
         </div>
-        <div class="assistant-messages" id="assistant-messages">
-          ${this.config.greeting ? `
-            <div class="assistant-message ai">
-              <div class="message-author">Assistant</div>
-              ${this.config.greeting}
-            </div>
-          ` : ''}
-        </div>
-        <div class="assistant-input-area">
-          <input
-            type="text"
-            class="assistant-input"
-            id="assistant-input"
-            placeholder="${this.config.placeholder}"
-          />
-          <button class="assistant-send" id="assistant-send">Send</button>
+        <div class="assistant-content">
+          <div class="assistant-messages" id="assistant-messages">
+            ${this.config.greeting ? `
+              <div class="assistant-message ai">
+                <div class="message-author">Assistant</div>
+                ${this.config.greeting}
+              </div>
+            ` : ''}
+          </div>
+          <div class="assistant-input-area">
+            <input
+              type="text"
+              class="assistant-input"
+              id="assistant-input"
+              placeholder="${this.config.placeholder}"
+            />
+            <button class="assistant-send" id="assistant-send">Send</button>
+          </div>
         </div>
       </div>
     `;
@@ -291,6 +422,7 @@ export class AssistantPanel {
   private setupEventListeners(): void {
     const input = this.container.querySelector('#assistant-input') as HTMLInputElement;
     const sendBtn = this.container.querySelector('#assistant-send') as HTMLButtonElement;
+    const toggleBtn = this.container.querySelector('#toggle-panel') as HTMLButtonElement;
 
     sendBtn?.addEventListener('click', () => this.sendMessage());
     input?.addEventListener('keypress', (e) => {
@@ -299,6 +431,9 @@ export class AssistantPanel {
         this.sendMessage();
       }
     });
+
+    // Toggle panel collapse/expand
+    toggleBtn?.addEventListener('click', () => this.toggle());
 
     // Event subscription moved to initializeRoom() after room lookup
   }
