@@ -16,6 +16,8 @@ export interface ConfigEntry {
   isConfigured?: boolean;
   getKeyUrl?: string;
   billingUrl?: string;
+  /** Masked key preview like "sk-...QfQA" */
+  maskedKey?: string;
 }
 
 const STATUS_MESSAGES: Record<TestStatus, { icon: string; label: string }> = {
@@ -71,7 +73,7 @@ export class ProviderEntry {
             data-key="${entry.key}"
             data-provider="${entry.provider.toLowerCase()}"
             value="${pendingValue ?? entry.value}"
-            placeholder="${isConfigured ? '••••••••••••••••' : (entry.isSecret ? 'Enter API key...' : 'Enter URL...')}"
+            placeholder="${isConfigured ? (entry.maskedKey || '••••••••') : (entry.isSecret ? 'Enter API key...' : 'Enter URL...')}"
           />
           ${this.renderTestButton()}
         </div>

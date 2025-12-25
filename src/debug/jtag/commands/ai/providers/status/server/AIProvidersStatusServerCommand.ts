@@ -91,18 +91,41 @@ export class AIProvidersStatusServerCommand extends AIProvidersStatusCommand {
     super('ai/providers/status', context, subpath, commander);
   }
 
+  /**
+   * Mask a key to show prefix and suffix only, e.g. "sk-...QfQA"
+   */
+  private maskKey(key: string): string {
+    if (!key || key.length < 8) return '***';
+
+    // Find prefix (up to first dash or 4 chars)
+    const dashIndex = key.indexOf('-');
+    const prefixEnd = dashIndex > 0 && dashIndex < 6 ? dashIndex + 1 : 4;
+    const prefix = key.slice(0, prefixEnd);
+
+    // Show last 4 chars
+    const suffix = key.slice(-4);
+
+    return `${prefix}...${suffix}`;
+  }
+
   async execute(params: JTAGPayload): Promise<AIProvidersStatusResult> {
     const secrets = SecretManager.getInstance();
 
-    const providers: ProviderStatus[] = PROVIDER_CONFIG.map(config => ({
-      provider: config.provider,
-      key: config.key,
-      category: config.category,
-      description: config.description,
-      isConfigured: secrets.has(config.key),
-      getKeyUrl: config.getKeyUrl,
-      billingUrl: config.billingUrl
-    }));
+    const providers: ProviderStatus[] = PROVIDER_CONFIG.map(config => {
+      const isConfigured = secrets.has(config.key);
+      const rawKey = isConfigured ? secrets.get(config.key) : undefined;
+
+      return {
+        provider: config.provider,
+        key: config.key,
+        category: config.category,
+        description: config.description,
+        isConfigured,
+        getKeyUrl: config.getKeyUrl,
+        billingUrl: config.billingUrl,
+        maskedKey: rawKey ? this.maskKey(rawKey) : undefined
+      };
+    });
 
     const configuredCount = providers.filter(p => p.isConfigured).length;
 

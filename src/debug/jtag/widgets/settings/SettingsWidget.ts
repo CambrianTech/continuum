@@ -61,7 +61,8 @@ export class SettingsWidget extends BaseWidget {
           description: p.description,
           isConfigured: p.isConfigured,
           getKeyUrl: p.getKeyUrl,
-          billingUrl: p.billingUrl
+          billingUrl: p.billingUrl,
+          maskedKey: p.maskedKey
         }));
       } else {
         this.configEntries = this.getDefaultConfigEntries();

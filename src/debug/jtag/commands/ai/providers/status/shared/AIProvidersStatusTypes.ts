@@ -19,6 +19,8 @@ export interface ProviderStatus {
   description: string;
   getKeyUrl?: string;
   billingUrl?: string;
+  /** Masked key preview like "sk-...QfQA" - safe to display */
+  maskedKey?: string;
 }
 
 export interface AIProvidersStatusResult extends CommandResult {
