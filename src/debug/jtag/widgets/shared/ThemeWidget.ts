@@ -43,54 +43,35 @@ export class ThemeWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎨 ThemeWidget: Initializing with dynamic theme discovery...');
+    console.log('🎨 ThemeWidget: Initializing...');
 
     try {
-      // Discover all available themes dynamically (like widget/command discovery)
+      // Discover all available themes dynamically
       await this.themeDiscovery.discoverThemes();
 
-      // Load current theme using dynamic system
-      const themeResult = await this.themeDiscovery.loadTheme(this.currentTheme);
+      // Get saved theme from localStorage (single source of truth)
+      const savedTheme = LocalStorageStateManager.isAvailable()
+        ? LocalStorageStateManager.getTheme()
+        : null;
 
-      if (themeResult.success) {
-        // Inject theme CSS into document head for global access
-        await this.injectThemeIntoDocumentHead(themeResult.cssContent);
-        console.log('✅ ThemeWidget: Dynamic theme system initialized successfully');
-      } else {
-        console.error('❌ ThemeWidget: Failed to load theme:', themeResult.error);
-        // Fallback: try loading base theme manually if discovery fails
-        console.log('🎨 ThemeWidget: Attempting fallback base theme loading...');
-        await this.setTheme('base');
-      }
+      this.currentTheme = savedTheme || 'base';
+      console.log(`🎨 ThemeWidget: Using theme '${this.currentTheme}' from localStorage`);
+
     } catch (error) {
       console.error('❌ ThemeWidget: Theme discovery failed:', error);
-      // Fallback: try loading base theme manually if discovery fails completely
-      console.log('🎨 ThemeWidget: Attempting fallback base theme loading after error...');
-      try {
-        await this.setTheme('base');
-      } catch (fallbackError) {
-        console.error('❌ ThemeWidget: Even fallback theme loading failed:', fallbackError);
-      }
+      this.currentTheme = 'base';
     }
 
-    console.log('✅ ThemeWidget: BaseWidget initialization complete');
+    console.log('✅ ThemeWidget: Initialization complete');
   }
 
   protected async renderWidget(): Promise<void> {
-    console.log('🎨 ThemeWidget: renderWidget() called');
+    console.log(`🎨 ThemeWidget: renderWidget() - currentTheme: ${this.currentTheme}`);
 
-    // Load saved theme from UserState or fallback to base theme
+    // Load theme CSS if not already in DOM (uses this.currentTheme set from localStorage in init)
     if (!this.themeStyleElement) {
-      console.log('🎨 ThemeWidget: Loading theme on initial render');
-      try {
-        const savedTheme = await this.loadThemeFromUserState();
-        const themeToLoad = savedTheme || 'base';
-        console.log(`🎨 ThemeWidget: Loading theme '${themeToLoad}' (saved: ${savedTheme})`);
-        await this.setTheme(themeToLoad);
-      } catch (error) {
-        console.error('❌ ThemeWidget: Failed to load theme, falling back to base:', error);
-        await this.setTheme('base');
-      }
+      console.log(`🎨 ThemeWidget: Loading theme '${this.currentTheme}' CSS`);
+      await this.setTheme(this.currentTheme);
     }
 
     const styles = `
@@ -328,12 +309,11 @@ export class ThemeWidget extends BaseWidget {
     // Clean up assistant panel
     this.assistantPanel?.destroy();
 
-    // Remove theme CSS when widget is destroyed
-    if (this.themeStyleElement) {
-      this.themeStyleElement.remove();
-      this.themeStyleElement = null;
-    }
-    console.log('✅ ThemeWidget: Cleanup complete');
+    // KEEP theme CSS in document.head - it should persist across tab changes
+    // Just clear our reference so we can re-acquire it on next init
+    this.themeStyleElement = null;
+
+    console.log('✅ ThemeWidget: Cleanup complete (theme CSS preserved in document.head)');
   }
 
   /**
@@ -365,26 +345,24 @@ export class ThemeWidget extends BaseWidget {
 
   /**
    * Inject theme CSS into document head for global widget access
-   * Removes existing theme styles and adds new ones
+   * Updates existing theme style or creates new one
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
-      console.log('🎨 ThemeWidget: Injecting theme CSS into document head for global access...');
+      console.log('🎨 ThemeWidget: Injecting theme CSS into document head...');
 
-      // Remove existing theme style element
-      if (this.themeStyleElement) {
-        this.themeStyleElement.remove();
-        this.themeStyleElement = null;
-      }
+      // Check for existing theme style elements in DOM (may exist from previous widget instance)
+      const existingStyles = document.querySelectorAll('style[id^="jtag-theme-"]');
+      existingStyles.forEach(el => el.remove());
 
-      // Create new theme style element and inject into document head
+      // Create new theme style element
       this.themeStyleElement = document.createElement('style');
       this.themeStyleElement.id = `jtag-theme-${this.currentTheme}`;
       this.themeStyleElement.textContent = combinedCSS;
 
       document.head.appendChild(this.themeStyleElement);
 
-      console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected into document head (${combinedCSS.length} chars)`);
+      console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
 
       // Dispatch theme change event
       this.dispatchEvent(new CustomEvent('theme-changed', {
@@ -393,7 +371,7 @@ export class ThemeWidget extends BaseWidget {
       }));
 
     } catch (error) {
-      console.error('❌ ThemeWidget: Failed to inject theme CSS into document head:', error);
+      console.error('❌ ThemeWidget: Failed to inject theme CSS:', error);
       throw error;
     }
   }
