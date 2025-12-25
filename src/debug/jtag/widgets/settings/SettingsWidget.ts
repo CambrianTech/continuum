@@ -24,11 +24,21 @@ interface ConfigEntry {
   billingUrl?: string;
 }
 
+type TestStatus = 'idle' | 'testing' | 'operational' | 'invalid' | 'out-of-funds' | 'rate-limited' | 'error';
+
+interface ProviderTestResult {
+  status: TestStatus;
+  message?: string;
+  responseTime?: number;
+}
+
 export class SettingsWidget extends BaseWidget {
   private configEntries: ConfigEntry[] = [];
   private isLoading = true;
   private saveStatus: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
   private assistantPanel?: AssistantPanel;
+  private testResults: Map<string, ProviderTestResult> = new Map();
+  private pendingChanges: Map<string, string> = new Map(); // Track changed keys before save
 
   constructor() {
     super({
@@ -370,6 +380,104 @@ export class SettingsWidget extends BaseWidget {
         border-color: rgba(0, 212, 255, 0.5);
       }
 
+      .input-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .input-row .config-input {
+        flex: 1;
+      }
+
+      .btn-test {
+        padding: 10px 16px;
+        background: rgba(0, 212, 255, 0.1);
+        border: 1px solid rgba(0, 212, 255, 0.3);
+        border-radius: 4px;
+        color: #00d4ff;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .btn-test:hover {
+        background: rgba(0, 212, 255, 0.2);
+        border-color: rgba(0, 212, 255, 0.5);
+      }
+
+      .btn-test:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .btn-test.testing {
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      .test-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 4px;
+      }
+
+      .test-status.operational {
+        background: rgba(0, 255, 100, 0.1);
+        color: #00ff64;
+      }
+
+      .test-status.invalid {
+        background: rgba(255, 50, 50, 0.1);
+        color: #ff5050;
+      }
+
+      .test-status.out-of-funds {
+        background: rgba(255, 200, 50, 0.1);
+        color: #ffc832;
+      }
+
+      .test-status.rate-limited {
+        background: rgba(255, 150, 50, 0.1);
+        color: #ff9632;
+      }
+
+      .test-status.error {
+        background: rgba(255, 50, 50, 0.1);
+        color: #ff5050;
+      }
+
+      .test-status.testing {
+        background: rgba(0, 212, 255, 0.1);
+        color: #00d4ff;
+      }
+
+      .response-time {
+        opacity: 0.6;
+        font-size: 11px;
+      }
+
+      .status-action {
+        margin-left: 8px;
+        color: #00d4ff;
+        text-decoration: none;
+        font-size: 11px;
+      }
+
+      .status-action:hover {
+        text-decoration: underline;
+      }
+
+      .status-action-hint {
+        margin-left: 8px;
+        opacity: 0.7;
+        font-size: 11px;
+      }
+
       @media (max-width: 768px) {
         .settings-layout {
           flex-direction: column;
@@ -390,6 +498,8 @@ export class SettingsWidget extends BaseWidget {
       const isConfigured = entry.isConfigured ?? false;
       const statusClass = isConfigured ? 'status-configured' : 'status-not-set';
       const statusText = isConfigured ? '✓ Configured' : '○ Not set';
+      const testResult = this.testResults.get(entry.key);
+      const hasPendingChange = this.pendingChanges.has(entry.key);
 
       // Build action links
       const links: string[] = [];
@@ -401,8 +511,57 @@ export class SettingsWidget extends BaseWidget {
       }
       const linksHtml = links.length > 0 ? `<span class="provider-links">${links.join(' ')}</span>` : '';
 
+      // Test button for cloud providers
+      const showTestButton = entry.category === 'cloud';
+      const isTesting = testResult?.status === 'testing';
+      const testButtonHtml = showTestButton ? `
+        <button class="btn-test ${isTesting ? 'testing' : ''}"
+                data-provider="${entry.provider.toLowerCase()}"
+                data-key="${entry.key}"
+                ${isTesting ? 'disabled' : ''}>
+          ${isTesting ? 'Testing...' : 'Test'}
+        </button>
+      ` : '';
+
+      // Test status display with action links
+      const renderTestStatus = () => {
+        if (!testResult || testResult.status === 'idle') return '';
+
+        const statusMessages: Record<TestStatus, { icon: string; label: string }> = {
+          'idle': { icon: '', label: '' },
+          'testing': { icon: '⏳', label: 'Testing connection...' },
+          'operational': { icon: '✓', label: 'Operational' },
+          'invalid': { icon: '✗', label: 'Invalid key' },
+          'out-of-funds': { icon: '⚠', label: 'Out of funds' },
+          'rate-limited': { icon: '⏱', label: 'Rate limited' },
+          'error': { icon: '✗', label: 'Connection error' }
+        };
+
+        const { icon, label } = statusMessages[testResult.status];
+        const responseTimeHtml = testResult.responseTime ?
+          `<span class="response-time">(${testResult.responseTime}ms)</span>` : '';
+
+        // Build action link based on status
+        let actionHtml = '';
+        if (testResult.status === 'out-of-funds' && entry.billingUrl) {
+          actionHtml = `<a href="${entry.billingUrl}" target="_blank" class="status-action">Add funds →</a>`;
+        } else if (testResult.status === 'invalid' && entry.getKeyUrl) {
+          actionHtml = `<a href="${entry.getKeyUrl}" target="_blank" class="status-action">Get new key →</a>`;
+        } else if (testResult.status === 'rate-limited') {
+          actionHtml = `<span class="status-action-hint">Try again in a few minutes</span>`;
+        }
+
+        return `
+          <div class="test-status ${testResult.status}">
+            <span>${icon} ${label}</span>
+            ${responseTimeHtml}
+            ${actionHtml}
+          </div>
+        `;
+      };
+
       return `
-        <div class="config-entry">
+        <div class="config-entry" data-entry-key="${entry.key}">
           <div class="provider-header">
             <span class="provider-name">${entry.provider}</span>
             <div class="provider-actions">
@@ -414,13 +573,18 @@ export class SettingsWidget extends BaseWidget {
             <span class="config-key">${entry.key}</span>
             <span class="config-description">${entry.description || ''}</span>
           </div>
-          <input
-            type="${entry.isSecret ? 'password' : 'text'}"
-            class="config-input"
-            data-key="${entry.key}"
-            value="${entry.value}"
-            placeholder="${isConfigured ? '••••••••••••••••' : (entry.isSecret ? 'Enter API key...' : 'Enter URL...')}"
-          />
+          <div class="input-row">
+            <input
+              type="${entry.isSecret ? 'password' : 'text'}"
+              class="config-input"
+              data-key="${entry.key}"
+              data-provider="${entry.provider.toLowerCase()}"
+              value="${hasPendingChange ? this.pendingChanges.get(entry.key) : entry.value}"
+              placeholder="${isConfigured ? '••••••••••••••••' : (entry.isSecret ? 'Enter API key...' : 'Enter URL...')}"
+            />
+            ${testButtonHtml}
+          </div>
+          ${renderTestStatus()}
         </div>
       `;
     };
@@ -514,36 +678,195 @@ export class SettingsWidget extends BaseWidget {
 
     // Track changes in inputs
     this.shadowRoot?.querySelectorAll('.config-input').forEach(input => {
-      input.addEventListener('change', (e) => {
+      input.addEventListener('input', (e) => {
         const target = e.target as HTMLInputElement;
         const key = target.dataset.key;
-        if (key) {
-          const entry = this.configEntries.find(e => e.key === key);
-          if (entry) {
-            entry.value = target.value;
-          }
+        if (key && target.value) {
+          this.pendingChanges.set(key, target.value);
+          // Clear previous test result when key changes
+          this.testResults.delete(key);
+        } else if (key) {
+          this.pendingChanges.delete(key);
         }
         this.saveStatus = 'idle';
       });
     });
+
+    // Test button click handlers
+    this.shadowRoot?.querySelectorAll('.btn-test').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const target = e.target as HTMLButtonElement;
+        const provider = target.dataset.provider;
+        const key = target.dataset.key;
+        if (provider && key) {
+          await this.testApiKey(provider, key);
+        }
+      });
+    });
+  }
+
+  private async testApiKey(provider: string, key: string): Promise<void> {
+    // Get the key value - either from pending changes or input
+    const input = this.shadowRoot?.querySelector(`input[data-key="${key}"]`) as HTMLInputElement;
+    const keyValue = this.pendingChanges.get(key) || input?.value;
+
+    if (!keyValue || keyValue.startsWith('••••')) {
+      // No new key to test - check if already configured
+      const entry = this.configEntries.find(e => e.key === key);
+      if (!entry?.isConfigured) {
+        this.testResults.set(key, {
+          status: 'error',
+          message: 'Enter a key to test'
+        });
+        this.renderWidget();
+        return;
+      }
+      // For configured keys without a new value, we can't test (we don't have the value)
+      this.testResults.set(key, {
+        status: 'error',
+        message: 'Enter new key to test'
+      });
+      this.renderWidget();
+      return;
+    }
+
+    // Set testing status
+    this.testResults.set(key, { status: 'testing' });
+    this.renderWidget();
+
+    try {
+      // Cast params to avoid TypeScript strict checking for dynamic command
+      const result = await Commands.execute('ai/key/test', {
+        provider,
+        key: keyValue
+      } as any) as any;
+
+      if (result?.valid) {
+        this.testResults.set(key, {
+          status: 'operational',
+          responseTime: result.responseTime,
+          message: result.models?.length ? `${result.models.length} models available` : undefined
+        });
+      } else {
+        // Parse error to determine status
+        const status = this.parseErrorStatus(result?.errorMessage || '');
+        this.testResults.set(key, {
+          status,
+          responseTime: result?.responseTime,
+          message: result?.errorMessage
+        });
+      }
+    } catch (error) {
+      this.testResults.set(key, {
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Test failed'
+      });
+    }
+
+    this.renderWidget();
+  }
+
+  private parseErrorStatus(errorMessage: string): TestStatus {
+    const lowerError = errorMessage.toLowerCase();
+
+    if (lowerError.includes('insufficient') || lowerError.includes('billing') ||
+        lowerError.includes('funds') || lowerError.includes('quota') ||
+        lowerError.includes('credit') || lowerError.includes('payment')) {
+      return 'out-of-funds';
+    }
+
+    if (lowerError.includes('rate') || lowerError.includes('limit') ||
+        lowerError.includes('too many') || lowerError.includes('429')) {
+      return 'rate-limited';
+    }
+
+    if (lowerError.includes('invalid') || lowerError.includes('unauthorized') ||
+        lowerError.includes('authentication') || lowerError.includes('401') ||
+        lowerError.includes('incorrect')) {
+      return 'invalid';
+    }
+
+    return 'error';
   }
 
   private async saveConfig(): Promise<void> {
+    // Check if there are any pending changes that haven't been tested
+    const untestedChanges: string[] = [];
+    const failedTests: string[] = [];
+
+    for (const [key] of this.pendingChanges) {
+      const testResult = this.testResults.get(key);
+      if (!testResult || testResult.status === 'idle') {
+        untestedChanges.push(key);
+      } else if (testResult.status !== 'operational') {
+        failedTests.push(key);
+      }
+    }
+
+    if (untestedChanges.length > 0) {
+      // Auto-test untested keys before saving
+      this.saveStatus = 'saving';
+      this.renderWidget();
+
+      for (const key of untestedChanges) {
+        const entry = this.configEntries.find(e => e.key === key);
+        if (entry) {
+          await this.testApiKey(entry.provider.toLowerCase(), key);
+        }
+      }
+
+      // Re-check for failures after testing
+      failedTests.length = 0;
+      for (const [key] of this.pendingChanges) {
+        const testResult = this.testResults.get(key);
+        if (testResult && testResult.status !== 'operational') {
+          failedTests.push(key);
+        }
+      }
+    }
+
+    if (failedTests.length > 0) {
+      this.saveStatus = 'error';
+      console.log('Settings: Cannot save - some keys failed validation:', failedTests);
+      this.renderWidget();
+      return;
+    }
+
     this.saveStatus = 'saving';
     this.renderWidget();
 
     try {
-      // TODO: Implement system/config/save command
+      // Build config from validated pending changes
       const config: Record<string, string> = {};
-      for (const entry of this.configEntries) {
-        if (entry.value) {
-          config[entry.key] = entry.value;
+      for (const [key, value] of this.pendingChanges) {
+        if (value) {
+          config[key] = value;
         }
       }
+
+      if (Object.keys(config).length === 0) {
+        this.saveStatus = 'saved';
+        console.log('Settings: No changes to save');
+        this.renderWidget();
+        return;
+      }
+
       console.log('Settings: Would save config:', Object.keys(config));
 
-      // Simulate save delay
+      // TODO: Implement system/config/save command to write to ~/.continuum/config.env
+      // For now, simulate save
       await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Clear pending changes after successful save
+      this.pendingChanges.clear();
+
+      // Update entry status to reflect saved keys
+      for (const key of Object.keys(config)) {
+        const entry = this.configEntries.find(e => e.key === key);
+        if (entry) {
+          entry.isConfigured = true;
+        }
+      }
 
       this.saveStatus = 'saved';
       console.log('Settings: Configuration saved (stub)');
