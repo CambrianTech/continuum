@@ -64,12 +64,12 @@ export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
     defaultTitle: 'Help',
   },
 
-  // Persona details/editor
+  // Persona brain/cognitive view
   persona: {
-    widget: 'persona-widget',
+    widget: 'persona-brain-widget',
     displayName: 'Persona',
     pathPrefix: '/persona',
-    requiresEntity: true,  // Needs userId
+    requiresEntity: true,  // Needs userId (uniqueId)
   },
 
   // Web browser (collaborative)
