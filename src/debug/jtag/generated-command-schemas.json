@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-25T05:17:30.230Z",
+  "generated": "2025-12-25T05:42:43.030Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4086,6 +4086,22 @@
           "type": "boolean",
           "required": false,
           "description": "allowFallback parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/key/test",
+      "description": "Ai Key Test Command - Shared Types\n *\n * Test an API key before saving it. Makes a minimal API call to verify the key is valid and has sufficient permissions.",
+      "params": {
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
+        },
+        "key": {
+          "type": "string",
+          "required": true,
+          "description": "key parameter"
         }
       }
     },

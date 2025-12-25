@@ -31,6 +31,7 @@ export const COMMANDS = {
   AI_EMBEDDING_GENERATE: 'ai/embedding/generate',
   AI_GENERATE: 'ai/generate',
   AI_GENOME_STATS: 'ai/genome/stats',
+  AI_KEY_TEST: 'ai/key/test',
   AI_MODEL_FIND: 'ai/model/find',
   AI_MODEL_LIST: 'ai/model/list',
   AI_MUTE: 'ai/mute',

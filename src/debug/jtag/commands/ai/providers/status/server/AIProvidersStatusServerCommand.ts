@@ -5,11 +5,12 @@
  * Returns status only - NEVER exposes actual key values to browser.
  */
 
-import { CommandBase, type ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
-import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
+import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { AIProvidersStatusParams, AIProvidersStatusResult, ProviderStatus } from '../shared/AIProvidersStatusTypes';
-import { SecretManager } from '../../../../../system/secrets/SecretManager';
+import { AIProvidersStatusCommand } from '../shared/AIProvidersStatusCommand';
+import { SecretManager } from '@system/secrets/SecretManager';
 
 // Provider configuration with helpful links
 const PROVIDER_CONFIG: Array<{
@@ -85,10 +86,7 @@ const PROVIDER_CONFIG: Array<{
   }
 ];
 
-export class AIProvidersStatusServerCommand extends CommandBase<
-  AIProvidersStatusParams,
-  AIProvidersStatusResult
-> {
+export class AIProvidersStatusServerCommand extends AIProvidersStatusCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('ai/providers/status', context, subpath, commander);
   }

@@ -5,7 +5,7 @@
  * Safe to call from browser - only returns boolean status.
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
 
 export interface AIProvidersStatusParams extends CommandParams {
   // No additional params needed - returns all provider statuses

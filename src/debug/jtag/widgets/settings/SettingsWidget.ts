@@ -53,9 +53,12 @@ export class SettingsWidget extends BaseWidget {
 
     // Get actual provider status from server (checks ~/.continuum/config.env)
     try {
+      console.log('Settings: Calling ai/providers/status...');
       const result = await Commands.execute('ai/providers/status', {}) as any;
+      console.log('Settings: Got result:', result);
 
       if (result?.providers) {
+        console.log('Settings: Found providers:', result.providers.length);
         // Map server response to config entries
         this.configEntries = result.providers.map((p: any) => ({
           key: p.key,
@@ -68,12 +71,14 @@ export class SettingsWidget extends BaseWidget {
           getKeyUrl: p.getKeyUrl,
           billingUrl: p.billingUrl
         }));
+        console.log('Settings: Mapped entries, configured count:', this.configEntries.filter(e => e.isConfigured).length);
       } else {
+        console.log('Settings: No providers in result, using defaults');
         // Fallback to defaults if command fails
         this.configEntries = this.getDefaultConfigEntries();
       }
     } catch (error) {
-      console.warn('Settings: Failed to load provider status, using defaults:', error);
+      console.error('Settings: Error loading provider status:', error);
       this.configEntries = this.getDefaultConfigEntries();
     }
 
