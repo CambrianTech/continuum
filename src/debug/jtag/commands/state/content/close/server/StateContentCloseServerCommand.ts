@@ -62,7 +62,7 @@ export class StateContentCloseServerCommand extends CommandBase<StateContentClos
       });
 
       // 4. Emit content:closed event for widgets to respond to
-      await Events.emit('content:closed', {
+      await Events.emit(this.context, 'content:closed', {
         contentItemId: params.contentItemId,
         userId: params.userId,
         currentItemId: userState.contentState.currentItemId

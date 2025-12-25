@@ -71,7 +71,7 @@ export class StateContentSwitchServerCommand extends CommandBase<StateContentSwi
       });
 
       // 4. Emit content:switched event for widgets to respond to
-      await Events.emit('content:switched', {
+      await Events.emit(this.context, 'content:switched', {
         contentItemId: params.contentItemId,
         userId: params.userId,
         currentItemId: userState.contentState.currentItemId

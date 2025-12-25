@@ -36,28 +36,22 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
    * TODO: Move to database, make configurable by "org chart manager" persona
    */
   private readonly ROUTING_RULES: SmartRoutingRule[] = [
-    // Everyone joins general (Discord-style)
+    // Everyone joins all public rooms (Discord-style server with multiple channels)
     {
-      rooms: [ROOM_UNIQUE_IDS.GENERAL]
+      rooms: [
+        ROOM_UNIQUE_IDS.GENERAL,
+        ROOM_UNIQUE_IDS.ACADEMY,
+        ROOM_UNIQUE_IDS.DEV_UPDATES,
+        ROOM_UNIQUE_IDS.HELP
+      ]
     },
-    // SOTA PersonaUsers join Pantheon (elite multi-provider collaboration)
+    // SOTA PersonaUsers also join Pantheon (elite multi-provider collaboration)
     // These are cloud-provider PersonaUsers with top-tier models
     {
       userType: 'persona',
       capabilities: ['sota'],
       rooms: [ROOM_UNIQUE_IDS.PANTHEON]
-    },
-    // Future examples (commented out for now):
-    // {
-    //   userType: 'persona',
-    //   capabilities: ['code-generation'],
-    //   rooms: [ROOM_UNIQUE_IDS.CODE_ROOM]
-    // },
-    // {
-    //   userType: 'persona',
-    //   capabilities: ['research'],
-    //   rooms: [ROOM_UNIQUE_IDS.RESEARCH_ROOM]
-    // }
+    }
   ];
 
   constructor(context: JTAGContext, router: JTAGRouter) {
@@ -137,6 +131,13 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
    */
   private async handleUserCreated(userEntity: UserEntity): Promise<void> {
     this.log.info(`🔔 RoomMembershipDaemon: handleUserCreated CALLED for ${userEntity.displayName} (id=${userEntity.id})`);
+
+    // CRITICAL: Validate user entity has valid id before processing
+    if (!userEntity?.id) {
+      this.log.error(`❌ RoomMembershipDaemon: Received user without valid ID: ${JSON.stringify(userEntity)}. Skipping.`);
+      return;
+    }
+
     try {
       const roomsToJoin = this.determineRoomsForUser(userEntity);
       this.log.info(`🔔 RoomMembershipDaemon: Determined ${roomsToJoin.length} rooms for ${userEntity.displayName}: ${roomsToJoin.join(', ')}`);
@@ -192,6 +193,12 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     displayName: string,
     roomUniqueIds: string[]
   ): Promise<void> {
+    // CRITICAL: Validate userId before adding to any room
+    if (!userId) {
+      this.log.error(`❌ RoomMembershipDaemon: Cannot add user "${displayName}" - userId is ${userId}. Skipping.`);
+      return;
+    }
+
     for (const roomUniqueId of roomUniqueIds) {
       try {
         // Query for room
