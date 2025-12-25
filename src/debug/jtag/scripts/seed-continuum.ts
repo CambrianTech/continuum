@@ -824,7 +824,20 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom];
+      const themeRoom = createRoom(
+        ROOM_IDS.THEME,
+        'theme',
+        'Theme',
+        'Design and customize your visual experience with AI assistance',
+        "Get help designing themes, choosing colors, and customizing your workspace appearance",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["theme", "design", "customization", "appearance", "system"],  // 'system' tag = hidden from rooms list
+        humanUser.id,
+        'theme'  // recipe: theme-focused room with Helper AI
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);

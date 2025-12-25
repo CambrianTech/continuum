@@ -281,11 +281,6 @@ export class MainWidget extends BaseWidget {
     console.log(`📋 MainPanel: Closed tab "${contentItem.title}"`);
   }
 
-  private openThemeTab(): void {
-    // Show theme modal/overlay instead of switching tabs
-    this.showThemeModal();
-  }
-
   private switchToTab(tabName: string): void {
     // Remove active class from all tabs
     this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
@@ -309,120 +304,6 @@ export class MainWidget extends BaseWidget {
     // Content view always shows chat for now
     // Theme is handled via modal, not content switching
     contentView.innerHTML = '<chat-widget></chat-widget>';
-  }
-
-  private showThemeModal(): void {
-    // Remove existing dropdown
-    const existingDropdown = this.shadowRoot?.querySelector('.theme-slide-panel');
-    if (existingDropdown) {
-      existingDropdown.remove();
-      return; // Toggle behavior - close if already open
-    }
-
-    // Create slide-down panel from the top
-    const slidePanel = document.createElement('div');
-    slidePanel.className = 'theme-slide-panel';
-    slidePanel.innerHTML = `
-      <theme-widget></theme-widget>
-    `;
-
-    // Add fast smooth slide-down styles
-    const style = document.createElement('style');
-    style.textContent = `
-      .theme-slide-panel {
-        position: fixed;
-        top: 0;
-        right: 20px;
-        z-index: 2000;
-        width: 320px;
-        background: rgba(0, 10, 15, 0.98);
-        border: 2px solid #00d4ff;
-        border-top: none;
-        border-radius: 0 0 8px 8px;
-        box-shadow: 
-          0 8px 24px rgba(0, 212, 255, 0.4),
-          inset 0 1px 0 rgba(0, 212, 255, 0.2);
-        overflow: hidden;
-        
-        /* Fast smooth slide from top */
-        animation: slide-down-fast 0.2s cubic-bezier(0.23, 1, 0.32, 1);
-        transform-origin: top center;
-      }
-      
-      @keyframes slide-down-fast {
-        0% {
-          transform: translateY(-100%);
-          opacity: 0;
-        }
-        100% {
-          transform: translateY(0);
-          opacity: 1;
-        }
-      }
-      
-      /* Cyberpunk border glow */
-      .theme-slide-panel::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -2px;
-        right: -2px;
-        bottom: -2px;
-        background: linear-gradient(180deg, #00d4ff, rgba(0, 212, 255, 0.1));
-        border-radius: 0 0 8px 8px;
-        z-index: -1;
-        opacity: 0.6;
-      }
-    `;
-
-    // Prevent panel clicks from propagating (stops click-outside detection)
-    slidePanel.addEventListener('click', (event) => {
-      const target = event.target as HTMLElement;
-      
-      // Handle Apply button - close panel after applying
-      if (target.id === 'apply-theme') {
-        setTimeout(() => {
-          slidePanel.remove();
-          style.remove();
-          document.removeEventListener('click', handleClickOutside);
-        }, 200);
-      } else {
-        // For all other clicks inside panel, stop propagation to prevent closing
-        event.stopPropagation();
-      }
-    });
-
-    // Append to shadow root for proper positioning
-    this.shadowRoot?.appendChild(style);
-    this.shadowRoot?.appendChild(slidePanel);
-
-    // Close panel function
-    const closePanel = () => {
-      slidePanel.remove();
-      style.remove();
-      document.removeEventListener('click', handleClickOutside);
-    };
-
-    // Click-outside detection
-    const handleClickOutside = (event: Event) => {
-      closePanel();
-    };
-
-    // Add click-outside detection with delay
-    setTimeout(() => {
-      document.addEventListener('click', handleClickOutside);
-    }, 200);
-
-    // Listen for theme-cancelled event from Cancel button
-    slidePanel.addEventListener('theme-cancelled', closePanel);
-    
-    // Listen for theme-applied event from Apply button
-    slidePanel.addEventListener('theme-applied', (event) => {
-      console.log('🎨 MainPanel: Theme applied, closing panel');
-      closePanel();
-    });
-
-    console.log('🎨 MainPanel: Theme slide panel opened');
   }
 
   /**
@@ -531,9 +412,12 @@ export class MainWidget extends BaseWidget {
    * Setup header controls event listeners
    */
   private setupHeaderControlsListeners(): void {
-    // Listen to theme-clicked event from header-controls-widget
+    // Listen to theme-clicked event - opens Theme tab with integrated AI chat
     this.addEventListener('theme-clicked', () => {
-      this.openThemeTab();
+      console.log('🎨 MainPanel: Theme button clicked - opening Theme tab');
+      // Opens theme-widget with embedded chat for AI assistance
+      // The Theme room (DEFAULT_ROOMS.THEME) provides the chat backend
+      this.openContentTab('theme', 'Theme');
     });
 
     // Listen to settings-clicked event - opens Settings tab with integrated AI chat

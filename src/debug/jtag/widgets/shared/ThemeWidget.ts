@@ -1,12 +1,13 @@
 /**
- * ThemeWidget - Centralized theme management for all widgets
- * 
- * Single responsibility: Load and inject theme CSS into document head
- * All other widgets just consume the CSS custom properties
- * Extends BaseWidget to reuse existing CSS loading infrastructure
+ * ThemeWidget - Theme customization with AI assistance
+ *
+ * Visual theme editor with embedded AI assistant for designing themes,
+ * choosing colors, and customizing workspace appearance.
+ * Think Mac Terminal's theme selector, but with AI help.
  */
 
 import { BaseWidget } from './BaseWidget';
+import { AssistantPanel } from './AssistantPanel';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import { Commands } from '../../system/core/shared/Commands';
@@ -19,23 +20,26 @@ import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/upd
 import type { ThemeSetParams, ThemeSetResult } from '../../commands/theme/set/shared/ThemeSetTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
+import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
   private themeStyleElement: HTMLStyleElement | null = null;
   private themeDiscovery: ThemeDiscoveryService;
+  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
       widgetName: 'ThemeWidget',
-      template: 'theme-widget.html',
-      styles: 'theme-widget.css',
+      template: undefined,
+      styles: undefined,
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
       enableScreenshots: false
     });
-    
+
     // Initialize dynamic theme discovery service
     this.themeDiscovery = new ThemeDiscoveryService();
   }
@@ -75,7 +79,7 @@ export class ThemeWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
-    console.log('🎨 ThemeWidget: renderWidget() called - using BaseWidget template system');
+    console.log('🎨 ThemeWidget: renderWidget() called');
 
     // Load saved theme from UserState or fallback to base theme
     if (!this.themeStyleElement) {
@@ -90,32 +94,242 @@ export class ThemeWidget extends BaseWidget {
         await this.setTheme('base');
       }
     }
-    
-    // Use external template and styles loaded by BaseWidget (like ChatWidget does)
-    const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
-    
-    // Ensure template is a string before processing
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
-    // Replace dynamic content in template
-    const dynamicContent = templateString.replace(
-      '<!-- Current theme name -->', 
-      this.currentTheme
-    );
 
-    this.shadowRoot!.innerHTML = `
-      <style>${styles}</style>
-      ${dynamicContent}
+    const styles = `
+      :host {
+        display: block;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      .theme-layout {
+        display: grid;
+        grid-template-columns: 1fr 350px;
+        height: 100%;
+        gap: 0;
+      }
+
+      .theme-main {
+        overflow-y: auto;
+        padding: 24px;
+      }
+
+      .theme-assistant {
+        border-left: 1px solid rgba(0, 212, 255, 0.2);
+        height: 100%;
+      }
+
+      .theme-container {
+        max-width: 600px;
+      }
+
+      .theme-header {
+        margin-bottom: 24px;
+      }
+
+      .theme-title {
+        font-size: 24px;
+        font-weight: 600;
+        color: #00d4ff;
+        margin: 0 0 8px 0;
+      }
+
+      .theme-subtitle {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 14px;
+      }
+
+      .theme-section {
+        background: rgba(15, 20, 25, 0.8);
+        border: 1px solid rgba(0, 212, 255, 0.2);
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }
+
+      .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #00d4ff;
+        margin: 0 0 16px 0;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+      }
+
+      .theme-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 12px;
+      }
+
+      .theme-card {
+        background: rgba(0, 10, 15, 0.8);
+        border: 2px solid rgba(0, 212, 255, 0.2);
+        border-radius: 8px;
+        padding: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: center;
+      }
+
+      .theme-card:hover {
+        border-color: rgba(0, 212, 255, 0.5);
+        background: rgba(0, 212, 255, 0.05);
+        transform: translateY(-2px);
+      }
+
+      .theme-card.active {
+        border-color: #00d4ff;
+        background: rgba(0, 212, 255, 0.1);
+        box-shadow: 0 0 12px rgba(0, 212, 255, 0.3);
+      }
+
+      .theme-preview {
+        width: 100%;
+        height: 60px;
+        border-radius: 4px;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: monospace;
+        font-size: 11px;
+      }
+
+      .theme-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: white;
+      }
+
+      .theme-description {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.5);
+        margin-top: 4px;
+      }
+
+      .current-theme-display {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px;
+        background: rgba(0, 212, 255, 0.1);
+        border: 1px solid rgba(0, 212, 255, 0.3);
+        border-radius: 8px;
+        margin-bottom: 20px;
+      }
+
+      .current-theme-label {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 13px;
+      }
+
+      .current-theme-name {
+        color: #00d4ff;
+        font-weight: 600;
+        font-size: 16px;
+      }
+
+      .info-box {
+        background: rgba(0, 212, 255, 0.1);
+        border: 1px solid rgba(0, 212, 255, 0.3);
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin-bottom: 20px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.8);
+      }
+
+      @media (max-width: 900px) {
+        .theme-layout {
+          grid-template-columns: 1fr;
+          grid-template-rows: 1fr 300px;
+        }
+
+        .theme-assistant {
+          border-left: none;
+          border-top: 1px solid rgba(0, 212, 255, 0.2);
+        }
+      }
     `;
-    
-    // Set up theme switching event handlers (now async for dynamic population)
-    await this.setupThemeControls();
-    
-    console.log('✅ ThemeWidget: Rendered using BaseWidget template system like ChatWidget');
+
+    // Get available themes
+    const themes = ThemeRegistry.getAllThemes();
+
+    const themeCardsHtml = themes.map(theme => `
+      <div class="theme-card ${theme.name === this.currentTheme ? 'active' : ''}"
+           data-theme="${theme.name}"
+           title="${theme.description}">
+        <div class="theme-preview" style="background: ${theme.preview?.backgroundColor || '#0a0f14'}; color: ${theme.preview?.textColor || '#00d4ff'}; border: 1px solid ${theme.preview?.primaryColor || '#00d4ff'};">
+          Aa
+        </div>
+        <div class="theme-name">${theme.displayName}</div>
+        <div class="theme-description">${theme.category}</div>
+      </div>
+    `).join('');
+
+    const template = `
+      <div class="theme-layout">
+        <div class="theme-main">
+          <div class="theme-container">
+            <div class="theme-header">
+              <h1 class="theme-title">Theme</h1>
+              <p class="theme-subtitle">Customize your workspace appearance</p>
+            </div>
+
+            <div class="info-box">
+              <strong>AI Theme Design:</strong> Ask the AI assistant for help choosing colors,
+              creating custom themes, or matching a specific aesthetic.
+            </div>
+
+            <div class="current-theme-display">
+              <span class="current-theme-label">Current Theme:</span>
+              <span class="current-theme-name">${this.currentTheme}</span>
+            </div>
+
+            <div class="theme-section">
+              <h2 class="section-title">Available Themes</h2>
+              <div class="theme-grid">
+                ${themeCardsHtml}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="theme-assistant" id="assistant-container"></div>
+      </div>
+    `;
+
+    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
+
+    // Setup event listeners
+    this.setupThemeControls();
+
+    // Initialize assistant panel
+    this.initializeAssistant();
+
+    console.log('✅ ThemeWidget: Rendered with AI assistant panel');
+  }
+
+  private initializeAssistant(): void {
+    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
+    if (!container) return;
+
+    // Clean up old instance
+    this.assistantPanel?.destroy();
+
+    // Create new assistant panel connected to Theme room
+    this.assistantPanel = new AssistantPanel(container, {
+      roomId: DEFAULT_ROOMS.THEME as UUID,
+      roomName: 'theme',
+      placeholder: 'Ask about themes, colors, or design...',
+      greeting: "Hi! I can help you customize your workspace appearance. What kind of look are you going for? Dark and moody? Bright and colorful? Or something inspired by a specific style?"
+    });
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    // Clean up assistant panel
+    this.assistantPanel?.destroy();
+
     // Remove theme CSS when widget is destroyed
     if (this.themeStyleElement) {
       this.themeStyleElement.remove();
@@ -152,71 +366,36 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Load and inject theme CSS into document head (DEPRECATED - use themeDiscovery.loadTheme)
-   * This method is kept for compatibility but delegates to the dynamic discovery service
-   */
-  private async loadTheme(themeName: string): Promise<void> {
-    console.log(`🎨 ThemeWidget: Loading theme '${themeName}' via dynamic discovery service`);
-    
-    try {
-      // Use dynamic theme discovery service
-      const themeResult = await this.themeDiscovery.loadTheme(themeName);
-      
-      if (themeResult.success) {
-        // Inject theme CSS into document head for global access
-        await this.injectThemeIntoDocumentHead(themeResult.cssContent);
-        console.log(`✅ ThemeWidget: Theme '${themeName}' loaded via discovery service`);
-      } else {
-        console.error(`❌ ThemeWidget: Failed to load theme '${themeName}':`, themeResult.error);
-      }
-    } catch (error) {
-      console.error(`❌ ThemeWidget: Error loading theme '${themeName}':`, error);
-    }
-  }
-
-  /**
    * Inject theme CSS into document head for global widget access
    * Removes existing theme styles and adds new ones
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
       console.log('🎨 ThemeWidget: Injecting theme CSS into document head for global access...');
-      console.log('🔧 CLAUDE-DEBUG: combinedCSS length:', combinedCSS.length);
-      console.log('🔧 CLAUDE-DEBUG: combinedCSS first 200 chars:', combinedCSS.substring(0, 200));
-      
+
       // Remove existing theme style element
       if (this.themeStyleElement) {
-        console.log('🔧 CLAUDE-DEBUG: Removing existing theme style element:', this.themeStyleElement.id);
         this.themeStyleElement.remove();
         this.themeStyleElement = null;
       }
-      
+
       // Create new theme style element and inject into document head
       this.themeStyleElement = document.createElement('style');
       this.themeStyleElement.id = `jtag-theme-${this.currentTheme}`;
       this.themeStyleElement.textContent = combinedCSS;
-      
-      console.log('🔧 CLAUDE-DEBUG: Created style element with id:', this.themeStyleElement.id);
-      console.log('🔧 CLAUDE-DEBUG: About to append to document.head...');
-      
+
       document.head.appendChild(this.themeStyleElement);
-      
-      // Verify the injection worked
-      const verifyElement = document.head.querySelector(`#jtag-theme-${this.currentTheme}`);
-      console.log('🔧 CLAUDE-DEBUG: Verification - element exists in document head:', !!verifyElement);
-      console.log('🔧 CLAUDE-DEBUG: Verification - element content length:', verifyElement?.textContent?.length || 0);
-      
+
       console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected into document head (${combinedCSS.length} chars)`);
-      
+
       // Dispatch theme change event
       this.dispatchEvent(new CustomEvent('theme-changed', {
         detail: { themeName: this.currentTheme },
         bubbles: true
       }));
-      
+
     } catch (error) {
       console.error('❌ ThemeWidget: Failed to inject theme CSS into document head:', error);
-      console.error('🔧 CLAUDE-DEBUG: Error stack:', (error as Error).stack);
       throw error;
     }
   }
@@ -227,21 +406,21 @@ export class ThemeWidget extends BaseWidget {
   private async loadAllThemeCSS(): Promise<string> {
     try {
       console.log('🎨 ThemeWidget: Loading ALL theme CSS (base + theme)');
-      
+
       // Load base CSS files from themes/base/
       const baseStyles = await this.loadDirectoryStyles('base');
-      
+
       // Load theme-specific CSS files from themes/current-theme-name/
-      const themeStyles = this.currentTheme !== 'base' 
+      const themeStyles = this.currentTheme !== 'base'
         ? await this.loadDirectoryStyles(this.currentTheme)
         : '';
-      
+
       // Combine base + theme styles
       const combinedCSS = baseStyles + themeStyles;
-      
+
       console.log(`✅ ThemeWidget: Combined theme CSS loaded (${combinedCSS.length} chars)`);
       return combinedCSS;
-      
+
     } catch (error) {
       console.error('❌ ThemeWidget: Failed to load all theme CSS:', error);
       return '';
@@ -256,7 +435,7 @@ export class ThemeWidget extends BaseWidget {
       // Get list of files to load for this directory
       const cssFiles = await this.getDirectoryFiles(directoryName);
       let combinedStyles = '';
-      
+
       for (const fileName of cssFiles) {
         try {
           // Use BaseWidget's protected executeCommand method - same as loadResource does internally
@@ -266,7 +445,7 @@ export class ThemeWidget extends BaseWidget {
           const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
             filepath: filePath
           });
-          
+
           // Handle nested JTAG response structure (same as BaseWidget loadResource)
           const fileData = (result as FileLoadResult & { commandResult?: FileLoadResult }).commandResult ?? result;
           if (result.success && fileData.success && fileData.content) {
@@ -279,7 +458,7 @@ export class ThemeWidget extends BaseWidget {
           console.warn(`⚠️ ThemeWidget: Could not load ${directoryName}/${fileName}:`, error);
         }
       }
-      
+
       return combinedStyles;
     } catch (error) {
       console.error(`❌ ThemeWidget: Failed to load directory styles for '${directoryName}':`, error);
@@ -296,7 +475,7 @@ export class ThemeWidget extends BaseWidget {
     if (themeManifest) {
       return themeManifest.files;
     }
-    
+
     // Fallback to standard theme.css if no manifest found
     console.warn(`⚠️ ThemeWidget: No manifest found for theme '${directoryName}', using fallback`);
     return ['theme.css'];
@@ -321,113 +500,30 @@ export class ThemeWidget extends BaseWidget {
   /**
    * Set up theme switching controls and event handlers
    */
-  private async setupThemeControls(): Promise<void> {
-    const themeSelector = this.shadowRoot?.querySelector('#theme-selector') as HTMLSelectElement;
-    const applyButton = this.shadowRoot?.querySelector('#apply-theme') as HTMLButtonElement;
-    const cancelButton = this.shadowRoot?.querySelector('#cancel-theme') as HTMLButtonElement;
-    
-    if (!themeSelector || !applyButton) {
-      console.warn('🎨 ThemeWidget: Theme controls not found in shadow DOM');
-      return;
-    }
-    
-    // Populate dropdown with discovered themes dynamically
-    await this.populateThemeDropdown(themeSelector);
-    
-    // Set current theme as selected
-    const originalTheme = this.currentTheme;
-    themeSelector.value = this.currentTheme;
-    
-    // Handle Apply button click
-    applyButton.addEventListener('click', async () => {
-      const selectedTheme = themeSelector.value;
-      if (selectedTheme) {
-        console.log(`🎨 ThemeWidget: Applying theme '${selectedTheme}' (removing !== check due to dropdown preview)`);
-        
-        // Use the actual JTAG theme/set command for proper theme switching
-        try {
-          // Domain-owned: CommandDaemon handles theme switching with optimization
-          await Commands.execute<ThemeSetParams, ThemeSetResult>(THEME_COMMANDS.SET, {
-            themeName: selectedTheme
-          });
-          console.log(`✅ ThemeWidget: Successfully applied theme '${selectedTheme}' via CommandDaemon`);
-        } catch (error) {
-          console.error(`❌ ThemeWidget: Failed to apply theme '${selectedTheme}':`, error);
-          // Try fallback method
-          await this.setTheme(selectedTheme);
-        }
-        
-        // Dispatch custom event to signal theme was applied (for panel closing)
-        this.dispatchEvent(new CustomEvent('theme-applied', {
-          detail: { themeName: selectedTheme },
-          bubbles: true
-        }));
-      }
-    });
-    
-    // Handle Cancel button click
-    if (cancelButton) {
-      cancelButton.addEventListener('click', async () => {
-        console.log(`🎨 ThemeWidget: Canceling theme changes, reverting to '${originalTheme}'`);
-        
-        // Revert dropdown to original theme
-        themeSelector.value = originalTheme;
-        
-        // Revert theme if it was changed
-        if (this.currentTheme !== originalTheme) {
-          await this.setTheme(originalTheme);
-        }
-        
-        // Close the theme modal if we're in one
-        this.dispatchEvent(new CustomEvent('theme-cancelled', {
-          detail: { originalTheme },
-          bubbles: true
-        }));
-      });
-    }
-    
-    // Handle dropdown change (immediate apply)
-    themeSelector.addEventListener('change', async (event) => {
-      const selectedTheme = (event.target as HTMLSelectElement).value;
-      if (selectedTheme && selectedTheme !== this.currentTheme) {
-        console.log(`🎨 ThemeWidget: Auto-applying theme switch to '${selectedTheme}'`);
-        await this.setTheme(selectedTheme);
-      }
-    });
-    
-    console.log('✅ ThemeWidget: Theme controls set up successfully with Cancel button');
-  }
+  private setupThemeControls(): void {
+    // Handle theme card clicks
+    this.shadowRoot?.querySelectorAll('.theme-card').forEach(card => {
+      card.addEventListener('click', async () => {
+        const themeName = (card as HTMLElement).dataset.theme;
+        if (themeName && themeName !== this.currentTheme) {
+          console.log(`🎨 ThemeWidget: Theme card clicked - switching to '${themeName}'`);
 
-  /**
-   * Dynamically populate theme dropdown from discovered themes
-   */
-  private async populateThemeDropdown(themeSelector: HTMLSelectElement): Promise<void> {
-    try {
-      // Clear existing options
-      themeSelector.innerHTML = '';
-      
-      // Get all discovered themes from registry
-      const themes = ThemeRegistry.getAllThemes();
-      
-      // Create options for each theme
-      themes.forEach(theme => {
-        const option = document.createElement('option');
-        option.value = theme.name;
-        option.textContent = theme.displayName;
-        option.title = theme.description;
-        themeSelector.appendChild(option);
+          // Use the actual JTAG theme/set command for proper theme switching
+          try {
+            await Commands.execute<ThemeSetParams, ThemeSetResult>(THEME_COMMANDS.SET, {
+              themeName: themeName
+            });
+            console.log(`✅ ThemeWidget: Successfully applied theme '${themeName}' via CommandDaemon`);
+          } catch (error) {
+            console.error(`❌ ThemeWidget: Failed to apply theme '${themeName}':`, error);
+            // Try fallback method
+            await this.setTheme(themeName);
+          }
+        }
       });
-      
-      console.log(`🎨 ThemeWidget: Populated dropdown with ${themes.length} discovered themes`);
-      
-    } catch (error) {
-      console.error('❌ ThemeWidget: Failed to populate theme dropdown:', error);
-      // Fallback option if discovery fails
-      const fallbackOption = document.createElement('option');
-      fallbackOption.value = 'base';
-      fallbackOption.textContent = 'Base Theme';
-      themeSelector.appendChild(fallbackOption);
-    }
+    });
+
+    console.log('✅ ThemeWidget: Theme controls set up successfully');
   }
 
   /**
@@ -545,5 +641,4 @@ export class ThemeWidget extends BaseWidget {
   }
 }
 
-// Register the custom element
 // Registration handled by centralized BROWSER_WIDGETS registry
