@@ -18,9 +18,7 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
 import { getWidgetForType, buildContentPath, parseContentPath } from './shared/ContentTypeRegistry';
-import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
-import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
-import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
+// Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
@@ -45,8 +43,8 @@ export class MainWidget extends BaseWidget {
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🎯 MainPanel: Initializing main content panel...');
 
-    // Load theme CSS on startup (before any content renders)
-    await this.loadThemeOnStartup();
+    // Theme CSS is loaded by ContinuumWidget (parent) in onWidgetInitialize
+    // Don't load again here - it would remove base.css variables
 
     // Initialize content tabs
     await this.initializeContentTabs();
@@ -64,50 +62,6 @@ export class MainWidget extends BaseWidget {
     this.setupVisibilityTracking();
 
     console.log('✅ MainPanel: Main panel initialized');
-  }
-
-  /**
-   * Load theme CSS on app startup from localStorage
-   */
-  private async loadThemeOnStartup(): Promise<void> {
-    try {
-      const themeName = LocalStorageStateManager.isAvailable()
-        ? (LocalStorageStateManager.getTheme() || 'base')
-        : 'base';
-
-      console.log(`🎨 MainPanel: Loading theme '${themeName}'`);
-
-      // Load base theme CSS
-      let combinedCSS = await this.loadThemeFile('base');
-
-      // Add theme-specific CSS if not base
-      if (themeName !== 'base') {
-        combinedCSS += '\n' + await this.loadThemeFile(themeName);
-      }
-
-      if (combinedCSS) {
-        document.querySelectorAll('style[id^="jtag-theme-"]').forEach(el => el.remove());
-        const styleEl = document.createElement('style');
-        styleEl.id = `jtag-theme-${themeName}`;
-        styleEl.textContent = combinedCSS;
-        document.head.appendChild(styleEl);
-        console.log(`✅ MainPanel: Theme '${themeName}' loaded`);
-      }
-    } catch (error) {
-      console.error('❌ MainPanel: Theme load failed:', error);
-    }
-  }
-
-  private async loadThemeFile(themeName: string): Promise<string> {
-    try {
-      const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
-        filepath: `widgets/shared/themes/${themeName}/theme.css`
-      });
-      const fileData = (result as any).commandResult || result;
-      return (fileData.success && fileData.content) ? fileData.content : '';
-    } catch {
-      return '';
-    }
   }
 
   /**
