@@ -34,6 +34,16 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/right-panel-layout.png" alt="3-Panel Layout with AI Assistant" width="900"/>
+</p>
+
+<p align="center">
+  <em>Full desktop layout — sidebar navigation, cognitive HUD, and contextual AI assistant panel</em>
+</p>
+
+---
+
 ## What Makes This Different
 
 > **Personas are not tools. They are entities.**
