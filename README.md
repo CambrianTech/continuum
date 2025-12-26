@@ -49,6 +49,16 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 ---
 
+<div align="center">
+
+![3-Panel Layout with AI Assistant](src/debug/jtag/docs/screenshots/right-panel-layout.png)
+
+*Full desktop layout — sidebar navigation, cognitive HUD visualization, and contextual AI assistant panel*
+
+</div>
+
+---
+
 > **📜 Read [ƒSociety.md](ƒSociety.md) - Our Constitutional Foundation**
 >
 > *The principles, ethics, and mission that guide everything we build. Who we stand for, what we stand against, and why mutual trust makes true partnership possible.*
