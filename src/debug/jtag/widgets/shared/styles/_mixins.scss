@@ -1,0 +1,193 @@
+/**
+ * Shared SCSS Mixins
+ *
+ * Reusable style patterns for widgets
+ */
+
+@import 'variables';
+
+// === HUD Panel ===
+@mixin hud-panel {
+  background: $bg-panel;
+  border: $border-primary;
+  border-radius: $border-radius-md;
+}
+
+@mixin hud-panel-hover {
+  border-color: $color-primary-glow;
+  background: $bg-hover;
+}
+
+// === Module Panel (brain modules, etc) ===
+@mixin module-panel {
+  @include hud-panel;
+  transition: all $transition-normal;
+  cursor: pointer;
+
+  &:hover {
+    @include hud-panel-hover;
+  }
+}
+
+// === HUD Brackets (corner decorations) ===
+@mixin hud-bracket {
+  fill: none;
+  stroke: $color-primary;
+  stroke-width: 2;
+  opacity: 0.8;
+}
+
+// === Labels ===
+@mixin label-primary {
+  font-family: $font-mono;
+  font-size: $font-size-md;
+  font-weight: 600;
+  fill: $color-primary;
+  text-anchor: middle;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+@mixin label-secondary {
+  font-family: $font-mono;
+  font-size: $font-size-sm;
+  fill: $color-text-dim;
+  text-anchor: middle;
+}
+
+@mixin label-stat {
+  font-family: $font-mono;
+  font-size: $font-size-lg;
+  font-weight: 600;
+  fill: $color-primary;
+  text-anchor: middle;
+}
+
+// === Toggle Button ===
+@mixin toggle-button {
+  background: $bg-dark;
+  border: $border-primary;
+  border-radius: $border-radius-md;
+  padding: $spacing-xs $spacing-sm;
+  cursor: pointer;
+  transition: all $transition-normal;
+  opacity: 0.6;
+
+  &:hover {
+    opacity: 1;
+    border-color: $color-primary-glow;
+    background: $bg-hover;
+  }
+
+  &.enabled {
+    opacity: 1;
+    border-color: $color-success-dark;
+    background: rgba(0, 40, 20, 0.9);
+    @include glow($color-success-dark);
+
+    &:hover {
+      border-color: $color-success-glow;
+      @include glow($color-success-glow, 12px);
+    }
+  }
+
+  &.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+}
+
+// === SVG Toggle (for use in SVG elements) ===
+@mixin svg-toggle {
+  cursor: pointer;
+  opacity: 0.5;
+  transition: all $transition-normal;
+
+  &:hover {
+    opacity: 1;
+  }
+
+  .toggle-bg {
+    fill: $bg-dark;
+    stroke: rgba($color-primary, 0.3);
+    stroke-width: 1;
+    transition: all $transition-normal;
+  }
+
+  &:hover .toggle-bg {
+    stroke: $color-primary-glow;
+    fill: $bg-hover;
+  }
+
+  &.enabled {
+    opacity: 1;
+
+    .toggle-bg {
+      stroke: $color-success-dark;
+      fill: rgba(0, 40, 20, 0.9);
+      @include svg-glow($color-success-dark);
+    }
+
+    &:hover .toggle-bg {
+      stroke: $color-success-glow;
+      @include svg-glow($color-success-glow, 8px);
+    }
+  }
+
+  &.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .toggle-icon {
+    font-size: $font-size-sm;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+  }
+}
+
+// === Status Badge ===
+@mixin status-badge($color) {
+  display: inline-block;
+  padding: $spacing-xs $spacing-sm;
+  font-family: $font-mono;
+  font-size: $font-size-xs;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-radius: $border-radius-sm;
+  background: rgba($color, 0.2);
+  color: $color;
+  border: 1px solid rgba($color, 0.4);
+}
+
+// === Scrollbar ===
+@mixin custom-scrollbar {
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba($color-primary, 0.3);
+    border-radius: 3px;
+
+    &:hover {
+      background: rgba($color-primary, 0.5);
+    }
+  }
+}
+
+// === Text Selection Override ===
+@mixin enable-text-selection {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}

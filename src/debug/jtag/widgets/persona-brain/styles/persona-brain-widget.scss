@@ -1,0 +1,581 @@
+/**
+ * PersonaBrainWidget Styles
+ *
+ * Cyberpunk HUD-style brain visualization widget.
+ * Uses shared variables from widgets/shared/styles/
+ */
+
+@import '../../shared/styles/variables';
+@import '../../shared/styles/mixins';
+
+// === Text Selection ===
+.brain-container,
+.brain-container * {
+  @include enable-text-selection;
+}
+
+.brain-svg,
+.brain-svg * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+// === Layout ===
+.brain-container {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-lg;
+}
+
+.brain-header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: $spacing-sm;
+}
+
+.brain-main {
+  display: flex;
+  gap: $spacing-lg;
+}
+
+.brain-visualization {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+}
+
+.brain-sidebar {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-md;
+}
+
+.brain-svg {
+  width: 100%;
+  max-width: 900px;
+  height: auto;
+}
+
+// === Persona Status Badge ===
+.persona-status {
+  @include status-badge($color-primary);
+}
+
+.persona-status.status-online {
+  @include status-badge($color-success);
+}
+
+.persona-status.status-offline {
+  @include status-badge($color-error);
+}
+
+.persona-status.status-idle {
+  @include status-badge($color-warning);
+}
+
+// === Low-Poly Brain Facets ===
+.brain-facet {
+  stroke: $color-primary-dark;
+  stroke-width: 0.5;
+  transition: all $transition-slow;
+}
+
+.brain-facet.f-bright {
+  fill: rgba(80, 200, 255, 0.5);
+}
+
+.brain-facet.f-light {
+  fill: rgba(40, 160, 220, 0.45);
+}
+
+.brain-facet.f-med {
+  fill: rgba(20, 120, 180, 0.4);
+}
+
+.brain-facet.f-dark {
+  fill: rgba(10, 80, 140, 0.35);
+}
+
+.brain-edge {
+  filter: url(#glow-subtle);
+}
+
+// === Neural Activity Nodes ===
+.neural-node {
+  fill: rgba($color-primary, 0.4);
+  stroke: none;
+}
+
+.neural-node.active {
+  fill: $color-primary;
+  filter: url(#glow);
+  animation: node-pulse 2s ease-in-out infinite;
+}
+
+@keyframes node-pulse {
+  0%, 100% { opacity: 0.6; r: 3; }
+  50% { opacity: 1; r: 4; }
+}
+
+// === HUD Module Panels ===
+.brain-module {
+  cursor: pointer;
+  transition: all $transition-slow;
+
+  &:hover {
+    filter: url(#glow);
+  }
+
+  &.selected {
+    filter: url(#glow-strong);
+  }
+}
+
+.hud-bracket {
+  @include hud-bracket;
+  transition: all $transition-slow;
+}
+
+.brain-module:hover .hud-bracket {
+  stroke: $color-primary;
+}
+
+.module-shape {
+  fill: $bg-dark;
+  stroke: $color-primary-dark;
+  stroke-width: 1;
+  transition: all $transition-slow;
+}
+
+.brain-module:hover .module-shape,
+.brain-module.selected .module-shape {
+  fill: $bg-hover;
+  stroke: $color-primary-glow;
+}
+
+.brain-module.status-active .module-shape {
+  stroke: $color-success-dark;
+}
+
+.brain-module.status-active .hud-bracket {
+  stroke: $color-success;
+}
+
+.brain-module.status-error .module-shape {
+  stroke: $color-error-dark;
+  animation: error-flash 1s ease infinite;
+}
+
+@keyframes error-flash {
+  0%, 100% { stroke-opacity: 0.5; }
+  50% { stroke-opacity: 1; }
+}
+
+// === Module Labels ===
+.module-label {
+  @include label-primary;
+}
+
+.module-sublabel {
+  @include label-secondary;
+  letter-spacing: 1px;
+}
+
+.module-stat {
+  @include label-stat;
+  font-size: $font-size-md;
+  font-weight: 500;
+}
+
+// === Circuit Connections ===
+.circuit-connection {
+  stroke: rgba($color-primary, 0.4);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  animation: data-pulse 1.5s linear infinite;
+}
+
+.connection-node {
+  fill: $bg-dark;
+  stroke: $color-primary;
+  stroke-width: 2;
+  filter: url(#glow-subtle);
+}
+
+@keyframes data-pulse {
+  0% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -20; }
+}
+
+// === Waveform Animation ===
+.waveform {
+  fill: none;
+  stroke: $color-primary;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  animation: waveform-anim 2s ease-in-out infinite;
+}
+
+@keyframes waveform-anim {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+// === HUD Readouts ===
+.readout-label {
+  fill: rgba($color-primary, 0.5);
+  font-size: $font-size-xs;
+  font-family: $font-mono;
+  letter-spacing: 1px;
+}
+
+.readout-value {
+  fill: $color-text;
+  font-size: $font-size-md;
+  font-family: $font-mono;
+  font-weight: 500;
+}
+
+// === Module Detail View ===
+.module-details {
+  margin-top: $spacing-lg;
+}
+
+.module-detail-view {
+  @include hud-panel;
+  padding: $spacing-lg;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: $spacing-lg;
+  padding-bottom: $spacing-md;
+  border-bottom: 1px solid rgba($color-primary, 0.15);
+
+  h3 {
+    margin: 0;
+    color: $color-primary;
+    font-size: $font-size-lg;
+    font-weight: 600;
+    font-family: $font-mono;
+    letter-spacing: 2px;
+  }
+}
+
+.btn-small {
+  padding: $spacing-xs 10px;
+  font-size: $font-size-sm;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: $spacing-sm 0;
+  border-bottom: 1px solid rgba($color-primary, 0.05);
+}
+
+.stat-label {
+  color: $color-text-muted;
+  font-size: $font-size-md;
+  font-family: $font-mono;
+}
+
+.stat-value {
+  color: $color-text;
+  font-size: $font-size-md;
+  font-family: $font-mono;
+
+  &.status-active { color: $color-success; }
+  &.status-idle { color: $color-warning; }
+  &.status-error { color: $color-error; }
+}
+
+.detail-actions {
+  display: flex;
+  gap: $spacing-sm;
+  margin-top: $spacing-lg;
+}
+
+// === Stats Bar ===
+.stats-bar {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+  padding: $spacing-md;
+  background: rgba(0, 15, 25, 0.6);
+  border: 1px solid rgba($color-primary, 0.15);
+  border-radius: $border-radius-sm;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+}
+
+.stat-icon {
+  font-size: $font-size-md;
+  opacity: 0.7;
+}
+
+.stat-text {
+  font-size: $font-size-md;
+  color: $color-text-dim;
+  font-family: $font-mono;
+  letter-spacing: 0.5px;
+}
+
+// === Module Overview (hidden) ===
+.module-overview {
+  display: none;
+}
+
+// === Activity Feed Panel ===
+.activity-feed {
+  @include hud-panel;
+  overflow: hidden;
+}
+
+.feed-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: $spacing-sm $spacing-md;
+  background: rgba($color-primary, 0.08);
+  border-bottom: 1px solid rgba($color-primary, 0.15);
+}
+
+.feed-title {
+  font-size: $font-size-sm;
+  font-weight: 600;
+  color: $color-primary;
+  font-family: $font-mono;
+  letter-spacing: 1px;
+}
+
+.feed-count,
+.feed-status {
+  font-size: $font-size-xs;
+  color: $color-text-muted;
+  font-family: $font-mono;
+}
+
+.feed-items {
+  max-height: 200px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.feed-item {
+  display: grid;
+  grid-template-columns: 20px 60px 70px 1fr;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba($color-primary, 0.05);
+  font-size: $font-size-sm;
+  font-family: $font-mono;
+  transition: background $transition-normal;
+
+  &:hover {
+    background: rgba($color-primary, 0.08);
+  }
+
+  &.severity-warn {
+    border-left: 2px solid $color-warning;
+  }
+
+  &.severity-error {
+    border-left: 2px solid $color-error;
+  }
+}
+
+.feed-icon {
+  font-size: $font-size-md;
+}
+
+.feed-time {
+  color: $color-text-muted;
+}
+
+.feed-module {
+  color: $color-primary;
+  text-transform: uppercase;
+}
+
+.feed-message {
+  color: $color-text-dim;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// === Issues Panel ===
+.issues-panel {
+  background: rgba(30, 10, 15, 0.85);
+  border: 1px solid rgba($color-error, 0.35);
+  border-radius: $border-radius-md;
+  overflow: hidden;
+}
+
+.issues-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: $spacing-sm $spacing-md;
+  background: rgba($color-error, 0.1);
+  border-bottom: 1px solid rgba($color-error, 0.2);
+}
+
+.issues-title {
+  font-size: $font-size-sm;
+  font-weight: 600;
+  color: $color-error;
+  font-family: $font-mono;
+  letter-spacing: 1px;
+}
+
+.issues-count {
+  background: $color-error;
+  color: white;
+  padding: 2px $spacing-sm;
+  border-radius: 10px;
+  font-size: $font-size-xs;
+  font-weight: 600;
+  font-family: $font-mono;
+}
+
+.issues-list {
+  max-height: 150px;
+  overflow-y: auto;
+  @include custom-scrollbar;
+}
+
+.issue-item {
+  display: grid;
+  grid-template-columns: 20px 70px 1fr 60px;
+  gap: 6px;
+  padding: $spacing-sm 10px;
+  border-bottom: 1px solid rgba($color-error, 0.1);
+  font-size: $font-size-sm;
+  font-family: $font-mono;
+  cursor: pointer;
+  transition: background $transition-normal;
+
+  &:hover {
+    background: rgba($color-error, 0.1);
+  }
+
+  &.type-warning {
+    border-left: 2px solid $color-warning;
+  }
+
+  &.type-error {
+    border-left: 2px solid $color-error;
+  }
+}
+
+.issue-icon {
+  font-size: $font-size-md;
+}
+
+.issue-module {
+  color: lighten($color-error, 20%);
+  text-transform: uppercase;
+}
+
+.issue-message {
+  color: $color-text-dim;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.issue-time {
+  color: $color-text-muted;
+  text-align: right;
+}
+
+// === Issue Indicator in Stats Bar ===
+.issue-indicator {
+  cursor: pointer;
+  padding: $spacing-xs $spacing-sm;
+  border-radius: $border-radius-sm;
+  background: rgba($color-error, 0.15);
+  border: 1px solid rgba($color-error, 0.3);
+  transition: all $transition-normal;
+
+  &:hover {
+    background: rgba($color-error, 0.25);
+    border-color: rgba($color-error, 0.5);
+  }
+}
+
+.issue-count {
+  color: $color-error !important;
+}
+
+// === Log Toggle (Master Button) ===
+.log-toggle {
+  @include toggle-button;
+  font-size: $font-size-lg;
+}
+
+// === Module Log Toggles (SVG) ===
+// Override base mixin with specific class names used in the widget
+.module-log-toggle {
+  cursor: pointer;
+  opacity: 0.5;
+  transition: all $transition-normal;
+
+  &:hover {
+    opacity: 1;
+  }
+
+  .log-toggle-bg {
+    fill: $bg-dark;
+    stroke: $color-primary-dark;
+    stroke-width: 1;
+    transition: all $transition-normal;
+  }
+
+  &:hover .log-toggle-bg {
+    stroke: $color-primary-glow;
+    fill: $bg-hover;
+  }
+
+  &.enabled {
+    opacity: 1;
+
+    .log-toggle-bg {
+      stroke: $color-success-dark;
+      fill: rgba(0, 40, 20, 0.9);
+      @include svg-glow($color-success-dark);
+    }
+
+    &:hover .log-toggle-bg {
+      stroke: $color-success-glow;
+      @include svg-glow($color-success-glow, 8px);
+    }
+  }
+
+  &.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .log-toggle-icon {
+    font-size: $font-size-sm;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+  }
+}

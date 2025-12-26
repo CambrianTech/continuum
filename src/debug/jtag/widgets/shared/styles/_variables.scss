@@ -1,0 +1,76 @@
+/**
+ * Shared SCSS Variables - Cyberpunk Theme
+ *
+ * Central place for all theme colors, fonts, spacing, etc.
+ */
+
+// === Colors ===
+$color-primary: #00d4ff;
+$color-primary-dark: rgba(0, 212, 255, 0.3);
+$color-primary-glow: rgba(0, 212, 255, 0.6);
+
+$color-success: #00ff64;
+$color-success-dark: rgba(0, 255, 100, 0.3);
+$color-success-glow: rgba(0, 255, 100, 0.6);
+
+$color-warning: #ffaa00;
+$color-warning-dark: rgba(255, 170, 0, 0.3);
+
+$color-error: #ff5050;
+$color-error-dark: rgba(255, 80, 80, 0.3);
+
+$color-text: rgba(255, 255, 255, 0.9);
+$color-text-dim: rgba(255, 255, 255, 0.6);
+$color-text-muted: rgba(255, 255, 255, 0.4);
+
+// === Backgrounds ===
+$bg-dark: rgba(0, 15, 25, 0.95);
+$bg-darker: rgba(0, 10, 18, 0.98);
+$bg-panel: rgba(0, 20, 35, 0.85);
+$bg-hover: rgba(0, 30, 50, 0.9);
+
+// === Borders ===
+$border-primary: 1px solid rgba(0, 212, 255, 0.3);
+$border-primary-hover: 1px solid rgba(0, 212, 255, 0.6);
+$border-success: 1px solid rgba(0, 255, 100, 0.4);
+
+// === Typography ===
+$font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+$font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+$font-size-xs: 9px;
+$font-size-sm: 10px;
+$font-size-md: 12px;
+$font-size-lg: 14px;
+$font-size-xl: 16px;
+
+// === Spacing ===
+$spacing-xs: 4px;
+$spacing-sm: 8px;
+$spacing-md: 12px;
+$spacing-lg: 16px;
+$spacing-xl: 24px;
+
+// === Borders & Radius ===
+$border-radius-sm: 2px;
+$border-radius-md: 4px;
+$border-radius-lg: 8px;
+
+// === Transitions ===
+$transition-fast: 0.15s ease;
+$transition-normal: 0.2s ease;
+$transition-slow: 0.3s ease;
+
+// === Shadows ===
+@mixin glow($color, $size: 8px) {
+  box-shadow: 0 0 $size $color;
+}
+
+@mixin glow-text($color, $size: 4px) {
+  text-shadow: 0 0 $size $color;
+}
+
+// === SVG Filters ===
+@mixin svg-glow($color, $size: 4px) {
+  filter: drop-shadow(0 0 $size $color);
+}
