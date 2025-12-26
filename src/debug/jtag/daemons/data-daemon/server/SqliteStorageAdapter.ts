@@ -119,6 +119,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     // Use explicit filename from options, or fall back to default database path
     // This allows multi-database support (training DBs, etc.) while maintaining backward compatibility
     const dbPath = options.filename || getDatabasePath();
+    console.log(`🗄️ SqliteStorageAdapter: options.filename=${options.filename}, fallback=${getDatabasePath()}, using=${dbPath}`);
     log.info(`Using database path: ${dbPath}`);
 
     // Ensure directory exists with proper permissions

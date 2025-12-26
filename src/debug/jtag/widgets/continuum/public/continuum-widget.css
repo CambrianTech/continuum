@@ -8,10 +8,20 @@
 
 .desktop-container {
   display: grid;
-  grid-template-columns: var(--sidebar-width, 250px) 1fr;
+  grid-template-columns: var(--sidebar-width, 250px) 1fr var(--right-panel-width, 320px);
   height: 100vh;
   overflow: hidden;
   position: relative;
+}
+
+/* Collapsed right panel state */
+.desktop-container.right-panel-collapsed {
+  grid-template-columns: var(--sidebar-width, 250px) 1fr 0px;
+}
+
+.desktop-container.right-panel-collapsed .right-panel-container {
+  width: 0;
+  overflow: hidden;
 }
 
 /* Main panel layout */
@@ -54,6 +64,48 @@
   flex: 1;
   height: 100%;
   overflow: hidden;
+}
+
+/* Right Panel Container - mirrors sidebar structure */
+.right-panel-container {
+  position: relative;
+  display: flex;
+  height: 100%;
+  background: var(--sidebar-background);
+  border-left: 1px solid var(--sidebar-border);
+}
+
+.right-panel-container right-panel-widget {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Right panel resizer - on the LEFT side (mirrors sidebar resizer) */
+right-panel-resizer {
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: var(--resizer-width, 2px);
+  height: 100%;
+  cursor: col-resize;
+  background: var(--resizer-background);
+  z-index: 1000;
+  transition: all 0.2s ease;
+  border-left: 1px solid var(--resizer-border);
+}
+
+right-panel-resizer:hover {
+  background: var(--resizer-background-hover);
+  border-left: 1px solid var(--resizer-border-hover);
+  box-shadow: 0 0 4px var(--resizer-glow-hover);
+}
+
+right-panel-resizer:active, right-panel-resizer.dragging {
+  background: var(--resizer-background-active);
+  border-left: 2px solid var(--resizer-border-active);
+  box-shadow: 0 0 6px var(--resizer-glow-active);
+  width: var(--resizer-width-active, 3px);
 }
 
 /* Discord/VS Code style resizer - visible divider at exact border */

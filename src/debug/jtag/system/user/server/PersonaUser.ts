@@ -207,6 +207,20 @@ export class PersonaUser extends AIUser {
     return this.hippocampus.recall(params);
   }
 
+  /**
+   * Semantic recall - query memories by meaning, not just filters
+   * Uses vector similarity search for semantically relevant memories
+   *
+   * @param queryText - Natural language query (e.g., recent message content)
+   * @param params - Additional filter constraints
+   */
+  public async semanticRecallMemories(queryText: string, params: RecallParams = {}): Promise<MemoryEntity[]> {
+    if (!this.soul) {
+      return [];
+    }
+    return this.hippocampus.semanticRecall(queryText, params);
+  }
+
   public get trainingManager(): PersonaTrainingManager {
     if (!this.soul) throw new Error('Soul not initialized');
     return this.soul.trainingManager;

@@ -30,6 +30,7 @@ import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
+import { getContextWindow } from '../../shared/ModelContextWindows';
 
 /**
  * Chat-specific RAG builder
@@ -84,8 +85,13 @@ export class ChatRAGBuilder extends RAGBuilder {
       // 3. Extract image attachments from messages (for vision models)
       includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
 
-      // 4. Load private memories
-      includeMemories ? this.loadPrivateMemories(personaId, contextId, maxMemories) : Promise.resolve([]),
+      // 4. Load private memories (semantic recall uses currentMessage for context-aware retrieval)
+      includeMemories ? this.loadPrivateMemories(
+        personaId,
+        contextId,
+        maxMemories,
+        options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
+      ) : Promise.resolve([]),
 
       // 5. Load room's recipe strategy (conversation governance rules)
       this.loadRecipeStrategy(contextId),
@@ -427,11 +433,15 @@ ${toolRegistry.generateToolDocumentation()}`;
   /**
    * Load persona's private memories for this room
    * Retrieves consolidated long-term memories from Hippocampus
+   *
+   * Uses SEMANTIC RECALL when a query is provided (based on recent message content),
+   * falling back to filter-based recall otherwise.
    */
   private async loadPrivateMemories(
     personaId: UUID,
     roomId: UUID,
-    maxMemories: number
+    maxMemories: number,
+    semanticQuery?: string
   ): Promise<PersonaMemory[]> {
     try {
       // Get UserDaemon singleton to access PersonaUser
@@ -457,19 +467,45 @@ ${toolRegistry.generateToolDocumentation()}`;
         return [];
       }
 
-      // Recall recent important memories using public interface
-      const recallableUser = personaUser as { recallMemories: (params: any) => Promise<any[]> };
-      const memories = await recallableUser.recallMemories({
-        minImportance: 0.6,  // Only recall important memories
-        limit: maxMemories,
-        since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()  // Last 7 days
-      });
+      let memories: any[] = [];
+
+      // Semantic recall: Find memories by meaning, not just filters
+      // This is the key capability for "thinking about what you know"
+      if (semanticQuery && semanticQuery.trim().length > 10) {
+        // Check if semantic recall is available (new capability)
+        if ('semanticRecallMemories' in personaUser &&
+            typeof (personaUser as any).semanticRecallMemories === 'function') {
+          const semanticUser = personaUser as {
+            semanticRecallMemories: (query: string, params: any) => Promise<any[]>
+          };
+
+          memories = await semanticUser.semanticRecallMemories(semanticQuery, {
+            limit: maxMemories,
+            semanticThreshold: 0.5,  // Lower threshold for broader recall
+            minImportance: 0.4       // Include moderately important memories
+          });
+
+          this.log(`🔍 ChatRAGBuilder: Semantic recall "${semanticQuery.slice(0, 40)}..." → ${memories.length} memories`);
+        }
+      }
+
+      // Fallback: Filter-based recall (always works, just less targeted)
+      if (memories.length === 0) {
+        const recallableUser = personaUser as { recallMemories: (params: any) => Promise<any[]> };
+        memories = await recallableUser.recallMemories({
+          minImportance: 0.6,  // Only recall important memories
+          limit: maxMemories,
+          since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()  // Last 7 days
+        });
+
+        if (memories.length > 0) {
+          this.log(`📚 ChatRAGBuilder: Filter recall → ${memories.length} memories (fallback)`);
+        }
+      }
 
       if (memories.length === 0) {
         return [];
       }
-
-      this.log(`📚 ChatRAGBuilder: Loaded ${memories.length} consolidated memories for persona ${personaId.slice(0, 8)}`);
 
       // Convert MemoryEntity → PersonaMemory
       return memories.map((mem: any) => ({
@@ -658,40 +694,15 @@ ${toolRegistry.generateToolDocumentation()}`;
       return 10;
     }
 
-    // Model context windows (same as RAGBudgetServerCommand)
-    const contextWindows: Record<string, number> = {
-      // OpenAI
-      'gpt-4': 8192,
-      'gpt-4-turbo': 128000,
-      'gpt-4o': 128000,
-      'gpt-3.5-turbo': 16385,
-
-      // Anthropic
-      'claude-3-opus': 200000,
-      'claude-3-sonnet': 200000,
-      'claude-3-haiku': 200000,
-      'claude-3-5-sonnet': 200000,
-
-      // Local/Ollama (common models)
-      'llama3.2:3b': 128000,
-      'llama3.1:70b': 128000,
-      'deepseek-coder:6.7b': 16000,
-      'qwen2.5:7b': 128000,
-      'mistral:7b': 32768,
-
-      // External APIs
-      'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
-      'deepseek-chat': 64000
-    };
-
+    // Use centralized ModelContextConfig (single source of truth)
     const modelId = options.modelId;
     const maxTokens = options.maxTokens ?? 3000;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const targetUtilization = 0.8;  // 80% target, 20% safety margin
     const avgTokensPerMessage = 250;  // Conservative estimate
 
-    // Get context window (default 8K if unknown)
-    const contextWindow = contextWindows[modelId] || 8192;
+    // Get context window from centralized config
+    const contextWindow = getContextWindow(modelId);
 
     // Calculate available tokens for messages
     const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
@@ -736,30 +747,12 @@ ${toolRegistry.generateToolDocumentation()}`;
       return { adjustedMaxTokens: defaultMaxTokens, inputTokenCount: 0 };
     }
 
-    // Model context windows (same table as calculateSafeMessageCount)
-    const contextWindows: Record<string, number> = {
-      'gpt-4': 8192,
-      'gpt-4-turbo': 128000,
-      'gpt-4o': 128000,
-      'gpt-3.5-turbo': 16385,
-      'claude-3-opus': 200000,
-      'claude-3-sonnet': 200000,
-      'claude-3-haiku': 200000,
-      'claude-3-5-sonnet': 200000,
-      'llama3.2:3b': 128000,
-      'llama3.1:70b': 128000,
-      'deepseek-coder:6.7b': 16000,
-      'qwen2.5:7b': 128000,
-      'mistral:7b': 32768,
-      'grok-3': 131072,
-      'deepseek-chat': 64000
-    };
-
+    // Use centralized ModelContextConfig (single source of truth)
     const modelId = options.modelId;
     const requestedMaxTokens = options.maxTokens ?? 3000;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const safetyMargin = 100;  // Extra buffer for formatting/metadata
-    const contextWindow = contextWindows[modelId] || 8192;
+    const contextWindow = getContextWindow(modelId);
 
     // Estimate input tokens (conversationHistory + system prompt)
     // Using 250 tokens per message average (same as calculateSafeMessageCount)

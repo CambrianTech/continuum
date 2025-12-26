@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-"version": "1.0.6341",
+  "version": "1.0.6368",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -177,6 +177,8 @@
     "switch:widget-ui": "npx tsx scripts/switch-example.ts widget-ui",
     "switch:current": "npx tsx scripts/switch-example.ts --current",
     "test": "npx tsx scripts/intelligent-test-runner.ts",
+    "test:vitest": "npx vitest run tests/unit/semantic-cognition.test.ts tests/unit/semantic-memory-system.test.ts tests/unit/FineTuningJobEntity.test.ts",
+    "test:vitest:all": "npx vitest run tests/unit/ --reporter=verbose",
     "test:report": "npx tsx scripts/generate-test-report.ts",
     "test:compiler-check": "echo '🔍 PRE-TEST: TypeScript Compilation Check...' && npx tsc --noEmit --project . && echo '✅ TypeScript compilation passed - proceeding with tests'",
     "test:global-cli": "echo '📦 GLOBAL CLI: Testing global installation workflow...' && npx tsx tests/global-cli-installation.test.ts && echo '✅ Global CLI installation tests passed'",
