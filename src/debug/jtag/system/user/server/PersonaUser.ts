@@ -107,9 +107,9 @@ import type { RecallParams, MemoryEntity } from './modules/MemoryTypes';
 import { PersonaLogger } from './modules/PersonaLogger';
 import { setToolDefinitionsLogger } from './modules/PersonaToolDefinitions';
 import { setPeerReviewLogger } from './modules/cognition/PeerReviewManager';
-import { PersonaSoul, type PersonaUserForSoul } from './modules/being/PersonaSoul';
-import { PersonaMind, type PersonaUserForMind } from './modules/being/PersonaMind';
-import { PersonaBody, type PersonaUserForBody } from './modules/being/PersonaBody';
+import { LimbicSystem, type PersonaUserForLimbic } from './modules/being/LimbicSystem';
+import { PrefrontalCortex, type PersonaUserForPrefrontal } from './modules/being/PrefrontalCortex';
+import { MotorCortex, type PersonaUserForMotorCortex } from './modules/being/MotorCortex';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
@@ -154,10 +154,10 @@ export class PersonaUser extends AIUser {
   // NOTE: Can't name this 'state' - conflicts with BaseUser.state (UserStateEntity)
   public inbox: PersonaInbox;
 
-  // BEING ARCHITECTURE: Delegate to mind for personaState
+  // NEUROANATOMY: Delegate to prefrontal for personaState
   public get personaState(): PersonaStateManager {
-    if (!this.mind) throw new Error('Mind not initialized');
-    return this.mind.personaState;
+    if (!this.prefrontal) throw new Error('Prefrontal cortex not initialized');
+    return this.prefrontal.personaState;
   }
 
   // PHASE 5: Self-task generation (autonomous work creation)
@@ -166,34 +166,34 @@ export class PersonaUser extends AIUser {
   // Tool result tracking (prevents infinite loops from re-processing tool results)
   readonly taskTracker: PersonaTaskTracker;
 
-  // BEING ARCHITECTURE: Soul system (memory, learning, identity)
-  private soul: PersonaSoul | null = null;
+  // NEUROANATOMY: Limbic system (memory, learning, identity, emotion)
+  private limbic: LimbicSystem | null = null;
 
-  // BEING ARCHITECTURE: Mind system (cognition, evaluation, planning)
-  public mind: PersonaMind | null = null;  // Public for CNS and Hippocampus access
+  // NEUROANATOMY: Prefrontal cortex (cognition, evaluation, planning)
+  public prefrontal: PrefrontalCortex | null = null;  // Public for CNS and Hippocampus access
 
-  // BEING ARCHITECTURE: Body system (action, execution, output)
-  private body: PersonaBody | null = null;
+  // NEUROANATOMY: Motor cortex (action, execution, output)
+  private motorCortex: MotorCortex | null = null;
 
-  // BEING ARCHITECTURE: Delegate to soul for memory/genome/training/hippocampus
+  // NEUROANATOMY: Delegate to limbic for memory/genome/training/hippocampus
   public get memory(): PersonaMemory {
-    if (!this.soul) throw new Error('Soul not initialized');
-    return this.soul.memory;
+    if (!this.limbic) throw new Error('Limbic system not initialized');
+    return this.limbic.memory;
   }
 
   public get trainingAccumulator(): TrainingDataAccumulator {
-    if (!this.soul) throw new Error('Soul not initialized');
-    return this.soul.trainingAccumulator;
+    if (!this.limbic) throw new Error('Limbic system not initialized');
+    return this.limbic.trainingAccumulator;
   }
 
   private get genomeManager(): PersonaGenomeManager {
-    if (!this.soul) throw new Error('Soul not initialized');
-    return this.soul.genomeManager;
+    if (!this.limbic) throw new Error('Limbic system not initialized');
+    return this.limbic.genomeManager;
   }
 
   private get hippocampus(): Hippocampus {
-    if (!this.soul) throw new Error('Soul not initialized');
-    return this.soul.hippocampus;
+    if (!this.limbic) throw new Error('Limbic system not initialized');
+    return this.limbic.hippocampus;
   }
 
   /**
@@ -201,7 +201,7 @@ export class PersonaUser extends AIUser {
    * Public interface for RAG and other systems to access consolidated memories
    */
   public async recallMemories(params: RecallParams): Promise<MemoryEntity[]> {
-    if (!this.soul) {
+    if (!this.limbic) {
       return [];
     }
     return this.hippocampus.recall(params);
@@ -215,15 +215,15 @@ export class PersonaUser extends AIUser {
    * @param params - Additional filter constraints
    */
   public async semanticRecallMemories(queryText: string, params: RecallParams = {}): Promise<MemoryEntity[]> {
-    if (!this.soul) {
+    if (!this.limbic) {
       return [];
     }
     return this.hippocampus.semanticRecall(queryText, params);
   }
 
   public get trainingManager(): PersonaTrainingManager {
-    if (!this.soul) throw new Error('Soul not initialized');
-    return this.soul.trainingManager;
+    if (!this.limbic) throw new Error('Limbic system not initialized');
+    return this.limbic.trainingManager;
   }
 
   // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
@@ -240,38 +240,38 @@ export class PersonaUser extends AIUser {
 
   // BEING ARCHITECTURE: Delegate to mind for workingMemory
   public get workingMemory(): WorkingMemoryManager {
-    if (!this.mind) throw new Error('Mind not initialized');
-    return this.mind.workingMemory;
+    if (!this.prefrontal) throw new Error('Prefrontal cortex not initialized');
+    return this.prefrontal.workingMemory;
   }
 
   // BEING ARCHITECTURE: Delegate to mind for selfState
   public get selfState(): PersonaSelfState {
-    if (!this.mind) throw new Error('Mind not initialized');
-    return this.mind.selfState;
+    if (!this.prefrontal) throw new Error('Prefrontal cortex not initialized');
+    return this.prefrontal.selfState;
   }
 
   // BEING ARCHITECTURE: Delegate to mind for planFormulator
   public get planFormulator(): SimplePlanFormulator {
-    if (!this.mind) throw new Error('Mind not initialized');
-    return this.mind.planFormulator;
+    if (!this.prefrontal) throw new Error('Prefrontal cortex not initialized');
+    return this.prefrontal.planFormulator;
   }
 
   // BEING ARCHITECTURE: Delegate to body for toolExecutor
   private get toolExecutor(): PersonaToolExecutor {
-    if (!this.body) throw new Error('Body not initialized');
-    return this.body.toolExecutor;
+    if (!this.motorCortex) throw new Error('Motor cortex not initialized');
+    return this.motorCortex.toolExecutor;
   }
 
   // BEING ARCHITECTURE: Delegate to body for toolRegistry
   private get toolRegistry(): PersonaToolRegistry {
-    if (!this.body) throw new Error('Body not initialized');
-    return this.body.toolRegistry;
+    if (!this.motorCortex) throw new Error('Motor cortex not initialized');
+    return this.motorCortex.toolRegistry;
   }
 
   // BEING ARCHITECTURE: Delegate to body for responseGenerator
   private get responseGenerator(): PersonaResponseGenerator {
-    if (!this.body) throw new Error('Body not initialized');
-    return this.body.responseGenerator;
+    if (!this.motorCortex) throw new Error('Motor cortex not initialized');
+    return this.motorCortex.responseGenerator;
   }
 
   // Message evaluation module (extracted from PersonaUser for modularity)
@@ -354,16 +354,16 @@ export class PersonaUser extends AIUser {
       this.logger.enqueueLog('cognition.log', message);
     });
 
-    // BEING ARCHITECTURE Phase 1: Initialize Soul FIRST (memory, learning, identity)
-    // Soul wraps memory/genome/learning systems - must be initialized before anything that uses getters
-    this.soul = new PersonaSoul(this as any as PersonaUserForSoul);
+    // NEUROANATOMY Phase 1: Initialize Limbic System FIRST (memory, learning, identity, emotion)
+    // Limbic wraps memory/genome/learning systems - must be initialized before anything that uses getters
+    this.limbic = new LimbicSystem(this as any as PersonaUserForLimbic);
 
-    // BEING ARCHITECTURE Phase 2: Initialize Mind (cognition, evaluation, planning)
-    this.mind = new PersonaMind(this as any as PersonaUserForMind);
+    // NEUROANATOMY Phase 2: Initialize Prefrontal Cortex (cognition, evaluation, planning)
+    this.prefrontal = new PrefrontalCortex(this as any as PersonaUserForPrefrontal);
 
-    // BEING ARCHITECTURE Phase 3: Initialize Body (action, execution, output)
-    // Note: Body creates toolExecutor, toolRegistry, and responseGenerator internally
-    this.body = new PersonaBody({
+    // NEUROANATOMY Phase 3: Initialize Motor Cortex (action, execution, output)
+    // Note: Motor cortex creates toolExecutor, toolRegistry, and responseGenerator internally
+    this.motorCortex = new MotorCortex({
       id: this.id,
       displayName: this.displayName,
       entity: this.entity,
@@ -532,7 +532,7 @@ export class PersonaUser extends AIUser {
     this.log.info(`📝 ${this.displayName}: PersonaLogger started (queued, non-blocking logging)`);
 
     // Start soul memory consolidation (Hippocampus subprocess via soul interface)
-    await this.soul!.startMemoryConsolidation();
+    await this.limbic!.startMemoryConsolidation();
   }
 
   /**
@@ -1315,7 +1315,7 @@ export class PersonaUser extends AIUser {
    */
   async shutdown(): Promise<void> {
     // Stop soul systems (hippocampus + memory consolidation)
-    await this.soul!.shutdown();
+    await this.limbic!.shutdown();
 
     // Force flush all queued logs before stopping logger
     await this.logger.forceFlush();

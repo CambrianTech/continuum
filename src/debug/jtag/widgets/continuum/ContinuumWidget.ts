@@ -11,9 +11,12 @@ import { Events } from '../../system/core/shared/Events';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import type { ContinuumStatus } from '../../commands/continuum/set/shared/ContinuumSetTypes';
+import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
+import { ThemeRegistry } from '../shared/themes/ThemeTypes';
 
 export class ContinuumWidget extends BaseWidget {
   private currentStatus: ContinuumStatus | null = null;
+  private currentTheme: string = 'base';
 
   constructor() {
     super({
@@ -30,7 +33,14 @@ export class ContinuumWidget extends BaseWidget {
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
 
-    // CRITICAL: Load and inject base theme CSS FIRST, before any child widgets render
+    // Load saved theme from localStorage FIRST
+    const savedTheme = LocalStorageStateManager.isAvailable()
+      ? LocalStorageStateManager.getTheme()
+      : null;
+    this.currentTheme = savedTheme || 'base';
+    console.log(`🎨 ContinuumWidget: Using theme '${this.currentTheme}' from localStorage`);
+
+    // CRITICAL: Load and inject theme CSS FIRST, before any child widgets render
     // This ensures CSS variables are available when sidebar, room-list, etc. initialize
     const themeCSS = await this.loadThemeCSS();
     await this.injectThemeIntoDocumentHead(themeCSS);
@@ -96,11 +106,12 @@ export class ContinuumWidget extends BaseWidget {
 
   /**
    * Load theme CSS for shadow DOM injection
+   * Loads base CSS first, then overlays current theme if not 'base'
    */
   private async loadThemeCSS(): Promise<string> {
     try {
-      // Load both base layout CSS and theme variables CSS
-      const [baseLayoutResult, themeVariablesResult] = await Promise.all([
+      // Always load base CSS first (provides layout and default variables)
+      const [baseLayoutResult, baseThemeResult] = await Promise.all([
         Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
           filepath: 'widgets/shared/themes/base/base.css'
         }),
@@ -109,14 +120,35 @@ export class ContinuumWidget extends BaseWidget {
         })
       ]);
 
-      // Extract content directly from FileLoadResult
       const baseLayoutCss = baseLayoutResult.content ?? '/* Base layout CSS not found */';
-      const themeVariablesCss = themeVariablesResult.content ?? '/* Theme variables CSS not found */';
+      const baseThemeCss = baseThemeResult.content ?? '/* Base theme CSS not found */';
 
-      // Combine both CSS files - theme variables first, then layout
-      const combinedCss = themeVariablesCss + '\n' + baseLayoutCss;
+      // Combine base CSS - theme variables first, then layout
+      let combinedCss = baseThemeCss + '\n' + baseLayoutCss;
 
-      console.log('🎨 ContinuumWidget: Loaded base theme CSS variables and layout for shadow DOM injection');
+      // If current theme is not 'base', load and overlay its CSS
+      if (this.currentTheme !== 'base') {
+        console.log(`🎨 ContinuumWidget: Loading theme '${this.currentTheme}' CSS overlay`);
+
+        // Get theme manifest for file list
+        const themeManifest = ThemeRegistry.getTheme(this.currentTheme);
+        const themeFiles = themeManifest?.files ?? ['theme.css'];
+
+        for (const fileName of themeFiles) {
+          try {
+            const themeFileResult = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+              filepath: `widgets/shared/themes/${this.currentTheme}/${fileName}`
+            });
+            if (themeFileResult.content) {
+              combinedCss += `\n/* === ${this.currentTheme}/${fileName} === */\n${themeFileResult.content}`;
+            }
+          } catch (err) {
+            console.warn(`⚠️ ContinuumWidget: Could not load ${this.currentTheme}/${fileName}:`, err);
+          }
+        }
+      }
+
+      console.log(`🎨 ContinuumWidget: Loaded theme '${this.currentTheme}' CSS (${combinedCss.length} chars)`);
       return combinedCss;
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to load theme CSS:', error);
@@ -128,7 +160,7 @@ export class ContinuumWidget extends BaseWidget {
    * Get current theme name for theme widget
    */
   getCurrentTheme(): string {
-    return 'base';
+    return this.currentTheme;
   }
 
 
@@ -137,22 +169,20 @@ export class ContinuumWidget extends BaseWidget {
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
-      console.log('🎨 ContinuumWidget: Injecting theme CSS into document head for global access...');
+      console.log(`🎨 ContinuumWidget: Injecting theme '${this.currentTheme}' CSS into document head...`);
 
-      // Remove existing theme style element
-      const existingTheme = document.head.querySelector('#jtag-theme-base');
-      if (existingTheme) {
-        existingTheme.remove();
-      }
+      // Remove any existing theme style elements
+      const existingStyles = document.head.querySelectorAll('style[id^="jtag-theme-"]');
+      existingStyles.forEach(el => el.remove());
 
       // Create new theme style element and inject into document head
       const themeStyleElement = document.createElement('style');
-      themeStyleElement.id = 'jtag-theme-base';
+      themeStyleElement.id = `jtag-theme-${this.currentTheme}`;
       themeStyleElement.textContent = combinedCSS;
 
       document.head.appendChild(themeStyleElement);
 
-      console.log(`✅ ContinuumWidget: Base theme CSS injected into document head (${combinedCSS.length} chars)`);
+      console.log(`✅ ContinuumWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
 
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to inject theme CSS into document head:', error);

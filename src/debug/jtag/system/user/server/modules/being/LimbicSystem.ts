@@ -1,10 +1,8 @@
 /**
- * PersonaSoul - Memory, Learning, Identity
+ * LimbicSystem - Memory, Emotion, Learning, Identity
  *
- * Part of Being Architecture (Mind/Body/Soul decomposition)
- *
- * Responsibility: All aspects of long-term memory, learning, and identity.
- * Maps to limbic system in neuroscience (hippocampus, amygdala, cortical memory).
+ * Part of Being Architecture (neuroanatomy-inspired decomposition)
+ * Maps to limbic system: hippocampus, amygdala, emotional memory, identity
  *
  * Components:
  * - Long-term memory (PersonaMemory)
@@ -29,7 +27,7 @@ import type { UserStateEntity } from '../../../../data/entities/UserStateEntity'
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
  */
-export interface PersonaUserForSoul {
+export interface PersonaUserForLimbic {
   readonly id: UUID;
   readonly displayName: string;
   readonly entity: UserEntity;
@@ -41,12 +39,12 @@ export interface PersonaUserForSoul {
 }
 
 /**
- * PersonaSoul - The limbic system of a persona
+ * LimbicSystem - Memory, emotion, and identity center
  *
  * Handles all memory, learning, and identity functions.
- * Independent of cognition (Mind) and execution (Body).
+ * Independent of executive function (PrefrontalCortex) and motor execution (MotorCortex).
  */
-export class PersonaSoul {
+export class LimbicSystem {
   private readonly logger: SubsystemLogger;
 
   // Long-term Memory
@@ -66,15 +64,15 @@ export class PersonaSoul {
   private readonly personaId: UUID;
   private readonly displayName: string;
 
-  constructor(personaUser: PersonaUserForSoul) {
+  constructor(personaUser: PersonaUserForLimbic) {
     this.personaId = personaUser.id;
     this.displayName = personaUser.displayName;
 
     // Initialize logger first
-    this.logger = new SubsystemLogger('soul', personaUser.id, personaUser.entity.uniqueId, {
+    this.logger = new SubsystemLogger('limbic', personaUser.id, personaUser.entity.uniqueId, {
       logDir: `${personaUser.homeDirectory}/logs`
     });
-    this.logger.info('Soul subsystem initializing...');
+    this.logger.info('Limbic system initializing...');
 
     // Initialize memory systems
     // PersonaMemory(personaId, displayName, genomeConfig, client?, genomeLogger?)
@@ -147,10 +145,10 @@ export class PersonaSoul {
     );
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
-    // This is safe because PersonaSoul is only instantiated by PersonaUser
+    // This is safe because LimbicSystem is only instantiated by PersonaUser
     this.hippocampus = new Hippocampus(personaUser as any);
 
-    this.logger.info('Soul subsystem initialized', {
+    this.logger.info('Limbic system initialized', {
       components: ['memory', 'genomeManager', 'trainingAccumulator', 'trainingManager', 'hippocampus']
     });
   }
@@ -183,16 +181,16 @@ export class PersonaSoul {
   }
 
   /**
-   * Shutdown soul systems
+   * Shutdown limbic systems
    * Stops hippocampus subprocess and any background tasks
    */
   async shutdown(): Promise<void> {
-    this.logger.info('Soul subsystem shutting down...');
+    this.logger.info('Limbic system shutting down...');
     await this.hippocampus.stop();
     // Memory is just data access - no shutdown needed
     // Genome is just data access - no shutdown needed
     // Training accumulator is just data structure - no shutdown needed
-    this.logger.info('Soul shutdown complete');
+    this.logger.info('Limbic system shutdown complete');
     this.logger.close();
   }
 

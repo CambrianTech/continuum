@@ -79,14 +79,14 @@ logger.error('Something failed', error);
 | Category | File | Component | Purpose |
 |----------|------|-----------|---------|
 | **adapters** | `adapters.log` | BaseAIProviderAdapter | AI provider requests, responses, errors |
-| **body** | `body.log` | PersonaBody | Physical state, energy, fatigue |
-| **cns** | `cns.log` | PersonaCNS | Central nervous system coordination |
+| **cns** | `cns.log` | PersonaCentralNervousSystem | Central nervous system coordination |
 | **cognition** | `cognition.log` | PersonaCognition | Decision-making, thought streams |
 | **genome** | `genome.log` | PersonaGenome | LoRA adapter paging, eviction |
-| **hippocampus** | `hippocampus.log` | PersonaHippocampus | Memory storage, retrieval, consolidation |
-| **mind** | `mind.log` | PersonaMind | High-level thoughts, planning |
+| **hippocampus** | `hippocampus.log` | Hippocampus | Memory storage, retrieval, consolidation |
+| **limbic** | `limbic.log` | LimbicSystem | Memory, learning, genome operations |
+| **motor-cortex** | `motor-cortex.log` | MotorCortex | Action execution, response generation |
 | **personalogger** | `personalogger.log` | PersonaLogger | Persona lifecycle (boot, shutdown) |
-| **soul** | `soul.log` | PersonaSoul | Emotional state, mood tracking |
+| **prefrontal** | `prefrontal.log` | PrefrontalCortex | High-level thoughts, planning, cognition |
 | **tools** | `tools.log` | PersonaToolExecutor | Tool execution (per-persona) |
 | **training** | `training.log` | TrainingDataAccumulator | Fine-tuning data accumulation |
 | **user** | `user.log` | PersonaUser | User interaction events |

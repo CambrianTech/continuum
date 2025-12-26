@@ -1,7 +1,8 @@
 /**
- * PersonaBody - Action/Execution Systems
+ * MotorCortex - Action/Execution Systems
  *
- * Part of Being Architecture (Mind/Body/Soul decomposition)
+ * Part of Being Architecture (neuroanatomy-inspired decomposition)
+ * Maps to motor cortex: voluntary movement, tool use, action execution
  */
 
 import type { UUID } from '../../../../core/types/CrossPlatformUUID';
@@ -14,7 +15,7 @@ import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { PersonaMediaConfig } from '../PersonaMediaConfig';
 import { SubsystemLogger } from './logging/SubsystemLogger';
 
-export interface PersonaUserForBody {
+export interface PersonaUserForMotorCortex {
   readonly id: UUID;
   readonly displayName: string;
   readonly entity: UserEntity;
@@ -26,18 +27,18 @@ export interface PersonaUserForBody {
   readonly logger: import('../PersonaLogger').PersonaLogger;
 }
 
-export class PersonaBody {
+export class MotorCortex {
   private readonly logger: SubsystemLogger;
   public readonly toolExecutor: PersonaToolExecutor;
   public readonly toolRegistry: PersonaToolRegistry;
   public readonly responseGenerator: PersonaResponseGenerator;
 
-  constructor(personaUser: PersonaUserForBody) {
+  constructor(personaUser: PersonaUserForMotorCortex) {
     // Initialize logger first
-    this.logger = new SubsystemLogger('body', personaUser.id, personaUser.entity.uniqueId, {
+    this.logger = new SubsystemLogger('motor-cortex', personaUser.id, personaUser.entity.uniqueId, {
       logDir: `${personaUser.homeDirectory}/logs`
     });
-    this.logger.info('Body subsystem initializing...');
+    this.logger.info('Motor cortex initializing...');
 
     // Create toolExecutor and toolRegistry first
     this.toolExecutor = new PersonaToolExecutor(personaUser);
@@ -58,16 +59,16 @@ export class PersonaBody {
       logger: personaUser.logger
     });
 
-    this.logger.info('Body subsystem initialized', {
+    this.logger.info('Motor cortex initialized', {
       components: ['toolExecutor', 'toolRegistry', 'responseGenerator']
     });
   }
 
   /**
-   * Shutdown body subsystem (cleanup)
+   * Shutdown motor cortex (cleanup)
    */
   shutdown(): void {
-    this.logger.info('Body subsystem shutting down...');
+    this.logger.info('Motor cortex shutting down...');
     this.logger.close();
   }
 }

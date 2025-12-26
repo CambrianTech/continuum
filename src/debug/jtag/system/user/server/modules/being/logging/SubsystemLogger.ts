@@ -1,26 +1,27 @@
 /**
  * SubsystemLogger - Persona cognitive logging (thin wrapper around Logger)
  *
- * Provides file-based logging per persona and subsystem (Mind/Body/Soul/CNS).
+ * Provides file-based logging per persona and subsystem (neuroanatomy-inspired).
  * This is now just a convenience wrapper around the core Logger system.
  *
  * Directory structure:
  * .continuum/personas/{uniqueId}/logs/
- *   ├── mind.log       (cognition, state tracking)
- *   ├── body.log       (action, execution, tools)
- *   ├── soul.log       (memory, learning, genome)
- *   └── cns.log        (orchestration, coordination)
+ *   ├── prefrontal.log   (cognition, planning, state tracking)
+ *   ├── motor-cortex.log (action, execution, tools)
+ *   ├── limbic.log       (memory, learning, emotion, genome)
+ *   ├── hippocampus.log  (memory consolidation)
+ *   └── cns.log          (orchestration, coordination)
  *
  * Usage:
  * ```typescript
  * import { SubsystemLogger } from './SubsystemLogger';
  *
- * class PersonaMind {
+ * class PrefrontalCortex {
  *   private logger: SubsystemLogger;
  *
- *   constructor(personaUser: PersonaUserForMind) {
- *     this.logger = new SubsystemLogger('mind', personaUser.id, personaUser.entity.uniqueId);
- *     this.logger.info('Mind initialized');
+ *   constructor(personaUser: PersonaUserForPrefrontal) {
+ *     this.logger = new SubsystemLogger('prefrontal', personaUser.id, personaUser.entity.uniqueId);
+ *     this.logger.info('Prefrontal cortex initialized');
  *   }
  * }
  * ```
@@ -33,7 +34,7 @@ import { Logger, FileMode } from '../../../../../core/logging/Logger';
 import type { ComponentLogger } from '../../../../../core/logging/Logger';
 import { LoggingConfig } from '../../../../../core/logging/LoggingConfig';
 
-export type Subsystem = 'mind' | 'body' | 'soul' | 'cns';
+export type Subsystem = 'prefrontal' | 'motor-cortex' | 'limbic' | 'hippocampus' | 'cns';
 
 export interface LoggerConfig {
   /**
