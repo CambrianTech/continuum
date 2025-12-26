@@ -342,7 +342,7 @@ interface AICapabilities {
 ./jtag debug/logs --filterPattern="YOLO|preprocessing" --tailLines=20
 
 # 3. Check persona response
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # Expect: Persona responds about image content despite text-only model
 ```

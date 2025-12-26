@@ -268,7 +268,7 @@ export class ThemeSystemValidator {
   
   private async takeScreenshot(selector: string, filename: string): Promise<{success: boolean, message: string, filePath?: string}> {
     try {
-      const { stdout, stderr } = await execAsync(`./jtag screenshot --querySelector="${selector}" --filename="${filename}"`);
+      const { stdout, stderr } = await execAsync(`./jtag interface/screenshot --querySelector="${selector}" --filename="${filename}"`);
       
       // Parse output to find filepath
       const lines = stdout.split('\n');

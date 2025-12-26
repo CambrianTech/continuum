@@ -17,7 +17,7 @@ async function testMultiResolution() {
   try {
     // Test 1: Multi-preset screenshot
     console.log('📸 Test 1: Multi-preset screenshot (mobile,desktop)');
-    const { stdout, stderr } = await execAsync('./jtag screenshot --querySelector=body --presets=mobile,desktop --filename=test-multi');
+    const { stdout, stderr } = await execAsync('./jtag interface/screenshot --querySelector=body --presets=mobile,desktop --filename=test-multi');
     
     if (stdout.includes('SUCCESS')) {
       console.log('✅ Multi-preset command executed successfully');
@@ -54,7 +54,7 @@ async function testMultiResolution() {
     
     // Test 3: Single preset
     console.log('📸 Test 3: Single preset (thumbnail)');
-    const { stdout: stdout2 } = await execAsync('./jtag screenshot --querySelector=body --presets=thumbnail --filename=test-thumb');
+    const { stdout: stdout2 } = await execAsync('./jtag interface/screenshot --querySelector=body --presets=thumbnail --filename=test-thumb');
     
     if (stdout2.includes('SUCCESS')) {
       console.log('✅ Single preset command executed successfully');

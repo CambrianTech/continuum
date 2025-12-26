@@ -378,7 +378,7 @@ message-composer-widget {
 
 ```bash
 # Test 1: File picker
-./jtag screenshot --querySelector="message-composer-widget .attach-btn"
+./jtag interface/screenshot --querySelector="message-composer-widget .attach-btn"
 # Click button, select image, verify preview appears
 
 # Test 2: Drag & drop
@@ -392,7 +392,7 @@ message-composer-widget {
 # Message appears with image inline
 
 # Test 5: Message row rendering
-./jtag screenshot --querySelector=".message-row:last-child"
+./jtag interface/screenshot --querySelector=".message-row:last-child"
 # Verify image renders correctly in message
 ```
 

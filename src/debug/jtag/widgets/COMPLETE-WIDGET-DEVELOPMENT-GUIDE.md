@@ -195,7 +195,7 @@ console.log('🎨 Theme color changed to coral red');
 " --environment="browser"
 
 # Capture result  
-./jtag screenshot --querySelector="enhanced-chat-widget" --filename="theme-test-coral.png"
+./jtag interface/screenshot --querySelector="enhanced-chat-widget" --filename="theme-test-coral.png"
 ```
 
 ## 🔧 **DEVELOPMENT WORKFLOW**
@@ -211,14 +211,14 @@ JTAG_WORKING_DIR="examples/widget-ui" npm start
 # Edit widgets/enhanced/public/chat-widget.css
 
 # 3. Test changes visually
-./jtag screenshot --querySelector="chat-widget" --filename="changes-test.png"
-./jtag screenshot --querySelector="enhanced-chat-widget" --filename="enhanced-test.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="changes-test.png"
+./jtag interface/screenshot --querySelector="enhanced-chat-widget" --filename="enhanced-test.png"
 
 # 4. Validate tests still pass
 npm test
 
 # 5. Capture final state
-./jtag screenshot --querySelector="body" --filename="full-system-state.png"
+./jtag interface/screenshot --querySelector="body" --filename="full-system-state.png"
 ```
 
 ### **Widget Creation Template**

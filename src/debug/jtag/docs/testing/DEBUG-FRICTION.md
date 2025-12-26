@@ -354,7 +354,7 @@ ERROR: Connection failed - WebSocket connection error: Connection failed
 **Problem**: Took screenshot but didn't view it immediately, missing critical feedback
 
 **Pattern**:
-1. ✅ Execute `./jtag screenshot` successfully
+1. ✅ Execute `./jtag interface/screenshot` successfully
 2. ❌ Continue analysis without viewing result
 3. ❌ Make conclusions based on incomplete data
 4. ❌ Waste time debugging working system

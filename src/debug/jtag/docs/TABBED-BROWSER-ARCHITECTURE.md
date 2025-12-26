@@ -233,7 +233,7 @@ interface NavigateParams extends CommandParams {
 npm start
 ./jtag navigate --url="https://example.com"
 # Should see tab open in browser tabs widget, not navigate away
-./jtag screenshot  # Should capture widget with embedded browser tab
+./jtag interface/screenshot  # Should capture widget with embedded browser tab
 ```
 
 ### Phase 2: Backend Proxy & Security
@@ -310,7 +310,7 @@ npm start
 ./jtag navigate --url="https://docs.anthropic.com/claude"
 
 # AI analyzes what's visible
-./jtag screenshot --querySelector="browser-tabs-widget"
+./jtag interface/screenshot --querySelector="browser-tabs-widget"
 # AI: "I see the Claude API docs. Looking at the 'Messages' section..."
 
 # AI points to specific section
@@ -333,11 +333,11 @@ npm start
 
 # AI responds and navigates
 ./jtag navigate --url="https://competitor1.com/pricing"
-./jtag screenshot --querySelector="browser-tabs-widget"
+./jtag interface/screenshot --querySelector="browser-tabs-widget"
 # AI extracts pricing, opens new tab for next competitor
 
 ./jtag tabs/create --url="https://competitor2.com/pricing"
-./jtag screenshot
+./jtag interface/screenshot
 # AI compiles comparison, sends summary in chat
 
 ./jtag collaboration/chat/send --room="general" --message="Found 3 competitors: A ($10/mo), B ($15/mo), C ($20/mo). Screenshots in tabs."

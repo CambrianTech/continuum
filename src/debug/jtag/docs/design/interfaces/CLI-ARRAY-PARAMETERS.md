@@ -314,7 +314,7 @@ Commands should treat these differently if semantics require.
 # Existing commands continue working:
 ./jtag ping
 ./jtag collaboration/chat/send --message="Test"
-./jtag screenshot --querySelector="body"
+./jtag interface/screenshot --querySelector="body"
 
 # New array syntax works:
 ./jtag collaboration/chat/send --message="Test" --media p1.png --media p2.jpg

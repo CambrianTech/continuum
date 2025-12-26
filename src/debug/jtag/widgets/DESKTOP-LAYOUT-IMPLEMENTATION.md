@@ -398,14 +398,14 @@ console.log('✅ Desktop layout components loaded');
 JTAG_WORKING_DIR="examples/widget-ui" npm start
 
 # Capture the new desktop layout
-./jtag screenshot --querySelector=".desktop-container" --filename="desktop-layout-v1.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="desktop-layout-v1.png"
 
 # Test individual components
-./jtag screenshot --querySelector=".left-sidebar" --filename="left-sidebar.png"
-./jtag screenshot --querySelector=".main-panel" --filename="main-panel.png"
+./jtag interface/screenshot --querySelector=".left-sidebar" --filename="left-sidebar.png"
+./jtag interface/screenshot --querySelector=".main-panel" --filename="main-panel.png"
 
 # Test that existing chat widget still works
-./jtag screenshot --querySelector="chat-widget" --filename="chat-widget-in-desktop.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="chat-widget-in-desktop.png"
 ```
 
 ### **Interactive Testing**

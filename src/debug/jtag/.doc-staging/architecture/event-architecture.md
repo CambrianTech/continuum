@@ -379,7 +379,7 @@ grep "DataDaemon: Emitted" .continuum/*/logs/server-console-log.log
 grep "Clearing all entities" .continuum/*/logs/browser-console-log.log
 
 # 5. Verify UI updated
-./jtag screenshot --querySelector="user-list-widget"
+./jtag interface/screenshot --querySelector="user-list-widget"
 ```
 
 ### Test CRUD Event Flow

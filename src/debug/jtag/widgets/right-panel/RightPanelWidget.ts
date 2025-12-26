@@ -13,7 +13,6 @@ import { BaseWidget } from '../shared/BaseWidget';
 
 export class RightPanelWidget extends BaseWidget {
   private currentRoom: string = 'help';
-  private isCollapsed = false;  // Will be set to true in onWidgetInitialize
 
   constructor() {
     super({
@@ -28,32 +27,21 @@ export class RightPanelWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('📋 RightPanelWidget: Initializing (collapsed until recipe system ready)...');
-
-    // Start collapsed - will be controlled by recipe.layout when wired
-    this.collapsePanel(true);
-
+    console.log('📋 RightPanelWidget: Initializing...');
+    // Collapse state managed by RightPanelResizer (persisted to localStorage)
     console.log('✅ RightPanelWidget: Initialized');
   }
 
-  private collapsePanel(collapse: boolean): void {
-    if (this.isCollapsed === collapse) return;
-
-    this.isCollapsed = collapse;
-
-    // Find desktop container and toggle collapsed class
+  /**
+   * Toggle collapse via the resizer (single source of truth)
+   */
+  private toggleCollapse(): void {
     const continuumWidget = document.querySelector('continuum-widget') as any;
     if (continuumWidget?.shadowRoot) {
-      const desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container');
-      if (desktopContainer) {
-        desktopContainer.classList.toggle('right-panel-collapsed', collapse);
+      const resizer = continuumWidget.shadowRoot.querySelector('right-panel-resizer') as any;
+      if (resizer?.toggle) {
+        resizer.toggle();
       }
-    }
-
-    // Update button text if visible
-    const collapseBtn = this.shadowRoot?.querySelector('.collapse-btn');
-    if (collapseBtn) {
-      collapseBtn.textContent = collapse ? '«' : '»';
     }
   }
 
@@ -151,7 +139,7 @@ export class RightPanelWidget extends BaseWidget {
     const collapseBtn = this.shadowRoot?.querySelector('.collapse-btn');
     if (collapseBtn) {
       collapseBtn.addEventListener('click', () => {
-        this.collapsePanel(!this.isCollapsed);
+        this.toggleCollapse();
       });
     }
   }

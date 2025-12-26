@@ -473,7 +473,7 @@ Test cases:
 
 ### Visual Regression Tests
 ```bash
-./jtag screenshot --querySelector="vram-calculator-widget" --filename="calculator-baseline.png"
+./jtag interface/screenshot --querySelector="vram-calculator-widget" --filename="calculator-baseline.png"
 ```
 
 ---

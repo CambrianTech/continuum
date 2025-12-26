@@ -338,7 +338,7 @@ These debug commands integrate with the core debugging methodology in CLAUDE.md:
 ./jtag debug/widget-events
 
 # 3. Visual validation
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # 4. Iterate and validate
 ./jtag debug/widget-events --testServerEvents=true

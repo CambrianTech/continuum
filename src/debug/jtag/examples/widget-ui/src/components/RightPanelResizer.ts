@@ -253,6 +253,15 @@ class RightPanelResizer extends HTMLElement {
 
         this.shadowRoot?.addEventListener('mousedown', this.handleMouseDown.bind(this));
         this.shadowRoot?.addEventListener('dblclick', this.handleDoubleClick.bind(this));
+
+        // Expand button click (only visible when collapsed)
+        const expandBtn = this.shadowRoot?.querySelector('.expand-btn');
+        if (expandBtn) {
+            expandBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.expand();
+            });
+        }
         document.addEventListener('mousemove', this.boundMouseMove);
         document.addEventListener('mouseup', this.boundMouseUp);
 
@@ -385,6 +394,7 @@ class RightPanelResizer extends HTMLElement {
                     background: rgba(0, 212, 255, 0.1);
                     border-left: 1px solid rgba(0, 212, 255, 0.2);
                     transition: all 0.2s ease;
+                    overflow: visible;
                 }
 
                 :host(:hover) {
@@ -423,8 +433,42 @@ class RightPanelResizer extends HTMLElement {
                     right: -4px;
                     background: transparent;
                 }
+
+                /* Expand button - ONLY visible when collapsed, fixed to right edge */
+                .expand-btn {
+                    position: fixed;
+                    top: 50%;
+                    right: 6px;
+                    transform: translateY(-50%);
+                    width: 18px;
+                    height: 36px;
+                    background: rgba(0, 20, 30, 0.95);
+                    border: 1px solid rgba(0, 212, 255, 0.4);
+                    border-radius: 4px 0 0 4px;
+                    color: #00d4ff;
+                    font-size: 11px;
+                    cursor: pointer;
+                    display: none;
+                    align-items: center;
+                    justify-content: center;
+                    z-index: 2000;
+                    transition: all 0.2s ease;
+                }
+
+                :host(.collapsed) .expand-btn {
+                    display: flex;
+                    opacity: 0.8;
+                }
+
+                .expand-btn:hover {
+                    opacity: 1;
+                    background: rgba(0, 212, 255, 0.2);
+                    border-color: #00d4ff;
+                    box-shadow: 0 0 8px rgba(0, 212, 255, 0.5);
+                }
             </style>
             <div class="resizer-handle"></div>
+            <button class="expand-btn" title="Expand panel">«</button>
         `;
     }
 

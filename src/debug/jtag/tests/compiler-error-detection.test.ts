@@ -179,7 +179,7 @@ async function main() {
   console.log('1. Use "npx tsc --noEmit" to detect TypeScript errors');
   console.log('2. Use "npm run agent:quick" for instant health checks');
   console.log('3. Fix detected errors before running system');
-  console.log('4. Verify fixes with "npm start" or "./jtag screenshot"');
+  console.log('4. Verify fixes with "npm start" or "./jtag interface/screenshot"');
 }
 
 main().catch(console.error);

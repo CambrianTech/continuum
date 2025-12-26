@@ -396,7 +396,7 @@ npm start  # 90-180 seconds - cleans, builds, deploys, restarts everything
 ./jtag ping
 
 # Take screenshots
-./jtag screenshot --querySelector="chat-widget" --filename="debug.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="debug.png"
 
 # Query database
 ./jtag data/list --collection=rooms
@@ -643,7 +643,7 @@ npm start                    # Starts system + browser
 
 # Try some commands
 ./jtag ping                  # Check health
-./jtag screenshot            # Take UI screenshot
+./jtag interface/screenshot            # Take UI screenshot
 ./jtag data/list --collection=rooms  # See chat rooms
 ./jtag ai/report            # See AI activity
 

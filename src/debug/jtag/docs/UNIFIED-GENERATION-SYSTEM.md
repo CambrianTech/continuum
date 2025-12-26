@@ -193,12 +193,12 @@ const result = await Commands.execute('screenshot', {
 
 Capture entire page:
 \`\`\`bash
-./jtag screenshot
+./jtag interface/screenshot
 \`\`\`
 
 Capture specific element:
 \`\`\`bash
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 \`\`\`
 
 AI tool usage:

@@ -103,7 +103,7 @@ The system now supports the original vision:
 # When browser is connected:
 ./jtag debug/widget-events --widgetSelector="room-list-widget"
 ./jtag debug/html-inspector --selector="room-list-widget"
-./jtag screenshot --querySelector="room-list-widget" --filename="after-update.png"
+./jtag interface/screenshot --querySelector="room-list-widget" --filename="after-update.png"
 ```
 
 ### Integration Test Framework

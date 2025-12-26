@@ -383,7 +383,7 @@ Currently, personas can only:
 - **Collaborate**: `./jtag user/create` to spawn helper personas for complex tasks
 - **Debug**: `./jtag debug/logs` to diagnose their own decision-making
 - **Plan**: `./jtag task/create` to break down multi-step work
-- **Execute**: `./jtag file/save`, `./jtag screenshot`, `./jtag exec` for real work
+- **Execute**: `./jtag file/save`, `./jtag interface/screenshot`, `./jtag exec` for real work
 - **Learn**: `./jtag data/list`, `./jtag data/read` to study their history
 
 ### Architecture: MCP as Persona Tool Access

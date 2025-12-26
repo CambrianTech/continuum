@@ -129,7 +129,7 @@ Final verification that integration didn't break anything, then commit.
 
 # Verify existing functionality still works
 ./jtag ping
-./jtag screenshot
+./jtag interface/screenshot
 
 # Check logs for errors
 tail -f .continuum/sessions/user/shared/*/logs/server.log
@@ -426,13 +426,13 @@ Each command does ONE thing well:
 
 ```bash
 # Screenshot takes a picture
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # Data/list queries data
 ./jtag data/list --collection=users
 
 # Compose them for powerful workflows
-./jtag screenshot && ./jtag data/list --collection=screenshots
+./jtag interface/screenshot && ./jtag data/list --collection=screenshots
 ```
 
 ### 2. Kernel-Level Primitives
@@ -646,7 +646,7 @@ cp metrics-widget.js src/debug/jtag/widgets/metrics-widget/
 npm start
 
 # Stage 4: VERIFY
-./jtag screenshot --querySelector="metrics-widget"
+./jtag interface/screenshot --querySelector="metrics-widget"
 ```
 
 ---

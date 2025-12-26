@@ -106,7 +106,7 @@ async function captureScreenshot(test: ScreenshotTest, filename: string): Promis
   const startTime = Date.now();
   
   try {
-    const { stdout } = await execAsync(`./jtag screenshot --querySelector="${test.selector}" --filename="${filename}"`);
+    const { stdout } = await execAsync(`./jtag interface/screenshot --querySelector="${test.selector}" --filename="${filename}"`);
     const executionTime = Date.now() - startTime;
     
     // Parse output to find filepath

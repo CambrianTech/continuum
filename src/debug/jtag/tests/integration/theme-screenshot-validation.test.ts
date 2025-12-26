@@ -147,7 +147,7 @@ async function testSingleTheme(theme: ThemeInfo): Promise<ThemeTestResult> {
     // Step 2: Take screenshot with theme name
     console.log(`   📸 Capturing screenshot for ${theme.name} theme`);
     const screenshotFilename = `theme-${theme.name}-validation.png`;
-    const screenshotCommand = `./jtag screenshot --querySelector=body --filename=${screenshotFilename}`;
+    const screenshotCommand = `./jtag interface/screenshot --querySelector=body --filename=${screenshotFilename}`;
     
     try {
       const screenshotResult = await execAsync(screenshotCommand, {

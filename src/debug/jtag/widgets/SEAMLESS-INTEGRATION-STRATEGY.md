@@ -348,7 +348,7 @@ touch widgets/chat-widget/public/chat-widget.html
 # Test that both systems work together
 npm test                           # Must pass 100%
 npm run system:start              # Must work normally
-./jtag screenshot --querySelector="chat-widget"  # Must capture both versions if present
+./jtag interface/screenshot --querySelector="chat-widget"  # Must capture both versions if present
 ```
 
 ### **Step 4: Gradual Replacement**
