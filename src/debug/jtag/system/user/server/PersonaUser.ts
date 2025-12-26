@@ -103,6 +103,7 @@ import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
+import type { RecallParams, MemoryEntity } from './modules/MemoryTypes';
 import { PersonaLogger } from './modules/PersonaLogger';
 import { setToolDefinitionsLogger } from './modules/PersonaToolDefinitions';
 import { setPeerReviewLogger } from './modules/cognition/PeerReviewManager';
@@ -193,6 +194,31 @@ export class PersonaUser extends AIUser {
   private get hippocampus(): Hippocampus {
     if (!this.soul) throw new Error('Soul not initialized');
     return this.soul.hippocampus;
+  }
+
+  /**
+   * Recall memories from long-term memory (Hippocampus)
+   * Public interface for RAG and other systems to access consolidated memories
+   */
+  public async recallMemories(params: RecallParams): Promise<MemoryEntity[]> {
+    if (!this.soul) {
+      return [];
+    }
+    return this.hippocampus.recall(params);
+  }
+
+  /**
+   * Semantic recall - query memories by meaning, not just filters
+   * Uses vector similarity search for semantically relevant memories
+   *
+   * @param queryText - Natural language query (e.g., recent message content)
+   * @param params - Additional filter constraints
+   */
+  public async semanticRecallMemories(queryText: string, params: RecallParams = {}): Promise<MemoryEntity[]> {
+    if (!this.soul) {
+      return [];
+    }
+    return this.hippocampus.semanticRecall(queryText, params);
   }
 
   public get trainingManager(): PersonaTrainingManager {

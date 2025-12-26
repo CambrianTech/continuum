@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-25T17:55:14.418Z",
+  "generated": "2025-12-26T00:59:47.124Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2523,6 +2523,11 @@
           "type": "string",
           "required": true,
           "description": "collection parameter"
+        },
+        "dbHandle": {
+          "type": "string",
+          "required": false,
+          "description": "dbHandle parameter"
         },
         "queryText": {
           "type": "string",

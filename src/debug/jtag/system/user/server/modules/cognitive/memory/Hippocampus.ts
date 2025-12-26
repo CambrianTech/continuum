@@ -37,6 +37,8 @@ import { MemoryConsolidationAdapter } from './adapters/MemoryConsolidationAdapte
 import { SemanticCompressionAdapter } from './adapters/SemanticCompressionAdapter';
 import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
 import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
+import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
+import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../../daemons/data-daemon/shared/VectorSearchTypes';
 
 /**
  * Snapshot of persona state at tick time
@@ -217,6 +219,93 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   }
 
   /**
+   * Semantic recall - query memories by meaning, not just filters
+   *
+   * Uses vector similarity search to find semantically relevant memories.
+   * This is the key capability for "thinking about what you know" vs "filtering what you stored".
+   *
+   * @param queryText - Natural language query describing what you're looking for
+   * @param params - Additional filter constraints (types, importance, etc.)
+   * @returns Memories ranked by semantic relevance
+   */
+  public async semanticRecall(queryText: string, params: RecallParams = {}): Promise<MemoryEntity[]> {
+    // Wait for database initialization
+    if (this.initializePromise) {
+      await this.initializePromise;
+    }
+
+    if (!this.memoryDbHandle) {
+      this.log('WARN: semanticRecall called without LTM database - falling back to filter-based recall');
+      return this.recall(params);
+    }
+
+    if (!queryText || queryText.trim().length === 0) {
+      this.log('WARN: semanticRecall called with empty query - falling back to filter-based recall');
+      return this.recall(params);
+    }
+
+    try {
+      // Build metadata filter for pre-filtering (reduces search space)
+      // Note: No personaId filter - each persona has their own database file
+      // This fixes orphaned memories when personas get new UUIDs on reseed
+      const filter: Record<string, any> = {};
+
+      if (params.types) {
+        filter.type = { $in: params.types };
+      }
+
+      if (params.minImportance !== undefined) {
+        filter.importance = { $gte: params.minImportance };
+      }
+
+      if (params.since) {
+        filter.timestamp = { $gte: params.since };
+      }
+
+      // Perform vector similarity search via DataDaemon
+      // Map RecallParams hybridMode to VectorSearchOptions hybridMode
+      // 'filter' in our API maps to 'keyword' in vector search (filter-based = keyword-based)
+      const vectorHybridMode = params.hybridMode === 'filter' ? 'keyword' :
+                               params.hybridMode === 'hybrid' ? 'hybrid' : 'semantic';
+
+      const searchOptions: VectorSearchOptions = {
+        collection: 'memories',
+        dbHandle: this.memoryDbHandle || undefined,  // Use per-persona database
+        queryText,
+        k: params.limit || 10,
+        similarityThreshold: params.semanticThreshold || 0.6,
+        filter,
+        hybridMode: vectorHybridMode
+      };
+
+      // Use Commands.execute to go through VectorSearchServerCommand which handles dbHandle
+      const result = await Commands.execute<any, any>('data/vector-search', searchOptions);
+
+      if (!result.success || !result.results) {
+        this.log(`WARN: Vector search failed: ${result.error} - falling back to filter-based recall`);
+        return this.recall(params);
+      }
+
+      // Cast results back to MemoryEntity (type-safe at runtime, worked around generic constraint)
+      const memories = result.results.map((r: { data: unknown }) => r.data as unknown as MemoryEntity);
+
+      // Update access stats for retrieved memories
+      for (const memory of memories) {
+        memory.accessCount++;
+        memory.lastAccessedAt = ISOString(new Date().toISOString());
+      }
+
+      this.log(`🔍 Semantic recall: "${queryText.slice(0, 50)}..." → ${memories.length} results ` +
+               `(threshold=${searchOptions.similarityThreshold}, mode=${searchOptions.hybridMode})`);
+
+      return memories;
+    } catch (error) {
+      this.log(`ERROR: Semantic recall failed: ${error} - falling back to filter-based recall`);
+      return this.recall(params);
+    }
+  }
+
+  /**
    * Search long-term memory (database)
    */
   private async searchLTM(params: RecallParams): Promise<MemoryEntity[]> {
@@ -226,9 +315,9 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
     try {
       // Build filter
-      const filter: Record<string, any> = {
-        personaId: this.persona.id
-      };
+      // Note: No personaId filter - each persona has their own database file
+      // This fixes orphaned memories when personas get new UUIDs on reseed
+      const filter: Record<string, any> = {};
 
       if (params.types) {
         filter.type = { $in: params.types };
@@ -412,21 +501,35 @@ export class Hippocampus extends PersonaContinuousSubprocess {
   }
 
   /**
-   * Calculate recent conversation activity (messages per minute)
-   * Estimates from working memory size as proxy
+   * Calculate recent activity level (messages per minute equivalent)
+   * Aggregates working memory usage across all domains
    */
   private async calculateActivityLevel(): Promise<number> {
     try {
-      // Get working memory capacity usage
-      const capacity = await this.persona.mind?.workingMemory?.getCapacity('chat');
+      // Aggregate activity across all domains
+      const domains = ['chat', 'game', 'ui', 'browsing', 'code'];
+      let totalUsed = 0;
+      let domainsChecked = 0;
 
-      if (!capacity) {
-        return 1.0;  // Default to moderate activity if mind/workingMemory not available
+      for (const domain of domains) {
+        try {
+          const capacity = await this.persona.mind?.workingMemory?.getCapacity(domain);
+          if (capacity) {
+            totalUsed += capacity.used;
+            domainsChecked++;
+          }
+        } catch {
+          // Domain not configured - skip
+        }
+      }
+
+      if (domainsChecked === 0) {
+        return 1.0;  // Default to moderate activity if no domains available
       }
 
       // Rough heuristic: working memory size indicates recent activity
       // If working memory is 40/100, estimate ~4 msg/min over last 10 min
-      const estimatedRate = capacity.used / 10.0;
+      const estimatedRate = totalUsed / 10.0;
 
       return Math.max(0.1, estimatedRate);  // Minimum 0.1 to avoid division by zero
     } catch (error) {
@@ -453,15 +556,41 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Get memory system statistics
    */
   public async getStats(): Promise<MemoryStats> {
-    // Get working memory size (source of consolidation)
-    const workingMemorySize = this.persona.mind?.workingMemory
-      ? (await this.persona.mind.workingMemory.getCapacity('chat')).used  // TODO: aggregate all domains
-      : 0;
+    // Aggregate working memory size across all domains
+    let workingMemorySize = 0;
+    const domains = ['chat', 'game', 'ui', 'browsing', 'code'];
+    for (const domain of domains) {
+      try {
+        const capacity = await this.persona.mind?.workingMemory?.getCapacity(domain);
+        if (capacity) {
+          workingMemorySize += capacity.used;
+        }
+      } catch {
+        // Domain not configured
+      }
+    }
+
+    // Query actual LTM count from database
+    // Note: No personaId filter needed - each persona has their own database file
+    // This also fixes the orphaned memories bug when personas get new UUIDs on reseed
+    let ltmCount = 0;
+    if (this.memoryDbHandle) {
+      try {
+        const result = await Commands.execute(DATA_COMMANDS.LIST, {
+          dbHandle: this.memoryDbHandle,
+          collection: 'memories',
+          limit: 0  // Just get count
+        } as any) as any;
+        ltmCount = result.totalCount || result.items?.length || 0;
+      } catch (error) {
+        this.log(`WARN: Could not get LTM count: ${error}`);
+      }
+    }
 
     return {
       stmSize: workingMemorySize, // WorkingMemory acts as STM
       stmMaxSize: 100, // WorkingMemory max capacity
-      ltmCount: 0, // TODO: Query LTM count from database
+      ltmCount,
       consolidationCount: this.metrics.consolidationCount,
       lastConsolidation: this.metrics.lastConsolidation || undefined
     };

@@ -64,12 +64,12 @@ export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
     defaultTitle: 'Help',
   },
 
-  // Persona details/editor
+  // Persona brain/cognitive view
   persona: {
-    widget: 'persona-widget',
+    widget: 'persona-brain-widget',
     displayName: 'Persona',
     pathPrefix: '/persona',
-    requiresEntity: true,  // Needs userId
+    requiresEntity: true,  // Needs userId (uniqueId)
   },
 
   // Web browser (collaborative)
@@ -79,6 +79,23 @@ export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
     pathPrefix: '/browser',
     requiresEntity: false,
     defaultTitle: 'Browser',
+  },
+
+  // System diagnostics and persona logs
+  diagnostics: {
+    widget: 'diagnostics-widget',
+    displayName: 'Diagnostics',
+    pathPrefix: '/diagnostics',
+    requiresEntity: false,
+    defaultTitle: 'System Diagnostics',
+  },
+
+  // Individual log viewer (opened from diagnostics)
+  'diagnostics-log': {
+    widget: 'log-viewer-widget',
+    displayName: 'Log',
+    pathPrefix: '/log',
+    requiresEntity: true,  // Needs log file path
   },
 };
 

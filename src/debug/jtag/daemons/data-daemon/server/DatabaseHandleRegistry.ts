@@ -53,7 +53,8 @@ export type OpenMode = 'readonly' | 'readwrite' | 'create';
  * SQLite-specific configuration
  */
 export interface SqliteConfig {
-  filename: string;                    // Database file path
+  filename?: string;                   // Database file path (deprecated, use 'path')
+  path?: string;                       // Database file path (preferred)
   mode?: OpenMode;                     // Open mode (default: readwrite)
   poolSize?: number;                   // Connection pool size
   foreignKeys?: boolean;               // Enable foreign key constraints
@@ -217,13 +218,19 @@ export class DatabaseHandleRegistry {
     switch (adapter) {
       case 'sqlite': {
         const sqliteConfig = config as SqliteConfig;
+        // Support both 'path' (preferred) and 'filename' (deprecated) for backward compatibility
+        const dbPath = sqliteConfig.path || sqliteConfig.filename;
+        if (!dbPath) {
+          throw new Error('SQLite config requires either "path" or "filename" property');
+        }
+        console.log(`🔌 DatabaseHandleRegistry: Opening SQLite at: ${dbPath}`);
         storageAdapter = new SqliteStorageAdapter();
         // Initialize with proper StorageAdapterConfig
         await storageAdapter.initialize({
           type: 'sqlite',
           namespace: handle,  // Use handle as namespace
           options: {
-            filename: sqliteConfig.filename,
+            filename: dbPath,
             mode: sqliteConfig.mode,
             poolSize: sqliteConfig.poolSize,
             foreignKeys: sqliteConfig.foreignKeys,

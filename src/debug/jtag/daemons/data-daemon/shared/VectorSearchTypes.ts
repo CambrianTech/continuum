@@ -29,6 +29,9 @@ export interface EmbeddingModel {
 export interface VectorSearchOptions {
   readonly collection: string;
 
+  // Database handle for per-persona databases (optional - uses main db if not provided)
+  readonly dbHandle?: string;
+
   // Query can be text (will generate embedding) OR pre-computed vector
   readonly queryText?: string;
   readonly queryVector?: VectorEmbedding;

@@ -19,6 +19,7 @@ import { MemoryType } from '../../../MemoryTypes';
 import { generateUUID } from '../../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../../data/domains/CoreTypes';
 import type { PersonaUser } from '../../../../PersonaUser';
+import { EmbeddingService } from '../../../../../../core/services/EmbeddingService';
 
 /**
  * Group of related thoughts for synthesis
@@ -78,11 +79,42 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
       }
     }
 
+    // Phase 2: Generate embeddings for all memories (semantic cognition)
+    let embeddingsGenerated = 0;
+    for (const memory of memories) {
+      try {
+        // Create IEmbeddable wrapper for the memory
+        const embeddableMemory = {
+          ...memory,
+          getEmbeddableContent: () => memory.content
+        };
+
+        // Generate embedding via EmbeddingService
+        await EmbeddingService.embedIfNeeded(embeddableMemory, {
+          log: (msg: string) => this.log(`[Embedding] ${msg}`)
+        });
+
+        // Copy embedding data back to memory
+        if (embeddableMemory.embedding) {
+          memory.embedding = embeddableMemory.embedding;
+          memory.embeddedAt = embeddableMemory.embeddedAt;
+          memory.embeddingModel = embeddableMemory.embeddingModel;
+          embeddingsGenerated++;
+        }
+      } catch (error) {
+        // Don't fail consolidation if embedding fails - memory is still valuable without it
+        this.log(`[Embedding] Failed for memory ${memory.id}: ${error}`);
+      }
+    }
+
+    this.log(`🧠 [${context.personaName}] Embeddings: ${embeddingsGenerated}/${memories.length} generated`);
+
     return {
       memories,
       metadata: {
         synthesisCount,
         groupsCreated: groups.length,
+        embeddingsGenerated,
         errors: errors.length > 0 ? errors : undefined
       }
     };

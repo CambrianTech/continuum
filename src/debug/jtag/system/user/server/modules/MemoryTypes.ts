@@ -53,7 +53,19 @@ export interface MemoryEntity extends BaseEntityData {
 
   // Metadata
   source: string;                   // Where memory came from (e.g., "chat/send", "ai/generate")
-  embedding?: number[];             // Vector embedding (future: semantic search)
+
+  // Semantic embedding (IEmbeddable pattern)
+  embedding?: number[];             // Vector embedding for semantic search
+  embeddedAt?: ISOString;           // When embedding was generated
+  embeddingModel?: string;          // Model used (e.g., "all-minilm")
+}
+
+/**
+ * Get embeddable content from a MemoryEntity
+ * This follows the IEmbeddable pattern for semantic embedding
+ */
+export function getMemoryEmbeddableContent(memory: MemoryEntity): string {
+  return memory.content;
 }
 
 /**
@@ -76,12 +88,21 @@ export interface CreateMemoryParams {
  * Parameters for recalling memories
  */
 export interface RecallParams {
+  // Filter-based recall (existing)
   types?: MemoryType[];             // Filter by memory types
   tags?: string[];                  // Filter by tags (AND logic)
   minImportance?: number;           // Minimum importance threshold
   limit?: number;                   // Max results to return
   since?: ISOString;                // Only memories after this date
   contextFilter?: Record<string, any>;  // Filter by context fields
+
+  // Semantic search options (new)
+  semanticQuery?: string;           // Natural language query for semantic search
+  semanticThreshold?: number;       // Minimum similarity 0-1 (default: 0.6)
+  hybridMode?: 'semantic' | 'filter' | 'hybrid';  // Search strategy
+
+  // Include private thoughts in results
+  includePrivate?: boolean;
 }
 
 /**

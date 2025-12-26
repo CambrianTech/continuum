@@ -30,6 +30,11 @@ export class ContinuumWidget extends BaseWidget {
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
 
+    // CRITICAL: Load and inject base theme CSS FIRST, before any child widgets render
+    // This ensures CSS variables are available when sidebar, room-list, etc. initialize
+    const themeCSS = await this.loadThemeCSS();
+    await this.injectThemeIntoDocumentHead(themeCSS);
+
     // Initialize any dynamic content or state
     await this.updateConnectionStatus();
 
@@ -52,9 +57,7 @@ export class ContinuumWidget extends BaseWidget {
     const styles = this.templateCSS ?? '/* No styles loaded */';
     const template = this.templateHTML ?? '<div>No template loaded</div>';
 
-    // Load theme CSS and inject into document head for global access (like ThemeWidget does)
-    const themeCSS = await this.loadThemeCSS();
-    await this.injectThemeIntoDocumentHead(themeCSS);
+    // Theme CSS already injected in onWidgetInitialize() - no need to reload here
 
     // Ensure template is a string
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
@@ -69,7 +72,7 @@ export class ContinuumWidget extends BaseWidget {
       ${dynamicContent}
     `;
 
-    console.log('✅ ContinuumWidget: Desktop interface rendered with theme CSS injected into document head');
+    console.log('✅ ContinuumWidget: Desktop interface rendered');
   }
 
   protected async onWidgetCleanup(): Promise<void> {
