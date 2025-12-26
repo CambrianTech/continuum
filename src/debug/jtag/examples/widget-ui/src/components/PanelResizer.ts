@@ -565,5 +565,7 @@ export class PanelResizer extends HTMLElement {
     }
 }
 
-// Don't auto-register - let specific implementations do that
+// Register the custom element
+customElements.define('panel-resizer', PanelResizer);
+
 export type { PanelResizedDetail, WidthLimits };

@@ -1,0 +1,65 @@
+{
+  "uniqueId": "settings",
+  "name": "Settings Configuration",
+  "displayName": "Settings",
+  "description": "Configure API keys, preferences, and system settings with AI assistance",
+  "version": 1,
+
+  "layout": {
+    "mainWidget": "settings-widget",
+    "rightPanel": {
+      "widget": "chat-widget",
+      "room": "help",
+      "compact": true
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": false
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "teaching",
+    "responseRules": [
+      "Help users configure their settings correctly",
+      "Explain what each setting does when asked",
+      "Warn about security implications of exposing API keys",
+      "Suggest optimal configurations based on user needs"
+    ],
+    "decisionCriteria": [
+      "Is the user asking about a specific setting?",
+      "Do they need help understanding configuration options?",
+      "Are there security concerns to address?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["settings", "configuration", "help"]
+}

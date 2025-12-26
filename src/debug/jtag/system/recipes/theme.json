@@ -1,0 +1,60 @@
+{
+  "uniqueId": "theme",
+  "name": "Theme Designer",
+  "displayName": "Theme",
+  "description": "Customize the visual appearance with AI-assisted theme design",
+  "version": 1,
+
+  "layout": {
+    "mainWidget": "theme-widget",
+    "rightPanel": {
+      "widget": "chat-widget",
+      "room": "help",
+      "compact": true
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Help users design cohesive color schemes",
+      "Suggest complementary colors based on selections",
+      "Explain accessibility considerations (contrast ratios)",
+      "Offer creative theme ideas based on mood or style"
+    ],
+    "decisionCriteria": [
+      "Is the user asking for design advice?",
+      "Do they need help with color theory?",
+      "Are there accessibility issues to address?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["theme", "design", "customization"]
+}

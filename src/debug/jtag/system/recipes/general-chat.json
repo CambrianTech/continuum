@@ -5,6 +5,11 @@
   "description": "Natural conversation where AIs respond to humans thoughtfully, avoiding AI-to-AI loops",
   "version": 1,
 
+  "layout": {
+    "mainWidget": "chat-widget",
+    "rightPanel": null
+  },
+
   "pipeline": [
     {
       "command": "rag/build",

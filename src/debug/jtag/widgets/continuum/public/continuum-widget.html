@@ -3,7 +3,7 @@
     <!-- Left Sidebar Panel with Resizer -->
     <div class="sidebar-container">
         <sidebar-widget class="left-sidebar"></sidebar-widget>
-        <sidebar-resizer></sidebar-resizer>
+        <panel-resizer side="left" css-var-prefix="sidebar" container-class="sidebar-container"></panel-resizer>
     </div>
 
     <!-- Main Content Panel -->
@@ -11,7 +11,7 @@
 
     <!-- Right Panel with Resizer (Assistant, Logs, Tools) -->
     <div class="right-panel-container">
-        <right-panel-resizer></right-panel-resizer>
+        <panel-resizer side="right" css-var-prefix="right-panel" container-class="right-panel-container"></panel-resizer>
         <right-panel-widget></right-panel-widget>
     </div>
 </div>

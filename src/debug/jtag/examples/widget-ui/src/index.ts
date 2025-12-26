@@ -11,8 +11,7 @@ import type { JTAGClient } from '@continuum/jtag/dist/system/core/client/shared/
 
 // Import widget components
 import './components/ContinuumEmoter.js';
-import './components/SidebarResizer.js';
-import './components/RightPanelResizer.js';
+import './components/PanelResizer.js';  // Unified resizer for both sidebars
 
 // console.log('✅ Widget UI: JTAG imported:', typeof jtag);
 

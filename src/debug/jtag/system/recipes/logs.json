@@ -1,0 +1,60 @@
+{
+  "uniqueId": "logs",
+  "name": "Log Analyzer",
+  "displayName": "Logs",
+  "description": "View and analyze system logs with AI-assisted debugging",
+  "version": 1,
+
+  "layout": {
+    "mainWidget": "logs-widget",
+    "rightPanel": {
+      "widget": "chat-widget",
+      "room": "help",
+      "compact": true
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 15,
+        "includeParticipants": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 15,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "teaching",
+    "responseRules": [
+      "Help users understand log entries and error messages",
+      "Identify patterns in errors or warnings",
+      "Suggest fixes for common issues",
+      "Explain what different log levels mean"
+    ],
+    "decisionCriteria": [
+      "Is the user asking about a specific error?",
+      "Do they need help interpreting log output?",
+      "Are there recurring issues to highlight?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["logs", "debugging", "analysis"]
+}

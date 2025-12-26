@@ -5,14 +5,17 @@
  * Embeds ChatWidget in compact mode - no duplicate chat code.
  * Can be collapsed/expanded.
  *
- * TODO: Wire to recipe system - each room's recipe defines layout.rightPanel
- * For now, starts collapsed until recipe-driven layout is implemented.
+ * Listens to UI_EVENTS.RIGHT_PANEL_CONFIGURE to update room/visibility
+ * based on the current content type's recipe layout.
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import { Events } from '../../system/core/shared/Events';
+import { UI_EVENTS, type RightPanelConfigPayload } from '../../system/core/shared/EventConstants';
 
 export class RightPanelWidget extends BaseWidget {
   private currentRoom: string = 'help';
+  private isHidden: boolean = false;
 
   constructor() {
     super({
@@ -28,8 +31,68 @@ export class RightPanelWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('📋 RightPanelWidget: Initializing...');
-    // Collapse state managed by RightPanelResizer (persisted to localStorage)
-    console.log('✅ RightPanelWidget: Initialized');
+
+    // Listen for layout configuration events from MainWidget
+    Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
+      this.handleLayoutConfig(config);
+    });
+
+    console.log('✅ RightPanelWidget: Initialized with layout event listener');
+  }
+
+  /**
+   * Handle layout configuration from MainWidget
+   * Updates room and visibility based on content type's recipe
+   */
+  private handleLayoutConfig(config: RightPanelConfigPayload): void {
+    console.log(`📋 RightPanelWidget: Received layout config for ${config.contentType}:`, config);
+
+    if (config.widget === null) {
+      // Hide the panel
+      this.isHidden = true;
+      this.collapsePanel();
+      console.log(`📋 RightPanelWidget: Hiding panel for ${config.contentType}`);
+    } else {
+      // Show the panel with configured room
+      this.isHidden = false;
+      const newRoom = config.room || 'help';
+
+      if (this.currentRoom !== newRoom) {
+        this.currentRoom = newRoom;
+        this.updateEmbeddedChat();
+        console.log(`📋 RightPanelWidget: Switched to room '${newRoom}' for ${config.contentType}`);
+      }
+
+      // Expand if it was hidden before
+      this.expandPanel();
+    }
+  }
+
+  /**
+   * Collapse the panel (via resizer)
+   */
+  private collapsePanel(): void {
+    const continuumWidget = document.querySelector('continuum-widget') as any;
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector('panel-resizer[side="right"]') as any;
+      if (resizer?.collapse) {
+        resizer.collapse();
+      }
+    }
+  }
+
+  /**
+   * Expand the panel (via resizer) if not manually collapsed
+   */
+  private expandPanel(): void {
+    const continuumWidget = document.querySelector('continuum-widget') as any;
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector('panel-resizer[side="right"]') as any;
+      // Only expand if explicitly hidden by layout (not user preference)
+      if (resizer?.expand && this.isHidden === false) {
+        resizer.expand();
+      }
+    }
   }
 
   /**
@@ -38,7 +101,7 @@ export class RightPanelWidget extends BaseWidget {
   private toggleCollapse(): void {
     const continuumWidget = document.querySelector('continuum-widget') as any;
     if (continuumWidget?.shadowRoot) {
-      const resizer = continuumWidget.shadowRoot.querySelector('right-panel-resizer') as any;
+      const resizer = continuumWidget.shadowRoot.querySelector('panel-resizer[side="right"]') as any;
       if (resizer?.toggle) {
         resizer.toggle();
       }

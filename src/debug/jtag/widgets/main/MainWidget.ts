@@ -17,7 +17,7 @@ import type { ContentOpenParams, ContentOpenResult } from '../../commands/collab
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import { getWidgetForType, buildContentPath, parseContentPath } from './shared/ContentTypeRegistry';
+import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig } from './shared/ContentTypeRegistry';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
@@ -221,6 +221,7 @@ export class MainWidget extends BaseWidget {
   /**
    * Switch content view to render the appropriate widget
    * NOTE: Does NOT emit ROOM_SELECTED - caller is responsible for that to avoid loops
+   * Emits RIGHT_PANEL_CONFIGURE to update right panel based on content type's layout
    */
   private switchContentView(contentType: string, entityId?: string): void {
     const contentView = this.shadowRoot?.querySelector('.content-view');
@@ -236,7 +237,16 @@ export class MainWidget extends BaseWidget {
 
     contentView.innerHTML = widgetHtml;
 
-    console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}`);
+    // Emit right panel configuration based on content type's layout
+    const rightPanelConfig = getRightPanelConfig(contentType);
+    Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+      widget: rightPanelConfig?.widget || null,
+      room: rightPanelConfig?.room,
+      compact: rightPanelConfig?.compact,
+      contentType: contentType
+    });
+
+    console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}, rightPanel: ${rightPanelConfig ? rightPanelConfig.room : 'hidden'}`);
   }
 
   /**

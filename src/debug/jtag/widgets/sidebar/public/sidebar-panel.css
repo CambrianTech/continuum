@@ -16,10 +16,30 @@
   height: 100%;
   min-height: 0;
   padding: 15px;
+  padding-top: 0;
   position: relative;
   gap: var(--spacing-md);
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* Collapse button - positioned top right */
+.collapse-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--content-secondary, #8a92a5);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 14px;
+  transition: color 0.2s;
+  z-index: 10;
+}
+
+.collapse-btn:hover {
+  color: var(--content-accent, #00d4ff);
 }
 
 /* Widget containers - split vertical space evenly */
@@ -87,15 +107,4 @@
 /* Continuum Emoter Widget Styling */
 continuum-emoter {
   margin-bottom: 15px;
-}
-
-/* Sidebar Resizer */
-sidebar-resizer {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  bottom: 0;
-  width: 8px;
-  cursor: col-resize;
-  z-index: 1000;
 }
