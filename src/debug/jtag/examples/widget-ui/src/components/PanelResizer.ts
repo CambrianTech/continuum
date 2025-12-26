@@ -1,17 +1,39 @@
 /**
- * SidebarResizer - Draggable resizer for left sidebar
+ * PanelResizer - Unified draggable resizer for sidebar panels
+ *
+ * Works for both left sidebar and right panel with configurable:
+ * - Side (left/right) - determines positioning and drag direction
+ * - Collapsible - optional collapse with expand button
+ * - CSS var prefix - reads dimensions from theme
+ * - Storage key - localStorage persistence
  *
  * Features:
  * - Drag to resize
- * - Drag past threshold to collapse
- * - Double-click to toggle collapse
- * - Expand button when collapsed
- * - All dimensions from CSS vars (single source of truth)
- * - All colors from theme vars
+ * - Drag past threshold to collapse (if enabled)
+ * - Double-click to toggle collapse (if enabled)
+ * - Expand button when collapsed (if enabled)
+ * - All colors from CSS theme vars
  * - Persists state to localStorage
  */
 
-interface SidebarResizedDetail {
+export interface PanelResizerConfig {
+    /** Which side of the layout ('left' for sidebar, 'right' for right panel) */
+    side: 'left' | 'right';
+
+    /** CSS variable prefix for dimensions (e.g., 'sidebar' reads --sidebar-width) */
+    cssVarPrefix: string;
+
+    /** Container class to resize (e.g., 'sidebar-container' or 'right-panel-container') */
+    containerClass: string;
+
+    /** Enable collapse functionality */
+    collapsible?: boolean;
+
+    /** LocalStorage key prefix for persistence */
+    storageKeyPrefix: string;
+}
+
+interface PanelResizedDetail {
     width: number;
     collapsed: boolean;
 }
@@ -22,18 +44,19 @@ interface WidthLimits {
     default: number;
 }
 
-class SidebarResizer extends HTMLElement {
+export class PanelResizer extends HTMLElement {
+    private config!: PanelResizerConfig;
     private isDragging: boolean = false;
     private startX: number = 0;
     private startWidth: number = 0;
     private currentWidth?: number;
     private isCollapsed: boolean = false;
-    private lastExpandedWidth: number = 250;
+    private lastExpandedWidth: number = 320;
 
-    // Read from CSS vars in connectedCallback
+    // Read from CSS vars
     private minWidth: number = 150;
-    private maxWidth: number = 400;
-    private defaultWidth: number = 250;
+    private maxWidth: number = 600;
+    private defaultWidth: number = 320;
     private collapseThreshold: number = 50;
     private collapsedHandleWidth: number = 6;
 
@@ -48,7 +71,31 @@ class SidebarResizer extends HTMLElement {
         this.attachShadow({ mode: 'open' });
     }
 
+    /**
+     * Configure the resizer. Must be called before connectedCallback or via attribute.
+     */
+    configure(config: PanelResizerConfig): void {
+        this.config = config;
+    }
+
     connectedCallback(): void {
+        // Try to get config from attributes if not set programmatically
+        if (!this.config) {
+            const side = this.getAttribute('side') as 'left' | 'right' || 'right';
+            const cssVarPrefix = this.getAttribute('css-var-prefix') || (side === 'left' ? 'sidebar' : 'right-panel');
+            const containerClass = this.getAttribute('container-class') || (side === 'left' ? 'sidebar-container' : 'right-panel-container');
+            const collapsible = this.getAttribute('collapsible') !== 'false';
+            const storageKeyPrefix = this.getAttribute('storage-key-prefix') || `continuum-${side}-panel`;
+
+            this.config = {
+                side,
+                cssVarPrefix,
+                containerClass,
+                collapsible,
+                storageKeyPrefix
+            };
+        }
+
         this.loadCSSVars();
         this.render();
         this.setupEventListeners();
@@ -64,6 +111,7 @@ class SidebarResizer extends HTMLElement {
      */
     private loadCSSVars(): void {
         const styles = getComputedStyle(document.documentElement);
+        const prefix = this.config.cssVarPrefix;
 
         const getCSSPixelValue = (varName: string, fallback: number): number => {
             const value = styles.getPropertyValue(varName).trim();
@@ -72,62 +120,68 @@ class SidebarResizer extends HTMLElement {
             return isNaN(parsed) ? fallback : parsed;
         };
 
-        this.minWidth = getCSSPixelValue('--sidebar-min-width', 150);
-        this.maxWidth = getCSSPixelValue('--sidebar-max-width', 400);
-        this.defaultWidth = getCSSPixelValue('--sidebar-width', 250);
-        this.collapseThreshold = getCSSPixelValue('--sidebar-collapse-threshold', 50);
-        this.collapsedHandleWidth = getCSSPixelValue('--sidebar-collapsed-width', 6);
+        this.minWidth = getCSSPixelValue(`--${prefix}-min-width`, 150);
+        this.maxWidth = getCSSPixelValue(`--${prefix}-max-width`, 600);
+        this.defaultWidth = getCSSPixelValue(`--${prefix}-width`, 320);
+        this.collapseThreshold = getCSSPixelValue(`--${prefix}-collapse-threshold`, 50);
+        this.collapsedHandleWidth = getCSSPixelValue(`--${prefix}-collapsed-width`, 6);
         this.lastExpandedWidth = this.defaultWidth;
     }
 
     private loadSavedState(): void {
+        const prefix = this.config.storageKeyPrefix;
+
         try {
             // Load collapsed state
-            const savedCollapsed = localStorage.getItem('continuum-sidebar-collapsed');
-            if (savedCollapsed === 'true') {
-                this.isCollapsed = true;
-                this.applyCollapsedState(true);
-                this.updateHostClass();
-                return;
+            if (this.config.collapsible) {
+                const savedCollapsed = localStorage.getItem(`${prefix}-collapsed`);
+                if (savedCollapsed === 'true') {
+                    this.isCollapsed = true;
+                    this.applyCollapsedState(true);
+                    this.updateHostClass();
+                    return;
+                }
             }
 
-            const savedWidth = localStorage.getItem('continuum-sidebar-width');
+            const savedWidth = localStorage.getItem(`${prefix}-width`);
             if (savedWidth) {
                 const width = parseInt(savedWidth, 10);
                 if (!isNaN(width) && width >= this.minWidth && width <= this.maxWidth) {
                     this.lastExpandedWidth = width;
-                    this.applySidebarWidth(width);
+                    this.applyPanelWidth(width);
                     return;
                 }
             }
         } catch {
             // Ignore errors
         }
-        this.applySidebarWidth(this.defaultWidth);
+        this.applyPanelWidth(this.defaultWidth);
     }
 
     private saveWidth(width: number): void {
+        const prefix = this.config.storageKeyPrefix;
         try {
-            localStorage.setItem('continuum-sidebar-width', width.toString());
-            localStorage.setItem('continuum-sidebar-collapsed', 'false');
+            localStorage.setItem(`${prefix}-width`, width.toString());
+            localStorage.setItem(`${prefix}-collapsed`, 'false');
         } catch {
             // Ignore errors
         }
     }
 
     private saveCollapsedState(collapsed: boolean): void {
+        const prefix = this.config.storageKeyPrefix;
         try {
-            localStorage.setItem('continuum-sidebar-collapsed', collapsed.toString());
+            localStorage.setItem(`${prefix}-collapsed`, collapsed.toString());
         } catch {
             // Ignore errors
         }
     }
 
     /**
-     * Collapse the sidebar to a thin handle
+     * Collapse the panel to a thin handle
      */
     collapse(): void {
-        if (this.isCollapsed) return;
+        if (!this.config.collapsible || this.isCollapsed) return;
 
         if (this.currentWidth && this.currentWidth >= this.minWidth) {
             this.lastExpandedWidth = this.currentWidth;
@@ -140,14 +194,14 @@ class SidebarResizer extends HTMLElement {
     }
 
     /**
-     * Expand the sidebar to last width
+     * Expand the panel to last width
      */
     expand(): void {
         if (!this.isCollapsed) return;
 
         this.isCollapsed = false;
         this.applyCollapsedState(false);
-        this.applySidebarWidth(this.lastExpandedWidth);
+        this.applyPanelWidth(this.lastExpandedWidth);
         this.saveCollapsedState(false);
         this.saveWidth(this.lastExpandedWidth);
         this.updateHostClass();
@@ -177,55 +231,67 @@ class SidebarResizer extends HTMLElement {
         if (!continuumWidget?.shadowRoot) return;
 
         const desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container') as HTMLElement;
-        const sidebarContainer = continuumWidget.shadowRoot.querySelector('.sidebar-container') as HTMLElement;
+        const panelContainer = continuumWidget.shadowRoot.querySelector(`.${this.config.containerClass}`) as HTMLElement;
 
-        if (!desktopContainer || !sidebarContainer) return;
+        if (!desktopContainer || !panelContainer) return;
 
         if (collapsed) {
-            sidebarContainer.style.width = `${this.collapsedHandleWidth}px`;
-            sidebarContainer.classList.add('collapsed');
+            panelContainer.style.width = `${this.collapsedHandleWidth}px`;
+            panelContainer.classList.add('collapsed');
 
             const currentCols = getComputedStyle(desktopContainer).gridTemplateColumns.split(' ');
-            const rightPanelWidth = currentCols[2] || 'var(--right-panel-width, 320px)';
-            desktopContainer.style.gridTemplateColumns = `${this.collapsedHandleWidth}px 1fr ${rightPanelWidth}`;
+
+            if (this.config.side === 'left') {
+                const rightPanelWidth = currentCols[2] || 'var(--right-panel-width, 320px)';
+                desktopContainer.style.gridTemplateColumns = `${this.collapsedHandleWidth}px 1fr ${rightPanelWidth}`;
+            } else {
+                const sidebarWidth = currentCols[0] || 'var(--sidebar-width, 250px)';
+                desktopContainer.style.gridTemplateColumns = `${sidebarWidth} 1fr ${this.collapsedHandleWidth}px`;
+            }
 
             this.currentWidth = 0;
 
-            this.dispatchEvent(new CustomEvent<SidebarResizedDetail>('sidebar-resized', {
+            this.dispatchEvent(new CustomEvent<PanelResizedDetail>('panel-resized', {
                 detail: { width: 0, collapsed: true },
                 bubbles: true
             }));
         } else {
-            sidebarContainer.classList.remove('collapsed');
+            panelContainer.classList.remove('collapsed');
         }
     }
 
-    private applySidebarWidth(width: number, clipping: boolean = false): void {
+    private applyPanelWidth(width: number, clipping: boolean = false): void {
         const continuumWidget = document.querySelector('continuum-widget') as any;
         if (!continuumWidget?.shadowRoot) return;
 
         const desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container') as HTMLElement;
-        const sidebarContainer = continuumWidget.shadowRoot.querySelector('.sidebar-container') as HTMLElement;
+        const panelContainer = continuumWidget.shadowRoot.querySelector(`.${this.config.containerClass}`) as HTMLElement;
 
-        if (!sidebarContainer || !desktopContainer) return;
+        if (!panelContainer || !desktopContainer) return;
 
-        sidebarContainer.style.width = `${width}px`;
+        panelContainer.style.width = `${width}px`;
 
         if (clipping) {
-            sidebarContainer.style.overflow = 'hidden';
-            sidebarContainer.classList.add('clipping');
+            panelContainer.style.overflow = 'hidden';
+            panelContainer.classList.add('clipping');
         } else {
-            sidebarContainer.style.overflow = '';
-            sidebarContainer.classList.remove('clipping');
+            panelContainer.style.overflow = '';
+            panelContainer.classList.remove('clipping');
         }
 
         const currentCols = getComputedStyle(desktopContainer).gridTemplateColumns.split(' ');
-        const rightPanelWidth = currentCols[2] || 'var(--right-panel-width, 320px)';
-        desktopContainer.style.gridTemplateColumns = `${width}px 1fr ${rightPanelWidth}`;
+
+        if (this.config.side === 'left') {
+            const rightPanelWidth = currentCols[2] || 'var(--right-panel-width, 320px)';
+            desktopContainer.style.gridTemplateColumns = `${width}px 1fr ${rightPanelWidth}`;
+        } else {
+            const sidebarWidth = currentCols[0] || 'var(--sidebar-width, 250px)';
+            desktopContainer.style.gridTemplateColumns = `${sidebarWidth} 1fr ${width}px`;
+        }
 
         this.currentWidth = width;
 
-        this.dispatchEvent(new CustomEvent<SidebarResizedDetail>('sidebar-resized', {
+        this.dispatchEvent(new CustomEvent<PanelResizedDetail>('panel-resized', {
             detail: { width, collapsed: false },
             bubbles: true
         }));
@@ -238,15 +304,17 @@ class SidebarResizer extends HTMLElement {
         this.boundTouchEnd = this.handleTouchEnd.bind(this);
 
         this.shadowRoot?.addEventListener('mousedown', this.handleMouseDown.bind(this));
-        this.shadowRoot?.addEventListener('dblclick', this.handleDoubleClick.bind(this));
 
-        // Expand button click
-        const expandBtn = this.shadowRoot?.querySelector('.expand-btn');
-        if (expandBtn) {
-            expandBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.expand();
-            });
+        if (this.config.collapsible) {
+            this.shadowRoot?.addEventListener('dblclick', this.handleDoubleClick.bind(this));
+
+            const expandBtn = this.shadowRoot?.querySelector('.expand-btn');
+            if (expandBtn) {
+                expandBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.expand();
+                });
+            }
         }
 
         document.addEventListener('mousemove', this.boundMouseMove);
@@ -287,7 +355,7 @@ class SidebarResizer extends HTMLElement {
         this.startWidth = this.currentWidth || this.defaultWidth;
 
         document.body.style.cursor = 'col-resize';
-        document.documentElement.classList.add('sidebar-dragging');
+        document.documentElement.classList.add(`${this.config.side}-panel-dragging`);
         this.shadowRoot?.host.classList.add('dragging');
     }
 
@@ -303,43 +371,46 @@ class SidebarResizer extends HTMLElement {
     }
 
     private doDrag(clientX: number): void {
-        // For left sidebar: dragging RIGHT increases width
-        const deltaX = clientX - this.startX;
+        // For left sidebar: dragging RIGHT increases width (+deltaX)
+        // For right panel: dragging LEFT increases width (-deltaX)
+        const deltaX = this.config.side === 'left'
+            ? clientX - this.startX
+            : this.startX - clientX;
+
         const rawWidth = this.startWidth + deltaX;
 
         // If collapsed and dragging to expand
-        if (this.isCollapsed) {
+        if (this.isCollapsed && this.config.collapsible) {
             if (rawWidth >= this.minWidth) {
                 this.isCollapsed = false;
                 this.shadowRoot?.host.classList.remove('collapsed');
                 const continuumWidget = document.querySelector('continuum-widget') as any;
                 if (continuumWidget?.shadowRoot) {
-                    const sidebarContainer = continuumWidget.shadowRoot.querySelector('.sidebar-container') as HTMLElement;
-                    if (sidebarContainer) {
-                        sidebarContainer.classList.remove('collapsed');
+                    const panelContainer = continuumWidget.shadowRoot.querySelector(`.${this.config.containerClass}`) as HTMLElement;
+                    if (panelContainer) {
+                        panelContainer.classList.remove('collapsed');
                     }
                 }
-                this.applySidebarWidth(this.minWidth);
+                this.applyPanelWidth(this.minWidth);
             }
             return;
         }
 
-        // Below snap threshold → collapse completely
-        const snapThreshold = this.collapseThreshold;
-        if (rawWidth < snapThreshold) {
+        // Below snap threshold → collapse completely (if collapsible)
+        if (this.config.collapsible && rawWidth < this.collapseThreshold) {
             this.collapse();
             return;
         }
 
         // Below minWidth but above snap → allow with clipping
-        if (rawWidth < this.minWidth) {
-            this.applySidebarWidth(rawWidth, true);
+        if (this.config.collapsible && rawWidth < this.minWidth) {
+            this.applyPanelWidth(rawWidth, true);
             return;
         }
 
         // Normal resize within bounds
-        const newWidth = Math.min(this.maxWidth, rawWidth);
-        this.applySidebarWidth(newWidth);
+        const newWidth = Math.max(this.minWidth, Math.min(this.maxWidth, rawWidth));
+        this.applyPanelWidth(newWidth);
     }
 
     private handleMouseUp(): void {
@@ -354,7 +425,7 @@ class SidebarResizer extends HTMLElement {
         if (this.isDragging) {
             this.isDragging = false;
             document.body.style.cursor = '';
-            document.documentElement.classList.remove('sidebar-dragging');
+            document.documentElement.classList.remove(`${this.config.side}-panel-dragging`);
             this.shadowRoot?.host.classList.remove('dragging');
 
             if (this.currentWidth !== undefined && this.currentWidth > 0) {
@@ -366,48 +437,61 @@ class SidebarResizer extends HTMLElement {
     private render(): void {
         if (!this.shadowRoot) return;
 
+        const isLeft = this.config.side === 'left';
+        const prefix = this.config.cssVarPrefix;
+
+        // Position: left sidebar has resizer on RIGHT edge, right panel on LEFT edge
+        const positionStyles = isLeft
+            ? 'right: -1px; border-right: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.2));'
+            : 'left: -1px; border-left: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.2));';
+
+        const hoverBorder = isLeft ? 'border-right' : 'border-left';
+        const activeBorder = isLeft ? 'border-right' : 'border-left';
+
+        // Expand button position for collapsed state
+        const expandBtnPosition = isLeft ? 'left: 6px;' : 'right: var(--right-panel-collapsed-width, 6px);';
+
         this.shadowRoot.innerHTML = `
             <style>
                 :host {
                     position: absolute;
                     top: 0;
-                    right: -1px;
                     bottom: 0;
+                    ${positionStyles}
                     width: var(--resizer-width, 2px);
                     cursor: col-resize;
                     z-index: 1000;
                     background: var(--resizer-background, rgba(0, 212, 255, 0.1));
-                    border-right: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.2));
                     transition: all 0.2s ease;
                     overflow: visible;
                 }
 
                 :host(:hover) {
                     background: var(--resizer-background-hover, rgba(0, 212, 255, 0.3));
-                    border-right: 1px solid var(--resizer-border-hover, #00d4ff);
+                    ${hoverBorder}: 1px solid var(--resizer-border-hover, #00d4ff);
                     box-shadow: 0 0 4px var(--resizer-glow-hover, rgba(0, 212, 255, 0.5));
                 }
 
                 :host(.dragging) {
                     background: var(--resizer-background-active, rgba(0, 212, 255, 0.6));
-                    border-right: 2px solid var(--resizer-border-active, #00d4ff);
+                    ${activeBorder}: 2px solid var(--resizer-border-active, #00d4ff);
                     box-shadow: 0 0 6px var(--resizer-glow-active, rgba(0, 212, 255, 0.8));
                     width: var(--resizer-width-active, 3px);
                 }
 
                 /* Collapsed state - thin glowing handle */
                 :host(.collapsed) {
-                    width: var(--sidebar-collapsed-width, 6px);
-                    right: 0;
+                    width: var(--${prefix}-collapsed-width, 6px);
+                    ${isLeft ? 'right: 0;' : 'left: 0;'}
                     background: var(--resizer-background, rgba(0, 212, 255, 0.15));
-                    border-right: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.3));
+                    ${hoverBorder}: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.3));
                 }
 
                 :host(.collapsed:hover) {
                     background: var(--resizer-background-hover, rgba(0, 212, 255, 0.4));
-                    border-right: 1px solid var(--resizer-border-hover, #00d4ff);
+                    ${hoverBorder}: 1px solid var(--resizer-border-hover, #00d4ff);
                     box-shadow: 0 0 8px var(--resizer-glow-hover, rgba(0, 212, 255, 0.6));
-                    cursor: w-resize;
+                    cursor: ${isLeft ? 'w-resize' : 'e-resize'};
                 }
 
                 .resizer-handle {
@@ -419,17 +503,17 @@ class SidebarResizer extends HTMLElement {
                     background: transparent;
                 }
 
-                /* Expand button - ONLY visible when collapsed, fixed to left edge */
+                /* Expand button - ONLY visible when collapsed, fixed position */
                 .expand-btn {
                     position: fixed;
                     top: 50%;
-                    left: var(--sidebar-collapsed-width, 6px);
+                    ${expandBtnPosition}
                     transform: translateY(-50%);
                     width: 18px;
                     height: 36px;
                     background: var(--sidebar-background, rgba(20, 25, 35, 0.95));
                     border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
-                    border-radius: 0 4px 4px 0;
+                    border-radius: ${isLeft ? '0 4px 4px 0' : '4px 0 0 4px'};
                     color: var(--content-accent, #00d4ff);
                     font-size: 11px;
                     cursor: pointer;
@@ -453,7 +537,7 @@ class SidebarResizer extends HTMLElement {
                 }
             </style>
             <div class="resizer-handle"></div>
-            <button class="expand-btn" title="Expand sidebar">»</button>
+            ${this.config.collapsible ? `<button class="expand-btn" title="Expand panel">${isLeft ? '»' : '«'}</button>` : ''}
         `;
     }
 
@@ -464,7 +548,7 @@ class SidebarResizer extends HTMLElement {
 
     setWidth(width: number): void {
         const clampedWidth = Math.max(this.minWidth, Math.min(this.maxWidth, width));
-        this.applySidebarWidth(clampedWidth);
+        this.applyPanelWidth(clampedWidth);
         this.saveWidth(clampedWidth);
     }
 
@@ -481,7 +565,5 @@ class SidebarResizer extends HTMLElement {
     }
 }
 
-customElements.define('sidebar-resizer', SidebarResizer);
-
-export { SidebarResizer };
-export type { SidebarResizedDetail, WidthLimits };
+// Don't auto-register - let specific implementations do that
+export type { PanelResizedDetail, WidthLimits };

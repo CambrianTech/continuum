@@ -24,6 +24,17 @@
   overflow: hidden;
 }
 
+/* Collapsed sidebar - thin handle visible, content hidden */
+.sidebar-container.collapsed {
+  overflow: visible;  /* Allow expand button to show outside */
+  transition: width 0.2s ease;
+}
+
+.sidebar-container.collapsed .left-sidebar {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Collapsed right panel - thin handle visible, content hidden */
 .right-panel-container.collapsed {
   overflow: visible;  /* Allow expand button to show outside */

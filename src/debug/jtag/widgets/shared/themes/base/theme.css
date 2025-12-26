@@ -5,10 +5,14 @@
 
 :root {
   /* === LAYOUT === */
+  /* Left sidebar */
   --sidebar-width: 250px;
   --sidebar-min-width: 150px;
   --sidebar-max-width: 400px;
+  --sidebar-collapse-threshold: 50px;
+  --sidebar-collapsed-width: 6px;
 
+  /* Right panel */
   --right-panel-width: 320px;
   --right-panel-min-width: 150px;
   --right-panel-max-width: 600px;
