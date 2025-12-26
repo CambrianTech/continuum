@@ -26,11 +26,13 @@ class RightPanelResizer extends HTMLElement {
     private currentWidth?: number;
     private isCollapsed: boolean = false;
     private lastExpandedWidth: number = 320;
-    private readonly minWidth: number = 200;
-    private readonly maxWidth: number = 600;
-    private readonly defaultWidth: number = 320;
-    private readonly collapseThreshold: number = 80;  // Drag below this to collapse
-    private readonly collapsedHandleWidth: number = 6; // Thin strip when collapsed
+
+    // These are read from CSS vars in connectedCallback
+    private minWidth: number = 150;
+    private maxWidth: number = 600;
+    private defaultWidth: number = 320;
+    private collapseThreshold: number = 50;
+    private collapsedHandleWidth: number = 6;
 
     // Event handler references for proper cleanup
     private boundMouseMove?: (e: MouseEvent) => void;
@@ -44,9 +46,31 @@ class RightPanelResizer extends HTMLElement {
     }
 
     connectedCallback(): void {
+        this.loadCSSVars();
         this.render();
         this.setupEventListeners();
         this.loadSavedWidth();
+    }
+
+    /**
+     * Read layout dimensions from CSS vars - single source of truth
+     */
+    private loadCSSVars(): void {
+        const styles = getComputedStyle(document.documentElement);
+
+        const getCSSPixelValue = (varName: string, fallback: number): number => {
+            const value = styles.getPropertyValue(varName).trim();
+            if (!value) return fallback;
+            const parsed = parseInt(value, 10);
+            return isNaN(parsed) ? fallback : parsed;
+        };
+
+        this.minWidth = getCSSPixelValue('--right-panel-min-width', 150);
+        this.maxWidth = getCSSPixelValue('--right-panel-max-width', 600);
+        this.defaultWidth = getCSSPixelValue('--right-panel-width', 320);
+        this.collapseThreshold = getCSSPixelValue('--right-panel-collapse-threshold', 50);
+        this.collapsedHandleWidth = getCSSPixelValue('--right-panel-collapsed-width', 6);
+        this.lastExpandedWidth = this.defaultWidth;
     }
 
     disconnectedCallback(): void {
@@ -175,7 +199,7 @@ class RightPanelResizer extends HTMLElement {
         }
     }
 
-    private applyPanelWidth(width: number): void {
+    private applyPanelWidth(width: number, clipping: boolean = false): void {
         let rightPanelContainer: HTMLElement | null = null;
         let desktopContainer: HTMLElement | null = null;
 
@@ -195,6 +219,15 @@ class RightPanelResizer extends HTMLElement {
 
         if (rightPanelContainer && desktopContainer) {
             rightPanelContainer.style.width = `${width}px`;
+
+            // Apply overflow clipping when dragging smaller than min
+            if (clipping) {
+                rightPanelContainer.style.overflow = 'hidden';
+                rightPanelContainer.classList.add('clipping');
+            } else {
+                rightPanelContainer.style.overflow = '';
+                rightPanelContainer.classList.remove('clipping');
+            }
 
             // Get current sidebar width from the grid
             const currentCols = getComputedStyle(desktopContainer).gridTemplateColumns.split(' ');
@@ -278,28 +311,40 @@ class RightPanelResizer extends HTMLElement {
         const deltaX = this.startX - clientX;
         const rawWidth = this.startWidth + deltaX;
 
-        // If dragged below collapse threshold, collapse
-        if (rawWidth < this.collapseThreshold) {
-            if (!this.isCollapsed) {
-                this.collapse();
+        // If collapsed and dragging to expand
+        if (this.isCollapsed) {
+            if (rawWidth >= this.minWidth) {
+                // Expand when dragged past minimum
+                this.isCollapsed = false;
+                this.shadowRoot?.host.classList.remove('collapsed');
+                const continuumWidget = document.querySelector('continuum-widget') as any;
+                if (continuumWidget?.shadowRoot) {
+                    const rightPanelContainer = continuumWidget.shadowRoot.querySelector('.right-panel-container') as HTMLElement;
+                    if (rightPanelContainer) {
+                        rightPanelContainer.classList.remove('collapsed');
+                    }
+                }
+                this.applyPanelWidth(this.minWidth);
             }
             return;
         }
 
-        // If was collapsed and now dragging to expand
-        if (this.isCollapsed && rawWidth >= this.collapseThreshold) {
-            this.isCollapsed = false;
-            this.shadowRoot?.host.classList.remove('collapsed');
-            const continuumWidget = document.querySelector('continuum-widget') as any;
-            if (continuumWidget?.shadowRoot) {
-                const rightPanelContainer = continuumWidget.shadowRoot.querySelector('.right-panel-container') as HTMLElement;
-                if (rightPanelContainer) {
-                    rightPanelContainer.classList.remove('collapsed');
-                }
-            }
+        // Below snap threshold → collapse completely
+        const snapThreshold = 50;
+        if (rawWidth < snapThreshold) {
+            this.collapse();
+            return;
         }
 
-        const newWidth = Math.max(this.minWidth, Math.min(this.maxWidth, rawWidth));
+        // Below minWidth but above snap → allow with clipping (content clips off)
+        // This gives visual feedback that panel is closing
+        if (rawWidth < this.minWidth) {
+            this.applyPanelWidth(rawWidth, true); // true = clipping mode
+            return;
+        }
+
+        // Normal resize within bounds
+        const newWidth = Math.min(this.maxWidth, rawWidth);
         this.applyPanelWidth(newWidth);
     }
 
@@ -357,7 +402,7 @@ class RightPanelResizer extends HTMLElement {
 
                 /* Collapsed state - thin glowing handle */
                 :host(.collapsed) {
-                    width: 6px;
+                    width: var(--right-panel-collapsed-width, 6px);
                     left: 0;
                     background: rgba(0, 212, 255, 0.15);
                     border-left: 1px solid rgba(0, 212, 255, 0.3);
