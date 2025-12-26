@@ -84,6 +84,7 @@ class RightPanelResizer extends HTMLElement {
             if (savedCollapsed === 'true') {
                 this.isCollapsed = true;
                 this.applyCollapsedState(true);
+                this.updateHostClass();  // Ensure expand button shows
                 return;
             }
 
