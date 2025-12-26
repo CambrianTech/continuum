@@ -227,30 +227,31 @@ export class LoggingConfig {
   private updateEnabled(personaId: string, category: string, enabled: boolean): void {
     const normalizedId = this.normalizePersonaId(personaId);
 
-    // Ensure persona config exists
+    // Ensure persona config exists (don't change enabled state)
     if (!this.config.personas[normalizedId]) {
       this.config.personas[normalizedId] = {
-        enabled: true,
+        enabled: false,
         categories: []
       };
     }
 
     const personaConfig = this.config.personas[normalizedId];
 
+    if (!personaConfig.categories) {
+      personaConfig.categories = [];
+    }
+
     if (enabled) {
       // Add category if not present
-      if (!personaConfig.categories) {
-        personaConfig.categories = [];
-      }
       if (!personaConfig.categories.includes(category)) {
         personaConfig.categories.push(category);
       }
     } else {
       // Remove category
-      if (personaConfig.categories) {
-        personaConfig.categories = personaConfig.categories.filter(c => c !== category);
-      }
+      personaConfig.categories = personaConfig.categories.filter(c => c !== category);
     }
+
+    // Individual toggles don't change persona.enabled - that's controlled by global toggle only
 
     this.save();
   }

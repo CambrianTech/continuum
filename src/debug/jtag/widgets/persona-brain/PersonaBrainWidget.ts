@@ -1,8 +1,14 @@
 /**
- * PersonaBrainWidget - Per-persona cognitive visualization
+ * PersonaBrainWidget - Per-persona cognitive visualization HUD
  *
  * Displays a stylized brain diagram with clickable regions for each
- * cognitive module (Mind, Soul, Hippocampus, Body, CNS).
+ * cognitive module (PrefrontalCortex, LimbicSystem, Hippocampus, MotorCortex, CNS).
+ *
+ * Features:
+ * - Low-poly brain visualization with module status indicators
+ * - Activity feed showing real-time cognitive events
+ * - Issues panel with click-through to relevant logs
+ * - Click any module to view details and access logs
  *
  * Entry points:
  * - Users & Agents sidebar click
@@ -24,25 +30,51 @@ interface PersonaData {
 }
 
 interface ModuleStats {
-  mind: { status: 'active' | 'idle' | 'error'; lastActivity?: string };
-  soul: { status: 'active' | 'idle' | 'error'; mood?: string };
+  prefrontal: { status: 'active' | 'idle' | 'error'; lastActivity?: string };
+  limbic: { status: 'active' | 'idle' | 'error'; mood?: string };
   hippocampus: { status: 'active' | 'idle' | 'error'; memoryCount: number; ltmSize?: string };
-  body: { status: 'active' | 'idle' | 'error'; toolsAvailable: number };
+  motorCortex: { status: 'active' | 'idle' | 'error'; toolsAvailable: number };
   cns: { status: 'active' | 'idle' | 'error'; connections: number };
+}
+
+interface ActivityEvent {
+  timestamp: Date;
+  type: 'thought' | 'action' | 'memory' | 'error' | 'tool';
+  module: string;
+  message: string;
+  severity?: 'info' | 'warn' | 'error';
+  details?: any;
+}
+
+interface Issue {
+  id: string;
+  module: string;
+  type: 'error' | 'warning';
+  message: string;
+  timestamp: Date;
+  details?: any;
+}
+
+interface LoggingConfigState {
+  enabled: boolean;
+  categories: string[];
 }
 
 export class PersonaBrainWidget extends BasePanelWidget {
   private personaId: string = '';
   private persona: PersonaData | null = null;
   private moduleStats: ModuleStats = {
-    mind: { status: 'idle' },
-    soul: { status: 'idle' },
+    prefrontal: { status: 'idle' },
+    limbic: { status: 'idle' },
     hippocampus: { status: 'idle', memoryCount: 0 },
-    body: { status: 'idle', toolsAvailable: 0 },
+    motorCortex: { status: 'idle', toolsAvailable: 0 },
     cns: { status: 'idle', connections: 0 }
   };
   private isLoading = true;
   private selectedModule: string | null = null;
+  private activityFeed: ActivityEvent[] = [];
+  private issues: Issue[] = [];
+  private loggingConfig: LoggingConfigState = { enabled: false, categories: [] };
 
   constructor() {
     super({
@@ -89,8 +121,11 @@ export class PersonaBrainWidget extends BasePanelWidget {
         this.panelConfig.panelTitle = user.displayName;
         this.panelConfig.panelSubtitle = `@${user.uniqueId} - Cognitive System View`;
 
-        // Load module stats
-        await this.loadModuleStats();
+        // Load module stats and logging config
+        await Promise.all([
+          this.loadModuleStats(),
+          this.loadLoggingConfig()
+        ]);
       }
     } catch (error) {
       console.error('PersonaBrainWidget: Error loading persona:', error);
@@ -98,6 +133,110 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
     this.isLoading = false;
     this.renderWidget();
+  }
+
+  /**
+   * Load logging configuration for this persona
+   */
+  private async loadLoggingConfig(): Promise<void> {
+    try {
+      const result = await Commands.execute('logs/config', {
+        persona: this.personaId
+      } as any) as any;
+
+      if (result.success && result.personaConfig) {
+        this.loggingConfig = {
+          enabled: result.personaConfig.enabled,
+          categories: result.personaConfig.categories || []
+        };
+      }
+    } catch (error) {
+      console.warn('PersonaBrainWidget: Error loading logging config:', error);
+    }
+  }
+
+  /**
+   * Toggle logging for the entire persona
+   */
+  private async togglePersonaLogging(enabled: boolean): Promise<void> {
+    try {
+      const result = await Commands.execute('logs/config', {
+        persona: this.personaId,
+        action: enabled ? 'enable' : 'disable'
+      } as any) as any;
+
+      if (result.success && result.personaConfig) {
+        this.loggingConfig = {
+          enabled: result.personaConfig.enabled,
+          categories: result.personaConfig.categories || []
+        };
+        this.renderWidget();
+      }
+    } catch (error) {
+      console.error('PersonaBrainWidget: Error toggling logging:', error);
+    }
+  }
+
+  /**
+   * Toggle logging for a specific category
+   * Only works when global logging is enabled
+   */
+  private async toggleCategoryLogging(category: string): Promise<void> {
+    // Block if global logging is off
+    if (!this.loggingConfig.enabled) {
+      console.log('PersonaBrainWidget: Global logging is off, enable it first');
+      return;
+    }
+
+    const isEnabled = this.isCategoryEnabled(category);
+
+    try {
+      const result = await Commands.execute('logs/config', {
+        persona: this.personaId,
+        action: isEnabled ? 'disable' : 'enable',
+        category
+      } as any) as any;
+
+      if (result.success && result.personaConfig) {
+        this.loggingConfig = {
+          enabled: result.personaConfig.enabled,
+          categories: result.personaConfig.categories || []
+        };
+        this.renderWidget();
+      }
+    } catch (error) {
+      console.error('PersonaBrainWidget: Error toggling category logging:', error);
+    }
+  }
+
+  /**
+   * Check if a category is enabled for logging
+   */
+  private isCategoryEnabled(category: string): boolean {
+    if (!this.loggingConfig.enabled) return false;
+    // Empty categories or '*' means all enabled
+    if (this.loggingConfig.categories.length === 0) return true;
+    if (this.loggingConfig.categories.includes('*')) return true;
+    return this.loggingConfig.categories.includes(category);
+  }
+
+  /**
+   * Render a log toggle button for a module
+   * @param category - The logging category to toggle
+   * @param x - X position for the toggle
+   * @param y - Y position for the toggle
+   */
+  private renderLogToggle(category: string, x: number, y: number): string {
+    const globalEnabled = this.loggingConfig.enabled;
+    const categoryEnabled = this.isCategoryEnabled(category);
+    const disabled = !globalEnabled;
+
+    return `
+      <g class="module-log-toggle ${categoryEnabled ? 'enabled' : ''} ${disabled ? 'disabled' : ''}" data-category="${category}">
+        <rect x="${x}" y="${y}" width="22" height="16" rx="2" class="log-toggle-bg"/>
+        <text x="${x + 11}" y="${y + 12}" class="log-toggle-icon">${categoryEnabled ? '📝' : '📋'}</text>
+      </g>
+    `;
   }
 
   private async loadModuleStats(): Promise<void> {
@@ -142,11 +281,11 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
       // Update module stats with real data
       this.moduleStats = {
-        mind: {
+        prefrontal: {
           status: aiStatus?.isInitialized ? 'active' : 'idle',
           lastActivity: aiStatus?.status === 'healthy' ? 'Online and ready' : 'Waiting...'
         },
-        soul: {
+        limbic: {
           status: aiStatus?.hasWorker ? 'active' : 'idle',
           mood: this.inferMood(memoryCount)
         },
@@ -155,7 +294,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
           memoryCount,
           ltmSize
         },
-        body: {
+        motorCortex: {
           status: toolCount > 0 ? 'active' : 'idle',
           toolsAvailable: toolCount > 0 ? 12 : 0  // Tool count is hardcoded for now
         },
@@ -176,12 +315,21 @@ export class PersonaBrainWidget extends BasePanelWidget {
       console.error('PersonaBrainWidget: Error loading stats:', error);
       // Keep default placeholder stats on error
       this.moduleStats = {
-        mind: { status: 'error', lastActivity: 'Failed to load' },
-        soul: { status: 'error', mood: 'unknown' },
+        prefrontal: { status: 'error', lastActivity: 'Failed to load' },
+        limbic: { status: 'error', mood: 'unknown' },
         hippocampus: { status: 'error', memoryCount: 0 },
-        body: { status: 'error', toolsAvailable: 0 },
+        motorCortex: { status: 'error', toolsAvailable: 0 },
         cns: { status: 'error', connections: 0 }
       };
+      // Add issue for error tracking
+      this.issues.push({
+        id: `load-error-${Date.now()}`,
+        module: 'system',
+        type: 'error',
+        message: 'Failed to load module stats',
+        timestamp: new Date(),
+        details: error
+      });
     }
   }
 
@@ -223,11 +371,23 @@ export class PersonaBrainWidget extends BasePanelWidget {
     return `
       <div class="brain-container">
         <div class="brain-header">
+          <button class="log-toggle ${this.loggingConfig.enabled ? 'enabled' : ''}"
+                  data-action="toggle-logging"
+                  title="${this.loggingConfig.enabled ? 'Logging ON - Click to disable' : 'Logging OFF - Click to enable'}">
+            ${this.loggingConfig.enabled ? '📝' : '📋'}
+          </button>
           <div class="persona-status status-${this.persona.status}">${this.persona.status}</div>
         </div>
 
-        <div class="brain-visualization">
-          ${this.renderBrainSVG()}
+        <div class="brain-main">
+          <div class="brain-visualization">
+            ${this.renderBrainSVG()}
+          </div>
+
+          <div class="brain-sidebar">
+            ${this.renderActivityFeed()}
+            ${this.renderIssuesPanel()}
+          </div>
         </div>
 
         ${this.selectedModule ? `<div class="module-details">${this.renderModuleDetails()}</div>` : ''}
@@ -397,7 +557,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
         </g>
 
         <!-- PREFRONTAL CORTEX module (top left HUD panel) - Executive function -->
-        <g class="brain-module module-mind ${this.getModuleClass('mind')}" data-module="mind">
+        <g class="brain-module module-prefrontal ${this.getModuleClass('prefrontal')}" data-module="prefrontal">
           <!-- HUD bracket frame -->
           <path class="hud-bracket" d="M10,40 L10,20 L30,20"/>
           <path class="hud-bracket" d="M170,20 L190,20 L190,40"/>
@@ -406,14 +566,15 @@ export class PersonaBrainWidget extends BasePanelWidget {
           <rect x="15" y="25" width="170" height="90" class="module-shape"/>
           <text x="100" y="50" class="module-label">PREFRONTAL</text>
           <text x="100" y="70" class="module-sublabel">[ EXECUTIVE ]</text>
-          <text x="100" y="100" class="module-stat">${this.moduleStats.mind.status.toUpperCase()}</text>
+          <text x="100" y="100" class="module-stat">${this.moduleStats.prefrontal.status.toUpperCase()}</text>
+          ${this.renderLogToggle('cognition', 160, 30)}
           <!-- Connection line to brain -->
           <line x1="190" y1="70" x2="280" y2="150" class="circuit-connection"/>
           <circle cx="280" cy="150" r="5" class="connection-node"/>
         </g>
 
         <!-- LIMBIC SYSTEM module (top right HUD panel) - Emotion/motivation -->
-        <g class="brain-module module-soul ${this.getModuleClass('soul')}" data-module="soul">
+        <g class="brain-module module-limbic ${this.getModuleClass('limbic')}" data-module="limbic">
           <path class="hud-bracket" d="M610,40 L610,20 L630,20"/>
           <path class="hud-bracket" d="M770,20 L790,20 L790,40"/>
           <path class="hud-bracket" d="M610,100 L610,120 L630,120"/>
@@ -421,7 +582,8 @@ export class PersonaBrainWidget extends BasePanelWidget {
           <rect x="615" y="25" width="170" height="90" class="module-shape"/>
           <text x="700" y="50" class="module-label">LIMBIC</text>
           <text x="700" y="70" class="module-sublabel">[ EMOTION ]</text>
-          <text x="700" y="100" class="module-stat">${this.moduleStats.soul.mood?.toUpperCase() || 'NEUTRAL'}</text>
+          <text x="700" y="100" class="module-stat">${this.moduleStats.limbic.mood?.toUpperCase() || 'NEUTRAL'}</text>
+          ${this.renderLogToggle('user', 760, 30)}
           <line x1="610" y1="70" x2="520" y2="180" class="circuit-connection"/>
           <circle cx="520" cy="180" r="5" class="connection-node"/>
         </g>
@@ -435,6 +597,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
           <rect x="10" y="205" width="170" height="140" class="module-shape"/>
           <text x="95" y="230" class="module-label">HIPPOCAMPUS</text>
           <text x="95" y="250" class="module-sublabel">[ MEMORY ]</text>
+          ${this.renderLogToggle('hippocampus', 155, 210)}
           <!-- Memory bar visualization -->
           <rect x="25" y="268" width="140" height="8" fill="rgba(0,20,30,0.8)" stroke="rgba(0,212,255,0.3)" rx="2"/>
           <rect x="25" y="268" width="105" height="8" fill="rgba(0,212,255,0.6)" rx="2"/>
@@ -445,7 +608,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
         </g>
 
         <!-- MOTOR CORTEX module (right side HUD panel) - Actions/tools -->
-        <g class="brain-module module-body ${this.getModuleClass('body')}" data-module="body">
+        <g class="brain-module module-motorCortex ${this.getModuleClass('motorCortex')}" data-module="motorCortex">
           <path class="hud-bracket" d="M615,220 L615,200 L635,200"/>
           <path class="hud-bracket" d="M775,200 L795,200 L795,220"/>
           <path class="hud-bracket" d="M615,330 L615,350 L635,350"/>
@@ -453,17 +616,18 @@ export class PersonaBrainWidget extends BasePanelWidget {
           <rect x="620" y="205" width="170" height="140" class="module-shape"/>
           <text x="705" y="230" class="module-label">MOTOR CORTEX</text>
           <text x="705" y="250" class="module-sublabel">[ ACTIONS ]</text>
+          ${this.renderLogToggle('adapters', 765, 210)}
           <!-- Tool slots visualization -->
           <g class="tool-slots">
             ${[0,1,2,3,4,5].map(i => `
               <rect x="${640 + (i % 3) * 35}" y="${268 + Math.floor(i/3) * 28}"
                     width="28" height="20" rx="2"
-                    class="tool-slot ${i < this.moduleStats.body.toolsAvailable ? 'active' : ''}"
-                    fill="${i < this.moduleStats.body.toolsAvailable ? 'rgba(0,212,255,0.3)' : 'rgba(0,20,30,0.5)'}"
+                    class="tool-slot ${i < this.moduleStats.motorCortex.toolsAvailable ? 'active' : ''}"
+                    fill="${i < this.moduleStats.motorCortex.toolsAvailable ? 'rgba(0,212,255,0.3)' : 'rgba(0,20,30,0.5)'}"
                     stroke="rgba(0,212,255,0.4)"/>
             `).join('')}
           </g>
-          <text x="705" y="340" class="module-stat">${this.moduleStats.body.toolsAvailable} ACTIVE</text>
+          <text x="705" y="340" class="module-stat">${this.moduleStats.motorCortex.toolsAvailable} ACTIVE</text>
           <line x1="615" y1="275" x2="530" y2="320" class="circuit-connection"/>
           <circle cx="530" cy="320" r="5" class="connection-node"/>
         </g>
@@ -477,6 +641,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
           <rect x="305" y="465" width="190" height="120" class="module-shape"/>
           <text x="400" y="495" class="module-label">CNS</text>
           <text x="400" y="515" class="module-sublabel">[ INTEGRATION ]</text>
+          ${this.renderLogToggle('cognition', 470, 470)}
           <!-- Activity waveform -->
           <polyline class="waveform" points="320,550 345,540 370,555 395,530 420,548 445,525 470,545 490,535"/>
           <text x="400" y="575" class="module-stat">${this.moduleStats.cns.connections} CONN</text>
@@ -511,10 +676,10 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
   private renderModuleOverview(): string {
     const modules = [
-      { id: 'mind', name: 'Mind', desc: 'Cognition & reasoning', icon: '🧠' },
-      { id: 'soul', name: 'Soul', desc: 'Personality & values', icon: '✨' },
+      { id: 'prefrontal', name: 'Prefrontal', desc: 'Executive function', icon: '🧠' },
+      { id: 'limbic', name: 'Limbic', desc: 'Emotion & motivation', icon: '💜' },
       { id: 'hippocampus', name: 'Hippocampus', desc: 'Memory & learning', icon: '💾' },
-      { id: 'body', name: 'Body', desc: 'Tools & actions', icon: '🔧' },
+      { id: 'motorCortex', name: 'Motor Cortex', desc: 'Actions & tools', icon: '⚡' },
       { id: 'cns', name: 'CNS', desc: 'Integration & coordination', icon: '🔗' }
     ];
 
@@ -538,7 +703,15 @@ export class PersonaBrainWidget extends BasePanelWidget {
     const module = this.selectedModule;
     if (!module) return '';
     const stats = (this.moduleStats as any)[module];
-    const logFile = `${module}.log`;
+    // Map module name to log type (motorCortex -> motor-cortex)
+    const logTypeMap: Record<string, string> = {
+      prefrontal: 'prefrontal',
+      limbic: 'limbic',
+      hippocampus: 'hippocampus',
+      motorCortex: 'motor-cortex',
+      cns: 'cns'
+    };
+    const logType = logTypeMap[module] || module;
 
     return `
       <div class="module-detail-view">
@@ -554,8 +727,8 @@ export class PersonaBrainWidget extends BasePanelWidget {
           ${this.renderModuleSpecificStats(module!, stats)}
         </div>
         <div class="detail-actions">
-          <button class="btn btn-primary" data-action="view-log" data-log="${logFile}">
-            View ${module}.log
+          <button class="btn btn-primary" data-action="view-log" data-log="${logType}">
+            View ${logType}.log
           </button>
           <button class="btn btn-secondary" data-action="inspect">
             Inspect State
@@ -578,21 +751,21 @@ export class PersonaBrainWidget extends BasePanelWidget {
             <span class="stat-value">${stats?.ltmSize || 'N/A'}</span>
           </div>
         `;
-      case 'mind':
+      case 'prefrontal':
         return `
           <div class="stat-row">
             <span class="stat-label">Last Activity</span>
             <span class="stat-value">${stats?.lastActivity || 'None'}</span>
           </div>
         `;
-      case 'soul':
+      case 'limbic':
         return `
           <div class="stat-row">
             <span class="stat-label">Current Mood</span>
             <span class="stat-value">${stats?.mood || 'neutral'}</span>
           </div>
         `;
-      case 'body':
+      case 'motorCortex':
         return `
           <div class="stat-row">
             <span class="stat-label">Tools Available</span>
@@ -619,15 +792,139 @@ export class PersonaBrainWidget extends BasePanelWidget {
           <span class="stat-text">${this.moduleStats.hippocampus.ltmSize || '0 MB'}</span>
         </div>
         <div class="stat-item">
-          <span class="stat-icon">🔧</span>
-          <span class="stat-text">${this.moduleStats.body.toolsAvailable} tools</span>
+          <span class="stat-icon">⚡</span>
+          <span class="stat-text">${this.moduleStats.motorCortex.toolsAvailable} tools</span>
         </div>
         <div class="stat-item">
           <span class="stat-icon">🔗</span>
           <span class="stat-text">${this.moduleStats.cns.connections} conn</span>
         </div>
+        ${this.issues.length > 0 ? `
+        <div class="stat-item issue-indicator" data-action="show-issues">
+          <span class="stat-icon">⚠️</span>
+          <span class="stat-text issue-count">${this.issues.length} issues</span>
+        </div>
+        ` : ''}
       </div>
     `;
+  }
+
+  /**
+   * Render activity feed panel showing recent cognitive events
+   */
+  private renderActivityFeed(): string {
+    if (this.activityFeed.length === 0) {
+      return `
+        <div class="activity-feed">
+          <div class="feed-header">
+            <span class="feed-title">ACTIVITY STREAM</span>
+            <span class="feed-status">NO RECENT ACTIVITY</span>
+          </div>
+        </div>
+      `;
+    }
+
+    const recentEvents = this.activityFeed.slice(-10).reverse();
+    return `
+      <div class="activity-feed">
+        <div class="feed-header">
+          <span class="feed-title">ACTIVITY STREAM</span>
+          <span class="feed-count">${this.activityFeed.length} events</span>
+        </div>
+        <div class="feed-items">
+          ${recentEvents.map(event => `
+            <div class="feed-item severity-${event.severity || 'info'}" data-event-type="${event.type}">
+              <span class="feed-icon">${this.getEventIcon(event.type)}</span>
+              <span class="feed-time">${this.formatTime(event.timestamp)}</span>
+              <span class="feed-module">${event.module}</span>
+              <span class="feed-message">${event.message}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render issues panel showing errors and warnings
+   */
+  private renderIssuesPanel(): string {
+    if (this.issues.length === 0) return '';
+
+    return `
+      <div class="issues-panel">
+        <div class="issues-header">
+          <span class="issues-title">ISSUES</span>
+          <span class="issues-count">${this.issues.length}</span>
+        </div>
+        <div class="issues-list">
+          ${this.issues.map(issue => `
+            <div class="issue-item type-${issue.type}" data-issue-id="${issue.id}" data-module="${issue.module}">
+              <span class="issue-icon">${issue.type === 'error' ? '❌' : '⚠️'}</span>
+              <span class="issue-module">${issue.module}</span>
+              <span class="issue-message">${issue.message}</span>
+              <span class="issue-time">${this.formatTime(issue.timestamp)}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Get icon for activity event type
+   */
+  private getEventIcon(type: string): string {
+    switch (type) {
+      case 'thought': return '💭';
+      case 'action': return '⚡';
+      case 'memory': return '💾';
+      case 'error': return '❌';
+      case 'tool': return '🔧';
+      default: return '📡';
+    }
+  }
+
+  /**
+   * Format timestamp for display
+   */
+  private formatTime(date: Date): string {
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  /**
+   * Add activity event (can be called from external sources)
+   */
+  public addActivity(event: Omit<ActivityEvent, 'timestamp'>): void {
+    this.activityFeed.push({
+      ...event,
+      timestamp: new Date()
+    });
+    // Keep only last 100 events
+    if (this.activityFeed.length > 100) {
+      this.activityFeed = this.activityFeed.slice(-100);
+    }
+    this.renderWidget();
+  }
+
+  /**
+   * Add issue (can be called from external sources)
+   */
+  public addIssue(issue: Omit<Issue, 'id' | 'timestamp'>): void {
+    this.issues.push({
+      ...issue,
+      id: `issue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: new Date()
+    });
+    this.renderWidget();
+  }
+
+  /**
+   * Clear issue by ID
+   */
+  public clearIssue(issueId: string): void {
+    this.issues = this.issues.filter(i => i.id !== issueId);
+    this.renderWidget();
   }
 
   protected async onContentRendered(): Promise<void> {
@@ -662,6 +959,60 @@ export class PersonaBrainWidget extends BasePanelWidget {
         await this.openLogViewer(logFile);
       }
     });
+
+    // Issue click handlers - click to view module logs
+    this.shadowRoot.querySelectorAll('.issue-item').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        const module = (el as HTMLElement).dataset.module;
+        if (module && module !== 'system') {
+          // Map module name to log type (no .log extension)
+          const logTypeMap: Record<string, string> = {
+            prefrontal: 'prefrontal',
+            limbic: 'limbic',
+            hippocampus: 'hippocampus',
+            motorCortex: 'motor-cortex',
+            cns: 'cns'
+          };
+          const logType = logTypeMap[module];
+          if (logType) {
+            await this.openLogViewer(logType);
+          }
+        }
+      });
+    });
+
+    // Issue indicator in stats bar - scroll to issues panel
+    this.shadowRoot.querySelector('[data-action="show-issues"]')?.addEventListener('click', () => {
+      const issuesPanel = this.shadowRoot?.querySelector('.issues-panel');
+      issuesPanel?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    // Activity feed item click - show details
+    this.shadowRoot.querySelectorAll('.feed-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const eventType = (el as HTMLElement).dataset.eventType;
+        console.log('PersonaBrainWidget: Activity event clicked:', eventType);
+        // Future: could open a detail modal or navigate to relevant log
+      });
+    });
+
+    // Main logging toggle button (master on/off)
+    this.shadowRoot.querySelector('[data-action="toggle-logging"]')?.addEventListener('click', async () => {
+      await this.togglePersonaLogging(!this.loggingConfig.enabled);
+    });
+
+    // Category-specific log toggles on each module
+    this.shadowRoot.querySelectorAll('.module-log-toggle').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation(); // Don't trigger module selection
+        // SVG elements use getAttribute, not dataset
+        const category = el.getAttribute('data-category');
+        console.log('🔧 Log toggle clicked, category:', category);
+        if (category) {
+          await this.toggleCategoryLogging(category);
+        }
+      });
+    });
   }
 
   private selectModule(module: string): void {
@@ -669,14 +1020,15 @@ export class PersonaBrainWidget extends BasePanelWidget {
     this.renderWidget();
   }
 
-  private async openLogViewer(logFile: string): Promise<void> {
-    const logPath = `.continuum/personas/${this.personaId}/logs/${logFile}`;
+  private async openLogViewer(logType: string): Promise<void> {
+    // Log paths are in format: {uniqueId}/{logType} e.g., "helper/cns", "local/prefrontal"
+    const logPath = `${this.personaId}/${logType}`;
 
     try {
       await Commands.execute('collaboration/content/open', {
         contentType: 'diagnostics-log',
         entityId: logPath,
-        title: `${this.persona?.displayName} - ${logFile}`,
+        title: `${this.persona?.displayName} - ${logType}`,
         setAsCurrent: true,
         metadata: { logPath, autoFollow: true }
       } as any);
@@ -690,6 +1042,20 @@ export class PersonaBrainWidget extends BasePanelWidget {
  * Styles for PersonaBrainWidget
  */
 const PERSONA_BRAIN_STYLES = `
+  /* Enable text selection throughout the widget (override base theme) */
+  .brain-container,
+  .brain-container * {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+  }
+
+  /* But keep SVG elements non-selectable */
+  .brain-svg,
+  .brain-svg * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+  }
+
   .brain-container {
     display: flex;
     flex-direction: column;
@@ -1019,7 +1385,290 @@ const PERSONA_BRAIN_STYLES = `
   .module-overview {
     display: none;
   }
+
+  /* Brain main layout - visualization + sidebar */
+  .brain-main {
+    display: flex;
+    gap: 16px;
+  }
+
+  .brain-visualization {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .brain-sidebar {
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* Activity Feed Panel */
+  .activity-feed {
+    background: rgba(0, 15, 25, 0.85);
+    border: 1px solid rgba(0, 212, 255, 0.25);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .feed-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(0, 212, 255, 0.08);
+    border-bottom: 1px solid rgba(0, 212, 255, 0.15);
+  }
+
+  .feed-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: #00d4ff;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 1px;
+  }
+
+  .feed-count, .feed-status {
+    font-size: 9px;
+    color: rgba(255, 255, 255, 0.5);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .feed-items {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .feed-item {
+    display: grid;
+    grid-template-columns: 20px 60px 70px 1fr;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.05);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    transition: background 0.2s;
+  }
+
+  .feed-item:hover {
+    background: rgba(0, 212, 255, 0.08);
+  }
+
+  .feed-item.severity-warn {
+    border-left: 2px solid #ffcc00;
+  }
+
+  .feed-item.severity-error {
+    border-left: 2px solid #ff5050;
+  }
+
+  .feed-icon {
+    font-size: 11px;
+  }
+
+  .feed-time {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .feed-module {
+    color: #00d4ff;
+    text-transform: uppercase;
+  }
+
+  .feed-message {
+    color: rgba(255, 255, 255, 0.8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Issues Panel */
+  .issues-panel {
+    background: rgba(30, 10, 15, 0.85);
+    border: 1px solid rgba(255, 80, 80, 0.35);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .issues-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: rgba(255, 80, 80, 0.1);
+    border-bottom: 1px solid rgba(255, 80, 80, 0.2);
+  }
+
+  .issues-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: #ff5050;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 1px;
+  }
+
+  .issues-count {
+    background: #ff5050;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 9px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .issues-list {
+    max-height: 150px;
+    overflow-y: auto;
+  }
+
+  .issue-item {
+    display: grid;
+    grid-template-columns: 20px 70px 1fr 60px;
+    gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(255, 80, 80, 0.1);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .issue-item:hover {
+    background: rgba(255, 80, 80, 0.1);
+  }
+
+  .issue-item.type-warning {
+    border-left: 2px solid #ffcc00;
+  }
+
+  .issue-item.type-error {
+    border-left: 2px solid #ff5050;
+  }
+
+  .issue-icon {
+    font-size: 11px;
+  }
+
+  .issue-module {
+    color: #ff8080;
+    text-transform: uppercase;
+  }
+
+  .issue-message {
+    color: rgba(255, 255, 255, 0.8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .issue-time {
+    color: rgba(255, 255, 255, 0.4);
+    text-align: right;
+  }
+
+  /* Issue indicator in stats bar */
+  .issue-indicator {
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 2px;
+    background: rgba(255, 80, 80, 0.15);
+    border: 1px solid rgba(255, 80, 80, 0.3);
+    transition: all 0.2s;
+  }
+
+  .issue-indicator:hover {
+    background: rgba(255, 80, 80, 0.25);
+    border-color: rgba(255, 80, 80, 0.5);
+  }
+
+  .issue-count {
+    color: #ff5050 !important;
+  }
+
+  /* Simple logging toggle button (header) */
+  .log-toggle {
+    background: rgba(0, 15, 25, 0.8);
+    border: 1px solid rgba(0, 212, 255, 0.3);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    opacity: 0.6;
+  }
+
+  .log-toggle:hover {
+    opacity: 1;
+    border-color: rgba(0, 212, 255, 0.6);
+    background: rgba(0, 30, 50, 0.9);
+  }
+
+  .log-toggle.enabled {
+    opacity: 1;
+    border-color: rgba(0, 255, 100, 0.5);
+    background: rgba(0, 40, 20, 0.9);
+    box-shadow: 0 0 8px rgba(0, 255, 100, 0.3);
+  }
+
+  .log-toggle.enabled:hover {
+    border-color: rgba(0, 255, 100, 0.8);
+    box-shadow: 0 0 12px rgba(0, 255, 100, 0.4);
+  }
+
+  /* Module log toggle buttons (SVG) */
+  .module-log-toggle {
+    cursor: pointer;
+    opacity: 0.5;
+    transition: all 0.2s ease;
+  }
+
+  .module-log-toggle:hover {
+    opacity: 1;
+  }
+
+  .module-log-toggle .log-toggle-bg {
+    fill: rgba(0, 15, 25, 0.9);
+    stroke: rgba(0, 212, 255, 0.3);
+    stroke-width: 1;
+    transition: all 0.2s ease;
+  }
+
+  .module-log-toggle:hover .log-toggle-bg {
+    stroke: rgba(0, 212, 255, 0.6);
+    fill: rgba(0, 30, 50, 0.9);
+  }
+
+  .module-log-toggle.enabled {
+    opacity: 1;
+  }
+
+  .module-log-toggle.enabled .log-toggle-bg {
+    stroke: rgba(0, 255, 100, 0.5);
+    fill: rgba(0, 40, 20, 0.9);
+    filter: drop-shadow(0 0 4px rgba(0, 255, 100, 0.4));
+  }
+
+  .module-log-toggle.enabled:hover .log-toggle-bg {
+    stroke: rgba(0, 255, 100, 0.8);
+    filter: drop-shadow(0 0 8px rgba(0, 255, 100, 0.5));
+  }
+
+  .module-log-toggle .log-toggle-icon {
+    font-size: 10px;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+  }
+
+  .module-log-toggle.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
 `;
+
 
 // Register the custom element
 customElements.define('persona-brain-widget', PersonaBrainWidget);

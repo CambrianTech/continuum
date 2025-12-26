@@ -126,6 +126,7 @@ export const COMMANDS = {
   INTERFACE_WEB_FETCH: 'interface/web/fetch',
   INTERFACE_WEB_SEARCH: 'interface/web/search',
   LIST: 'list',
+  LOGS_CONFIG: 'logs/config',
   LOGS_LIST: 'logs/list',
   LOGS_READ: 'logs/read',
   LOGS_SEARCH: 'logs/search',
