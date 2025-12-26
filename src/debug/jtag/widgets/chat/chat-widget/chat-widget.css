@@ -785,3 +785,100 @@
     box-shadow: 0 0 25px rgba(0, 255, 136, 0.6);
   }
 }
+
+/* ========================================
+   COMPACT MODE - For right panel & mobile
+   ======================================== */
+
+.entity-list-container.compact {
+  --chat-spacing-tight: 1px;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.entity-list-container.compact .entity-list-body {
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
+}
+
+/* Minimal header in compact mode */
+.entity-list-container.compact .entity-list-header {
+  padding: var(--spacing-xxs, 2px) var(--spacing-xs, 6px);
+  gap: 0;
+}
+
+.entity-list-container.compact .header-top {
+  gap: 4px;
+}
+
+.entity-list-container.compact .header-title {
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+/* Hide welcome text and member chips in compact */
+.entity-list-container.compact .room-description,
+.entity-list-container.compact .header-members {
+  display: none;
+}
+
+.entity-list-container.compact .message-row {
+  padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
+}
+
+.entity-list-container.compact .message-bubble {
+  max-width: 95%;
+  padding: var(--spacing-xs, 6px) var(--spacing-sm, 10px);
+  border-radius: var(--radius-md, 12px);
+}
+
+.entity-list-container.compact .message-header {
+  gap: var(--spacing-xs, 4px);
+  margin-bottom: var(--spacing-xxs, 2px);
+}
+
+.entity-list-container.compact .sender-name {
+  font-size: 0.7rem;
+}
+
+.entity-list-container.compact .message-time {
+  font-size: 0.65rem;
+}
+
+.entity-list-container.compact .message-content {
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.entity-list-container.compact .input-container {
+  padding: var(--spacing-xs, 6px) var(--spacing-sm, 8px);
+}
+
+.entity-list-container.compact .message-input {
+  padding: var(--spacing-xs, 6px) var(--spacing-sm, 10px);
+  font-size: 0.8125rem;
+  min-height: 32px;
+}
+
+.entity-list-container.compact .send-button {
+  padding: var(--spacing-xs, 6px) var(--spacing-sm, 12px);
+  font-size: 0.75rem;
+}
+
+.entity-list-container.compact .ai-status-container {
+  padding: var(--spacing-xxs, 2px) var(--spacing-xs, 4px);
+}
+
+.entity-list-container.compact .ai-status-chip {
+  padding: 2px 6px;
+  font-size: 0.65rem;
+}
+
+/* Hide errors toggle in compact mode - less clutter */
+.entity-list-container.compact .errors-toggle {
+  display: none;
+}

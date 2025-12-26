@@ -167,10 +167,13 @@ class SidebarResizer extends HTMLElement {
         if (sidebarContainer && desktopContainer) {
             // Set the sidebar container width directly
             sidebarContainer.style.width = `${width}px`;
-            
-            // Update the grid template to match the new sidebar width
-            desktopContainer.style.gridTemplateColumns = `${width}px 1fr`;
-            
+
+            // Update the grid template while preserving the 3-column layout
+            // Get current right panel width from the grid (or use default 320px)
+            const currentCols = getComputedStyle(desktopContainer).gridTemplateColumns.split(' ');
+            const rightPanelWidth = currentCols[2] || '320px';
+            desktopContainer.style.gridTemplateColumns = `${width}px 1fr ${rightPanelWidth}`;
+
             this.currentWidth = width;
             
             // Dispatch custom event for other components
