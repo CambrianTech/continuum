@@ -70,7 +70,7 @@ When `captureMetrics=true`:
 # Full debugging workflow
 ./jtag debug/scroll-test --target=top --captureMetrics=true
 ./jtag debug/logs --filterPattern="EntityScroller" --tailLines=20
-./jtag screenshot --querySelector="chat-widget" --filename="after-scroll.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="after-scroll.png"
 ```
 
 ## Architecture

@@ -5,6 +5,11 @@
   "description": "Organic multi-persona conversations with intelligent resource management. Uses fast bag-of-words gating (<1ms), domain expertise matching, and multi-stage AI escalation for natural collaboration without artificial limitations.",
   "version": 1,
 
+  "layout": {
+    "mainWidget": "chat-widget",
+    "rightPanel": null
+  },
+
   "pipeline": [
     {
       "command": "rag/build",

@@ -37,10 +37,10 @@ export class SidebarWidget extends BaseWidget {
     // Use BaseWidget's template and styles system
     const styles = this.templateCSS ?? '/* No styles loaded */';
     const template = this.templateHTML ?? '<div>No template loaded</div>';
-    
+
     // Ensure template is a string
     const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-    
+
     // Replace dynamic content
     const dynamicContent = templateString
       .replace('<!-- STATUS_CONTENT -->', await this.getStatusContent())
@@ -50,8 +50,36 @@ export class SidebarWidget extends BaseWidget {
       <style>${styles}</style>
       ${dynamicContent}
     `;
-    
+
+    // Wire up collapse button
+    this.setupCollapseButton();
+
     console.log('✅ SidebarPanel: Sidebar panel rendered');
+  }
+
+  /**
+   * Wire up collapse button to toggle sidebar via PanelResizer
+   */
+  private setupCollapseButton(): void {
+    const collapseBtn = this.shadowRoot?.querySelector('.collapse-btn');
+    if (collapseBtn) {
+      collapseBtn.addEventListener('click', () => {
+        this.toggleCollapse();
+      });
+    }
+  }
+
+  /**
+   * Toggle collapse via the resizer (single source of truth)
+   */
+  private toggleCollapse(): void {
+    const continuumWidget = document.querySelector('continuum-widget') as any;
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector('panel-resizer[side="left"]') as any;
+      if (resizer?.toggle) {
+        resizer.toggle();
+      }
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {

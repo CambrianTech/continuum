@@ -529,7 +529,7 @@ renderParticipant(member: RoomMemberEntity): string {
 npm start
 
 # 2. Screenshot chat widget
-./jtag screenshot --querySelector="chat-widget" --filename="learning-mode-ui.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="learning-mode-ui.png"
 
 # 3. Verify indicators show
 # - Learning participants have 🧬 icon

@@ -785,7 +785,7 @@ class SQLiteAdapter implements IStorageAdapter {
 
 # 3. Test system
 ./jtag ping
-./jtag screenshot
+./jtag interface/screenshot
 
 # 4. If something breaks, restore from backup
 ./jtag data/import --input="/tmp/backup-before-upgrade.json" --strategy="replace"

@@ -389,7 +389,7 @@ npm start
 
 # Verify
 ./jtag ping                                          # Check connection
-./jtag screenshot                                    # See the UI
+./jtag interface/screenshot                                    # See the UI
 ./jtag chat/send --room="general" --message="Hello!" # Send a message
 ./jtag chat/export --room="general" --limit=20      # See responses
 ```

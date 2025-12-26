@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6370",
+  "version": "1.0.6423",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -132,7 +132,7 @@
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "clean:logs": "find .continuum/jtag/logs -name '*.log' -type f -delete 2>/dev/null || true; find .continuum/personas -path '*/logs/*.log' -type f -delete 2>/dev/null || true; echo '✅ Cleaned all log files (system + persona logs)'",
     "prepare": "npx tsx scripts/ensure-config.ts 2>/dev/null || true",
-    "prebuild": "npx tsx scripts/ensure-config.ts && npm run version:bump && npm run clean:all && npm run worker:build && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts && npx tsx generator/generate-command-constants.ts",
+    "prebuild": "npx tsx scripts/ensure-config.ts && npm run version:bump && npm run clean:all && npm run worker:build && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts && npx tsx generator/generate-command-constants.ts && npx tsx scripts/compile-sass.ts",
     "build:ts": "npx tsx generator/generate-version.ts && npx tsx generator/generate-config.ts && npx tsx scripts/build-with-loud-failure.ts",
     "lint": "eslint . --ext .ts --fix-dry-run && tsc --noEmit --project .",
     "lint:file": "eslint --ext .ts --fix-dry-run",
@@ -328,6 +328,7 @@
     "@types/ws": "^8.18.1",
     "glob": "^11.0.3",
     "node-fetch": "^3.3.2",
+    "sass": "^1.97.1",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "ws": "^8.18.3"

@@ -5,7 +5,19 @@
 
 :root {
   /* === LAYOUT === */
-  --sidebar-width: 250px;
+  /* Left sidebar */
+  --sidebar-width: 400px;
+  --sidebar-min-width: 300px;
+  --sidebar-max-width: 600px;
+  --sidebar-collapse-threshold: 50px;
+  --sidebar-collapsed-width: 6px;
+
+  /* Right panel */
+  --right-panel-width: 400px;
+  --right-panel-min-width: 300px;
+  --right-panel-max-width: 600px;
+  --right-panel-collapse-threshold: 50px;
+  --right-panel-collapsed-width: 6px;
   
   /* === SPACING === */
   --spacing-xs: 4px;

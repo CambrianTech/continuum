@@ -345,7 +345,7 @@ npm start
 # Wait for system ready
 ./jtag debug/chat-send --room="general" --message="Explain quantum computing"
 # Wait 10 seconds
-./jtag screenshot  # Should see 1-2 quality responses, not 5+ redundant ones
+./jtag interface/screenshot  # Should see 1-2 quality responses, not 5+ redundant ones
 ```
 
 ---

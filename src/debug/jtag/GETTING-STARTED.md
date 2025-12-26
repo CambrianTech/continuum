@@ -69,7 +69,7 @@ This will:
 
 ```bash
 # Take a screenshot of the UI
-./jtag screenshot
+./jtag interface/screenshot
 
 # Send a message to the chat
 ./jtag chat/send --room="general" --message="Hello from the CLI!"
@@ -136,7 +136,7 @@ npm start
 
 # 3. Test with CLI or browser
 ./jtag ping
-./jtag screenshot
+./jtag interface/screenshot
 ```
 
 **Important:** `npm start` rebuilds everything. Changes won't appear until you restart.

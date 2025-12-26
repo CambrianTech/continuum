@@ -586,7 +586,7 @@ npm start
 ./jtag collaboration/chat/send --room="general" --message="I'm creating a proposal about logging standards. Let's vote on it!"
 
 # Monitor in chat widget
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # Verify decision recorded
 ./jtag decision/list --status=open

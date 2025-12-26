@@ -44,12 +44,8 @@ textarea {
 }
 
 /* === DESKTOP LAYOUT === */
-.desktop-container {
-    display: grid;
-    grid-template-columns: var(--sidebar-width) 1fr;
-    height: 100vh;
-    overflow: hidden;
-}
+/* Note: .desktop-container grid defined in continuum-widget.css (shadow DOM) */
+/* Do not override here - continuum-widget.css handles the 3-column layout */
 
 /* === SIDEBAR === */
 .sidebar-panel {

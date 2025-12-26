@@ -272,7 +272,7 @@ CodeReview AI: From a technical perspective, I'm deterministic code running on h
   chatWidget.sendMessage();
 "
 # Wait 30 seconds
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 # Expect: 1-2 responses, not all 3 personas
 
 # Test 2: Direct mention (should get that persona only)

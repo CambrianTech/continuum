@@ -7,10 +7,10 @@
  * - Filter by component/module
  * - Auto-follow (tail) mode for live updates
  * - Line number display
- * - Clickable timestamps for navigation
+ * - Text is fully selectable/copyable
  *
  * Opened via content/open command with contentType='diagnostics-log'
- * entityId is the log file path (e.g., '.continuum/personas/helper/logs/hippocampus.log')
+ * entityId is the log path in format: {uniqueId}/{logType} (e.g., 'helper/hippocampus', 'local/cns')
  */
 
 import { BasePanelWidget } from '../shared/BasePanelWidget';
@@ -352,6 +352,13 @@ export class LogViewerWidget extends BasePanelWidget {
  * Styles specific to LogViewerWidget
  */
 const LOG_VIEWER_STYLES = `
+  /* Enable text selection for log content (override base theme) */
+  .log-content,
+  .log-content * {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+  }
+
   .log-controls {
     display: flex;
     gap: 16px;

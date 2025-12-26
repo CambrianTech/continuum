@@ -237,17 +237,24 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Remove a content item from open tabs
+   * If closing the current tab, switches to most recently accessed tab (browser-style history)
    */
   removeContentItem(itemId: UUID): void {
     const wasCurrentItem = this.contentState.currentItemId === itemId;
 
     this.contentState.openItems = this.contentState.openItems.filter(item => item.id !== itemId);
 
-    // If we removed the current item, set new current
-    if (wasCurrentItem) {
-      this.contentState.currentItemId = this.contentState.openItems.length > 0
-        ? this.contentState.openItems[0].id
-        : undefined;
+    // If we removed the current item, switch to most recently accessed tab
+    if (wasCurrentItem && this.contentState.openItems.length > 0) {
+      // Sort by lastAccessedAt descending to find most recently viewed
+      const mostRecent = [...this.contentState.openItems].sort((a, b) => {
+        const aTime = new Date(a.lastAccessedAt).getTime();
+        const bTime = new Date(b.lastAccessedAt).getTime();
+        return bTime - aTime;
+      })[0];
+      this.contentState.currentItemId = mostRecent.id;
+    } else if (this.contentState.openItems.length === 0) {
+      this.contentState.currentItemId = undefined;
     }
 
     this.contentState.lastUpdatedAt = new Date();
@@ -300,13 +307,18 @@ export class UserStateEntity extends BaseEntity {
       item.lastAccessedAt > cutoffDate || item.priority === 'urgent'
     );
 
-    // If current item was removed, set new current
+    // If current item was removed, switch to most recently accessed
     if (this.contentState.currentItemId) {
       const currentExists = this.contentState.openItems.some(item => item.id === this.contentState.currentItemId);
-      if (!currentExists) {
-        this.contentState.currentItemId = this.contentState.openItems.length > 0
-          ? this.contentState.openItems[0].id
-          : undefined;
+      if (!currentExists && this.contentState.openItems.length > 0) {
+        const mostRecent = [...this.contentState.openItems].sort((a, b) => {
+          const aTime = new Date(a.lastAccessedAt).getTime();
+          const bTime = new Date(b.lastAccessedAt).getTime();
+          return bTime - aTime;
+        })[0];
+        this.contentState.currentItemId = mostRecent.id;
+      } else if (this.contentState.openItems.length === 0) {
+        this.contentState.currentItemId = undefined;
       }
     }
 

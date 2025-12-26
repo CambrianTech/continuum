@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-26T01:36:23.745Z",
+  "generated": "2025-12-26T19:25:04.100Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1192,6 +1192,27 @@
           "type": "boolean",
           "required": false,
           "description": "includeSessionLogs parameter"
+        }
+      }
+    },
+    {
+      "name": "logs/config",
+      "description": "Logs Config Command - Shared Types\n *\n * Get or set logging configuration per persona and category",
+      "params": {
+        "persona": {
+          "type": "string",
+          "required": false,
+          "description": "persona parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": false,
+          "description": "action parameter"
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
         }
       }
     },

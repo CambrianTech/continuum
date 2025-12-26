@@ -685,7 +685,7 @@ sleep 360
   --message="What theme should I use?" --count=1
 
 # 10. Verify persona remembers dark mode preference
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 ```
 
 ---

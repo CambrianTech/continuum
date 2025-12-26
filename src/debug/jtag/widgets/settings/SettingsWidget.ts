@@ -7,9 +7,6 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { AssistantPanel } from '../shared/AssistantPanel';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../system/core/shared/Commands';
 import { SETTINGS_STYLES } from './components/SettingsStyles';
 import { ProviderEntry, type ConfigEntry } from './components/ProviderEntry';
@@ -19,7 +16,6 @@ export class SettingsWidget extends BaseWidget {
   private configEntries: ConfigEntry[] = [];
   private isLoading = true;
   private saveStatus: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
-  private assistantPanel?: AssistantPanel;
   private tester: ProviderStatusTester;
   private pendingChanges: Map<string, string> = new Map();
 
@@ -93,7 +89,7 @@ export class SettingsWidget extends BaseWidget {
 
   protected async renderWidget(): Promise<void> {
     // Preserve scroll position before re-render
-    const scrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    const scrollContainer = this.shadowRoot?.querySelector('.settings-container');
     const scrollTop = scrollContainer?.scrollTop || 0;
 
     const localEntries = this.configEntries.filter(e => e.category === 'local');
@@ -110,86 +106,56 @@ export class SettingsWidget extends BaseWidget {
     const cloudEntriesHtml = cloudEntries.map(renderEntry).join('');
 
     const template = this.isLoading ? `
-      <div class="settings-layout">
-        <div class="settings-main">
-          <div class="settings-container">
-            <div class="loading">Loading configuration...</div>
-          </div>
-        </div>
-        <div class="settings-assistant" id="assistant-container"></div>
+      <div class="settings-container">
+        <div class="loading">Loading configuration...</div>
       </div>
     ` : `
-      <div class="settings-layout">
-        <div class="settings-main">
-          <div class="settings-container">
-            <div class="settings-header">
-              <h1 class="settings-title">AI Providers</h1>
-              <p class="settings-subtitle">Connect AI services to power your assistants</p>
-            </div>
-
-            <div class="info-box">
-              <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
-              or connect cloud providers for more powerful models. You can use multiple providers.
-              <span class="storage-note">Keys stored in <code>~/.continuum/config.env</code> <button class="btn-refresh" id="refresh-btn" title="Reload from file">↻</button></span>
-            </div>
-
-            <div class="settings-section local-highlight">
-              <h2 class="section-title">Local AI (Free)</h2>
-              <p class="section-intro">
-                Runs on your machine. No API key required. Private and unlimited.
-                <a href="https://ollama.ai" target="_blank">Download Ollama</a> if not installed.
-              </p>
-              ${localEntriesHtml}
-            </div>
-
-            <div class="settings-section">
-              <h2 class="section-title">Cloud Providers (Paid)</h2>
-              <p class="section-intro">
-                Requires API keys from each provider. More powerful models, usage-based pricing.
-              </p>
-              ${cloudEntriesHtml}
-            </div>
-
-            <div class="save-section">
-              ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
-              ${this.saveStatus === 'error' ? '<span class="status-message status-error">Fix errors before saving</span>' : ''}
-              <button class="btn btn-secondary" id="reset-btn">Reset</button>
-              <button class="btn btn-primary" id="save-btn">Save Changes</button>
-            </div>
-          </div>
+      <div class="settings-container">
+        <div class="settings-header">
+          <h1 class="settings-title">AI Providers</h1>
+          <p class="settings-subtitle">Connect AI services to power your assistants</p>
         </div>
-        <div class="settings-assistant" id="assistant-container"></div>
+
+        <div class="info-box">
+          <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
+          or connect cloud providers for more powerful models. You can use multiple providers.
+          <span class="storage-note">Keys stored in <code>~/.continuum/config.env</code> <button class="btn-refresh" id="refresh-btn" title="Reload from file">↻</button></span>
+        </div>
+
+        <div class="settings-section local-highlight">
+          <h2 class="section-title">Local AI (Free)</h2>
+          <p class="section-intro">
+            Runs on your machine. No API key required. Private and unlimited.
+            <a href="https://ollama.ai" target="_blank">Download Ollama</a> if not installed.
+          </p>
+          ${localEntriesHtml}
+        </div>
+
+        <div class="settings-section">
+          <h2 class="section-title">Cloud Providers (Paid)</h2>
+          <p class="section-intro">
+            Requires API keys from each provider. More powerful models, usage-based pricing.
+          </p>
+          ${cloudEntriesHtml}
+        </div>
+
+        <div class="save-section">
+          ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
+          ${this.saveStatus === 'error' ? '<span class="status-message status-error">Fix errors before saving</span>' : ''}
+          <button class="btn btn-secondary" id="reset-btn">Reset</button>
+          <button class="btn btn-primary" id="save-btn">Save Changes</button>
+        </div>
       </div>
     `;
 
     this.shadowRoot!.innerHTML = `<style>${SETTINGS_STYLES}</style>${template}`;
     this.setupEventListeners();
-    this.initializeAssistant();
 
     // Restore scroll position after re-render
-    const newScrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    const newScrollContainer = this.shadowRoot?.querySelector('.settings-container');
     if (newScrollContainer && scrollTop > 0) {
       newScrollContainer.scrollTop = scrollTop;
     }
-  }
-
-  private initializeAssistant(): void {
-    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
-    if (!container) return;
-
-    // Only create AssistantPanel once - don't recreate on every render
-    if (this.assistantPanel) {
-      // Re-attach to the new container element (DOM was replaced)
-      container.appendChild(this.assistantPanel['container']);
-      return;
-    }
-
-    this.assistantPanel = new AssistantPanel(container, {
-      roomId: DEFAULT_ROOMS.SETTINGS as UUID,
-      roomName: 'settings',
-      placeholder: 'Ask about providers, pricing, or setup...',
-      greeting: "I can help you choose and configure AI providers. Ask me about:\n• Which provider is best for your needs\n• How to get API keys\n• Troubleshooting connections\n• Comparing costs and capabilities"
-    });
   }
 
   private setupEventListeners(): void {
@@ -328,7 +294,6 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    this.assistantPanel?.destroy();
     console.log('Settings: Cleanup complete');
   }
 }

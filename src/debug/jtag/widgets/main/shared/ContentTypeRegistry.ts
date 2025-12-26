@@ -3,7 +3,23 @@
  *
  * This is the "React Router" of the main panel - determines which widget
  * renders based on the current tab's content type.
+ *
+ * IMPORTANT: Right panel configs here mirror recipe JSON layouts.
+ * Recipe JSONs are the source of truth for AI behavior, this registry
+ * is the source of truth for browser-side UI composition.
  */
+
+/**
+ * Right panel configuration - mirrors recipe.layout.rightPanel
+ */
+export interface RightPanelConfig {
+  /** Widget to display (default: 'chat-widget') */
+  widget?: string;
+  /** For chat-widget: which room to connect to */
+  room?: string;
+  /** Display in compact mode for sidebar use */
+  compact?: boolean;
+}
 
 export interface ContentTypeConfig {
   /** Widget tag name (e.g., 'chat-widget', 'settings-widget') */
@@ -18,6 +34,8 @@ export interface ContentTypeConfig {
   requiresEntity: boolean;
   /** Default title when no entity specified */
   defaultTitle?: string;
+  /** Right panel configuration. null = hidden, undefined = inherit default */
+  rightPanel?: RightPanelConfig | null;
 }
 
 /**
@@ -30,72 +48,88 @@ export interface ContentTypeConfig {
  */
 export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
   // Chat rooms - the original content type
+  // Chat IS the main content, no right panel needed
   chat: {
     widget: 'chat-widget',
     displayName: 'Chat',
     pathPrefix: '/chat',
     requiresEntity: true,  // Needs roomId
+    rightPanel: null,  // Hide right panel for chat (chat IS the content)
   },
 
   // Settings - config.env editor, API keys
+  // Help assistant in right panel for configuration guidance
   settings: {
     widget: 'settings-widget',
     displayName: 'Settings',
     pathPrefix: '/settings',
     requiresEntity: false,
     defaultTitle: 'Settings',
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
   // Theme customization
+  // Help assistant for color scheme suggestions
   theme: {
     widget: 'theme-widget',
     displayName: 'Theme',
     pathPrefix: '/theme',
     requiresEntity: false,
     defaultTitle: 'Theme',
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
   // Help & onboarding
+  // No right panel - help IS the main content
   help: {
     widget: 'help-widget',
     displayName: 'Help',
     pathPrefix: '/help',
     requiresEntity: false,
     defaultTitle: 'Help',
+    rightPanel: null,
   },
 
   // Persona brain/cognitive view
+  // Help assistant for understanding persona state
   persona: {
     widget: 'persona-brain-widget',
     displayName: 'Persona',
     pathPrefix: '/persona',
     requiresEntity: true,  // Needs userId (uniqueId)
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
   // Web browser (collaborative)
+  // Help assistant for browser usage
   browser: {
     widget: 'browser-widget',
     displayName: 'Browser',
     pathPrefix: '/browser',
     requiresEntity: false,
     defaultTitle: 'Browser',
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
   // System diagnostics and persona logs
+  // Help assistant for log interpretation
   diagnostics: {
     widget: 'diagnostics-widget',
     displayName: 'Diagnostics',
     pathPrefix: '/diagnostics',
     requiresEntity: false,
     defaultTitle: 'System Diagnostics',
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
   // Individual log viewer (opened from diagnostics)
+  // Help assistant for understanding log entries
   'diagnostics-log': {
     widget: 'log-viewer-widget',
     displayName: 'Log',
     pathPrefix: '/log',
     requiresEntity: true,  // Needs log file path
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 };
 
@@ -154,4 +188,25 @@ export function buildContentPath(contentType: string, entityId?: string): string
     return `${config.pathPrefix}/${entityId}`;
   }
   return config.pathPrefix;
+}
+
+/**
+ * Get right panel configuration for a content type
+ * Returns null if right panel should be hidden
+ * Returns config object if right panel should be shown
+ */
+export function getRightPanelConfig(contentType: string): RightPanelConfig | null {
+  const config = CONTENT_TYPE_REGISTRY[contentType];
+  if (!config) {
+    // Unknown content type - default to showing help panel
+    return { widget: 'chat-widget', room: 'help', compact: true };
+  }
+
+  // null means explicitly hidden, undefined means use default
+  if (config.rightPanel === null) {
+    return null;
+  }
+
+  // Return the config or default help panel
+  return config.rightPanel || { widget: 'chat-widget', room: 'help', compact: true };
 }

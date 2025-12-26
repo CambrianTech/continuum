@@ -375,7 +375,7 @@ async serviceInbox() {
 sleep 10
 
 # 4. Screenshot
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 
 # Expected: Helper AI response with file references
 # "PersonaUser.inbox is a priority queue (PersonaInbox.ts:45-120)..."

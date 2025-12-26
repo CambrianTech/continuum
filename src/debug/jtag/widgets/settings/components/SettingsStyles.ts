@@ -35,6 +35,9 @@ export const SETTINGS_STYLES = `
 
   .settings-container {
     width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    padding: 24px;
   }
 
   .settings-header {

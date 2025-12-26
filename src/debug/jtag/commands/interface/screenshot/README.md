@@ -5,7 +5,7 @@ Screenshot Command - Shared Types
 ## Usage
 
 ```bash
-./jtag screenshot [options]
+./jtag interface/screenshot [options]
 ```
 
 ## Parameters
@@ -55,10 +55,10 @@ Screenshot Command - Shared Types
 
 ```bash
 # Example 1: Basic invocation
-./jtag screenshot
+./jtag interface/screenshot
 
 # Example 2: With parameters
-./jtag screenshot --param=value
+./jtag interface/screenshot --param=value
 ```
 
 ### Programmatic Usage

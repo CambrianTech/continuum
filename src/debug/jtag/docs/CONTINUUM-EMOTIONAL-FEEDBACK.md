@@ -76,11 +76,11 @@ await Commands.execute('continuum/set', {
 
 ```bash
 # Screenshot with animation (default ON)
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 # → Draws Tron-style light cycle trail around crop rectangle
 
 # Screenshot without animation
-./jtag screenshot --querySelector="chat-widget" --noAnimation=true
+./jtag interface/screenshot --querySelector="chat-widget" --noAnimation=true
 ```
 
 **How it works**:
@@ -351,8 +351,8 @@ interface ScreenshotParams extends CommandParams {
 
 **Examples**:
 ```bash
-./jtag screenshot --querySelector="body"  # Animates by default
-./jtag screenshot --querySelector="chat-widget" --noAnimation=true
+./jtag interface/screenshot --querySelector="body"  # Animates by default
+./jtag interface/screenshot --querySelector="chat-widget" --noAnimation=true
 ```
 
 ---
@@ -749,11 +749,11 @@ Events.emit('system:health', {
 # Manual testing
 npm start
 ./jtag continuum/set --emoji="🔍" --message="Testing"
-./jtag screenshot --querySelector="body"
+./jtag interface/screenshot --querySelector="body"
 ./jtag continuum/point --querySelector="chat-widget"
 
 # Visual verification
-./jtag screenshot --querySelector="continuum-widget" --output="/tmp/continuum-test.png"
+./jtag interface/screenshot --querySelector="continuum-widget" --output="/tmp/continuum-test.png"
 
 # Event testing
 ./jtag debug/events --filter="continuum:*"

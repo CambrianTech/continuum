@@ -64,6 +64,68 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     return 'chat';
   }
 
+  // Observed attributes for reactive updates
+  static get observedAttributes(): string[] {
+    return ['compact', 'room'];
+  }
+
+  // Compact mode for right panel / mobile
+  private _compact: boolean = false;
+
+  get compact(): boolean {
+    return this._compact;
+  }
+
+  set compact(value: boolean) {
+    this._compact = value;
+    this.updateCompactMode();
+  }
+
+  attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
+    if (oldValue === newValue) return;
+
+    switch (name) {
+      case 'compact':
+        this._compact = newValue !== null && newValue !== 'false';
+        this.updateCompactMode();
+        break;
+      case 'room':
+        if (newValue) {
+          this.switchToRoom(newValue);
+        }
+        break;
+    }
+  }
+
+  private updateCompactMode(): void {
+    const container = this.shadowRoot?.querySelector('.entity-list-container');
+    if (container) {
+      container.classList.toggle('compact', this._compact);
+    }
+  }
+
+  private async switchToRoom(roomIdOrName: string): Promise<void> {
+    // Try to find room by uniqueId first, then by ID
+    try {
+      const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+        collection: 'rooms',
+        filter: { uniqueId: roomIdOrName },
+        limit: 1
+      });
+
+      if (result.success && result.items?.[0]) {
+        const room = result.items[0];
+        await this.loadRoomData(room.id as UUID);
+        return;
+      }
+
+      // Try as UUID directly
+      await this.loadRoomData(roomIdOrName as UUID);
+    } catch (error) {
+      console.error('ChatWidget: Failed to switch room:', error);
+    }
+  }
+
   protected resolveResourcePath(filename: string): string {
     return `widgets/chat/chat-widget/${filename}`;
   }
@@ -544,6 +606,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       container.addEventListener('dragover', (e) => this.handleDragOver(e));
       container.addEventListener('dragleave', (e) => this.handleDragLeave(e));
       container.addEventListener('drop', (e) => this.handleDrop(e));
+
+      // Apply compact mode if set via attribute
+      this.updateCompactMode();
     }
   }
 

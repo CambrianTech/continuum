@@ -93,6 +93,11 @@ export const UI_EVENTS = {
   // Widget State
   WIDGET_FOCUSED: 'widget:focused',
   WIDGET_BLURRED: 'widget:blurred',
+
+  // Layout/Right Panel Configuration
+  // Emitted when content type changes to reconfigure the right panel
+  LAYOUT_CHANGED: 'layout:changed',
+  RIGHT_PANEL_CONFIGURE: 'layout:rightpanel:configure',
 } as const;
 
 /**
@@ -180,6 +185,20 @@ export type EventName = typeof ALL_EVENT_NAMES[number] | string;
 /**
  * Event payload types (extend as needed)
  */
+/**
+ * Right panel configuration payload
+ */
+export interface RightPanelConfigPayload {
+  /** Widget to display (null = hide panel) */
+  widget: string | null;
+  /** For chat-widget: which room to connect to */
+  room?: string;
+  /** Display in compact mode */
+  compact?: boolean;
+  /** Content type that triggered this change */
+  contentType: string;
+}
+
 export interface EventPayloads {
   // Data events have generic entity payloads (defined by BaseEntity extensions)
   [key: `data:${string}:${CrudOperation}`]: any;
@@ -188,6 +207,8 @@ export interface EventPayloads {
   'room:selected': { roomId: string; roomName: string };
   'theme:changed': { theme: string };
   'sidebar:toggled': { collapsed: boolean };
+  'layout:changed': { contentType: string };
+  'layout:rightpanel:configure': RightPanelConfigPayload;
 
   // System events
   'system:ready': { timestamp: string };

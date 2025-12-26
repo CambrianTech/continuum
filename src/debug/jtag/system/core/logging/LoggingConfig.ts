@@ -227,30 +227,49 @@ export class LoggingConfig {
   private updateEnabled(personaId: string, category: string, enabled: boolean): void {
     const normalizedId = this.normalizePersonaId(personaId);
 
-    // Ensure persona config exists
+    // Ensure persona config exists (don't change enabled state)
     if (!this.config.personas[normalizedId]) {
       this.config.personas[normalizedId] = {
-        enabled: true,
+        enabled: false,
         categories: []
       };
     }
 
     const personaConfig = this.config.personas[normalizedId];
 
+    if (!personaConfig.categories) {
+      personaConfig.categories = [];
+    }
+
+    // All known categories for converting empty->explicit list
+    const allCategories = Object.values(LOGGING_CATEGORIES);
+
     if (enabled) {
-      // Add category if not present
-      if (!personaConfig.categories) {
-        personaConfig.categories = [];
+      // ENABLING a category
+      if (personaConfig.categories.length === 0 || personaConfig.categories.includes('*')) {
+        // Already all enabled - nothing to do
+        return;
       }
+      // Add category if not present
       if (!personaConfig.categories.includes(category)) {
         personaConfig.categories.push(category);
       }
+      // If all categories are now enabled, simplify to empty array (meaning "all")
+      if (allCategories.every(c => personaConfig.categories!.includes(c))) {
+        personaConfig.categories = [];
+      }
     } else {
-      // Remove category
-      if (personaConfig.categories) {
+      // DISABLING a category
+      if (personaConfig.categories.length === 0 || personaConfig.categories.includes('*')) {
+        // Currently "all enabled" - convert to explicit list of all EXCEPT the disabled one
+        personaConfig.categories = allCategories.filter(c => c !== category);
+      } else {
+        // Remove category from explicit list
         personaConfig.categories = personaConfig.categories.filter(c => c !== category);
       }
     }
+
+    // Individual toggles don't change persona.enabled - that's controlled by global toggle only
 
     this.save();
   }

@@ -178,7 +178,7 @@ class AutonomousDevToolkit {
     // 2. Take a screenshot to see current state
     console.log('📸 Taking screenshot of current state...');
     try {
-      await execAsync('./jtag screenshot --filename=iteration-current.png');
+      await execAsync('./jtag interface/screenshot --filename=iteration-current.png');
       console.log('✅ Screenshot saved: iteration-current.png');
     } catch (error: any) {
       console.log('⚠️ Screenshot failed:', error.message);

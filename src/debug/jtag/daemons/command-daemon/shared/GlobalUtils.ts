@@ -90,7 +90,7 @@ export function getEnvironmentType(): 'browser' | 'server' | 'webworker' | 'unkn
 
 /**
  * Safely access DOM elements with proper error handling
- * Automatically handles widget selectors with shadow DOM traversal
+ * Automatically pierces shadow DOM to find elements
  * Only works in browser environment - returns null otherwise
  */
 export function safeQuerySelector(selector: string): Element | null {
@@ -98,27 +98,55 @@ export function safeQuerySelector(selector: string): Element | null {
 
   const context = getGlobalContext();
   try {
-    // Check if selector looks like a widget (ends with -widget)
-    if (selector.endsWith('-widget')) {
-      // Dynamically import WidgetDiscovery to avoid circular dependencies
-      // Use runtime check for browser environment
-      if (typeof document !== 'undefined' && document.querySelector('continuum-widget')) {
-        // Import WidgetDiscovery class
-        // Note: This requires the module to be loaded in browser context
-        const widgetDiscovery = (globalThis as any).WidgetDiscovery;
-        if (widgetDiscovery?.findWidget) {
-          const widgetRef = widgetDiscovery.findWidget(selector);
-          return widgetRef?.element ?? null;
-        }
-      }
-    }
+    // First try regular document query
+    const directMatch = context.document?.querySelector(selector);
+    if (directMatch) return directMatch;
 
-    // Fallback to regular query selector
-    return context.document?.querySelector(selector) ?? null;
+    // If not found, search through all shadow DOMs
+    return querySelectorDeep(selector, context.document?.body ?? null);
   } catch (error) {
     console.warn(`Failed to query selector "${selector}":`, error);
     return null;
   }
+}
+
+/**
+ * Recursively search through shadow DOMs for an element
+ * Automatically pierces all shadow roots to find the selector
+ */
+export function querySelectorDeep(selector: string, root: Element | null): Element | null {
+  if (!root) return null;
+
+  // Try to find in this element's shadow root
+  const shadowRoot = (root as any).shadowRoot as ShadowRoot | null;
+  if (shadowRoot) {
+    const match = shadowRoot.querySelector(selector);
+    if (match) return match;
+
+    // Search children within shadow root
+    const shadowChildren = shadowRoot.querySelectorAll('*');
+    for (const child of Array.from(shadowChildren)) {
+      const found = querySelectorDeep(selector, child);
+      if (found) return found;
+    }
+  }
+
+  // Search children in light DOM
+  const children = root.querySelectorAll('*');
+  for (const child of Array.from(children)) {
+    // Check if child has shadow root
+    const childShadow = (child as any).shadowRoot as ShadowRoot | null;
+    if (childShadow) {
+      const match = childShadow.querySelector(selector);
+      if (match) return match;
+
+      // Recurse into shadow root's children
+      const found = querySelectorDeep(selector, child);
+      if (found) return found;
+    }
+  }
+
+  return null;
 }
 
 /**

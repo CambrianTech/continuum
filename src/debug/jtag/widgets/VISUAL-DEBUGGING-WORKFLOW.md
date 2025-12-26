@@ -25,7 +25,7 @@ npx tsc --noEmit           # Compile check
 # 3. ONLY if tests pass, continue visual development
 JTAG_WORKING_DIR="examples/widget-ui" npm start
 # 4. Take screenshots to see what you built
-./jtag screenshot --querySelector=".desktop-container" --filename="desktop-current.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="desktop-current.png"
 # 5. Execute JavaScript to test interactions  
 ./jtag exec --code="console.log('Testing interaction...')" --environment="browser"
 ```
@@ -35,34 +35,34 @@ JTAG_WORKING_DIR="examples/widget-ui" npm start
 ### **Progressive Screenshot Capture**
 ```bash
 # Step 1: Basic structure
-./jtag screenshot --querySelector="body" --filename="01-basic-structure.png"
+./jtag interface/screenshot --querySelector="body" --filename="01-basic-structure.png"
 
 # Step 2: Left sidebar only
-./jtag screenshot --querySelector=".left-sidebar" --filename="02-left-sidebar.png"
+./jtag interface/screenshot --querySelector=".left-sidebar" --filename="02-left-sidebar.png"
 
 # Step 3: Main panel only
-./jtag screenshot --querySelector=".main-panel" --filename="03-main-panel.png"
+./jtag interface/screenshot --querySelector=".main-panel" --filename="03-main-panel.png"
 
 # Step 4: Full desktop layout
-./jtag screenshot --querySelector=".desktop-container" --filename="04-full-desktop.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="04-full-desktop.png"
 
 # Step 5: Existing chat widget still working
-./jtag screenshot --querySelector="chat-widget" --filename="05-chat-widget-preserved.png"
+./jtag interface/screenshot --querySelector="chat-widget" --filename="05-chat-widget-preserved.png"
 
 # Step 6: Specific components
-./jtag screenshot --querySelector="continuum-emoter" --filename="06-emoter-component.png"
-./jtag screenshot --querySelector="dynamic-list" --filename="07-dynamic-list.png"
+./jtag interface/screenshot --querySelector="continuum-emoter" --filename="06-emoter-component.png"
+./jtag interface/screenshot --querySelector="dynamic-list" --filename="07-dynamic-list.png"
 ```
 
 ### **Before/After Comparison Workflow**
 ```bash
 # Capture before making changes
-./jtag screenshot --querySelector=".desktop-container" --filename="before-css-changes.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="before-css-changes.png"
 
 # Make CSS/HTML changes
 
 # Capture after changes
-./jtag screenshot --querySelector=".desktop-container" --filename="after-css-changes.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="after-css-changes.png"
 
 # Compare visually to see what changed
 ```
@@ -130,7 +130,7 @@ console.log('📐 Adjusted grid layout widths');
 " --environment="browser"
 
 # Capture result
-./jtag screenshot --querySelector=".desktop-container" --filename="live-css-test.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="live-css-test.png"
 ```
 
 ## 🐛 **COMMON DEBUGGING SCENARIOS**
@@ -217,7 +217,7 @@ if (input && button) {
 ## 📋 **SYSTEMATIC DEBUGGING CHECKLIST**
 
 ### **After Each Major Change**
-1. **Screenshot the full layout**: `./jtag screenshot --querySelector="body" --filename="step-X-full.png"`
+1. **Screenshot the full layout**: `./jtag interface/screenshot --querySelector="body" --filename="step-X-full.png"`
 2. **Test existing chat widget**: Verify it still works
 3. **Check console for errors**: Look at browser logs
 4. **Test new functionality**: Use exec to interact with new components
@@ -232,7 +232,7 @@ npx tsc --noEmit           # Compile check
 # 3. ONLY if tests pass, proceed with visual validation
 JTAG_WORKING_DIR="examples/widget-ui" npm start
 # 4. Screenshot to see changes
-./jtag screenshot --querySelector=".desktop-container" --filename="iteration-$(date +%s).png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="iteration-$(date +%s).png"
 # 5. Test interactions with exec
 ./jtag exec --code="/* test new functionality */" --environment="browser"
 # 6. Check logs for any errors
@@ -244,7 +244,7 @@ JTAG_WORKING_DIR="examples/widget-ui" npm start
 ```bash
 # When something doesn't work:
 # 1. Take screenshot to see current state
-./jtag screenshot --querySelector="body" --filename="debug-current-state.png"
+./jtag interface/screenshot --querySelector="body" --filename="debug-current-state.png"
 
 # 2. Check if elements exist
 ./jtag exec --code="
@@ -268,7 +268,7 @@ if (element) {
 
 # 4. Make targeted fix
 # 5. Screenshot to verify fix
-./jtag screenshot --querySelector=".fixed-element" --filename="debug-fixed.png"
+./jtag interface/screenshot --querySelector=".fixed-element" --filename="debug-fixed.png"
 ```
 
 ## 🎯 **SPECIFIC DESKTOP LAYOUT DEBUGGING**
@@ -276,7 +276,7 @@ if (element) {
 ### **Phase 1: Grid Structure Debug**
 ```bash
 # Verify basic grid is working
-./jtag screenshot --querySelector=".desktop-container" --filename="grid-structure.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="grid-structure.png"
 ./jtag exec --code="
 const grid = document.querySelector('.desktop-container');
 console.log('Grid computed style:', getComputedStyle(grid).gridTemplateColumns);
@@ -286,8 +286,8 @@ console.log('Grid computed style:', getComputedStyle(grid).gridTemplateColumns);
 ### **Phase 2: Sidebar Components Debug**
 ```bash
 # Test each sidebar component
-./jtag screenshot --querySelector="continuum-emoter" --filename="emoter-debug.png"
-./jtag screenshot --querySelector="dynamic-list" --filename="list-debug.png"
+./jtag interface/screenshot --querySelector="continuum-emoter" --filename="emoter-debug.png"
+./jtag interface/screenshot --querySelector="dynamic-list" --filename="list-debug.png"
 ./jtag exec --code="
 document.querySelector('[data-context=\"academy\"]').click();
 console.log('Academy context clicked for testing');
@@ -313,7 +313,7 @@ document.dispatchEvent(new MouseEvent('mouseup'));
 " --environment="browser"
 
 # Screenshot result
-./jtag screenshot --querySelector=".desktop-container" --filename="after-drag-test.png"
+./jtag interface/screenshot --querySelector=".desktop-container" --filename="after-drag-test.png"
 ```
 
 ## 🚨 **MICRO-INCREMENT DEVELOPMENT STRATEGY**

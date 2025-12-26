@@ -5,6 +5,11 @@
   "description": "Progressive learning system where Teacher AI creates exams, Student AI responds, and Teacher scores/provides feedback. Student's LoRA adapter trains on the conversation subject to improve over time. Difficulty progressively increases as student improves.",
   "version": 1,
 
+  "layout": {
+    "mainWidget": "chat-widget",
+    "rightPanel": null
+  },
+
   "pipeline": [
     {
       "command": "rag/build",

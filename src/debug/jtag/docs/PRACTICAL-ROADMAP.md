@@ -109,7 +109,7 @@ Security AI: Identifies vulnerabilities
 
 # Wait 5-10 seconds
 
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 # → Helper AI should give accurate answer with file references
 ```
 
@@ -155,7 +155,7 @@ git push origin feature/test-branch
 # Create PR via GitHub web UI
 
 # Check dev-updates room
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 # → Should see PR summary + CodeReview AI analysis
 ```
 
@@ -211,7 +211,7 @@ Weekly Fine-Tuning:
 ./jtag collaboration/chat/send --message="Why does Commands.execute() work everywhere?"
 
 # Check if answer improved
-./jtag screenshot
+./jtag interface/screenshot
 ```
 
 **Success Criteria**:

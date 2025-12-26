@@ -24,6 +24,28 @@
   overflow: hidden;
 }
 
+/* Collapsed sidebar - thin handle visible, content hidden */
+.sidebar-container.collapsed {
+  overflow: visible;  /* Allow expand button to show outside */
+  transition: width 0.2s ease;
+}
+
+.sidebar-container.collapsed .left-sidebar {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Collapsed right panel - thin handle visible, content hidden */
+.right-panel-container.collapsed {
+  overflow: visible;  /* Allow expand button to show outside */
+  transition: width 0.2s ease;
+}
+
+.right-panel-container.collapsed right-panel-widget {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Main panel layout */
 .main-panel {
   display: flex;
@@ -81,59 +103,7 @@
   overflow: hidden;
 }
 
-/* Right panel resizer - on the LEFT side (mirrors sidebar resizer) */
-right-panel-resizer {
-  position: absolute;
-  top: 0;
-  left: -1px;
-  width: var(--resizer-width, 2px);
-  height: 100%;
-  cursor: col-resize;
-  background: var(--resizer-background);
-  z-index: 1000;
-  transition: all 0.2s ease;
-  border-left: 1px solid var(--resizer-border);
-}
-
-right-panel-resizer:hover {
-  background: var(--resizer-background-hover);
-  border-left: 1px solid var(--resizer-border-hover);
-  box-shadow: 0 0 4px var(--resizer-glow-hover);
-}
-
-right-panel-resizer:active, right-panel-resizer.dragging {
-  background: var(--resizer-background-active);
-  border-left: 2px solid var(--resizer-border-active);
-  box-shadow: 0 0 6px var(--resizer-glow-active);
-  width: var(--resizer-width-active, 3px);
-}
-
-/* Discord/VS Code style resizer - visible divider at exact border */
-sidebar-resizer {
-  position: absolute;
-  top: 0;
-  right: -1px;
-  width: var(--resizer-width, 2px);
-  height: 100%;
-  cursor: col-resize;
-  background: var(--resizer-background);
-  z-index: 1000;
-  transition: all 0.2s ease;
-  border-right: 1px solid var(--resizer-border);
-}
-
-sidebar-resizer:hover {
-  background: var(--resizer-background-hover);
-  border-right: 1px solid var(--resizer-border-hover);
-  box-shadow: 0 0 4px var(--resizer-glow-hover);
-}
-
-sidebar-resizer:active, sidebar-resizer.dragging {
-  background: var(--resizer-background-active);
-  border-right: 2px solid var(--resizer-border-active);
-  box-shadow: 0 0 6px var(--resizer-glow-active);
-  width: var(--resizer-width-active, 3px);
-}
+/* Panel resizer styling handled in PanelResizer component shadow DOM */
 
 /* Theme Widget Overlay - positioned in top-right corner */
 .theme-widget-overlay {

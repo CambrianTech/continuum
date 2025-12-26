@@ -572,7 +572,7 @@ npm start
 
 # Send another message
 ./jtag debug/chat-send --roomId="UUID" --message="Anyone there?"
-./jtag screenshot --querySelector="chat-widget"
+./jtag interface/screenshot --querySelector="chat-widget"
 # Personas should NOT respond (or much slower) due to low temperature
 ```
 

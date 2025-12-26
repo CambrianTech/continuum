@@ -154,7 +154,7 @@ async function captureScreenshot(filename: string, description: string): Promise
   error?: string;
 }> {
   try {
-    const { stdout } = await execAsync(`./jtag screenshot --querySelector="body" --filename="${filename}"`);
+    const { stdout } = await execAsync(`./jtag interface/screenshot --querySelector="body" --filename="${filename}"`);
     
     // Parse filepath from output
     let filePath: string | undefined;
