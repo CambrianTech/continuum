@@ -104,28 +104,111 @@ export class PersonaBrainWidget extends BasePanelWidget {
     if (!this.persona) return;
 
     try {
-      // Get memory stats from hippocampus
-      const logsResult = await Commands.execute('logs/stats', {
-        persona: this.personaId
-      } as any) as any;
+      // Fetch all stats in parallel for better performance
+      const [aiStatusResult, memoryCountResult, toolLogsResult] = await Promise.all([
+        // 1. Get AI status (model, provider, health)
+        Commands.execute('ai/status', {} as any) as Promise<any>,
+        // 2. Get memory count
+        Commands.execute('data/list', {
+          collection: 'memories',
+          filter: { personaId: this.persona.id },
+          limit: 1  // We just need the count
+        } as any) as Promise<any>,
+        // 3. Get tool execution count
+        Commands.execute('data/list', {
+          collection: 'tool_execution_logs',
+          filter: { personaId: this.persona.id },
+          limit: 1
+        } as any) as Promise<any>
+      ]);
 
-      if (logsResult.success) {
-        // Update stats based on log activity
-        this.moduleStats.hippocampus.memoryCount = logsResult.hippocampusLines || 0;
-        this.moduleStats.mind.status = logsResult.mindActive ? 'active' : 'idle';
+      // Parse AI status
+      let aiStatus: any = null;
+      if (aiStatusResult?.success && aiStatusResult.personas) {
+        aiStatus = aiStatusResult.personas.find(
+          (p: any) => p.userId === this.persona?.id || p.uniqueId === this.personaId
+        );
       }
 
-      // Placeholder stats - in real implementation, pull from actual persona state
+      // Calculate memory stats
+      const memoryCount = memoryCountResult?.count || 0;
+      const ltmSizeKB = memoryCount * 0.5; // Rough estimate: ~0.5KB per memory
+      const ltmSize = ltmSizeKB > 1024
+        ? `${(ltmSizeKB / 1024).toFixed(1)} MB`
+        : `${ltmSizeKB.toFixed(0)} KB`;
+
+      // Tool execution stats
+      const toolCount = toolLogsResult?.count || 0;
+
+      // Update module stats with real data
       this.moduleStats = {
-        mind: { status: 'active', lastActivity: 'Processing chat message' },
-        soul: { status: 'idle', mood: 'curious' },
-        hippocampus: { status: 'active', memoryCount: 2921, ltmSize: '2.3 MB' },
-        body: { status: 'idle', toolsAvailable: 12 },
-        cns: { status: 'active', connections: 5 }
+        mind: {
+          status: aiStatus?.isInitialized ? 'active' : 'idle',
+          lastActivity: aiStatus?.status === 'healthy' ? 'Online and ready' : 'Waiting...'
+        },
+        soul: {
+          status: aiStatus?.hasWorker ? 'active' : 'idle',
+          mood: this.inferMood(memoryCount)
+        },
+        hippocampus: {
+          status: memoryCount > 0 ? 'active' : 'idle',
+          memoryCount,
+          ltmSize
+        },
+        body: {
+          status: toolCount > 0 ? 'active' : 'idle',
+          toolsAvailable: toolCount > 0 ? 12 : 0  // Tool count is hardcoded for now
+        },
+        cns: {
+          status: aiStatus?.isSubscribed ? 'active' : 'idle',
+          connections: aiStatus?.isSubscribed ? 5 : 0
+        }
       };
+
+      // Store additional persona info
+      if (aiStatus) {
+        (this.persona as any).provider = aiStatus.provider;
+        (this.persona as any).model = aiStatus.model;
+        (this.persona as any).health = aiStatus.status;
+      }
+
     } catch (error) {
       console.error('PersonaBrainWidget: Error loading stats:', error);
+      // Keep default placeholder stats on error
+      this.moduleStats = {
+        mind: { status: 'error', lastActivity: 'Failed to load' },
+        soul: { status: 'error', mood: 'unknown' },
+        hippocampus: { status: 'error', memoryCount: 0 },
+        body: { status: 'error', toolsAvailable: 0 },
+        cns: { status: 'error', connections: 0 }
+      };
     }
+  }
+
+  /**
+   * Infer mood based on memory count and activity
+   */
+  private inferMood(memoryCount: number): string {
+    if (memoryCount > 1000) return 'experienced';
+    if (memoryCount > 500) return 'curious';
+    if (memoryCount > 100) return 'learning';
+    if (memoryCount > 0) return 'exploring';
+    return 'fresh';
+  }
+
+  /**
+   * Truncate model name for display in HUD
+   */
+  private truncateModel(model: string): string {
+    if (model.length <= 12) return model.toUpperCase();
+    // Shorten common model names
+    return model
+      .replace('llama3.2:', 'L3.2:')
+      .replace('llama-3.1-', 'L3.1-')
+      .replace('claude-', 'C-')
+      .replace('-instant', '-I')
+      .toUpperCase()
+      .substring(0, 12);
   }
 
   protected async renderContent(): Promise<string> {
@@ -404,17 +487,17 @@ export class PersonaBrainWidget extends BasePanelWidget {
         <!-- Status readout (bottom left) -->
         <g class="hud-readout" transform="translate(20, 450)">
           <text x="0" y="20" class="readout-label">SYS.STATUS</text>
-          <text x="0" y="40" class="readout-value">${this.persona?.status?.toUpperCase() || 'OFFLINE'}</text>
-          <text x="0" y="70" class="readout-label">UPTIME</text>
-          <text x="0" y="90" class="readout-value">--:--:--</text>
+          <text x="0" y="40" class="readout-value">${((this.persona as any)?.health || this.persona?.status || 'OFFLINE').toUpperCase()}</text>
+          <text x="0" y="70" class="readout-label">PROVIDER</text>
+          <text x="0" y="90" class="readout-value">${((this.persona as any)?.provider || 'N/A').toUpperCase()}</text>
         </g>
 
         <!-- Data readout (bottom right) -->
         <g class="hud-readout" transform="translate(680, 450)">
-          <text x="0" y="20" class="readout-label">NEURAL.LOAD</text>
-          <text x="0" y="40" class="readout-value">42%</text>
-          <text x="0" y="70" class="readout-label">PROC.QUEUE</text>
-          <text x="0" y="90" class="readout-value">0</text>
+          <text x="0" y="20" class="readout-label">MODEL</text>
+          <text x="0" y="40" class="readout-value">${this.truncateModel((this.persona as any)?.model || 'N/A')}</text>
+          <text x="0" y="70" class="readout-label">MEMORIES</text>
+          <text x="0" y="90" class="readout-value">${this.moduleStats.hippocampus.memoryCount.toLocaleString()}</text>
         </g>
       </svg>
     `;

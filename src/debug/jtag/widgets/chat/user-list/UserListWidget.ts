@@ -12,6 +12,7 @@ import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } fro
 import { Events } from '../../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
+import type { ContentOpenParams, ContentOpenResult } from '../../../commands/collaboration/content/open/shared/ContentOpenTypes';
 
 /**
  * AI Status tracking for user list display
@@ -573,12 +574,57 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   }
 
   /**
-   * Select a user (highlight in list)
+   * Select a user - for AI personas/agents, opens their brain view
    */
-  private selectUser(userId: string): void {
+  private async selectUser(userId: string): Promise<void> {
+    // Find the user entity
+    const userEntity = this.scroller?.entities().find(u => u.id === userId);
+    if (!userEntity) {
+      console.warn(`❌ UserListWidget: User not found: "${userId}"`);
+      return;
+    }
+
+    // Update selection highlight
     this.selectedUserId = userId;
     this.scroller?.refresh();
-    console.log(`✅ UserListWidget: Selected user ${userId}`);
+
+    // For AI personas/agents, open their brain widget
+    if (userEntity.type === 'persona' || userEntity.type === 'agent') {
+      await this.openPersonaBrain(userEntity);
+    } else {
+      console.log(`✅ UserListWidget: Selected human user ${userEntity.displayName}`);
+      // Future: Could open user profile, DM, etc.
+    }
+  }
+
+  /**
+   * Open the persona brain widget for an AI user
+   */
+  private async openPersonaBrain(userEntity: UserEntity): Promise<void> {
+    const entityId = userEntity.uniqueId || userEntity.id;
+    const title = userEntity.displayName || 'AI Brain';
+
+    console.log(`🧠 UserListWidget: Opening brain for ${title} (${entityId})`);
+
+    // Emit content:opened for MainWidget tab update (optimistic UI)
+    Events.emit('content:opened', {
+      contentType: 'persona',
+      entityId,
+      title,
+      setAsCurrent: true
+    });
+
+    // Persist to server in background
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+        userId,
+        contentType: 'persona',
+        entityId,
+        title,
+        setAsCurrent: true
+      }).catch(err => console.error('Failed to persist persona open:', err));
+    }
   }
 
   /**

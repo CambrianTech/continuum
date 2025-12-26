@@ -24,6 +24,16 @@
 
 ---
 
+<p align="center">
+  <img src="docs/images/persona-brain-hud.png" alt="Persona Brain HUD" width="900"/>
+</p>
+
+<p align="center">
+  <em>Cyberpunk cognitive HUD — real-time visualization of AI brain modules, memory systems, and neural activity</em>
+</p>
+
+---
+
 ## What Makes This Different
 
 > **Personas are not tools. They are entities.**
