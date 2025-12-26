@@ -388,40 +388,40 @@ class RightPanelResizer extends HTMLElement {
                     top: 0;
                     left: -1px;
                     bottom: 0;
-                    width: 2px;
+                    width: var(--resizer-width, 2px);
                     cursor: col-resize;
                     z-index: 1000;
-                    background: rgba(0, 212, 255, 0.1);
-                    border-left: 1px solid rgba(0, 212, 255, 0.2);
+                    background: var(--resizer-background, rgba(0, 212, 255, 0.1));
+                    border-left: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.2));
                     transition: all 0.2s ease;
                     overflow: visible;
                 }
 
                 :host(:hover) {
-                    background: rgba(0, 212, 255, 0.3);
-                    border-left: 1px solid #00d4ff;
-                    box-shadow: 0 0 4px rgba(0, 212, 255, 0.5);
+                    background: var(--resizer-background-hover, rgba(0, 212, 255, 0.3));
+                    border-left: 1px solid var(--resizer-border-hover, #00d4ff);
+                    box-shadow: 0 0 4px var(--resizer-glow-hover, rgba(0, 212, 255, 0.5));
                 }
 
                 :host(.dragging) {
-                    background: rgba(0, 212, 255, 0.6);
-                    border-left: 2px solid #00d4ff;
-                    box-shadow: 0 0 6px rgba(0, 212, 255, 0.8);
-                    width: 3px;
+                    background: var(--resizer-background-active, rgba(0, 212, 255, 0.6));
+                    border-left: 2px solid var(--resizer-border-active, #00d4ff);
+                    box-shadow: 0 0 6px var(--resizer-glow-active, rgba(0, 212, 255, 0.8));
+                    width: var(--resizer-width-active, 3px);
                 }
 
                 /* Collapsed state - thin glowing handle */
                 :host(.collapsed) {
                     width: var(--right-panel-collapsed-width, 6px);
                     left: 0;
-                    background: rgba(0, 212, 255, 0.15);
-                    border-left: 1px solid rgba(0, 212, 255, 0.3);
+                    background: var(--resizer-background, rgba(0, 212, 255, 0.15));
+                    border-left: 1px solid var(--resizer-border, rgba(0, 212, 255, 0.3));
                 }
 
                 :host(.collapsed:hover) {
-                    background: rgba(0, 212, 255, 0.4);
-                    border-left: 1px solid #00d4ff;
-                    box-shadow: 0 0 8px rgba(0, 212, 255, 0.6);
+                    background: var(--resizer-background-hover, rgba(0, 212, 255, 0.4));
+                    border-left: 1px solid var(--resizer-border-hover, #00d4ff);
+                    box-shadow: 0 0 8px var(--resizer-glow-hover, rgba(0, 212, 255, 0.6));
                     cursor: e-resize;
                 }
 
@@ -438,14 +438,14 @@ class RightPanelResizer extends HTMLElement {
                 .expand-btn {
                     position: fixed;
                     top: 50%;
-                    right: 6px;
+                    right: var(--right-panel-collapsed-width, 6px);
                     transform: translateY(-50%);
                     width: 18px;
                     height: 36px;
-                    background: rgba(0, 20, 30, 0.95);
-                    border: 1px solid rgba(0, 212, 255, 0.4);
+                    background: var(--sidebar-background, rgba(20, 25, 35, 0.95));
+                    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
                     border-radius: 4px 0 0 4px;
-                    color: #00d4ff;
+                    color: var(--content-accent, #00d4ff);
                     font-size: 11px;
                     cursor: pointer;
                     display: none;
@@ -462,9 +462,9 @@ class RightPanelResizer extends HTMLElement {
 
                 .expand-btn:hover {
                     opacity: 1;
-                    background: rgba(0, 212, 255, 0.2);
-                    border-color: #00d4ff;
-                    box-shadow: 0 0 8px rgba(0, 212, 255, 0.5);
+                    background: var(--resizer-background-hover, rgba(0, 212, 255, 0.2));
+                    border-color: var(--resizer-border-hover, #00d4ff);
+                    box-shadow: 0 0 8px var(--resizer-glow-hover, rgba(0, 212, 255, 0.5));
                 }
             </style>
             <div class="resizer-handle"></div>
