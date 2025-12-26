@@ -52,15 +52,15 @@
 
 ### 2. Persona Cognitive Logs (Per-Persona)
 **Location**: `.continuum/personas/{name-id}/logs/`
-**Purpose**: Track cognitive processes for a specific persona (their "mind")
+**Purpose**: Track cognitive processes for a specific persona
 **Examples**: Thought generation, action selection, state changes
 
 | Subsystem | File Path | What Goes Here | Used By |
 |-----------|-----------|----------------|---------|
-| Mind | `.continuum/personas/{name-id}/logs/mind.log` | Thought generation, decision-making, cognitive cycles | PersonaMind |
-| Body | `.continuum/personas/{name-id}/logs/body.log` | Action execution, tool usage, physical interactions | PersonaBody |
-| Soul | `.continuum/personas/{name-id}/logs/soul.log` | Goal selection, value alignment, motivations | PersonaSoul |
-| CNS | `.continuum/personas/{name-id}/logs/cns.log` | Coordination, state transitions, system integration | PersonaCNS |
+| PrefrontalCortex | `.continuum/personas/{name-id}/logs/prefrontal.log` | Thought generation, decision-making, cognitive cycles | PrefrontalCortex |
+| MotorCortex | `.continuum/personas/{name-id}/logs/motor-cortex.log` | Action execution, tool usage, response generation | MotorCortex |
+| LimbicSystem | `.continuum/personas/{name-id}/logs/limbic.log` | Memory, learning, genome, emotional state | LimbicSystem |
+| CNS | `.continuum/personas/{name-id}/logs/cns.log` | Coordination, state transitions, system integration | PersonaCentralNervousSystem |
 | Tools | `.continuum/personas/{name-id}/logs/tools.log` | Tool execution by this persona (params, results, errors) | PersonaToolExecutor |
 
 **Key Property**: These logs are PERSONA-SPECIFIC - each persona has its own set tracking its cognitive processes and tool usage.
@@ -138,7 +138,7 @@ logs: {
     // ✅ Uses ".continuum/personas/claude-assistant-79a5e548/logs/" (correct!)
   },
 
-  subsystem: (uniqueId: string, subsystem: 'mind' | 'body' | 'soul' | 'cns'): string => {
+  subsystem: (uniqueId: string, subsystem: 'prefrontal' | 'motor-cortex' | 'limbic' | 'cns'): string => {
     return path.join(baseRoot, 'personas', uniqueId, 'logs', `${subsystem}.log`);
   }
 }
@@ -176,7 +176,7 @@ personas: {
 // BEFORE (WRONG):
 class SubsystemLogger {
   constructor(
-    private subsystem: 'mind' | 'body' | 'soul' | 'cns',
+    private subsystem: 'prefrontal' | 'motor-cortex' | 'limbic' | 'cns',
     private personaName: string  // Just the display name!
   ) {}
 
@@ -188,7 +188,7 @@ class SubsystemLogger {
 // AFTER (CORRECT):
 class SubsystemLogger {
   constructor(
-    private subsystem: 'mind' | 'body' | 'soul' | 'cns',
+    private subsystem: 'prefrontal' | 'motor-cortex' | 'limbic' | 'cns',
     private personaId: string  // Full "{name}-{shortId}" format
   ) {}
 
@@ -210,9 +210,9 @@ class SubsystemLogger {
 **Task**: Pass `personaId` instead of `personaName` to constructor
 **Files**: `system/user/server/modules/being/logging/SubsystemLogger.ts`
 
-### Step 4: Update PersonaMind/Body/Soul/CNS
+### Step 4: Update PrefrontalCortex/MotorCortex/LimbicSystem/CNS
 **Task**: Pass full persona ID when creating SubsystemLogger
-**Files**: `system/user/server/modules/being/PersonaMind.ts` (and Body/Soul/CNS)
+**Files**: `system/user/server/modules/being/PrefrontalCortex.ts` (and MotorCortex/LimbicSystem/CNS)
 
 ### Step 7: Deploy and Test
 ```bash
@@ -225,7 +225,7 @@ sleep 130  # Wait for deployment
 # Check ALL logs appear in correct location (one flat directory)
 ls -la .continuum/personas/claude-assistant-79a5e548/logs/
 # Should show:
-#   mind.log, body.log, soul.log, cns.log (cognitive)
+#   prefrontal.log, motor-cortex.log, limbic.log, cns.log (cognitive)
 #   tools.log (tool execution by this persona)
 #   hippocampus.log, personalogger.log (debug)
 
@@ -263,12 +263,12 @@ ls -la .continuum/jtag/system/logs/
 ├── personas/                               # Persona-specific data
 │   ├── claude-assistant-79a5e548/          # Format: {name}-{shortId}
 │   │   ├── logs/                           # ALL logs (cognitive + tools + debug)
-│   │   │   ├── mind.log                    # Thought generation
-│   │   │   ├── body.log                    # Action execution
-│   │   │   ├── soul.log                    # Goal selection
+│   │   │   ├── prefrontal.log              # Thought generation, cognition
+│   │   │   ├── motor-cortex.log            # Action execution, response generation
+│   │   │   ├── limbic.log                  # Memory, learning, genome
 │   │   │   ├── cns.log                     # Coordination
 │   │   │   ├── tools.log                   # Tool execution by this persona
-│   │   │   ├── hippocampus.log             # Subprocess stdout/stderr
+│   │   │   ├── hippocampus.log             # Memory consolidation subprocess
 │   │   │   └── personalogger.log           # Subprocess management
 │   │   ├── memory/
 │   │   │   └── hippocampus.db
@@ -290,7 +290,7 @@ ls -la .continuum/jtag/system/logs/
 - [ ] SQL operations log to `sql.log`
 - [ ] Tool execution logs to `tools.log`
 - [ ] Persona cognitive logs appear in `.continuum/personas/{name-id}/logs/`
-- [ ] Each subsystem (mind/body/soul/cns) has its own file
+- [ ] Each subsystem (prefrontal/motor-cortex/limbic/cns) has its own file
 - [ ] Directory names use `{name}-{shortId}` format
 - [ ] No logs appearing in old location (`.continuum/jtag/personas/`)
 - [ ] Fresh `npm start` creates correct directory structure
@@ -329,7 +329,7 @@ __pycache__/
 1. **Find persona ID generation** - Where is `{name}-{shortId}` format created?
 2. **Update SystemPaths** - Change APIs to use `personaId` not `personaName`
 3. **Update SubsystemLogger** - Accept `personaId` in constructor
-4. **Update PersonaMind/Body/Soul/CNS** - Pass full persona ID
+4. **Update PrefrontalCortex/MotorCortex/LimbicSystem/CNS** - Pass full persona ID
 5. **Migrate logs** - Move active logs to correct location
 6. **Test** - Verify logs appear in correct places after `npm start`
 7. **Document** - Update CLAUDE.md with final structure

@@ -363,7 +363,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     };
 
     // Snoop on PersonaUser's working memory (thoughts during cognition)
-    if (this.persona.mind?.workingMemory) {
+    if (this.persona.prefrontal?.workingMemory) {
       await this.snoopAndConsolidate();
     }
 
@@ -393,7 +393,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       const currentThreshold = this.adaptiveThreshold.getThreshold();
 
       // 3. Recall thoughts above adaptive threshold
-      const thoughts = await this.persona.mind?.workingMemory?.recall({
+      const thoughts = await this.persona.prefrontal?.workingMemory?.recall({
         minImportance: currentThreshold,  // ← ADAPTIVE!
         limit: 50,
         includePrivate: true
@@ -480,7 +480,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       // Remove ONLY successfully consolidated thoughts from working memory
       if (consolidatedIds.length > 0) {
-        await this.persona.mind?.workingMemory.clearBatch(consolidatedIds as any);
+        await this.persona.prefrontal?.workingMemory.clearBatch(consolidatedIds as any);
         this.log(`✅ Consolidated ${consolidatedIds.length} thoughts to LTM${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
 
         // Reset time decay timer (successful consolidation)
@@ -513,7 +513,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       for (const domain of domains) {
         try {
-          const capacity = await this.persona.mind?.workingMemory?.getCapacity(domain);
+          const capacity = await this.persona.prefrontal?.workingMemory?.getCapacity(domain);
           if (capacity) {
             totalUsed += capacity.used;
             domainsChecked++;
@@ -561,7 +561,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     const domains = ['chat', 'game', 'ui', 'browsing', 'code'];
     for (const domain of domains) {
       try {
-        const capacity = await this.persona.mind?.workingMemory?.getCapacity(domain);
+        const capacity = await this.persona.prefrontal?.workingMemory?.getCapacity(domain);
         if (capacity) {
           workingMemorySize += capacity.used;
         }

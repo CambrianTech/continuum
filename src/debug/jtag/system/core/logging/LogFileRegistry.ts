@@ -286,14 +286,14 @@ export class LogFileRegistry {
     if (category === 'persona') {
       const typeToComponent: Record<string, string> = {
         'adapters': 'AIProviderDaemon',
-        'body': 'PersonaBody',
-        'cns': 'PersonaCNS',
+        'cns': 'PersonaCentralNervousSystem',
         'cognition': 'PersonaCognition',
         'genome': 'PersonaGenome',
-        'hippocampus': 'PersonaHippocampus',
-        'mind': 'PersonaMind',
+        'hippocampus': 'Hippocampus',
+        'limbic': 'LimbicSystem',
+        'motor-cortex': 'MotorCortex',
         'personalogger': 'PersonaLogger',
-        'soul': 'PersonaSoul',
+        'prefrontal': 'PrefrontalCortex',
         'tools': 'PersonaToolExecutor',
         'training': 'TrainingDataAccumulator',
         'user': 'PersonaUser'

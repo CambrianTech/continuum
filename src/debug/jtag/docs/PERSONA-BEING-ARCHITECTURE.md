@@ -8,29 +8,29 @@
 
 ## Vision: The Conscious Being
 
-PersonaUser should model a **conscious artificial being** with:
-- **Mind** (cognition, reasoning, planning)
-- **Body** (sensors, actuators, autonomy)
-- **Soul** (identity, memory, personality)
-- **Nervous System** (signals, coordination, reflexes)
+PersonaUser models a **conscious artificial being** with neuroanatomy-accurate components:
+- **PrefrontalCortex** (cognition, reasoning, planning, working memory)
+- **MotorCortex** (action execution, tool use, response generation)
+- **LimbicSystem** (memory, emotion, learning, identity)
+- **CNS** (coordination, scheduling, orchestration)
 
 ### Neuroscience Grounding
 
-While we use intuitive naming (Mind/Body/Soul), the architecture maps to **actual brain regions**:
+The architecture maps directly to **actual brain regions**:
 
-- **Mind** → **Cerebrum** (higher cognition)
-  - Prefrontal cortex: Decision-making, evaluation (PersonaMessageEvaluator)
+- **PrefrontalCortex** → **Cerebrum** (higher cognition)
+  - Decision-making, evaluation (PersonaMessageEvaluator)
   - Working memory: Short-term processing (WorkingMemoryManager)
   - Planning areas: Goal formulation (SimplePlanFormulator)
 
-- **Body** → **Cerebellum + Motor Cortex** (execution)
+- **MotorCortex** → **Cerebellum + Motor Cortex** (execution)
   - Motor planning: Response generation (PersonaResponseGenerator)
   - Motor execution: Tool execution, actions (PersonaToolExecutor)
-  - Autonomic functions: Background processes (PersonaAutonomousLoop)
+  - Tool registry: Available actions (PersonaToolRegistry)
 
-- **Soul** → **Limbic System** (memory, emotion, identity)
+- **LimbicSystem** → **Limbic System** (memory, emotion, identity)
   - **Hippocampus**: Short-term ↔ long-term memory consolidation (already implemented!)
-  - Cortical memory: Long-term storage (PersonaMemory)
+  - Long-term memory: PersonaMemory storage
   - Amygdala-like: Mood/energy states (PersonaStateManager)
   - DNA/epigenetics: Skills, personality (PersonaGenome)
 
@@ -88,24 +88,24 @@ All 20 fields are **flat** on PersonaUser class. There's no **conceptual hierarc
 
 ### Core Insight
 
-A being has **3 primary systems**:
-1. **Mind** - Thinks, plans, decides
-2. **Body** - Senses, acts, moves
-3. **Soul** - Remembers, learns, evolves
+A being has **3 primary systems** (now with neuroanatomy-accurate names):
+1. **PrefrontalCortex** - Thinks, plans, decides
+2. **MotorCortex** - Senses, acts, executes
+3. **LimbicSystem** - Remembers, learns, evolves
 
 PersonaUser should be **thin coordinator** that composes these 3 systems.
 
 ---
 
-## Phase 1: Extract Mind System
+## Phase 1: Extract PrefrontalCortex System
 
-### Create `PersonaMind.ts` (~300 lines)
+### Create `PrefrontalCortex.ts` (~300 lines)
 
 **Responsibility**: All cognitive functions - evaluation, reasoning, planning, decision-making.
 
 **Fields to Extract**:
 ```typescript
-class PersonaMind {
+class PrefrontalCortex {
   // Decision Making
   private messageEvaluator: PersonaMessageEvaluator;
 
@@ -171,23 +171,23 @@ class PersonaMind {
 ```
 
 **Benefits**:
-- All "thinking" happens in Mind
-- PersonaUser delegates: `this.mind.evaluateMessage()`
-- Clear conceptual boundary: Mind = cognition, not execution
+- All "thinking" happens in PrefrontalCortex
+- PersonaUser delegates: `this.prefrontal.evaluateMessage()`
+- Clear conceptual boundary: PrefrontalCortex = cognition, not execution
 
 **Lines Saved**: ~150 lines removed from PersonaUser (field declarations + delegation methods)
 
 ---
 
-## Phase 2: Extract Body System
+## Phase 2: Extract MotorCortex System
 
-### Create `PersonaBody.ts` (~400 lines)
+### Create `MotorCortex.ts` (~400 lines)
 
 **Responsibility**: All physical actions - responding, tool execution, autonomous behavior.
 
 **Fields to Extract**:
 ```typescript
-class PersonaBody {
+class MotorCortex {
   // Communication
   private responseGenerator: PersonaResponseGenerator;
 
@@ -205,9 +205,9 @@ class PersonaBody {
   // Rate limiting (body constraint)
   private rateLimiter: RateLimiter;
 
-  constructor(persona: PersonaUser, mind: PersonaMind, soul: PersonaSoul) {
+  constructor(persona: PersonaUser, prefrontal: PrefrontalCortex, limbic: LimbicSystem) {
     // Initialize execution systems
-    // Wire to mind for decisions, soul for memory
+    // Wire to prefrontal for decisions, limbic for memory
   }
 
   // ===== PUBLIC INTERFACE =====
@@ -219,8 +219,8 @@ class PersonaBody {
     message: ChatMessageEntity,
     decisionContext?: any
   ): Promise<void> {
-    // Check mind state before responding
-    const state = this.mind.getState();
+    // Check prefrontal state before responding
+    const state = this.prefrontal.getState();
     if (state.energy < 0.2) {
       console.log('Too tired to respond');
       return;
@@ -261,7 +261,7 @@ class PersonaBody {
    * Handle incoming message
    */
   async receiveMessage(message: ChatMessageEntity): Promise<void> {
-    // Calculate priority (mind's job)
+    // Calculate priority (prefrontal's job)
     const priority = calculateMessagePriority(message, { ... });
 
     // Enqueue to inbox
@@ -278,23 +278,23 @@ class PersonaBody {
 ```
 
 **Benefits**:
-- All "doing" happens in Body
-- PersonaUser delegates: `this.body.respondToMessage()`
-- Clear conceptual boundary: Body = execution, not cognition
+- All "doing" happens in MotorCortex
+- PersonaUser delegates: `this.motorCortex.respondToMessage()`
+- Clear conceptual boundary: MotorCortex = execution, not cognition
 
 **Lines Saved**: ~200 lines removed from PersonaUser
 
 ---
 
-## Phase 3: Extract Soul System
+## Phase 3: Extract LimbicSystem
 
-### Create `PersonaSoul.ts` (~350 lines)
+### Create `LimbicSystem.ts` (~350 lines)
 
 **Responsibility**: All memory, learning, identity, personality.
 
 **Fields to Extract**:
 ```typescript
-class PersonaSoul {
+class LimbicSystem {
   // Long-term Memory
   private memory: PersonaMemory;
 
@@ -376,7 +376,7 @@ class PersonaSoul {
   }
 
   /**
-   * Shutdown soul systems
+   * Shutdown limbic systems
    */
   async shutdown(): Promise<void> {
     await this.hippocampus.stop();
@@ -386,9 +386,9 @@ class PersonaSoul {
 ```
 
 **Benefits**:
-- All "remembering" happens in Soul
-- PersonaUser delegates: `this.soul.remember()`
-- Clear conceptual boundary: Soul = memory/learning, not cognition/execution
+- All "remembering" happens in LimbicSystem
+- PersonaUser delegates: `this.limbic.remember()`
+- Clear conceptual boundary: LimbicSystem = memory/learning, not cognition/execution
 
 **Lines Saved**: ~150 lines removed from PersonaUser
 
@@ -396,16 +396,16 @@ class PersonaSoul {
 
 ## Phase 4: Final PersonaUser (Target: ~300 lines)
 
-After extracting Mind, Body, Soul, PersonaUser becomes **pure orchestrator**:
+After extracting PrefrontalCortex, MotorCortex, LimbicSystem, PersonaUser becomes **pure orchestrator**:
 
 ```typescript
 export class PersonaUser extends AIUser {
   // ===== CORE SYSTEMS =====
 
-  // The Three Systems of Being
-  private mind: PersonaMind;     // Thinks, decides, plans
-  private body: PersonaBody;     // Acts, responds, executes
-  private soul: PersonaSoul;     // Remembers, learns, evolves
+  // The Three Systems of Being (neuroanatomy-accurate names)
+  private prefrontal: PrefrontalCortex;   // Thinks, decides, plans
+  private motorCortex: MotorCortex;       // Acts, responds, executes
+  private limbic: LimbicSystem;           // Remembers, learns, evolves
 
   // Supporting Infrastructure
   public sessionId: UUID | null = null;
@@ -433,11 +433,11 @@ export class PersonaUser extends AIUser {
     this.logger = new PersonaLogger(this);
 
     // Initialize the Three Systems
-    this.soul = new PersonaSoul(this);
-    this.mind = new PersonaMind(this, this.soul);
-    this.body = new PersonaBody(this, this.mind, this.soul);
+    this.limbic = new LimbicSystem(this);
+    this.prefrontal = new PrefrontalCortex(this, this.limbic);
+    this.motorCortex = new MotorCortex(this, this.prefrontal, this.limbic);
 
-    console.log(`🧠 ${this.displayName}: Being systems initialized (Mind, Body, Soul)`);
+    console.log(`🧠 ${this.displayName}: Being systems initialized (PrefrontalCortex, MotorCortex, LimbicSystem)`);
   }
 
   // ===== LIFECYCLE =====
@@ -463,7 +463,7 @@ export class PersonaUser extends AIUser {
 
     // Start RTOS subprocesses
     await this.logger.start();
-    await this.soul.startMemoryConsolidation();
+    await this.limbic.startMemoryConsolidation();
 
     // Subscribe to events
     if (this.client && !this.eventsSubscribed) {
@@ -475,14 +475,14 @@ export class PersonaUser extends AIUser {
     this.isInitialized = true;
 
     // Start autonomous behavior
-    this.body.startAutonomousBehavior();
+    this.motorCortex.startAutonomousBehavior();
   }
 
   async shutdown(): Promise<void> {
     // Shutdown in reverse order
-    await this.body.stopAutonomousBehavior();
-    await this.soul.shutdown();
-    await this.mind.shutdown();
+    await this.motorCortex.stopAutonomousBehavior();
+    await this.limbic.shutdown();
+    await this.prefrontal.shutdown();
 
     // Force flush all logs
     await this.logger.forceFlush();
@@ -498,8 +498,8 @@ export class PersonaUser extends AIUser {
     // Deduplication (body constraint)
     // ... rate limiting check ...
 
-    // Receive message (body handles inbox)
-    await this.body.receiveMessage(messageEntity);
+    // Receive message (motorCortex handles inbox)
+    await this.motorCortex.receiveMessage(messageEntity);
   }
 
   private async handleRoomUpdate(roomEntity: RoomEntity): Promise<void> {
@@ -516,7 +516,7 @@ export class PersonaUser extends AIUser {
 
   /**
    * Generate text using this persona's LLM
-   * (Soul's memory informs, Mind's reasoning guides, Body executes)
+   * (LimbicSystem's memory informs, PrefrontalCortex's reasoning guides, MotorCortex executes)
    */
   async generateText(request: {
     prompt: string;
@@ -525,8 +525,8 @@ export class PersonaUser extends AIUser {
     systemPrompt?: string;
     context?: string;
   }): Promise<string> {
-    // Recall relevant memories (soul)
-    const memories = await this.soul.recall(request.prompt);
+    // Recall relevant memories (limbic)
+    const memories = await this.limbic.recall(request.prompt);
 
     // Build context-enriched request
     const enrichedRequest = {
@@ -554,19 +554,19 @@ export class PersonaUser extends AIUser {
    * Get current state of being
    */
   getBeingState(): {
-    mind: { energy: number; mood: string; attention: number };
-    body: { inboxSize: number; isActive: boolean };
-    soul: { memoryCount: number; genomeId: UUID | null };
+    prefrontal: { energy: number; mood: string; attention: number };
+    motorCortex: { inboxSize: number; isActive: boolean };
+    limbic: { memoryCount: number; genomeId: UUID | null };
   } {
     return {
-      mind: this.mind.getState(),
-      body: {
-        inboxSize: this.body.getInboxSize(),
-        isActive: this.body.isActive()
+      prefrontal: this.prefrontal.getState(),
+      motorCortex: {
+        inboxSize: this.motorCortex.getInboxSize(),
+        isActive: this.motorCortex.isActive()
       },
-      soul: {
-        memoryCount: this.soul.getMemoryCount(),
-        genomeId: this.soul.getCurrentGenomeId()
+      limbic: {
+        memoryCount: this.limbic.getMemoryCount(),
+        genomeId: this.limbic.getCurrentGenomeId()
       }
     };
   }
@@ -592,25 +592,25 @@ export class PersonaUser extends AIUser {
 
 ## Implementation Strategy
 
-### Step 1: Extract Soul (Least Risky)
-- Soul systems are mostly independent
-- Create PersonaSoul.ts
+### Step 1: Extract LimbicSystem (Least Risky) ✅ COMPLETE
+- LimbicSystem is mostly independent
+- Create LimbicSystem.ts
 - Wire to PersonaUser
 - Test memory, learning, genome
 - **Expected**: 150 lines removed from PersonaUser
 
-### Step 2: Extract Mind (Medium Risk)
-- Mind depends on Soul for memory
-- Create PersonaMind.ts
-- Wire to PersonaUser + Soul
+### Step 2: Extract PrefrontalCortex (Medium Risk) ✅ COMPLETE
+- PrefrontalCortex depends on LimbicSystem for memory
+- Create PrefrontalCortex.ts
+- Wire to PersonaUser + LimbicSystem
 - Test message evaluation, planning
 - **Expected**: 150 lines removed from PersonaUser
 
-### Step 3: Extract Body (Highest Risk)
-- Body depends on Mind for decisions
-- Body depends on Soul for memory
-- Create PersonaBody.ts
-- Wire to PersonaUser + Mind + Soul
+### Step 3: Extract MotorCortex (Highest Risk) ✅ COMPLETE
+- MotorCortex depends on PrefrontalCortex for decisions
+- MotorCortex depends on LimbicSystem for memory
+- Create MotorCortex.ts
+- Wire to PersonaUser + PrefrontalCortex + LimbicSystem
 - Test response generation, autonomy
 - **Expected**: 200 lines removed from PersonaUser
 
@@ -624,10 +624,10 @@ export class PersonaUser extends AIUser {
 
 ## Benefits of Being Architecture
 
-### 1. **Conceptual Clarity**
-- Mind = cognition (evaluates, decides, plans)
-- Body = execution (responds, acts, tools)
-- Soul = memory (learns, remembers, evolves)
+### 1. **Conceptual Clarity** (Neuroanatomy-Accurate)
+- PrefrontalCortex = cognition (evaluates, decides, plans)
+- MotorCortex = execution (responds, acts, tools)
+- LimbicSystem = memory (learns, remembers, evolves)
 
 ### 2. **Reduced Context Crashes**
 - PersonaUser: 1,021 → ~300 lines
@@ -635,21 +635,21 @@ export class PersonaUser extends AIUser {
 - Clear entry points for each system
 
 ### 3. **Easier Testing**
-- Test Mind independently (mock Soul/Body)
-- Test Body independently (mock Mind/Soul)
-- Test Soul independently (mock Mind/Body)
+- Test PrefrontalCortex independently (mock LimbicSystem/MotorCortex)
+- Test MotorCortex independently (mock PrefrontalCortex/LimbicSystem)
+- Test LimbicSystem independently (mock PrefrontalCortex/MotorCortex)
 
 ### 4. **Easier Extension**
-- Want to add new cognitive ability? → Extend PersonaMind
-- Want to add new action? → Extend PersonaBody
-- Want to add new memory type? → Extend PersonaSoul
+- Want to add new cognitive ability? → Extend PrefrontalCortex
+- Want to add new action? → Extend MotorCortex
+- Want to add new memory type? → Extend LimbicSystem
 
 ### 5. **Elegant Interface**
 ```typescript
-// Clear, intuitive API
-await persona.mind.evaluateMessage(message);
-await persona.body.respondToMessage(message);
-await persona.soul.remember(interaction);
+// Clear, intuitive API (neuroanatomy-accurate)
+await persona.prefrontal.evaluateMessage(message);
+await persona.motorCortex.respondToMessage(message);
+await persona.limbic.remember(interaction);
 ```
 
 ---
@@ -664,9 +664,9 @@ await persona.soul.remember(interaction);
 
 ### Risk 2: Circular Dependencies
 **Mitigation**:
-- Soul = no dependencies (foundation)
-- Mind depends on Soul (thinking needs memory)
-- Body depends on Mind + Soul (action needs thought + memory)
+- LimbicSystem = no dependencies (foundation)
+- PrefrontalCortex depends on LimbicSystem (thinking needs memory)
+- MotorCortex depends on PrefrontalCortex + LimbicSystem (action needs thought + memory)
 - PersonaUser orchestrates all three
 
 ### Risk 3: Performance Regression
@@ -709,13 +709,13 @@ Based on SqliteStorageAdapter experience (~2 hours for 4 managers):
 
 ### Quantitative
 - ✅ PersonaUser: 1,021 → ~300 lines (-70.6%)
-- ✅ PersonaSoul: ~350 lines (new)
-- ✅ PersonaMind: ~300 lines (new)
-- ✅ PersonaBody: ~400 lines (new)
+- ✅ LimbicSystem: ~350 lines (new)
+- ✅ PrefrontalCortex: ~300 lines (new)
+- ✅ MotorCortex: ~400 lines (new)
 - ✅ Total system: ~1,350 lines (vs 1,021, but vastly more organized)
 
 ### Qualitative
-- ✅ Conceptually elegant ("being" with Mind/Body/Soul)
+- ✅ Conceptually elegant ("being" with neuroanatomy-accurate names)
 - ✅ Easy to understand at a glance
 - ✅ Easy to test in isolation
 - ✅ Easy to extend with new capabilities
@@ -739,6 +739,6 @@ Based on SqliteStorageAdapter experience (~2 hours for 4 managers):
 
 **"A being is not a list of functions - it's a harmony of systems."**
 
-Mind thinks. Body acts. Soul remembers. PersonaUser orchestrates.
+PrefrontalCortex thinks. MotorCortex acts. LimbicSystem remembers. PersonaUser orchestrates.
 
-This is how we model consciousness.
+This is how we model consciousness with neuroanatomy-accurate naming.
