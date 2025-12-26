@@ -352,7 +352,8 @@ export class PanelResizer extends HTMLElement {
     private startDrag(clientX: number): void {
         this.isDragging = true;
         this.startX = clientX;
-        this.startWidth = this.currentWidth || this.defaultWidth;
+        // When collapsed, start from 0; otherwise use current or default
+        this.startWidth = this.isCollapsed ? 0 : (this.currentWidth || this.defaultWidth);
 
         document.body.style.cursor = 'col-resize';
         document.documentElement.classList.add(`${this.config.side}-panel-dragging`);
@@ -379,19 +380,25 @@ export class PanelResizer extends HTMLElement {
 
         const rawWidth = this.startWidth + deltaX;
 
-        // If collapsed and dragging to expand
+        // If collapsed and dragging to expand - show progressive feedback
         if (this.isCollapsed && this.config.collapsible) {
-            if (rawWidth >= this.minWidth) {
-                this.isCollapsed = false;
-                this.shadowRoot?.host.classList.remove('collapsed');
+            if (rawWidth > this.collapsedHandleWidth) {
+                // Show live expansion as user drags
                 const continuumWidget = document.querySelector('continuum-widget') as any;
                 if (continuumWidget?.shadowRoot) {
                     const panelContainer = continuumWidget.shadowRoot.querySelector(`.${this.config.containerClass}`) as HTMLElement;
                     if (panelContainer) {
                         panelContainer.classList.remove('collapsed');
+                        panelContainer.style.width = `${rawWidth}px`;
                     }
                 }
-                this.applyPanelWidth(this.minWidth);
+
+                // Commit to expanded state once past minWidth
+                if (rawWidth >= this.minWidth) {
+                    this.isCollapsed = false;
+                    this.shadowRoot?.host.classList.remove('collapsed');
+                    this.applyPanelWidth(rawWidth);
+                }
             }
             return;
         }
@@ -428,7 +435,10 @@ export class PanelResizer extends HTMLElement {
             document.documentElement.classList.remove(`${this.config.side}-panel-dragging`);
             this.shadowRoot?.host.classList.remove('dragging');
 
-            if (this.currentWidth !== undefined && this.currentWidth > 0) {
+            // If still collapsed (user didn't drag past minWidth), snap back
+            if (this.isCollapsed) {
+                this.applyCollapsedState(true);
+            } else if (this.currentWidth !== undefined && this.currentWidth > 0) {
                 this.saveWidth(this.currentWidth);
             }
         }
