@@ -1,10 +1,16 @@
 /**
  * RightPanelResizer - Draggable resizer for right panel
- * Mirrors SidebarResizer but for the right side of the layout
+ *
+ * Better than VS Code:
+ * - Drag past threshold to collapse (no buttons needed)
+ * - Thin glowing handle when collapsed
+ * - Double-click to toggle collapse/expand
+ * - Smooth animations
  */
 
 interface RightPanelResizedDetail {
     width: number;
+    collapsed: boolean;
 }
 
 interface WidthLimits {
@@ -18,9 +24,13 @@ class RightPanelResizer extends HTMLElement {
     private startX: number = 0;
     private startWidth: number = 0;
     private currentWidth?: number;
+    private isCollapsed: boolean = false;
+    private lastExpandedWidth: number = 320;
     private readonly minWidth: number = 200;
     private readonly maxWidth: number = 600;
     private readonly defaultWidth: number = 320;
+    private readonly collapseThreshold: number = 80;  // Drag below this to collapse
+    private readonly collapsedHandleWidth: number = 6; // Thin strip when collapsed
 
     // Event handler references for proper cleanup
     private boundMouseMove?: (e: MouseEvent) => void;
@@ -45,10 +55,19 @@ class RightPanelResizer extends HTMLElement {
 
     private loadSavedWidth(): void {
         try {
+            // Load collapsed state
+            const savedCollapsed = localStorage.getItem('continuum-right-panel-collapsed');
+            if (savedCollapsed === 'true') {
+                this.isCollapsed = true;
+                this.applyCollapsedState(true);
+                return;
+            }
+
             const savedWidth = localStorage.getItem('continuum-right-panel-width');
             if (savedWidth) {
                 const width = parseInt(savedWidth, 10);
                 if (!isNaN(width) && width >= this.minWidth && width <= this.maxWidth) {
+                    this.lastExpandedWidth = width;
                     this.applyPanelWidth(width);
                     return;
                 }
@@ -62,8 +81,97 @@ class RightPanelResizer extends HTMLElement {
     private saveWidth(width: number): void {
         try {
             localStorage.setItem('continuum-right-panel-width', width.toString());
+            localStorage.setItem('continuum-right-panel-collapsed', 'false');
         } catch {
             // Ignore errors
+        }
+    }
+
+    private saveCollapsedState(collapsed: boolean): void {
+        try {
+            localStorage.setItem('continuum-right-panel-collapsed', collapsed.toString());
+        } catch {
+            // Ignore errors
+        }
+    }
+
+    /**
+     * Collapse the panel to a thin handle
+     */
+    collapse(): void {
+        if (this.isCollapsed) return;
+
+        // Save current width for restore
+        if (this.currentWidth && this.currentWidth >= this.minWidth) {
+            this.lastExpandedWidth = this.currentWidth;
+        }
+
+        this.isCollapsed = true;
+        this.applyCollapsedState(true);
+        this.saveCollapsedState(true);
+        this.updateHostClass();
+    }
+
+    /**
+     * Expand the panel to last width
+     */
+    expand(): void {
+        if (!this.isCollapsed) return;
+
+        this.isCollapsed = false;
+        this.applyCollapsedState(false);
+        this.applyPanelWidth(this.lastExpandedWidth);
+        this.saveCollapsedState(false);
+        this.saveWidth(this.lastExpandedWidth);
+        this.updateHostClass();
+    }
+
+    /**
+     * Toggle collapse state
+     */
+    toggle(): void {
+        if (this.isCollapsed) {
+            this.expand();
+        } else {
+            this.collapse();
+        }
+    }
+
+    private updateHostClass(): void {
+        if (this.isCollapsed) {
+            this.shadowRoot?.host.classList.add('collapsed');
+        } else {
+            this.shadowRoot?.host.classList.remove('collapsed');
+        }
+    }
+
+    private applyCollapsedState(collapsed: boolean): void {
+        const continuumWidget = document.querySelector('continuum-widget') as any;
+        if (!continuumWidget?.shadowRoot) return;
+
+        const desktopContainer = continuumWidget.shadowRoot.querySelector('.desktop-container') as HTMLElement;
+        const rightPanelContainer = continuumWidget.shadowRoot.querySelector('.right-panel-container') as HTMLElement;
+
+        if (!desktopContainer || !rightPanelContainer) return;
+
+        if (collapsed) {
+            // Collapse to thin handle
+            rightPanelContainer.style.width = `${this.collapsedHandleWidth}px`;
+            rightPanelContainer.classList.add('collapsed');
+
+            const currentCols = getComputedStyle(desktopContainer).gridTemplateColumns.split(' ');
+            const sidebarWidth = currentCols[0] || 'var(--sidebar-width, 250px)';
+            desktopContainer.style.gridTemplateColumns = `${sidebarWidth} 1fr ${this.collapsedHandleWidth}px`;
+
+            this.currentWidth = 0;
+
+            // Dispatch event
+            this.dispatchEvent(new CustomEvent<RightPanelResizedDetail>('right-panel-resized', {
+                detail: { width: 0, collapsed: true },
+                bubbles: true
+            }));
+        } else {
+            rightPanelContainer.classList.remove('collapsed');
         }
     }
 
@@ -97,7 +205,7 @@ class RightPanelResizer extends HTMLElement {
             this.currentWidth = width;
 
             const event = new CustomEvent<RightPanelResizedDetail>('right-panel-resized', {
-                detail: { width },
+                detail: { width, collapsed: false },
                 bubbles: true
             });
             this.dispatchEvent(event);
@@ -111,12 +219,18 @@ class RightPanelResizer extends HTMLElement {
         this.boundTouchEnd = this.handleTouchEnd.bind(this);
 
         this.shadowRoot?.addEventListener('mousedown', this.handleMouseDown.bind(this));
+        this.shadowRoot?.addEventListener('dblclick', this.handleDoubleClick.bind(this));
         document.addEventListener('mousemove', this.boundMouseMove);
         document.addEventListener('mouseup', this.boundMouseUp);
 
         this.shadowRoot?.addEventListener('touchstart', this.handleTouchStart.bind(this));
         document.addEventListener('touchmove', this.boundTouchMove);
         document.addEventListener('touchend', this.boundTouchEnd);
+    }
+
+    private handleDoubleClick(e: MouseEvent): void {
+        e.preventDefault();
+        this.toggle();
     }
 
     private removeEventListeners(): void {
@@ -162,7 +276,30 @@ class RightPanelResizer extends HTMLElement {
     private doDrag(clientX: number): void {
         // For right panel, dragging LEFT increases width, RIGHT decreases
         const deltaX = this.startX - clientX;
-        const newWidth = Math.max(this.minWidth, Math.min(this.maxWidth, this.startWidth + deltaX));
+        const rawWidth = this.startWidth + deltaX;
+
+        // If dragged below collapse threshold, collapse
+        if (rawWidth < this.collapseThreshold) {
+            if (!this.isCollapsed) {
+                this.collapse();
+            }
+            return;
+        }
+
+        // If was collapsed and now dragging to expand
+        if (this.isCollapsed && rawWidth >= this.collapseThreshold) {
+            this.isCollapsed = false;
+            this.shadowRoot?.host.classList.remove('collapsed');
+            const continuumWidget = document.querySelector('continuum-widget') as any;
+            if (continuumWidget?.shadowRoot) {
+                const rightPanelContainer = continuumWidget.shadowRoot.querySelector('.right-panel-container') as HTMLElement;
+                if (rightPanelContainer) {
+                    rightPanelContainer.classList.remove('collapsed');
+                }
+            }
+        }
+
+        const newWidth = Math.max(this.minWidth, Math.min(this.maxWidth, rawWidth));
         this.applyPanelWidth(newWidth);
     }
 
@@ -216,6 +353,21 @@ class RightPanelResizer extends HTMLElement {
                     border-left: 2px solid #00d4ff;
                     box-shadow: 0 0 6px rgba(0, 212, 255, 0.8);
                     width: 3px;
+                }
+
+                /* Collapsed state - thin glowing handle */
+                :host(.collapsed) {
+                    width: 6px;
+                    left: 0;
+                    background: rgba(0, 212, 255, 0.15);
+                    border-left: 1px solid rgba(0, 212, 255, 0.3);
+                }
+
+                :host(.collapsed:hover) {
+                    background: rgba(0, 212, 255, 0.4);
+                    border-left: 1px solid #00d4ff;
+                    box-shadow: 0 0 8px rgba(0, 212, 255, 0.6);
+                    cursor: e-resize;
                 }
 
                 .resizer-handle {

@@ -24,6 +24,17 @@
   overflow: hidden;
 }
 
+/* Collapsed right panel - thin handle visible, content hidden */
+.right-panel-container.collapsed {
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+.right-panel-container.collapsed right-panel-widget {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Main panel layout */
 .main-panel {
   display: flex;
