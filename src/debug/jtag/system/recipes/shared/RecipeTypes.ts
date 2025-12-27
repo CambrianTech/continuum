@@ -82,15 +82,16 @@ export interface RecipeStrategy {
  *
  * Inputs are strings (uniqueId or UUID) - system resolves as needed.
  * URL rewriter can work either direction: /persona/helper ↔ /persona/uuid
+ *
+ * Simple form: just description string (input is required)
+ * Full form: object with description + optional default (has default = optional)
  */
-export interface RecipeInput {
-  /** Is this input required? */
-  required?: boolean;
-  /** Default value if not provided */
+export type RecipeInput = string | {
+  /** What this input is for - REQUIRED */
+  description: string;
+  /** Default value - if provided, input becomes optional */
   default?: string;
-  /** Human-readable description */
-  description?: string;
-}
+};
 
 /**
  * Single step in recipe command pipeline
