@@ -84,13 +84,62 @@ export class MainWidget extends BaseWidget {
 
       // Switch to the content view based on URL
       // Delay slightly to let the DOM render first
-      setTimeout(() => {
+      setTimeout(async () => {
         this.switchContentView(type, entityId);
+
+        // Ensure a tab exists for this URL (URL is source of truth for content)
+        await this.ensureTabForContent(type, entityId);
+
         // For chat, emit ROOM_SELECTED so ChatWidget loads the room
         if (type === 'chat' && entityId) {
           Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '' });
         }
       }, 100);
+    }
+  }
+
+  /**
+   * Ensure a tab exists for the given content type and entityId
+   * Creates tab if it doesn't exist, selects it if it does
+   */
+  private async ensureTabForContent(contentType: string, entityId?: string): Promise<void> {
+    // Check if tab already exists
+    const existingTab = this.userState?.contentState?.openItems?.find(
+      item => item.type === contentType && item.entityId === entityId
+    );
+
+    if (existingTab) {
+      // Tab exists - just make sure it's current
+      if (this.userState?.contentState) {
+        this.userState.contentState.currentItemId = existingTab.id;
+      }
+      this.updateContentTabs();
+      return;
+    }
+
+    // Create tab via content/open command
+    const userId = this.userState?.userId;
+    if (userId) {
+      // Get title from entityId or content type
+      const title = entityId
+        ? entityId.charAt(0).toUpperCase() + entityId.slice(1)
+        : contentType.charAt(0).toUpperCase() + contentType.slice(1);
+
+      try {
+        await Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+          userId: userId as UUID,
+          contentType: contentType as ContentType,
+          entityId: entityId,
+          title: title,
+          setAsCurrent: true
+        });
+        // Refresh tabs from DB
+        await this.loadUserContext();
+        await this.updateContentTabs();
+        console.log(`📋 MainPanel: Created tab for ${contentType}/${entityId || 'default'}`);
+      } catch (err) {
+        console.error(`Failed to create tab for ${contentType}:`, err);
+      }
     }
   }
 
@@ -286,6 +335,15 @@ export class MainWidget extends BaseWidget {
               roomId: firstItem.entityId,
               roomName: firstItem.title
             });
+          }
+        } else {
+          // No tabs left - clear content area (like IDE with no files open)
+          this.userState.contentState.currentItemId = undefined;
+          this.currentPath = '/';
+          this.updateUrl('/');
+          const contentView = this.shadowRoot?.querySelector('.content-view');
+          if (contentView) {
+            contentView.innerHTML = '';
           }
         }
       }

@@ -20,6 +20,58 @@ export const SETTINGS_STYLES = `
     gap: 0;
   }
 
+  .settings-nav {
+    width: 200px;
+    flex-shrink: 0;
+    background: rgba(10, 15, 20, 0.9);
+    border-right: 1px solid rgba(0, 212, 255, 0.2);
+    padding: 16px 0;
+    overflow-y: auto;
+  }
+
+  .nav-section {
+    margin-bottom: 8px;
+  }
+
+  .nav-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: rgba(255, 255, 255, 0.4);
+    padding: 8px 16px 4px;
+    margin: 0;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-left: 3px solid transparent;
+  }
+
+  .nav-item:hover {
+    background: rgba(0, 212, 255, 0.1);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .nav-item.active {
+    background: rgba(0, 212, 255, 0.15);
+    color: #00d4ff;
+    border-left-color: #00d4ff;
+  }
+
+  .nav-icon {
+    font-size: 16px;
+    width: 20px;
+    text-align: center;
+  }
+
   .settings-main {
     flex: 1;
     overflow-y: auto;

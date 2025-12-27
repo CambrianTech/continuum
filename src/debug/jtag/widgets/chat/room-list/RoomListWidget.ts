@@ -127,21 +127,11 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
       }
     });
 
-    // Auto-select General room on startup ONLY if on a chat URL
-    // Don't override Settings/Help/Theme content
-    setTimeout(() => {
-      const currentPath = window.location.pathname;
-      const isOnChat = currentPath.startsWith('/chat') || currentPath === '/';
-
-      if (isOnChat) {
-        const generalRoom = this.scroller?.entities().find(room => room.id === DEFAULT_ROOMS.GENERAL);
-        if (generalRoom) {
-          this.selectRoom(DEFAULT_ROOMS.GENERAL as UUID);
-        }
-      } else {
-        console.log(`📋 RoomListWidget: Skipping auto-select - URL is ${currentPath}, not chat`);
-      }
-    }, 100); // Small delay to ensure room list is loaded
+    // DO NOT auto-select General here - initial content is determined by:
+    // 1. URL routing in MainWidget
+    // 2. Saved contentState from userState
+    // 3. Default handled by MainWidget if neither exists
+    // RoomListWidget only reacts to ROOM_SELECTED events, doesn't initiate them
   }
 
   // Event subscriptions now handled automatically by EntityScrollerWidget base class
