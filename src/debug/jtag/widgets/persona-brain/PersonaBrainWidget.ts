@@ -83,8 +83,9 @@ export class PersonaBrainWidget extends BasePanelWidget {
       widgetName: 'PersonaBrainWidget',
       panelTitle: 'Persona',
       panelSubtitle: 'Cognitive System View',
-      assistantRoom: 'help',
-      assistantGreeting: 'Ask me about this persona\'s cognitive modules, memory stats, or how to debug issues.',
+      // Assistant now handled by layout system's right panel
+      // assistantRoom: 'help',
+      // assistantGreeting: 'Ask me about this persona\'s cognitive modules, memory stats, or how to debug issues.',
       additionalStyles: personaBrainStyles
     });
   }
