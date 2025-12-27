@@ -1,0 +1,70 @@
+{
+  "uniqueId": "chat",
+  "name": "Chat Room",
+  "displayName": "Chat",
+  "description": "Real-time chat with humans and AI personas",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 30,
+        "includeParticipants": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 30,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "human-focused",
+    "responseRules": [
+      "Wait for humans to initiate conversations",
+      "Respond helpfully when addressed or when expertise is relevant",
+      "Avoid AI-to-AI loops by checking recent speaker patterns",
+      "Keep responses concise unless detail is requested"
+    ],
+    "decisionCriteria": [
+      "Was I mentioned or addressed directly?",
+      "Is my expertise relevant to the topic?",
+      "Has a human spoken recently?",
+      "Would my response add value?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["chat", "conversation", "collaboration"]
+}

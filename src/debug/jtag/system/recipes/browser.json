@@ -1,0 +1,66 @@
+{
+  "uniqueId": "browser",
+  "name": "Collaborative Browser",
+  "displayName": "Browser",
+  "description": "Web browsing with AI assistance for research and exploration",
+  "version": 1,
+
+  "layout": {
+    "main": ["browser-widget"],
+    "right": {
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 15,
+        "includeParticipants": true,
+        "browserContext": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 15,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "browserContext": true
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help users find information efficiently",
+      "Summarize page content when requested",
+      "Suggest related searches or resources",
+      "Warn about potentially unreliable sources"
+    ],
+    "decisionCriteria": [
+      "What is the user researching?",
+      "Would a summary or extraction be helpful?",
+      "Are there better sources for this information?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["browser", "web", "research", "exploration"]
+}

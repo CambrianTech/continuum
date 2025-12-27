@@ -281,13 +281,19 @@ export function buildContentPath(contentType: string, entityId?: string): string
 export function getRightPanelConfig(contentType: string): RightPanelConfig | null {
   // 1. Try recipe-driven layout first
   const recipeService = getRecipeLayoutService();
-  if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
+  const isLoaded = recipeService.isLoaded();
+  const hasRecipe = recipeService.hasRecipe(contentType);
+  console.log(`🔍 getRightPanelConfig('${contentType}'): isLoaded=${isLoaded}, hasRecipe=${hasRecipe}`);
+
+  if (isLoaded && hasRecipe) {
     const rightPanel = recipeService.getRightPanel(contentType);
+    console.log(`🔍 getRightPanelConfig('${contentType}'): recipe rightPanel=`, rightPanel);
     if (rightPanel === null) return null;
     if (rightPanel) return rightPanel;
   }
 
   // 2. Fall back to static registry
+  console.log(`🔍 getRightPanelConfig('${contentType}'): using FALLBACK_REGISTRY`);
   const config = FALLBACK_REGISTRY[contentType];
   if (!config) {
     // Unknown content type - default to showing help panel

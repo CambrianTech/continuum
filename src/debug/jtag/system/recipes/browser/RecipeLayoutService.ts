@@ -45,17 +45,20 @@ export class RecipeLayoutService {
 
   private async doLoad(): Promise<void> {
     try {
-      console.log('📚 RecipeLayoutService: Loading recipe layouts...');
+      console.log('📚 RecipeLayoutService: Loading recipe layouts via data/list...');
 
-      // Force reload to get the recipe data (otherwise skipped recipes return empty)
-      const result = await Commands.execute('workspace/recipe/load', {
-        loadAll: true,
-        reload: true
-      } as any) as unknown as { success: boolean; loaded?: RecipeLayoutData[] };
+      // Query recipes directly from database to get full entity including layout
+      const result = await Commands.execute('data/list', {
+        collection: 'recipes',
+        limit: 100
+      } as any) as unknown as { items?: RecipeLayoutData[]; success?: boolean; error?: string };
 
-      if (result?.loaded) {
-        for (const recipe of result.loaded) {
+      console.log('📚 RecipeLayoutService: data/list result:', result);
+
+      if (result?.items && result.items.length > 0) {
+        for (const recipe of result.items) {
           if (recipe.uniqueId) {
+            console.log(`📚 RecipeLayoutService: Adding recipe '${recipe.uniqueId}' with layout:`, recipe.layout);
             this.layouts.set(recipe.uniqueId, {
               uniqueId: recipe.uniqueId,
               displayName: recipe.displayName || recipe.uniqueId,
@@ -63,7 +66,9 @@ export class RecipeLayoutService {
             });
           }
         }
-        console.log(`✅ RecipeLayoutService: Loaded ${this.layouts.size} recipe layouts`);
+        console.log(`✅ RecipeLayoutService: Loaded ${this.layouts.size} recipe layouts: ${Array.from(this.layouts.keys()).join(', ')}`);
+      } else {
+        console.warn('⚠️ RecipeLayoutService: No recipes returned from data/list', result);
       }
 
       this.loaded = true;

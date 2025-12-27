@@ -1,0 +1,71 @@
+{
+  "uniqueId": "diagnostics-log",
+  "name": "Log Viewer",
+  "displayName": "Log",
+  "description": "View and analyze individual persona or system logs",
+  "version": 1,
+
+  "inputs": {
+    "logPath": {
+      "description": "Path to the log file to view",
+      "type": "string"
+    }
+  },
+
+  "layout": {
+    "main": ["log-viewer-widget"],
+    "right": {
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help interpret log entries and patterns",
+      "Identify errors, warnings, and anomalies",
+      "Correlate events across log entries",
+      "Explain technical log messages in plain terms"
+    ],
+    "decisionCriteria": [
+      "What is the user investigating in these logs?",
+      "Are there error patterns that need attention?",
+      "Would filtering or searching help narrow down issues?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["logs", "diagnostics", "debugging", "monitoring"]
+}

@@ -1,0 +1,61 @@
+{
+  "uniqueId": "help",
+  "name": "Help & Documentation",
+  "displayName": "Help",
+  "description": "System help, documentation, and onboarding",
+  "version": 1,
+
+  "layout": {
+    "main": ["help-widget"],
+    "right": null
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": false
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "teaching",
+    "responseRules": [
+      "Provide clear, step-by-step guidance",
+      "Link to relevant documentation when available",
+      "Use examples to illustrate concepts",
+      "Be patient and thorough with explanations"
+    ],
+    "decisionCriteria": [
+      "What is the user trying to accomplish?",
+      "What's the simplest path to their goal?",
+      "Are there related features they should know about?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["help", "documentation", "onboarding"]
+}
