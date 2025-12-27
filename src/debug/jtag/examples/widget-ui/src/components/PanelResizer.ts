@@ -51,12 +51,12 @@ export class PanelResizer extends HTMLElement {
     private startWidth: number = 0;
     private currentWidth?: number;
     private isCollapsed: boolean = false;
-    private lastExpandedWidth: number = 320;
+    private lastExpandedWidth: number = 340;
 
     // Read from CSS vars
-    private minWidth: number = 150;
-    private maxWidth: number = 600;
-    private defaultWidth: number = 320;
+    private minWidth: number = 250;
+    private maxWidth: number = 450;
+    private defaultWidth: number = 340;
     private collapseThreshold: number = 50;
     private collapsedHandleWidth: number = 6;
 
@@ -131,11 +131,21 @@ export class PanelResizer extends HTMLElement {
     private loadSavedState(): void {
         const prefix = this.config.storageKeyPrefix;
 
-        // Calculate viewport-based max for safety
+        // Calculate viewport-based max for safety - max 28% of viewport per panel
+        // This ensures both panels (28% * 2 = 56%) plus center (40%+) fit within 100vw
         const viewportWidth = window.innerWidth;
-        const safeMaxWidth = Math.min(this.maxWidth, Math.floor(viewportWidth * 0.35)); // Max 35% of viewport
+        const safeMaxWidth = Math.min(this.maxWidth, Math.floor(viewportWidth * 0.28));
 
         try {
+            // MIGRATION: Clear any saved widths > 350px to fix overflow issues
+            const migrationKey = 'panel-width-migration-v2';
+            if (!localStorage.getItem(migrationKey)) {
+                console.log(`🔧 PanelResizer: Running width migration for ${prefix}`);
+                localStorage.removeItem(`${prefix}-width`);
+                localStorage.removeItem(`${prefix}-collapsed`);
+                localStorage.setItem(migrationKey, 'done');
+            }
+
             // Load collapsed state
             if (this.config.collapsible) {
                 const savedCollapsed = localStorage.getItem(`${prefix}-collapsed`);
@@ -245,16 +255,17 @@ export class PanelResizer extends HTMLElement {
         if (!desktopContainer || !panelContainer) return;
 
         if (collapsed) {
-            panelContainer.style.width = `${this.collapsedHandleWidth}px`;
+            // DON'T set explicit width - let grid control sizing via CSS var
+            // panelContainer.style.width = `${this.collapsedHandleWidth}px`;
             panelContainer.classList.add('collapsed');
 
-            // Update CSS var to collapsed width
+            // Update CSS var to collapsed width - grid will use this
             const cssVarName = `--${this.config.cssVarPrefix}-width`;
             document.documentElement.style.setProperty(cssVarName, `${this.collapsedHandleWidth}px`);
 
-            // Update grid to use CSS vars (both panels)
+            // Update grid to use CSS vars (both panels) with min() to prevent overflow
             desktopContainer.style.gridTemplateColumns =
-                'var(--sidebar-width, 400px) 1fr var(--right-panel-width, 400px)';
+                'min(var(--sidebar-width, 340px), 28vw) 1fr min(var(--right-panel-width, 340px), 28vw)';
 
             this.currentWidth = 0;
 
@@ -279,11 +290,13 @@ export class PanelResizer extends HTMLElement {
         // Safety: Ensure width doesn't exceed reasonable bounds based on viewport
         const viewportWidth = window.innerWidth;
         const minMainContent = 400; // Minimum space for main content
-        const otherPanelEstimate = 400; // Assume other panel takes ~400px
+        const otherPanelEstimate = 340; // Assume other panel takes ~340px
         const maxPanelWidth = Math.min(this.maxWidth, viewportWidth - minMainContent - otherPanelEstimate);
         const safeWidth = Math.max(this.minWidth, Math.min(width, maxPanelWidth));
 
-        panelContainer.style.width = `${safeWidth}px`;
+        // DON'T set explicit width on container - let the grid control sizing
+        // Only set the CSS variable, which the grid uses with min() to prevent overflow
+        // panelContainer.style.width = `${safeWidth}px`;  // REMOVED - causes overflow
 
         if (clipping) {
             panelContainer.style.overflow = 'hidden';
@@ -294,14 +307,14 @@ export class PanelResizer extends HTMLElement {
         }
 
         // Update the CSS custom property for this panel's width
-        // This allows the grid to respond automatically without overwriting other panel's width
+        // The grid uses min(var, 30vw) to constrain the actual rendered width
         const cssVarName = `--${this.config.cssVarPrefix}-width`;
         document.documentElement.style.setProperty(cssVarName, `${safeWidth}px`);
 
-        // Also update the grid template to use current CSS vars (in case they're not set)
-        // This ensures both panels' widths are respected
+        // Also update the grid template to use current CSS vars with min() to prevent overflow
+        // This ensures both panels' widths are respected while preventing viewport overflow
         desktopContainer.style.gridTemplateColumns =
-            'var(--sidebar-width, 400px) 1fr var(--right-panel-width, 400px)';
+            'min(var(--sidebar-width, 340px), 28vw) 1fr min(var(--right-panel-width, 340px), 28vw)';
 
         this.currentWidth = safeWidth;
 

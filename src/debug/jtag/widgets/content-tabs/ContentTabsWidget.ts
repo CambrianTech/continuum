@@ -59,19 +59,13 @@ export class ContentTabsWidget extends BaseWidget {
         /* Extend tabs below the header border to overlap it */
         margin-bottom: -1px;
         padding-bottom: 1px;
+        /* Hide scrollbar but keep scrollable */
+        scrollbar-width: none;  /* Firefox */
+        -ms-overflow-style: none;  /* IE/Edge */
       }
 
       .content-tabs-container::-webkit-scrollbar {
-        height: 4px;
-      }
-
-      .content-tabs-container::-webkit-scrollbar-thumb {
-        background: rgba(0, 212, 255, 0.3);
-        border-radius: 2px;
-      }
-
-      .content-tabs-container::-webkit-scrollbar-track {
-        background: rgba(0, 10, 15, 0.5);
+        display: none;  /* Chrome/Safari - hide scrollbar */
       }
 
       .content-tab {

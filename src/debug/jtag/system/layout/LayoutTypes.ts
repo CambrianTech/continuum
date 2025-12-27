@@ -60,17 +60,20 @@ export interface LayoutConfig {
  * Global layout - persistent widgets that appear across ALL content types
  * These are merged with content-specific layouts (global first, then content-specific)
  *
- * Persistent widgets:
- * - continuum-emoter-widget: HAL 9000 system status indicator
- * - cognition-histogram-widget: AI pipeline visualization
- * - continuum-metrics-widget: AI performance dashboard
+ * Persistent widgets (priority order - top to bottom):
+ * 1. continuum-emoter-widget: HAL 9000 system status indicator
+ * 2. cognition-histogram-widget: Pipeline stages
+ * 3. continuum-metrics-widget: Requests dashboard
+ * 4. user-list-widget: Users & Agents
  */
 export const GLOBAL_LAYOUT: LayoutConfig = {
   widgets: [
-    // Left panel persistent widgets (always show at top of sidebar)
+    // AI system indicators - top of sidebar
     { widget: 'continuum-emoter-widget', position: 'left', order: -100, persistent: true },
     { widget: 'cognition-histogram-widget', position: 'left', order: -90, persistent: true },
-    { widget: 'continuum-metrics-widget', position: 'left', order: -80, persistent: true }
+    { widget: 'continuum-metrics-widget', position: 'left', order: -80, persistent: true },
+    // Users & Agents - persistent, after Rooms (which is order 0)
+    { widget: 'user-list-widget', position: 'left', order: 10, persistent: true }
   ]
 };
 
@@ -80,10 +83,10 @@ export const GLOBAL_LAYOUT: LayoutConfig = {
  */
 export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
   // Chat layout - room list left, chat center, assistant right
+  // (user-list-widget is global, no need to include here)
   'chat': {
     widgets: [
       { widget: 'room-list-widget', position: 'left', order: 0 },
-      { widget: 'user-list-widget', position: 'left', order: 1 },
       { widget: 'chat-widget', position: 'center', order: 0 },
       { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'help', compact: true } }
     ]

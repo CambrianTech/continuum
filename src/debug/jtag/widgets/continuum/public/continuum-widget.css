@@ -8,17 +8,25 @@
 
 .desktop-container {
   display: grid;
-  grid-template-columns: var(--sidebar-width, 250px) 1fr var(--right-panel-width, 320px);
+  /* Use min() to prevent panels from exceeding 28% of viewport even if CSS var is larger */
+  /* 28% * 2 panels = 56%, leaving 44% for center content */
+  grid-template-columns:
+    min(var(--sidebar-width, 340px), 28vw)
+    1fr
+    min(var(--right-panel-width, 340px), 28vw);
   height: 100vh;
   max-height: 100vh;
+  max-width: 100vw;
+  width: 100vw;
   overflow: hidden;
   position: relative;
   clip-path: inset(0);
+  box-sizing: border-box;
 }
 
 /* Collapsed right panel state */
 .desktop-container.right-panel-collapsed {
-  grid-template-columns: var(--sidebar-width, 250px) 1fr 0px;
+  grid-template-columns: min(var(--sidebar-width, 340px), 28vw) 1fr 0px;
 }
 
 .desktop-container.right-panel-collapsed .right-panel-container {
@@ -53,6 +61,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;  /* Critical: allow grid item to shrink below content size */
 }
 
 .content-header {
@@ -80,9 +89,11 @@
   position: relative;
   display: flex;
   height: 100%;
+  max-width: 100%;  /* Never exceed grid track size */
   background: var(--sidebar-background);
   border-right: 1px solid var(--sidebar-border);
   box-sizing: border-box;  /* Include border in width calculation */
+  overflow: hidden;
 }
 
 .left-sidebar {
@@ -96,6 +107,7 @@
   position: relative;
   display: flex;
   height: 100%;
+  max-width: 100%;  /* Never exceed grid track size */
   background: var(--sidebar-background);
   border-left: 1px solid var(--sidebar-border);
   overflow: hidden;
