@@ -3,7 +3,8 @@
 :host {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;  /* Allow flex child to shrink */
   width: 250px;
   background: var(--sidebar-background, linear-gradient(135deg, rgba(10, 15, 20, 0.95) 0%, rgba(15, 20, 30, 0.98) 100%));
   border-right: 1px solid var(--sidebar-border, rgba(0, 212, 255, 0.2));

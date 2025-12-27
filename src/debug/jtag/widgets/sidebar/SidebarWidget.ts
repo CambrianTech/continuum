@@ -1,141 +1,142 @@
 /**
- * SidebarPanel - Modular Sidebar Widget
- * 
- * Left or right sidebar panel containing status view, emoter, and dynamic content.
- * Follows the VSCode/Discord/Slack sidebar pattern.
+ * SidebarWidget - Left sidebar panel with navigation and status
+ *
+ * Shows:
+ * - System emoter (HAL 9000 status indicator)
+ * - Cognition histogram (AI pipeline visualization)
+ * - Metrics (AI performance dashboard)
+ * - Room list and user list
+ *
+ * Extends BaseSidePanelWidget for consistent panel behavior.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import { BaseSidePanelWidget, type SidePanelSide } from '../shared/BaseSidePanelWidget';
 
-export class SidebarWidget extends BaseWidget {
-  
+export class SidebarWidget extends BaseSidePanelWidget {
+
   constructor() {
     super({
-      widgetName: 'SidebarWidget',
-      template: 'sidebar-panel.html',
-      styles: 'sidebar-panel.css',
-      enableAI: false,
-      enableDatabase: false, 
-      enableRouterEvents: true,
-      enableScreenshots: false
+      widgetName: 'SidebarWidget'
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎯 SidebarPanel: Initializing sidebar panel...');
-    
-    // Initialize status view
-    await this.updateStatusView();
-    
-    // Initialize dynamic list based on current page/context
-    await this.updateDynamicList();
-    
-    console.log('✅ SidebarPanel: Sidebar panel initialized');
+  // === Panel Configuration ===
+
+  protected get panelTitle(): string {
+    return '';  // Not used - no header
   }
 
-  protected async renderWidget(): Promise<void> {
-    // Use BaseWidget's template and styles system
-    const styles = this.templateCSS ?? '/* No styles loaded */';
-    const template = this.templateHTML ?? '<div>No template loaded</div>';
+  protected get panelIcon(): string {
+    return '';  // Not used - no header
+  }
 
-    // Ensure template is a string
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+  protected get panelSide(): SidePanelSide {
+    return 'left';
+  }
 
-    // Replace dynamic content
-    const dynamicContent = templateString
-      .replace('<!-- STATUS_CONTENT -->', await this.getStatusContent())
-      .replace('<!-- DYNAMIC_LIST_CONTENT -->', await this.getDynamicListContent());
+  protected get showHeader(): boolean {
+    return false;  // Just floating « button
+  }
 
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${dynamicContent}
+  // === Lifecycle ===
+
+  protected async onPanelInitialize(): Promise<void> {
+    console.log('🎯 SidebarWidget: Initializing...');
+  }
+
+  protected async onPanelCleanup(): Promise<void> {
+    console.log('🧹 SidebarWidget: Cleanup complete');
+  }
+
+  // === Content Rendering ===
+
+  protected async renderPanelContent(): Promise<string> {
+    return `
+      <div class="sidebar-widgets">
+        <!-- ContinuumEmoter Widget - HAL 9000 System Status -->
+        <continuum-emoter-widget></continuum-emoter-widget>
+
+        <!-- Cognition Histogram Widget - AI Pipeline Visualization -->
+        <cognition-histogram-widget></cognition-histogram-widget>
+
+        <!-- Metrics Widget - AI Performance Dashboard -->
+        <continuum-metrics-widget></continuum-metrics-widget>
+
+        <!-- Room List -->
+        <div class="widget-container">
+          <room-list-widget></room-list-widget>
+        </div>
+
+        <!-- User List -->
+        <div class="widget-container">
+          <user-list-widget></user-list-widget>
+        </div>
+      </div>
     `;
-
-    // Wire up collapse button
-    this.setupCollapseButton();
-
-    console.log('✅ SidebarPanel: Sidebar panel rendered');
   }
 
-  /**
-   * Wire up collapse button to toggle sidebar via PanelResizer
-   */
-  private setupCollapseButton(): void {
-    const collapseBtn = this.shadowRoot?.querySelector('.collapse-btn');
-    if (collapseBtn) {
-      collapseBtn.addEventListener('click', () => {
-        this.toggleCollapse();
-      });
-    }
-  }
-
-  /**
-   * Toggle collapse via the resizer (single source of truth)
-   */
-  private toggleCollapse(): void {
-    const continuumWidget = document.querySelector('continuum-widget') as any;
-    if (continuumWidget?.shadowRoot) {
-      const resizer = continuumWidget.shadowRoot.querySelector('panel-resizer[side="left"]') as any;
-      if (resizer?.toggle) {
-        resizer.toggle();
+  protected getAdditionalStyles(): string {
+    return `
+      .sidebar-widgets {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md, 12px);
+        padding: var(--spacing-md, 12px);
+        overflow-y: auto;
+        overflow-x: hidden;
       }
-    }
-  }
 
-  protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 SidebarPanel: Cleanup complete');
-  }
+      /* Emoter styling */
+      continuum-emoter-widget {
+        margin-bottom: 8px;
+      }
 
-  /**
-   * Update status view display
-   */
-  private async updateStatusView(): Promise<void> {
-    // Update connection status, user status, etc.
-    console.log('🔗 SidebarPanel: Status view updated');
-  }
+      /* Widget containers split vertical space */
+      .widget-container {
+        flex: 1;
+        min-height: 150px;
+        max-height: 300px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
 
-  /**
-   * Update dynamic list based on current page context
-   */
-  private async updateDynamicList(): Promise<void> {
-    // Load appropriate widgets for current page/context
-    console.log('📋 SidebarPanel: Dynamic list updated');
-  }
+      /* Status View (if needed) */
+      .status-view {
+        margin-bottom: 16px;
+        padding: 10px;
+        background: var(--widget-surface, rgba(0, 212, 255, 0.1));
+        border-radius: 6px;
+        border: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
+      }
 
-  /**
-   * Get status content HTML
-   */
-  private async getStatusContent(): Promise<string> {
-    return `
-      <div class="connection-status connected">CONNECTED</div>
-      <div class="user-status">Online</div>
+      .connection-status {
+        font-size: 0.8em;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 5px;
+      }
+
+      .connection-status.connected {
+        color: var(--content-success, #4CAF50);
+      }
+
+      .user-status {
+        font-size: 0.7em;
+        color: var(--content-secondary, rgba(255, 255, 255, 0.7));
+      }
     `;
   }
 
-  /**
-   * Get dynamic list content HTML - now loads modular widgets
-   */
-  private async getDynamicListContent(): Promise<string> {
-    // Dynamic sidebar widgets based on current page/context
-    // For chat page: load room list and user list widgets
-    return `
-      <div class="sidebar-widget-container">
-        <room-list-widget></room-list-widget>
-      </div>
-      <div class="sidebar-widget-container">  
-        <user-list-widget></user-list-widget>
-      </div>
-    `;
-  }
-
-  /**
-   * Get available rooms/channels for this context
-   */
-  async getContextualItems(): Promise<string[]> {
-    // Will be dynamic based on page - chat, code editor, etc.
-    return ['general', 'academy', 'community'];
+  protected async onPanelRendered(): Promise<void> {
+    console.log('✅ SidebarWidget: Rendered');
   }
 }
 
-// Register the custom element
 // Registration handled by centralized BROWSER_WIDGETS registry

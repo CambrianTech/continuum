@@ -1,11 +1,11 @@
 /* Chat Widget - Uses proper theme variables */
 
 :host {
-  display: flex;
-  flex-direction: column;
+  display: block;
+  position: relative;
   height: 100%;
+  min-height: 0;  /* Critical for flexbox shrinking */
   width: 100%;
-  max-width: calc(100vw - var(--sidebar-width) - 100px);
   min-width: 0;
   overflow: hidden;
   box-sizing: border-box;
@@ -209,13 +209,17 @@
 .entity-list-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  width: 100%;
-  min-width: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
 }
 
 .entity-list-body {
   flex: 1;
+  min-height: 0;  /* Critical for flexbox shrinking */
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -261,10 +265,14 @@
   background: var(--surface-secondary, rgba(10, 15, 20, 0.8));
   border-radius: 0 0 var(--radius-md, 8px) var(--radius-md, 8px);
   flex-shrink: 0; /* Prevent input from shrinking */
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 
 .message-input {
   flex: 1;
+  min-width: 0;  /* Allow shrinking in flex context */
   padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
   background: var(--surface-input, rgba(255, 255, 255, 0.1));
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.2));
@@ -272,6 +280,7 @@
   color: var(--text-primary, rgba(255, 255, 255, 0.9));
   font-size: 0.875rem;
   font-family: var(--font-primary, inherit);
+  box-sizing: border-box;
 }
 
 .message-input::placeholder {
@@ -296,6 +305,8 @@
   font-size: 0.875rem;
   transition: all 0.2s ease;
   box-shadow: var(--shadow-sm, 0 2px 4px rgba(0, 0, 0, 0.2));
+  flex-shrink: 0;  /* Prevent button from shrinking */
+  box-sizing: border-box;
 }
 
 .send-button:hover {
@@ -792,14 +803,19 @@
 
 .entity-list-container.compact {
   --chat-spacing-tight: 1px;
-  max-height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   overflow: hidden;
+  contain: layout paint;  /* Strict containment boundary */
 }
 
 .entity-list-container.compact .entity-list-body {
   flex: 1;
   min-height: 0;
-  max-height: 100%;
+  overflow-y: auto;
 }
 
 /* Minimal header in compact mode */
@@ -855,18 +871,34 @@
 }
 
 .entity-list-container.compact .input-container {
-  padding: var(--spacing-xs, 6px) var(--spacing-sm, 8px);
+  padding: var(--spacing-xs, 4px);
+  gap: var(--spacing-xs, 4px);
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .entity-list-container.compact .message-input {
   padding: var(--spacing-xs, 6px) var(--spacing-sm, 10px);
   font-size: 0.8125rem;
   min-height: 32px;
+  /* Force input to shrink to make room for button */
+  width: 0;  /* Start at 0, let flex: 1 expand it */
+  flex: 1 1 0;  /* Grow, shrink, basis 0 */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .entity-list-container.compact .send-button {
-  padding: var(--spacing-xs, 6px) var(--spacing-sm, 12px);
-  font-size: 0.75rem;
+  padding: var(--spacing-xs, 6px) var(--spacing-sm, 8px);
+  font-size: 0;  /* Hide "Send" text */
+  min-width: 32px;
+  width: 32px;
+}
+
+/* Show arrow icon instead of "Send" text in compact mode */
+.entity-list-container.compact .send-button::after {
+  content: '→';
+  font-size: 1rem;
 }
 
 .entity-list-container.compact .ai-status-container {

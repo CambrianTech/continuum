@@ -10,8 +10,10 @@
   display: grid;
   grid-template-columns: var(--sidebar-width, 250px) 1fr var(--right-panel-width, 320px);
   height: 100vh;
+  max-height: 100vh;
   overflow: hidden;
   position: relative;
+  clip-path: inset(0);
 }
 
 /* Collapsed right panel state */
@@ -80,6 +82,7 @@
   height: 100%;
   background: var(--sidebar-background);
   border-right: 1px solid var(--sidebar-border);
+  box-sizing: border-box;  /* Include border in width calculation */
 }
 
 .left-sidebar {
@@ -95,12 +98,20 @@
   height: 100%;
   background: var(--sidebar-background);
   border-left: 1px solid var(--sidebar-border);
+  overflow: hidden;
+  clip-path: inset(0);
+  box-sizing: border-box;  /* Include border in width calculation */
 }
 
 .right-panel-container right-panel-widget {
   flex: 1;
   height: 100%;
+  max-height: 100%;
+  width: 100%;
+  min-width: 0;  /* Allow shrinking in flex context */
   overflow: hidden;
+  clip-path: inset(0);
+  box-sizing: border-box;
 }
 
 /* Panel resizer styling handled in PanelResizer component shadow DOM */
