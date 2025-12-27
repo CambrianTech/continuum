@@ -3,16 +3,17 @@
   "name": "Theme Designer",
   "displayName": "Theme",
   "description": "Customize the visual appearance with AI-assisted theme design",
-  "version": 1,
+  "version": 2,
 
   "layout": {
-    "mainWidget": "theme-widget",
-    "rightPanel": {
-      "widget": "chat-widget",
-      "room": "help",
-      "compact": true
+    "main": ["theme-widget"],
+    "right": {
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
     }
   },
+
+  "locked": ["layout.main"],
 
   "pipeline": [
     {
