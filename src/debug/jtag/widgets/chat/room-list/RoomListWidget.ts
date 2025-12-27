@@ -127,11 +127,19 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
       }
     });
 
-    // Auto-select General room on startup
+    // Auto-select General room on startup ONLY if on a chat URL
+    // Don't override Settings/Help/Theme content
     setTimeout(() => {
-      const generalRoom = this.scroller?.entities().find(room => room.id === DEFAULT_ROOMS.GENERAL);
-      if (generalRoom) {
-        this.selectRoom(DEFAULT_ROOMS.GENERAL as UUID);
+      const currentPath = window.location.pathname;
+      const isOnChat = currentPath.startsWith('/chat') || currentPath === '/';
+
+      if (isOnChat) {
+        const generalRoom = this.scroller?.entities().find(room => room.id === DEFAULT_ROOMS.GENERAL);
+        if (generalRoom) {
+          this.selectRoom(DEFAULT_ROOMS.GENERAL as UUID);
+        }
+      } else {
+        console.log(`📋 RoomListWidget: Skipping auto-select - URL is ${currentPath}, not chat`);
       }
     }, 100); // Small delay to ensure room list is loaded
   }

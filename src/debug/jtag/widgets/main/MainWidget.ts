@@ -275,10 +275,18 @@ export class MainWidget extends BaseWidget {
         const firstItem = this.userState.contentState.openItems[0];
         if (firstItem) {
           this.userState.contentState.currentItemId = firstItem.id;
-          Events.emit(UI_EVENTS.ROOM_SELECTED, {
-            roomId: firstItem.entityId,
-            roomName: firstItem.title
-          });
+          // Switch to the correct content view based on content type
+          this.switchContentView(firstItem.type, firstItem.entityId);
+          // Update URL
+          const newPath = buildContentPath(firstItem.type, firstItem.entityId);
+          this.updateUrl(newPath);
+          // Only emit ROOM_SELECTED for chat content
+          if (firstItem.type === 'chat') {
+            Events.emit(UI_EVENTS.ROOM_SELECTED, {
+              roomId: firstItem.entityId,
+              roomName: firstItem.title
+            });
+          }
         }
       }
     }
@@ -516,12 +524,19 @@ export class MainWidget extends BaseWidget {
     Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
       console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
 
+      // Only switch to chat if we're currently viewing chat content
+      // Don't override settings/help/theme when sidebar highlights a room
+      const { type: currentType } = parseContentPath(this.currentPath);
+      if (currentType !== 'chat') {
+        console.log(`📋 MainPanel: Ignoring ROOM_SELECTED - currently on ${currentType}, not chat`);
+        return;
+      }
+
       // Update URL for room selection (bookmarkable deep links)
       const newPath = buildContentPath('chat', data.roomId);
       this.updateUrl(newPath);
 
-      // Ensure chat widget is displayed (in case we were on settings/help)
-      // Safe now - switchContentView no longer emits ROOM_SELECTED
+      // Switch to the selected chat room
       this.switchContentView('chat', data.roomId);
 
       // Small delay to let the content/open command complete first
