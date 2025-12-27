@@ -16,6 +16,7 @@
 import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import type { LogLine, LogsReadResult } from '../../commands/logs/read/shared/LogsReadTypes';
 
 interface LogViewerData {
@@ -108,11 +109,48 @@ export class LogViewerWidget extends BasePanelWidget {
 
     this.logData.isLoading = false;
     this.renderWidget();
+    this.emitPositronContext();
 
     // Scroll to bottom if auto-follow is enabled
     if (this.logData.autoFollow) {
       this.scrollToBottom();
     }
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   * Called when log loads or filters change
+   */
+  private emitPositronContext(): void {
+    // Count errors and warnings in visible lines
+    const errorCount = this.logData.lines.filter(l => l.level === 'ERROR').length;
+    const warnCount = this.logData.lines.filter(l => l.level === 'WARN').length;
+
+    // Get recent errors for AI context
+    const recentErrors = this.logData.lines
+      .filter(l => l.level === 'ERROR')
+      .slice(-5)
+      .map(l => l.content);
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'log-viewer',
+        entityId: this.logData.logPath,
+        title: `Logs - ${this.logData.logName}`,
+        metadata: {
+          logPath: this.logData.logPath,
+          totalLines: this.logData.totalLines,
+          visibleLines: this.logData.lines.length,
+          levelFilter: this.logData.levelFilter,
+          componentFilter: this.logData.componentFilter,
+          errorCount,
+          warnCount,
+          autoFollow: this.logData.autoFollow,
+          recentErrors
+        }
+      },
+      { action: 'debugging', target: this.logData.logName }
+    );
   }
 
   private startAutoRefresh(): void {

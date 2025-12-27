@@ -118,15 +118,13 @@ export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
     ]
   },
 
-  // Logs layout - logs viewer center, no right panel
+  // Logs layout - logs nav left, log viewer center, AI assistant right for debugging help
   'logs': {
     widgets: [
-      { widget: 'room-list-widget', position: 'left', order: 0 },
-      { widget: 'logs-widget', position: 'center', order: 0 }
-    ],
-    panels: {
-      right: { visible: false }
-    }
+      { widget: 'logs-nav-widget', position: 'left', order: 0, persistent: true },
+      { widget: 'log-viewer-widget', position: 'center', order: 0 },
+      { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'help', compact: true } }
+    ]
   }
 };
 
