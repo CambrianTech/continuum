@@ -7,7 +7,6 @@
  */
 
 import { BaseWidget } from './BaseWidget';
-import { AssistantPanel } from './AssistantPanel';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/shared/FileLoadTypes';
 import { Commands } from '../../system/core/shared/Commands';
@@ -18,14 +17,11 @@ import type { DataListResult, DataListParams } from '../../commands/data/list/sh
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
   private themeStyleElement: HTMLStyleElement | null = null;
   private themeDiscovery: ThemeDiscoveryService;
-  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
@@ -87,7 +83,6 @@ export class ThemeWidget extends BaseWidget {
         flex: 1;
         width: 100%;
         height: 100%;
-        gap: 0;
       }
 
       .theme-main {
@@ -95,12 +90,6 @@ export class ThemeWidget extends BaseWidget {
         overflow-y: auto;
         padding: 20px 24px;
         min-width: 0;
-      }
-
-      .theme-assistant {
-        flex-shrink: 0;
-        height: 100%;
-        display: flex;
       }
 
       .theme-container {
@@ -224,16 +213,6 @@ export class ThemeWidget extends BaseWidget {
         color: rgba(255, 255, 255, 0.8);
       }
 
-      @media (max-width: 768px) {
-        .theme-layout {
-          flex-direction: column;
-        }
-
-        .theme-assistant {
-          height: 300px;
-          flex-shrink: 0;
-        }
-      }
     `;
 
     // Get available themes
@@ -278,7 +257,6 @@ export class ThemeWidget extends BaseWidget {
             </div>
           </div>
         </div>
-        <div class="theme-assistant" id="assistant-container"></div>
       </div>
     `;
 
@@ -287,32 +265,10 @@ export class ThemeWidget extends BaseWidget {
     // Setup event listeners
     this.setupThemeControls();
 
-    // Initialize assistant panel
-    this.initializeAssistant();
-
-    console.log('✅ ThemeWidget: Rendered with AI assistant panel');
-  }
-
-  private initializeAssistant(): void {
-    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
-    if (!container) return;
-
-    // Clean up old instance
-    this.assistantPanel?.destroy();
-
-    // Create new assistant panel connected to Theme room
-    this.assistantPanel = new AssistantPanel(container, {
-      roomId: DEFAULT_ROOMS.THEME as UUID,
-      roomName: 'theme',
-      placeholder: 'Ask about themes, colors, or design...',
-      greeting: "Hi! I can help you customize your workspace appearance. What kind of look are you going for? Dark and moody? Bright and colorful? Or something inspired by a specific style?"
-    });
+    console.log('✅ ThemeWidget: Rendered');
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    // Clean up assistant panel
-    this.assistantPanel?.destroy();
-
     // KEEP theme CSS in document.head - it should persist across tab changes
     // Just clear our reference so we can re-acquire it on next init
     this.themeStyleElement = null;
