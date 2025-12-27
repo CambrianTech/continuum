@@ -63,12 +63,12 @@ export class SidebarWidget extends BaseSidePanelWidget {
         <continuum-metrics-widget></continuum-metrics-widget>
 
         <!-- Room List -->
-        <div class="widget-container">
+        <div class="widget-container rooms">
           <room-list-widget></room-list-widget>
         </div>
 
-        <!-- User List -->
-        <div class="widget-container">
+        <!-- User List (flex: 2 for more space) -->
+        <div class="widget-container users">
           <user-list-widget></user-list-widget>
         </div>
       </div>
@@ -96,14 +96,19 @@ export class SidebarWidget extends BaseSidePanelWidget {
         margin-bottom: 8px;
       }
 
-      /* Widget containers split vertical space */
+      /* Widget containers split remaining vertical space */
       .widget-container {
         flex: 1;
-        min-height: 150px;
-        max-height: 300px;
+        min-height: 120px;
         display: flex;
         flex-direction: column;
         overflow: hidden;
+      }
+
+      /* Users section gets more space (more items typically) */
+      .widget-container.users {
+        flex: 2;
+        min-height: 200px;
       }
 
       /* Status View (if needed) */
