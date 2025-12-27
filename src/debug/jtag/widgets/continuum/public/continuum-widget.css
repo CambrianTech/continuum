@@ -126,6 +126,52 @@
   box-sizing: border-box;
 }
 
+/* Panel expand buttons - visible only when panels are collapsed */
+.panel-expand-btn {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 40px;
+  background: var(--sidebar-background, rgba(20, 25, 35, 0.95));
+  border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
+  color: var(--content-accent, #00d4ff);
+  font-size: 12px;
+  cursor: pointer;
+  display: none;  /* Hidden by default */
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;  /* Above everything */
+  transition: all 0.2s ease;
+}
+
+.panel-expand-btn:hover {
+  background: rgba(0, 212, 255, 0.2);
+  border-color: var(--content-accent, #00d4ff);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.5);
+}
+
+.panel-expand-btn.left-expand {
+  left: 0;
+  border-radius: 0 4px 4px 0;
+  border-left: none;
+}
+
+.panel-expand-btn.right-expand {
+  right: 0;
+  border-radius: 4px 0 0 4px;
+  border-right: none;
+}
+
+/* Show expand buttons when panels are collapsed */
+.sidebar-container.collapsed ~ .panel-expand-btn.left-expand {
+  display: flex;
+}
+
+.right-panel-container.collapsed ~ .panel-expand-btn.right-expand {
+  display: flex;
+}
+
 /* Panel resizer styling handled in PanelResizer component shadow DOM */
 
 /* Theme Widget Overlay - positioned in top-right corner */

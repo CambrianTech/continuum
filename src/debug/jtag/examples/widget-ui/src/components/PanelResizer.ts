@@ -486,7 +486,8 @@ export class PanelResizer extends HTMLElement {
         const activeBorder = isLeft ? 'border-right' : 'border-left';
 
         // Expand button position for collapsed state
-        const expandBtnPosition = isLeft ? 'left: 6px;' : 'right: var(--right-panel-collapsed-width, 6px);';
+        // Left panel: button on left edge; Right panel: button on right edge (0px from edge)
+        const expandBtnPosition = isLeft ? 'left: 6px;' : 'right: 0;';
 
         this.shadowRoot.innerHTML = `
             <style>
@@ -574,7 +575,7 @@ export class PanelResizer extends HTMLElement {
                 }
             </style>
             <div class="resizer-handle"></div>
-            ${this.config.collapsible ? `<button class="expand-btn" title="Expand panel">${isLeft ? '»' : '«'}</button>` : ''}
+            <!-- Expand button now rendered in ContinuumWidget for proper z-index -->
         `;
     }
 

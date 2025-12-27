@@ -82,7 +82,34 @@ export class ContinuumWidget extends BaseWidget {
       ${dynamicContent}
     `;
 
+    // Set up expand button click handlers
+    this.setupExpandButtons();
+
     console.log('✅ ContinuumWidget: Desktop interface rendered');
+  }
+
+  /**
+   * Set up click handlers for panel expand buttons
+   * These buttons are in ContinuumWidget's shadow DOM (not nested shadow DOMs)
+   * so they can properly overlay everything
+   */
+  private setupExpandButtons(): void {
+    const leftExpand = this.shadowRoot?.querySelector('.left-expand');
+    const rightExpand = this.shadowRoot?.querySelector('.right-expand');
+
+    if (leftExpand) {
+      leftExpand.addEventListener('click', () => {
+        const resizer = this.shadowRoot?.querySelector('panel-resizer[side="left"]') as any;
+        resizer?.expand?.();
+      });
+    }
+
+    if (rightExpand) {
+      rightExpand.addEventListener('click', () => {
+        const resizer = this.shadowRoot?.querySelector('panel-resizer[side="right"]') as any;
+        resizer?.expand?.();
+      });
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {
