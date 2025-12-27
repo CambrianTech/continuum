@@ -8,9 +8,12 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { Commands } from '../../system/core/shared/Commands';
-import { SETTINGS_STYLES } from './components/SettingsStyles';
+import { Events } from '../../system/core/shared/Events';
+import { styles as SETTINGS_STYLES } from './styles/settings.styles';
 import { ProviderEntry, type ConfigEntry } from './components/ProviderEntry';
 import { ProviderStatusTester } from './components/ProviderStatusTester';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { SETTINGS_NAV_EVENTS, type SettingsSection, type SettingsSectionChangedPayload } from '../settings-nav/SettingsNavWidget';
 
 export class SettingsWidget extends BaseWidget {
   private configEntries: ConfigEntry[] = [];
@@ -18,6 +21,8 @@ export class SettingsWidget extends BaseWidget {
   private saveStatus: 'idle' | 'saving' | 'saved' | 'error' = 'idle';
   private tester: ProviderStatusTester;
   private pendingChanges: Map<string, string> = new Map();
+  private currentSection: SettingsSection = 'providers';
+  private sectionEventUnsubscribe?: () => void;
 
   constructor() {
     super({
@@ -36,7 +41,46 @@ export class SettingsWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('Settings: Initializing settings widget...');
+
+    // Listen for section changes from SettingsNavWidget in sidebar
+    Events.subscribe(SETTINGS_NAV_EVENTS.SECTION_CHANGED, (payload: SettingsSectionChangedPayload) => {
+      if (payload.section !== this.currentSection) {
+        console.log(`Settings: Section changed to ${payload.section} (from SettingsNavWidget)`);
+        this.currentSection = payload.section;
+        this.renderWidget();
+        this.emitPositronContext();
+      }
+    });
+
     await this.loadConfig();
+    this.emitPositronContext();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   * Called on init and section changes
+   */
+  private emitPositronContext(): void {
+    const sectionTitles: Record<SettingsSection, string> = {
+      'providers': 'AI Providers',
+      'appearance': 'Appearance',
+      'account': 'Account',
+      'about': 'About'
+    };
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'settings',
+        section: this.currentSection,
+        title: `Settings - ${sectionTitles[this.currentSection]}`,
+        metadata: {
+          configuredProviders: this.configEntries.filter(e => e.isConfigured).length,
+          totalProviders: this.configEntries.length,
+          hasPendingChanges: this.pendingChanges.size > 0
+        }
+      },
+      { action: 'configuring', target: sectionTitles[this.currentSection] }
+    );
   }
 
   private async loadConfig(): Promise<void> {
@@ -89,9 +133,70 @@ export class SettingsWidget extends BaseWidget {
 
   protected async renderWidget(): Promise<void> {
     // Preserve scroll position before re-render
-    const scrollContainer = this.shadowRoot?.querySelector('.settings-container');
+    const scrollContainer = this.shadowRoot?.querySelector('.settings-main');
     const scrollTop = scrollContainer?.scrollTop || 0;
 
+    const contentHtml = this.isLoading
+      ? `<div class="loading">Loading configuration...</div>`
+      : this.renderSectionContent();
+
+    // Navigation is now handled by SettingsNavWidget in the sidebar
+    // This widget just shows the content
+    const template = `
+      <div class="settings-layout settings-layout--no-nav">
+        <main class="settings-main">
+          ${contentHtml}
+        </main>
+      </div>
+    `;
+
+    this.shadowRoot!.innerHTML = `<style>${SETTINGS_STYLES}</style>${template}`;
+    this.setupEventListeners();
+
+    // Restore scroll position after re-render
+    const newScrollContainer = this.shadowRoot?.querySelector('.settings-main');
+    if (newScrollContainer && scrollTop > 0) {
+      newScrollContainer.scrollTop = scrollTop;
+    }
+  }
+
+  private renderNav(): string {
+    const sections: { id: SettingsSection; icon: string; label: string }[] = [
+      { id: 'providers', icon: '🤖', label: 'AI Providers' },
+      { id: 'appearance', icon: '🎨', label: 'Appearance' },
+      { id: 'account', icon: '👤', label: 'Account' },
+      { id: 'about', icon: 'ℹ️', label: 'About' }
+    ];
+
+    return `
+      <div class="nav-section">
+        <h3 class="nav-section-title">Settings</h3>
+        ${sections.map(s => `
+          <div class="nav-item ${this.currentSection === s.id ? 'active' : ''}" data-section="${s.id}">
+            <span class="nav-icon">${s.icon}</span>
+            <span>${s.label}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  private renderSectionContent(): string {
+    switch (this.currentSection) {
+      case 'providers':
+        return this.renderProvidersSection();
+      case 'appearance':
+        return this.renderAppearanceSection();
+      case 'account':
+        return this.renderAccountSection();
+      case 'about':
+        return this.renderAboutSection();
+      default:
+        return this.renderProvidersSection();
+    }
+  }
+
+  private renderProvidersSection(): string {
     const localEntries = this.configEntries.filter(e => e.category === 'local');
     const cloudEntries = this.configEntries.filter(e => e.category === 'cloud');
 
@@ -105,57 +210,104 @@ export class SettingsWidget extends BaseWidget {
     const localEntriesHtml = localEntries.map(renderEntry).join('');
     const cloudEntriesHtml = cloudEntries.map(renderEntry).join('');
 
-    const template = this.isLoading ? `
-      <div class="settings-container">
-        <div class="loading">Loading configuration...</div>
+    return `
+      <div class="settings-header">
+        <h1 class="settings-title">AI Providers</h1>
+        <p class="settings-subtitle">Connect AI services to power your assistants</p>
       </div>
-    ` : `
-      <div class="settings-container">
-        <div class="settings-header">
-          <h1 class="settings-title">AI Providers</h1>
-          <p class="settings-subtitle">Connect AI services to power your assistants</p>
-        </div>
 
-        <div class="info-box">
-          <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
-          or connect cloud providers for more powerful models. You can use multiple providers.
-          <span class="storage-note">Keys stored in <code>~/.continuum/config.env</code> <button class="btn-refresh" id="refresh-btn" title="Reload from file">↻</button></span>
-        </div>
+      <div class="info-box">
+        <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
+        or connect cloud providers for more powerful models. You can use multiple providers.
+        <span class="storage-note">Keys stored in <code>~/.continuum/config.env</code> <button class="btn-refresh" id="refresh-btn" title="Reload from file">↻</button></span>
+      </div>
 
-        <div class="settings-section local-highlight">
-          <h2 class="section-title">Local AI (Free)</h2>
-          <p class="section-intro">
-            Runs on your machine. No API key required. Private and unlimited.
-            <a href="https://ollama.ai" target="_blank">Download Ollama</a> if not installed.
-          </p>
-          ${localEntriesHtml}
-        </div>
+      <div class="settings-section local-highlight">
+        <h2 class="section-title">Local AI (Free)</h2>
+        <p class="section-intro">
+          Runs on your machine. No API key required. Private and unlimited.
+          <a href="https://ollama.ai" target="_blank">Download Ollama</a> if not installed.
+        </p>
+        ${localEntriesHtml}
+      </div>
 
-        <div class="settings-section">
-          <h2 class="section-title">Cloud Providers (Paid)</h2>
-          <p class="section-intro">
-            Requires API keys from each provider. More powerful models, usage-based pricing.
-          </p>
-          ${cloudEntriesHtml}
-        </div>
+      <div class="settings-section">
+        <h2 class="section-title">Cloud Providers (Paid)</h2>
+        <p class="section-intro">
+          Requires API keys from each provider. More powerful models, usage-based pricing.
+        </p>
+        ${cloudEntriesHtml}
+      </div>
 
-        <div class="save-section">
-          ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
-          ${this.saveStatus === 'error' ? '<span class="status-message status-error">Fix errors before saving</span>' : ''}
-          <button class="btn btn-secondary" id="reset-btn">Reset</button>
-          <button class="btn btn-primary" id="save-btn">Save Changes</button>
-        </div>
+      <div class="save-section">
+        ${this.saveStatus === 'saved' ? '<span class="status-message status-saved">Settings saved!</span>' : ''}
+        ${this.saveStatus === 'error' ? '<span class="status-message status-error">Fix errors before saving</span>' : ''}
+        <button class="btn btn-secondary" id="reset-btn">Reset</button>
+        <button class="btn btn-primary" id="save-btn">Save Changes</button>
       </div>
     `;
+  }
 
-    this.shadowRoot!.innerHTML = `<style>${SETTINGS_STYLES}</style>${template}`;
-    this.setupEventListeners();
+  private renderAppearanceSection(): string {
+    return `
+      <div class="settings-header">
+        <h1 class="settings-title">Appearance</h1>
+        <p class="settings-subtitle">Customize the look and feel</p>
+      </div>
 
-    // Restore scroll position after re-render
-    const newScrollContainer = this.shadowRoot?.querySelector('.settings-container');
-    if (newScrollContainer && scrollTop > 0) {
-      newScrollContainer.scrollTop = scrollTop;
-    }
+      <div class="settings-section">
+        <h2 class="section-title">Theme</h2>
+        <p class="section-intro">
+          Theme customization coming soon. Currently using the default dark theme.
+        </p>
+      </div>
+    `;
+  }
+
+  private renderAccountSection(): string {
+    return `
+      <div class="settings-header">
+        <h1 class="settings-title">Account</h1>
+        <p class="settings-subtitle">Manage your profile and preferences</p>
+      </div>
+
+      <div class="settings-section">
+        <h2 class="section-title">Profile</h2>
+        <p class="section-intro">
+          Account settings coming soon.
+        </p>
+      </div>
+    `;
+  }
+
+  private renderAboutSection(): string {
+    return `
+      <div class="settings-header">
+        <h1 class="settings-title">About</h1>
+        <p class="settings-subtitle">Continuum JTAG</p>
+      </div>
+
+      <div class="settings-section">
+        <h2 class="section-title">Version</h2>
+        <p class="section-intro">
+          Version information and credits coming soon.
+        </p>
+      </div>
+    `;
+  }
+
+  private setupNavListeners(): void {
+    this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        const target = e.currentTarget as HTMLElement;
+        const section = target.dataset.section as SettingsSection;
+        if (section && section !== this.currentSection) {
+          this.currentSection = section;
+          this.renderWidget();
+          this.emitPositronContext();  // Notify AIs of section change
+        }
+      });
+    });
   }
 
   private setupEventListeners(): void {

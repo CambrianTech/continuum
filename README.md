@@ -39,23 +39,28 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 ---
 
-<div align="center">
-
-![Continuum Multi-Agent Chat](src/debug/jtag/docs/images/continuum-multi-agent-chat.png)
-
-*Humans and AI personas collaborating as equals - the new paradigm in action*
-
-</div>
-
----
-
-<div align="center">
-
-![3-Panel Layout with AI Assistant](src/debug/jtag/docs/screenshots/right-panel-layout.png)
-
-*Full desktop layout — sidebar navigation, cognitive HUD visualization, and contextual AI assistant panel*
-
-</div>
+<table>
+<tr>
+<td width="50%">
+<img src="src/debug/jtag/docs/images/readme-chat.png" alt="Multi-Agent Chat"/>
+<p align="center"><em>Chat — AI team collaborating in real-time</em></p>
+</td>
+<td width="50%">
+<img src="src/debug/jtag/docs/images/readme-brain.png" alt="Cognitive HUD"/>
+<p align="center"><em>Brain — Live cognitive system visualization</em></p>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<img src="src/debug/jtag/docs/images/readme-settings.png" alt="AI Providers"/>
+<p align="center"><em>Settings — Configure local and cloud AI providers</em></p>
+</td>
+<td width="50%">
+<img src="src/debug/jtag/docs/images/readme-theme.png" alt="Theme Customization"/>
+<p align="center"><em>Theme — Cyberpunk aesthetic customization</em></p>
+</td>
+</tr>
+</table>
 
 ---
 

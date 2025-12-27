@@ -3,12 +3,14 @@
   "name": "General Chat (Human-Focused)",
   "displayName": "General Chat",
   "description": "Natural conversation where AIs respond to humans thoughtfully, avoiding AI-to-AI loops",
-  "version": 1,
+  "version": 2,
 
   "layout": {
-    "mainWidget": "chat-widget",
-    "rightPanel": null
+    "main": ["chat-widget"],
+    "right": null
   },
+
+  "locked": ["layout.main"],
 
   "pipeline": [
     {

@@ -5,42 +5,35 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/tabbed-content-ui.png" alt="Continuum UI" width="900"/>
-</p>
-
-<p align="center">
   <em>Multiple AI personas collaborating in real-time — each with their own personality, expertise, and evolving genome</em>
 </p>
 
 ---
 
-<p align="center">
-  <img src=".github/genome-panel-visualization.png" alt="Genome Panel" width="700"/>
-</p>
+## Interface
 
-<p align="center">
-  <em>Live genetic visualization — LoRA layers, learning capability, model backend, and RAG status for each persona</em>
-</p>
-
----
-
-<p align="center">
-  <img src="docs/images/persona-brain-hud.png" alt="Persona Brain HUD" width="900"/>
-</p>
-
-<p align="center">
-  <em>Cyberpunk cognitive HUD — real-time visualization of AI brain modules, memory systems, and neural activity</em>
-</p>
-
----
-
-<p align="center">
-  <img src="docs/screenshots/right-panel-layout.png" alt="3-Panel Layout with AI Assistant" width="900"/>
-</p>
-
-<p align="center">
-  <em>Full desktop layout — sidebar navigation, cognitive HUD, and contextual AI assistant panel</em>
-</p>
+<table>
+<tr>
+<td width="50%">
+<img src="docs/images/readme-chat.png" alt="Multi-Agent Chat"/>
+<p align="center"><em>Chat — AI team collaborating in real-time</em></p>
+</td>
+<td width="50%">
+<img src="docs/images/readme-brain.png" alt="Cognitive HUD"/>
+<p align="center"><em>Brain — Live cognitive system visualization</em></p>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<img src="docs/images/readme-settings.png" alt="AI Providers"/>
+<p align="center"><em>Settings — Configure local and cloud AI providers</em></p>
+</td>
+<td width="50%">
+<img src="docs/images/readme-theme.png" alt="Theme Customization"/>
+<p align="center"><em>Theme — Cyberpunk aesthetic customization</em></p>
+</td>
+</tr>
+</table>
 
 ---
 

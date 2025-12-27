@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-26T19:25:04.100Z",
+  "generated": "2025-12-27T23:05:45.294Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3284,7 +3284,7 @@
         },
         "title": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "title parameter"
         },
         "subtitle": {
@@ -3466,6 +3466,191 @@
           "type": "boolean",
           "required": true,
           "description": "present parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/activity/update",
+      "description": "Activity Update Command - Update activity state, phase, or config",
+      "params": {
+        "activityId": {
+          "type": "string",
+          "required": true,
+          "description": "activityId parameter"
+        },
+        "displayName": {
+          "type": "string",
+          "required": false,
+          "description": "displayName parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "phase": {
+          "type": "string",
+          "required": false,
+          "description": "phase parameter"
+        },
+        "progress": {
+          "type": "number",
+          "required": false,
+          "description": "progress parameter"
+        },
+        "variables": {
+          "type": "object",
+          "required": false,
+          "description": "variables parameter"
+        },
+        "settings": {
+          "type": "object",
+          "required": false,
+          "description": "settings parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/activity/list",
+      "description": "Activity List Command - Query activities with filters",
+      "params": {
+        "recipeId": {
+          "type": "string",
+          "required": false,
+          "description": "recipeId parameter"
+        },
+        "status": {
+          "type": "array",
+          "required": false,
+          "description": "status parameter"
+        },
+        "ownerId": {
+          "type": "string",
+          "required": false,
+          "description": "ownerId parameter"
+        },
+        "participantId": {
+          "type": "string",
+          "required": false,
+          "description": "participantId parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "orderBy": {
+          "type": "string",
+          "required": false,
+          "description": "orderBy parameter"
+        },
+        "orderDirection": {
+          "type": "string",
+          "required": false,
+          "description": "orderDirection parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/activity/join",
+      "description": "Activity Join Command - Add a participant to an activity",
+      "params": {
+        "activityId": {
+          "type": "string",
+          "required": true,
+          "description": "activityId parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
+        },
+        "role": {
+          "type": "string",
+          "required": false,
+          "description": "role parameter"
+        },
+        "roleConfig": {
+          "type": "object",
+          "required": false,
+          "description": "roleConfig parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/activity/get",
+      "description": "Activity Get Command - Retrieve an activity by ID or uniqueId",
+      "params": {
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "id parameter"
+        },
+        "uniqueId": {
+          "type": "string",
+          "required": false,
+          "description": "uniqueId parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/activity/create",
+      "description": "Activity Create Command - Create a new activity from a recipe\n *\n * Activities are runtime instances of recipes with:\n * - Participants (humans + AIs with roles)\n * - Mutable state (phase, progress, variables)\n * - Configuration (can override recipe defaults)",
+      "params": {
+        "recipeId": {
+          "type": "string",
+          "required": true,
+          "description": "recipeId parameter"
+        },
+        "displayName": {
+          "type": "string",
+          "required": true,
+          "description": "displayName parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "ownerId": {
+          "type": "string",
+          "required": false,
+          "description": "ownerId parameter"
+        },
+        "uniqueId": {
+          "type": "string",
+          "required": false,
+          "description": "uniqueId parameter"
+        },
+        "participants": {
+          "type": "array",
+          "required": false,
+          "description": "participants parameter"
+        },
+        "role": {
+          "type": "string",
+          "required": true,
+          "description": "role parameter"
+        },
+        "roleConfig": {
+          "type": "object",
+          "required": false,
+          "description": "roleConfig parameter"
         }
       }
     },

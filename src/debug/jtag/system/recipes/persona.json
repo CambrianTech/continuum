@@ -1,0 +1,71 @@
+{
+  "uniqueId": "persona",
+  "name": "Persona Brain View",
+  "displayName": "Persona",
+  "description": "View and interact with AI persona cognitive state, memory, and activity",
+  "version": 1,
+
+  "inputs": {
+    "personaId": {
+      "description": "The persona to view (uniqueId or UUID)",
+      "entity": "users"
+    }
+  },
+
+  "layout": {
+    "main": ["persona-brain-widget"],
+    "right": {
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 20,
+        "includeParticipants": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 20,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": true
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help users understand the persona's cognitive state",
+      "Explain memory patterns and learning progress",
+      "Provide insights into persona behavior and decisions",
+      "Suggest ways to interact with or train the persona"
+    ],
+    "decisionCriteria": [
+      "What aspect of the persona is the user exploring?",
+      "Are there anomalies or interesting patterns to highlight?",
+      "Would historical context be helpful?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["persona", "ai", "cognitive", "memory"]
+}

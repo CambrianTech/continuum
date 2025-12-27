@@ -1,0 +1,64 @@
+{
+  "uniqueId": "diagnostics",
+  "name": "System Diagnostics",
+  "displayName": "Diagnostics",
+  "description": "System health, performance metrics, and persona logs overview",
+  "version": 1,
+
+  "layout": {
+    "main": ["diagnostics-widget"],
+    "right": {
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help interpret system metrics and logs",
+      "Identify potential issues or anomalies",
+      "Suggest troubleshooting steps",
+      "Explain technical concepts in accessible terms"
+    ],
+    "decisionCriteria": [
+      "What system aspect is the user investigating?",
+      "Are there warning signs in the metrics?",
+      "Would historical comparison be useful?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["diagnostics", "system", "logs", "monitoring"]
+}

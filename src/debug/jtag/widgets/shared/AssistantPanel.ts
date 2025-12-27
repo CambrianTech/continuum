@@ -10,6 +10,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { getDataEventName } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { PositronWidgetState, type PositronicContext } from './services/state/PositronWidgetState';
 
 export interface AssistantPanelConfig {
   /** Room ID for this assistant's chat backend */
@@ -45,8 +46,12 @@ export class AssistantPanel {
   private isLoading = false;
   private isCollapsed = false;
   private unsubscribe?: () => void;
+  private unsubscribePositron?: () => void;
 
   private actualRoomId: string | null = null;
+
+  // Positronic awareness - what widget the user is viewing
+  private currentContext: PositronicContext | null = null;
 
   constructor(container: HTMLElement, config: AssistantPanelConfig) {
     this.container = container;
@@ -63,6 +68,36 @@ export class AssistantPanel {
     this.render();
     this.setupEventListeners();
     this.initializeRoom();
+    this.subscribeToPositronState();
+  }
+
+  /**
+   * Subscribe to Positron widget state for context awareness
+   * AIs will know what the user is viewing and can provide contextual help
+   */
+  private subscribeToPositronState(): void {
+    this.unsubscribePositron = PositronWidgetState.subscribe((context) => {
+      this.currentContext = context;
+      this.updateContextIndicator();
+      console.log('🧠 AssistantPanel: Context updated', {
+        widgetType: context.widget.widgetType,
+        section: context.widget.section
+      });
+    });
+  }
+
+  /**
+   * Update the context indicator in the header
+   */
+  private updateContextIndicator(): void {
+    const indicator = this.container.querySelector('.context-indicator');
+    if (indicator && this.currentContext) {
+      const { widget } = this.currentContext;
+      indicator.textContent = widget.section
+        ? `📍 ${widget.title}`
+        : `📍 ${widget.widgetType}`;
+      indicator.setAttribute('title', PositronWidgetState.toRAGContext());
+    }
   }
 
   /** Toggle panel collapsed state */
@@ -204,6 +239,28 @@ export class AssistantPanel {
         .toggle-btn:hover {
           background: rgba(0, 212, 255, 0.3);
           border-color: #00d4ff;
+        }
+
+        .context-bar {
+          padding: 6px 12px;
+          background: rgba(138, 43, 226, 0.15);
+          border-bottom: 1px solid rgba(138, 43, 226, 0.3);
+          flex-shrink: 0;
+        }
+
+        .context-indicator {
+          font-size: 11px;
+          color: rgba(200, 150, 255, 0.9);
+          cursor: help;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          display: block;
+        }
+
+        .assistant-panel.collapsed .context-bar {
+          opacity: 0;
+          pointer-events: none;
         }
 
         .assistant-icon {
@@ -393,8 +450,11 @@ export class AssistantPanel {
           <button class="toggle-btn" id="toggle-panel" title="Toggle panel">
             ${this.isCollapsed ? '«' : '»'}
           </button>
-          <span class="assistant-icon">🤖</span>
+          <span class="assistant-icon">🧠</span>
           <span class="assistant-title-text">${this.config.title}</span>
+        </div>
+        <div class="context-bar">
+          <span class="context-indicator" title="AI sees your current context">📍 Initializing...</span>
         </div>
         <div class="assistant-content">
           <div class="assistant-messages" id="assistant-messages">
@@ -492,10 +552,23 @@ export class AssistantPanel {
     this.setLoading(true);
 
     try {
-      // Send to room - use any type for lightweight widget context
+      // Build message with Positron context for AI awareness
+      // Context tells AIs what widget/section the user is viewing
+      const contextPrefix = this.currentContext
+        ? `[Context: User is viewing ${this.currentContext.widget.title || this.currentContext.widget.widgetType}${this.currentContext.widget.section ? ` > ${this.currentContext.widget.section}` : ''}]\n\n`
+        : '';
+
+      // Send to room with context prefix (AIs will see what user is viewing)
       await (Commands as any).execute('collaboration/chat/send', {
         room: this.config.roomName,
-        message: message
+        message: contextPrefix + message,
+        metadata: {
+          positronContext: this.currentContext ? {
+            widgetType: this.currentContext.widget.widgetType,
+            section: this.currentContext.widget.section,
+            title: this.currentContext.widget.title
+          } : undefined
+        }
       });
     } catch (err) {
       console.error('AssistantPanel: Failed to send message:', err);
@@ -578,5 +651,6 @@ export class AssistantPanel {
   /** Clean up subscriptions */
   destroy(): void {
     this.unsubscribe?.();
+    this.unsubscribePositron?.();
   }
 }

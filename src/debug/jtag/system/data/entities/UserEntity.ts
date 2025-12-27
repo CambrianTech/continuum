@@ -11,7 +11,7 @@ import type { MediaType } from './ChatMessageEntity';
 
 // User-specific types for three-tier citizen architecture
 export type UserType = 'human' | 'agent' | 'persona' | 'system';
-export type UserStatus = 'online' | 'offline' | 'away' | 'busy';
+export type UserStatus = 'online' | 'offline' | 'away' | 'busy' | 'frozen' | 'deleted';
 
 export interface UserCapabilities {
   canSendMessages: boolean;
@@ -242,7 +242,7 @@ export class UserEntity extends BaseEntity {
       return { success: false, error: `User type must be one of: ${validTypes.join(', ')}` };
     }
 
-    const validStatuses: UserStatus[] = ['online', 'offline', 'away', 'busy'];
+    const validStatuses: UserStatus[] = ['online', 'offline', 'away', 'busy', 'frozen', 'deleted'];
     if (!validStatuses.includes(this.status)) {
       return { success: false, error: `User status must be one of: ${validStatuses.join(', ')}` };
     }

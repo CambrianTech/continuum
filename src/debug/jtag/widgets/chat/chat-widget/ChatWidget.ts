@@ -107,6 +107,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private async switchToRoom(roomIdOrName: string): Promise<void> {
     // Try to find room by uniqueId first, then by ID
     try {
+      let roomId: UUID | undefined;
+      let roomName: string = roomIdOrName;
+
       const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: 'rooms',
         filter: { uniqueId: roomIdOrName },
@@ -115,12 +118,44 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       if (result.success && result.items?.[0]) {
         const room = result.items[0];
-        await this.loadRoomData(room.id as UUID);
+        roomId = room.id as UUID;
+        roomName = room.displayName || room.name || roomIdOrName;
+      } else {
+        // Try as UUID directly
+        roomId = roomIdOrName as UUID;
+      }
+
+      // Skip if already on this room
+      if (roomId === this.currentRoomId) {
+        console.log(`📨 ChatWidget: Already on room ${roomName}, skipping switch`);
         return;
       }
 
-      // Try as UUID directly
-      await this.loadRoomData(roomIdOrName as UUID);
+      console.log(`📨 ChatWidget: Switching to room "${roomName}" (${roomId})`);
+
+      // Update state
+      this.currentRoomId = roomId;
+      this.currentRoomName = roomName;
+
+      // Reset counters for new room
+      this.totalMessageCount = 0;
+      this.loadedMessageCount = 0;
+
+      // Clear AI status indicators for previous room
+      this.aiStatusIndicator.clearAll();
+
+      // Update header immediately
+      this.updateHeader();
+
+      // Load room data and refresh messages
+      await Promise.all([
+        this.loadRoomData(roomId),
+        this.scroller?.refresh()
+      ]);
+
+      // Update header with correct count
+      this.updateHeader();
+
     } catch (error) {
       console.error('ChatWidget: Failed to switch room:', error);
     }
@@ -316,9 +351,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     console.log(`📨 ChatWidget: Enabled ChatMessage event subscriptions for real-time updates`);
 
-    // Load current room from UserState (not just default to General)
-    // This handles the case where user clicks a room tab and a new ChatWidget is created
-    await this.loadCurrentRoomFromUserState();
+    // Check if room was specified via attribute (e.g., <chat-widget room="help">)
+    // This takes precedence over UserState - used by RightPanelWidget to show specific rooms
+    const roomAttr = this.getAttribute('room');
+    if (roomAttr) {
+      console.log(`📨 ChatWidget: Room attribute set to "${roomAttr}", using it instead of UserState`);
+      await this.switchToRoom(roomAttr);
+    } else {
+      // Load current room from UserState (not just default to General)
+      // This handles the case where user clicks a room tab and a new ChatWidget is created
+      await this.loadCurrentRoomFromUserState();
+    }
 
     // Load initial room data
     if (this.currentRoomId) {
@@ -326,8 +369,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.updateHeader();
     }
 
-    // Listen for room selection events
+    // Listen for room selection events (only if NOT pinned to a specific room via attribute)
+    // RightPanelWidget uses room="help" to pin the chat, which should ignore ROOM_SELECTED
     Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (eventData: { roomId: string; roomName: string }) => {
+      // Skip if this widget has a fixed room via attribute (e.g., right panel assistant)
+      if (this.getAttribute('room')) {
+        console.log(`📨 ChatWidget: Ignoring ROOM_SELECTED - pinned to room "${this.getAttribute('room')}"`);
+        return;
+      }
+
       console.log(`🏠 ChatWidget: Room selected "${eventData.roomName}" (${eventData.roomId})`);
       this.currentRoomId = eventData.roomId as UUID;
       this.currentRoomName = eventData.roomName;
@@ -355,6 +405,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Listen for content:opened events (from content/open command or tab switching)
     // This handles when user opens a chat room via command or clicks a tab
     Events.subscribe('content:opened', async (eventData: { contentType: string; entityId: string; title: string }) => {
+      // Skip if this widget has a fixed room via attribute (e.g., right panel assistant)
+      if (this.getAttribute('room')) {
+        return;  // Silent skip - already logged at ROOM_SELECTED
+      }
+
       // Only handle chat content types
       if (eventData.contentType !== 'chat' || !eventData.entityId) {
         console.log(`📨 ChatWidget: Ignoring content:opened for ${eventData.contentType}`);
@@ -400,6 +455,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       entityId?: string;
       title?: string;
     }) => {
+      // Skip if this widget has a fixed room via attribute (e.g., right panel assistant)
+      if (this.getAttribute('room')) {
+        return;  // Silent skip - already logged at ROOM_SELECTED
+      }
+
       // Only handle chat content types
       if (eventData.contentType !== 'chat' || !eventData.entityId) {
         console.log(`📨 ChatWidget: Ignoring content:switched - not a chat (type=${eventData.contentType})`);

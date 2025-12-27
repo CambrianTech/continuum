@@ -1,141 +1,186 @@
 /**
- * SidebarPanel - Modular Sidebar Widget
- * 
- * Left or right sidebar panel containing status view, emoter, and dynamic content.
- * Follows the VSCode/Discord/Slack sidebar pattern.
+ * SidebarWidget - Left sidebar panel with dynamic content
+ *
+ * Shows different widgets based on content type:
+ * - Default (chat): Emoter, histogram, metrics, room list, user list
+ * - Settings: Settings navigation
+ * - Help: Help topics navigation
+ *
+ * Uses LayoutManager to determine which widgets to show.
+ * Extends BaseSidePanelWidget for consistent panel behavior.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import { BaseSidePanelWidget, type SidePanelSide } from '../shared/BaseSidePanelWidget';
+import { Events } from '../../system/core/shared/Events';
+import { LAYOUT_EVENTS, type LayoutChangedPayload, type LayoutWidget, DEFAULT_LAYOUTS, getWidgetsForPosition, getLayoutForContentType } from '../../system/layout';
 
-export class SidebarWidget extends BaseWidget {
-  
+export class SidebarWidget extends BaseSidePanelWidget {
+  private currentContentType: string = 'chat';
+  private leftWidgets: LayoutWidget[] = [];
+
   constructor() {
     super({
-      widgetName: 'SidebarWidget',
-      template: 'sidebar-panel.html',
-      styles: 'sidebar-panel.css',
-      enableAI: false,
-      enableDatabase: false, 
-      enableRouterEvents: true,
-      enableScreenshots: false
+      widgetName: 'SidebarWidget'
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎯 SidebarPanel: Initializing sidebar panel...');
-    
-    // Initialize status view
-    await this.updateStatusView();
-    
-    // Initialize dynamic list based on current page/context
-    await this.updateDynamicList();
-    
-    console.log('✅ SidebarPanel: Sidebar panel initialized');
+  // === Panel Configuration ===
+
+  protected get panelTitle(): string {
+    return '';  // Not used - no header
   }
 
-  protected async renderWidget(): Promise<void> {
-    // Use BaseWidget's template and styles system
-    const styles = this.templateCSS ?? '/* No styles loaded */';
-    const template = this.templateHTML ?? '<div>No template loaded</div>';
+  protected get panelIcon(): string {
+    return '';  // Not used - no header
+  }
 
-    // Ensure template is a string
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+  protected get panelSide(): SidePanelSide {
+    return 'left';
+  }
 
-    // Replace dynamic content
-    const dynamicContent = templateString
-      .replace('<!-- STATUS_CONTENT -->', await this.getStatusContent())
-      .replace('<!-- DYNAMIC_LIST_CONTENT -->', await this.getDynamicListContent());
+  protected get showHeader(): boolean {
+    return false;  // Just floating « button
+  }
 
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${dynamicContent}
-    `;
+  // === Lifecycle ===
 
-    // Wire up collapse button
-    this.setupCollapseButton();
+  protected async onPanelInitialize(): Promise<void> {
+    console.log('🎯 SidebarWidget: Initializing...');
 
-    console.log('✅ SidebarPanel: Sidebar panel rendered');
+    // Detect initial content type from URL
+    const initialContentType = this.detectContentTypeFromUrl();
+    console.log(`📐 SidebarWidget: Initial content type from URL: ${initialContentType}`);
+    this.updateLayout(initialContentType);
+
+    // Listen for layout changes when content type switches
+    Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
+      console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
+      this.updateLayout(payload.contentType);
+    });
+
+    // Also listen for content:switched events as backup
+    Events.subscribe('content:switched', (data: { contentType?: string }) => {
+      if (data.contentType && data.contentType !== this.currentContentType) {
+        console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
+        this.updateLayout(data.contentType);
+      }
+    });
   }
 
   /**
-   * Wire up collapse button to toggle sidebar via PanelResizer
+   * Detect content type from current URL pathname
+   * Maps paths like /settings, /theme, /help to their content types
+   * Uses DEFAULT_LAYOUTS keys as source of truth for valid content types
    */
-  private setupCollapseButton(): void {
-    const collapseBtn = this.shadowRoot?.querySelector('.collapse-btn');
-    if (collapseBtn) {
-      collapseBtn.addEventListener('click', () => {
-        this.toggleCollapse();
-      });
+  private detectContentTypeFromUrl(): string {
+    const pathname = window.location.pathname;
+
+    // Get first segment from path (e.g., /settings -> 'settings')
+    const firstSegment = pathname.split('/').filter(Boolean)[0] || '';
+
+    // Check if this path matches a known layout content type
+    const knownContentTypes = Object.keys(DEFAULT_LAYOUTS);
+    if (knownContentTypes.includes(firstSegment)) {
+      return firstSegment;
     }
+
+    // Default to chat for root or unknown paths
+    return 'chat';
   }
 
-  /**
-   * Toggle collapse via the resizer (single source of truth)
-   */
-  private toggleCollapse(): void {
-    const continuumWidget = document.querySelector('continuum-widget') as any;
-    if (continuumWidget?.shadowRoot) {
-      const resizer = continuumWidget.shadowRoot.querySelector('panel-resizer[side="left"]') as any;
-      if (resizer?.toggle) {
-        resizer.toggle();
+  private updateLayout(contentType: string): void {
+    this.currentContentType = contentType;
+    const layout = getLayoutForContentType(contentType);
+    this.leftWidgets = getWidgetsForPosition(layout, 'left');
+
+    console.log(`📐 SidebarWidget: Got ${this.leftWidgets.length} left widgets for ${contentType}:`,
+      this.leftWidgets.map(w => w.widget));
+
+    // Re-render with new widgets - call the inherited rendering method
+    this.renderPanelContent().then(html => {
+      const contentContainer = this.shadowRoot?.querySelector('.panel-content');
+      if (contentContainer) {
+        contentContainer.innerHTML = html;
+      }
+    });
+  }
+
+  protected async onPanelCleanup(): Promise<void> {
+    console.log('🧹 SidebarWidget: Cleanup complete');
+  }
+
+  // === Content Rendering ===
+
+  protected async renderPanelContent(): Promise<string> {
+    // Always use layout system - GLOBAL_LAYOUT provides persistent widgets,
+    // content-specific layouts are merged on top by getLayoutForContentType()
+    const widgetsHtml = this.leftWidgets.map(w => this.renderLayoutWidget(w)).join('\n');
+    return `<div class="sidebar-widgets">${widgetsHtml}</div>`;
+  }
+
+  private renderLayoutWidget(layoutWidget: LayoutWidget): string {
+    const tagName = layoutWidget.widget;
+
+    // Build attributes from config
+    let attrs = '';
+    if (layoutWidget.config) {
+      for (const [key, value] of Object.entries(layoutWidget.config)) {
+        if (typeof value === 'string') {
+          attrs += ` ${key}="${value}"`;
+        } else if (typeof value === 'boolean' && value) {
+          attrs += ` ${key}`;
+        } else if (typeof value === 'number') {
+          attrs += ` ${key}="${value}"`;
+        }
       }
     }
+
+    // Add wrapper with appropriate class for persistent vs dynamic widgets
+    const wrapperClass = layoutWidget.persistent ? 'widget-slot widget-slot--persistent' : 'widget-slot widget-slot--dynamic';
+    return `<div class="${wrapperClass}"><${tagName}${attrs}></${tagName}></div>`;
   }
 
-  protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 SidebarPanel: Cleanup complete');
-  }
-
-  /**
-   * Update status view display
-   */
-  private async updateStatusView(): Promise<void> {
-    // Update connection status, user status, etc.
-    console.log('🔗 SidebarPanel: Status view updated');
-  }
-
-  /**
-   * Update dynamic list based on current page context
-   */
-  private async updateDynamicList(): Promise<void> {
-    // Load appropriate widgets for current page/context
-    console.log('📋 SidebarPanel: Dynamic list updated');
-  }
-
-  /**
-   * Get status content HTML
-   */
-  private async getStatusContent(): Promise<string> {
+  protected getAdditionalStyles(): string {
     return `
-      <div class="connection-status connected">CONNECTED</div>
-      <div class="user-status">Online</div>
+      .sidebar-widgets {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md, 12px);
+        padding: var(--spacing-md, 12px);
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+
+      /* Persistent widgets - natural height, no flex grow */
+      .widget-slot--persistent {
+        flex-shrink: 0;
+      }
+
+      /* Dynamic widgets - flex to fill remaining space */
+      .widget-slot--dynamic {
+        flex: 1;
+        min-height: 100px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* Child widgets fill their container */
+      .widget-slot--dynamic > * {
+        flex: 1;
+        min-height: 0;
+      }
     `;
   }
 
-  /**
-   * Get dynamic list content HTML - now loads modular widgets
-   */
-  private async getDynamicListContent(): Promise<string> {
-    // Dynamic sidebar widgets based on current page/context
-    // For chat page: load room list and user list widgets
-    return `
-      <div class="sidebar-widget-container">
-        <room-list-widget></room-list-widget>
-      </div>
-      <div class="sidebar-widget-container">  
-        <user-list-widget></user-list-widget>
-      </div>
-    `;
-  }
-
-  /**
-   * Get available rooms/channels for this context
-   */
-  async getContextualItems(): Promise<string[]> {
-    // Will be dynamic based on page - chat, code editor, etc.
-    return ['general', 'academy', 'community'];
+  protected async onPanelRendered(): Promise<void> {
+    console.log('✅ SidebarWidget: Rendered');
   }
 }
 
-// Register the custom element
 // Registration handled by centralized BROWSER_WIDGETS registry

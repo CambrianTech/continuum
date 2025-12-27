@@ -22,11 +22,14 @@ export class ContentOpenBrowserCommand extends ContentOpenCommand {
 
     // If successful, emit content:opened locally for browser widgets to respond
     if (result.success) {
+      // Derive title if not provided (same logic as server)
+      const title = params.title || this.deriveTitle(params.contentType);
+
       const event: ContentOpenedEvent & { setAsCurrent?: boolean } = {
         contentItemId: result.contentItemId,
         contentType: params.contentType,
         entityId: params.entityId,
-        title: params.title,
+        title,
         userId: params.userId,
         currentItemId: result.currentItemId,
         setAsCurrent: params.setAsCurrent
@@ -37,5 +40,16 @@ export class ContentOpenBrowserCommand extends ContentOpenCommand {
     }
 
     return result;
+  }
+
+  /**
+   * Derive a display title from contentType for singleton content
+   * e.g., 'settings' -> 'Settings', 'user-profile' -> 'User Profile'
+   */
+  private deriveTitle(contentType: string): string {
+    return contentType
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
   }
 }

@@ -3,16 +3,17 @@
   "name": "Log Analyzer",
   "displayName": "Logs",
   "description": "View and analyze system logs with AI-assisted debugging",
-  "version": 1,
+  "version": 2,
 
   "layout": {
-    "mainWidget": "logs-widget",
-    "rightPanel": {
-      "widget": "chat-widget",
-      "room": "help",
-      "compact": true
-    }
+    "widgets": [
+      { "widget": "logs-nav-widget", "position": "left", "order": 0, "persistent": true },
+      { "widget": "log-viewer-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "help", "compact": true } }
+    ]
   },
+
+  "locked": ["layout.main"],
 
   "pipeline": [
     {

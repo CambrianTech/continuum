@@ -15,8 +15,8 @@ export class RecipeLoadBrowserCommand extends RecipeLoadCommand {
   }
 
   async execute(params: RecipeLoadParams): Promise<RecipeLoadResult> {
-    // Browser cannot access file system - route to server
-    const { Commands } = await import('@system/core/shared/Commands');
-    return Commands.execute<RecipeLoadParams, RecipeLoadResult>('recipe/load', params);
+    // Browser cannot access file system - delegate to server via remoteExecute
+    console.log('📚 BROWSER: Recipe load → delegating to server');
+    return this.remoteExecute(params);
   }
 }

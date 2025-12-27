@@ -6,16 +6,16 @@
 :root {
   /* === LAYOUT === */
   /* Left sidebar */
-  --sidebar-width: 400px;
-  --sidebar-min-width: 300px;
-  --sidebar-max-width: 600px;
+  --sidebar-width: 340px;
+  --sidebar-min-width: 250px;
+  --sidebar-max-width: 450px;
   --sidebar-collapse-threshold: 50px;
   --sidebar-collapsed-width: 6px;
 
   /* Right panel */
-  --right-panel-width: 400px;
-  --right-panel-min-width: 300px;
-  --right-panel-max-width: 600px;
+  --right-panel-width: 340px;
+  --right-panel-min-width: 250px;
+  --right-panel-max-width: 450px;
   --right-panel-collapse-threshold: 50px;
   --right-panel-collapsed-width: 6px;
   
