@@ -174,6 +174,16 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
     requiresEntity: true,  // Needs log file path
     rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
+
+  // User profile - universal view for all user types
+  // Edit, freeze, delete actions + links to cognitive views for AI
+  profile: {
+    widget: 'user-profile-widget',
+    displayName: 'Profile',
+    pathPrefix: '/profile',
+    requiresEntity: true,  // Needs userId (uniqueId or UUID)
+    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
+  },
 };
 
 /**

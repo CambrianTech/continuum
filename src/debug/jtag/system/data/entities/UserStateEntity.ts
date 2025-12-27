@@ -9,7 +9,7 @@
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // Content state types for dynamic content management
-export type ContentType = 'chat' | 'document' | 'user-profile' | 'system-config' | 'widget-debug' | 'data-explorer' | 'browser' | 'settings' | 'help' | 'theme' | 'persona' | 'diagnostics' | 'diagnostics-log';
+export type ContentType = 'chat' | 'document' | 'user-profile' | 'profile' | 'system-config' | 'widget-debug' | 'data-explorer' | 'browser' | 'settings' | 'help' | 'theme' | 'persona' | 'diagnostics' | 'diagnostics-log';
 export type ContentPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface ContentItem {

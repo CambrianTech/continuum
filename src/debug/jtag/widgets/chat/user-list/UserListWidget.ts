@@ -574,7 +574,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   }
 
   /**
-   * Select a user - for AI personas/agents, opens their brain view
+   * Select a user - opens their profile view
    */
   private async selectUser(userId: string): Promise<void> {
     // Find the user entity
@@ -588,12 +588,37 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
     this.selectedUserId = userId;
     this.scroller?.refresh();
 
-    // For AI personas/agents, open their brain widget
-    if (userEntity.type === 'persona' || userEntity.type === 'agent') {
-      await this.openPersonaBrain(userEntity);
-    } else {
-      console.log(`✅ UserListWidget: Selected human user ${userEntity.displayName}`);
-      // Future: Could open user profile, DM, etc.
+    // Open profile for all users
+    await this.openUserProfile(userEntity);
+  }
+
+  /**
+   * Open user profile view - works for ALL user types (humans, personas, agents)
+   */
+  private async openUserProfile(userEntity: UserEntity): Promise<void> {
+    const entityId = userEntity.uniqueId || userEntity.id;
+    const title = userEntity.displayName || 'User Profile';
+
+    console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
+
+    // Emit content:opened for MainWidget tab update (optimistic UI)
+    Events.emit('content:opened', {
+      contentType: 'profile',
+      entityId,
+      title,
+      setAsCurrent: true
+    });
+
+    // Persist to server in background
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+        userId,
+        contentType: 'profile',
+        entityId,
+        title,
+        setAsCurrent: true
+      }).catch(err => console.error('Failed to persist profile open:', err));
     }
   }
 

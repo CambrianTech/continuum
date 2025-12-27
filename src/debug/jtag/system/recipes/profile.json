@@ -1,0 +1,71 @@
+{
+  "uniqueId": "profile",
+  "name": "User Profile",
+  "displayName": "Profile",
+  "description": "View and manage user profile, settings, and status",
+  "version": 1,
+
+  "inputs": {
+    "userId": {
+      "description": "The user to view (uniqueId or UUID)",
+      "entity": "users"
+    }
+  },
+
+  "layout": {
+    "main": ["user-profile-widget"],
+    "right": {
+      "widgets": ["chat-widget"],
+      "config": { "room": "help", "compact": true }
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "administrative",
+    "responseRules": [
+      "Help users manage their profile and settings",
+      "Explain what freezing vs deleting means",
+      "Guide users through account management",
+      "Warn about permanent actions like deletion"
+    ],
+    "decisionCriteria": [
+      "What action is the user trying to perform?",
+      "Is this a reversible or permanent action?",
+      "Does the user need confirmation?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["profile", "user", "management", "settings"]
+}
