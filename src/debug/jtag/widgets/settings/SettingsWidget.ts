@@ -11,6 +11,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { styles as SETTINGS_STYLES } from './styles/settings.styles';
 import { ProviderEntry, type ConfigEntry } from './components/ProviderEntry';
 import { ProviderStatusTester } from './components/ProviderStatusTester';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 type SettingsSection = 'providers' | 'appearance' | 'account' | 'about';
 
@@ -40,6 +41,34 @@ export class SettingsWidget extends BaseWidget {
   protected async onWidgetInitialize(): Promise<void> {
     console.log('Settings: Initializing settings widget...');
     await this.loadConfig();
+    this.emitPositronContext();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   * Called on init and section changes
+   */
+  private emitPositronContext(): void {
+    const sectionTitles: Record<SettingsSection, string> = {
+      'providers': 'AI Providers',
+      'appearance': 'Appearance',
+      'account': 'Account',
+      'about': 'About'
+    };
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'settings',
+        section: this.currentSection,
+        title: `Settings - ${sectionTitles[this.currentSection]}`,
+        metadata: {
+          configuredProviders: this.configEntries.filter(e => e.isConfigured).length,
+          totalProviders: this.configEntries.length,
+          hasPendingChanges: this.pendingChanges.size > 0
+        }
+      },
+      { action: 'configuring', target: sectionTitles[this.currentSection] }
+    );
   }
 
   private async loadConfig(): Promise<void> {
@@ -266,6 +295,7 @@ export class SettingsWidget extends BaseWidget {
         if (section && section !== this.currentSection) {
           this.currentSection = section;
           this.renderWidget();
+          this.emitPositronContext();  // Notify AIs of section change
         }
       });
     });

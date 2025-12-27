@@ -9,6 +9,7 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { AssistantPanel } from '../shared/AssistantPanel';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface HelpSection {
   id: string;
@@ -35,6 +36,28 @@ export class HelpWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('Help: Initializing help widget...');
+    this.emitPositronContext();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    const sections = this.getSections();
+    const currentSectionData = sections.find(s => s.id === this.activeSection);
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'help',
+        section: this.activeSection,
+        title: `Help - ${currentSectionData?.title || 'Documentation'}`,
+        metadata: {
+          totalSections: sections.length,
+          sectionTitles: sections.map(s => s.title)
+        }
+      },
+      { action: 'viewing', target: currentSectionData?.title || 'help documentation' }
+    );
   }
 
   private getSections(): HelpSection[] {
@@ -370,9 +393,10 @@ export class HelpWidget extends BaseWidget {
     this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
       item.addEventListener('click', (e) => {
         const section = (e.currentTarget as HTMLElement).dataset.section;
-        if (section) {
+        if (section && section !== this.activeSection) {
           this.activeSection = section;
           this.renderWidget();
+          this.emitPositronContext();  // Notify AIs of section change
         }
       });
     });
