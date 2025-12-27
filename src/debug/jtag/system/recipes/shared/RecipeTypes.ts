@@ -85,6 +85,9 @@ export interface RecipeEntity {
   // AI behavior
   strategy: RecipeStrategy;
 
+  // UI composition - defines what widgets compose the experience
+  layout?: ActivityUILayout;
+
   // Sharing
   isPublic: boolean;
   createdBy: UUID;

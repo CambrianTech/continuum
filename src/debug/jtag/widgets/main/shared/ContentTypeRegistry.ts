@@ -4,13 +4,22 @@
  * This is the "React Router" of the main panel - determines which widget
  * renders based on the current tab's content type.
  *
- * IMPORTANT: Right panel configs here mirror recipe JSON layouts.
- * Recipe JSONs are the source of truth for AI behavior, this registry
- * is the source of truth for browser-side UI composition.
+ * ARCHITECTURE: Recipe JSON files are THE source of truth for layouts.
+ * This registry provides:
+ * 1. Dynamic lookup from RecipeLayoutService (loaded from recipes)
+ * 2. Fallback defaults for content types without recipes
+ *
+ * When adding a new content type:
+ * 1. Create a recipe JSON file in system/recipes/{contentType}.json
+ * 2. Define layout.mainWidget and layout.rightPanel in the recipe
+ * 3. The registry will automatically pick it up
+ * 4. Only add to FALLBACK_REGISTRY if recipe doesn't exist yet
  */
 
+import { getRecipeLayoutService } from '../../../system/recipes/browser/RecipeLayoutService';
+
 /**
- * Right panel configuration - mirrors recipe.layout.rightPanel
+ * Right panel configuration - matches recipe.layout.rightPanel
  */
 export interface RightPanelConfig {
   /** Widget to display (default: 'chat-widget') */
@@ -39,14 +48,12 @@ export interface ContentTypeConfig {
 }
 
 /**
- * Registry of all supported content types
+ * Fallback registry for content types without recipe JSON files
  *
- * To add a new content type:
- * 1. Add entry here with widget tag name
- * 2. Create the widget component
- * 3. Register widget in BROWSER_WIDGETS
+ * PREFER: Create a recipe JSON in system/recipes/{contentType}.json
+ * This fallback is only for content types that haven't been migrated yet.
  */
-export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
+const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
   // Chat rooms - the original content type
   // Chat IS the main content, no right panel needed
   chat: {
@@ -135,9 +142,20 @@ export const CONTENT_TYPE_REGISTRY: Record<string, ContentTypeConfig> = {
 
 /**
  * Get widget tag name for a content type
+ * Checks RecipeLayoutService first, then falls back to static registry
  */
 export function getWidgetForType(contentType: string): string {
-  const config = CONTENT_TYPE_REGISTRY[contentType];
+  // 1. Try recipe-driven layout first
+  const recipeService = getRecipeLayoutService();
+  if (recipeService.isLoaded()) {
+    const recipeWidget = recipeService.getWidget(contentType);
+    if (recipeWidget) {
+      return recipeWidget;
+    }
+  }
+
+  // 2. Fall back to static registry
+  const config = FALLBACK_REGISTRY[contentType];
   if (!config) {
     console.warn(`Unknown content type: ${contentType}, falling back to chat-widget`);
     return 'chat-widget';
@@ -147,9 +165,26 @@ export function getWidgetForType(contentType: string): string {
 
 /**
  * Get content type config
+ * Checks RecipeLayoutService first, then falls back to static registry
  */
 export function getContentTypeConfig(contentType: string): ContentTypeConfig | undefined {
-  return CONTENT_TYPE_REGISTRY[contentType];
+  // 1. Try recipe-driven layout first
+  const recipeService = getRecipeLayoutService();
+  if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
+    const layout = recipeService.getLayout(contentType);
+    if (layout) {
+      return {
+        widget: layout.mainWidget,
+        displayName: recipeService.getDisplayName(contentType) || contentType,
+        pathPrefix: `/${contentType}`,
+        requiresEntity: false,
+        rightPanel: layout.rightPanel
+      };
+    }
+  }
+
+  // 2. Fall back to static registry
+  return FALLBACK_REGISTRY[contentType];
 }
 
 /**
@@ -163,11 +198,25 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
 export function parseContentPath(path: string): { type: string; entityId?: string } {
   const normalized = path.startsWith('/') ? path : `/${path}`;
 
-  for (const [type, config] of Object.entries(CONTENT_TYPE_REGISTRY)) {
+  // Check static registry (has pathPrefix definitions)
+  for (const [type, config] of Object.entries(FALLBACK_REGISTRY)) {
     if (normalized.startsWith(config.pathPrefix)) {
       const remainder = normalized.slice(config.pathPrefix.length);
       const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
       return { type, entityId: entityId || undefined };
+    }
+  }
+
+  // Check recipe content types (use /{uniqueId} as path)
+  const recipeService = getRecipeLayoutService();
+  if (recipeService.isLoaded()) {
+    for (const type of recipeService.getAllContentTypes()) {
+      const pathPrefix = `/${type}`;
+      if (normalized.startsWith(pathPrefix)) {
+        const remainder = normalized.slice(pathPrefix.length);
+        const entityId = remainder.startsWith('/') ? remainder.slice(1) : undefined;
+        return { type, entityId: entityId || undefined };
+      }
     }
   }
 
@@ -179,15 +228,13 @@ export function parseContentPath(path: string): { type: string; entityId?: strin
  * Build URL path from content type and entity
  */
 export function buildContentPath(contentType: string, entityId?: string): string {
-  const config = CONTENT_TYPE_REGISTRY[contentType];
-  if (!config) {
-    return `/chat/${entityId || 'general'}`;
-  }
+  const config = FALLBACK_REGISTRY[contentType];
+  const pathPrefix = config?.pathPrefix || `/${contentType}`;
 
   if (entityId) {
-    return `${config.pathPrefix}/${entityId}`;
+    return `${pathPrefix}/${entityId}`;
   }
-  return config.pathPrefix;
+  return pathPrefix;
 }
 
 /**
@@ -196,7 +243,16 @@ export function buildContentPath(contentType: string, entityId?: string): string
  * Returns config object if right panel should be shown
  */
 export function getRightPanelConfig(contentType: string): RightPanelConfig | null {
-  const config = CONTENT_TYPE_REGISTRY[contentType];
+  // 1. Try recipe-driven layout first
+  const recipeService = getRecipeLayoutService();
+  if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
+    const rightPanel = recipeService.getRightPanel(contentType);
+    if (rightPanel === null) return null;
+    if (rightPanel) return rightPanel;
+  }
+
+  // 2. Fall back to static registry
+  const config = FALLBACK_REGISTRY[contentType];
   if (!config) {
     // Unknown content type - default to showing help panel
     return { widget: 'chat-widget', room: 'help', compact: true };
@@ -210,3 +266,18 @@ export function getRightPanelConfig(contentType: string): RightPanelConfig | nul
   // Return the config or default help panel
   return config.rightPanel || { widget: 'chat-widget', room: 'help', compact: true };
 }
+
+/**
+ * Initialize recipe layouts from server
+ * Call this early in app startup (e.g., MainWidget init)
+ */
+export async function initializeRecipeLayouts(): Promise<void> {
+  const recipeService = getRecipeLayoutService();
+  await recipeService.loadLayouts();
+}
+
+/**
+ * Export the fallback registry for debugging/introspection
+ * (Use the functions above for actual lookups)
+ */
+export const CONTENT_TYPE_REGISTRY = FALLBACK_REGISTRY;

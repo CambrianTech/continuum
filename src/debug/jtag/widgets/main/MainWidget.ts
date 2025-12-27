@@ -17,7 +17,7 @@ import type { ContentOpenParams, ContentOpenResult } from '../../commands/collab
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig } from './shared/ContentTypeRegistry';
+import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
@@ -42,6 +42,10 @@ export class MainWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🎯 MainPanel: Initializing main content panel...');
+
+    // Load recipe layouts early so ContentTypeRegistry can use them
+    // This enables dynamic, recipe-driven content type → widget mapping
+    await initializeRecipeLayouts();
 
     // Theme CSS is loaded by ContinuumWidget (parent) in onWidgetInitialize
     // Don't load again here - it would remove base.css variables

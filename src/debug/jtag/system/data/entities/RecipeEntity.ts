@@ -10,7 +10,8 @@ import { TextField, JsonField, DateField, TEXT_LENGTH } from '../decorators/Fiel
 import type {
   RecipeStep,
   RAGTemplate,
-  RecipeStrategy
+  RecipeStrategy,
+  ActivityUILayout
 } from '../../../system/recipes/shared/RecipeTypes';
 
 /**
@@ -45,6 +46,9 @@ export class RecipeEntity extends BaseEntity {
 
   @JsonField()
   strategy!: RecipeStrategy;
+
+  @JsonField({ nullable: true })
+  layout?: ActivityUILayout;
 
   @JsonField()
   tags!: string[];
