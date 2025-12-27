@@ -112,10 +112,10 @@ export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
     }
   },
 
-  // Theme layout - theme picker center, assistant right
+  // Theme layout - theme picker center, theme assistant right
+  // No room-list in left (global persistent widgets handle it)
   'theme': {
     widgets: [
-      { widget: 'room-list-widget', position: 'left', order: 0 },
       { widget: 'theme-widget', position: 'center', order: 0 },
       { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'theme', compact: true } }
     ]

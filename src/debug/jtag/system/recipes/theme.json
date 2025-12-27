@@ -6,11 +6,10 @@
   "version": 2,
 
   "layout": {
-    "main": ["theme-widget"],
-    "right": {
-      "widgets": ["chat-widget"],
-      "config": { "room": "help", "compact": true }
-    }
+    "widgets": [
+      { "widget": "theme-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "theme", "compact": true } }
+    ]
   },
 
   "locked": ["layout.main"],

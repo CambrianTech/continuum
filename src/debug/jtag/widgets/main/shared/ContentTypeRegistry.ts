@@ -11,48 +11,12 @@
  *
  * When adding a new content type:
  * 1. Create a recipe JSON file in system/recipes/{contentType}.json
- * 2. Define layout.mainWidget and layout.rightPanel in the recipe
+ * 2. Define layout.widgets array with position/order (new format)
  * 3. The registry will automatically pick it up
  * 4. Only add to FALLBACK_REGISTRY if recipe doesn't exist yet
  */
 
 import { getRecipeLayoutService } from '../../../system/recipes/browser/RecipeLayoutService';
-import type { ActivityUILayout, PanelConfig } from '../../../system/recipes/shared/RecipeTypes';
-
-/**
- * Extract main widget from layout (handles both array and legacy formats)
- */
-function getMainWidgetFromLayout(layout: ActivityUILayout): string {
-  // New format: main as array or PanelConfig
-  if (layout.main) {
-    if (Array.isArray(layout.main)) {
-      return layout.main[0] || 'chat-widget';
-    }
-    return (layout.main as PanelConfig).widgets[0] || 'chat-widget';
-  }
-  // Legacy format
-  return layout.mainWidget || 'chat-widget';
-}
-
-/**
- * Extract right panel config from layout (handles both formats)
- */
-function getRightPanelFromLayout(layout: ActivityUILayout): RightPanelConfig | null | undefined {
-  // New format
-  if (layout.right !== undefined) {
-    if (layout.right === null) return null;
-    if (Array.isArray(layout.right)) {
-      // Convert array to RightPanelConfig
-      return layout.right.length > 0 ? { widget: layout.right[0] } : null;
-    }
-    const panelConfig = layout.right as PanelConfig;
-    return panelConfig.widgets.length > 0
-      ? { widget: panelConfig.widgets[0], ...panelConfig.config }
-      : null;
-  }
-  // Legacy format
-  return layout.rightPanel;
-}
 
 /**
  * Right panel configuration - matches recipe.layout.rightPanel
@@ -112,14 +76,14 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
   },
 
   // Theme customization
-  // Help assistant for color scheme suggestions
+  // Theme room assistant for color scheme suggestions
   theme: {
     widget: 'theme-widget',
     displayName: 'Theme',
     pathPrefix: '/theme',
     requiresEntity: false,
     defaultTitle: 'Theme',
-    rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
+    rightPanel: { widget: 'chat-widget', room: 'theme', compact: true },
   },
 
   // Help & onboarding
@@ -217,14 +181,17 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
   // 1. Try recipe-driven layout first
   const recipeService = getRecipeLayoutService();
   if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
-    const layout = recipeService.getLayout(contentType);
-    if (layout) {
+    // Use RecipeLayoutService's methods which handle both old and new formats
+    const widget = recipeService.getWidget(contentType);
+    const rightPanel = recipeService.getRightPanel(contentType);
+
+    if (widget) {
       return {
-        widget: getMainWidgetFromLayout(layout),
+        widget,
         displayName: recipeService.getDisplayName(contentType) || contentType,
         pathPrefix: `/${contentType}`,
         requiresEntity: false,
-        rightPanel: getRightPanelFromLayout(layout)
+        rightPanel: rightPanel ?? undefined
       };
     }
   }
