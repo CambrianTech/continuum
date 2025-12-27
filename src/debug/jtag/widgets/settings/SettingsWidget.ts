@@ -8,12 +8,12 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { Commands } from '../../system/core/shared/Commands';
+import { Events } from '../../system/core/shared/Events';
 import { styles as SETTINGS_STYLES } from './styles/settings.styles';
 import { ProviderEntry, type ConfigEntry } from './components/ProviderEntry';
 import { ProviderStatusTester } from './components/ProviderStatusTester';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
-
-type SettingsSection = 'providers' | 'appearance' | 'account' | 'about';
+import { SETTINGS_NAV_EVENTS, type SettingsSection, type SettingsSectionChangedPayload } from '../settings-nav/SettingsNavWidget';
 
 export class SettingsWidget extends BaseWidget {
   private configEntries: ConfigEntry[] = [];
@@ -22,6 +22,7 @@ export class SettingsWidget extends BaseWidget {
   private tester: ProviderStatusTester;
   private pendingChanges: Map<string, string> = new Map();
   private currentSection: SettingsSection = 'providers';
+  private sectionEventUnsubscribe?: () => void;
 
   constructor() {
     super({
@@ -40,6 +41,17 @@ export class SettingsWidget extends BaseWidget {
 
   protected async onWidgetInitialize(): Promise<void> {
     console.log('Settings: Initializing settings widget...');
+
+    // Listen for section changes from SettingsNavWidget in sidebar
+    Events.subscribe(SETTINGS_NAV_EVENTS.SECTION_CHANGED, (payload: SettingsSectionChangedPayload) => {
+      if (payload.section !== this.currentSection) {
+        console.log(`Settings: Section changed to ${payload.section} (from SettingsNavWidget)`);
+        this.currentSection = payload.section;
+        this.renderWidget();
+        this.emitPositronContext();
+      }
+    });
+
     await this.loadConfig();
     this.emitPositronContext();
   }
@@ -124,16 +136,14 @@ export class SettingsWidget extends BaseWidget {
     const scrollContainer = this.shadowRoot?.querySelector('.settings-main');
     const scrollTop = scrollContainer?.scrollTop || 0;
 
-    const navHtml = this.renderNav();
     const contentHtml = this.isLoading
       ? `<div class="loading">Loading configuration...</div>`
       : this.renderSectionContent();
 
+    // Navigation is now handled by SettingsNavWidget in the sidebar
+    // This widget just shows the content
     const template = `
-      <div class="settings-layout">
-        <nav class="settings-nav">
-          ${navHtml}
-        </nav>
+      <div class="settings-layout settings-layout--no-nav">
         <main class="settings-main">
           ${contentHtml}
         </main>
@@ -142,7 +152,6 @@ export class SettingsWidget extends BaseWidget {
 
     this.shadowRoot!.innerHTML = `<style>${SETTINGS_STYLES}</style>${template}`;
     this.setupEventListeners();
-    this.setupNavListeners();
 
     // Restore scroll position after re-render
     const newScrollContainer = this.shadowRoot?.querySelector('.settings-main');

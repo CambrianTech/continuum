@@ -40,6 +40,17 @@ $text-faint: rgba(255, 255, 255, 0.4);
   width: 100%;
   height: 100%;
   gap: 0;
+
+  // When nav is in sidebar, hide internal nav
+  &--no-nav {
+    .settings-nav {
+      display: none;
+    }
+
+    .settings-main {
+      padding: 24px 32px;
+    }
+  }
 }
 
 // Left Navigation

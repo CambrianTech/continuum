@@ -35,6 +35,9 @@ export interface LayoutWidget {
 
   /** Optional: unique ID for tracking/drag-drop (auto-generated if not provided) */
   id?: string;
+
+  /** If true, this widget persists across all content types (from global layout) */
+  persistent?: boolean;
 }
 
 /**
@@ -54,8 +57,26 @@ export interface LayoutConfig {
 }
 
 /**
+ * Global layout - persistent widgets that appear across ALL content types
+ * These are merged with content-specific layouts (global first, then content-specific)
+ *
+ * Persistent widgets:
+ * - continuum-emoter-widget: HAL 9000 system status indicator
+ * - cognition-histogram-widget: AI pipeline visualization
+ * - continuum-metrics-widget: AI performance dashboard
+ */
+export const GLOBAL_LAYOUT: LayoutConfig = {
+  widgets: [
+    // Left panel persistent widgets (always show at top of sidebar)
+    { widget: 'continuum-emoter-widget', position: 'left', order: -100, persistent: true },
+    { widget: 'cognition-histogram-widget', position: 'left', order: -90, persistent: true },
+    { widget: 'continuum-metrics-widget', position: 'left', order: -80, persistent: true }
+  ]
+};
+
+/**
  * Default layouts for content types
- * These are used when no recipe-specific layout is defined
+ * These are MERGED with GLOBAL_LAYOUT - persistent widgets always appear
  */
 export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
   // Chat layout - room list left, chat center, assistant right
@@ -68,10 +89,10 @@ export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
     ]
   },
 
-  // Settings layout - settings nav left, settings form center, help assistant right
+  // Settings layout - settings nav left (persistent), settings form center, help assistant right
   'settings': {
     widgets: [
-      { widget: 'settings-nav-widget', position: 'left', order: 0 },
+      { widget: 'settings-nav-widget', position: 'left', order: 0, persistent: true },
       { widget: 'settings-widget', position: 'center', order: 0 },
       { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'help', compact: true } }
     ]
@@ -127,8 +148,116 @@ export function isPanelVisible(layout: LayoutConfig, position: WidgetPosition): 
 }
 
 /**
- * Get layout for a content type, falling back to defaults
+ * Get layout for a content type, merging global persistent widgets
+ *
+ * Inheritance model:
+ * 1. Start with GLOBAL_LAYOUT (persistent widgets)
+ * 2. Merge content-specific layout on top
+ * 3. Sort by order (negative orders appear first)
+ *
+ * This ensures emoter, histogram, metrics always appear in sidebar
+ * while content-specific widgets (room-list, settings-nav) appear below them.
  */
 export function getLayoutForContentType(contentType: string): LayoutConfig {
-  return DEFAULT_LAYOUTS[contentType] || DEFAULT_LAYOUTS['chat'];
+  const contentLayout = DEFAULT_LAYOUTS[contentType] || DEFAULT_LAYOUTS['chat'];
+
+  // Merge global persistent widgets with content-specific widgets
+  const mergedWidgets = [
+    ...GLOBAL_LAYOUT.widgets,
+    ...contentLayout.widgets
+  ];
+
+  return {
+    widgets: mergedWidgets,
+    panels: contentLayout.panels
+  };
+}
+
+/**
+ * Parse a recipe layout (supports both old and new formats)
+ *
+ * Old format:
+ * ```json
+ * { "main": ["settings-widget"], "right": { "widgets": ["chat-widget"], "config": {...} } }
+ * ```
+ *
+ * New format:
+ * ```json
+ * { "widgets": [ { "widget": "settings-nav-widget", "position": "left", "order": 0 } ] }
+ * ```
+ */
+export function parseRecipeLayout(recipeLayout: unknown): LayoutConfig | null {
+  if (!recipeLayout || typeof recipeLayout !== 'object') {
+    return null;
+  }
+
+  const layout = recipeLayout as Record<string, unknown>;
+
+  // New format: has 'widgets' array with position/order
+  if (Array.isArray(layout.widgets)) {
+    const widgets: LayoutWidget[] = (layout.widgets as unknown[])
+      .filter((w): w is Record<string, unknown> => !!w && typeof w === 'object')
+      .map((w, index) => ({
+        widget: String(w.widget || 'unknown-widget'),
+        position: (w.position as WidgetPosition) || 'center',
+        order: typeof w.order === 'number' ? w.order : index,
+        config: w.config as Record<string, unknown> | undefined,
+        id: w.id as string | undefined
+      }));
+
+    const panelConfig = layout.panels as Record<string, { visible?: boolean }> | undefined;
+
+    return {
+      widgets,
+      panels: panelConfig ? {
+        left: panelConfig.left?.visible !== undefined ? { visible: panelConfig.left.visible } : undefined,
+        center: panelConfig.center?.visible !== undefined ? { visible: panelConfig.center.visible } : undefined,
+        right: panelConfig.right?.visible !== undefined ? { visible: panelConfig.right.visible } : undefined
+      } : undefined
+    };
+  }
+
+  // Old format: has 'main' and/or 'right' arrays
+  if (layout.main || layout.right || layout.left) {
+    const widgets: LayoutWidget[] = [];
+
+    // Parse left panel
+    if (Array.isArray(layout.left)) {
+      (layout.left as string[]).forEach((widget, index) => {
+        widgets.push({ widget, position: 'left', order: index });
+      });
+    }
+
+    // Parse main/center panel
+    if (Array.isArray(layout.main)) {
+      (layout.main as string[]).forEach((widget, index) => {
+        widgets.push({ widget, position: 'center', order: index });
+      });
+    }
+
+    // Parse right panel (can be array or object with widgets + config)
+    if (layout.right) {
+      if (Array.isArray(layout.right)) {
+        (layout.right as string[]).forEach((widget, index) => {
+          widgets.push({ widget, position: 'right', order: index });
+        });
+      } else if (typeof layout.right === 'object' && layout.right !== null) {
+        const rightConfig = layout.right as Record<string, unknown>;
+        if (Array.isArray(rightConfig.widgets)) {
+          (rightConfig.widgets as string[]).forEach((widget, index) => {
+            widgets.push({
+              widget,
+              position: 'right',
+              order: index,
+              config: rightConfig.config as Record<string, unknown> | undefined
+            });
+          });
+        }
+      }
+    }
+
+    return { widgets };
+  }
+
+  return null;
 }

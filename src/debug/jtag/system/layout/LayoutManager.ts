@@ -163,8 +163,8 @@ class LayoutManagerService {
    * Subscribe to layout changes
    */
   onLayoutChanged(callback: (payload: LayoutChangedPayload) => void): () => void {
-    Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, callback);
-    return () => Events.unsubscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, callback);
+    // Events.subscribe returns an unsubscribe function
+    return Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, callback);
   }
 
   /**
@@ -176,8 +176,8 @@ class LayoutManagerService {
         callback(payload);
       }
     };
-    Events.subscribe(LAYOUT_EVENTS.PANEL_UPDATE, handler);
-    return () => Events.unsubscribe(LAYOUT_EVENTS.PANEL_UPDATE, handler);
+    // Events.subscribe returns an unsubscribe function
+    return Events.subscribe(LAYOUT_EVENTS.PANEL_UPDATE, handler);
   }
 
   // === Private Methods ===

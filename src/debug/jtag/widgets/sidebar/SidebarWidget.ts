@@ -1,18 +1,22 @@
 /**
- * SidebarWidget - Left sidebar panel with navigation and status
+ * SidebarWidget - Left sidebar panel with dynamic content
  *
- * Shows:
- * - System emoter (HAL 9000 status indicator)
- * - Cognition histogram (AI pipeline visualization)
- * - Metrics (AI performance dashboard)
- * - Room list and user list
+ * Shows different widgets based on content type:
+ * - Default (chat): Emoter, histogram, metrics, room list, user list
+ * - Settings: Settings navigation
+ * - Help: Help topics navigation
  *
+ * Uses LayoutManager to determine which widgets to show.
  * Extends BaseSidePanelWidget for consistent panel behavior.
  */
 
 import { BaseSidePanelWidget, type SidePanelSide } from '../shared/BaseSidePanelWidget';
+import { Events } from '../../system/core/shared/Events';
+import { LAYOUT_EVENTS, type LayoutChangedPayload, type LayoutWidget, DEFAULT_LAYOUTS, getWidgetsForPosition, getLayoutForContentType } from '../../system/layout';
 
 export class SidebarWidget extends BaseSidePanelWidget {
+  private currentContentType: string = 'chat';
+  private leftWidgets: LayoutWidget[] = [];
 
   constructor() {
     super({
@@ -42,6 +46,63 @@ export class SidebarWidget extends BaseSidePanelWidget {
 
   protected async onPanelInitialize(): Promise<void> {
     console.log('🎯 SidebarWidget: Initializing...');
+
+    // Detect initial content type from URL
+    const initialContentType = this.detectContentTypeFromUrl();
+    console.log(`📐 SidebarWidget: Initial content type from URL: ${initialContentType}`);
+    this.updateLayout(initialContentType);
+
+    // Listen for layout changes when content type switches
+    Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
+      console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
+      this.updateLayout(payload.contentType);
+    });
+
+    // Also listen for content:switched events as backup
+    Events.subscribe('content:switched', (data: { contentType?: string }) => {
+      if (data.contentType && data.contentType !== this.currentContentType) {
+        console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
+        this.updateLayout(data.contentType);
+      }
+    });
+  }
+
+  /**
+   * Detect content type from current URL pathname
+   * Maps paths like /settings, /theme, /help to their content types
+   * Uses DEFAULT_LAYOUTS keys as source of truth for valid content types
+   */
+  private detectContentTypeFromUrl(): string {
+    const pathname = window.location.pathname;
+
+    // Get first segment from path (e.g., /settings -> 'settings')
+    const firstSegment = pathname.split('/').filter(Boolean)[0] || '';
+
+    // Check if this path matches a known layout content type
+    const knownContentTypes = Object.keys(DEFAULT_LAYOUTS);
+    if (knownContentTypes.includes(firstSegment)) {
+      return firstSegment;
+    }
+
+    // Default to chat for root or unknown paths
+    return 'chat';
+  }
+
+  private updateLayout(contentType: string): void {
+    this.currentContentType = contentType;
+    const layout = getLayoutForContentType(contentType);
+    this.leftWidgets = getWidgetsForPosition(layout, 'left');
+
+    console.log(`📐 SidebarWidget: Got ${this.leftWidgets.length} left widgets for ${contentType}:`,
+      this.leftWidgets.map(w => w.widget));
+
+    // Re-render with new widgets - call the inherited rendering method
+    this.renderPanelContent().then(html => {
+      const contentContainer = this.shadowRoot?.querySelector('.panel-content');
+      if (contentContainer) {
+        contentContainer.innerHTML = html;
+      }
+    });
   }
 
   protected async onPanelCleanup(): Promise<void> {
@@ -51,28 +112,32 @@ export class SidebarWidget extends BaseSidePanelWidget {
   // === Content Rendering ===
 
   protected async renderPanelContent(): Promise<string> {
-    return `
-      <div class="sidebar-widgets">
-        <!-- ContinuumEmoter Widget - HAL 9000 System Status -->
-        <continuum-emoter-widget></continuum-emoter-widget>
+    // Always use layout system - GLOBAL_LAYOUT provides persistent widgets,
+    // content-specific layouts are merged on top by getLayoutForContentType()
+    const widgetsHtml = this.leftWidgets.map(w => this.renderLayoutWidget(w)).join('\n');
+    return `<div class="sidebar-widgets">${widgetsHtml}</div>`;
+  }
 
-        <!-- Cognition Histogram Widget - AI Pipeline Visualization -->
-        <cognition-histogram-widget></cognition-histogram-widget>
+  private renderLayoutWidget(layoutWidget: LayoutWidget): string {
+    const tagName = layoutWidget.widget;
 
-        <!-- Metrics Widget - AI Performance Dashboard -->
-        <continuum-metrics-widget></continuum-metrics-widget>
+    // Build attributes from config
+    let attrs = '';
+    if (layoutWidget.config) {
+      for (const [key, value] of Object.entries(layoutWidget.config)) {
+        if (typeof value === 'string') {
+          attrs += ` ${key}="${value}"`;
+        } else if (typeof value === 'boolean' && value) {
+          attrs += ` ${key}`;
+        } else if (typeof value === 'number') {
+          attrs += ` ${key}="${value}"`;
+        }
+      }
+    }
 
-        <!-- Room List -->
-        <div class="widget-container rooms">
-          <room-list-widget></room-list-widget>
-        </div>
-
-        <!-- User List (flex: 2 for more space) -->
-        <div class="widget-container users">
-          <user-list-widget></user-list-widget>
-        </div>
-      </div>
-    `;
+    // Add wrapper with appropriate class for persistent vs dynamic widgets
+    const wrapperClass = layoutWidget.persistent ? 'widget-slot widget-slot--persistent' : 'widget-slot widget-slot--dynamic';
+    return `<div class="${wrapperClass}"><${tagName}${attrs}></${tagName}></div>`;
   }
 
   protected getAdditionalStyles(): string {
@@ -91,50 +156,24 @@ export class SidebarWidget extends BaseSidePanelWidget {
         overflow-x: hidden;
       }
 
-      /* Emoter styling */
-      continuum-emoter-widget {
-        margin-bottom: 8px;
+      /* Persistent widgets - natural height, no flex grow */
+      .widget-slot--persistent {
+        flex-shrink: 0;
       }
 
-      /* Widget containers split remaining vertical space */
-      .widget-container {
+      /* Dynamic widgets - flex to fill remaining space */
+      .widget-slot--dynamic {
         flex: 1;
-        min-height: 120px;
+        min-height: 100px;
         display: flex;
         flex-direction: column;
         overflow: hidden;
       }
 
-      /* Users section gets more space (more items typically) */
-      .widget-container.users {
-        flex: 2;
-        min-height: 200px;
-      }
-
-      /* Status View (if needed) */
-      .status-view {
-        margin-bottom: 16px;
-        padding: 10px;
-        background: var(--widget-surface, rgba(0, 212, 255, 0.1));
-        border-radius: 6px;
-        border: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
-      }
-
-      .connection-status {
-        font-size: 0.8em;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-bottom: 5px;
-      }
-
-      .connection-status.connected {
-        color: var(--content-success, #4CAF50);
-      }
-
-      .user-status {
-        font-size: 0.7em;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.7));
+      /* Child widgets fill their container */
+      .widget-slot--dynamic > * {
+        flex: 1;
+        min-height: 0;
       }
     `;
   }

@@ -6,10 +6,13 @@
   "version": 2,
 
   "layout": {
-    "main": ["settings-widget"],
-    "right": {
-      "widgets": ["chat-widget"],
-      "config": { "room": "help", "compact": true }
+    "widgets": [
+      { "widget": "settings-nav-widget", "position": "left", "order": 0 },
+      { "widget": "settings-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "help", "compact": true } }
+    ],
+    "panels": {
+      "left": { "visible": true }
     }
   },
 

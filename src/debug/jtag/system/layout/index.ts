@@ -9,10 +9,12 @@ export {
   type WidgetPosition,
   type LayoutWidget,
   type LayoutConfig,
+  GLOBAL_LAYOUT,
   DEFAULT_LAYOUTS,
   getWidgetsForPosition,
   isPanelVisible,
-  getLayoutForContentType
+  getLayoutForContentType,
+  parseRecipeLayout
 } from './LayoutTypes';
 
 export {
