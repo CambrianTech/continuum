@@ -77,6 +77,21 @@ export interface RecipeStrategy {
 }
 
 /**
+ * Recipe input parameter definition
+ * Recipe = function definition, Activity = function call with arguments
+ */
+export interface RecipeInput {
+  /** Parameter type for validation */
+  type: 'string' | 'number' | 'boolean' | 'userId' | 'roomId' | 'entityId';
+  /** Is this input required? */
+  required?: boolean;
+  /** Default value if not provided */
+  default?: unknown;
+  /** Human-readable description */
+  description?: string;
+}
+
+/**
  * Single step in recipe command pipeline
  */
 export interface RecipeStep {
@@ -110,6 +125,17 @@ export interface RecipeEntity {
 
   // UI composition - defines what widgets compose the experience
   layout?: ActivityUILayout;
+
+  /**
+   * Input parameters for dynamic recipes.
+   * Recipe = function definition, Activity = function call with arguments.
+   *
+   * Examples:
+   * - persona-details: { personaId: { type: 'userId', required: true } }
+   * - log-viewer: { personaId: { type: 'userId' }, logPath: { type: 'string', required: true } }
+   * - room-chat: { roomId: { type: 'string', required: true } }
+   */
+  inputs?: Record<string, RecipeInput>;
 
   /**
    * Fields that activities CANNOT override.
