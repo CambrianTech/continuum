@@ -74,6 +74,7 @@ import { MemoryEntity } from '../../../system/data/entities/MemoryEntity';
 import { WallDocumentEntity } from '../../../system/data/entities/WallDocumentEntity';
 import { DecisionEntity } from '../../../system/data/entities/DecisionEntity';
 import { SystemConfigEntity } from '../../../system/data/entities/SystemConfigEntity';
+import { ActivityEntity } from '../../../system/data/entities/ActivityEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -121,6 +122,7 @@ export function initializeEntityRegistry(): void {
   new WallDocumentEntity();
   new DecisionEntity();
   new SystemConfigEntity();
+  new ActivityEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -160,6 +162,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(WallDocumentEntity.collection, WallDocumentEntity);
   registerEntity(DecisionEntity.collection, DecisionEntity);
   registerEntity(SystemConfigEntity.collection, SystemConfigEntity);
+  registerEntity(ActivityEntity.collection, ActivityEntity);
 
   log.info('All entities registered');
 }

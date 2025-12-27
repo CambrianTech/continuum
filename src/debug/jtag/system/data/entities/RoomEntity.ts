@@ -85,7 +85,7 @@ export class RoomEntity extends BaseEntity {
   @DateField({ index: true })
   lastMessageAt?: Date;
 
-  @TextField({ nullable: true })
+  @ForeignKeyField({ references: 'recipes.uniqueId', nullable: true })
   recipeId?: string;
 
   // Complex objects stored as JSON blobs

@@ -3,6 +3,29 @@
  *
  * Recipes are composable command pipelines that define how humans and AIs collaborate.
  * They're templates for conversation patterns, stored as JSON and executed as command chains.
+ *
+ * ## Recipe vs Activity Architecture
+ *
+ * **Recipe = Template (Class)**
+ * - Static definition of behavior
+ * - Defines pipeline, RAG template, strategy, layout
+ * - Stored in system/recipes/*.json and loaded to database
+ * - Immutable during runtime
+ *
+ * **Activity = Instance (Object)**
+ * - Runtime instance of a Recipe
+ * - Has mutable state (phase, progress, variables)
+ * - Tracks participants (users + AIs) with roles
+ * - Can override recipe config
+ * - Stored in ActivityEntity
+ *
+ * Examples:
+ * - Recipe "general-chat" → Activity for #general room
+ * - Recipe "settings" → Activity for user's settings session
+ * - Recipe "academy-lesson" → Activity for a lesson with teacher + student
+ *
+ * See: system/data/entities/ActivityEntity.ts
+ * See: system/activities/shared/ActivityTypes.ts
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
@@ -88,6 +111,19 @@ export interface RecipeEntity {
   // UI composition - defines what widgets compose the experience
   layout?: ActivityUILayout;
 
+  /**
+   * Fields that activities CANNOT override.
+   * Recipe author controls what's immutable.
+   *
+   * Examples:
+   * - ["layout.mainWidget"] - main experience locked
+   * - ["layout.mainWidget", "pipeline"] - core behavior locked
+   * - [] or undefined - everything can be overridden
+   *
+   * Activities can always reset to recipe defaults.
+   */
+  locked?: string[];
+
   // Sharing
   isPublic: boolean;
   createdBy: UUID;
@@ -153,29 +189,52 @@ export interface RecipeDefinition {
 }
 
 /**
+ * Panel arrangement options
+ */
+export type PanelArrangement = 'single' | 'split-h' | 'split-v' | 'tabs' | 'stack';
+
+/**
+ * Panel configuration - widgets + how they're arranged
+ */
+export interface PanelConfig {
+  /** Widget tag names */
+  widgets: string[];
+  /** How to arrange multiple widgets (default: 'single' for 1, 'tabs' for many) */
+  arrangement?: PanelArrangement;
+  /** Panel-specific config passed to widgets */
+  config?: Record<string, unknown>;
+}
+
+/**
  * Activity UI Layout - defines what widgets compose the collaborative experience
  *
- * Recipes define not just AI behavior, but the entire collaborative environment:
- * - What the human sees (main content widget)
- * - Where AI companions appear (right panel)
- * - What tools are available
+ * Recipes define not just AI behavior, but the entire collaborative environment.
+ * All panels are arrays for composability.
  *
  * Examples:
- * - Chat: main=chat-widget, rightPanel=null (no assistant needed, already chatting)
- * - Settings: main=settings-widget, rightPanel=chat-widget (help room)
- * - Theme: main=theme-widget, rightPanel=chat-widget (theme AI assists design)
- * - Logs: main=logs-widget, rightPanel=chat-widget (AI helps analyze logs)
- * - Browser: main=browser-widget, rightPanel=chat-widget (AI sees page, assists)
- * - Game: main=game-widget, rightPanel=chat-widget (AI teammates/opponents)
+ * - Chat: main=["chat-widget"], right=null
+ * - Settings: main=["settings-widget"], right=["chat-widget"] (help room)
+ * - IDE: main=["editor", "terminal"], left=["file-tree"], right=["ai-assistant"]
+ * - Academy: main=["lesson-widget"], right=["teacher-chat", "progress-widget"]
  */
 export interface ActivityUILayout {
-  /** Main content widget tag name (e.g., 'chat-widget', 'settings-widget') */
-  mainWidget: string;
+  /** Main content area - primary experience */
+  main: string[] | PanelConfig;
 
-  /** Right panel configuration. null = hidden, string = chat room name */
+  /** Left panel (sidebar) - navigation, lists, trees */
+  left?: string[] | PanelConfig | null;
+
+  /** Right panel - AI assistants, tools, helpers */
+  right?: string[] | PanelConfig | null;
+
+  /** Bottom panel - terminals, logs, output */
+  bottom?: string[] | PanelConfig | null;
+
+  // Legacy support (deprecated - use main/right instead)
+  /** @deprecated Use main instead */
+  mainWidget?: string;
+  /** @deprecated Use right instead */
   rightPanel?: RightPanelConfig | null;
-
-  /** Future: left panel, bottom panel, floating panels, etc. */
 }
 
 /**

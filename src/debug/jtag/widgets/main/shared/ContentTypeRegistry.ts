@@ -17,6 +17,42 @@
  */
 
 import { getRecipeLayoutService } from '../../../system/recipes/browser/RecipeLayoutService';
+import type { ActivityUILayout, PanelConfig } from '../../../system/recipes/shared/RecipeTypes';
+
+/**
+ * Extract main widget from layout (handles both array and legacy formats)
+ */
+function getMainWidgetFromLayout(layout: ActivityUILayout): string {
+  // New format: main as array or PanelConfig
+  if (layout.main) {
+    if (Array.isArray(layout.main)) {
+      return layout.main[0] || 'chat-widget';
+    }
+    return (layout.main as PanelConfig).widgets[0] || 'chat-widget';
+  }
+  // Legacy format
+  return layout.mainWidget || 'chat-widget';
+}
+
+/**
+ * Extract right panel config from layout (handles both formats)
+ */
+function getRightPanelFromLayout(layout: ActivityUILayout): RightPanelConfig | null | undefined {
+  // New format
+  if (layout.right !== undefined) {
+    if (layout.right === null) return null;
+    if (Array.isArray(layout.right)) {
+      // Convert array to RightPanelConfig
+      return layout.right.length > 0 ? { widget: layout.right[0] } : null;
+    }
+    const panelConfig = layout.right as PanelConfig;
+    return panelConfig.widgets.length > 0
+      ? { widget: panelConfig.widgets[0], ...panelConfig.config }
+      : null;
+  }
+  // Legacy format
+  return layout.rightPanel;
+}
 
 /**
  * Right panel configuration - matches recipe.layout.rightPanel
@@ -174,11 +210,11 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
     const layout = recipeService.getLayout(contentType);
     if (layout) {
       return {
-        widget: layout.mainWidget,
+        widget: getMainWidgetFromLayout(layout),
         displayName: recipeService.getDisplayName(contentType) || contentType,
         pathPrefix: `/${contentType}`,
         requiresEntity: false,
-        rightPanel: layout.rightPanel
+        rightPanel: getRightPanelFromLayout(layout)
       };
     }
   }
