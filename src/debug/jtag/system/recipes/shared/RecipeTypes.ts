@@ -79,14 +79,15 @@ export interface RecipeStrategy {
 /**
  * Recipe input parameter definition
  * Recipe = function definition, Activity = function call with arguments
+ *
+ * Inputs are strings (uniqueId or UUID) - system resolves as needed.
+ * URL rewriter can work either direction: /persona/helper ↔ /persona/uuid
  */
 export interface RecipeInput {
-  /** Parameter type for validation */
-  type: 'string' | 'number' | 'boolean' | 'userId' | 'roomId' | 'entityId';
   /** Is this input required? */
   required?: boolean;
   /** Default value if not provided */
-  default?: unknown;
+  default?: string;
   /** Human-readable description */
   description?: string;
 }
