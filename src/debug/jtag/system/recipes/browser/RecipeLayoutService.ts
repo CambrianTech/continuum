@@ -47,8 +47,10 @@ export class RecipeLayoutService {
     try {
       console.log('📚 RecipeLayoutService: Loading recipe layouts...');
 
+      // Force reload to get the recipe data (otherwise skipped recipes return empty)
       const result = await Commands.execute('workspace/recipe/load', {
-        loadAll: true
+        loadAll: true,
+        reload: true
       } as any) as unknown as { success: boolean; loaded?: RecipeLayoutData[] };
 
       if (result?.loaded) {
@@ -81,18 +83,58 @@ export class RecipeLayoutService {
 
   /**
    * Get widget tag for a content type
+   * Handles both new format (main: string[]) and deprecated (mainWidget: string)
    */
   getWidget(contentType: string): string | undefined {
     const layout = this.getLayout(contentType);
-    return layout?.mainWidget;
+    if (!layout) return undefined;
+
+    // New format: main can be string[] or PanelConfig
+    if (layout.main) {
+      if (Array.isArray(layout.main)) {
+        return layout.main[0]; // First widget is primary
+      } else if (typeof layout.main === 'object' && 'widgets' in layout.main) {
+        return layout.main.widgets[0];
+      }
+    }
+
+    // Deprecated format fallback
+    return layout.mainWidget;
   }
 
   /**
    * Get right panel config for a content type
+   * Handles both new format (right: string[] | PanelConfig) and deprecated (rightPanel)
    */
   getRightPanel(contentType: string): RightPanelConfig | null | undefined {
     const layout = this.getLayout(contentType);
-    return layout?.rightPanel;
+    if (!layout) return undefined;
+
+    // New format: right can be string[], PanelConfig, or null
+    if ('right' in layout) {
+      if (layout.right === null) {
+        return null; // Explicitly hidden
+      }
+      if (Array.isArray(layout.right)) {
+        // Convert string[] to RightPanelConfig
+        return {
+          widget: layout.right[0],
+          compact: true
+        };
+      }
+      if (typeof layout.right === 'object' && 'widgets' in layout.right) {
+        // Convert PanelConfig to RightPanelConfig
+        const panelConfig = layout.right as { widgets: string[]; config?: Record<string, unknown> };
+        return {
+          widget: panelConfig.widgets[0],
+          compact: true,
+          ...panelConfig.config
+        };
+      }
+    }
+
+    // Deprecated format fallback
+    return layout.rightPanel;
   }
 
   /**

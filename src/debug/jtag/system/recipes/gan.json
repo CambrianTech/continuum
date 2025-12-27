@@ -1,0 +1,50 @@
+{
+  "uniqueId": "gan",
+  "name": "GAN Recipe",
+  "displayName": "GAN Training",
+  "description": "Generative Adversarial Network training visualization",
+  "version": 1,
+
+  "layout": {
+    "main": ["gan-widget"],
+    "right": null
+  },
+
+  "pipeline": [
+    {
+      "command": "ai/generate",
+      "params": {
+        "temperature": 0.3
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 5,
+      "orderBy": "chronological",
+      "includeTimestamps": false
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Provide technical explanations about GAN training",
+      "Help interpret training metrics and visualizations",
+      "Suggest hyperparameter adjustments based on training progress"
+    ],
+    "decisionCriteria": [
+      "Is the user asking about training progress?",
+      "Do they need help interpreting results?"
+    ]
+  },
+
+  "isPublic": false,
+  "tags": ["gan", "ml", "training"]
+}

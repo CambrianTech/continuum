@@ -6,8 +6,8 @@
   "version": 1,
 
   "layout": {
-    "mainWidget": "chat-widget",
-    "rightPanel": null
+    "main": ["chat-widget"],
+    "right": null
   },
 
   "pipeline": [
