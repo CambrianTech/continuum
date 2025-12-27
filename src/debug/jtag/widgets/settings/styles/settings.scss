@@ -1,0 +1,522 @@
+/**
+ * SettingsWidget Styles
+ *
+ * Uses SCSS nesting and variables for cleaner organization.
+ * Compiled to settings.styles.ts by compile-sass.ts
+ */
+
+// Theme colors
+$primary: #00d4ff;
+$primary-dark: #0099cc;
+$success: #00ff64;
+$error: #ff5050;
+$warning: #ffc832;
+$warning-dark: #ff9632;
+
+$bg-dark: rgba(10, 15, 20, 0.9);
+$bg-section: rgba(15, 20, 25, 0.8);
+$bg-input: rgba(0, 10, 15, 0.8);
+
+$border-primary: rgba(0, 212, 255, 0.2);
+$border-primary-hover: rgba(0, 212, 255, 0.5);
+$border-success: rgba(0, 255, 100, 0.3);
+
+$text-primary: white;
+$text-muted: rgba(255, 255, 255, 0.6);
+$text-subtle: rgba(255, 255, 255, 0.5);
+$text-faint: rgba(255, 255, 255, 0.4);
+
+:host {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+// Layout
+.settings-layout {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  gap: 0;
+}
+
+// Left Navigation
+.settings-nav {
+  width: 200px;
+  flex-shrink: 0;
+  background: $bg-dark;
+  border-right: 1px solid $border-primary;
+  padding: 16px 0;
+  overflow-y: auto;
+}
+
+.nav-section {
+  margin-bottom: 8px;
+}
+
+.nav-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $text-faint;
+  padding: 8px 16px 4px;
+  margin: 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-left: 3px solid transparent;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  &.active {
+    background: rgba(0, 212, 255, 0.15);
+    color: $primary;
+    border-left-color: $primary;
+  }
+}
+
+.nav-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+// Main Content Area
+.settings-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  min-width: 0;
+}
+
+.settings-assistant {
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+}
+
+.settings-container {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+// Header
+.settings-header {
+  margin-bottom: 24px;
+}
+
+.settings-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: $primary;
+  margin: 0 0 8px 0;
+}
+
+.settings-subtitle {
+  color: $text-muted;
+  font-size: 14px;
+}
+
+// Sections
+.settings-section {
+  background: $bg-section;
+  border: 1px solid $border-primary;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+
+  &.local-highlight {
+    background: rgba(0, 255, 100, 0.1);
+    border-color: $border-success;
+
+    .section-title {
+      color: $success;
+    }
+  }
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: $primary;
+  margin: 0 0 16px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid $border-primary;
+}
+
+.section-intro {
+  font-size: 13px;
+  color: $text-muted;
+  margin-bottom: 16px;
+  line-height: 1.5;
+
+  a {
+    color: $success;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+// Config Entries
+.config-entry {
+  margin-bottom: 16px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.config-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.config-key {
+  font-family: monospace;
+  font-size: 13px;
+  color: $primary;
+}
+
+.config-description {
+  font-size: 12px;
+  color: $text-subtle;
+}
+
+.config-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: $bg-input;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 4px;
+  color: $text-primary;
+  font-family: monospace;
+  font-size: 14px;
+  box-sizing: border-box;
+
+  &:focus {
+    outline: none;
+    border-color: $primary;
+    box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.2);
+  }
+
+  &::placeholder {
+    color: rgba(255, 255, 255, 0.3);
+  }
+}
+
+// Provider Header
+.provider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.provider-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: $primary;
+}
+
+.provider-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.provider-links {
+  display: flex;
+  gap: 8px;
+}
+
+.provider-link {
+  font-size: 11px;
+  color: $primary;
+  text-decoration: none;
+  padding: 2px 8px;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 4px;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    border-color: $border-primary-hover;
+  }
+}
+
+// Input Row
+.input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+
+  .config-input {
+    flex: 1;
+  }
+}
+
+// Buttons
+.btn {
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, $primary, $primary-dark);
+  border: none;
+  color: $text-primary;
+
+  &:hover {
+    background: linear-gradient(135deg, #00e5ff, #00aadd);
+    transform: translateY(-1px);
+  }
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid rgba(0, 212, 255, 0.4);
+  color: $primary;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+  }
+}
+
+.btn-test {
+  padding: 10px 16px;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 4px;
+  color: $primary;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.2);
+    border-color: $border-primary-hover;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  &.testing {
+    color: $text-muted;
+  }
+}
+
+.btn-refresh {
+  background: none;
+  border: none;
+  color: rgba(0, 212, 255, 0.6);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  transition: all 0.2s ease;
+
+  &:hover {
+    color: $primary;
+    background: rgba(0, 212, 255, 0.1);
+  }
+}
+
+// Save Section
+.save-section {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid $border-primary;
+}
+
+// Status Messages
+.status-message {
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.status-saved {
+  background: rgba(0, 255, 100, 0.1);
+  color: $success;
+}
+
+.status-error {
+  background: rgba(255, 50, 50, 0.1);
+  color: $error;
+}
+
+// Info Box
+.info-box {
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.8);
+
+  a {
+    color: $primary;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+.storage-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: $text-subtle;
+
+  code {
+    color: rgba(0, 212, 255, 0.8);
+    background: rgba(0, 212, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    user-select: all;
+  }
+}
+
+// Status Indicators
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.status-configured {
+  background: rgba(0, 255, 100, 0.15);
+  color: $success;
+}
+
+.status-not-set {
+  background: rgba(255, 255, 255, 0.1);
+  color: $text-subtle;
+}
+
+// Test Status
+.test-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+
+  &.operational {
+    background: rgba(0, 255, 100, 0.1);
+    color: $success;
+  }
+
+  &.invalid {
+    background: rgba(255, 50, 50, 0.1);
+    color: $error;
+  }
+
+  &.out-of-funds {
+    background: rgba(255, 200, 50, 0.1);
+    color: $warning;
+  }
+
+  &.rate-limited {
+    background: rgba(255, 150, 50, 0.1);
+    color: $warning-dark;
+  }
+
+  &.error {
+    background: rgba(255, 50, 50, 0.1);
+    color: $error;
+  }
+
+  &.testing {
+    background: rgba(0, 212, 255, 0.1);
+    color: $primary;
+  }
+}
+
+.response-time {
+  opacity: 0.6;
+  font-size: 11px;
+}
+
+.status-action {
+  margin-left: 8px;
+  color: $primary;
+  text-decoration: none;
+  font-size: 11px;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.status-action-hint {
+  margin-left: 8px;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+// Loading
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: $text-muted;
+}
+
+// Responsive
+@media (max-width: 768px) {
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid $border-primary;
+  }
+
+  .settings-assistant {
+    height: 300px;
+    flex-shrink: 0;
+  }
+}

@@ -81,7 +81,8 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
         entityId: params.entityId,
         title: params.title,
         userId,
-        currentItemId: userState.contentState.currentItemId
+        currentItemId: userState.contentState.currentItemId,
+        setAsCurrent  // Include so browser knows to switch view
       };
 
       await Events.emit(this.context, 'content:opened', event);

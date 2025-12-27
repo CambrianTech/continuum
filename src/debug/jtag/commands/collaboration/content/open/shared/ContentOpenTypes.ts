@@ -35,4 +35,5 @@ export interface ContentOpenedEvent {
   readonly title: string;
   readonly userId: UUID;
   readonly currentItemId?: UUID;
+  readonly setAsCurrent?: boolean;   // Whether this content should be displayed immediately
 }

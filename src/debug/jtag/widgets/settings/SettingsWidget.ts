@@ -8,7 +8,7 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { Commands } from '../../system/core/shared/Commands';
-import { SETTINGS_STYLES } from './components/SettingsStyles';
+import { styles as SETTINGS_STYLES } from './styles/settings.styles';
 import { ProviderEntry, type ConfigEntry } from './components/ProviderEntry';
 import { ProviderStatusTester } from './components/ProviderStatusTester';
 
