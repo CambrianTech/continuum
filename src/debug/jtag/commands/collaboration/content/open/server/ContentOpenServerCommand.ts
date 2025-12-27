@@ -50,36 +50,39 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       // 2. Generate unique ID for the content item
       const contentItemId = generateUUID();
 
-      // 3. Add content item using UserStateEntity method
+      // 3. Derive title if not provided (for singletons like settings/help/theme)
+      const title = params.title || this.deriveTitle(params.contentType);
+
+      // 4. Add content item using UserStateEntity method
       userState.addContentItem({
         id: contentItemId,
         type: params.contentType,
         entityId: params.entityId,
-        title: params.title,
+        title,
         subtitle: params.subtitle,
         priority: params.priority || 'normal',
         metadata: params.metadata
       });
 
-      // 4. Optionally set as current item (default: true)
+      // 5. Optionally set as current item (default: true)
       const setAsCurrent = params.setAsCurrent !== false; // Default to true
       if (setAsCurrent) {
         userState.setCurrentContent(contentItemId);
       }
 
-      // 5. Save updated userState to database
+      // 6. Save updated userState to database
       await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
         collection: 'user_states',
         id: userState.id,
         data: userState
       });
 
-      // 6. Emit content:opened event for widgets to respond to
+      // 7. Emit content:opened event for widgets to respond to
       const event: ContentOpenedEvent = {
         contentItemId,
         contentType: params.contentType,
         entityId: params.entityId,
-        title: params.title,
+        title,  // Use derived title
         userId,
         currentItemId: userState.contentState.currentItemId,
         setAsCurrent  // Include so browser knows to switch view
@@ -87,7 +90,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       await Events.emit(this.context, 'content:opened', event);
 
-      // 7. Return success result
+      // 8. Return success result
       return transformPayload(params, {
         success: true,
         contentItemId,
@@ -104,5 +107,17 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
         error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
+  }
+
+  /**
+   * Derive a display title from contentType for singleton content
+   * e.g., 'settings' -> 'Settings', 'user-profile' -> 'User Profile'
+   */
+  private deriveTitle(contentType: string): string {
+    // Handle hyphenated types like 'user-profile' -> 'User Profile'
+    return contentType
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
   }
 }

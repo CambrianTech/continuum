@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-27T16:17:06.099Z",
+  "generated": "2025-12-27T17:40:16.552Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3284,7 +3284,7 @@
         },
         "title": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "title parameter"
         },
         "subtitle": {

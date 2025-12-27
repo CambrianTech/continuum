@@ -15,16 +15,18 @@ import type { StateContentCloseParams, StateContentCloseResult } from '../../com
 import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
+import type { ContentType, ContentPriority, ContentItem } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
+import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
   private currentPath = '/chat/general'; // Current open room/path
   private contentManager: ContentInfoManager;
   private currentContent: ContentInfo | null = null;
-  
+  private contentStateAdapter: PositronContentStateAdapter;
+
   constructor() {
     super({
       widgetName: 'MainWidget',
@@ -35,9 +37,25 @@ export class MainWidget extends BaseWidget {
       enableRouterEvents: true,
       enableScreenshots: false
     });
-    
+
     // Initialize content manager with widget context
     this.contentManager = new ContentInfoManager(this);
+
+    // Initialize Positron content state adapter
+    // This handles content:opened/closed/switched events with proper state management
+    this.contentStateAdapter = new PositronContentStateAdapter(
+      () => this.userState,
+      {
+        name: 'MainWidget',
+        onStateChange: () => this.updateContentTabs(),
+        onViewSwitch: (contentType, entityId) => this.switchContentView(contentType, entityId),
+        onUrlUpdate: (contentType, entityId) => {
+          const newPath = buildContentPath(contentType, entityId);
+          this.updateUrl(newPath);
+        },
+        onFallback: () => this.refreshTabsFromDatabase('fallback')
+      }
+    );
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -530,56 +548,10 @@ export class MainWidget extends BaseWidget {
    * Subscribe to content events (opened, closed, switched) and room selection
    */
   private subscribeToContentEvents(): void {
-    // Helper to refresh tabs
-    const refreshTabs = async (source: string) => {
-      try {
-        console.log(`📋 MainPanel: Refreshing tabs from ${source}...`);
-        await this.loadUserContext();
-        await this.updateContentTabs();
-        console.log(`✅ MainPanel: Tabs refreshed from ${source}, now ${this.userState?.contentState?.openItems?.length} items`);
-      } catch (error) {
-        console.error(`❌ MainPanel: Error refreshing tabs from ${source}:`, error);
-      }
-    };
-
-    // Listen for content:opened events from content/open command
-    Events.subscribe('content:opened', (eventData: unknown) => {
-      console.log('📋 MainPanel: Received content:opened event!', eventData);
-      refreshTabs('content:opened');
-
-      // If content was opened with setAsCurrent, switch to it
-      const data = eventData as { contentType?: string; entityId?: string; setAsCurrent?: boolean };
-      if (data?.setAsCurrent && data?.contentType) {
-        console.log(`📋 MainPanel: Switching to new ${data.contentType} content`);
-        this.switchContentView(data.contentType, data.entityId);
-
-        // Update URL
-        const newPath = buildContentPath(data.contentType, data.entityId);
-        this.updateUrl(newPath);
-      }
-    });
-
-    // Also listen for content:closed and content:switched
-    Events.subscribe('content:closed', () => {
-      console.log('📋 MainPanel: Received content:closed event');
-      refreshTabs('content:closed');
-    });
-
-    Events.subscribe('content:switched', (eventData: unknown) => {
-      console.log('📋 MainPanel: Received content:switched event', eventData);
-      refreshTabs('content:switched');
-
-      // Switch to the new content view
-      const data = eventData as { contentType?: string; entityId?: string };
-      if (data?.contentType) {
-        console.log(`📋 MainPanel: Switching view to ${data.contentType}`);
-        this.switchContentView(data.contentType, data.entityId);
-
-        // Update URL
-        const newPath = buildContentPath(data.contentType, data.entityId);
-        this.updateUrl(newPath);
-      }
-    });
+    // Use Positron adapter for content:opened/closed/switched events
+    // This delegates to PositronContentStateAdapter which updates local state
+    // directly from event data instead of refetching from DB
+    this.contentStateAdapter.subscribeToEvents();
 
     // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup
     // RoomListWidget emits this and it definitely works (sidebar highlights change)
@@ -602,10 +574,25 @@ export class MainWidget extends BaseWidget {
       this.switchContentView('chat', data.roomId);
 
       // Small delay to let the content/open command complete first
-      setTimeout(() => refreshTabs('ROOM_SELECTED'), 100);
+      setTimeout(() => this.refreshTabsFromDatabase('ROOM_SELECTED'), 100);
     });
 
     console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
+  }
+
+  /**
+   * Refresh tabs by fetching from database
+   * Used as fallback when Positron local state isn't available
+   */
+  private async refreshTabsFromDatabase(source: string): Promise<void> {
+    try {
+      console.log(`📋 MainPanel: Refreshing tabs from DB (${source})...`);
+      await this.loadUserContext();
+      await this.updateContentTabs();
+      console.log(`✅ MainPanel: Tabs refreshed from DB (${source}), now ${this.userState?.contentState?.openItems?.length} items`);
+    } catch (error) {
+      console.error(`❌ MainPanel: Error refreshing tabs from DB (${source}):`, error);
+    }
   }
 
   /**

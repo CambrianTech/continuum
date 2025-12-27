@@ -13,7 +13,7 @@ export interface ContentOpenParams extends CommandParams {
   readonly userId: UUID;             // User ID (REQUIRED - infrastructure should inject from session)
   readonly contentType: ContentType;
   readonly entityId?: UUID;          // ID of the room/document/etc being opened (optional for singletons like settings)
-  readonly title: string;             // Display title for the tab
+  readonly title?: string;            // Display title for the tab (optional - derived from contentType if not provided)
   readonly subtitle?: string;         // Optional subtitle
   readonly priority?: 'low' | 'normal' | 'high' | 'urgent';
   readonly setAsCurrent?: boolean;    // Set as currentItemId (default: true)

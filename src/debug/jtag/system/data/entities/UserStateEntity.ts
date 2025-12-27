@@ -171,7 +171,7 @@ export class UserStateEntity extends BaseEntity {
         return { success: false, error: 'UserState contentItem must have id, type, and title' };
       }
 
-      const validTypes: ContentType[] = ['chat', 'document', 'user-profile', 'system-config', 'widget-debug', 'data-explorer', 'browser', 'settings', 'help', 'theme', 'persona', 'diagnostics', 'diagnostics-log'];
+      const validTypes: ContentType[] = ['chat', 'document', 'user-profile', 'profile', 'system-config', 'widget-debug', 'data-explorer', 'browser', 'settings', 'help', 'theme', 'persona', 'diagnostics', 'diagnostics-log'];
       if (!validTypes.includes(item.type)) {
         return { success: false, error: `UserState contentItem type must be one of: ${validTypes.join(', ')}` };
       }
