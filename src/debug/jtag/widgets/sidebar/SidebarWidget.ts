@@ -62,9 +62,6 @@ export class SidebarWidget extends BaseSidePanelWidget {
         <!-- Metrics Widget - AI Performance Dashboard -->
         <continuum-metrics-widget></continuum-metrics-widget>
 
-        <!-- System Navigation - Settings, Theme, Help, Logs -->
-        <system-nav-widget></system-nav-widget>
-
         <!-- Room List -->
         <div class="widget-container rooms">
           <room-list-widget></room-list-widget>
