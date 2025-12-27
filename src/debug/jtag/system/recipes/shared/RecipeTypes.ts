@@ -83,12 +83,15 @@ export interface RecipeStrategy {
  * Inputs are strings (uniqueId or UUID) - system resolves as needed.
  * URL rewriter can work either direction: /persona/helper ↔ /persona/uuid
  *
- * Simple form: just description string (input is required)
- * Full form: object with description + optional default (has default = optional)
+ * Simple form: just description string (input is required, no entity validation)
+ * Full form: object with description + entity collection for validation
  */
 export type RecipeInput = string | {
   /** What this input is for - REQUIRED */
   description: string;
+  /** Collection to validate against (e.g., 'users', 'rooms', 'recipes')
+   *  If specified, input must match uniqueId or id in that collection */
+  entity?: string;
   /** Default value - if provided, input becomes optional */
   default?: string;
 };
