@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-28T03:51:39.554Z",
+  "generated": "2025-12-28T04:06:47.840Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1942,6 +1942,48 @@
           "type": "string",
           "required": false,
           "description": "rootDir parameter"
+        }
+      }
+    },
+    {
+      "name": "development/sandbox-execute",
+      "description": "Sandbox Execute Types - Run AI-generated commands in isolation\n *\n * Executes commands from persona sandboxes using npx tsx for dynamic loading.\n * No main system recompile needed.",
+      "params": {
+        "commandPath": {
+          "type": "string",
+          "required": true,
+          "description": "commandPath parameter"
+        },
+        "params": {
+          "type": "object",
+          "required": false,
+          "description": "params parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        }
+      }
+    },
+    {
+      "name": "development/propose-command",
+      "description": "Propose Command Types - AI Command Generation\n *\n * Allows AI personas to propose and generate new commands in their isolated sandbox.\n * Commands are generated to per-persona directories and loaded dynamically.\n *\n * Flow:\n * 1. AI proposes a CommandSpec JSON\n * 2. Command is generated to .continuum/personas/{personaId}/commands/\n * 3. Commands are namespaced: persona:{uniqueId}/command-name\n * 4. AI can test their command in isolation\n * 5. Human can promote to main codebase if valuable",
+      "params": {
+        "spec": {
+          "type": "string",
+          "required": true,
+          "description": "spec parameter"
+        },
+        "force": {
+          "type": "boolean",
+          "required": false,
+          "description": "force parameter"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "required": false,
+          "description": "dryRun parameter"
         }
       }
     },
