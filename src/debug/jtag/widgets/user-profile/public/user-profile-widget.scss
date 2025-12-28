@@ -1,0 +1,254 @@
+/**
+ * UserProfileWidget Styles
+ *
+ * Universal user profile view for humans, personas, and agents.
+ * Uses shared SCSS variables for consistent theming.
+ */
+
+@import '../../shared/styles/variables';
+@import '../../shared/styles/mixins';
+
+:host {
+  display: block;
+  height: 100%;
+  overflow: auto;
+}
+
+.profile-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: $spacing-xl;
+}
+
+.loading, .error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: $color-text-dim;
+  font-size: $font-size-md;
+}
+
+.error {
+  color: $color-error;
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: $spacing-lg;
+  padding: $spacing-lg;
+  background: rgba(10, 15, 20, 0.95);
+  border: $border-primary;
+  border-radius: $border-radius-lg;
+  margin-bottom: $spacing-lg;
+}
+
+.avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(0, 212, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  border: 2px solid rgba(0, 212, 255, 0.4);
+
+  &.frozen {
+    opacity: 0.5;
+    filter: grayscale(1);
+  }
+}
+
+.user-details {
+  flex: 1;
+}
+
+.user-name {
+  font-size: 28px;
+  font-weight: 600;
+  color: $color-text;
+  margin: 0 0 $spacing-xs 0;
+}
+
+.user-meta {
+  display: flex;
+  gap: $spacing-sm;
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+
+  // User type badges
+  &.type-human { background: $color-success; color: $color-text; }
+  &.type-persona { background: #9C27B0; color: $color-text; }
+  &.type-agent { background: #2196F3; color: $color-text; }
+  &.type-system { background: #607D8B; color: $color-text; }
+
+  // Status badges
+  &.status-online { background: $color-success; color: $color-text; }
+  &.status-offline { background: rgba(100, 100, 100, 0.5); color: $color-text-dim; }
+  &.status-frozen { background: #00bcd4; color: $color-text; }
+  &.status-deleted { background: $color-error; color: $color-text; }
+}
+
+.section {
+  background: rgba(10, 15, 20, 0.95);
+  border: $border-primary;
+  border-radius: $border-radius-lg;
+  margin-bottom: $spacing-lg;
+  overflow: hidden;
+}
+
+.section-header {
+  padding: $spacing-md $spacing-lg;
+  background: rgba(0, 212, 255, 0.1);
+  border-bottom: $border-primary;
+  font-size: $font-size-lg;
+  font-weight: 600;
+  color: $color-primary;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.section-content {
+  padding: $spacing-lg;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: $spacing-md;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.info-label {
+  font-size: 12px;
+  color: $color-text-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.info-value {
+  font-size: $font-size-md;
+  color: $color-text;
+}
+
+.actions {
+  display: flex;
+  gap: $spacing-sm;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: $spacing-sm $spacing-lg;
+  border-radius: $border-radius-md;
+  font-size: $font-size-lg;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all $transition-fast;
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+}
+
+.btn-primary {
+  background: $color-primary;
+  color: #000;
+
+  &:hover {
+    background: #00e5ff;
+    transform: translateY(-1px);
+  }
+}
+
+.btn-secondary {
+  background: rgba(0, 212, 255, 0.2);
+  color: $color-primary;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.3);
+  }
+}
+
+.btn-warning {
+  background: rgba(255, 152, 0, 0.2);
+  color: $color-warning;
+  border: 1px solid rgba(255, 152, 0, 0.3);
+
+  &:hover {
+    background: rgba(255, 152, 0, 0.3);
+  }
+}
+
+.btn-danger {
+  background: rgba(244, 67, 54, 0.2);
+  color: $color-error;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+
+  &:hover {
+    background: rgba(244, 67, 54, 0.3);
+  }
+}
+
+.cognitive-links {
+  display: flex;
+  gap: $spacing-sm;
+  margin-top: $spacing-sm;
+}
+
+.cognitive-link {
+  padding: $spacing-md $spacing-lg;
+  background: rgba(156, 39, 176, 0.15);
+  border: 1px solid rgba(156, 39, 176, 0.3);
+  border-radius: $border-radius-md;
+  color: #ce93d8;
+  cursor: pointer;
+  transition: all $transition-fast;
+  text-align: center;
+
+  &:hover {
+    background: rgba(156, 39, 176, 0.25);
+    transform: translateY(-2px);
+  }
+
+  .icon {
+    font-size: 24px;
+    display: block;
+    margin-bottom: $spacing-xs;
+  }
+
+  .label {
+    font-size: $font-size-lg;
+    font-weight: 600;
+  }
+}
+
+.actions-note {
+  color: $color-text-muted;
+  font-size: 13px;
+  margin: $spacing-md 0 0 0;
+}
+
+.description-text {
+  color: $color-text-dim;
+}
+
+.cognitive-description {
+  color: $color-text-dim;
+  margin: 0 0 $spacing-md 0;
+}
