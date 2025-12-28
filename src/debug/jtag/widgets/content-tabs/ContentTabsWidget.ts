@@ -97,9 +97,9 @@ export class ContentTabsWidget extends BaseWidget {
       .content-tab.active {
         /* Active tab connects to content below */
         background: rgba(15, 20, 25, 0.95);
-        border-color: rgba(0, 212, 255, 0.4);
+        border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
         border-bottom-color: transparent;
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
         font-weight: 600;
         z-index: 1;
       }

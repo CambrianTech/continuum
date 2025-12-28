@@ -217,8 +217,8 @@ export class HelpWidget extends BaseWidget {
 
       .nav-item.active {
         background: rgba(0, 212, 255, 0.15);
-        color: #00d4ff;
-        border-left: 3px solid #00d4ff;
+        color: var(--content-accent, #00d4ff);
+        border-left: 3px solid var(--content-accent, #00d4ff);
       }
 
       .nav-icon {
@@ -231,7 +231,7 @@ export class HelpWidget extends BaseWidget {
         border-radius: 50%;
         font-size: 12px;
         font-weight: 600;
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
       }
 
       .help-content {
@@ -241,7 +241,7 @@ export class HelpWidget extends BaseWidget {
 
       .help-content h3 {
         font-size: 24px;
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
         margin: 0 0 16px 0;
       }
 
@@ -273,12 +273,12 @@ export class HelpWidget extends BaseWidget {
         padding: 2px 6px;
         border-radius: 4px;
         font-family: monospace;
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
         font-size: 13px;
       }
 
       .help-content a {
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
         text-decoration: none;
       }
 
@@ -338,7 +338,7 @@ export class HelpWidget extends BaseWidget {
 
         .nav-item.active {
           border-left: none;
-          border-bottom: 2px solid #00d4ff;
+          border-bottom: 2px solid var(--content-accent, #00d4ff);
         }
 
         .help-assistant {
