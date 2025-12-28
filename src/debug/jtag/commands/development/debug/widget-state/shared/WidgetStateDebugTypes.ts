@@ -39,6 +39,9 @@ export interface WidgetStateDebugParams extends CommandParams {
     dwellTimeMs?: number;
   };
   contextSessionId?: string;  // Renamed to avoid conflict with CommandParams.sessionId
+
+  // Query stored context: get current RAG context for debugging
+  getStoredContext?: boolean;  // Return the current widget context from WidgetContextService
 }
 
 export interface WidgetStateDebugResult extends CommandResult {
@@ -105,6 +108,16 @@ export interface WidgetStateDebugResult extends CommandResult {
     rawData: Record<string, unknown>;
     filteredData: Record<string, unknown>;
     filterResults: string[];
+  };
+
+  // Stored RAG context from WidgetContextService
+  storedContext?: {
+    ragString: string | null;  // The formatted string injected into AI prompts
+    rawContext: unknown | null;  // The raw PositronicContext object
+    stats: {
+      activeContexts: number;
+      initialized: boolean;
+    };
   };
 
   connectivity: {
