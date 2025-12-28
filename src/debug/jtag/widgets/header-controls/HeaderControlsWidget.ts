@@ -117,6 +117,7 @@ export class HeaderControlsWidget extends BaseWidget {
         <div class="status-buttons">
           <button class="status-button" id="theme-button">Theme</button>
           <button class="status-button" id="settings-button">Settings</button>
+          <button class="status-button" id="browser-button">Browser</button>
           <button class="status-button" id="help-button">Help</button>
         </div>
       </div>
@@ -166,6 +167,11 @@ export class HeaderControlsWidget extends BaseWidget {
       this.handleSettingsClick();
     });
 
+    // Browser button
+    this.shadowRoot?.getElementById('browser-button')?.addEventListener('click', () => {
+      this.handleBrowserClick();
+    });
+
     // Help button
     this.shadowRoot?.getElementById('help-button')?.addEventListener('click', () => {
       this.handleHelpClick();
@@ -198,6 +204,20 @@ export class HeaderControlsWidget extends BaseWidget {
     Events.emit('header:settings-clicked', {});
 
     this.dispatchEvent(new CustomEvent('settings-clicked', {
+      bubbles: true,
+      composed: true
+    }));
+  }
+
+  /**
+   * Handle browser button click
+   */
+  private handleBrowserClick(): void {
+    console.log('🌐 HeaderControlsWidget: Browser button clicked');
+
+    Events.emit('header:browser-clicked', {});
+
+    this.dispatchEvent(new CustomEvent('browser-clicked', {
       bubbles: true,
       composed: true
     }));

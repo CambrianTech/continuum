@@ -6,7 +6,7 @@
   "version": 1,
 
   "layout": {
-    "main": ["browser-widget"],
+    "main": ["web-view-widget"],
     "right": {
       "widgets": ["chat-widget"],
       "config": { "room": "help", "compact": true }

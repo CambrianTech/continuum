@@ -1,38 +1,26 @@
 /**
- * WebViewWidget - Co-browsing widget for AI context awareness
+ * WebViewWidget - Onboarding and documentation with AI assistance
  *
- * Enables AIs to "see" what web content the user is viewing.
- * Fetches web pages via CORS proxy and extracts content for RAG context.
- *
- * Key capability: AI assistants can provide help based on the actual
- * web page content the user is looking at.
+ * Helps new users get started with Continuum.
+ * Includes embedded AI assistant for contextual help.
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
+import { AssistantPanel } from '../shared/AssistantPanel';
+import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
-import type { WebFetchParams, WebFetchResult } from '../../commands/interface/web/fetch/shared/WebFetchTypes';
 
-interface PageContent {
-  url: string;
+interface HelpSection {
+  id: string;
   title: string;
-  description: string;
-  textContent: string;
-  links: Array<{ text: string; href: string }>;
-  headings: string[];
-  fetchedAt: number;
+  icon: string;
+  content: string;
 }
 
 export class WebViewWidget extends BaseWidget {
-  private currentUrl: string = '';
-  private pageContent: PageContent | null = null;
-  private isLoading: boolean = false;
-  private error: string | null = null;
-
-  // DOM references
-  private urlInput!: HTMLInputElement;
-  private contentFrame!: HTMLDivElement;
-  private loadingIndicator!: HTMLDivElement;
-  private errorDisplay!: HTMLDivElement;
+  private activeSection: string = 'getting-started';
+  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
@@ -47,425 +35,377 @@ export class WebViewWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('WebView: Initializing co-browsing widget...');
+    console.log('Browser: Initializing help widget...');
     this.emitPositronContext();
-  }
-
-  protected async renderWidget(): Promise<void> {
-    this.render();
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    // No cleanup needed
-  }
-
-  /**
-   * Render the widget UI
-   */
-  private render(): void {
-    const container = this.shadowRoot || this;
-
-    container.innerHTML = `
-      <style>
-        :host {
-          display: flex;
-          flex-direction: column;
-          height: 100%;
-          background: var(--surface-background, rgba(15, 20, 25, 0.95));
-          color: var(--text-primary, #e0e0e0);
-          font-family: var(--font-family, 'Inter', sans-serif);
-        }
-
-        .url-bar {
-          display: flex;
-          gap: 8px;
-          padding: 12px;
-          background: var(--surface-elevated, rgba(25, 30, 40, 0.9));
-          border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
-        }
-
-        .url-input {
-          flex: 1;
-          padding: 8px 12px;
-          background: var(--input-background, rgba(0, 0, 0, 0.3));
-          border: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.3));
-          border-radius: 6px;
-          color: var(--text-primary, #e0e0e0);
-          font-size: 14px;
-          outline: none;
-        }
-
-        .url-input:focus {
-          border-color: var(--color-primary, #00d4ff);
-          box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.2);
-        }
-
-        .go-button {
-          padding: 8px 16px;
-          background: var(--color-primary, #00d4ff);
-          border: none;
-          border-radius: 6px;
-          color: #000;
-          font-weight: 600;
-          cursor: pointer;
-          transition: opacity 0.2s;
-        }
-
-        .go-button:hover {
-          opacity: 0.9;
-        }
-
-        .go-button:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .content-area {
-          flex: 1;
-          overflow: auto;
-          padding: 16px;
-        }
-
-        .loading {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 100%;
-          color: var(--text-secondary, #888);
-        }
-
-        .loading::after {
-          content: '';
-          width: 24px;
-          height: 24px;
-          margin-left: 12px;
-          border: 2px solid var(--color-primary, #00d4ff);
-          border-top-color: transparent;
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-
-        .error {
-          padding: 16px;
-          background: rgba(255, 80, 80, 0.1);
-          border: 1px solid rgba(255, 80, 80, 0.3);
-          border-radius: 8px;
-          color: #ff5050;
-        }
-
-        .page-content {
-          line-height: 1.6;
-        }
-
-        .page-content h1, .page-content h2, .page-content h3 {
-          color: var(--color-primary, #00d4ff);
-          margin-top: 1.5em;
-          margin-bottom: 0.5em;
-        }
-
-        .page-content h1 { font-size: 1.5em; }
-        .page-content h2 { font-size: 1.3em; }
-        .page-content h3 { font-size: 1.1em; }
-
-        .page-content p {
-          margin-bottom: 1em;
-        }
-
-        .page-content a {
-          color: var(--color-primary, #00d4ff);
-          text-decoration: none;
-        }
-
-        .page-content a:hover {
-          text-decoration: underline;
-        }
-
-        .page-meta {
-          margin-bottom: 16px;
-          padding-bottom: 16px;
-          border-bottom: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
-        }
-
-        .page-meta .title {
-          font-size: 1.2em;
-          font-weight: 600;
-          color: var(--text-primary, #e0e0e0);
-          margin-bottom: 8px;
-        }
-
-        .page-meta .description {
-          color: var(--text-secondary, #888);
-          font-size: 0.9em;
-        }
-
-        .empty-state {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 100%;
-          color: var(--text-secondary, #888);
-          text-align: center;
-        }
-
-        .empty-state .icon {
-          font-size: 48px;
-          margin-bottom: 16px;
-          opacity: 0.5;
-        }
-
-        .ai-context-badge {
-          position: absolute;
-          top: 8px;
-          right: 8px;
-          padding: 4px 8px;
-          background: rgba(0, 212, 255, 0.2);
-          border: 1px solid rgba(0, 212, 255, 0.4);
-          border-radius: 4px;
-          font-size: 10px;
-          color: var(--color-primary, #00d4ff);
-        }
-      </style>
-
-      <div class="url-bar">
-        <input type="text" class="url-input" placeholder="Enter URL to browse (e.g., https://example.com)" />
-        <button class="go-button">Go</button>
-      </div>
-
-      <div class="content-area">
-        <div class="empty-state">
-          <div class="icon">🌐</div>
-          <div>Enter a URL above to browse</div>
-          <div style="margin-top: 8px; font-size: 0.85em;">
-            AI assistants will be able to see the page content
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Get DOM references
-    this.urlInput = container.querySelector('.url-input') as HTMLInputElement;
-    this.contentFrame = container.querySelector('.content-area') as HTMLDivElement;
-
-    // Set up event listeners
-    const goButton = container.querySelector('.go-button') as HTMLButtonElement;
-    goButton.addEventListener('click', () => this.loadUrl());
-
-    this.urlInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        this.loadUrl();
-      }
-    });
-  }
-
-  /**
-   * Load a URL via CORS proxy
-   */
-  async loadUrl(url?: string): Promise<void> {
-    const targetUrl = url || this.urlInput.value.trim();
-
-    if (!targetUrl) {
-      this.showError('Please enter a URL');
-      return;
-    }
-
-    // Normalize URL
-    let normalizedUrl = targetUrl;
-    if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
-      normalizedUrl = 'https://' + normalizedUrl;
-    }
-
-    this.currentUrl = normalizedUrl;
-    this.isLoading = true;
-    this.error = null;
-    this.showLoading();
-
-    try {
-      // Fetch via server-side command (bypasses CORS)
-      const result = await this.executeCommand<WebFetchParams, WebFetchResult>(
-        'interface/web/fetch',
-        {
-          url: normalizedUrl,
-          format: 'text',
-          maxLength: 10000  // Limit for RAG context efficiency
-        }
-      );
-
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch page');
-      }
-
-      // Extract headings from content (simple heuristic)
-      const headings = this.extractHeadings(result.content || '');
-
-      // Store the content
-      this.pageContent = {
-        url: result.finalUrl || normalizedUrl,
-        title: result.title || this.extractDomain(normalizedUrl),
-        description: '',  // Not available from text format
-        textContent: result.content || '',
-        links: [],  // Not extracted in text format
-        headings,
-        fetchedAt: Date.now()
-      };
-
-      this.renderContent();
-      this.emitPositronContext();
-
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.showError(`Failed to load page: ${errorMsg}`);
-      console.error('WebView: Error loading URL:', error);
-    } finally {
-      this.isLoading = false;
-    }
-  }
-
-  /**
-   * Show loading state
-   */
-  private showLoading(): void {
-    this.contentFrame.innerHTML = `
-      <div class="loading">Loading ${this.currentUrl}...</div>
-    `;
-  }
-
-  /**
-   * Show error state
-   */
-  private showError(message: string): void {
-    this.error = message;
-    this.contentFrame.innerHTML = `
-      <div class="error">${message}</div>
-    `;
-  }
-
-  /**
-   * Render the fetched content
-   */
-  private renderContent(): void {
-    if (!this.pageContent) return;
-
-    const { title, description, textContent, headings } = this.pageContent;
-
-    // Truncate content for display (full content goes to AI context)
-    const displayContent = textContent.length > 5000
-      ? textContent.slice(0, 5000) + '...'
-      : textContent;
-
-    this.contentFrame.innerHTML = `
-      <div class="ai-context-badge">AI can see this page</div>
-      <div class="page-meta">
-        <div class="title">${this.escapeHtml(title)}</div>
-        ${description ? `<div class="description">${this.escapeHtml(description)}</div>` : ''}
-      </div>
-      <div class="page-content">
-        ${headings.length > 0 ? `
-          <h3>Page Sections</h3>
-          <ul>
-            ${headings.slice(0, 10).map(h => `<li>${this.escapeHtml(h)}</li>`).join('')}
-          </ul>
-        ` : ''}
-        <h3>Content</h3>
-        <div style="white-space: pre-wrap;">${this.escapeHtml(displayContent)}</div>
-      </div>
-    `;
   }
 
   /**
    * Emit Positron context for AI awareness
    */
   private emitPositronContext(): void {
-    if (this.pageContent) {
-      // Emit rich context with page content
-      PositronWidgetState.emit(
-        {
-          widgetType: 'web-view',
-          title: `Browsing: ${this.pageContent.title}`,
-          metadata: {
-            url: this.pageContent.url,
-            pageTitle: this.pageContent.title,
-            pageDescription: this.pageContent.description,
-            // Include summarized content for AI (truncated for token efficiency)
-            pageContent: this.pageContent.textContent.slice(0, 2000),
-            headings: this.pageContent.headings.slice(0, 10),
-            linkCount: this.pageContent.links.length,
-            fetchedAt: this.pageContent.fetchedAt
-          }
-        },
-        {
-          action: 'viewing',
-          target: this.pageContent.title,
-          details: `User is browsing: ${this.pageContent.url}`
+    const sections = this.getSections();
+    const currentSectionData = sections.find(s => s.id === this.activeSection);
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'browser',
+        section: this.activeSection,
+        title: `Help - ${currentSectionData?.title || 'Documentation'}`,
+        metadata: {
+          totalSections: sections.length,
+          sectionTitles: sections.map(s => s.title)
         }
-      );
-    } else {
-      // Emit empty state
-      PositronWidgetState.emit(
-        {
-          widgetType: 'web-view',
-          title: 'Web Browser',
-          metadata: {
-            state: 'empty',
-            message: 'No page loaded'
-          }
-        },
-        { action: 'viewing', target: 'web browser (empty)' }
-      );
-    }
+      },
+      { action: 'viewing', target: currentSectionData?.title || 'help documentation' }
+    );
   }
 
-  /**
-   * Extract headings from text content (simple heuristic)
-   */
-  private extractHeadings(text: string): string[] {
-    const lines = text.split('\n');
-    const headings: string[] = [];
+  private getSections(): HelpSection[] {
+    return [
+      {
+        id: 'getting-started',
+        title: 'Getting Started',
+        icon: '1',
+        content: `
+          <h3>Welcome to Continuum</h3>
+          <p>Continuum is a collaborative AI workspace where you can chat with multiple AI models,
+          configure your environment, and work together with AI assistants.</p>
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      // Heuristic: short lines (5-80 chars) that are capitalized or end with no punctuation
-      // might be headings
-      if (trimmed.length >= 5 && trimmed.length <= 80) {
-        // Check if it looks like a heading (all caps, title case, or no ending punctuation)
-        const isAllCaps = trimmed === trimmed.toUpperCase() && /[A-Z]/.test(trimmed);
-        const noEndPunct = !/[.!?:;,]$/.test(trimmed);
-        const startsCapital = /^[A-Z]/.test(trimmed);
+          <h4>Quick Start</h4>
+          <ol>
+            <li><strong>Chat</strong> - Click on any room in the sidebar to start chatting</li>
+            <li><strong>AI Models</strong> - Multiple AI assistants are available to help</li>
+            <li><strong>Settings</strong> - Add API keys to enable cloud AI providers</li>
+            <li><strong>Free AI</strong> - Ollama provides free local AI with no API keys needed</li>
+          </ol>
+        `
+      },
+      {
+        id: 'ollama',
+        title: 'Free AI with Ollama',
+        icon: '2',
+        content: `
+          <h3>Local AI - No API Keys Required</h3>
+          <p>Ollama runs AI models locally on your machine, completely free.</p>
 
-        if ((isAllCaps || (startsCapital && noEndPunct)) && headings.length < 20) {
-          headings.push(trimmed);
+          <h4>Setup</h4>
+          <ol>
+            <li>Download Ollama from <a href="https://ollama.ai" target="_blank">ollama.ai</a></li>
+            <li>Install and run Ollama</li>
+            <li>Pull a model: <code>ollama pull llama3.2</code></li>
+            <li>That's it! Local Assistant will now respond in chat</li>
+          </ol>
+
+          <h4>Recommended Models</h4>
+          <ul>
+            <li><strong>llama3.2:3b</strong> - Fast, good for general chat (2GB)</li>
+            <li><strong>llama3.2:7b</strong> - Better quality (4GB)</li>
+            <li><strong>codellama</strong> - Optimized for code</li>
+          </ul>
+        `
+      },
+      {
+        id: 'api-keys',
+        title: 'API Keys',
+        icon: '3',
+        content: `
+          <h3>Cloud AI Providers</h3>
+          <p>For more powerful AI models, add API keys in Settings.</p>
+
+          <h4>Supported Providers</h4>
+          <ul>
+            <li><strong>Anthropic (Claude)</strong> - Best for complex reasoning</li>
+            <li><strong>OpenAI (GPT)</strong> - General purpose AI</li>
+            <li><strong>Groq</strong> - Extremely fast inference</li>
+            <li><strong>Together.ai</strong> - Open source models</li>
+            <li><strong>DeepSeek</strong> - Cost-effective coding</li>
+            <li><strong>xAI (Grok)</strong> - Latest AI research</li>
+          </ul>
+
+          <p>Go to <strong>Settings</strong> to add your API keys.</p>
+        `
+      },
+      {
+        id: 'chat-rooms',
+        title: 'Chat Rooms',
+        icon: '4',
+        content: `
+          <h3>Collaborative Spaces</h3>
+          <p>Chat rooms are collaborative spaces where you and AI assistants can work together.</p>
+
+          <h4>Default Rooms</h4>
+          <ul>
+            <li><strong>General</strong> - Open discussion for any topic</li>
+            <li><strong>Academy</strong> - Learning and tutorials</li>
+            <li><strong>Dev Updates</strong> - Development activity feed</li>
+            <li><strong>Pantheon</strong> - Advanced multi-model reasoning</li>
+          </ul>
+
+          <h4>Tips</h4>
+          <ul>
+            <li>Click a room in the sidebar to open it</li>
+            <li>Multiple rooms can be open as tabs</li>
+            <li>AI assistants respond automatically</li>
+          </ul>
+        `
+      },
+      {
+        id: 'keyboard',
+        title: 'Keyboard Shortcuts',
+        icon: '5',
+        content: `
+          <h3>Keyboard Shortcuts</h3>
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr><td><code>Enter</code></td><td>Send message</td></tr>
+            <tr><td><code>Shift + Enter</code></td><td>New line in message</td></tr>
+            <tr><td><code>Ctrl/Cmd + K</code></td><td>Quick command palette</td></tr>
+            <tr><td><code>Ctrl/Cmd + ,</code></td><td>Open settings</td></tr>
+            <tr><td><code>Ctrl/Cmd + 1-9</code></td><td>Switch to tab N</td></tr>
+          </table>
+        `
+      }
+    ];
+  }
+
+  protected async renderWidget(): Promise<void> {
+    const sections = this.getSections();
+    const activeContent = sections.find(s => s.id === this.activeSection)?.content || '';
+
+    const styles = `
+      :host {
+        display: block;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      .help-layout {
+        display: grid;
+        grid-template-columns: 220px 1fr 350px;
+        height: 100%;
+      }
+
+      .help-sidebar {
+        background: rgba(10, 15, 20, 0.95);
+        border-right: 1px solid rgba(0, 212, 255, 0.2);
+        padding: 16px 0;
+        overflow-y: auto;
+      }
+
+      .sidebar-title {
+        padding: 0 16px 12px;
+        font-size: 12px;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+        letter-spacing: 1px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 14px;
+      }
+
+      .nav-item:hover {
+        background: rgba(0, 212, 255, 0.1);
+        color: white;
+      }
+
+      .nav-item.active {
+        background: rgba(0, 212, 255, 0.15);
+        color: var(--content-accent, #00d4ff);
+        border-left: 3px solid var(--content-accent, #00d4ff);
+      }
+
+      .nav-icon {
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 212, 255, 0.2);
+        border-radius: 50%;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--content-accent, #00d4ff);
+      }
+
+      .help-content {
+        padding: 32px;
+        overflow-y: auto;
+      }
+
+      .help-content h3 {
+        font-size: 24px;
+        color: var(--content-accent, #00d4ff);
+        margin: 0 0 16px 0;
+      }
+
+      .help-content h4 {
+        font-size: 16px;
+        color: white;
+        margin: 24px 0 12px 0;
+      }
+
+      .help-content p {
+        color: rgba(255, 255, 255, 0.8);
+        line-height: 1.6;
+        margin: 0 0 16px 0;
+      }
+
+      .help-content ol, .help-content ul {
+        color: rgba(255, 255, 255, 0.8);
+        line-height: 1.8;
+        padding-left: 24px;
+        margin: 0 0 16px 0;
+      }
+
+      .help-content li {
+        margin-bottom: 8px;
+      }
+
+      .help-content code {
+        background: rgba(0, 212, 255, 0.15);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: monospace;
+        color: var(--content-accent, #00d4ff);
+        font-size: 13px;
+      }
+
+      .help-content a {
+        color: var(--content-accent, #00d4ff);
+        text-decoration: none;
+      }
+
+      .help-content a:hover {
+        text-decoration: underline;
+      }
+
+      .help-content table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 16px 0;
+      }
+
+      .help-content td {
+        padding: 8px 12px;
+        border-bottom: 1px solid rgba(0, 212, 255, 0.1);
+        color: rgba(255, 255, 255, 0.8);
+      }
+
+      .help-content td:first-child {
+        width: 150px;
+      }
+
+      .help-assistant {
+        border-left: 1px solid rgba(0, 212, 255, 0.2);
+        height: 100%;
+      }
+
+      @media (max-width: 1100px) {
+        .help-layout {
+          grid-template-columns: 180px 1fr 300px;
         }
       }
-    }
 
-    return headings;
+      @media (max-width: 900px) {
+        .help-layout {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto 1fr 300px;
+        }
+
+        .help-sidebar {
+          border-right: none;
+          border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+          display: flex;
+          overflow-x: auto;
+          padding: 8px;
+        }
+
+        .sidebar-title {
+          display: none;
+        }
+
+        .nav-item {
+          white-space: nowrap;
+          padding: 8px 12px;
+        }
+
+        .nav-item.active {
+          border-left: none;
+          border-bottom: 2px solid var(--content-accent, #00d4ff);
+        }
+
+        .help-assistant {
+          border-left: none;
+          border-top: 1px solid rgba(0, 212, 255, 0.2);
+        }
+      }
+    `;
+
+    const navItems = sections.map(s => `
+      <div class="nav-item ${s.id === this.activeSection ? 'active' : ''}" data-section="${s.id}">
+        <span class="nav-icon">${s.icon}</span>
+        <span>${s.title}</span>
+      </div>
+    `).join('');
+
+    const template = `
+      <div class="help-layout">
+        <div class="help-sidebar">
+          <div class="sidebar-title">Help Topics</div>
+          ${navItems}
+        </div>
+        <div class="help-content">
+          ${activeContent}
+        </div>
+        <div class="help-assistant" id="assistant-container"></div>
+      </div>
+    `;
+
+    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
+    this.setupEventListeners();
+    this.initializeAssistant();
   }
 
-  /**
-   * Extract domain from URL
-   */
-  private extractDomain(url: string): string {
-    try {
-      const urlObj = new URL(url);
-      return urlObj.hostname;
-    } catch {
-      return url;
-    }
+  private initializeAssistant(): void {
+    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
+    if (!container) return;
+
+    // Clean up old instance
+    this.assistantPanel?.destroy();
+
+    // Create new assistant panel connected to Help room
+    this.assistantPanel = new AssistantPanel(container, {
+      roomId: DEFAULT_ROOMS.HELP as UUID,
+      roomName: 'help',
+      placeholder: 'Ask for help...',
+      greeting: "Hi! I'm here to help you get started with Continuum. What would you like to know?"
+    });
   }
 
-  /**
-   * Escape HTML to prevent XSS
-   */
-  private escapeHtml(text: string): string {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+  private setupEventListeners(): void {
+    this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        const section = (e.currentTarget as HTMLElement).dataset.section;
+        if (section && section !== this.activeSection) {
+          this.activeSection = section;
+          this.renderWidget();
+          this.emitPositronContext();  // Notify AIs of section change
+        }
+      });
+    });
+  }
+
+  protected async onWidgetCleanup(): Promise<void> {
+    this.assistantPanel?.destroy();
+    console.log('Browser: Cleanup complete');
   }
 }
 
-// Register custom element
-customElements.define('web-view-widget', WebViewWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry
