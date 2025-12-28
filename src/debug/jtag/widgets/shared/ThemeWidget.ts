@@ -4,6 +4,11 @@
  * Visual theme editor with embedded AI assistant for designing themes,
  * choosing colors, and customizing workspace appearance.
  * Think Mac Terminal's theme selector, but with AI help.
+ *
+ * Structure:
+ * - public/theme-widget.html - Template container
+ * - public/theme-widget.scss - Styles (compiled to .css)
+ * - ThemeWidget.ts - Logic (this file)
  */
 
 import { BaseWidget } from './BaseWidget';
@@ -27,8 +32,8 @@ export class ThemeWidget extends BaseWidget {
   constructor() {
     super({
       widgetName: 'ThemeWidget',
-      template: undefined,
-      styles: undefined,
+      template: 'theme-widget.html',
+      styles: 'theme-widget.css',
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
@@ -37,6 +42,13 @@ export class ThemeWidget extends BaseWidget {
 
     // Initialize dynamic theme discovery service
     this.themeDiscovery = new ThemeDiscoveryService();
+  }
+
+  /**
+   * Override path resolution - ThemeWidget is in widgets/shared/, public folder is there too
+   */
+  protected resolveResourcePath(filename: string): string {
+    return `widgets/shared/public/${filename}`;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -95,155 +107,35 @@ export class ThemeWidget extends BaseWidget {
       await this.setTheme(this.currentTheme);
     }
 
-    const styles = `
-      :host {
-        display: flex;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-      }
+    // Inject loaded template and styles into shadow DOM
+    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
+      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
+      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
+    }
 
-      .theme-layout {
-        display: flex;
-        flex: 1;
-        width: 100%;
-        height: 100%;
-      }
+    // Render dynamic content
+    this.renderContent();
 
-      .theme-main {
-        flex: 1;
-        overflow-y: auto;
-        padding: 20px 24px;
-        min-width: 0;
-      }
+    // Setup event listeners
+    this.setupThemeControls();
 
-      .theme-container {
-        width: 100%;
-      }
+    console.log('✅ ThemeWidget: Rendered');
+  }
 
-      .theme-header {
-        margin-bottom: 24px;
-      }
+  private renderContent(): void {
+    // Update current theme display
+    const themeNameEl = this.shadowRoot?.querySelector('#current-theme-name');
+    if (themeNameEl) {
+      themeNameEl.textContent = this.currentTheme;
+    }
 
-      .theme-title {
-        font-size: 24px;
-        font-weight: 600;
-        color: var(--content-accent, #00d4ff);
-        margin: 0 0 8px 0;
-      }
+    // Render theme cards
+    const themeGrid = this.shadowRoot?.querySelector('#theme-grid');
+    if (!themeGrid) return;
 
-      .theme-subtitle {
-        color: rgba(255, 255, 255, 0.6);
-        font-size: 14px;
-      }
-
-      .theme-section {
-        background: rgba(15, 20, 25, 0.8);
-        border: 1px solid rgba(0, 212, 255, 0.2);
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 16px;
-      }
-
-      .section-title {
-        font-size: 16px;
-        font-weight: 600;
-        color: var(--content-accent, #00d4ff);
-        margin: 0 0 16px 0;
-        padding-bottom: 8px;
-        border-bottom: 1px solid var(--border-accent, rgba(0, 212, 255, 0.2));
-      }
-
-      .theme-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-        gap: 12px;
-      }
-
-      .theme-card {
-        background: rgba(0, 10, 15, 0.8);
-        border: 2px solid rgba(0, 212, 255, 0.2);
-        border-radius: 8px;
-        padding: 12px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        text-align: center;
-      }
-
-      .theme-card:hover {
-        border-color: rgba(0, 212, 255, 0.5);
-        background: rgba(0, 212, 255, 0.05);
-        transform: translateY(-2px);
-      }
-
-      .theme-card.active {
-        border-color: var(--content-accent, #00d4ff);
-        background: rgba(0, 212, 255, 0.1);
-        box-shadow: 0 0 12px rgba(0, 212, 255, 0.3);
-      }
-
-      .theme-preview {
-        width: 100%;
-        height: 60px;
-        border-radius: 4px;
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-family: monospace;
-        font-size: 11px;
-      }
-
-      .theme-name {
-        font-size: 13px;
-        font-weight: 500;
-        color: white;
-      }
-
-      .theme-description {
-        font-size: 11px;
-        color: rgba(255, 255, 255, 0.5);
-        margin-top: 4px;
-      }
-
-      .current-theme-display {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 16px;
-        background: rgba(0, 212, 255, 0.1);
-        border: 1px solid rgba(0, 212, 255, 0.3);
-        border-radius: 8px;
-        margin-bottom: 20px;
-      }
-
-      .current-theme-label {
-        color: rgba(255, 255, 255, 0.6);
-        font-size: 13px;
-      }
-
-      .current-theme-name {
-        color: var(--content-accent, #00d4ff);
-        font-weight: 600;
-        font-size: 16px;
-      }
-
-      .info-box {
-        background: rgba(0, 212, 255, 0.1);
-        border: 1px solid rgba(0, 212, 255, 0.3);
-        border-radius: 6px;
-        padding: 12px 16px;
-        margin-bottom: 20px;
-        font-size: 13px;
-        color: rgba(255, 255, 255, 0.8);
-      }
-
-    `;
-
-    // Get available themes
     const themes = ThemeRegistry.getAllThemes();
 
-    const themeCardsHtml = themes.map(theme => `
+    themeGrid.innerHTML = themes.map(theme => `
       <div class="theme-card ${theme.name === this.currentTheme ? 'active' : ''}"
            data-theme="${theme.name}"
            title="${theme.description}">
@@ -254,43 +146,6 @@ export class ThemeWidget extends BaseWidget {
         <div class="theme-description">${theme.category}</div>
       </div>
     `).join('');
-
-    const template = `
-      <div class="theme-layout">
-        <div class="theme-main">
-          <div class="theme-container">
-            <div class="theme-header">
-              <h1 class="theme-title">Theme</h1>
-              <p class="theme-subtitle">Customize your workspace appearance</p>
-            </div>
-
-            <div class="info-box">
-              <strong>AI Theme Design:</strong> Ask the AI assistant for help choosing colors,
-              creating custom themes, or matching a specific aesthetic.
-            </div>
-
-            <div class="current-theme-display">
-              <span class="current-theme-label">Current Theme:</span>
-              <span class="current-theme-name">${this.currentTheme}</span>
-            </div>
-
-            <div class="theme-section">
-              <h2 class="section-title">Available Themes</h2>
-              <div class="theme-grid">
-                ${themeCardsHtml}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-
-    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
-
-    // Setup event listeners
-    this.setupThemeControls();
-
-    console.log('✅ ThemeWidget: Rendered');
   }
 
   protected async onWidgetCleanup(): Promise<void> {
