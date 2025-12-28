@@ -72,12 +72,12 @@ export const PANEL_HEADER_STYLES = `
   .panel-title {
     font-size: 24px;
     font-weight: 600;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     margin: 0 0 8px 0;
   }
 
   .panel-subtitle {
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--content-secondary, rgba(255, 255, 255, 0.6));
     font-size: 14px;
   }
 `;
@@ -100,27 +100,27 @@ export const PANEL_SECTION_STYLES = `
   }
 
   .panel-section.highlighted .section-title {
-    color: #00ff64;
+    color: var(--content-success, #00ff64);
   }
 
   .section-title {
     font-size: 16px;
     font-weight: 600;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     margin: 0 0 16px 0;
     padding-bottom: 8px;
-    border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+    border-bottom: 1px solid var(--border-accent, rgba(0, 212, 255, 0.2));
   }
 
   .section-intro {
     font-size: 13px;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--content-secondary, rgba(255, 255, 255, 0.6));
     margin-bottom: 16px;
     line-height: 1.5;
   }
 
   .section-intro a {
-    color: #00ff64;
+    color: var(--content-success, #00ff64);
     text-decoration: none;
   }
 
@@ -144,7 +144,7 @@ export const PANEL_INFO_STYLES = `
   }
 
   .info-box a {
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     text-decoration: none;
   }
 
@@ -182,8 +182,8 @@ export const PANEL_STATUS_STYLES = `
     display: inline-block;
     width: 24px;
     height: 24px;
-    border: 2px solid rgba(0, 212, 255, 0.3);
-    border-top-color: #00d4ff;
+    border: 2px solid var(--widget-border, rgba(0, 212, 255, 0.3));
+    border-top-color: var(--content-accent, #00d4ff);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
@@ -220,24 +220,24 @@ export const PANEL_STATUS_STYLES = `
   .status-configured,
   .status-operational {
     background: rgba(0, 255, 100, 0.15);
-    color: #00ff64;
+    color: var(--content-success, #00ff64);
   }
 
   .status-not-set {
     background: rgba(255, 255, 255, 0.1);
-    color: rgba(255, 255, 255, 0.5);
+    color: var(--content-secondary, rgba(255, 255, 255, 0.5));
   }
 
   .status-invalid,
   .status-error {
     background: rgba(255, 50, 50, 0.1);
-    color: #ff5050;
+    color: var(--status-busy, #ff5050);
   }
 
   .status-warning,
   .status-out-of-funds {
     background: rgba(255, 200, 50, 0.1);
-    color: #ffc832;
+    color: var(--status-away, #ffc832);
   }
 
   .status-rate-limited {
@@ -247,7 +247,7 @@ export const PANEL_STATUS_STYLES = `
 
   .status-testing {
     background: rgba(0, 212, 255, 0.1);
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
   }
 `;
 
