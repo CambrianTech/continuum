@@ -434,7 +434,7 @@ const LOG_VIEWER_STYLES = `
   .level-select:focus,
   .component-input:focus {
     outline: none;
-    border-color: #00d4ff;
+    border-color: var(--content-accent, #00d4ff);
   }
 
   .toggle-label {
@@ -445,7 +445,7 @@ const LOG_VIEWER_STYLES = `
   }
 
   .auto-follow-toggle {
-    accent-color: #00d4ff;
+    accent-color: var(--content-accent, #00d4ff);
   }
 
   .log-content {
@@ -516,24 +516,24 @@ const LOG_VIEWER_STYLES = `
   /* Level colors */
   .level-error .log-level,
   .level-error {
-    color: #ff5050;
+    color: var(--status-busy, #ff5050);
   }
 
   .level-error .log-message {
-    color: #ff7070;
+    color: var(--status-busy, #ff7070);
   }
 
   .level-warn .log-level,
   .level-warn {
-    color: #ffcc00;
+    color: var(--status-away, #ffcc00);
   }
 
   .level-warn .log-message {
-    color: #ffd633;
+    color: var(--status-away, #ffd633);
   }
 
   .level-info .log-level {
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
   }
 
   .level-debug .log-level {
@@ -556,11 +556,11 @@ const LOG_VIEWER_STYLES = `
   }
 
   .more-indicator {
-    color: #ffcc00;
+    color: var(--status-away, #ffcc00);
   }
 
   .follow-indicator {
-    color: #00ff64;
+    color: var(--content-success, #00ff64);
   }
 
   .follow-indicator::before {
@@ -568,7 +568,7 @@ const LOG_VIEWER_STYLES = `
     display: inline-block;
     width: 6px;
     height: 6px;
-    background: #00ff64;
+    background: var(--content-success, #00ff64);
     border-radius: 50%;
     margin-right: 6px;
     animation: pulse 1.5s ease infinite;

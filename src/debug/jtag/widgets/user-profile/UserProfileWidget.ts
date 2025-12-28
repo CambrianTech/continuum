@@ -253,10 +253,10 @@ export class UserProfileWidget extends BaseWidget {
       .section-header {
         padding: 16px 20px;
         background: rgba(0, 212, 255, 0.1);
-        border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+        border-bottom: 1px solid var(--border-accent, rgba(0, 212, 255, 0.2));
         font-size: 14px;
         font-weight: 600;
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
         text-transform: uppercase;
         letter-spacing: 1px;
       }
@@ -309,18 +309,18 @@ export class UserProfileWidget extends BaseWidget {
       }
 
       .btn-primary {
-        background: #00d4ff;
-        color: #000;
+        background: var(--button-primary-background, #00d4ff);
+        color: var(--button-primary-text, #000);
       }
       .btn-primary:hover {
-        background: #00e5ff;
+        background: var(--button-primary-hover, #00e5ff);
         transform: translateY(-1px);
       }
 
       .btn-secondary {
         background: rgba(0, 212, 255, 0.2);
-        color: #00d4ff;
-        border: 1px solid rgba(0, 212, 255, 0.3);
+        color: var(--content-accent, #00d4ff);
+        border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.3));
       }
       .btn-secondary:hover {
         background: rgba(0, 212, 255, 0.3);

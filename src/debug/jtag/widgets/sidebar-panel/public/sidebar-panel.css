@@ -36,11 +36,11 @@
 
 .list-item:hover {
     background: rgba(0, 212, 255, 0.1);
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
 }
 
 .list-item.active {
     background: rgba(0, 212, 255, 0.2);
-    color: #00d4ff;
-    border: 1px solid rgba(0, 212, 255, 0.4);
+    color: var(--content-accent, #00d4ff);
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
 }

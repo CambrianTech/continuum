@@ -322,7 +322,7 @@ const DIAGNOSTICS_STYLES = `
   .health-value {
     font-size: 14px;
     font-weight: 600;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
   }
 
   .persona-card {
@@ -341,7 +341,7 @@ const DIAGNOSTICS_STYLES = `
   }
 
   .persona-card.selected {
-    border-color: #00d4ff;
+    border-color: var(--content-accent, #00d4ff);
     background: rgba(0, 212, 255, 0.1);
   }
 
@@ -355,7 +355,7 @@ const DIAGNOSTICS_STYLES = `
   .persona-avatar {
     width: 40px;
     height: 40px;
-    background: linear-gradient(135deg, #00d4ff, #0099cc);
+    background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0099cc));
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -398,9 +398,9 @@ const DIAGNOSTICS_STYLES = `
     gap: 6px;
     padding: 6px 12px;
     background: rgba(0, 212, 255, 0.1);
-    border: 1px solid rgba(0, 212, 255, 0.2);
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.2));
     border-radius: 4px;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     font-size: 12px;
     cursor: pointer;
     transition: all 0.2s ease;

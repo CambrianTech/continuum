@@ -1,8 +1,8 @@
 /* Cyberpunk buttons */
 .cyber-btn {
     background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(0, 150, 200, 0.1));
-    border: 1px solid rgba(0, 212, 255, 0.4);
-    color: #00d4ff;
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
+    color: var(--content-accent, #00d4ff);
     padding: 12px 24px;
     border-radius: 6px;
     font-weight: 600;
