@@ -23,7 +23,7 @@ import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
-import { PositronWidgetState, type PositronicContext } from '../../shared/services/state/PositronWidgetState';
+import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
 // MessageComposerWidget removed - using inline HTML instead
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
@@ -588,67 +588,45 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
     // No manual subscription needed - filtering happens in shouldAddEntity()
 
-    // 🧠 REACTIVE WIDGET PATTERN: Subscribe to Positron widget state changes
-    // When UserProfileWidget updates a profile, we update our member display
-    this.positronUnsubscribe = PositronWidgetState.subscribe((context: PositronicContext) => {
-      this.handlePositronContextChange(context);
+    // 🧠 REACTIVE WIDGET PATTERN: Subscribe to UserProfileWidget events
+    // When UserProfileWidget emits status:changed, we update our member display
+    this.positronUnsubscribe = PositronWidgetState.subscribeToWidget('profile', 'status:changed', (data) => {
+      this.handleProfileStatusChange(data as { userId: string; status: string; displayName: string });
     });
-    console.log(`✅ ChatWidget: Positron widget state subscription active`);
+    console.log(`✅ ChatWidget: Subscribed to profile:status:changed events`);
 
     console.log(`✅ ChatWidget: Initialized with room selection, AI status indicators, and automatic CRUD events`);
   }
 
   /**
-   * Handle Positron context changes from other widgets
+   * Handle profile status changes from UserProfileWidget
    *
    * REACTIVE WIDGET PATTERN: This enables ChatWidget to react to UserProfileWidget
-   * state changes without polling. When someone views a user's profile, we can
-   * update that user's status display in our member list in real-time.
+   * events without polling. When a user's status changes, update our member display.
    */
-  private handlePositronContextChange(context: PositronicContext): void {
-    const { widget, interaction } = context;
-
-    // Only react to profile widget updates
-    if (widget.widgetType !== 'profile') {
-      return;
-    }
-
-    // Get the user ID from the profile widget
-    const profileUserId = widget.entityId as UUID;
-    if (!profileUserId) {
-      return;
-    }
+  private handleProfileStatusChange(data: { userId: string; status: string; displayName: string }): void {
+    const profileUserId = data.userId as UUID;
 
     // Check if this user is a member of our current room
     if (!this.roomMembers.has(profileUserId)) {
       return;
     }
 
-    // Debounce rapid updates (e.g., user switching between profiles quickly)
+    // Debounce rapid updates
     if (this.positronUpdateDebounce) {
       clearTimeout(this.positronUpdateDebounce);
     }
 
     this.positronUpdateDebounce = setTimeout(() => {
-      // Extract status from profile widget metadata
-      const metadata = widget.metadata as {
-        userStatus?: string;
-        userName?: string;
-        userType?: string;
-      } | undefined;
+      const member = this.roomMembers.get(profileUserId);
+      if (member && member.status !== data.status) {
+        console.log(`🧠 ChatWidget: Profile event - ${member.displayName} status: ${member.status} → ${data.status}`);
 
-      if (metadata?.userStatus) {
-        // Update the cached member data with new status
-        const member = this.roomMembers.get(profileUserId);
-        if (member && member.status !== metadata.userStatus) {
-          console.log(`🧠 ChatWidget: Positron update - ${member.displayName} status: ${member.status} → ${metadata.userStatus}`);
+        // Update the member's status
+        member.status = data.status as UserEntity['status'];
 
-          // Update the member's status directly (UserEntity is mutable)
-          member.status = metadata.userStatus as UserEntity['status'];
-
-          // Refresh the header to show updated member status
-          this.updateHeader();
-        }
+        // Refresh the header to show updated member status
+        this.updateHeader();
       }
 
       this.positronUpdateDebounce = undefined;

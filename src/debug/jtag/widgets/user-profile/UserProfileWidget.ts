@@ -104,6 +104,14 @@ export class UserProfileWidget extends BaseWidget {
       },
       { action: 'viewing', target: `${this.user.type} profile` }
     );
+
+    // Emit widget event for reactive subscriptions (ChatWidget listens to this)
+    PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
+      userId: this.user.id,
+      status: this.user.status,
+      displayName: this.user.displayName,
+      userType: this.user.type
+    });
   }
 
   private async updateUserStatus(newStatus: UserStatus): Promise<void> {
@@ -121,6 +129,14 @@ export class UserProfileWidget extends BaseWidget {
 
       // Emit event so user list can refresh
       Events.emit('data:users:updated', { id: this.user.id, status: newStatus });
+
+      // Emit widget event for reactive subscriptions
+      PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
+        userId: this.user.id,
+        status: newStatus,
+        displayName: this.user.displayName,
+        userType: this.user.type
+      });
     } catch (err) {
       console.error('Failed to update user status:', err);
     }
