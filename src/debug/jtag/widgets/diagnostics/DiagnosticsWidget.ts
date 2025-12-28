@@ -476,4 +476,4 @@ const DIAGNOSTICS_STYLES = `
 `;
 
 // Register the custom element
-customElements.define('diagnostics-widget', DiagnosticsWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

@@ -124,4 +124,4 @@ export class PanelLayoutWidget extends BaseWidget {
   }
 }
 
-customElements.define('panel-layout', PanelLayoutWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

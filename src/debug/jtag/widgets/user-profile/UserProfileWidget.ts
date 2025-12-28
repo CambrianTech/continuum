@@ -562,4 +562,4 @@ export class UserProfileWidget extends BaseWidget {
 }
 
 // Register the custom element
-customElements.define('user-profile-widget', UserProfileWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

@@ -1072,4 +1072,4 @@ export class PersonaBrainWidget extends BasePanelWidget {
 }
 
 // Register the custom element
-customElements.define('persona-brain-widget', PersonaBrainWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry
