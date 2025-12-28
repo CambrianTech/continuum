@@ -12,6 +12,7 @@
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import type { WebFetchParams, WebFetchResult } from '@commands/interface/web/fetch/shared/WebFetchTypes';
 
 export class WebViewWidget extends BaseWidget {
   private currentUrl: string = '';
@@ -79,7 +80,7 @@ export class WebViewWidget extends BaseWidget {
     });
   }
 
-  private loadUrl(url: string): void {
+  private async loadUrl(url: string): Promise<void> {
     if (!url) return;
 
     // Ensure URL has protocol
@@ -97,18 +98,108 @@ export class WebViewWidget extends BaseWidget {
       urlInput.value = url;
     }
 
-    // TODO: Fetch and display content via server-side proxy
-    // For now, just update the placeholder
-    const content = this.shadowRoot?.querySelector('.browser-content');
-    if (content) {
-      content.innerHTML = `
-        <div class="placeholder-text">
-          <h2>Loading...</h2>
-          <p>${url}</p>
-          <p>Server-side fetch coming soon.</p>
+    // Show loading state
+    const contentDiv = this.shadowRoot?.querySelector('.browser-content');
+    if (contentDiv) {
+      contentDiv.innerHTML = `
+        <div class="loading-state">
+          <div class="loading-spinner"></div>
+          <p>Fetching content...</p>
         </div>
       `;
     }
+
+    try {
+      // Fetch content via server-side command (bypasses CORS)
+      const result = await this.executeCommand<WebFetchParams, WebFetchResult>(
+        'interface/web/fetch',
+        {
+          url,
+          format: 'markdown',
+          maxLength: 100000
+        }
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to fetch URL');
+      }
+
+      // Update page title in context
+      if (result.title) {
+        PositronWidgetState.emit(
+          {
+            widgetType: 'browser',
+            title: result.title,
+            metadata: {
+              url: this.currentUrl,
+              pageTitle: result.title,
+              contentLength: result.contentLength
+            }
+          },
+          { action: 'viewing', target: result.title }
+        );
+      }
+
+      // Display fetched content
+      if (contentDiv) {
+        contentDiv.innerHTML = `
+          <div class="fetched-content">
+            ${result.title ? `<h1 class="page-title">${this.escapeHtml(result.title)}</h1>` : ''}
+            <div class="markdown-content">${this.renderMarkdown(result.content)}</div>
+          </div>
+        `;
+      }
+
+      console.log(`✅ WebViewWidget: Loaded ${url} (${result.contentLength} chars)`);
+
+    } catch (error) {
+      console.error(`❌ WebViewWidget: Failed to load ${url}:`, error);
+
+      if (contentDiv) {
+        contentDiv.innerHTML = `
+          <div class="error-state">
+            <h2>Failed to load page</h2>
+            <p class="error-url">${this.escapeHtml(url)}</p>
+            <p class="error-message">${error instanceof Error ? this.escapeHtml(error.message) : 'Unknown error'}</p>
+          </div>
+        `;
+      }
+    }
+  }
+
+  /**
+   * Simple HTML escaping
+   */
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /**
+   * Render markdown to HTML (basic implementation)
+   */
+  private renderMarkdown(markdown: string): string {
+    return markdown
+      // Escape HTML first
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // Then apply markdown formatting
+      .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+      .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+      .replace(/^# (.*$)/gm, '<h1>$1</h1>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+      .replace(/^- (.*$)/gm, '<li>$1</li>')
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br>')
+      // Wrap in paragraph
+      .replace(/^/, '<p>')
+      .replace(/$/, '</p>');
   }
 
   protected async onWidgetCleanup(): Promise<void> {

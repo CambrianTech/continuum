@@ -74,10 +74,12 @@
 .browser-content {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  color: $color-text-dim;
-  font-size: $font-size-xl;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: $spacing-lg;
+  color: $color-text;
+  font-size: $font-size-lg;
+  line-height: 1.6;
 }
 
 .placeholder-text {
@@ -111,20 +113,112 @@
 }
 
 // Loading state
-.loading-indicator {
+.loading-state {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: $spacing-sm;
+  height: 100%;
+  gap: $spacing-lg;
   color: $color-primary;
 
-  .spinner {
-    width: 20px;
-    height: 20px;
-    border: 2px solid $color-primary-dark;
+  .loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid $color-primary-dark;
     border-top-color: $color-primary;
     border-radius: 50%;
     animation: spin 1s linear infinite;
+  }
+
+  p {
+    font-size: $font-size-lg;
+    color: $color-text-muted;
+  }
+}
+
+// Error state
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  padding: $spacing-xl * 2;
+
+  h2 {
+    color: $color-error;
+    margin: 0 0 $spacing-lg 0;
+    font-size: 24px;
+  }
+
+  .error-url {
+    color: $color-text-muted;
+    font-family: $font-mono;
+    font-size: $font-size-lg;
+    word-break: break-all;
+    margin: 0 0 $spacing-md 0;
+  }
+
+  .error-message {
+    color: $color-error;
+    font-size: $font-size-lg;
+  }
+}
+
+// Fetched content
+.fetched-content {
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+
+  .page-title {
+    color: $color-primary;
+    font-size: 28px;
+    margin: 0 0 $spacing-xl 0;
+    padding-bottom: $spacing-md;
+    border-bottom: $border-primary;
+    @include glow-text($color-primary-dark, 4px);
+  }
+
+  .markdown-content {
+    h1, h2, h3 {
+      color: $color-primary;
+      margin-top: $spacing-xl;
+      margin-bottom: $spacing-md;
+    }
+
+    h1 { font-size: 24px; }
+    h2 { font-size: 20px; }
+    h3 { font-size: 18px; }
+
+    p {
+      margin-bottom: $spacing-md;
+    }
+
+    a {
+      color: $color-primary;
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+
+    strong {
+      color: $color-text;
+      font-weight: 600;
+    }
+
+    em {
+      font-style: italic;
+    }
+
+    li {
+      margin-left: $spacing-lg;
+      margin-bottom: $spacing-sm;
+    }
   }
 }
 
