@@ -1,0 +1,57 @@
+{
+  "uniqueId": "{{KEBAB_NAME}}",
+  "name": "{{DISPLAY_NAME}}",
+  "displayName": "{{DISPLAY_NAME}}",
+  "description": "{{DESCRIPTION}}",
+  "version": 1,
+
+  "layout": {
+    "main": ["{{TAG_NAME}}"],
+    "right": {{RIGHT_PANEL_JSON}}
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Provide helpful guidance",
+      "Be concise and clear"
+    ],
+    "decisionCriteria": [
+      "What is the user trying to accomplish?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["{{KEBAB_NAME}}"]
+}

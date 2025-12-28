@@ -1,11 +1,12 @@
 /**
  * PanelLayoutWidget - Composable panel layout container
  *
- * Provides two-column layout (content + assistant sidebar) via slots.
+ * Provides single-column layout with header via slots.
+ * AI assistance provided via unified right panel (Positron).
  * Widgets don't need to extend anything - just wrap them:
  *
  * ```html
- * <panel-layout title="Settings" assistant-room="settings">
+ * <panel-layout title="Settings">
  *   <settings-widget></settings-widget>
  * </panel-layout>
  * ```
@@ -13,19 +14,12 @@
  * Attributes:
  * - title: Panel header title
  * - subtitle: Panel header subtitle (optional)
- * - assistant-room: Room name for AI assistant (optional, omit to hide assistant)
- * - assistant-greeting: Greeting message for assistant
  */
 
 import { BaseWidget } from './BaseWidget';
-import { AssistantPanel } from './AssistantPanel';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ALL_PANEL_STYLES } from './styles';
 
 export class PanelLayoutWidget extends BaseWidget {
-  private assistantPanel?: AssistantPanel;
-
   constructor() {
     super({
       widgetName: 'PanelLayoutWidget',
@@ -39,7 +33,7 @@ export class PanelLayoutWidget extends BaseWidget {
   }
 
   static get observedAttributes(): string[] {
-    return ['title', 'subtitle', 'assistant-room', 'assistant-greeting'];
+    return ['title', 'subtitle'];
   }
 
   attributeChangedCallback(name: string, oldValue: string, newValue: string): void {
@@ -53,7 +47,7 @@ export class PanelLayoutWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    this.assistantPanel?.destroy();
+    // No cleanup needed
   }
 
   protected async renderWidget(): Promise<void> {
@@ -61,19 +55,17 @@ export class PanelLayoutWidget extends BaseWidget {
 
     const title = this.getAttribute('title') || 'Panel';
     const subtitle = this.getAttribute('subtitle');
-    const assistantRoom = this.getAttribute('assistant-room');
-    const hasAssistant = !!assistantRoom;
 
     this.shadowRoot.innerHTML = `
       <style>
         ${ALL_PANEL_STYLES}
-        
+
         :host {
           display: block;
           width: 100%;
           height: 100%;
         }
-        
+
         ::slotted(*) {
           display: block;
         }
@@ -88,39 +80,8 @@ export class PanelLayoutWidget extends BaseWidget {
             <slot></slot>
           </div>
         </div>
-        ${hasAssistant ? '<div class="panel-assistant" id="assistant-container"></div>' : ''}
       </div>
     `;
-
-    if (hasAssistant) {
-      this.initializeAssistant(assistantRoom);
-    }
-  }
-
-  private initializeAssistant(roomName: string): void {
-    if (!this.shadowRoot) return;
-
-    const container = this.shadowRoot.querySelector('#assistant-container') as HTMLElement;
-    if (!container) return;
-
-    const roomId = (DEFAULT_ROOMS as any)[roomName.toUpperCase()] as UUID;
-    if (!roomId) {
-      console.warn(`PanelLayoutWidget: Room '${roomName}' not found in DEFAULT_ROOMS`);
-      return;
-    }
-
-    const greeting = this.getAttribute('assistant-greeting') || 'How can I help?';
-
-    this.assistantPanel = new AssistantPanel(container, {
-      roomId,
-      roomName,
-      title: 'AI Assistant',
-      placeholder: 'Ask for help...',
-      greeting,
-      maxMessages: 20,
-      width: '320px',
-      startCollapsed: false
-    });
   }
 }
 
