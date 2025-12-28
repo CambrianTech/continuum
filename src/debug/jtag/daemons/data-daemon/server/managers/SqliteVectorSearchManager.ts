@@ -158,47 +158,110 @@ export class SqliteVectorSearchManager implements VectorSearchAdapter {
   /**
    * Retrieve all vectors from a collection
    * Parses JSON embeddings back to number arrays
+   *
+   * IMPORTANT: Supports two storage patterns:
+   * 1. Separate vector table ({collection}_vectors) - preferred for external indexing
+   * 2. Inline embedding column in main table - used by memory consolidation
    */
   private async getVectorsFromSQLite(collection: string): Promise<StoredVector[]> {
     const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
+    const baseTableName = SqlNamingConverter.toTableName(collection);
 
-    // Check if table exists
-    const tableExists = await this.executor.runSql(
+    // First try: Check if separate vector table exists (preferred pattern)
+    const vectorTableExists = await this.executor.runSql(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
       [tableName]
     );
 
-    if (tableExists.length === 0) {
-      return [];  // No vectors yet
+    if (vectorTableExists.length > 0) {
+      // Use separate vector table
+      const rows = await this.executor.runSql(
+        `SELECT record_id, embedding, model, generated_at FROM \`${tableName}\``
+      );
+
+      return rows.map(row => ({
+        recordId: row.record_id as UUID,
+        embedding: JSON.parse(row.embedding as string) as number[],
+        model: row.model as string | undefined,
+        generatedAt: row.generated_at as string
+      }));
     }
 
-    const rows = await this.executor.runSql(`SELECT record_id, embedding, model, generated_at FROM \`${tableName}\``);
+    // Second try: Check if main table has inline embedding column (memory consolidation pattern)
+    const baseTableExists = await this.executor.runSql(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [baseTableName]
+    );
+
+    if (baseTableExists.length === 0) {
+      return [];  // Table doesn't exist
+    }
+
+    // Check if embedding column exists in main table
+    const columns = await this.executor.runSql(`PRAGMA table_info(\`${baseTableName}\`)`);
+    const hasEmbeddingColumn = columns.some((col: any) => col.name === 'embedding');
+
+    if (!hasEmbeddingColumn) {
+      return [];  // No embedding support
+    }
+
+    // Read inline embeddings from main table
+    const rows = await this.executor.runSql(
+      `SELECT id, embedding, created_at FROM \`${baseTableName}\`
+       WHERE embedding IS NOT NULL AND embedding != '[]' AND embedding != 'null' AND length(embedding) > 10`
+    );
+
+    console.log(`🔍 SqliteVectorSearch: Found ${rows.length} records with inline embeddings in ${baseTableName}`);
 
     return rows.map(row => ({
-      recordId: row.record_id as UUID,
+      recordId: row.id as UUID,
       embedding: JSON.parse(row.embedding as string) as number[],
-      model: row.model as string | undefined,
-      generatedAt: row.generated_at as string
+      model: 'inline',  // Mark as inline embedding
+      generatedAt: row.created_at as string
     }));
   }
 
   /**
    * Get count of vectors in a collection
+   * Supports both separate vector table and inline embeddings
    */
   private async countVectorsInSQLite(collection: string): Promise<number> {
     const tableName = `${SqlNamingConverter.toTableName(collection)}_vectors`;
+    const baseTableName = SqlNamingConverter.toTableName(collection);
 
-    // Check if table exists
-    const tableExists = await this.executor.runSql(
+    // First try: Check if separate vector table exists
+    const vectorTableExists = await this.executor.runSql(
       `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
       [tableName]
     );
 
-    if (tableExists.length === 0) {
+    if (vectorTableExists.length > 0) {
+      const result = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+      return (result[0]?.count as number) || 0;
+    }
+
+    // Second try: Count inline embeddings in main table
+    const baseTableExists = await this.executor.runSql(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [baseTableName]
+    );
+
+    if (baseTableExists.length === 0) {
       return 0;
     }
 
-    const result = await this.executor.runSql(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+    // Check if embedding column exists
+    const columns = await this.executor.runSql(`PRAGMA table_info(\`${baseTableName}\`)`);
+    const hasEmbeddingColumn = columns.some((col: any) => col.name === 'embedding');
+
+    if (!hasEmbeddingColumn) {
+      return 0;
+    }
+
+    const result = await this.executor.runSql(
+      `SELECT COUNT(*) as count FROM \`${baseTableName}\`
+       WHERE embedding IS NOT NULL AND embedding != '[]' AND embedding != 'null' AND length(embedding) > 10`
+    );
     return (result[0]?.count as number) || 0;
   }
 }
