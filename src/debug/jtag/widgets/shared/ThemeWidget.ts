@@ -17,6 +17,7 @@ import type { DataListResult, DataListParams } from '../../commands/data/list/sh
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
+import { PositronWidgetState } from './services/state/PositronWidgetState';
 
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
@@ -58,7 +59,31 @@ export class ThemeWidget extends BaseWidget {
       this.currentTheme = 'base';
     }
 
+    // Emit Positron context for AI awareness
+    this.emitPositronContext();
+
     console.log('✅ ThemeWidget: Initialization complete');
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    const themes = ThemeRegistry.getAllThemes();
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'theme',
+        section: 'theme-selector',
+        title: 'Theme Customization',
+        metadata: {
+          currentTheme: this.currentTheme,
+          availableThemes: themes.length,
+          themeNames: themes.map(t => t.name)
+        }
+      },
+      { action: 'configuring', target: 'workspace appearance' }
+    );
   }
 
   protected async renderWidget(): Promise<void> {
@@ -295,6 +320,9 @@ export class ThemeWidget extends BaseWidget {
 
       // Re-render widget to show updated theme name
       await this.renderWidget();
+
+      // Update Positron context with new theme
+      this.emitPositronContext();
 
       console.log('✅ ThemeWidget: Theme switched, injected globally, and saved to UserState');
 

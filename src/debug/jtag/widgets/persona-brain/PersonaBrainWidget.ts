@@ -22,6 +22,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { LogToggle, type LogToggleState } from './components/LogToggle';
 import { styles as personaBrainStyles } from './styles/persona-brain-widget.styles';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface PersonaData {
   id: UUID;
@@ -97,6 +98,35 @@ export class PersonaBrainWidget extends BasePanelWidget {
                      'helper'; // Default for testing
 
     await this.loadPersonaData();
+    this.emitPositronContext();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    PositronWidgetState.emit(
+      {
+        widgetType: 'persona',
+        section: this.selectedModule || 'overview',
+        title: this.persona
+          ? `AI Brain - ${this.persona.displayName}`
+          : 'AI Brain',
+        entityId: this.persona?.id,
+        metadata: {
+          personaId: this.personaId,
+          personaName: this.persona?.displayName,
+          personaStatus: this.persona?.status,
+          selectedModule: this.selectedModule,
+          issueCount: this.issues.length,
+          moduleStatuses: Object.entries(this.moduleStats).map(([name, stats]) => ({
+            module: name,
+            status: stats.status
+          }))
+        }
+      },
+      { action: 'debugging', target: this.selectedModule ? `${this.selectedModule} module` : 'cognitive system' }
+    );
   }
 
   private async loadPersonaData(): Promise<void> {

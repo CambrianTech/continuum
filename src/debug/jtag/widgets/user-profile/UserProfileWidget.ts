@@ -17,6 +17,7 @@ import type { DataListParams, DataListResult } from '../../commands/data/list/sh
 import type { DataDeleteParams, DataDeleteResult } from '../../commands/data/delete/shared/DataDeleteTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 export class UserProfileWidget extends BaseWidget {
   private user: UserEntity | null = null;
@@ -77,7 +78,32 @@ export class UserProfileWidget extends BaseWidget {
     }
 
     this.loading = false;
+    this.emitPositronContext();
     this.renderWidget();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    if (!this.user) return;
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'profile',
+        section: this.user.type,
+        title: `Profile - ${this.user.displayName}`,
+        entityId: this.user.id,
+        metadata: {
+          userType: this.user.type,
+          userName: this.user.displayName,
+          userStatus: this.user.status,
+          isAI: this.user.type === 'persona' || this.user.type === 'agent',
+          hasModelConfig: !!this.user.modelConfig
+        }
+      },
+      { action: 'viewing', target: `${this.user.type} profile` }
+    );
   }
 
   private async updateUserStatus(newStatus: UserStatus): Promise<void> {

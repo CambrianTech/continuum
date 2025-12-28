@@ -12,6 +12,7 @@
 import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface PersonaInfo {
   uniqueId: string;
@@ -50,6 +51,33 @@ export class DiagnosticsWidget extends BasePanelWidget {
 
   protected async onPanelInitialize(): Promise<void> {
     await this.loadPersonas();
+    this.emitPositronContext();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    const selectedPersonaInfo = this.selectedPersona
+      ? this.personas.find(p => p.uniqueId === this.selectedPersona)
+      : null;
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'diagnostics',
+        section: this.selectedPersona ? 'persona-logs' : 'persona-list',
+        title: this.selectedPersona
+          ? `Diagnostics - ${selectedPersonaInfo?.displayName || this.selectedPersona}`
+          : 'System Diagnostics',
+        entityId: this.selectedPersona || undefined,
+        metadata: {
+          personaCount: this.personas.length,
+          selectedPersona: this.selectedPersona,
+          onlinePersonas: this.personas.filter(p => p.status === 'online').length
+        }
+      },
+      { action: 'debugging', target: this.selectedPersona ? 'persona logs' : 'system health' }
+    );
   }
 
   private async loadPersonas(): Promise<void> {
