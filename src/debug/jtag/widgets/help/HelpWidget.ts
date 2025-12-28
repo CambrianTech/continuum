@@ -11,9 +11,6 @@
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { AssistantPanel } from '../shared/AssistantPanel';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface HelpSection {
@@ -25,7 +22,6 @@ interface HelpSection {
 
 export class HelpWidget extends BaseWidget {
   private activeSection: string = 'getting-started';
-  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
@@ -189,7 +185,6 @@ export class HelpWidget extends BaseWidget {
     // Render dynamic content
     this.renderContent();
     this.setupEventListeners();
-    this.initializeAssistant();
   }
 
   private renderContent(): void {
@@ -214,22 +209,6 @@ export class HelpWidget extends BaseWidget {
     }
   }
 
-  private initializeAssistant(): void {
-    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
-    if (!container) return;
-
-    // Clean up old instance
-    this.assistantPanel?.destroy();
-
-    // Create new assistant panel connected to Help room
-    this.assistantPanel = new AssistantPanel(container, {
-      roomId: DEFAULT_ROOMS.HELP as UUID,
-      roomName: 'help',
-      placeholder: 'Ask for help...',
-      greeting: "Hi! I'm here to help you get started with Continuum. What would you like to know?"
-    });
-  }
-
   private setupEventListeners(): void {
     this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
       item.addEventListener('click', (e) => {
@@ -244,7 +223,6 @@ export class HelpWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    this.assistantPanel?.destroy();
     console.log('Help: Cleanup complete');
   }
 }

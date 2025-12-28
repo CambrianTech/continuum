@@ -16,7 +16,7 @@
 
 .help-layout {
   display: grid;
-  grid-template-columns: 220px 1fr 350px;
+  grid-template-columns: 220px 1fr;
   height: 100%;
 }
 
@@ -143,22 +143,17 @@
   }
 }
 
-.help-assistant {
-  border-left: 1px solid rgba(0, 212, 255, 0.2);
-  height: 100%;
-}
-
 // Responsive breakpoints
 @media (max-width: 1100px) {
   .help-layout {
-    grid-template-columns: 180px 1fr 300px;
+    grid-template-columns: 180px 1fr;
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .help-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr 300px;
+    grid-template-rows: auto 1fr;
   }
 
   .help-sidebar {
@@ -185,10 +180,5 @@
       border-left: none;
       border-bottom: 2px solid $color-primary;
     }
-  }
-
-  .help-assistant {
-    border-left: none;
-    border-top: 1px solid rgba(0, 212, 255, 0.2);
   }
 }
