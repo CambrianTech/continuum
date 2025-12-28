@@ -20,6 +20,12 @@ export class WidgetStateServerCommand extends CommandBase<WidgetStateDebugParams
   }
 
   async execute(params: WidgetStateDebugParams): Promise<WidgetStateDebugResult> {
+    console.log('🧠 WidgetStateDebug: Received params:', JSON.stringify({
+      hasSetContext: !!params.setContext,
+      hasGetStoredContext: !!params.getStoredContext,
+      widgetSelector: params.widgetSelector
+    }));
+
     try {
       // Handle context bridging if setContext is provided
       if (params.setContext) {
@@ -54,6 +60,42 @@ export class WidgetStateServerCommand extends CommandBase<WidgetStateDebugParams
           debugging: {
             logs: [`Stored widget context for RAG: ${params.setContext.widget.widgetType}`],
             warnings: [],
+            errors: []
+          }
+        });
+      }
+
+      // Handle getStoredContext query - return current server-side context
+      if (params.getStoredContext) {
+        console.log('🧠 WidgetStateDebug: Querying stored widget context');
+
+        // Ensure service is initialized
+        WidgetContextService.initialize();
+
+        const stats = WidgetContextService.getStats();
+        const ragString = WidgetContextService.toRAGContext();
+        const rawContext = WidgetContextService.getMostRecentContext();
+
+        return createWidgetStateDebugResult(this.context, this.context.uuid, {
+          success: true,
+          widgetFound: !!rawContext,
+          widgetPath: 'context-query',
+          widgetType: rawContext?.widget?.widgetType || 'none',
+          methods: [],
+          state: { properties: {} },
+          messages: [],
+          storedContext: {
+            ragString,
+            rawContext,
+            stats
+          },
+          debugging: {
+            logs: [
+              `Active contexts: ${stats.activeContexts}`,
+              `Service initialized: ${stats.initialized}`,
+              rawContext ? `Current widget: ${rawContext.widget.widgetType}` : 'No context stored'
+            ],
+            warnings: rawContext ? [] : ['No widget context stored - widgets may not be emitting state'],
             errors: []
           }
         });
