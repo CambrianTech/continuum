@@ -149,6 +149,9 @@ export interface RAGContext {
     // Bug #5 fix: Two-dimensional budget calculation
     adjustedMaxTokens?: number;  // Dynamically adjusted completion token limit based on input size
     inputTokenCount?: number;    // Estimated tokens in conversationHistory
+
+    // Positron Layer 1: Widget context awareness
+    hasWidgetContext?: boolean;  // Whether widget context was included in system prompt
   };
 }
 
@@ -181,4 +184,8 @@ export interface RAGBuildOptions {
   preprocessImages?: boolean;  // Force preprocessing even for vision models (default: auto-detect)
   yoloEndpoint?: string;  // YOLO detection service endpoint (default: local)
   imageDescriptionModel?: string;  // Model for generating image descriptions
+
+  // NEW: Widget context for AI awareness (Positron Layer 1)
+  sessionId?: string;  // Session ID for widget context lookup
+  widgetContext?: string;  // Pre-formatted widget context string (if already available)
 }

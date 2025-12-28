@@ -51,8 +51,8 @@ export class HeaderControlsWidget extends BaseWidget {
       }
 
       .version-badge {
-        background: linear-gradient(135deg, #00d4ff, #0080ff);
-        color: #000a0f;
+        background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0080ff));
+        color: var(--button-primary-text, #000a0f);
         padding: 6px 12px;
         border-radius: 4px;
         font-weight: 600;
@@ -60,9 +60,9 @@ export class HeaderControlsWidget extends BaseWidget {
         font-family: 'Courier New', monospace;
         letter-spacing: 0.5px;
         box-shadow:
-          0 2px 8px rgba(0, 212, 255, 0.3),
+          0 2px 8px var(--button-primary-shadow, rgba(0, 212, 255, 0.3)),
           inset 0 1px 0 rgba(255, 255, 255, 0.2);
-        border: 1px solid rgba(0, 212, 255, 0.4);
+        border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
         cursor: default;
         user-select: none;
       }
@@ -80,9 +80,9 @@ export class HeaderControlsWidget extends BaseWidget {
       }
 
       .status-button {
-        background: rgba(0, 212, 255, 0.1);
-        border: 1px solid rgba(0, 212, 255, 0.3);
-        color: #00d4ff;
+        background: var(--button-secondary-background, rgba(0, 212, 255, 0.1));
+        border: 1px solid var(--widget-border, rgba(0, 212, 255, 0.3));
+        color: var(--content-accent, #00d4ff);
         padding: 6px 16px;
         border-radius: 4px;
         font-size: 13px;

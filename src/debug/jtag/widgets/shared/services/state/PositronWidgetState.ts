@@ -86,10 +86,26 @@ export interface PositronicContext {
 type ContextSubscriber = (context: PositronicContext) => void;
 
 /**
+ * Widget event handler type
+ */
+type WidgetEventHandler = (data: unknown) => void;
+
+/**
+ * Widget event subscription tracking
+ */
+interface WidgetSubscription {
+  widgetType: string;
+  event: string;
+  handler: WidgetEventHandler;
+}
+
+/**
  * PositronWidgetState - Singleton state service
  *
  * Bridges UI state to AI cognition. When user navigates or interacts,
  * this state updates, and subscribed AIs can observe and respond.
+ *
+ * Also provides widget-to-widget pub/sub for reactive patterns.
  */
 class PositronWidgetStateService {
   private currentContext: PositronicContext | null = null;
@@ -97,6 +113,17 @@ class PositronWidgetStateService {
   private contextHistory: WidgetContext[] = [];
   private readonly MAX_HISTORY = 10;
   private dwellStartTime: number = Date.now();
+
+  // Widget-to-widget pub/sub registry
+  // Map<widgetType, Map<eventName, Set<handler>>>
+  private widgetEventSubscribers = new Map<string, Map<string, Set<WidgetEventHandler>>>();
+
+  // Telemetry tracking
+  private eventMetrics = {
+    emitCount: 0,
+    subscribeCount: 0,
+    lastEmitLatency: 0
+  };
 
   /**
    * Emit new widget context
@@ -144,12 +171,71 @@ class PositronWidgetStateService {
     // Also emit as event for cross-component communication
     Events.emit('positron:widget-context-changed', this.currentContext);
 
+    // Bridge context to server via command (bypasses event routing issues)
+    // This ensures AI RAG context includes widget state
+    this.bridgeToServer();
+
     console.log('🧠 PositronWidgetState: Context updated', {
       widgetType: widget.widgetType,
       section: widget.section,
       interaction: interaction?.action
     });
   }
+
+  /**
+   * Bridge context to server via command
+   * The event system has routing issues browser→server, so use commands directly
+   */
+  private async bridgeToServer(): Promise<void> {
+    if (!this.currentContext) return;
+
+    // Debounce to avoid flooding server with every interaction
+    if (this.bridgeTimeout) {
+      clearTimeout(this.bridgeTimeout);
+    }
+
+    this.bridgeTimeout = setTimeout(() => {
+      this.executeBridgeCommand();
+    }, 200);  // 200ms debounce
+  }
+
+  /**
+   * Execute the bridge command (separated for cleaner async handling)
+   */
+  private async executeBridgeCommand(): Promise<void> {
+    if (!this.currentContext) return;
+
+    try {
+      console.log('🧠 PositronWidgetState: Bridging context to server...');
+      const { Commands } = await import('../../../../system/core/shared/Commands');
+      const sessionId = await this.getSessionId();
+
+      console.log('🧠 PositronWidgetState: Calling widget-state command with session:', sessionId);
+      const result = await Commands.execute('development/debug/widget-state', {
+        setContext: this.currentContext,
+        contextSessionId: sessionId
+      } as any);
+
+      console.log('🧠 PositronWidgetState: Bridge result:', result);
+    } catch (error) {
+      console.error('🧠 PositronWidgetState: Bridge to server failed:', error);
+    }
+  }
+
+  /**
+   * Get current session ID for context association
+   */
+  private async getSessionId(): Promise<string> {
+    try {
+      const { Commands } = await import('../../../../system/core/shared/Commands');
+      const result = await Commands.execute('session/get-id', {} as any) as any;
+      return result?.sessionId || 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  private bridgeTimeout: NodeJS.Timeout | null = null;
 
   /**
    * Update interaction hint without changing widget context
@@ -295,10 +381,124 @@ class PositronWidgetStateService {
       }
     }
   }
+
+  // ============================================
+  // WIDGET-TO-WIDGET REACTIVE PUB/SUB
+  // ============================================
+
+  /**
+   * Emit a named event from a widget type
+   * Other widgets can subscribe to these events for reactive updates
+   *
+   * @param widgetType - The emitting widget's type (e.g., 'profile', 'chat')
+   * @param event - Event name (e.g., 'status:changed', 'member:joined')
+   * @param data - Event payload
+   */
+  emitWidgetEvent(widgetType: string, event: string, data: unknown): void {
+    const start = performance.now();
+    this.eventMetrics.emitCount++;
+
+    const widgetSubs = this.widgetEventSubscribers.get(widgetType);
+    if (!widgetSubs) {
+      return; // No subscribers for this widget type
+    }
+
+    const eventSubs = widgetSubs.get(event);
+    if (!eventSubs || eventSubs.size === 0) {
+      return; // No subscribers for this event
+    }
+
+    // Notify all subscribers
+    for (const handler of eventSubs) {
+      try {
+        handler(data);
+      } catch (error) {
+        console.error(`PositronWidgetState: Widget event handler error [${widgetType}:${event}]`, error);
+      }
+    }
+
+    this.eventMetrics.lastEmitLatency = performance.now() - start;
+    console.log(`🔄 PositronWidgetState: ${widgetType}:${event} → ${eventSubs.size} subscribers (${this.eventMetrics.lastEmitLatency.toFixed(1)}ms)`);
+  }
+
+  /**
+   * Subscribe to a widget type's events
+   * Returns unsubscribe function for cleanup
+   *
+   * @param widgetType - The widget type to subscribe to (e.g., 'profile')
+   * @param event - Event name to subscribe to (e.g., 'status:changed')
+   * @param handler - Callback function
+   * @returns Unsubscribe function
+   */
+  subscribeToWidget(widgetType: string, event: string, handler: WidgetEventHandler): () => void {
+    this.eventMetrics.subscribeCount++;
+
+    // Ensure widget type map exists
+    if (!this.widgetEventSubscribers.has(widgetType)) {
+      this.widgetEventSubscribers.set(widgetType, new Map());
+    }
+
+    const widgetSubs = this.widgetEventSubscribers.get(widgetType)!;
+
+    // Ensure event set exists
+    if (!widgetSubs.has(event)) {
+      widgetSubs.set(event, new Set());
+    }
+
+    widgetSubs.get(event)!.add(handler);
+
+    console.log(`🔗 PositronWidgetState: Subscribed to ${widgetType}:${event} (total: ${widgetSubs.get(event)!.size})`);
+
+    // Return unsubscribe function
+    return () => {
+      const subs = this.widgetEventSubscribers.get(widgetType)?.get(event);
+      if (subs) {
+        subs.delete(handler);
+        console.log(`🔓 PositronWidgetState: Unsubscribed from ${widgetType}:${event} (remaining: ${subs.size})`);
+      }
+    };
+  }
+
+  /**
+   * Batch unsubscribe - clean up all subscriptions for a list of widget types
+   * Used by widgets in disconnectedCallback
+   *
+   * @param subscriptions - Array of subscription info to clean up
+   */
+  unsubscribeAll(subscriptions: WidgetSubscription[]): void {
+    for (const sub of subscriptions) {
+      const subs = this.widgetEventSubscribers.get(sub.widgetType)?.get(sub.event);
+      if (subs) {
+        subs.delete(sub.handler);
+      }
+    }
+    console.log(`🧹 PositronWidgetState: Cleaned up ${subscriptions.length} subscriptions`);
+  }
+
+  /**
+   * Get event metrics for telemetry/debugging
+   */
+  getEventMetrics(): typeof this.eventMetrics {
+    return { ...this.eventMetrics };
+  }
+
+  /**
+   * Get subscription count for a widget type (debugging)
+   */
+  getSubscriptionCount(widgetType: string): number {
+    const widgetSubs = this.widgetEventSubscribers.get(widgetType);
+    if (!widgetSubs) return 0;
+
+    let count = 0;
+    for (const eventSubs of widgetSubs.values()) {
+      count += eventSubs.size;
+    }
+    return count;
+  }
 }
 
 // Singleton export
 export const PositronWidgetState = new PositronWidgetStateService();
 
 // Type export for external use
-export type { ContextSubscriber };
+export type { ContextSubscriber, WidgetEventHandler, WidgetSubscription };

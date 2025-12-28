@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/ai/detect-semantic-loop",
+  "version": "1.0.0",
+  "description": "Detects if an AI's response is semantically too similar to recent messages, preventing repetitive loop behavior",
+  "main": "server/AiDetectSemanticLoopServerCommand.ts",
+  "types": "shared/AiDetectSemanticLoopTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AiDetectSemanticLoopIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "ai/detect-semantic-loop"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

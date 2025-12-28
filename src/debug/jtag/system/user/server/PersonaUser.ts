@@ -612,6 +612,14 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // STEP 1b: Skip system messages (tool results, etc.)
+    // Tool results are stored with senderType='system' and shouldn't trigger new responses.
+    // This prevents infinite loops where AI responds to its own tool results.
+    if (messageEntity.senderType === 'system') {
+      this.log.debug(`⏭️ ${this.displayName}: Skipping system message (tool result) from ${messageEntity.senderName}`);
+      return;
+    }
+
     // STEP 2: Deduplication - prevent evaluating same message multiple times
     if (this.rateLimiter.hasEvaluatedMessage(messageEntity.id)) {
       return; // Already evaluated this message

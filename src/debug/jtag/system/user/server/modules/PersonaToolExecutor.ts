@@ -76,6 +76,15 @@ export interface PersonaUserForToolExecutor {
 export class PersonaToolExecutor {
   private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/logs/system/cognition.log');
 
+  /**
+   * LOOP DETECTION: Track recent tool calls per persona to detect infinite loops
+   * Map<personaId, Array<{hash: string, timestamp: number}>>
+   * When same tool call appears 3+ times in 60 seconds, it's blocked
+   */
+  private static readonly recentToolCalls: Map<string, Array<{ hash: string; timestamp: number }>> = new Map();
+  private static readonly LOOP_DETECTION_WINDOW_MS = 60000; // 60 seconds
+  private static readonly LOOP_DETECTION_THRESHOLD = 3; // Block after 3 identical calls
+
   private persona: PersonaUserForToolExecutor;
   private toolRegistry: ToolRegistry;
   private formatAdapters: ToolFormatAdapter[];
@@ -103,6 +112,47 @@ export class PersonaToolExecutor {
     const timestamp = new Date().toISOString();
     const logLine = `[${timestamp}] ${message}\n`;
     fs.appendFileSync(PersonaToolExecutor.COGNITION_LOG_PATH, logLine, 'utf8');
+  }
+
+  /**
+   * LOOP DETECTION: Create a hash of a tool call for comparison
+   */
+  private static hashToolCall(toolCall: ToolCall): string {
+    return `${toolCall.toolName}:${JSON.stringify(toolCall.parameters)}`;
+  }
+
+  /**
+   * LOOP DETECTION: Check if a tool call is a duplicate (appears too frequently)
+   * Returns true if blocked (is a loop), false if allowed
+   */
+  private isLoopDetected(toolCall: ToolCall): boolean {
+    const personaId = this.persona.id;
+    const hash = PersonaToolExecutor.hashToolCall(toolCall);
+    const now = Date.now();
+
+    // Get or create recent calls list for this persona
+    let recentCalls = PersonaToolExecutor.recentToolCalls.get(personaId) || [];
+
+    // Clean up old entries outside the window
+    recentCalls = recentCalls.filter(
+      entry => now - entry.timestamp < PersonaToolExecutor.LOOP_DETECTION_WINDOW_MS
+    );
+
+    // Count how many times this exact call appears
+    const duplicateCount = recentCalls.filter(entry => entry.hash === hash).length;
+
+    // Record this call (even if it will be blocked)
+    recentCalls.push({ hash, timestamp: now });
+    PersonaToolExecutor.recentToolCalls.set(personaId, recentCalls);
+
+    // Block if threshold exceeded
+    if (duplicateCount >= PersonaToolExecutor.LOOP_DETECTION_THRESHOLD) {
+      this.log.warn(`🔁 LOOP DETECTED: ${toolCall.toolName} called ${duplicateCount + 1}x in ${PersonaToolExecutor.LOOP_DETECTION_WINDOW_MS / 1000}s - BLOCKING`);
+      PersonaToolExecutor.logToCognitionFile(`🔁 ${this.persona.displayName}: [LOOP BLOCKED] ${toolCall.toolName} (${duplicateCount + 1}x identical)`);
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -150,10 +200,24 @@ export class PersonaToolExecutor {
     this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
     PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
+    // Filter out looping tool calls before execution
+    const filteredToolCalls = toolCalls.filter(toolCall => {
+      if (this.isLoopDetected(toolCall)) {
+        this.log.warn(`Skipping looping tool call: ${toolCall.toolName}`);
+        return false;
+      }
+      return true;
+    });
+
+    if (filteredToolCalls.length === 0) {
+      this.log.warn('All tool calls blocked by loop detection');
+      return { formattedResults: '[All tool calls blocked - infinite loop detected]', storedResultIds: [] };
+    }
+
     // PARALLELIZED: Execute all tools concurrently instead of sequentially
     // This reduces tool execution time from O(sum of all tool times) to O(max tool time)
     // Example: 3 tools × 500ms each = 1500ms sequential → 500ms parallel (3x speedup)
-    const toolExecutionPromises = toolCalls.map(async (toolCall) => {
+    const toolExecutionPromises = filteredToolCalls.map(async (toolCall) => {
       const startTime = Date.now();
 
       // Resolve "current" room parameter to actual room name
@@ -453,7 +517,8 @@ ${result.error || 'Unknown error'}
     result: { success: boolean; data: unknown; error?: string }
   ): string {
     if (!result.success) {
-      return `Tool '${toolName}' failed: ${result.error?.slice(0, 100) || 'Unknown error'}`;
+      // Don't truncate error messages - AIs need full context to debug
+      return `Tool '${toolName}' failed: ${result.error || 'Unknown error'}`;
     }
 
     // Tool-specific summarization logic
@@ -497,9 +562,9 @@ ${result.error || 'Unknown error'}
       return `Command executed (${lines} lines of output)`;
     }
 
-    // Generic summary for unknown tools
-    const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
-    const preview = dataStr.slice(0, 80);
-    return `Tool '${toolName}' completed: ${preview}${dataStr.length > 80 ? '...' : ''}`;
+    // Generic summary for unknown tools - give AIs enough context to work with
+    const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    const preview = dataStr.slice(0, 500);
+    return `Tool '${toolName}' completed: ${preview}${dataStr.length > 500 ? '...' : ''}`;
   }
 }

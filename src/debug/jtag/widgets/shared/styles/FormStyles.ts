@@ -26,8 +26,8 @@ export const INPUT_STYLES = `
   .form-input:focus,
   .config-input:focus {
     outline: none;
-    border-color: #00d4ff;
-    box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.2);
+    border-color: var(--content-accent, #00d4ff);
+    box-shadow: 0 0 0 2px var(--input-focus-shadow, rgba(0, 212, 255, 0.2));
   }
 
   .form-input::placeholder,
@@ -97,28 +97,28 @@ export const BUTTON_STYLES = `
   }
 
   .btn-primary {
-    background: linear-gradient(135deg, #00d4ff, #0099cc);
-    color: white;
+    background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0099cc));
+    color: var(--button-primary-text, white);
   }
 
   .btn-primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, #00e5ff, #00aadd);
+    background: var(--button-primary-background-hover, linear-gradient(135deg, #00e5ff, #00aadd));
     transform: translateY(-1px);
   }
 
   .btn-secondary {
-    background: transparent;
-    border: 1px solid rgba(0, 212, 255, 0.4);
-    color: #00d4ff;
+    background: var(--button-secondary-background, transparent);
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
+    color: var(--content-accent, #00d4ff);
   }
 
   .btn-secondary:hover:not(:disabled) {
-    background: rgba(0, 212, 255, 0.1);
-    border-color: rgba(0, 212, 255, 0.6);
+    background: var(--button-secondary-background-hover, rgba(0, 212, 255, 0.1));
+    border-color: var(--widget-border-focus, rgba(0, 212, 255, 0.6));
   }
 
   .btn-success {
-    background: linear-gradient(135deg, #00ff64, #00cc50);
+    background: linear-gradient(135deg, var(--content-success, #00ff64), #00cc50);
     color: white;
   }
 
@@ -127,7 +127,7 @@ export const BUTTON_STYLES = `
   }
 
   .btn-danger {
-    background: linear-gradient(135deg, #ff5050, #cc3030);
+    background: linear-gradient(135deg, var(--content-warning, #ff5050), #cc3030);
     color: white;
   }
 
@@ -154,9 +154,9 @@ export const BUTTON_STYLES = `
   .btn-test {
     padding: 10px 16px;
     background: rgba(0, 212, 255, 0.1);
-    border: 1px solid rgba(0, 212, 255, 0.3);
+    border: 1px solid var(--widget-border, rgba(0, 212, 255, 0.3));
     border-radius: 4px;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     font-size: 12px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -165,7 +165,7 @@ export const BUTTON_STYLES = `
 
   .btn-test:hover:not(:disabled) {
     background: rgba(0, 212, 255, 0.2);
-    border-color: rgba(0, 212, 255, 0.5);
+    border-color: var(--widget-border-focus, rgba(0, 212, 255, 0.5));
   }
 
   .btn-test.testing {
@@ -175,7 +175,7 @@ export const BUTTON_STYLES = `
   .btn-refresh {
     background: none;
     border: none;
-    color: rgba(0, 212, 255, 0.6);
+    color: var(--content-secondary, rgba(0, 212, 255, 0.6));
     cursor: pointer;
     font-size: 12px;
     padding: 2px 4px;
@@ -185,7 +185,7 @@ export const BUTTON_STYLES = `
   }
 
   .btn-refresh:hover {
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     background: rgba(0, 212, 255, 0.1);
   }
 `;
@@ -195,7 +195,7 @@ export const BUTTON_STYLES = `
  */
 export const LINK_STYLES = `
   a {
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     text-decoration: none;
     transition: color 0.2s ease;
   }
@@ -206,12 +206,12 @@ export const LINK_STYLES = `
   }
 
   .link-subtle {
-    color: rgba(0, 212, 255, 0.7);
+    color: var(--content-secondary, rgba(0, 212, 255, 0.7));
     font-size: 12px;
   }
 
   .link-subtle:hover {
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
   }
 
   .action-link {

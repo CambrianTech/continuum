@@ -416,6 +416,11 @@ export class EventBridge {
       return true;
     }
 
+    // Positron widget context events should be bridged (for AI RAG awareness)
+    if (eventName.includes('positron:widget-context')) {
+      return true;
+    }
+
     return false;
   }
 }

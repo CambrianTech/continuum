@@ -12,6 +12,7 @@
 import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface PersonaInfo {
   uniqueId: string;
@@ -50,6 +51,33 @@ export class DiagnosticsWidget extends BasePanelWidget {
 
   protected async onPanelInitialize(): Promise<void> {
     await this.loadPersonas();
+    this.emitPositronContext();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    const selectedPersonaInfo = this.selectedPersona
+      ? this.personas.find(p => p.uniqueId === this.selectedPersona)
+      : null;
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'diagnostics',
+        section: this.selectedPersona ? 'persona-logs' : 'persona-list',
+        title: this.selectedPersona
+          ? `Diagnostics - ${selectedPersonaInfo?.displayName || this.selectedPersona}`
+          : 'System Diagnostics',
+        entityId: this.selectedPersona || undefined,
+        metadata: {
+          personaCount: this.personas.length,
+          selectedPersona: this.selectedPersona,
+          onlinePersonas: this.personas.filter(p => p.status === 'online').length
+        }
+      },
+      { action: 'debugging', target: this.selectedPersona ? 'persona logs' : 'system health' }
+    );
   }
 
   private async loadPersonas(): Promise<void> {
@@ -322,7 +350,7 @@ const DIAGNOSTICS_STYLES = `
   .health-value {
     font-size: 14px;
     font-weight: 600;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
   }
 
   .persona-card {
@@ -341,7 +369,7 @@ const DIAGNOSTICS_STYLES = `
   }
 
   .persona-card.selected {
-    border-color: #00d4ff;
+    border-color: var(--content-accent, #00d4ff);
     background: rgba(0, 212, 255, 0.1);
   }
 
@@ -355,7 +383,7 @@ const DIAGNOSTICS_STYLES = `
   .persona-avatar {
     width: 40px;
     height: 40px;
-    background: linear-gradient(135deg, #00d4ff, #0099cc);
+    background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0099cc));
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -398,9 +426,9 @@ const DIAGNOSTICS_STYLES = `
     gap: 6px;
     padding: 6px 12px;
     background: rgba(0, 212, 255, 0.1);
-    border: 1px solid rgba(0, 212, 255, 0.2);
+    border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.2));
     border-radius: 4px;
-    color: #00d4ff;
+    color: var(--content-accent, #00d4ff);
     font-size: 12px;
     cursor: pointer;
     transition: all 0.2s ease;

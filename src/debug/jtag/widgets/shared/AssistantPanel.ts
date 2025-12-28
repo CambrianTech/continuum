@@ -226,7 +226,7 @@ export class AssistantPanel {
           background: rgba(0, 212, 255, 0.2);
           border: 1px solid rgba(0, 212, 255, 0.3);
           border-radius: 4px;
-          color: #00d4ff;
+          color: var(--content-accent, #00d4ff);
           cursor: pointer;
           display: flex;
           align-items: center;
@@ -238,7 +238,7 @@ export class AssistantPanel {
 
         .toggle-btn:hover {
           background: rgba(0, 212, 255, 0.3);
-          border-color: #00d4ff;
+          border-color: var(--content-accent, #00d4ff);
         }
 
         .context-bar {
@@ -271,7 +271,7 @@ export class AssistantPanel {
         .assistant-title-text {
           font-size: 13px;
           font-weight: 600;
-          color: #00d4ff;
+          color: var(--content-accent, #00d4ff);
           white-space: nowrap;
           overflow: hidden;
           transition: opacity 0.2s ease;
@@ -378,8 +378,8 @@ export class AssistantPanel {
 
         .assistant-input:focus {
           outline: none;
-          border-color: #00d4ff;
-          box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.1);
+          border-color: var(--content-accent, #00d4ff);
+          box-shadow: 0 0 0 2px var(--input-focus-shadow, rgba(0, 212, 255, 0.1));
         }
 
         .assistant-input::placeholder {
@@ -388,10 +388,10 @@ export class AssistantPanel {
 
         .assistant-send {
           padding: 10px 14px;
-          background: linear-gradient(135deg, #00d4ff, #0088cc);
+          background: var(--button-primary-background, linear-gradient(135deg, #00d4ff, #0088cc));
           border: none;
           border-radius: 6px;
-          color: white;
+          color: var(--button-primary-text, white);
           font-weight: 600;
           font-size: 12px;
           cursor: pointer;
@@ -432,7 +432,7 @@ export class AssistantPanel {
           width: 5px;
           height: 5px;
           border-radius: 50%;
-          background: #00d4ff;
+          background: var(--content-accent, #00d4ff);
           animation: bounce 1.4s infinite ease-in-out;
         }
 

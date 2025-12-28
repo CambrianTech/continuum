@@ -24,6 +24,15 @@ export class SettingsWidget extends BaseWidget {
   private currentSection: SettingsSection = 'providers';
   private sectionEventUnsubscribe?: () => void;
 
+  // Track last test result for RAG context (so AIs know what's happening)
+  private lastTestResult: {
+    provider: string;
+    success: boolean;
+    status: string;
+    message: string | null;
+    testedAt: number;
+  } | null = null;
+
   constructor() {
     super({
       widgetName: 'SettingsWidget',
@@ -49,6 +58,12 @@ export class SettingsWidget extends BaseWidget {
         this.currentSection = payload.section;
         this.renderWidget();
         this.emitPositronContext();
+
+        // Emit widget event for collaborative AI assistance
+        PositronWidgetState.emitWidgetEvent('settings', 'section:changed', {
+          section: payload.section,
+          previousSection: this.currentSection
+        });
       }
     });
 
@@ -68,16 +83,40 @@ export class SettingsWidget extends BaseWidget {
       'about': 'About'
     };
 
+    // Build metadata including test results for AI RAG context
+    const metadata: Record<string, unknown> = {
+      configuredProviders: this.configEntries.filter(e => e.isConfigured).length,
+      totalProviders: this.configEntries.length,
+      hasPendingChanges: this.pendingChanges.size > 0
+    };
+
+    // Include last test result so AI knows about failures
+    if (this.lastTestResult) {
+      const ageMs = Date.now() - this.lastTestResult.testedAt;
+      const ageSeconds = Math.round(ageMs / 1000);
+
+      // Only include recent results (< 5 min old)
+      if (ageMs < 5 * 60 * 1000) {
+        metadata.lastTestedProvider = this.lastTestResult.provider;
+        metadata.lastTestSuccess = this.lastTestResult.success;
+        metadata.lastTestStatus = this.lastTestResult.status;
+        metadata.lastTestMessage = this.lastTestResult.message;
+        metadata.lastTestAgeSeconds = ageSeconds;
+
+        // Add explicit help request for failed tests
+        if (!this.lastTestResult.success) {
+          metadata.needsHelp = true;
+          metadata.helpContext = `User just tested ${this.lastTestResult.provider} API key but it failed with: ${this.lastTestResult.message || this.lastTestResult.status}`;
+        }
+      }
+    }
+
     PositronWidgetState.emit(
       {
         widgetType: 'settings',
         section: this.currentSection,
         title: `Settings - ${sectionTitles[this.currentSection]}`,
-        metadata: {
-          configuredProviders: this.configEntries.filter(e => e.isConfigured).length,
-          totalProviders: this.configEntries.length,
-          hasPendingChanges: this.pendingChanges.size > 0
-        }
+        metadata
       },
       { action: 'configuring', target: sectionTitles[this.currentSection] }
     );
@@ -352,23 +391,67 @@ export class SettingsWidget extends BaseWidget {
     const newValue = this.pendingChanges.get(configKey) || input?.value;
     const entry = this.configEntries.find(e => e.key === configKey);
 
+    // Emit event: user is testing a provider (AIs can offer help)
+    PositronWidgetState.emitWidgetEvent('settings', 'provider:testing', {
+      provider,
+      configKey,
+      hasNewKey: !!newValue && !newValue.startsWith('sk-...'),
+      isConfigured: entry?.isConfigured || false
+    });
+
     // If user entered a new value, test that
     if (newValue && !newValue.startsWith('sk-...') && !newValue.startsWith('gsk_...')) {
       console.log(`Testing new key for ${configKey}`);
-      await this.tester.testKey({ provider, key: newValue }, configKey);
+      const result = await this.tester.testKey({ provider, key: newValue }, configKey);
+      this.emitTestResult(provider, configKey, result);
       return;
     }
 
     // If already configured, test the stored key (pass empty to use server-side key)
     if (entry?.isConfigured) {
       console.log(`Testing stored key for ${configKey}`);
-      await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      const result = await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      this.emitTestResult(provider, configKey, result);
       return;
     }
 
     // Not configured and no new value - show error
     console.log(`No key to test for ${configKey}`);
-    await this.tester.testKey({ provider, key: '' }, configKey);
+    const result = await this.tester.testKey({ provider, key: '' }, configKey);
+    this.emitTestResult(provider, configKey, result);
+  }
+
+  /**
+   * Emit test result event for AI collaboration
+   */
+  private emitTestResult(provider: string, configKey: string, _result: any): void {
+    const testResult = this.tester.getResult(configKey);
+    const success = testResult?.status === 'operational';
+    const message = testResult?.message;
+
+    // Save result for RAG context (so AIs know about failures in their prompts)
+    this.lastTestResult = {
+      provider,
+      success,
+      status: testResult?.status || 'unknown',
+      message: message || null,
+      testedAt: Date.now()
+    };
+
+    // Emit widget event for real-time subscribers (SettingsAssistant, etc.)
+    PositronWidgetState.emitWidgetEvent('settings', 'provider:tested', {
+      provider,
+      configKey,
+      success,
+      status: testResult?.status || 'unknown',
+      message: message || null,
+      responseTime: testResult?.responseTime,
+      // If failed, AI can offer troubleshooting
+      needsHelp: !success
+    });
+
+    // Update Positron context for RAG pipeline (so AI knows current state in prompts)
+    this.emitPositronContext();
   }
 
   private async saveConfig(): Promise<void> {
@@ -437,9 +520,21 @@ export class SettingsWidget extends BaseWidget {
 
       this.saveStatus = 'saved';
       console.log('Settings: Configuration saved (stub)');
+
+      // Emit success event - AI can congratulate or suggest next steps
+      PositronWidgetState.emitWidgetEvent('settings', 'config:saved', {
+        providers: Object.keys(config),
+        success: true
+      });
     } catch (error) {
       console.error('Settings: Failed to save config:', error);
       this.saveStatus = 'error';
+
+      // Emit failure event - AI can offer troubleshooting
+      PositronWidgetState.emitWidgetEvent('settings', 'config:error', {
+        error: String(error),
+        needsHelp: true
+      });
     }
 
     this.renderWidget();

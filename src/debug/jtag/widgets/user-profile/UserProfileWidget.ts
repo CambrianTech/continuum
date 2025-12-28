@@ -17,6 +17,7 @@ import type { DataListParams, DataListResult } from '../../commands/data/list/sh
 import type { DataDeleteParams, DataDeleteResult } from '../../commands/data/delete/shared/DataDeleteTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 export class UserProfileWidget extends BaseWidget {
   private user: UserEntity | null = null;
@@ -77,7 +78,40 @@ export class UserProfileWidget extends BaseWidget {
     }
 
     this.loading = false;
+    this.emitPositronContext();
     this.renderWidget();
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   */
+  private emitPositronContext(): void {
+    if (!this.user) return;
+
+    PositronWidgetState.emit(
+      {
+        widgetType: 'profile',
+        section: this.user.type,
+        title: `Profile - ${this.user.displayName}`,
+        entityId: this.user.id,
+        metadata: {
+          userType: this.user.type,
+          userName: this.user.displayName,
+          userStatus: this.user.status,
+          isAI: this.user.type === 'persona' || this.user.type === 'agent',
+          hasModelConfig: !!this.user.modelConfig
+        }
+      },
+      { action: 'viewing', target: `${this.user.type} profile` }
+    );
+
+    // Emit widget event for reactive subscriptions (ChatWidget listens to this)
+    PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
+      userId: this.user.id,
+      status: this.user.status,
+      displayName: this.user.displayName,
+      userType: this.user.type
+    });
   }
 
   private async updateUserStatus(newStatus: UserStatus): Promise<void> {
@@ -95,6 +129,14 @@ export class UserProfileWidget extends BaseWidget {
 
       // Emit event so user list can refresh
       Events.emit('data:users:updated', { id: this.user.id, status: newStatus });
+
+      // Emit widget event for reactive subscriptions
+      PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
+        userId: this.user.id,
+        status: newStatus,
+        displayName: this.user.displayName,
+        userType: this.user.type
+      });
     } catch (err) {
       console.error('Failed to update user status:', err);
     }
@@ -253,10 +295,10 @@ export class UserProfileWidget extends BaseWidget {
       .section-header {
         padding: 16px 20px;
         background: rgba(0, 212, 255, 0.1);
-        border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+        border-bottom: 1px solid var(--border-accent, rgba(0, 212, 255, 0.2));
         font-size: 14px;
         font-weight: 600;
-        color: #00d4ff;
+        color: var(--content-accent, #00d4ff);
         text-transform: uppercase;
         letter-spacing: 1px;
       }
@@ -309,18 +351,18 @@ export class UserProfileWidget extends BaseWidget {
       }
 
       .btn-primary {
-        background: #00d4ff;
-        color: #000;
+        background: var(--button-primary-background, #00d4ff);
+        color: var(--button-primary-text, #000);
       }
       .btn-primary:hover {
-        background: #00e5ff;
+        background: var(--button-primary-hover, #00e5ff);
         transform: translateY(-1px);
       }
 
       .btn-secondary {
         background: rgba(0, 212, 255, 0.2);
-        color: #00d4ff;
-        border: 1px solid rgba(0, 212, 255, 0.3);
+        color: var(--content-accent, #00d4ff);
+        border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.3));
       }
       .btn-secondary:hover {
         background: rgba(0, 212, 255, 0.3);

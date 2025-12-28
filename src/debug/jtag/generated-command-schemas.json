@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-27T23:05:45.294Z",
+  "generated": "2025-12-28T11:20:57.485Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1946,6 +1946,48 @@
       }
     },
     {
+      "name": "development/sandbox-execute",
+      "description": "Sandbox Execute Types - Run AI-generated commands in isolation\n *\n * Executes commands from persona sandboxes using npx tsx for dynamic loading.\n * No main system recompile needed.",
+      "params": {
+        "commandPath": {
+          "type": "string",
+          "required": true,
+          "description": "commandPath parameter"
+        },
+        "params": {
+          "type": "object",
+          "required": false,
+          "description": "params parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        }
+      }
+    },
+    {
+      "name": "development/propose-command",
+      "description": "Propose Command Types - AI Command Generation\n *\n * Allows AI personas to propose and generate new commands in their isolated sandbox.\n * Commands are generated to per-persona directories and loaded dynamically.\n *\n * Flow:\n * 1. AI proposes a CommandSpec JSON\n * 2. Command is generated to .continuum/personas/{personaId}/commands/\n * 3. Commands are namespaced: persona:{uniqueId}/command-name\n * 4. AI can test their command in isolation\n * 5. Human can promote to main codebase if valuable",
+      "params": {
+        "spec": {
+          "type": "string",
+          "required": true,
+          "description": "spec parameter"
+        },
+        "force": {
+          "type": "boolean",
+          "required": false,
+          "description": "force parameter"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "required": false,
+          "description": "dryRun parameter"
+        }
+      }
+    },
+    {
       "name": "development/generate",
       "description": "Generate Command - Shared Types\n *\n * Generate a new command from a CommandSpec JSON definition",
       "params": {
@@ -2101,6 +2143,31 @@
           "type": "boolean",
           "required": false,
           "description": "countOnly parameter"
+        },
+        "setContext": {
+          "type": "object",
+          "required": false,
+          "description": "setContext parameter"
+        },
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "section parameter"
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "title parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        },
+        "timestamp": {
+          "type": "number",
+          "required": false,
+          "description": "timestamp parameter"
         }
       }
     },
@@ -4391,6 +4458,42 @@
           "type": "string",
           "required": false,
           "description": "provider parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/detect-semantic-loop",
+      "description": "Ai Detect Semantic Loop Command - Shared Types\n *\n * Detects if an AI's response is semantically too similar to recent messages, preventing repetitive loop behavior",
+      "params": {
+        "messageText": {
+          "type": "string",
+          "required": true,
+          "description": "messageText parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "lookbackCount": {
+          "type": "number",
+          "required": false,
+          "description": "lookbackCount parameter"
+        },
+        "similarityThreshold": {
+          "type": "number",
+          "required": false,
+          "description": "similarityThreshold parameter"
+        },
+        "timeWindowMinutes": {
+          "type": "number",
+          "required": false,
+          "description": "timeWindowMinutes parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
         }
       }
     },

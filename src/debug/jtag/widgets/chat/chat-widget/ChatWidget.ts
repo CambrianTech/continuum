@@ -23,6 +23,7 @@ import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
+import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
 // MessageComposerWidget removed - using inline HTML instead
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
@@ -40,6 +41,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private errorsHidden: boolean = true; // Toggle state for error notifications
   private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
   private isSending: boolean = false; // Guard against duplicate sends
+  private positronUnsubscribe?: () => void; // Cleanup for Positron subscription
+  private positronUpdateDebounce?: number; // Debounce for Positron state updates
 
   constructor() {
     super({
@@ -155,6 +158,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Update header with correct count
       this.updateHeader();
+
+      // Emit Positron widget state for AI awareness
+      PositronWidgetState.emit({
+        widgetType: 'chat',
+        entityId: roomId,
+        title: `Chat - ${roomName}`,
+        metadata: {
+          room: roomName,
+          messageCount: this.totalMessageCount
+        }
+      });
 
     } catch (error) {
       console.error('ChatWidget: Failed to switch room:', error);
@@ -574,7 +588,70 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
     // No manual subscription needed - filtering happens in shouldAddEntity()
 
+    // 🧠 REACTIVE WIDGET PATTERN: Subscribe to UserProfileWidget events
+    // When UserProfileWidget emits status:changed, we update our member display
+    this.positronUnsubscribe = PositronWidgetState.subscribeToWidget('profile', 'status:changed', (data) => {
+      this.handleProfileStatusChange(data as { userId: string; status: string; displayName: string });
+    });
+    console.log(`✅ ChatWidget: Subscribed to profile:status:changed events`);
+
     console.log(`✅ ChatWidget: Initialized with room selection, AI status indicators, and automatic CRUD events`);
+  }
+
+  /**
+   * Handle profile status changes from UserProfileWidget
+   *
+   * REACTIVE WIDGET PATTERN: This enables ChatWidget to react to UserProfileWidget
+   * events without polling. When a user's status changes, update our member display.
+   */
+  private handleProfileStatusChange(data: { userId: string; status: string; displayName: string }): void {
+    const profileUserId = data.userId as UUID;
+
+    // Check if this user is a member of our current room
+    if (!this.roomMembers.has(profileUserId)) {
+      return;
+    }
+
+    // Debounce rapid updates
+    if (this.positronUpdateDebounce) {
+      clearTimeout(this.positronUpdateDebounce);
+    }
+
+    this.positronUpdateDebounce = setTimeout(() => {
+      const member = this.roomMembers.get(profileUserId);
+      if (member && member.status !== data.status) {
+        console.log(`🧠 ChatWidget: Profile event - ${member.displayName} status: ${member.status} → ${data.status}`);
+
+        // Update the member's status
+        member.status = data.status as UserEntity['status'];
+
+        // Refresh the header to show updated member status
+        this.updateHeader();
+      }
+
+      this.positronUpdateDebounce = undefined;
+    }, 100) as unknown as number; // 100ms debounce
+  }
+
+  /**
+   * Cleanup when widget is disconnected from DOM
+   */
+  async disconnectedCallback(): Promise<void> {
+    // Clean up Positron subscription
+    if (this.positronUnsubscribe) {
+      this.positronUnsubscribe();
+      this.positronUnsubscribe = undefined;
+      console.log(`🧠 ChatWidget: Positron subscription cleaned up`);
+    }
+
+    // Clear any pending debounce
+    if (this.positronUpdateDebounce) {
+      clearTimeout(this.positronUpdateDebounce);
+      this.positronUpdateDebounce = undefined;
+    }
+
+    // Call parent cleanup
+    await super.disconnectedCallback();
   }
 
   /**
