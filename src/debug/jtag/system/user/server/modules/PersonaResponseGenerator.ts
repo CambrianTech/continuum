@@ -95,6 +95,112 @@ export class PersonaResponseGenerator {
   /** Response cleaner - strips unwanted prefixes from AI responses */
   private responseCleaner: ResponseCleaner;
 
+  /**
+   * RESPONSE-LEVEL LOOP DETECTION
+   *
+   * Tracks recent AI response hashes per persona to detect infinite loops.
+   * This catches loops BEFORE tool parsing, which is critical because:
+   * 1. Truncated responses never reach tool parsing
+   * 2. Tool-level detection only catches tool call loops, not content loops
+   * 3. DeepSeek was stuck repeating the same governance proposal 15+ times
+   *
+   * Map<personaId, Array<{hash: string, timestamp: number}>>
+   */
+  private static readonly recentResponseHashes: Map<string, Array<{ hash: string; timestamp: number }>> = new Map();
+  private static readonly RESPONSE_LOOP_WINDOW_MS = 600000; // 10 minutes (DeepSeek generates 34k tokens = slow)
+  private static readonly RESPONSE_LOOP_THRESHOLD = 3; // Block after 3 similar responses
+  private static readonly RESPONSE_HASH_LENGTH = 200; // First 200 chars for comparison
+
+  /**
+   * Create a hash of response content for loop detection
+   * Uses first N characters, normalized (lowercase, trimmed, no whitespace)
+   */
+  private static hashResponse(text: string): string {
+    const normalized = text
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, ' ')  // Normalize whitespace
+      .slice(0, PersonaResponseGenerator.RESPONSE_HASH_LENGTH);
+
+    // Simple hash: just use the normalized string as-is
+    // Could use crypto.createHash('md5') but not needed for loop detection
+    return normalized;
+  }
+
+  /**
+   * Check if response is a loop (appears too frequently in recent history)
+   * Returns true if blocked (is a loop), false if allowed
+   */
+  private isResponseLoop(responseText: string): boolean {
+    const hash = PersonaResponseGenerator.hashResponse(responseText);
+    const now = Date.now();
+
+    // Get or create recent responses list for this persona
+    let recentResponses = PersonaResponseGenerator.recentResponseHashes.get(this.personaId) || [];
+
+    // Clean up old entries outside the window
+    recentResponses = recentResponses.filter(
+      entry => now - entry.timestamp < PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS
+    );
+
+    // Count how many times similar response appears (using similarity threshold)
+    const duplicateCount = recentResponses.filter(entry => {
+      // Check if hashes are similar (allow some variation for minor differences)
+      const similarity = this.calculateSimilarity(entry.hash, hash);
+      return similarity > 0.8; // 80% similar = probable loop
+    }).length;
+
+    // Record this response (even if it will be blocked)
+    recentResponses.push({ hash, timestamp: now });
+    PersonaResponseGenerator.recentResponseHashes.set(this.personaId, recentResponses);
+
+    // Block if threshold exceeded
+    if (duplicateCount >= PersonaResponseGenerator.RESPONSE_LOOP_THRESHOLD) {
+      this.log(`🔁 RESPONSE LOOP DETECTED: "${hash.slice(0, 50)}..." appeared ${duplicateCount + 1}x in ${PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS / 1000}s - BLOCKING`);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Calculate similarity between two strings (0-1 scale)
+   * Uses simple character overlap for speed
+   */
+  private calculateSimilarity(a: string, b: string): number {
+    if (a === b) return 1;
+    if (a.length === 0 || b.length === 0) return 0;
+
+    // Jaccard similarity on character bigrams
+    const getBigrams = (s: string): Set<string> => {
+      const bigrams = new Set<string>();
+      for (let i = 0; i < s.length - 1; i++) {
+        bigrams.add(s.slice(i, i + 2));
+      }
+      return bigrams;
+    };
+
+    const bigramsA = getBigrams(a);
+    const bigramsB = getBigrams(b);
+
+    let intersection = 0;
+    for (const bigram of bigramsA) {
+      if (bigramsB.has(bigram)) intersection++;
+    }
+
+    const union = bigramsA.size + bigramsB.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+  }
+
+  /**
+   * Clear response loop history for this persona
+   * Call this when context changes significantly (e.g., room switch, manual reset)
+   */
+  clearResponseLoopHistory(): void {
+    PersonaResponseGenerator.recentResponseHashes.delete(this.personaId);
+    this.log(`🧹 Cleared response loop history for ${this.personaName}`);
+  }
+
   constructor(config: PersonaResponseGeneratorConfig) {
     this.personaId = config.personaId;
     this.personaName = config.personaName;
@@ -636,6 +742,77 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
         if (cleanedResponse !== aiResponse.text.trim()) {
           aiResponse.text = cleanedResponse;
+        }
+
+        // 🔧 PHASE 3.3.5b: RESPONSE-LEVEL LOOP DETECTION
+        // Check if this AI is stuck in a loop BEFORE tool parsing
+        // This catches cases where:
+        // - Response is truncated mid-tool-call (DeepSeek's issue)
+        // - AI repeats same content with minor variations
+        // - Tool-level detection would miss it
+        if (this.isResponseLoop(aiResponse.text)) {
+          this.log(`🔁 ${this.personaName}: [PHASE 3.3.5b] Response loop detected - DISCARDING response`);
+
+          // Release inference slot
+          InferenceCoordinator.releaseSlot(this.personaId, provider);
+
+          // Emit event to clear UI indicators
+          if (this.client) {
+            await Events.emit<AIDecidedSilentEventData>(
+              DataDaemon.jtagContext!,
+              AI_DECISION_EVENTS.DECIDED_SILENT,
+              {
+                personaId: this.personaId,
+                personaName: this.personaName,
+                roomId: originalMessage.roomId,
+                messageId: originalMessage.id,
+                isHumanMessage: originalMessage.senderType === 'human',
+                timestamp: Date.now(),
+                confidence: 0.9,
+                reason: 'Response loop detected - same content repeated 3+ times',
+                gatingModel: 'response-loop-detector'
+              },
+              {
+                scope: EVENT_SCOPES.ROOM,
+                scopeId: originalMessage.roomId
+              }
+            );
+          }
+
+          // Return early - treat as redundant (don't post this looping response)
+          return { success: true, wasRedundant: true, storedToolResultIds: [] };
+        }
+
+        // 🔧 PHASE 3.3.5c: TRUNCATED TOOL CALL DETECTION
+        // Detect tool calls that were cut off mid-generation (DeepSeek's issue)
+        // If we see <tool_use> or <tool  but no matching closing tag, the response is truncated
+        const hasToolStart = aiResponse.text.includes('<tool_use>') || aiResponse.text.includes('<tool ');
+        const hasToolEnd = aiResponse.text.includes('</tool_use>') || aiResponse.text.includes('</tool>');
+        if (hasToolStart && !hasToolEnd) {
+          this.log(`⚠️ ${this.personaName}: [PHASE 3.3.5c] TRUNCATED TOOL CALL detected - blocking response to prevent loop`);
+          this.log(`   Response ends with: "${aiResponse.text.slice(-100)}"`);
+
+          // Treat truncated tool calls the same as loops - they will just repeat forever
+          InferenceCoordinator.releaseSlot(this.personaId, provider);
+          if (this.client) {
+            await Events.emit<AIDecidedSilentEventData>(
+              DataDaemon.jtagContext!,
+              AI_DECISION_EVENTS.DECIDED_SILENT,
+              {
+                personaId: this.personaId,
+                personaName: this.personaName,
+                roomId: originalMessage.roomId,
+                messageId: originalMessage.id,
+                isHumanMessage: originalMessage.senderType === 'human',
+                timestamp: Date.now(),
+                confidence: 0.95,
+                reason: 'Truncated tool call detected - response cut off mid-tool-call',
+                gatingModel: 'truncated-tool-detector'
+              },
+              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
+            );
+          }
+          return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
         // 🔧 PHASE 3.3.6: Tool execution loop - parse and execute tool calls, then regenerate response

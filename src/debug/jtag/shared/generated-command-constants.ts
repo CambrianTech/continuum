@@ -28,6 +28,7 @@ export const COMMANDS = {
   AI_COST: 'ai/cost',
   AI_DATASET_CREATE: 'ai/dataset/create',
   AI_DATASET_LIST: 'ai/dataset/list',
+  AI_DETECT_SEMANTIC_LOOP: 'ai/detect-semantic-loop',
   AI_EMBEDDING_GENERATE: 'ai/embedding/generate',
   AI_GENERATE: 'ai/generate',
   AI_GENOME_STATS: 'ai/genome/stats',

@@ -517,7 +517,8 @@ ${result.error || 'Unknown error'}
     result: { success: boolean; data: unknown; error?: string }
   ): string {
     if (!result.success) {
-      return `Tool '${toolName}' failed: ${result.error?.slice(0, 100) || 'Unknown error'}`;
+      // Don't truncate error messages - AIs need full context to debug
+      return `Tool '${toolName}' failed: ${result.error || 'Unknown error'}`;
     }
 
     // Tool-specific summarization logic
@@ -561,9 +562,9 @@ ${result.error || 'Unknown error'}
       return `Command executed (${lines} lines of output)`;
     }
 
-    // Generic summary for unknown tools
-    const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
-    const preview = dataStr.slice(0, 80);
-    return `Tool '${toolName}' completed: ${preview}${dataStr.length > 80 ? '...' : ''}`;
+    // Generic summary for unknown tools - give AIs enough context to work with
+    const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    const preview = dataStr.slice(0, 500);
+    return `Tool '${toolName}' completed: ${preview}${dataStr.length > 500 ? '...' : ''}`;
   }
 }

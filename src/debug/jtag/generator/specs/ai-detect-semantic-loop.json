@@ -1,0 +1,76 @@
+{
+  "name": "ai/detect-semantic-loop",
+  "description": "Detects if an AI's response is semantically too similar to recent messages, preventing repetitive loop behavior",
+  "accessLevel": "ai-safe",
+  "environment": "server",
+  "params": [
+    {
+      "name": "messageText",
+      "type": "string",
+      "description": "The message text to check for similarity"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "description": "UUID of the persona to check message history for"
+    },
+    {
+      "name": "lookbackCount",
+      "type": "number",
+      "optional": true,
+      "description": "How many recent messages to compare against (default: 5)"
+    },
+    {
+      "name": "similarityThreshold",
+      "type": "number",
+      "optional": true,
+      "description": "Similarity threshold 0-1, higher = more strict (default: 0.85)"
+    },
+    {
+      "name": "timeWindowMinutes",
+      "type": "number",
+      "optional": true,
+      "description": "Only check messages within this timeframe in minutes (default: 10)"
+    },
+    {
+      "name": "roomId",
+      "type": "string",
+      "optional": true,
+      "description": "Room context - checks across all rooms if omitted"
+    }
+  ],
+  "results": [
+    {
+      "name": "isLoop",
+      "type": "boolean",
+      "description": "Whether the message is detected as a loop"
+    },
+    {
+      "name": "maxSimilarity",
+      "type": "number",
+      "description": "Similarity score of the closest match (0-1)"
+    },
+    {
+      "name": "matches",
+      "type": "Array<{messageId: string, similarity: number, timestamp: string, excerpt: string}>",
+      "description": "Details of similar messages found"
+    },
+    {
+      "name": "recommendation",
+      "type": "'ALLOW' | 'WARN' | 'BLOCK'",
+      "description": "Recommendation for what to do with the message"
+    },
+    {
+      "name": "explanation",
+      "type": "string",
+      "description": "Human-readable explanation of the result"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check if a message is looping",
+      "command": "./jtag ai/detect-semantic-loop --messageText=\"Key Insights: Take action...\" --personaId=\"helper-uuid\"",
+      "expectedResult": "{ isLoop: true, maxSimilarity: 0.92, recommendation: 'WARN' }"
+    }
+  ]
+}
