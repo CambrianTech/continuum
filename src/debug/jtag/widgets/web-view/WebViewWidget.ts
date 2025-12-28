@@ -3,6 +3,11 @@
  *
  * Displays web content and emits context to PositronWidgetState
  * so AI assistants can "see" what the user is viewing.
+ *
+ * Structure:
+ * - web-view-widget.html - Template
+ * - web-view-widget.scss - Styles (compiled to .css)
+ * - WebViewWidget.ts - Logic
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
@@ -14,8 +19,8 @@ export class WebViewWidget extends BaseWidget {
   constructor() {
     super({
       widgetName: 'WebViewWidget',
-      template: undefined,
-      styles: undefined,
+      template: 'web-view-widget.html',
+      styles: 'web-view-widget.css',
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
@@ -26,6 +31,13 @@ export class WebViewWidget extends BaseWidget {
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🌐 WebViewWidget: Initializing...');
     this.emitPositronContext();
+  }
+
+  /**
+   * Override path resolution - directory is 'web-view' not 'webview'
+   */
+  protected resolveResourcePath(filename: string): string {
+    return `widgets/web-view/public/${filename}`;
   }
 
   private emitPositronContext(): void {
@@ -42,102 +54,19 @@ export class WebViewWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
-    const styles = `
-      :host {
-        display: block;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-      }
+    // Inject loaded template and styles into shadow DOM
+    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
+      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
+      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
+    }
 
-      .browser-container {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        background: #2a2a2a;
-      }
-
-      .browser-toolbar {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 12px 16px;
-        background: #1a1a1a;
-        border-bottom: 1px solid rgba(0, 212, 255, 0.2);
-      }
-
-      .url-input {
-        flex: 1;
-        padding: 8px 12px;
-        background: #333;
-        border: 1px solid rgba(0, 212, 255, 0.3);
-        border-radius: 4px;
-        color: white;
-        font-size: 14px;
-      }
-
-      .url-input:focus {
-        outline: none;
-        border-color: var(--content-accent, #00d4ff);
-      }
-
-      .go-button {
-        padding: 8px 16px;
-        background: var(--content-accent, #00d4ff);
-        border: none;
-        border-radius: 4px;
-        color: #000;
-        font-weight: 600;
-        cursor: pointer;
-      }
-
-      .go-button:hover {
-        opacity: 0.9;
-      }
-
-      .browser-content {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: rgba(255, 255, 255, 0.5);
-        font-size: 16px;
-      }
-
-      .placeholder-text {
-        text-align: center;
-        padding: 40px;
-      }
-
-      .placeholder-text h2 {
-        color: var(--content-accent, #00d4ff);
-        margin-bottom: 16px;
-      }
-    `;
-
-    const template = `
-      <div class="browser-container">
-        <div class="browser-toolbar">
-          <input type="text" class="url-input" placeholder="Enter URL..." value="${this.currentUrl}">
-          <button class="go-button">Go</button>
-        </div>
-        <div class="browser-content">
-          <div class="placeholder-text">
-            <h2>Co-Browsing Widget</h2>
-            <p>Enter a URL above to load web content.</p>
-            <p>AI assistants will be able to see what you're viewing.</p>
-          </div>
-        </div>
-      </div>
-    `;
-
-    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
+    // Set up event listeners after DOM is ready
     this.setupEventListeners();
   }
 
   private setupEventListeners(): void {
-    const urlInput = this.shadowRoot?.querySelector('.url-input') as HTMLInputElement;
-    const goButton = this.shadowRoot?.querySelector('.go-button');
+    const urlInput = this.shadowRoot?.querySelector('#urlInput') as HTMLInputElement;
+    const goButton = this.shadowRoot?.querySelector('#goButton');
 
     goButton?.addEventListener('click', () => {
       this.loadUrl(urlInput?.value || '');
@@ -152,10 +81,34 @@ export class WebViewWidget extends BaseWidget {
 
   private loadUrl(url: string): void {
     if (!url) return;
+
+    // Ensure URL has protocol
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://' + url;
+    }
+
     this.currentUrl = url;
     console.log(`🌐 WebViewWidget: Loading URL: ${url}`);
     this.emitPositronContext();
+
+    // Update URL input to show normalized URL
+    const urlInput = this.shadowRoot?.querySelector('#urlInput') as HTMLInputElement;
+    if (urlInput) {
+      urlInput.value = url;
+    }
+
     // TODO: Fetch and display content via server-side proxy
+    // For now, just update the placeholder
+    const content = this.shadowRoot?.querySelector('.browser-content');
+    if (content) {
+      content.innerHTML = `
+        <div class="placeholder-text">
+          <h2>Loading...</h2>
+          <p>${url}</p>
+          <p>Server-side fetch coming soon.</p>
+        </div>
+      `;
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {
