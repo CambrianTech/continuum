@@ -47,6 +47,7 @@ import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from 
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
+import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 
 /**
  * Response generation result
@@ -199,6 +200,75 @@ export class PersonaResponseGenerator {
   clearResponseLoopHistory(): void {
     PersonaResponseGenerator.recentResponseHashes.delete(this.personaId);
     this.log(`🧹 Cleared response loop history for ${this.personaName}`);
+  }
+
+  /**
+   * SEMANTIC LOOP DETECTION
+   *
+   * Uses embedding-based similarity to detect if proposed response is too similar
+   * to recent messages in the room (from ANY source, not just self).
+   *
+   * This catches cases where multiple AIs post semantically identical content
+   * (e.g., Teacher AI and Local Assistant posting the same explanation).
+   *
+   * AUTONOMY-PRESERVING:
+   * - ALLOW (<0.75): Post normally
+   * - WARN (0.75-0.85): Log warning but allow (preserve autonomy)
+   * - BLOCK (>0.85): Truly redundant, block to prevent spam
+   *
+   * @param responseText - The proposed response text
+   * @param roomId - The room ID for context
+   * @returns true if should BLOCK (>0.85 similarity), false otherwise
+   */
+  private async checkSemanticLoop(responseText: string, roomId: UUID): Promise<{ shouldBlock: boolean; similarity: number; reason: string }> {
+    try {
+      // Short responses are unlikely to be loops - skip expensive embedding check
+      if (responseText.length < 50) {
+        return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
+      }
+
+      const result = await Commands.execute<AiDetectSemanticLoopParams, AiDetectSemanticLoopResult>('ai/detect-semantic-loop', {
+        messageText: responseText,
+        personaId: this.personaId,
+        roomId: roomId,
+        lookbackCount: 10,  // Check last 10 messages
+        similarityThreshold: 0.75,  // Start detecting at 0.75
+        timeWindowMinutes: 30  // Last 30 minutes
+      });
+
+      if (!result.success) {
+        this.log(`⚠️ Semantic loop check failed: ${result.error || 'Unknown error'}, allowing response`);
+        return { shouldBlock: false, similarity: 0, reason: 'Check failed, allowing' };
+      }
+
+      const maxSimilarity = result.maxSimilarity ?? 0;
+      const recommendation = result.recommendation || 'ALLOW';
+
+      // Log the check result
+      if (recommendation === 'BLOCK') {
+        this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
+        if (result.matches && result.matches.length > 0) {
+          this.log(`   Most similar to: "${result.matches[0].excerpt}"`);
+        }
+        return { shouldBlock: true, similarity: maxSimilarity, reason: result.explanation || 'Very high semantic similarity' };
+      } else if (recommendation === 'WARN') {
+        this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
+        if (result.matches && result.matches.length > 0) {
+          this.log(`   Similar to: "${result.matches[0].excerpt}"`);
+        }
+        // WARN but don't block - preserve autonomy
+        return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
+      }
+
+      // ALLOW - no action needed
+      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
+
+    } catch (error) {
+      // On error, allow the response (fail open to preserve autonomy)
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️ Semantic loop check error: ${errorMsg}, allowing response`);
+      return { shouldBlock: false, similarity: 0, reason: `Error: ${errorMsg}` };
+    }
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -812,6 +882,40 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
             );
           }
+          return { success: true, wasRedundant: true, storedToolResultIds: [] };
+        }
+
+        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION
+        // Check if this response is semantically too similar to recent messages in the room
+        // This catches cases where multiple AIs post the same explanation (Teacher AI + Local Assistant issue)
+        // AUTONOMY-PRESERVING: Only blocks at >0.85 similarity, warns at 0.75-0.85
+        const semanticCheck = await this.checkSemanticLoop(aiResponse.text, originalMessage.roomId);
+        if (semanticCheck.shouldBlock) {
+          this.log(`🚫 ${this.personaName}: [PHASE 3.3.5d] SEMANTIC LOOP BLOCKED (${semanticCheck.similarity.toFixed(2)} similarity)`);
+
+          // Release inference slot
+          InferenceCoordinator.releaseSlot(this.personaId, provider);
+
+          // Emit event to clear UI indicators
+          if (this.client) {
+            await Events.emit<AIDecidedSilentEventData>(
+              DataDaemon.jtagContext!,
+              AI_DECISION_EVENTS.DECIDED_SILENT,
+              {
+                personaId: this.personaId,
+                personaName: this.personaName,
+                roomId: originalMessage.roomId,
+                messageId: originalMessage.id,
+                isHumanMessage: originalMessage.senderType === 'human',
+                timestamp: Date.now(),
+                confidence: semanticCheck.similarity,
+                reason: semanticCheck.reason,
+                gatingModel: 'semantic-loop-detector'
+              },
+              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
+            );
+          }
+
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
