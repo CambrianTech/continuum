@@ -23,7 +23,7 @@ import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
-import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
+import { PositronWidgetState, type PositronicContext } from '../../shared/services/state/PositronWidgetState';
 // MessageComposerWidget removed - using inline HTML instead
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
@@ -41,6 +41,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private errorsHidden: boolean = true; // Toggle state for error notifications
   private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
   private isSending: boolean = false; // Guard against duplicate sends
+  private positronUnsubscribe?: () => void; // Cleanup for Positron subscription
+  private positronUpdateDebounce?: number; // Debounce for Positron state updates
 
   constructor() {
     super({
@@ -586,7 +588,92 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
     // No manual subscription needed - filtering happens in shouldAddEntity()
 
+    // 🧠 REACTIVE WIDGET PATTERN: Subscribe to Positron widget state changes
+    // When UserProfileWidget updates a profile, we update our member display
+    this.positronUnsubscribe = PositronWidgetState.subscribe((context: PositronicContext) => {
+      this.handlePositronContextChange(context);
+    });
+    console.log(`✅ ChatWidget: Positron widget state subscription active`);
+
     console.log(`✅ ChatWidget: Initialized with room selection, AI status indicators, and automatic CRUD events`);
+  }
+
+  /**
+   * Handle Positron context changes from other widgets
+   *
+   * REACTIVE WIDGET PATTERN: This enables ChatWidget to react to UserProfileWidget
+   * state changes without polling. When someone views a user's profile, we can
+   * update that user's status display in our member list in real-time.
+   */
+  private handlePositronContextChange(context: PositronicContext): void {
+    const { widget, interaction } = context;
+
+    // Only react to profile widget updates
+    if (widget.widgetType !== 'profile') {
+      return;
+    }
+
+    // Get the user ID from the profile widget
+    const profileUserId = widget.entityId as UUID;
+    if (!profileUserId) {
+      return;
+    }
+
+    // Check if this user is a member of our current room
+    if (!this.roomMembers.has(profileUserId)) {
+      return;
+    }
+
+    // Debounce rapid updates (e.g., user switching between profiles quickly)
+    if (this.positronUpdateDebounce) {
+      clearTimeout(this.positronUpdateDebounce);
+    }
+
+    this.positronUpdateDebounce = setTimeout(() => {
+      // Extract status from profile widget metadata
+      const metadata = widget.metadata as {
+        userStatus?: string;
+        userName?: string;
+        userType?: string;
+      } | undefined;
+
+      if (metadata?.userStatus) {
+        // Update the cached member data with new status
+        const member = this.roomMembers.get(profileUserId);
+        if (member && member.status !== metadata.userStatus) {
+          console.log(`🧠 ChatWidget: Positron update - ${member.displayName} status: ${member.status} → ${metadata.userStatus}`);
+
+          // Update the member's status directly (UserEntity is mutable)
+          member.status = metadata.userStatus as UserEntity['status'];
+
+          // Refresh the header to show updated member status
+          this.updateHeader();
+        }
+      }
+
+      this.positronUpdateDebounce = undefined;
+    }, 100) as unknown as number; // 100ms debounce
+  }
+
+  /**
+   * Cleanup when widget is disconnected from DOM
+   */
+  async disconnectedCallback(): Promise<void> {
+    // Clean up Positron subscription
+    if (this.positronUnsubscribe) {
+      this.positronUnsubscribe();
+      this.positronUnsubscribe = undefined;
+      console.log(`🧠 ChatWidget: Positron subscription cleaned up`);
+    }
+
+    // Clear any pending debounce
+    if (this.positronUpdateDebounce) {
+      clearTimeout(this.positronUpdateDebounce);
+      this.positronUpdateDebounce = undefined;
+    }
+
+    // Call parent cleanup
+    await super.disconnectedCallback();
   }
 
   /**
