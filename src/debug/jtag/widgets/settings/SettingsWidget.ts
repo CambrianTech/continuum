@@ -49,6 +49,12 @@ export class SettingsWidget extends BaseWidget {
         this.currentSection = payload.section;
         this.renderWidget();
         this.emitPositronContext();
+
+        // Emit widget event for collaborative AI assistance
+        PositronWidgetState.emitWidgetEvent('settings', 'section:changed', {
+          section: payload.section,
+          previousSection: this.currentSection
+        });
       }
     });
 
@@ -352,23 +358,57 @@ export class SettingsWidget extends BaseWidget {
     const newValue = this.pendingChanges.get(configKey) || input?.value;
     const entry = this.configEntries.find(e => e.key === configKey);
 
+    // Emit event: user is testing a provider (AIs can offer help)
+    PositronWidgetState.emitWidgetEvent('settings', 'provider:testing', {
+      provider,
+      configKey,
+      hasNewKey: !!newValue && !newValue.startsWith('sk-...'),
+      isConfigured: entry?.isConfigured || false
+    });
+
     // If user entered a new value, test that
     if (newValue && !newValue.startsWith('sk-...') && !newValue.startsWith('gsk_...')) {
       console.log(`Testing new key for ${configKey}`);
-      await this.tester.testKey({ provider, key: newValue }, configKey);
+      const result = await this.tester.testKey({ provider, key: newValue }, configKey);
+      this.emitTestResult(provider, configKey, result);
       return;
     }
 
     // If already configured, test the stored key (pass empty to use server-side key)
     if (entry?.isConfigured) {
       console.log(`Testing stored key for ${configKey}`);
-      await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      const result = await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
+      this.emitTestResult(provider, configKey, result);
       return;
     }
 
     // Not configured and no new value - show error
     console.log(`No key to test for ${configKey}`);
-    await this.tester.testKey({ provider, key: '' }, configKey);
+    const result = await this.tester.testKey({ provider, key: '' }, configKey);
+    this.emitTestResult(provider, configKey, result);
+  }
+
+  /**
+   * Emit test result event for AI collaboration
+   */
+  private emitTestResult(provider: string, configKey: string, _result: any): void {
+    const testResult = this.tester.getResult(configKey);
+    const success = testResult?.status === 'operational';
+    const message = testResult?.message;
+
+    PositronWidgetState.emitWidgetEvent('settings', 'provider:tested', {
+      provider,
+      configKey,
+      success,
+      status: testResult?.status || 'unknown',
+      message: message || null,
+      responseTime: testResult?.responseTime,
+      // If failed, AI can offer troubleshooting
+      needsHelp: !success
+    });
+
+    // Also update Positron context so AI knows current state
+    this.emitPositronContext();
   }
 
   private async saveConfig(): Promise<void> {
@@ -437,9 +477,21 @@ export class SettingsWidget extends BaseWidget {
 
       this.saveStatus = 'saved';
       console.log('Settings: Configuration saved (stub)');
+
+      // Emit success event - AI can congratulate or suggest next steps
+      PositronWidgetState.emitWidgetEvent('settings', 'config:saved', {
+        providers: Object.keys(config),
+        success: true
+      });
     } catch (error) {
       console.error('Settings: Failed to save config:', error);
       this.saveStatus = 'error';
+
+      // Emit failure event - AI can offer troubleshooting
+      PositronWidgetState.emitWidgetEvent('settings', 'config:error', {
+        error: String(error),
+        needsHelp: true
+      });
     }
 
     this.renderWidget();
