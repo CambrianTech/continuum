@@ -31,6 +31,7 @@ import type { StageCompleteEvent } from '../../conversation/shared/CognitionEven
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
 import { getContextWindow } from '../../shared/ModelContextWindows';
+import { WidgetContextService } from '../services/WidgetContextService';
 
 /**
  * Chat-specific RAG builder
@@ -74,10 +75,11 @@ export class ChatRAGBuilder extends RAGBuilder {
       artifacts,
       privateMemories,
       recipeStrategy,
-      learningConfig
+      learningConfig,
+      widgetContext
     ] = await Promise.all([
       // 1. Load persona identity (with room context for system prompt)
-      this.loadPersonaIdentity(personaId, contextId),
+      this.loadPersonaIdentity(personaId, contextId, options),
 
       // 2. Load recent conversation history from database
       this.loadConversationHistory(contextId, personaId, maxMessages),
@@ -97,8 +99,20 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.loadRecipeStrategy(contextId),
 
       // 6. Load learning configuration (Phase 2: Per-participant learning mode)
-      this.loadLearningConfig(contextId, personaId)
+      this.loadLearningConfig(contextId, personaId),
+
+      // 7. Load widget context for AI awareness (Positron Layer 1)
+      this.loadWidgetContext(options)
     ]);
+
+    // 2.4. Inject widget context into system prompt if available
+    // This enables AI to be aware of what the user is currently viewing
+    const finalIdentity = { ...identity };
+    if (widgetContext) {
+      finalIdentity.systemPrompt = identity.systemPrompt +
+        `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
+      this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
+    }
 
     // 2.5. Append current message if provided (for messages not yet persisted)
     // Check for duplicates by comparing content + name of most recent message
@@ -131,7 +145,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       domain: 'chat',
       contextId,
       personaId,
-      identity,
+      identity: finalIdentity,
       recipeStrategy,
       conversationHistory: finalConversationHistory,
       artifacts,
@@ -149,7 +163,10 @@ export class ChatRAGBuilder extends RAGBuilder {
 
         // Bug #5 fix: Two-dimensional budget (message count + maxTokens adjustment)
         adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
-        inputTokenCount: budgetCalculation.inputTokenCount
+        inputTokenCount: budgetCalculation.inputTokenCount,
+
+        // Positron Layer 1: Widget context awareness
+        hasWidgetContext: !!widgetContext
       }
     };
 
@@ -193,9 +210,43 @@ export class ChatRAGBuilder extends RAGBuilder {
   }
 
   /**
+   * Load widget context for AI awareness
+   * Returns formatted string describing what the user is currently viewing
+   */
+  private async loadWidgetContext(options?: RAGBuildOptions): Promise<string | null> {
+    // Ensure service is initialized (lazy init pattern)
+    WidgetContextService.initialize();
+
+    // Priority 1: Use pre-formatted context from options
+    if (options?.widgetContext) {
+      this.log('🧠 ChatRAGBuilder: Using widget context from options');
+      return options.widgetContext;
+    }
+
+    // Priority 2: Look up by session ID
+    if (options?.sessionId) {
+      const context = WidgetContextService.toRAGContext(options.sessionId);
+      if (context) {
+        this.log(`🧠 ChatRAGBuilder: Loaded widget context for session ${options.sessionId.slice(0, 8)}`);
+        return context;
+      }
+    }
+
+    // Priority 3: Get most recent context (fallback)
+    const fallbackContext = WidgetContextService.toRAGContext();
+    if (fallbackContext) {
+      this.log('🧠 ChatRAGBuilder: Using most recent widget context (fallback)');
+      return fallbackContext;
+    }
+
+    // No context available
+    return null;
+  }
+
+  /**
    * Load persona identity from UserEntity
    */
-  private async loadPersonaIdentity(personaId: UUID, roomId: UUID): Promise<PersonaIdentity> {
+  private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options?: RAGBuildOptions): Promise<PersonaIdentity> {
     try {
       const result = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
 

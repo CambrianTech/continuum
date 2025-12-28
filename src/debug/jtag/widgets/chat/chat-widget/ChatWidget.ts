@@ -23,6 +23,7 @@ import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
+import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
 // MessageComposerWidget removed - using inline HTML instead
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
@@ -155,6 +156,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Update header with correct count
       this.updateHeader();
+
+      // Emit Positron widget state for AI awareness
+      PositronWidgetState.emit({
+        widgetType: 'chat',
+        entityId: roomId,
+        title: `Chat - ${roomName}`,
+        metadata: {
+          room: roomName,
+          messageCount: this.totalMessageCount
+        }
+      });
 
     } catch (error) {
       console.error('ChatWidget: Failed to switch room:', error);

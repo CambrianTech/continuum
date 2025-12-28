@@ -207,12 +207,18 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     }
 
     // Emit room selection IMMEDIATELY so ChatWidget switches fast
-    Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId, roomName });
+    // Include uniqueId for human-readable URL building
+    Events.emit(UI_EVENTS.ROOM_SELECTED, {
+      roomId,
+      roomName,
+      uniqueId: roomEntity.uniqueId || roomEntity.name || roomId  // Prefer uniqueId for URLs
+    });
 
     // Emit content:opened for MainWidget tab update (optimistic)
+    // Use uniqueId for human-readable URLs
     Events.emit('content:opened', {
       contentType: 'chat',
-      entityId: roomId,
+      entityId: roomEntity.uniqueId || roomId,  // Use uniqueId for content state
       title: roomName
     });
 

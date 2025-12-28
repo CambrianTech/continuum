@@ -13,6 +13,7 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 export interface RoomState {
   roomId: UUID | null;
   roomName: string | null;
+  uniqueId?: string | null;  // For human-readable URL building
 }
 
 class RoomStateManager {
@@ -34,12 +35,13 @@ class RoomStateManager {
     return { ...this.currentRoom };
   }
 
-  selectRoom(roomId: UUID, roomName: string): void {
+  selectRoom(roomId: UUID, roomName: string, uniqueId?: string): void {
     console.log(`🏠 RoomStateManager: Selecting room "${roomName}" (${roomId})`);
 
     this.currentRoom = {
       roomId,
-      roomName
+      roomName,
+      uniqueId: uniqueId || null  // For human-readable URL building
     };
 
     // Emit event for all widgets to update
@@ -47,8 +49,8 @@ class RoomStateManager {
   }
 
   selectDefaultRoom(): void {
-    // Auto-select General room on startup
-    this.selectRoom(DEFAULT_ROOMS.GENERAL, 'General');
+    // Auto-select General room on startup (with uniqueId for human-readable URLs)
+    this.selectRoom(DEFAULT_ROOMS.GENERAL, 'General', 'general');
   }
 
   clearSelection(): void {

@@ -19,6 +19,8 @@ import type { ContentType, ContentPriority, ContentItem } from '../../system/dat
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { RoutingService } from '../../system/routing/RoutingService';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
@@ -112,9 +114,20 @@ export class MainWidget extends BaseWidget {
         // Ensure a tab exists for this URL (URL is source of truth for content)
         await this.ensureTabForContent(type, entityId);
 
-        // For chat, emit ROOM_SELECTED so ChatWidget loads the room
+        // For chat, resolve uniqueId → UUID and emit ROOM_SELECTED so ChatWidget loads the room
         if (type === 'chat' && entityId) {
-          Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '' });
+          const resolved = await RoutingService.resolveRoom(entityId);
+          if (resolved) {
+            Events.emit(UI_EVENTS.ROOM_SELECTED, {
+              roomId: resolved.id,
+              roomName: resolved.displayName,
+              uniqueId: resolved.uniqueId  // For URL building
+            });
+          } else {
+            console.warn(`⚠️ MainPanel: Could not resolve room: ${entityId}`);
+            // Fallback to using the identifier as-is (might be a UUID already)
+            Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '', uniqueId: entityId });
+          }
         }
       }, 100);
     }
@@ -279,10 +292,23 @@ export class MainWidget extends BaseWidget {
     this.updateUrl(newPath);
 
     // Emit appropriate event based on content type
-    if (resolvedContentType === 'chat') {
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: resolvedEntityId,
-        roomName: label || 'Chat'
+    if (resolvedContentType === 'chat' && resolvedEntityId) {
+      // Resolve uniqueId → UUID for consistent room identification
+      RoutingService.resolveRoom(resolvedEntityId).then(resolved => {
+        if (resolved) {
+          Events.emit(UI_EVENTS.ROOM_SELECTED, {
+            roomId: resolved.id,
+            roomName: resolved.displayName || label || 'Chat',
+            uniqueId: resolved.uniqueId  // For URL building
+          });
+        } else {
+          // Fallback to using the identifier as-is
+          Events.emit(UI_EVENTS.ROOM_SELECTED, {
+            roomId: resolvedEntityId,
+            roomName: label || 'Chat',
+            uniqueId: resolvedEntityId
+          });
+        }
       });
     }
 
@@ -315,6 +341,17 @@ export class MainWidget extends BaseWidget {
       room: rightPanelConfig?.room,
       compact: rightPanelConfig?.compact,
       contentType: contentType
+    });
+
+    // Emit Positron widget state for AI awareness
+    PositronWidgetState.emit({
+      widgetType: contentType,
+      entityId: entityId,
+      title: entityId ? `${contentType} - ${entityId}` : contentType,
+      metadata: {
+        widget: widgetTag,
+        rightPanelRoom: rightPanelConfig?.room
+      }
     });
 
     console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}, rightPanel: ${rightPanelConfig ? rightPanelConfig.room : 'hidden'}`);
@@ -352,10 +389,22 @@ export class MainWidget extends BaseWidget {
           const newPath = buildContentPath(firstItem.type, firstItem.entityId);
           this.updateUrl(newPath);
           // Only emit ROOM_SELECTED for chat content
-          if (firstItem.type === 'chat') {
-            Events.emit(UI_EVENTS.ROOM_SELECTED, {
-              roomId: firstItem.entityId,
-              roomName: firstItem.title
+          if (firstItem.type === 'chat' && firstItem.entityId) {
+            // Resolve uniqueId → UUID for consistent room identification
+            RoutingService.resolveRoom(firstItem.entityId).then(resolved => {
+              if (resolved) {
+                Events.emit(UI_EVENTS.ROOM_SELECTED, {
+                  roomId: resolved.id,
+                  roomName: resolved.displayName || firstItem.title,
+                  uniqueId: resolved.uniqueId  // For URL building
+                });
+              } else {
+                Events.emit(UI_EVENTS.ROOM_SELECTED, {
+                  roomId: firstItem.entityId,
+                  roomName: firstItem.title,
+                  uniqueId: firstItem.entityId
+                });
+              }
             });
           }
         } else {
@@ -555,7 +604,7 @@ export class MainWidget extends BaseWidget {
 
     // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup
     // RoomListWidget emits this and it definitely works (sidebar highlights change)
-    Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
+    Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string; uniqueId?: string }) => {
       console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
 
       // Only switch to chat if we're currently viewing chat content
@@ -567,11 +616,13 @@ export class MainWidget extends BaseWidget {
       }
 
       // Update URL for room selection (bookmarkable deep links)
-      const newPath = buildContentPath('chat', data.roomId);
+      // Use uniqueId for human-readable URLs, fall back to roomId if not available
+      const urlIdentifier = data.uniqueId || data.roomId;
+      const newPath = buildContentPath('chat', urlIdentifier);
       this.updateUrl(newPath);
 
-      // Switch to the selected chat room
-      this.switchContentView('chat', data.roomId);
+      // Switch to the selected chat room (use uniqueId for content view)
+      this.switchContentView('chat', urlIdentifier);
 
       // Small delay to let the content/open command complete first
       setTimeout(() => this.refreshTabsFromDatabase('ROOM_SELECTED'), 100);
