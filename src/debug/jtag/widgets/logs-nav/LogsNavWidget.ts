@@ -4,6 +4,11 @@
  * Shows available log files organized by category (system, persona, session).
  * Clicking a log opens it in the LogViewerWidget.
  * Emits events to coordinate with LogViewerWidget in center panel.
+ *
+ * Structure:
+ * - public/logs-nav-widget.html - Template container
+ * - public/logs-nav-widget.scss - Styles (compiled to .css)
+ * - LogsNavWidget.ts - Logic (this file)
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
@@ -30,13 +35,20 @@ export class LogsNavWidget extends BaseWidget {
   constructor() {
     super({
       widgetName: 'LogsNavWidget',
-      template: undefined,
-      styles: undefined,
+      template: 'logs-nav-widget.html',
+      styles: 'logs-nav-widget.css',
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
       enableScreenshots: false
     });
+  }
+
+  /**
+   * Override path resolution - directory is 'logs-nav' (kebab-case)
+   */
+  protected resolveResourcePath(filename: string): string {
+    return `widgets/logs-nav/public/${filename}`;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -73,160 +85,23 @@ export class LogsNavWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
-    const styles = `
-      :host {
-        display: block;
-      }
+    // Inject loaded template and styles into shadow DOM
+    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
+      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
+      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
+    }
 
-      .logs-nav-container {
-        padding: var(--spacing-md, 12px);
-      }
+    // Render dynamic content
+    this.renderContent();
+    this.setupEventListeners();
+  }
 
-      .nav-title {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.5));
-        margin-bottom: var(--spacing-sm, 8px);
-        padding: 0 var(--spacing-sm, 8px);
-      }
-
-      .loading {
-        padding: var(--spacing-md, 12px);
-        color: var(--content-secondary, rgba(255, 255, 255, 0.5));
-        font-size: 12px;
-      }
-
-      .category {
-        margin-bottom: var(--spacing-sm, 8px);
-      }
-
-      .category-header {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-xs, 4px);
-        padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
-        cursor: pointer;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.6));
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        border-radius: var(--border-radius-sm, 4px);
-        transition: all 0.15s ease;
-      }
-
-      .category-header:hover {
-        background: var(--sidebar-hover, rgba(0, 212, 255, 0.1));
-        color: var(--content-primary, white);
-      }
-
-      .category-chevron {
-        font-size: 10px;
-        transition: transform 0.15s ease;
-      }
-
-      .category.expanded .category-chevron {
-        transform: rotate(90deg);
-      }
-
-      .category-count {
-        margin-left: auto;
-        font-size: 10px;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.4));
-      }
-
-      .category-logs {
-        display: none;
-        padding-left: var(--spacing-md, 12px);
-      }
-
-      .category.expanded .category-logs {
-        display: block;
-      }
-
-      .log-item {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm, 8px);
-        padding: var(--spacing-xs, 4px) var(--spacing-sm, 8px);
-        border-radius: var(--border-radius-sm, 6px);
-        cursor: pointer;
-        transition: all 0.15s ease;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.7));
-        font-size: 13px;
-      }
-
-      .log-item:hover {
-        background: var(--sidebar-hover, rgba(0, 212, 255, 0.1));
-        color: var(--content-primary, white);
-      }
-
-      .log-item.active {
-        background: var(--sidebar-active, rgba(0, 212, 255, 0.15));
-        color: var(--content-accent, #00d4ff);
-      }
-
-      .log-icon {
-        font-size: 14px;
-        width: 18px;
-        text-align: center;
-      }
-
-      .log-name {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .log-size {
-        font-size: 10px;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.4));
-      }
-
-      .log-item.active .log-size {
-        color: var(--content-accent, #00d4ff);
-        opacity: 0.7;
-      }
-
-      .active-indicator {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--status-success, #00ff64);
-      }
-
-      .refresh-btn {
-        display: block;
-        width: 100%;
-        margin-top: var(--spacing-md, 12px);
-        padding: var(--spacing-sm, 8px);
-        background: transparent;
-        border: 1px solid var(--border-subtle, rgba(0, 212, 255, 0.2));
-        border-radius: var(--border-radius-sm, 6px);
-        color: var(--content-secondary, rgba(255, 255, 255, 0.6));
-        font-size: 12px;
-        cursor: pointer;
-        transition: all 0.15s ease;
-      }
-
-      .refresh-btn:hover {
-        background: var(--sidebar-hover, rgba(0, 212, 255, 0.1));
-        border-color: var(--content-accent, #00d4ff);
-        color: var(--content-primary, white);
-      }
-    `;
+  private renderContent(): void {
+    const contentContainer = this.shadowRoot?.querySelector('.logs-content');
+    if (!contentContainer) return;
 
     if (this.isLoading) {
-      this.shadowRoot!.innerHTML = `
-        <style>${styles}</style>
-        <div class="logs-nav-container">
-          <div class="nav-title">Log Files</div>
-          <div class="loading">Loading logs...</div>
-        </div>
-      `;
+      contentContainer.innerHTML = '<div class="loading">Loading logs...</div>';
       return;
     }
 
@@ -266,16 +141,10 @@ export class LogsNavWidget extends BaseWidget {
       `;
     }).join('');
 
-    const template = `
-      <div class="logs-nav-container">
-        <div class="nav-title">Log Files</div>
-        ${categoriesHtml}
-        <button class="refresh-btn" data-action="refresh">Refresh</button>
-      </div>
+    contentContainer.innerHTML = `
+      ${categoriesHtml}
+      <button class="refresh-btn" data-action="refresh">Refresh</button>
     `;
-
-    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
-    this.setupEventListeners();
   }
 
   private groupLogsByCategory(): Record<string, LogInfo[]> {
