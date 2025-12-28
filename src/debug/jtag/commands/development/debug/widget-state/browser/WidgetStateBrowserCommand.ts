@@ -29,6 +29,12 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
     const errors: string[] = [];
 
     try {
+      // If setContext is provided, route to server for RAG context storage
+      if (params.setContext) {
+        logs.push('🧠 Routing setContext to server for RAG storage');
+        return await this.remoteExecute<WidgetStateDebugParams, WidgetStateDebugResult>(params);
+      }
+
       const widgetSelector = params.widgetSelector || 'chat-widget';
       logs.push(`🔍 Starting widget introspection: ${widgetSelector}`);
 

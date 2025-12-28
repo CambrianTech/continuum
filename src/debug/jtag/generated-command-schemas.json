@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-28T02:25:16.449Z",
+  "generated": "2025-12-28T03:51:39.554Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2101,6 +2101,31 @@
           "type": "boolean",
           "required": false,
           "description": "countOnly parameter"
+        },
+        "setContext": {
+          "type": "object",
+          "required": false,
+          "description": "setContext parameter"
+        },
+        "section": {
+          "type": "string",
+          "required": false,
+          "description": "section parameter"
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "title parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        },
+        "timestamp": {
+          "type": "number",
+          "required": false,
+          "description": "timestamp parameter"
         }
       }
     },

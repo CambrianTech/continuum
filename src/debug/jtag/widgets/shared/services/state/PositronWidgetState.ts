@@ -171,12 +171,71 @@ class PositronWidgetStateService {
     // Also emit as event for cross-component communication
     Events.emit('positron:widget-context-changed', this.currentContext);
 
+    // Bridge context to server via command (bypasses event routing issues)
+    // This ensures AI RAG context includes widget state
+    this.bridgeToServer();
+
     console.log('🧠 PositronWidgetState: Context updated', {
       widgetType: widget.widgetType,
       section: widget.section,
       interaction: interaction?.action
     });
   }
+
+  /**
+   * Bridge context to server via command
+   * The event system has routing issues browser→server, so use commands directly
+   */
+  private async bridgeToServer(): Promise<void> {
+    if (!this.currentContext) return;
+
+    // Debounce to avoid flooding server with every interaction
+    if (this.bridgeTimeout) {
+      clearTimeout(this.bridgeTimeout);
+    }
+
+    this.bridgeTimeout = setTimeout(() => {
+      this.executeBridgeCommand();
+    }, 200);  // 200ms debounce
+  }
+
+  /**
+   * Execute the bridge command (separated for cleaner async handling)
+   */
+  private async executeBridgeCommand(): Promise<void> {
+    if (!this.currentContext) return;
+
+    try {
+      console.log('🧠 PositronWidgetState: Bridging context to server...');
+      const { Commands } = await import('../../../../system/core/shared/Commands');
+      const sessionId = await this.getSessionId();
+
+      console.log('🧠 PositronWidgetState: Calling widget-state command with session:', sessionId);
+      const result = await Commands.execute('development/debug/widget-state', {
+        setContext: this.currentContext,
+        contextSessionId: sessionId
+      } as any);
+
+      console.log('🧠 PositronWidgetState: Bridge result:', result);
+    } catch (error) {
+      console.error('🧠 PositronWidgetState: Bridge to server failed:', error);
+    }
+  }
+
+  /**
+   * Get current session ID for context association
+   */
+  private async getSessionId(): Promise<string> {
+    try {
+      const { Commands } = await import('../../../../system/core/shared/Commands');
+      const result = await Commands.execute('session/get-id', {} as any) as any;
+      return result?.sessionId || 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  private bridgeTimeout: NodeJS.Timeout | null = null;
 
   /**
    * Update interaction hint without changing widget context

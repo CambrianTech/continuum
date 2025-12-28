@@ -173,12 +173,24 @@ class WidgetContextServiceImpl {
 
     // Selective metadata (avoid dumping everything)
     if (widget.metadata) {
-      const relevantKeys = ['selectedProvider', 'selectedTheme', 'errorCount', 'logLevel', 'room'];
+      const relevantKeys = [
+        'selectedProvider', 'selectedTheme', 'errorCount', 'logLevel', 'room',
+        // Settings test results
+        'lastTestedProvider', 'lastTestSuccess', 'lastTestStatus', 'lastTestMessage',
+        'needsHelp', 'helpContext',
+        // Provider info
+        'configuredProviders', 'totalProviders', 'hasPendingChanges'
+      ];
       const relevant = Object.entries(widget.metadata)
         .filter(([key]) => relevantKeys.includes(key))
         .map(([key, value]) => `${key}: ${value}`);
       if (relevant.length > 0) {
         parts.push(`Context: ${relevant.join(', ')}`);
+      }
+
+      // Add special formatting for help context
+      if (widget.metadata.helpContext) {
+        parts.push(`\n⚠️ User needs help: ${widget.metadata.helpContext}`);
       }
     }
 

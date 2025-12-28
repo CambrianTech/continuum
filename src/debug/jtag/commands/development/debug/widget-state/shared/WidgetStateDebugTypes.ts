@@ -20,6 +20,25 @@ export interface WidgetStateDebugParams extends CommandParams {
   extractRowData?: boolean;
   rowSelector?: string;
   countOnly?: boolean; // Return only entityCount, no heavy data
+
+  // Context bridging: set widget context for RAG awareness
+  setContext?: {
+    widget: {
+      widgetType: string;
+      section?: string;
+      title?: string;
+      metadata?: Record<string, unknown>;
+      timestamp?: number;
+    };
+    interaction?: {
+      action: 'viewing' | 'editing' | 'searching' | 'configuring' | 'debugging';
+      target?: string;
+      details?: string;
+    };
+    breadcrumb?: string[];
+    dwellTimeMs?: number;
+  };
+  contextSessionId?: string;  // Renamed to avoid conflict with CommandParams.sessionId
 }
 
 export interface WidgetStateDebugResult extends CommandResult {

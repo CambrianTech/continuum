@@ -9,7 +9,7 @@
     "widgets": [
       { "widget": "settings-nav-widget", "position": "left", "order": 0 },
       { "widget": "settings-widget", "position": "center", "order": 0 },
-      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "help", "compact": true } }
+      { "widget": "settings-assistant", "position": "right", "order": 0, "config": { "reactive": true } }
     ],
     "panels": {
       "left": { "visible": true }
