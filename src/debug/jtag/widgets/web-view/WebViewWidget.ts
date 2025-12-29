@@ -23,13 +23,17 @@ export class WebViewWidget extends ReactiveWidget {
     urlInput: { type: String, state: true },
     currentUrl: { type: String, state: true },
     proxyUrl: { type: String, state: true },
-    pageTitle: { type: String, state: true }
+    pageTitle: { type: String, state: true },
+    loadError: { type: String, state: true },
+    isLoading: { type: Boolean, state: true }
   };
 
   protected urlInput = '';
   protected currentUrl = '';
   protected proxyUrl = '';
   protected pageTitle = '';
+  protected loadError = '';
+  protected isLoading = false;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // STYLES
@@ -145,6 +149,28 @@ export class WebViewWidget extends ReactiveWidget {
         overflow: hidden;
         text-overflow: ellipsis;
       }
+
+      .loading-overlay {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: var(--color-primary, #00d4ff);
+        font-size: 18px;
+        text-shadow: 0 0 8px rgba(0, 212, 255, 0.4);
+      }
+
+      .error-banner {
+        padding: 12px 16px;
+        background: rgba(255, 80, 80, 0.15);
+        border-bottom: 1px solid rgba(255, 80, 80, 0.3);
+        color: #ff8080;
+        font-size: 13px;
+      }
+
+      .error-banner strong {
+        color: #ff5050;
+      }
     `
   ];
 
@@ -195,6 +221,12 @@ export class WebViewWidget extends ReactiveWidget {
         ${this.currentUrl ? html`
           <div class="current-url">${this.currentUrl}</div>
         ` : ''}
+        ${this.loadError ? html`
+          <div class="error-banner">
+            <strong>Load failed:</strong> ${this.loadError}
+            <br><small>Some sites block proxied requests. Try documentation or blog sites instead.</small>
+          </div>
+        ` : ''}
         ${this.renderBrowserContent()}
       </div>
     `;
@@ -207,8 +239,10 @@ export class WebViewWidget extends ReactiveWidget {
           class="browser-frame"
           src=${this.proxyUrl}
           @load=${this.handleIframeLoad}
+          @error=${this.handleIframeError}
           sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
         ></iframe>
+        ${this.isLoading ? html`<div class="loading-overlay">Loading...</div>` : ''}
       `;
     }
 
@@ -216,7 +250,8 @@ export class WebViewWidget extends ReactiveWidget {
       <div class="placeholder">
         <h2>Co-Browsing Widget</h2>
         <p>Enter a URL above to browse web content.</p>
-        <p>All content is proxied through our server, so most sites will work.</p>
+        <p><strong>Works well:</strong> Documentation, blogs, articles, most content sites</p>
+        <p><strong>May not work:</strong> Google, Facebook, sites with bot detection</p>
         <p>AI assistants can see what you're viewing and provide contextual help.</p>
       </div>
     `;
@@ -243,7 +278,15 @@ export class WebViewWidget extends ReactiveWidget {
   }
 
   private handleIframeLoad(): void {
+    this.isLoading = false;
+    this.loadError = '';
     console.log(`✅ WebViewWidget: iframe loaded for ${this.currentUrl}`);
+  }
+
+  private handleIframeError(): void {
+    this.isLoading = false;
+    this.loadError = 'Failed to load page';
+    console.error(`❌ WebViewWidget: iframe error for ${this.currentUrl}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -261,6 +304,8 @@ export class WebViewWidget extends ReactiveWidget {
 
     this.currentUrl = url;
     this.urlInput = url;
+    this.loadError = '';
+    this.isLoading = true;
 
     // Create proxy URL
     this.proxyUrl = '/proxy/' + encodeURIComponent(url);

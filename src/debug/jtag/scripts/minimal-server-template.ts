@@ -197,6 +197,18 @@ class MinimalServer {
   }
 
   /**
+   * Read request body as string
+   */
+  private getRequestBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      req.on('error', reject);
+    });
+  }
+
+  /**
    * Handle proxy requests for co-browsing widget
    * Fetches external URLs and serves them from our origin (bypasses X-Frame-Options)
    */
@@ -205,7 +217,20 @@ class MinimalServer {
     const encodedUrl = url.substring(7); // Remove '/proxy/'
     const targetUrl = decodeURIComponent(encodedUrl);
 
-    console.log(`🌐 Proxy: Fetching ${targetUrl}`);
+    const method = req.method || 'GET';
+    console.log(`🌐 Proxy: ${method} ${targetUrl}`);
+
+    // Handle CORS preflight
+    if (method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Max-Age': '86400'
+      });
+      res.end();
+      return;
+    }
 
     try {
       // Forward browser headers to look like the user's browser
@@ -217,9 +242,22 @@ class MinimalServer {
         'Cache-Control': 'no-cache',
       };
 
+      // Forward content-type for POST requests
+      if (req.headers['content-type']) {
+        browserHeaders['Content-Type'] = req.headers['content-type'] as string;
+      }
+
+      // Get request body for POST/PUT
+      let body: string | undefined;
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        body = await this.getRequestBody(req);
+      }
+
       const response = await fetch(targetUrl, {
+        method,
         headers: browserHeaders,
-        redirect: 'follow'
+        redirect: 'follow',
+        body
       });
 
       if (!response.ok) {
@@ -232,7 +270,10 @@ class MinimalServer {
       let content = await response.text();
 
       // Rewrite URLs in HTML/CSS to go through our proxy
-      if (contentType.includes('text/html') || contentType.includes('text/css')) {
+      if (contentType.includes('text/html')) {
+        content = this.rewriteProxyUrls(content, targetUrl);
+        content = this.injectProxyShim(content, targetUrl);
+      } else if (contentType.includes('text/css')) {
         content = this.rewriteProxyUrls(content, targetUrl);
       }
 
@@ -254,6 +295,87 @@ class MinimalServer {
       res.writeHead(502, { 'Content-Type': 'text/plain' });
       res.end('Proxy error: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
+  }
+
+  /**
+   * Inject JavaScript shim that intercepts fetch/XHR to route through proxy
+   * This fixes CORS issues for dynamic requests made by page JavaScript
+   */
+  private injectProxyShim(content: string, baseUrl: string): string {
+    const base = new URL(baseUrl);
+
+    const shimScript = `
+<script>
+(function() {
+  // Proxy shim: intercept all network requests and route through our proxy
+  const PROXY_PREFIX = '/proxy/';
+  const BASE_ORIGIN = '${base.origin}';
+
+  function proxyUrl(url) {
+    if (!url || typeof url !== 'string') return url;
+    if (url.startsWith(PROXY_PREFIX)) return url;
+    if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
+
+    let absoluteUrl;
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      absoluteUrl = url;
+    } else if (url.startsWith('//')) {
+      absoluteUrl = 'https:' + url;
+    } else if (url.startsWith('/')) {
+      absoluteUrl = BASE_ORIGIN + url;
+    } else {
+      absoluteUrl = new URL(url, BASE_ORIGIN + '/').href;
+    }
+    return PROXY_PREFIX + encodeURIComponent(absoluteUrl);
+  }
+
+  // Override fetch
+  const originalFetch = window.fetch;
+  window.fetch = function(input, init) {
+    let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
+    const proxiedUrl = proxyUrl(url);
+
+    if (typeof input === 'string') {
+      return originalFetch.call(this, proxiedUrl, init);
+    } else if (input instanceof Request) {
+      return originalFetch.call(this, new Request(proxiedUrl, input), init);
+    }
+    return originalFetch.call(this, proxiedUrl, init);
+  };
+
+  // Override XMLHttpRequest.open
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+    const proxiedUrl = proxyUrl(url);
+    return originalXHROpen.call(this, method, proxiedUrl, async !== false, user, password);
+  };
+
+  // Override Image src
+  const originalImageDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+  if (originalImageDescriptor && originalImageDescriptor.set) {
+    Object.defineProperty(HTMLImageElement.prototype, 'src', {
+      set: function(value) {
+        originalImageDescriptor.set.call(this, proxyUrl(value));
+      },
+      get: originalImageDescriptor.get
+    });
+  }
+
+  console.log('[Proxy Shim] Installed - all requests routed through proxy');
+})();
+</script>`;
+
+    // Inject at start of <head> (after <head> tag)
+    if (content.includes('<head>')) {
+      content = content.replace('<head>', '<head>' + shimScript);
+    } else if (content.includes('<html>')) {
+      content = content.replace('<html>', '<html><head>' + shimScript + '</head>');
+    } else {
+      // No head/html tag, prepend
+      content = shimScript + content;
+    }
+
+    return content;
   }
 
   /**
