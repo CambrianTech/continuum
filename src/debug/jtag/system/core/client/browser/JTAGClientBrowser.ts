@@ -429,7 +429,39 @@ export function getWebSocketTransport(): WebSocket | null {
 /**
  * Update cached WebSocket transport reference
  * Called internally by JTAGClientBrowser after connection established
+ * Attaches immediate close/error handlers to emit disconnect events without polling delay
  */
 export function updateWebSocketTransport(transport: WebSocket | null): void {
   cachedTransport = transport;
+
+  // Attach immediate close/error handlers for instant disconnect detection
+  if (transport) {
+    transport.onclose = () => {
+      console.log('🔌 JTAGClientBrowser: WebSocket closed - emitting immediate disconnect');
+      Events.emit('connection:status', {
+        connected: false,
+        state: 'disconnected',
+        color: '#ff0000',
+        timestamp: Date.now()
+      });
+    };
+
+    transport.onerror = () => {
+      console.log('⚠️ JTAGClientBrowser: WebSocket error - emitting immediate disconnect');
+      Events.emit('connection:status', {
+        connected: false,
+        state: 'disconnected',
+        color: '#ff0000',
+        timestamp: Date.now()
+      });
+    };
+
+    // Emit connected status
+    Events.emit('connection:status', {
+      connected: true,
+      state: 'connected',
+      color: '#00cc00',
+      timestamp: Date.now()
+    });
+  }
 }
