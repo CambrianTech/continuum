@@ -209,13 +209,31 @@ class MinimalServer {
   }
 
   /**
+   * Decode HTML entities in a string (&#x3D; → =, &amp; → &, etc.)
+   */
+  private decodeHtmlEntities(str: string): string {
+    return str
+      // Numeric hex entities: &#x3D; → =
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      // Numeric decimal entities: &#61; → =
+      .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+      // Named entities
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+  }
+
+  /**
    * Handle proxy requests for co-browsing widget
    * Fetches external URLs and serves them from our origin (bypasses X-Frame-Options)
    */
   private async handleProxy(req: http.IncomingMessage, res: http.ServerResponse, url: string): Promise<void> {
     // Extract encoded URL from /proxy/{encodedUrl}
     const encodedUrl = url.substring(7); // Remove '/proxy/'
-    const targetUrl = decodeURIComponent(encodedUrl);
+    // URL-decode first, then decode any HTML entities (like &#x3D; → =)
+    const targetUrl = this.decodeHtmlEntities(decodeURIComponent(encodedUrl));
 
     const method = req.method || 'GET';
     console.log(`🌐 Proxy: ${method} ${targetUrl}`);
@@ -261,8 +279,49 @@ class MinimalServer {
       });
 
       if (!response.ok) {
-        res.writeHead(response.status, { 'Content-Type': 'text/plain' });
-        res.end(`Failed to fetch: ${response.status} ${response.statusText}`);
+        // Return same status code with appropriate content type
+        // Determine expected content type from URL extension
+        const ext = targetUrl.split('?')[0].split('.').pop()?.toLowerCase();
+        const contentTypes: Record<string, string> = {
+          'js': 'application/javascript',
+          'css': 'text/css',
+          'json': 'application/json',
+          'png': 'image/png',
+          'jpg': 'image/jpeg',
+          'jpeg': 'image/jpeg',
+          'gif': 'image/gif',
+          'webp': 'image/webp',
+          'mp4': 'video/mp4',
+          'webm': 'video/webm',
+          'svg': 'image/svg+xml',
+        };
+        const contentType = contentTypes[ext || ''] || 'text/plain';
+
+        // For binary types, just return empty response
+        if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'webm'].includes(ext || '')) {
+          res.writeHead(response.status, {
+            'Content-Type': contentType,
+            'Access-Control-Allow-Origin': '*',
+          });
+          res.end();
+        } else {
+          // For text types, return error comment in appropriate format
+          let errorContent: string;
+          if (contentType === 'application/javascript') {
+            errorContent = `/* Proxy error: ${response.status} ${response.statusText} for ${targetUrl} */`;
+          } else if (contentType === 'text/css') {
+            errorContent = `/* Proxy error: ${response.status} ${response.statusText} for ${targetUrl} */`;
+          } else if (contentType === 'application/json') {
+            errorContent = JSON.stringify({ error: `${response.status} ${response.statusText}`, url: targetUrl });
+          } else {
+            errorContent = `Proxy error: ${response.status} ${response.statusText} for ${targetUrl}`;
+          }
+          res.writeHead(response.status, {
+            'Content-Type': contentType,
+            'Access-Control-Allow-Origin': '*',
+          });
+          res.end(errorContent);
+        }
         return;
       }
 
@@ -292,8 +351,33 @@ class MinimalServer {
 
     } catch (error) {
       console.error(`❌ Proxy: Failed to fetch ${targetUrl}:`, error);
-      res.writeHead(502, { 'Content-Type': 'text/plain' });
-      res.end('Proxy error: ' + (error instanceof Error ? error.message : 'Unknown error'));
+
+      // Determine expected content type from URL extension
+      const ext = targetUrl.split('?')[0].split('.').pop()?.toLowerCase();
+      const contentTypes: Record<string, string> = {
+        'js': 'application/javascript',
+        'css': 'text/css',
+        'json': 'application/json',
+      };
+      const contentType = contentTypes[ext || ''] || 'text/plain';
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+
+      let errorContent: string;
+      if (contentType === 'application/javascript') {
+        errorContent = `/* Proxy error: ${errorMsg} */`;
+      } else if (contentType === 'text/css') {
+        errorContent = `/* Proxy error: ${errorMsg} */`;
+      } else if (contentType === 'application/json') {
+        errorContent = JSON.stringify({ error: errorMsg, url: targetUrl });
+      } else {
+        errorContent = `Proxy error: ${errorMsg}`;
+      }
+
+      res.writeHead(502, {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(errorContent);
     }
   }
 
@@ -311,10 +395,28 @@ class MinimalServer {
   const PROXY_PREFIX = '/proxy/';
   const BASE_ORIGIN = '${base.origin}';
 
+  // Decode HTML entities (&#x3D; → =, &amp; → &, etc.)
+  function decodeHtmlEntities(str) {
+    if (!str) return str;
+    return str
+      .replace(/&#x([0-9a-fA-F]+);/g, function(_, hex) { return String.fromCharCode(parseInt(hex, 16)); })
+      .replace(/&#(\\d+);/g, function(_, dec) { return String.fromCharCode(parseInt(dec, 10)); })
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+  }
+
   function proxyUrl(url) {
     if (!url || typeof url !== 'string') return url;
     if (url.startsWith(PROXY_PREFIX)) return url;
     if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
+
+    // Decode HTML entities first
+    url = decodeHtmlEntities(url);
+    // Decode URL-encoded chars to avoid double-encoding (%3D → %253D)
+    try { url = decodeURIComponent(url); } catch(e) {}
 
     let absoluteUrl;
     if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -385,12 +487,25 @@ class MinimalServer {
     try {
       const base = new URL(baseUrl);
 
+      // Helper to clean and encode a URL for proxy
+      const proxyEncodeUrl = (url: string): string => {
+        // Decode HTML entities first (&#x3D; → =, &amp; → &)
+        let decoded = this.decodeHtmlEntities(url);
+        // Also decode any URL-encoded chars to avoid double-encoding (%3D → %253D)
+        try {
+          decoded = decodeURIComponent(decoded);
+        } catch {
+          // Ignore decode errors (malformed URLs)
+        }
+        return encodeURIComponent(decoded);
+      };
+
       // Rewrite absolute URLs (http:// and https://)
       content = content.replace(
         /(href|src|action)=(["'])(https?:\/\/[^"']+)(["'])/gi,
         (match, attr, q1, url, q2) => {
           if (url.startsWith('/proxy/')) return match;
-          return `${attr}=${q1}/proxy/${encodeURIComponent(url)}${q2}`;
+          return `${attr}=${q1}/proxy/${proxyEncodeUrl(url)}${q2}`;
         }
       );
 
@@ -398,7 +513,8 @@ class MinimalServer {
       content = content.replace(
         /(href|src|action)=(["'])(\/\/[^"']+)(["'])/gi,
         (match, attr, q1, url, q2) => {
-          const fullUrl = 'https:' + url;
+          let fullUrl = 'https:' + this.decodeHtmlEntities(url);
+          try { fullUrl = decodeURIComponent(fullUrl); } catch {}
           return `${attr}=${q1}/proxy/${encodeURIComponent(fullUrl)}${q2}`;
         }
       );
@@ -408,7 +524,9 @@ class MinimalServer {
         /(href|src|action)=(["'])(\/[^/"'][^"']*)(["'])/gi,
         (match, attr, q1, path, q2) => {
           if (path.startsWith('/proxy/')) return match;
-          const fullUrl = new URL(path, base).href;
+          let decodedPath = this.decodeHtmlEntities(path);
+          try { decodedPath = decodeURIComponent(decodedPath); } catch {}
+          const fullUrl = new URL(decodedPath, base).href;
           return `${attr}=${q1}/proxy/${encodeURIComponent(fullUrl)}${q2}`;
         }
       );
@@ -418,15 +536,17 @@ class MinimalServer {
         /url\((["']?)([^)"']+)(["']?)\)/gi,
         (match, q1, url, q2) => {
           if (url.startsWith('data:') || url.startsWith('/proxy/')) return match;
+          let decodedUrl = this.decodeHtmlEntities(url);
+          try { decodedUrl = decodeURIComponent(decodedUrl); } catch {}
           let fullUrl: string;
-          if (url.startsWith('http')) {
-            fullUrl = url;
-          } else if (url.startsWith('//')) {
-            fullUrl = 'https:' + url;
-          } else if (url.startsWith('/')) {
-            fullUrl = new URL(url, base).href;
+          if (decodedUrl.startsWith('http')) {
+            fullUrl = decodedUrl;
+          } else if (decodedUrl.startsWith('//')) {
+            fullUrl = 'https:' + decodedUrl;
+          } else if (decodedUrl.startsWith('/')) {
+            fullUrl = new URL(decodedUrl, base).href;
           } else {
-            fullUrl = new URL(url, baseUrl).href;
+            fullUrl = new URL(decodedUrl, baseUrl).href;
           }
           return `url(${q1}/proxy/${encodeURIComponent(fullUrl)}${q2})`;
         }

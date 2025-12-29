@@ -124,11 +124,16 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       }
 
       const startTime = Date.now();
-      
+
+      // IFRAME CAPTURE: If iframeSelector is specified, capture iframe content
+      if (params.iframeSelector) {
+        return await this.captureIframeContent(params, html2canvas, startTime);
+      }
+
       // ADVANCED TARGETING: Use querySelector (modern) or selector (legacy)
       const targetSelector = params.querySelector || params.selector || 'body';
-      const targetElement = targetSelector === 'body' 
-        ? document.body 
+      const targetElement = targetSelector === 'body'
+        ? document.body
         : smartQuerySelector(targetSelector);
         
       if (!targetElement) {
@@ -347,6 +352,142 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       return createScreenshotResult(params.context, params.sessionId, {
         success: false,
         error: new EnhancementError('screenshot-capture', error.message || 'Screenshot capture failed')
+      });
+    }
+  }
+
+  /**
+   * Capture content inside an iframe (same-origin only)
+   * Used for co-browsing widget proxy content
+   */
+  private async captureIframeContent(
+    params: ScreenshotParams,
+    html2canvas: (element: Element, options?: Html2CanvasOptions) => Promise<Html2CanvasCanvas>,
+    startTime: number
+  ): Promise<ScreenshotResult> {
+    try {
+      // Find the iframe using smart selector (pierces shadow DOM)
+      const iframe = smartQuerySelector(params.iframeSelector!) as HTMLIFrameElement;
+      if (!iframe) {
+        throw new Error(`Iframe not found: ${params.iframeSelector}`);
+      }
+
+      if (!(iframe instanceof HTMLIFrameElement)) {
+        throw new Error(`Element is not an iframe: ${params.iframeSelector}`);
+      }
+
+      // Access iframe content (only works for same-origin iframes)
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!iframeDoc) {
+        throw new Error('Cannot access iframe content - may be cross-origin or not loaded');
+      }
+
+      const iframeBody = iframeDoc.body;
+      if (!iframeBody) {
+        throw new Error('Iframe has no body element');
+      }
+
+      console.log(`📷 BROWSER: Capturing iframe content from ${params.iframeSelector}`);
+
+      // Capture iframe content
+      const scale = params.scale || params.options?.scale || 1;
+      const devicePixelRatio = window.devicePixelRatio || 1;
+
+      const captureOptions: Html2CanvasOptions = {
+        scale: scale / devicePixelRatio,
+        scrollX: 0,
+        scrollY: 0,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: params.options?.backgroundColor || '#ffffff',
+        foreignObjectRendering: true,
+        removeContainer: true,
+        // Use iframe's window dimensions
+        windowWidth: iframe.contentWindow?.innerWidth,
+        windowHeight: iframe.contentWindow?.innerHeight,
+        ...params.options?.html2canvasOptions
+      };
+
+      const canvas = await html2canvas(iframeBody, captureOptions) as HTMLCanvasElement;
+      console.log(`📐 BROWSER: Iframe canvas dimensions: ${canvas.width}x${canvas.height}`);
+
+      // Apply scaling if width/height specified
+      let finalCanvas = canvas;
+      if (params.width || params.height) {
+        const maxWidth = params.width || canvas.width;
+        const maxHeight = params.height || canvas.height;
+        const scaleX = maxWidth / canvas.width;
+        const scaleY = maxHeight / canvas.height;
+        const scaleFactor = Math.min(scaleX, scaleY, 1);
+
+        const targetWidth = Math.round(canvas.width * scaleFactor);
+        const targetHeight = Math.round(canvas.height * scaleFactor);
+
+        if (targetWidth !== canvas.width || targetHeight !== canvas.height) {
+          const scaledCanvas = document.createElement('canvas');
+          const scaledCtx = scaledCanvas.getContext('2d')!;
+          scaledCanvas.width = targetWidth;
+          scaledCanvas.height = targetHeight;
+          scaledCtx.drawImage(canvas, 0, 0, targetWidth, targetHeight);
+          finalCanvas = scaledCanvas;
+        }
+      }
+
+      // Convert to data URL
+      const format = params.format || params.options?.format || 'png';
+      const quality = params.quality || params.options?.quality || 0.9;
+      const dataUrl = format === 'png'
+        ? finalCanvas.toDataURL('image/png')
+        : finalCanvas.toDataURL(`image/${format}`, quality);
+
+      const captureTime = Date.now() - startTime;
+      console.log(`✅ BROWSER: Iframe captured (${finalCanvas.width}x${finalCanvas.height}) in ${captureTime}ms`);
+
+      // Set up params for server handoff
+      params.dataUrl = dataUrl;
+      params.metadata = {
+        originalWidth: canvas.width,
+        originalHeight: canvas.height,
+        width: finalCanvas.width,
+        height: finalCanvas.height,
+        fileSizeBytes: Math.floor((dataUrl.length * 3) / 4),
+        size: dataUrl.length,
+        selector: params.iframeSelector,
+        elementName: 'iframe-content',
+        format: format,
+        captureTime: captureTime,
+        scale: scale,
+        quality: quality
+      };
+
+      if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both') {
+        params.filename = params.filename ?? `iframe-screenshot-${Date.now()}.${format}`;
+      }
+
+      // Delegate to server for file saving
+      if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both' ||
+          params.context.uuid !== this.context.uuid) {
+        return await this.remoteExecute(params);
+      }
+
+      // Return bytes directly
+      const base64Data = dataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+      const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+
+      return createScreenshotResult(params.context, params.sessionId, {
+        success: true,
+        dataUrl: dataUrl,
+        options: params.options,
+        metadata: params.metadata,
+        bytes: (params.destination === 'bytes' || params.destination === 'both') ? bytes : undefined
+      });
+
+    } catch (error: any) {
+      console.error(`❌ BROWSER: Iframe capture failed:`, error.message);
+      return createScreenshotResult(params.context, params.sessionId, {
+        success: false,
+        error: new EnhancementError('iframe-capture', error.message || 'Iframe screenshot capture failed')
       });
     }
   }

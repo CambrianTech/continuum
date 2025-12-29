@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-29T00:39:10.116Z",
+  "generated": "2025-12-29T01:02:06.896Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1380,6 +1380,11 @@
           "type": "string",
           "required": false,
           "description": "elementName parameter"
+        },
+        "iframeSelector": {
+          "type": "string",
+          "required": false,
+          "description": "iframeSelector parameter"
         },
         "options": {
           "type": "string",

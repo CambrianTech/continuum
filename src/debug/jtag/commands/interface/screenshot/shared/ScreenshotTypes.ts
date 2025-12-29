@@ -22,6 +22,7 @@ export interface ScreenshotParams extends CommandParams {
   selector?: string;
   querySelector?: string; // Modern querySelector API
   elementName?: string;   // For debugging/logging
+  iframeSelector?: string; // Capture content inside an iframe (same-origin only)
   options?: ScreenshotOptions;
   
   // Advanced targeting and cropping
