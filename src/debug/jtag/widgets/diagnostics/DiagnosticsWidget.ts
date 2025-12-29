@@ -41,9 +41,6 @@ export class DiagnosticsWidget extends BasePanelWidget {
       widgetName: 'DiagnosticsWidget',
       panelTitle: 'System Diagnostics',
       panelSubtitle: 'Monitor personas, view logs, and run health checks',
-      // Assistant now handled by layout system's right panel
-      // assistantRoom: 'help',
-      // assistantGreeting: 'Need help debugging? Ask me about logs, persona health, or system diagnostics.',
       enableDatabase: true,
       additionalStyles: DIAGNOSTICS_STYLES
     });
@@ -476,4 +473,4 @@ const DIAGNOSTICS_STYLES = `
 `;
 
 // Register the custom element
-customElements.define('diagnostics-widget', DiagnosticsWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

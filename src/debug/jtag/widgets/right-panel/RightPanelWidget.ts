@@ -151,4 +151,4 @@ export class RightPanelWidget extends BaseSidePanelWidget {
 }
 
 // Register the custom element
-customElements.define('right-panel-widget', RightPanelWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

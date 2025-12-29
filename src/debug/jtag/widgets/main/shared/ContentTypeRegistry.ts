@@ -110,7 +110,7 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
   // Web browser (collaborative)
   // Help assistant for browser usage
   browser: {
-    widget: 'browser-widget',
+    widget: 'web-view-widget',
     displayName: 'Browser',
     pathPrefix: '/browser',
     requiresEntity: false,

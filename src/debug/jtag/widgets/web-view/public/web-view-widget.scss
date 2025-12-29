@@ -1,0 +1,227 @@
+/**
+ * WebViewWidget Styles
+ *
+ * Uses shared SCSS variables for consistent theming
+ */
+
+@import '../../shared/styles/variables';
+@import '../../shared/styles/mixins';
+
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.browser-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: $bg-panel;
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-md $spacing-lg;
+  background: $bg-darker;
+  border-bottom: $border-primary;
+}
+
+.url-input {
+  flex: 1;
+  padding: $spacing-sm $spacing-md;
+  background: rgba(255, 255, 255, 0.05);
+  border: $border-primary;
+  border-radius: $border-radius-md;
+  color: $color-text;
+  font-size: $font-size-lg;
+  font-family: $font-mono;
+
+  &:focus {
+    outline: none;
+    border-color: $color-primary;
+    @include glow($color-primary-dark, 4px);
+  }
+
+  &::placeholder {
+    color: $color-text-muted;
+  }
+}
+
+.go-button {
+  padding: $spacing-sm $spacing-lg;
+  background: $color-primary;
+  border: none;
+  border-radius: $border-radius-md;
+  color: $bg-darker;
+  font-weight: 600;
+  font-size: $font-size-lg;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    @include glow($color-primary-glow, 8px);
+  }
+
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+.browser-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: $spacing-lg;
+  color: $color-text;
+  font-size: $font-size-lg;
+  line-height: 1.6;
+}
+
+.placeholder-text {
+  text-align: center;
+  padding: $spacing-xl * 2;
+
+  h2 {
+    color: $color-primary;
+    font-size: 24px;
+    margin: 0 0 $spacing-lg 0;
+    @include glow-text($color-primary-dark, 8px);
+  }
+
+  p {
+    margin: $spacing-sm 0;
+    line-height: 1.6;
+  }
+}
+
+// Content area when URL is loaded
+.browser-iframe-container {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+
+  iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+  }
+}
+
+// Loading state
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: $spacing-lg;
+  color: $color-primary;
+
+  .loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid $color-primary-dark;
+    border-top-color: $color-primary;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  p {
+    font-size: $font-size-lg;
+    color: $color-text-muted;
+  }
+}
+
+// Error state
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  padding: $spacing-xl * 2;
+
+  h2 {
+    color: $color-error;
+    margin: 0 0 $spacing-lg 0;
+    font-size: 24px;
+  }
+
+  .error-url {
+    color: $color-text-muted;
+    font-family: $font-mono;
+    font-size: $font-size-lg;
+    word-break: break-all;
+    margin: 0 0 $spacing-md 0;
+  }
+
+  .error-message {
+    color: $color-error;
+    font-size: $font-size-lg;
+  }
+}
+
+// Fetched content
+.fetched-content {
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+
+  .page-title {
+    color: $color-primary;
+    font-size: 28px;
+    margin: 0 0 $spacing-xl 0;
+    padding-bottom: $spacing-md;
+    border-bottom: $border-primary;
+    @include glow-text($color-primary-dark, 4px);
+  }
+
+  .markdown-content {
+    h1, h2, h3 {
+      color: $color-primary;
+      margin-top: $spacing-xl;
+      margin-bottom: $spacing-md;
+    }
+
+    h1 { font-size: 24px; }
+    h2 { font-size: 20px; }
+    h3 { font-size: 18px; }
+
+    p {
+      margin-bottom: $spacing-md;
+    }
+
+    a {
+      color: $color-primary;
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+
+    strong {
+      color: $color-text;
+      font-weight: 600;
+    }
+
+    em {
+      font-style: italic;
+    }
+
+    li {
+      margin-left: $spacing-lg;
+      margin-bottom: $spacing-sm;
+    }
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

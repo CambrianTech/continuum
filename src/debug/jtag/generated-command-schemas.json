@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-28T11:54:04.793Z",
+  "generated": "2025-12-29T18:07:34.920Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1271,6 +1271,11 @@
           "type": "number",
           "required": false,
           "description": "maxLength parameter"
+        },
+        "headers": {
+          "type": "object",
+          "required": false,
+          "description": "headers parameter"
         }
       }
     },
@@ -1375,6 +1380,16 @@
           "type": "string",
           "required": false,
           "description": "elementName parameter"
+        },
+        "iframeSelector": {
+          "type": "string",
+          "required": false,
+          "description": "iframeSelector parameter"
+        },
+        "viewportOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "viewportOnly parameter"
         },
         "options": {
           "type": "string",

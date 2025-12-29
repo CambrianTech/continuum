@@ -600,4 +600,4 @@ const LOG_VIEWER_STYLES = `
 `;
 
 // Register the custom element
-customElements.define('log-viewer-widget', LogViewerWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

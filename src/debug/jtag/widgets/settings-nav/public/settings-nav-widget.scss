@@ -1,0 +1,61 @@
+/**
+ * SettingsNavWidget Styles
+ *
+ * Navigation for settings sections in the sidebar.
+ * Uses shared SCSS variables for consistent theming.
+ */
+
+@import '../../shared/styles/variables';
+@import '../../shared/styles/mixins';
+
+:host {
+  display: block;
+}
+
+.settings-nav-container {
+  padding: $spacing-md;
+}
+
+.nav-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $color-text-muted;
+  margin-bottom: $spacing-sm;
+  padding: 0 $spacing-sm;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-sm $spacing-md;
+  border-radius: $border-radius-sm;
+  cursor: pointer;
+  transition: all $transition-fast;
+  color: $color-text-dim;
+  font-size: $font-size-lg;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    color: $color-text;
+  }
+
+  &.active {
+    background: rgba(0, 212, 255, 0.15);
+    color: $color-primary;
+    border-left: 3px solid $color-primary;
+    margin-left: -3px;
+  }
+}
+
+.nav-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.nav-label {
+  flex: 1;
+}

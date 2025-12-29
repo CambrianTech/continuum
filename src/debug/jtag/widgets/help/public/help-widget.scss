@@ -1,0 +1,184 @@
+/**
+ * HelpWidget Styles
+ *
+ * Onboarding and documentation with AI assistance.
+ * Uses shared SCSS variables for consistent theming.
+ */
+
+@import '../../shared/styles/variables';
+@import '../../shared/styles/mixins';
+
+:host {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+
+.help-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100%;
+}
+
+.help-sidebar {
+  background: rgba(10, 15, 20, 0.95);
+  border-right: 1px solid rgba(0, 212, 255, 0.2);
+  padding: $spacing-md 0;
+  overflow-y: auto;
+}
+
+.sidebar-title {
+  padding: 0 $spacing-md $spacing-sm;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: $color-text-muted;
+  letter-spacing: 1px;
+}
+
+.nav-items {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-sm $spacing-md;
+  cursor: pointer;
+  transition: all $transition-fast;
+  color: $color-text-dim;
+  font-size: $font-size-lg;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    color: $color-text;
+  }
+
+  &.active {
+    background: rgba(0, 212, 255, 0.15);
+    color: $color-primary;
+    border-left: 3px solid $color-primary;
+  }
+}
+
+.nav-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 212, 255, 0.2);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  color: $color-primary;
+}
+
+.help-content {
+  padding: $spacing-xl;
+  overflow-y: auto;
+
+  h3 {
+    font-size: 24px;
+    color: $color-primary;
+    margin: 0 0 $spacing-md 0;
+  }
+
+  h4 {
+    font-size: $font-size-md;
+    color: $color-text;
+    margin: $spacing-lg 0 $spacing-sm 0;
+  }
+
+  p {
+    color: $color-text-dim;
+    line-height: 1.6;
+    margin: 0 0 $spacing-md 0;
+  }
+
+  ol, ul {
+    color: $color-text-dim;
+    line-height: 1.8;
+    padding-left: $spacing-lg;
+    margin: 0 0 $spacing-md 0;
+  }
+
+  li {
+    margin-bottom: $spacing-xs;
+  }
+
+  code {
+    background: rgba(0, 212, 255, 0.15);
+    padding: 2px 6px;
+    border-radius: $border-radius-sm;
+    font-family: monospace;
+    color: $color-primary;
+    font-size: 13px;
+  }
+
+  a {
+    color: $color-primary;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: $spacing-md 0;
+  }
+
+  td {
+    padding: $spacing-xs $spacing-sm;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.1);
+    color: $color-text-dim;
+
+    &:first-child {
+      width: 150px;
+    }
+  }
+}
+
+// Responsive breakpoints
+@media (max-width: 1100px) {
+  .help-layout {
+    grid-template-columns: 180px 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .help-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .help-sidebar {
+    border-right: none;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.2);
+    display: flex;
+    overflow-x: auto;
+    padding: $spacing-xs;
+  }
+
+  .sidebar-title {
+    display: none;
+  }
+
+  .nav-items {
+    flex-direction: row;
+  }
+
+  .nav-item {
+    white-space: nowrap;
+    padding: $spacing-xs $spacing-sm;
+
+    &.active {
+      border-left: none;
+      border-bottom: 2px solid $color-primary;
+    }
+  }
+}

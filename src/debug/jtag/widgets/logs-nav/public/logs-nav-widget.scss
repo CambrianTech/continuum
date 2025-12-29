@@ -1,0 +1,153 @@
+/**
+ * LogsNavWidget Styles
+ *
+ * Navigation for log files in the sidebar.
+ * Uses shared SCSS variables for consistent theming.
+ */
+
+@import '../../shared/styles/variables';
+@import '../../shared/styles/mixins';
+
+:host {
+  display: block;
+}
+
+.logs-nav-container {
+  padding: $spacing-md;
+}
+
+.nav-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $color-text-muted;
+  margin-bottom: $spacing-sm;
+  padding: 0 $spacing-sm;
+}
+
+.loading {
+  padding: $spacing-md;
+  color: $color-text-muted;
+  font-size: 12px;
+}
+
+.category {
+  margin-bottom: $spacing-sm;
+}
+
+.category-header {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: $spacing-xs $spacing-sm;
+  cursor: pointer;
+  color: $color-text-dim;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: $border-radius-sm;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    color: $color-text;
+  }
+}
+
+.category-chevron {
+  font-size: 10px;
+  transition: transform $transition-fast;
+}
+
+.category.expanded .category-chevron {
+  transform: rotate(90deg);
+}
+
+.category-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: $color-text-muted;
+}
+
+.category-logs {
+  display: none;
+  padding-left: $spacing-md;
+}
+
+.category.expanded .category-logs {
+  display: block;
+}
+
+.log-item {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-xs $spacing-sm;
+  border-radius: $border-radius-sm;
+  cursor: pointer;
+  transition: all $transition-fast;
+  color: $color-text-dim;
+  font-size: 13px;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    color: $color-text;
+  }
+
+  &.active {
+    background: rgba(0, 212, 255, 0.15);
+    color: $color-primary;
+
+    .log-size {
+      color: $color-primary;
+      opacity: 0.7;
+    }
+  }
+}
+
+.log-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}
+
+.log-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-size {
+  font-size: 10px;
+  color: $color-text-muted;
+}
+
+.active-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: $color-success;
+}
+
+.refresh-btn {
+  display: block;
+  width: 100%;
+  margin-top: $spacing-md;
+  padding: $spacing-sm;
+  background: transparent;
+  border: $border-primary;
+  border-radius: $border-radius-sm;
+  color: $color-text-dim;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.1);
+    border-color: $color-primary;
+    color: $color-text;
+  }
+}

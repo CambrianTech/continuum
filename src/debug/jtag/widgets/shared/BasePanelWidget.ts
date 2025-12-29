@@ -3,9 +3,9 @@
  *
  * Extends BaseWidget with common patterns for Settings, Help, Theme, Diagnostics, etc.
  * These widgets share:
- * - Two-column layout (main content + optional AI assistant sidebar)
+ * - Single-column layout for main content
  * - Common styling (sections, headers, buttons, status indicators)
- * - AssistantPanel integration
+ * - AI assistance provided via unified right panel (Positron)
  *
  * Usage:
  * ```typescript
@@ -14,9 +14,7 @@
  *     super({
  *       widgetName: 'MyPanelWidget',
  *       panelTitle: 'My Panel',
- *       panelSubtitle: 'Description of what this panel does',
- *       assistantRoom: 'help',  // Optional: enables AI assistant sidebar
- *       assistantGreeting: 'How can I help?'
+ *       panelSubtitle: 'Description of what this panel does'
  *     });
  *   }
  *
@@ -28,9 +26,6 @@
  */
 
 import { BaseWidget, type WidgetConfig } from './BaseWidget';
-import { AssistantPanel, type AssistantPanelConfig } from './AssistantPanel';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ALL_PANEL_STYLES } from './styles';
 
 export interface PanelWidgetConfig extends Partial<WidgetConfig> {
@@ -43,18 +38,6 @@ export interface PanelWidgetConfig extends Partial<WidgetConfig> {
   /** Panel subtitle/description */
   panelSubtitle?: string;
 
-  /** Room name for AI assistant (e.g., 'help', 'settings'). Omit to disable assistant. */
-  assistantRoom?: string;
-
-  /** AI assistant greeting message */
-  assistantGreeting?: string;
-
-  /** AI assistant placeholder text */
-  assistantPlaceholder?: string;
-
-  /** Start with assistant collapsed */
-  assistantStartCollapsed?: boolean;
-
   /** Additional CSS styles (merged with panel styles) */
   additionalStyles?: string;
 
@@ -63,7 +46,6 @@ export interface PanelWidgetConfig extends Partial<WidgetConfig> {
 }
 
 export abstract class BasePanelWidget extends BaseWidget {
-  protected assistantPanel?: AssistantPanel;
   protected panelConfig: PanelWidgetConfig;
 
   constructor(config: PanelWidgetConfig) {
@@ -127,7 +109,6 @@ export abstract class BasePanelWidget extends BaseWidget {
     if (!this.shadowRoot) return;
 
     const content = await this.renderContent();
-    const hasAssistant = !!this.panelConfig.assistantRoom;
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -144,14 +125,8 @@ export abstract class BasePanelWidget extends BaseWidget {
             ${content}
           </div>
         </div>
-        ${hasAssistant ? '<div class="panel-assistant" id="assistant-container"></div>' : ''}
       </div>
     `;
-
-    // Initialize assistant panel if configured
-    if (hasAssistant) {
-      this.initializeAssistant();
-    }
 
     // Call post-render hook
     await this.onContentRendered();
@@ -163,32 +138,6 @@ export abstract class BasePanelWidget extends BaseWidget {
    */
   protected async onContentRendered(): Promise<void> {
     // Default: no post-render actions
-  }
-
-  private initializeAssistant(): void {
-    if (!this.shadowRoot || !this.panelConfig.assistantRoom) return;
-
-    const container = this.shadowRoot.querySelector('#assistant-container') as HTMLElement;
-    if (!container) return;
-
-    // Get room ID from room name
-    const roomId = (DEFAULT_ROOMS as any)[this.panelConfig.assistantRoom.toUpperCase()] as UUID;
-
-    if (!roomId) {
-      console.warn(`BasePanelWidget: Room '${this.panelConfig.assistantRoom}' not found in DEFAULT_ROOMS`);
-      return;
-    }
-
-    this.assistantPanel = new AssistantPanel(container, {
-      roomId,
-      roomName: this.panelConfig.assistantRoom,
-      title: 'AI Assistant',
-      placeholder: this.panelConfig.assistantPlaceholder || 'Ask for help...',
-      greeting: this.panelConfig.assistantGreeting || 'How can I help?',
-      maxMessages: 20,
-      width: '320px',
-      startCollapsed: this.panelConfig.assistantStartCollapsed ?? false
-    });
   }
 
   /**

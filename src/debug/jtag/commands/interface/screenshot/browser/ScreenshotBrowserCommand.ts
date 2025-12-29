@@ -124,11 +124,16 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       }
 
       const startTime = Date.now();
-      
+
+      // IFRAME CAPTURE: If iframeSelector is specified, capture iframe content
+      if (params.iframeSelector) {
+        return await this.captureIframeContent(params, html2canvas, startTime);
+      }
+
       // ADVANCED TARGETING: Use querySelector (modern) or selector (legacy)
       const targetSelector = params.querySelector || params.selector || 'body';
-      const targetElement = targetSelector === 'body' 
-        ? document.body 
+      const targetElement = targetSelector === 'body'
+        ? document.body
         : smartQuerySelector(targetSelector);
         
       if (!targetElement) {
@@ -159,8 +164,11 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         foreignObjectRendering: true,
         removeContainer: true,
         ignoreElements: (element) => {
-          // Skip problematic elements that cause shadow offset
-          return element.classList?.contains('html2canvas-ignore') || false;
+          // Skip problematic elements that cause shadow offset or hangs
+          if (element.classList?.contains('html2canvas-ignore')) return true;
+          // CRITICAL: Skip iframes to prevent html2canvas from hanging on cross-origin content
+          if (element.tagName === 'IFRAME') return true;
+          return false;
         },
         ...params.options?.html2canvasOptions
       };
@@ -233,6 +241,9 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         // console.debug(`📷 BROWSER: Using direct element capture (shadows preserved)`);
       }
       
+      // IFRAME COMPOSITING: Auto-fill any .browser-frame iframes with their captured content
+      finalCanvas = await this.compositeIframeContent(finalCanvas, actualScaleFactor);
+
       // SCALING: Fit-inside behavior with aspect ratio preservation
       let targetWidth = finalCanvas.width;
       let targetHeight = finalCanvas.height;
@@ -347,6 +358,275 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       return createScreenshotResult(params.context, params.sessionId, {
         success: false,
         error: new EnhancementError('screenshot-capture', error.message || 'Screenshot capture failed')
+      });
+    }
+  }
+
+  /**
+   * Auto-composite iframe content into main screenshot
+   * Finds all .browser-frame iframes and fills their areas with captured content
+   */
+  private async compositeIframeContent(
+    canvas: HTMLCanvasElement,
+    scaleFactor: number
+  ): Promise<HTMLCanvasElement> {
+    // Find all .browser-frame iframes (including in shadow DOM)
+    const iframes = this.findAllBrowserFrameIframes();
+
+    if (iframes.length === 0) {
+      return canvas; // No iframes to composite
+    }
+
+    console.log(`🖼️ BROWSER: Found ${iframes.length} iframe(s) to composite`);
+
+    // Create a new canvas to composite onto
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = canvas.width;
+    compositeCanvas.height = canvas.height;
+    const ctx = compositeCanvas.getContext('2d')!;
+
+    // Draw the original screenshot as base
+    ctx.drawImage(canvas, 0, 0);
+
+    // Capture and composite each iframe
+    for (const iframe of iframes) {
+      try {
+        // Get iframe's bounding box relative to viewport
+        const rect = iframe.getBoundingClientRect();
+
+        // Scale coordinates to match canvas
+        const x = Math.round(rect.left * scaleFactor);
+        const y = Math.round(rect.top * scaleFactor);
+        const width = Math.round(rect.width * scaleFactor);
+        const height = Math.round(rect.height * scaleFactor);
+
+        console.log(`📷 BROWSER: Capturing iframe at (${x}, ${y}) ${width}x${height}`);
+
+        // Capture iframe content via shim
+        const iframeDataUrl = await this.captureIframeViaShim(iframe, width, height);
+
+        if (iframeDataUrl) {
+          // Load the captured image and draw onto composite canvas
+          await new Promise<void>((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              ctx.drawImage(img, x, y, width, height);
+              console.log(`✅ BROWSER: Composited iframe at (${x}, ${y})`);
+              resolve();
+            };
+            img.onerror = () => {
+              console.warn(`⚠️ BROWSER: Failed to load iframe capture`);
+              resolve();
+            };
+            img.src = iframeDataUrl;
+          });
+        }
+      } catch (error: any) {
+        console.warn(`⚠️ BROWSER: Failed to composite iframe:`, error.message);
+        // Continue with other iframes
+      }
+    }
+
+    return compositeCanvas;
+  }
+
+  /**
+   * Find all .browser-frame iframes in the document, including those in shadow DOM
+   */
+  private findAllBrowserFrameIframes(): HTMLIFrameElement[] {
+    const iframes: HTMLIFrameElement[] = [];
+
+    // Recursive function to search shadow DOMs
+    const searchElement = (element: Element) => {
+      // Check if this element is a .browser-frame iframe
+      if (element instanceof HTMLIFrameElement && element.classList.contains('browser-frame')) {
+        iframes.push(element);
+      }
+
+      // Search children
+      for (const child of Array.from(element.children)) {
+        searchElement(child);
+      }
+
+      // Search shadow DOM if present
+      if (element.shadowRoot) {
+        for (const child of Array.from(element.shadowRoot.children)) {
+          searchElement(child);
+        }
+      }
+    };
+
+    searchElement(document.body);
+    return iframes;
+  }
+
+  /**
+   * Capture a single iframe via its JTAG shim
+   */
+  private async captureIframeViaShim(
+    iframe: HTMLIFrameElement,
+    _targetWidth: number,
+    _targetHeight: number
+  ): Promise<string | null> {
+    if (!iframe.contentWindow) {
+      return null;
+    }
+
+    const requestId = `composite-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', handler);
+        console.warn(`⚠️ BROWSER: Iframe shim timeout`);
+        resolve(null);
+      }, 10000); // 10s timeout
+
+      const handler = (event: MessageEvent) => {
+        if (event.data?.type === 'jtag-shim-response' && event.data?.requestId === requestId) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', handler);
+
+          if (event.data.result?.success && event.data.result?.data?.dataUrl) {
+            resolve(event.data.result.data.dataUrl);
+          } else {
+            resolve(null);
+          }
+        }
+      };
+
+      window.addEventListener('message', handler);
+
+      // Request screenshot from shim - viewport only, scaled to fit target size
+      iframe.contentWindow!.postMessage({
+        type: 'jtag-shim-request',
+        command: 'screenshot',
+        requestId,
+        params: {
+          viewportOnly: true,
+          scale: 1,
+          format: 'png',
+          quality: 0.9
+        }
+      }, '*');
+    });
+  }
+
+  /**
+   * Capture content inside an iframe using injected JTAG shim
+   * The shim runs html2canvas INSIDE the iframe (no CORS issues)
+   */
+  private async captureIframeContent(
+    params: ScreenshotParams,
+    _html2canvas: (element: Element, options?: Html2CanvasOptions) => Promise<Html2CanvasCanvas>,
+    startTime: number
+  ): Promise<ScreenshotResult> {
+    try {
+      // Find the iframe using smart selector (pierces shadow DOM)
+      const iframe = smartQuerySelector(params.iframeSelector!) as HTMLIFrameElement;
+      if (!iframe) {
+        throw new Error(`Iframe not found: ${params.iframeSelector}`);
+      }
+
+      if (!(iframe instanceof HTMLIFrameElement)) {
+        throw new Error(`Element is not an iframe: ${params.iframeSelector}`);
+      }
+
+      console.log(`📷 BROWSER: Capturing iframe via JTAG shim from ${params.iframeSelector}`);
+
+      // Send screenshot command to injected JTAG shim via postMessage
+      const requestId = `screenshot-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+      const shimResult = await new Promise<{
+        success: boolean;
+        data?: {
+          dataUrl: string;
+          metadata: { width: number; height: number; format: string; quality: number };
+        };
+        error?: { message: string };
+      }>((resolve) => {
+        const timeout = setTimeout(() => {
+          window.removeEventListener('message', handler);
+          resolve({ success: false, error: { message: 'JTAG shim timeout - shim may not be loaded' } });
+        }, 30000); // 30s timeout for capture
+
+        const handler = (event: MessageEvent) => {
+          if (event.data?.type === 'jtag-shim-response' && event.data?.requestId === requestId) {
+            clearTimeout(timeout);
+            window.removeEventListener('message', handler);
+            resolve(event.data.result);
+          }
+        };
+
+        window.addEventListener('message', handler);
+
+        // Send request to iframe's JTAG shim
+        // Default to viewport-only for iframe screenshots (prevents huge images overwhelming AIs)
+        iframe.contentWindow?.postMessage({
+          type: 'jtag-shim-request',
+          command: 'screenshot',
+          requestId,
+          params: {
+            selector: params.querySelector,
+            scale: params.scale || params.options?.scale || 1,
+            format: params.format || params.options?.format || 'png',
+            quality: params.quality || params.options?.quality || 0.9,
+            backgroundColor: params.options?.backgroundColor || '#ffffff',
+            viewportOnly: params.viewportOnly !== false  // Default true for iframes
+          }
+        }, '*');
+      });
+
+      if (!shimResult.success || !shimResult.data?.dataUrl) {
+        throw new Error(shimResult.error?.message || 'Shim capture failed');
+      }
+
+      const { dataUrl, metadata } = shimResult.data;
+      const captureTime = Date.now() - startTime;
+      console.log(`✅ BROWSER: Iframe captured via shim (${metadata?.width}x${metadata?.height}) in ${captureTime}ms`);
+
+      // Set up params for server handoff
+      const format = params.format || params.options?.format || 'png';
+      params.dataUrl = dataUrl;
+      params.metadata = {
+        width: metadata?.width,
+        height: metadata?.height,
+        fileSizeBytes: Math.floor((dataUrl.length * 3) / 4),
+        size: dataUrl.length,
+        selector: params.iframeSelector,
+        elementName: 'iframe-content-via-shim',
+        format: format,
+        captureTime: captureTime,
+        scale: params.scale || params.options?.scale || 1,
+        quality: metadata?.quality
+      };
+
+      if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both') {
+        params.filename = params.filename ?? `iframe-screenshot-${Date.now()}.${format}`;
+      }
+
+      // Delegate to server for file saving
+      if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both' ||
+          params.context.uuid !== this.context.uuid) {
+        return await this.remoteExecute(params);
+      }
+
+      // Return bytes directly
+      const base64Data = dataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+      const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+
+      return createScreenshotResult(params.context, params.sessionId, {
+        success: true,
+        dataUrl: dataUrl,
+        options: params.options,
+        metadata: params.metadata,
+        bytes: (params.destination === 'bytes' || params.destination === 'both') ? bytes : undefined
+      });
+
+    } catch (error: any) {
+      console.error(`❌ BROWSER: Iframe shim capture failed:`, error.message);
+      return createScreenshotResult(params.context, params.sessionId, {
+        success: false,
+        error: new EnhancementError('iframe-capture', error.message || 'Iframe screenshot capture failed')
       });
     }
   }

@@ -1,21 +1,27 @@
-<div class="theme-status">
-  <div class="theme-indicator">
-    <span class="theme-icon">🎨</span>
-    <span class="theme-name"><!-- Current theme name --></span>
-  </div>
-  <div class="theme-controls">
-    <label for="theme-selector">Switch Theme:</label>
-    <select id="theme-selector" class="theme-dropdown">
-      <option value="base">Base (Dark Cyberpunk)</option>
-      <option value="light">Light Theme</option>
-      <option value="cyberpunk">Cyberpunk Neon</option>
-      <option value="retro-mac">Retro Mac System 11</option>
-      <option value="monochrome">Monochrome</option>
-      <option value="classic">Classic</option>
-    </select>
-    <button id="apply-theme" class="theme-apply-btn">Apply</button>
-  </div>
-  <div class="theme-info">
-    Theme System Active - CSS injected into document.head
+<div class="theme-layout">
+  <div class="theme-main">
+    <div class="theme-container">
+      <div class="theme-header">
+        <h1 class="theme-title">Theme</h1>
+        <p class="theme-subtitle">Customize your workspace appearance</p>
+      </div>
+
+      <div class="info-box">
+        <strong>AI Theme Design:</strong> Ask the AI assistant for help choosing colors,
+        creating custom themes, or matching a specific aesthetic.
+      </div>
+
+      <div class="current-theme-display">
+        <span class="current-theme-label">Current Theme:</span>
+        <span class="current-theme-name" id="current-theme-name">base</span>
+      </div>
+
+      <div class="theme-section">
+        <h2 class="section-title">Available Themes</h2>
+        <div class="theme-grid" id="theme-grid">
+          <!-- Theme cards generated dynamically -->
+        </div>
+      </div>
+    </div>
   </div>
 </div>

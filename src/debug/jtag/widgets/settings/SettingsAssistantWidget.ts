@@ -235,4 +235,4 @@ Give a brief, helpful troubleshooting tip (2-3 sentences max). Focus on the most
 }
 
 // Register custom element
-customElements.define('settings-assistant', SettingsAssistantWidget);
+// Registration handled by centralized BROWSER_WIDGETS registry

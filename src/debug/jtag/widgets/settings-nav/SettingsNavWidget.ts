@@ -3,6 +3,11 @@
  *
  * Shows settings navigation in the left sidebar when Settings is open.
  * Emits events to coordinate with SettingsWidget in center panel.
+ *
+ * Structure:
+ * - public/settings-nav-widget.html - Template container
+ * - public/settings-nav-widget.scss - Styles (compiled to .css)
+ * - SettingsNavWidget.ts - Logic (this file)
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
@@ -24,13 +29,20 @@ export class SettingsNavWidget extends BaseWidget {
   constructor() {
     super({
       widgetName: 'SettingsNavWidget',
-      template: undefined,
-      styles: undefined,
+      template: 'settings-nav-widget.html',
+      styles: 'settings-nav-widget.css',
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
       enableScreenshots: false
     });
+  }
+
+  /**
+   * Override path resolution - directory is 'settings-nav' (kebab-case)
+   */
+  protected resolveResourcePath(filename: string): string {
+    return `widgets/settings-nav/public/${filename}`;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -46,6 +58,18 @@ export class SettingsNavWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
+    // Inject loaded template and styles into shadow DOM
+    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
+      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
+      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
+    }
+
+    // Generate nav items dynamically
+    this.renderNavItems();
+    this.setupEventListeners();
+  }
+
+  private renderNavItems(): void {
     const sections: { id: SettingsSection; icon: string; label: string }[] = [
       { id: 'providers', icon: '🤖', label: 'AI Providers' },
       { id: 'appearance', icon: '🎨', label: 'Appearance' },
@@ -53,76 +77,15 @@ export class SettingsNavWidget extends BaseWidget {
       { id: 'about', icon: 'ℹ️', label: 'About' }
     ];
 
-    const styles = `
-      :host {
-        display: block;
-      }
+    const navItemsContainer = this.shadowRoot?.querySelector('.nav-items');
+    if (!navItemsContainer) return;
 
-      .settings-nav-container {
-        padding: var(--spacing-md, 12px);
-      }
-
-      .nav-title {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.5));
-        margin-bottom: var(--spacing-sm, 8px);
-        padding: 0 var(--spacing-sm, 8px);
-      }
-
-      .nav-item {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-sm, 8px);
-        padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
-        border-radius: var(--border-radius-sm, 6px);
-        cursor: pointer;
-        transition: all 0.15s ease;
-        color: var(--content-secondary, rgba(255, 255, 255, 0.7));
-        font-size: 14px;
-      }
-
-      .nav-item:hover {
-        background: var(--sidebar-hover, rgba(0, 212, 255, 0.1));
-        color: var(--content-primary, white);
-      }
-
-      .nav-item.active {
-        background: var(--sidebar-active, rgba(0, 212, 255, 0.15));
-        color: var(--content-accent, #00d4ff);
-        border-left: 3px solid var(--content-accent, #00d4ff);
-        margin-left: -3px;
-      }
-
-      .nav-icon {
-        font-size: 16px;
-        width: 20px;
-        text-align: center;
-      }
-
-      .nav-label {
-        flex: 1;
-      }
-    `;
-
-    const navItems = sections.map(s => `
+    navItemsContainer.innerHTML = sections.map(s => `
       <div class="nav-item ${this.currentSection === s.id ? 'active' : ''}" data-section="${s.id}">
         <span class="nav-icon">${s.icon}</span>
         <span class="nav-label">${s.label}</span>
       </div>
     `).join('');
-
-    const template = `
-      <div class="settings-nav-container">
-        <div class="nav-title">Settings</div>
-        ${navItems}
-      </div>
-    `;
-
-    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
-    this.setupEventListeners();
   }
 
   private setupEventListeners(): void {

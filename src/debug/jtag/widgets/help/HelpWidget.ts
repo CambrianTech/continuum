@@ -3,12 +3,14 @@
  *
  * Helps new users get started with Continuum.
  * Includes embedded AI assistant for contextual help.
+ *
+ * Structure:
+ * - public/help-widget.html - Template container
+ * - public/help-widget.scss - Styles (compiled to .css)
+ * - HelpWidget.ts - Logic (this file)
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { AssistantPanel } from '../shared/AssistantPanel';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
-import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface HelpSection {
@@ -20,18 +22,24 @@ interface HelpSection {
 
 export class HelpWidget extends BaseWidget {
   private activeSection: string = 'getting-started';
-  private assistantPanel?: AssistantPanel;
 
   constructor() {
     super({
       widgetName: 'HelpWidget',
-      template: undefined,
-      styles: undefined,
+      template: 'help-widget.html',
+      styles: 'help-widget.css',
       enableAI: false,
       enableDatabase: false,
       enableRouterEvents: false,
       enableScreenshots: false
     });
+  }
+
+  /**
+   * Override path resolution - directory is 'help' (matches class name pattern)
+   */
+  protected resolveResourcePath(filename: string): string {
+    return `widgets/help/public/${filename}`;
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -168,225 +176,37 @@ export class HelpWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
+    // Inject loaded template and styles into shadow DOM
+    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
+      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
+      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
+    }
+
+    // Render dynamic content
+    this.renderContent();
+    this.setupEventListeners();
+  }
+
+  private renderContent(): void {
     const sections = this.getSections();
     const activeContent = sections.find(s => s.id === this.activeSection)?.content || '';
 
-    const styles = `
-      :host {
-        display: block;
-        height: 100%;
-        overflow: hidden;
-      }
-
-      .help-layout {
-        display: grid;
-        grid-template-columns: 220px 1fr 350px;
-        height: 100%;
-      }
-
-      .help-sidebar {
-        background: rgba(10, 15, 20, 0.95);
-        border-right: 1px solid rgba(0, 212, 255, 0.2);
-        padding: 16px 0;
-        overflow-y: auto;
-      }
-
-      .sidebar-title {
-        padding: 0 16px 12px;
-        font-size: 12px;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.4);
-        letter-spacing: 1px;
-      }
-
-      .nav-item {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 12px 16px;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        color: rgba(255, 255, 255, 0.7);
-        font-size: 14px;
-      }
-
-      .nav-item:hover {
-        background: rgba(0, 212, 255, 0.1);
-        color: white;
-      }
-
-      .nav-item.active {
-        background: rgba(0, 212, 255, 0.15);
-        color: var(--content-accent, #00d4ff);
-        border-left: 3px solid var(--content-accent, #00d4ff);
-      }
-
-      .nav-icon {
-        width: 24px;
-        height: 24px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(0, 212, 255, 0.2);
-        border-radius: 50%;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--content-accent, #00d4ff);
-      }
-
-      .help-content {
-        padding: 32px;
-        overflow-y: auto;
-      }
-
-      .help-content h3 {
-        font-size: 24px;
-        color: var(--content-accent, #00d4ff);
-        margin: 0 0 16px 0;
-      }
-
-      .help-content h4 {
-        font-size: 16px;
-        color: white;
-        margin: 24px 0 12px 0;
-      }
-
-      .help-content p {
-        color: rgba(255, 255, 255, 0.8);
-        line-height: 1.6;
-        margin: 0 0 16px 0;
-      }
-
-      .help-content ol, .help-content ul {
-        color: rgba(255, 255, 255, 0.8);
-        line-height: 1.8;
-        padding-left: 24px;
-        margin: 0 0 16px 0;
-      }
-
-      .help-content li {
-        margin-bottom: 8px;
-      }
-
-      .help-content code {
-        background: rgba(0, 212, 255, 0.15);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-family: monospace;
-        color: var(--content-accent, #00d4ff);
-        font-size: 13px;
-      }
-
-      .help-content a {
-        color: var(--content-accent, #00d4ff);
-        text-decoration: none;
-      }
-
-      .help-content a:hover {
-        text-decoration: underline;
-      }
-
-      .help-content table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 16px 0;
-      }
-
-      .help-content td {
-        padding: 8px 12px;
-        border-bottom: 1px solid rgba(0, 212, 255, 0.1);
-        color: rgba(255, 255, 255, 0.8);
-      }
-
-      .help-content td:first-child {
-        width: 150px;
-      }
-
-      .help-assistant {
-        border-left: 1px solid rgba(0, 212, 255, 0.2);
-        height: 100%;
-      }
-
-      @media (max-width: 1100px) {
-        .help-layout {
-          grid-template-columns: 180px 1fr 300px;
-        }
-      }
-
-      @media (max-width: 900px) {
-        .help-layout {
-          grid-template-columns: 1fr;
-          grid-template-rows: auto 1fr 300px;
-        }
-
-        .help-sidebar {
-          border-right: none;
-          border-bottom: 1px solid rgba(0, 212, 255, 0.2);
-          display: flex;
-          overflow-x: auto;
-          padding: 8px;
-        }
-
-        .sidebar-title {
-          display: none;
-        }
-
-        .nav-item {
-          white-space: nowrap;
-          padding: 8px 12px;
-        }
-
-        .nav-item.active {
-          border-left: none;
-          border-bottom: 2px solid var(--content-accent, #00d4ff);
-        }
-
-        .help-assistant {
-          border-left: none;
-          border-top: 1px solid rgba(0, 212, 255, 0.2);
-        }
-      }
-    `;
-
-    const navItems = sections.map(s => `
-      <div class="nav-item ${s.id === this.activeSection ? 'active' : ''}" data-section="${s.id}">
-        <span class="nav-icon">${s.icon}</span>
-        <span>${s.title}</span>
-      </div>
-    `).join('');
-
-    const template = `
-      <div class="help-layout">
-        <div class="help-sidebar">
-          <div class="sidebar-title">Help Topics</div>
-          ${navItems}
+    // Render nav items
+    const navItemsContainer = this.shadowRoot?.querySelector('.nav-items');
+    if (navItemsContainer) {
+      navItemsContainer.innerHTML = sections.map(s => `
+        <div class="nav-item ${s.id === this.activeSection ? 'active' : ''}" data-section="${s.id}">
+          <span class="nav-icon">${s.icon}</span>
+          <span>${s.title}</span>
         </div>
-        <div class="help-content">
-          ${activeContent}
-        </div>
-        <div class="help-assistant" id="assistant-container"></div>
-      </div>
-    `;
+      `).join('');
+    }
 
-    this.shadowRoot!.innerHTML = `<style>${styles}</style>${template}`;
-    this.setupEventListeners();
-    this.initializeAssistant();
-  }
-
-  private initializeAssistant(): void {
-    const container = this.shadowRoot?.querySelector('#assistant-container') as HTMLElement;
-    if (!container) return;
-
-    // Clean up old instance
-    this.assistantPanel?.destroy();
-
-    // Create new assistant panel connected to Help room
-    this.assistantPanel = new AssistantPanel(container, {
-      roomId: DEFAULT_ROOMS.HELP as UUID,
-      roomName: 'help',
-      placeholder: 'Ask for help...',
-      greeting: "Hi! I'm here to help you get started with Continuum. What would you like to know?"
-    });
+    // Render help content
+    const contentContainer = this.shadowRoot?.querySelector('.help-content');
+    if (contentContainer) {
+      contentContainer.innerHTML = activeContent;
+    }
   }
 
   private setupEventListeners(): void {
@@ -403,7 +223,6 @@ export class HelpWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    this.assistantPanel?.destroy();
     console.log('Help: Cleanup complete');
   }
 }

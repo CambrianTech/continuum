@@ -455,37 +455,46 @@ export class MainWidget extends BaseWidget {
     const contentView = this.shadowRoot?.querySelector('.content-view');
     if (!contentView) return;
 
-    // Content view always shows chat for now
-    // Theme is handled via modal, not content switching
-    contentView.innerHTML = '<chat-widget></chat-widget>';
+    // Get the widget for this content type from registry
+    const widget = getWidgetForType(tabName);
+    contentView.innerHTML = `<${widget}></${widget}>`;
   }
 
   /**
    * Navigate to a different path (e.g., /chat/academy, /chat/user-123)
    */
   async navigateToPath(newPath: string): Promise<void> {
-    const [, pathType, roomId] = newPath.split('/');
-    
+    const { type, entityId } = parseContentPath(newPath);
+
     // Check if room exists, create if needed (especially for user chats)
-    if (pathType === 'chat' && roomId) {
-      await this.ensureRoomExists(roomId);
+    if (type === 'chat' && entityId) {
+      await this.ensureRoomExists(entityId);
     }
-    
-    // Update current path and clear cached content
+
+    // Update current path
     this.currentPath = newPath;
-    this.currentContent = null;
-    
-    // Load new content information
-    await this.loadCurrentContent();
-    
-    // Subscribe to events for this path
-    await this.subscribeToPathEvents(newPath);
-    
-    // Re-render to update tabs and content for new path
-    await this.renderWidget();
-    
-    const contentName = this.currentContent ? (this.currentContent as any).displayName : 'unknown';
-    console.log(`🔄 MainPanel: Navigated to path: ${newPath} (${contentName})`);
+
+    // Switch content view (same pattern as initial URL routing)
+    this.switchContentView(type, entityId);
+
+    // Ensure a tab exists for this URL
+    await this.ensureTabForContent(type, entityId);
+
+    // For chat, resolve uniqueId → UUID and emit ROOM_SELECTED
+    if (type === 'chat' && entityId) {
+      const resolved = await RoutingService.resolveRoom(entityId);
+      if (resolved) {
+        Events.emit(UI_EVENTS.ROOM_SELECTED, {
+          roomId: resolved.id,
+          roomName: resolved.displayName,
+          uniqueId: resolved.uniqueId
+        });
+      } else {
+        Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '', uniqueId: entityId });
+      }
+    }
+
+    console.log(`🔄 MainPanel: Navigated to ${type}/${entityId || 'default'}`);
   }
 
   /**
@@ -588,6 +597,12 @@ export class MainWidget extends BaseWidget {
       // Opens help-widget with embedded chat for AI assistance
       // The Help room (DEFAULT_ROOMS.HELP) provides the chat backend
       this.openContentTab('help', 'Help');
+    });
+
+    // Listen to browser-clicked event - opens Browser tab
+    this.addEventListener('browser-clicked', () => {
+      console.log('🌐 MainPanel: Browser button clicked - opening Browser tab');
+      this.openContentTab('browser', 'Browser');
     });
 
     console.log('🔗 MainPanel: Header controls listeners registered');

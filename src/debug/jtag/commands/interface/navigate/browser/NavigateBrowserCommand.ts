@@ -24,14 +24,22 @@
 import { type NavigateParams, type NavigateResult, createNavigateResult } from '../shared/NavigateTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import { NavigateCommand } from '../shared/NavigateCommand';
+import { Events } from '@system/core/shared/Events';
 
 export class NavigateBrowserCommand extends NavigateCommand {
   
   /**
    * Browser navigation - navigates to URL or reloads if no URL provided
+   * When target='webview', navigates the co-browsing widget instead
    */
   async execute(params: NavigateParams): Promise<NavigateResult> {
     const isReload = !params.url;
+    const isWebview = params.target === 'webview';
+
+    if (isWebview) {
+      return this.navigateWebview(params);
+    }
+
     console.log(isReload ? '🔄 BROWSER: Reloading page' : `🌐 BROWSER: Navigating to ${params.url}`);
 
     try {
@@ -74,7 +82,7 @@ export class NavigateBrowserCommand extends NavigateCommand {
   private async waitForElement(selector: string, timeout: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const startTime = Date.now();
-      
+
       const check = () => {
         if (document.querySelector(selector)) {
           resolve();
@@ -84,8 +92,49 @@ export class NavigateBrowserCommand extends NavigateCommand {
           setTimeout(check, 100);
         }
       };
-      
+
       check();
+    });
+  }
+
+  /**
+   * Navigate the co-browsing webview widget instead of main window
+   */
+  private async navigateWebview(params: NavigateParams): Promise<NavigateResult> {
+    if (!params.url) {
+      return createNavigateResult(params.context, params.sessionId, {
+        success: false,
+        url: '',
+        error: new ValidationError('url', 'URL is required for webview navigation')
+      });
+    }
+
+    console.log(`🌐 BROWSER: Navigating webview to ${params.url}`);
+
+    // Store pending URL in localStorage for WebViewWidget to pick up on mount
+    // This handles the case where the widget isn't mounted yet when we emit the event
+    localStorage.setItem('webview:pending-url', params.url);
+
+    // First switch to Browser tab by emitting content:opened event
+    // This follows the same pattern as RoomListWidget, UserListWidget etc.
+    Events.emit('content:opened', {
+      contentType: 'browser',
+      entityId: 'browser',
+      title: 'Browser',
+      setAsCurrent: true
+    });
+
+    // Wait for widget to mount (Browser tab needs time to render WebViewWidget)
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Emit navigate event for WebViewWidget to handle
+    // Also send as backup in case widget is already mounted
+    Events.emit('webview:navigate', { url: params.url });
+
+    return createNavigateResult(params.context, params.sessionId, {
+      success: true,
+      url: params.url,
+      title: 'WebView navigation initiated'
     });
   }
 }
