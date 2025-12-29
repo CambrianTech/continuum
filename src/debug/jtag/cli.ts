@@ -372,9 +372,11 @@ async function main() {
     try {
       // AI commands need longer timeout due to queue + generation time
       // Genome commands can take longer for training operations
+      // Interface commands (screenshot) may need to wait for html2canvas rendering
       const isAICommand = command.startsWith('ai/');
       const isGenomeCommand = command.startsWith('genome/');
-      const timeoutMs = isGenomeCommand ? 300000 : isAICommand ? 60000 : 10000; // 5min for genome, 60s for AI, 10s for others
+      const isInterfaceCommand = command.startsWith('interface/');
+      const timeoutMs = isGenomeCommand ? 300000 : isAICommand ? 60000 : isInterfaceCommand ? 60000 : 10000; // 5min for genome, 60s for AI/interface, 10s for others
       const timeoutSeconds = timeoutMs / 1000;
 
       const commandTimeout = new Promise((_, reject) =>

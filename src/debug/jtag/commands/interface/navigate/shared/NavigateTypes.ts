@@ -24,11 +24,13 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
+export type NavigateTarget = '_blank' | '_self' | '_parent' | '_top' | 'webview' | string;
+
 export interface NavigateParams extends CommandParams {
   readonly url?: string;  // Optional - if not provided, triggers location.reload()
   readonly timeout?: number;
   readonly waitForSelector?: string;
-  readonly target?: '_blank' | '_self' | '_parent' | '_top' | string;
+  readonly target?: NavigateTarget;  // 'webview' to navigate the co-browsing widget
 }
 
 export const createNavigateParams = (

@@ -100,11 +100,31 @@ export class PureWebSocketTransport implements PureTransport {
           this.connected = false;
           const reason = event.reason || `Code: ${event.code}`;
           this.disconnectCallback?.(reason);
+          // Emit immediate disconnect event for browser widgets (like WebViewWidget freeze)
+          if (typeof window !== 'undefined' && (window as any).JTAGEvents) {
+            console.log('🔌 PureWebSocketTransport: WebSocket closed - emitting connection:status');
+            (window as any).JTAGEvents.emit('connection:status', {
+              connected: false,
+              state: 'disconnected',
+              color: '#ff0000',
+              timestamp: Date.now()
+            });
+          }
         };
-        
+
         this.websocket.onerror = (event) => {
           const error = new Error(`WebSocket error: ${event.type}`);
           this.errorCallback?.(error);
+          // Emit immediate disconnect event for browser widgets
+          if (typeof window !== 'undefined' && (window as any).JTAGEvents) {
+            console.log('⚠️ PureWebSocketTransport: WebSocket error - emitting connection:status');
+            (window as any).JTAGEvents.emit('connection:status', {
+              connected: false,
+              state: 'disconnected',
+              color: '#ff0000',
+              timestamp: Date.now()
+            });
+          }
           reject(error);
         };
         

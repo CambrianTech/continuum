@@ -467,3 +467,9 @@ export class Events {
     // }
   }
 }
+
+// Expose Events on window for cross-module access (e.g., transport layer)
+// This enables immediate disconnect events without import cycles
+if (typeof window !== 'undefined') {
+  (window as any).JTAGEvents = Events;
+}
