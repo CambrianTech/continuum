@@ -495,6 +495,15 @@ class MinimalServer {
   // Proxy shim: intercept all network requests and route through our proxy
   const PROXY_PREFIX = '/proxy/';
   const BASE_ORIGIN = '${base.origin}';
+  var isFrozen = false;  // When true, stop all proxy requests (server disconnected)
+
+  // Listen for freeze command from parent (server disconnected)
+  window.addEventListener('message', function(event) {
+    if (event.source === window.parent && event.data && event.data.type === 'jtag-shim-freeze') {
+      console.log('[Proxy Shim] FREEZE - stopping all proxy requests');
+      isFrozen = true;
+    }
+  });
 
   // Decode HTML entities (&#x3D; → =, &amp; → &, etc.)
   function decodeHtmlEntities(str) {
@@ -510,6 +519,8 @@ class MinimalServer {
   }
 
   function proxyUrl(url) {
+    // If frozen, return original URL (let it fail naturally, no proxy flood)
+    if (isFrozen) return url;
     if (!url || typeof url !== 'string') return url;
     if (url.startsWith(PROXY_PREFIX)) return url;
     if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
@@ -706,30 +717,42 @@ class MinimalServer {
         var dpr = window.devicePixelRatio || 1;
 
         var opts = {
-          scale: scale / dpr,
+          scale: scale,
           useCORS: true,
           allowTaint: false,
           logging: false,
-          backgroundColor: params.backgroundColor || '#ffffff',
+          backgroundColor: params.backgroundColor || null,
           foreignObjectRendering: false,
           imageTimeout: 15000,
           removeContainer: true,
-          proxy: '/proxy-html2canvas'
+          proxy: '/proxy-html2canvas',
+          scrollX: -window.scrollX,
+          scrollY: -window.scrollY
         };
-        // viewportOnly: capture only visible area
+        // viewportOnly: capture only visible area by setting window dimensions
         if (params.viewportOnly) {
-          opts.width = window.innerWidth;
-          opts.height = window.innerHeight;
           opts.windowWidth = window.innerWidth;
           opts.windowHeight = window.innerHeight;
-          opts.x = window.scrollX;
-          opts.y = window.scrollY;
+          opts.width = window.innerWidth;
+          opts.height = window.innerHeight;
         }
         return h2c(target, opts);
       }).then(function(canvas) {
         var format = params.format || 'png';
         var quality = params.quality || 0.9;
-        var dataUrl = format === 'png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/' + format, quality);
+
+        // For viewport capture, crop to actual viewport size
+        var finalCanvas = canvas;
+        if (params.viewportOnly && (canvas.width > window.innerWidth || canvas.height > window.innerHeight)) {
+          var cropCanvas = document.createElement('canvas');
+          cropCanvas.width = window.innerWidth;
+          cropCanvas.height = window.innerHeight;
+          var ctx = cropCanvas.getContext('2d');
+          ctx.drawImage(canvas, 0, 0);
+          finalCanvas = cropCanvas;
+        }
+
+        var dataUrl = format === 'png' ? finalCanvas.toDataURL('image/png') : finalCanvas.toDataURL('image/' + format, quality);
         return success({
           dataUrl: dataUrl,
           metadata: { width: canvas.width, height: canvas.height, format: format, quality: quality, selector: params.selector || 'body', viewportOnly: !!params.viewportOnly, captureTime: Date.now() }
@@ -887,6 +910,42 @@ class MinimalServer {
 
   window.addEventListener('message', handleMessage);
   window.parent.postMessage({ type: 'jtag-shim-ready', version: JTAG_SHIM_VERSION, url: window.location.href }, '*');
+
+  // Notify parent of URL changes (for URL bar sync)
+  var lastUrl = window.location.href;
+  function checkUrlChange() {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      var title = document.title || '';
+      console.log('[JTAG Shim] URL changed:', lastUrl);
+      window.parent.postMessage({
+        type: 'jtag-shim-url-change',
+        url: lastUrl,
+        title: title
+      }, '*');
+    }
+  }
+
+  // Check for URL changes periodically (handles SPA navigation)
+  setInterval(checkUrlChange, 500);
+
+  // Also notify on popstate (back/forward navigation)
+  window.addEventListener('popstate', function() {
+    setTimeout(checkUrlChange, 50);
+  });
+
+  // Notify on link clicks that might cause navigation
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    while (target && target.tagName !== 'A') {
+      target = target.parentElement;
+    }
+    if (target && target.href) {
+      // Slight delay to allow navigation to complete
+      setTimeout(checkUrlChange, 100);
+    }
+  }, true);
+
   console.log('[JTAG Shim] Initialized v' + JTAG_SHIM_VERSION + ' with ' + Object.keys(commands).length + ' commands');
 })();
 </script>`;
@@ -933,6 +992,12 @@ class MinimalServer {
           if (url.startsWith('/proxy/')) return match;
           return `${attr}=${q1}/proxy/${proxyEncodeUrl(url)}${q2}`;
         }
+      );
+
+      // Add crossorigin="anonymous" to img tags for canvas access
+      content = content.replace(
+        /<img([^>]*)\ssrc=/gi,
+        '<img$1 crossorigin="anonymous" src='
       );
 
       // Rewrite protocol-relative URLs (//example.com)

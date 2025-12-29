@@ -50,6 +50,7 @@ export class WebViewWidget extends ReactiveWidget {
   private savedProxyUrl = '';
   private connectionUnsubscribe?: () => void;
   private navigationUnsubscribe?: () => void;
+  private boundHandleShimMessage?: (event: MessageEvent) => void;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // STYLES
@@ -260,6 +261,10 @@ export class WebViewWidget extends ReactiveWidget {
       this.navigateToUrl(data.url);
     });
 
+    // Listen for URL changes from the iframe shim (for URL bar sync)
+    this.boundHandleShimMessage = this.handleShimMessage.bind(this);
+    window.addEventListener('message', this.boundHandleShimMessage);
+
     // Check for pending navigation URL (set by navigate command before widget mounted)
     const pendingUrl = localStorage.getItem('webview:pending-url');
     if (pendingUrl) {
@@ -294,17 +299,19 @@ export class WebViewWidget extends ReactiveWidget {
       // Server disconnected - capture screenshot and STOP iframe to prevent request flood
       console.log('⏸️ WebViewWidget: Server disconnected, freezing iframe...');
 
-      // CRITICAL: Set iframe src to about:blank FIRST to cancel all pending requests
-      // Simply removing the iframe from DOM does NOT cancel pending network requests!
       const iframe = this.shadowRoot?.querySelector('.browser-frame') as HTMLIFrameElement;
-      if (iframe) {
-        console.log('🛑 WebViewWidget: Setting iframe src to about:blank to stop requests');
+      if (iframe?.contentWindow) {
+        // STEP 1: Tell the shim to stop proxying (immediate, before any captures)
+        console.log('🛑 WebViewWidget: Signaling shim to stop proxy requests');
+        iframe.contentWindow.postMessage({ type: 'jtag-shim-freeze' }, '*');
+
+        // STEP 2: Capture freeze frame while page content still exists (quick, 500ms timeout)
+        await this.captureFreeze();
+
+        // STEP 3: Clear iframe to absolutely stop all network activity
+        console.log('🛑 WebViewWidget: Setting iframe src to about:blank');
         iframe.src = 'about:blank';
       }
-
-      // Try to capture current state (may fail if server already down)
-      // Note: This happens AFTER stopping requests, so it may not capture the page
-      // TODO: Capture freeze frame BEFORE setting about:blank in future optimization
 
       this.savedProxyUrl = this.proxyUrl;
       this.proxyUrl = '';  // This removes the iframe from DOM (overlay shows instead)
@@ -378,6 +385,79 @@ export class WebViewWidget extends ReactiveWidget {
       this.navigationUnsubscribe();
       this.navigationUnsubscribe = undefined;
     }
+    if (this.boundHandleShimMessage) {
+      window.removeEventListener('message', this.boundHandleShimMessage);
+      this.boundHandleShimMessage = undefined;
+    }
+  }
+
+  /**
+   * Handle messages from the iframe shim (URL changes, ready status)
+   */
+  private handleShimMessage(event: MessageEvent): void {
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+
+    // URL change notification from shim
+    if (data.type === 'jtag-shim-url-change') {
+      this.handleUrlChangeFromIframe(data.url, data.title);
+    }
+  }
+
+  /**
+   * Update URL bar and state when navigation happens inside iframe
+   */
+  private handleUrlChangeFromIframe(proxiedUrl: string, pageTitle: string): void {
+    // The URL from the shim is the proxied URL like /proxy/https%3A%2F%2Fwww.cnn.com%2F...
+    // We need to extract the actual URL
+    const actualUrl = this.extractActualUrl(proxiedUrl);
+    if (!actualUrl) return;
+
+    console.log(`🔗 WebViewWidget: URL changed in iframe to ${actualUrl}`);
+
+    // Update state
+    this.currentUrl = actualUrl;
+    this.urlInput = actualUrl;
+    this.pageTitle = pageTitle || '';
+    this.siteName = this.extractSiteName(actualUrl, pageTitle);
+
+    // Persist for next session
+    localStorage.setItem(STORAGE_KEY, actualUrl);
+
+    // Emit updated context
+    this.emitContext(
+      {
+        widgetType: 'browser',
+        title: this.siteName || 'Browser',
+        section: this.pageTitle,
+        metadata: { url: actualUrl, pageTitle: this.pageTitle }
+      },
+      { action: 'viewing', target: actualUrl }
+    );
+  }
+
+  /**
+   * Extract the actual URL from a proxied URL
+   * e.g., /proxy/https%3A%2F%2Fwww.cnn.com%2F → https://www.cnn.com/
+   */
+  private extractActualUrl(proxiedUrl: string): string {
+    // Handle proxy prefix
+    if (proxiedUrl.startsWith('/proxy/')) {
+      const encoded = proxiedUrl.substring(7);  // Remove '/proxy/'
+      try {
+        return decodeURIComponent(encoded);
+      } catch {
+        return '';
+      }
+    }
+
+    // Handle local URLs (shouldn't happen, but just in case)
+    if (proxiedUrl.startsWith('http://localhost') || proxiedUrl.startsWith('/')) {
+      return '';  // Ignore local navigation
+    }
+
+    // Return as-is if it's already a regular URL
+    return proxiedUrl;
   }
 
   /**
@@ -385,9 +465,11 @@ export class WebViewWidget extends ReactiveWidget {
    */
   public navigateToUrl(url: string): void {
     if (!url) return;
-    console.log(`🌐 WebViewWidget: Navigating to ${url}`);
+    console.log(`🌐 WebViewWidget: navigateToUrl called with ${url}`);
     this.urlInput = url;
     this.loadUrl();
+    // Force Lit to re-render in case reactive update doesn't trigger
+    this.requestUpdate();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -596,7 +678,10 @@ export class WebViewWidget extends ReactiveWidget {
     // Create proxy URL
     this.proxyUrl = '/proxy/' + encodeURIComponent(url);
 
-    console.log(`🌐 WebViewWidget: Loading ${url} via proxy`);
+    console.log(`🌐 WebViewWidget: Loading ${url} via proxy, urlInput=${this.urlInput}, isLoading=${this.isLoading}`);
+
+    // Force re-render to show URL in input and loading state
+    this.requestUpdate();
 
     // Emit initial context (will be updated with page title after load)
     this.emitContext(
@@ -607,6 +692,58 @@ export class WebViewWidget extends ReactiveWidget {
       },
       { action: 'viewing', target: url }
     );
+
+    // Fallback: check for load completion after delay
+    // The @load event sometimes doesn't fire reliably with proxied content
+    this.scheduleLoadCheck();
+  }
+
+  /**
+   * Fallback mechanism to detect when iframe has loaded
+   * Checks if shim is responsive, indicating page has loaded
+   */
+  private scheduleLoadCheck(): void {
+    setTimeout(async () => {
+      if (!this.isLoading) return;  // Already handled by @load event
+
+      const iframe = this.shadowRoot?.querySelector('.browser-frame') as HTMLIFrameElement;
+      if (!iframe?.contentWindow) return;
+
+      // Try to ping the shim to see if page loaded
+      const requestId = `loadcheck-${Date.now()}`;
+      try {
+        const result = await new Promise<boolean>((resolve) => {
+          const timeout = setTimeout(() => {
+            window.removeEventListener('message', handler);
+            resolve(false);
+          }, 2000);
+
+          const handler = (event: MessageEvent) => {
+            if (event.data?.type === 'jtag-shim-response' && event.data?.requestId === requestId) {
+              clearTimeout(timeout);
+              window.removeEventListener('message', handler);
+              resolve(true);
+            }
+          };
+
+          window.addEventListener('message', handler);
+          iframe.contentWindow?.postMessage({
+            type: 'jtag-shim-request',
+            command: 'ping',
+            params: {},
+            requestId
+          }, '*');
+        });
+
+        if (result && this.isLoading) {
+          console.log('✅ WebViewWidget: Load detected via shim ping (fallback)');
+          this.isLoading = false;
+          await this.queryPageInfo();
+        }
+      } catch {
+        // Ignore errors
+      }
+    }, 3000);  // Check after 3 seconds
   }
 }
 
