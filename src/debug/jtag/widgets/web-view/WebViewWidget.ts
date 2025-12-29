@@ -52,6 +52,8 @@ export class WebViewWidget extends ReactiveWidget {
         width: 100%;
         height: 100%;
         overflow: hidden;
+        user-select: text;
+        -webkit-user-select: text;
       }
 
       .browser-container {
@@ -123,6 +125,9 @@ export class WebViewWidget extends ReactiveWidget {
         color: var(--color-text, #e0e0e0);
         font-size: 14px;
         line-height: 1.6;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
       }
 
       .placeholder {
@@ -149,6 +154,8 @@ export class WebViewWidget extends ReactiveWidget {
       .fetched-content {
         max-width: 900px;
         margin: 0 auto;
+        user-select: text;
+        -webkit-user-select: text;
       }
 
       .page-title {
@@ -158,6 +165,8 @@ export class WebViewWidget extends ReactiveWidget {
         padding-bottom: 12px;
         border-bottom: 1px solid var(--border-color, rgba(0, 212, 255, 0.2));
         text-shadow: 0 0 4px rgba(0, 212, 255, 0.2);
+        user-select: text;
+        -webkit-user-select: text;
       }
 
       .markdown-content h1,
@@ -369,14 +378,17 @@ export class WebViewWidget extends ReactiveWidget {
           throw new Error(result.error || 'Failed to fetch URL');
         }
 
+        // Guard against undefined content
+        const content = result.content || '';
+
         // Render markdown once and cache it
-        const renderedHtml = this.renderMarkdown(result.content);
+        const renderedHtml = this.renderMarkdown(content);
 
         this.pageData = {
           url,
           title: result.title,
-          content: result.content,
-          contentLength: result.contentLength,
+          content,
+          contentLength: content.length,
           renderedHtml
         };
 
@@ -394,7 +406,7 @@ export class WebViewWidget extends ReactiveWidget {
           { action: 'viewing', target: result.title || url }
         );
 
-        console.log(`✅ WebViewWidget: Loaded ${url} (${result.contentLength} chars)`);
+        console.log(`✅ WebViewWidget: Loaded ${url} (${content.length} chars)`);
       });
     } catch (e) {
       this.fetchError = e instanceof Error ? e.message : 'Unknown error';
