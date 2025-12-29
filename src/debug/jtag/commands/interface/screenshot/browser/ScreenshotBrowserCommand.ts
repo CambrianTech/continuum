@@ -241,6 +241,9 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         // console.debug(`📷 BROWSER: Using direct element capture (shadows preserved)`);
       }
       
+      // IFRAME COMPOSITING: Auto-fill any .browser-frame iframes with their captured content
+      finalCanvas = await this.compositeIframeContent(finalCanvas, actualScaleFactor);
+
       // SCALING: Fit-inside behavior with aspect ratio preservation
       let targetWidth = finalCanvas.width;
       let targetHeight = finalCanvas.height;
@@ -357,6 +360,155 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         error: new EnhancementError('screenshot-capture', error.message || 'Screenshot capture failed')
       });
     }
+  }
+
+  /**
+   * Auto-composite iframe content into main screenshot
+   * Finds all .browser-frame iframes and fills their areas with captured content
+   */
+  private async compositeIframeContent(
+    canvas: HTMLCanvasElement,
+    scaleFactor: number
+  ): Promise<HTMLCanvasElement> {
+    // Find all .browser-frame iframes (including in shadow DOM)
+    const iframes = this.findAllBrowserFrameIframes();
+
+    if (iframes.length === 0) {
+      return canvas; // No iframes to composite
+    }
+
+    console.log(`🖼️ BROWSER: Found ${iframes.length} iframe(s) to composite`);
+
+    // Create a new canvas to composite onto
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = canvas.width;
+    compositeCanvas.height = canvas.height;
+    const ctx = compositeCanvas.getContext('2d')!;
+
+    // Draw the original screenshot as base
+    ctx.drawImage(canvas, 0, 0);
+
+    // Capture and composite each iframe
+    for (const iframe of iframes) {
+      try {
+        // Get iframe's bounding box relative to viewport
+        const rect = iframe.getBoundingClientRect();
+
+        // Scale coordinates to match canvas
+        const x = Math.round(rect.left * scaleFactor);
+        const y = Math.round(rect.top * scaleFactor);
+        const width = Math.round(rect.width * scaleFactor);
+        const height = Math.round(rect.height * scaleFactor);
+
+        console.log(`📷 BROWSER: Capturing iframe at (${x}, ${y}) ${width}x${height}`);
+
+        // Capture iframe content via shim
+        const iframeDataUrl = await this.captureIframeViaShim(iframe, width, height);
+
+        if (iframeDataUrl) {
+          // Load the captured image and draw onto composite canvas
+          await new Promise<void>((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              ctx.drawImage(img, x, y, width, height);
+              console.log(`✅ BROWSER: Composited iframe at (${x}, ${y})`);
+              resolve();
+            };
+            img.onerror = () => {
+              console.warn(`⚠️ BROWSER: Failed to load iframe capture`);
+              resolve();
+            };
+            img.src = iframeDataUrl;
+          });
+        }
+      } catch (error: any) {
+        console.warn(`⚠️ BROWSER: Failed to composite iframe:`, error.message);
+        // Continue with other iframes
+      }
+    }
+
+    return compositeCanvas;
+  }
+
+  /**
+   * Find all .browser-frame iframes in the document, including those in shadow DOM
+   */
+  private findAllBrowserFrameIframes(): HTMLIFrameElement[] {
+    const iframes: HTMLIFrameElement[] = [];
+
+    // Recursive function to search shadow DOMs
+    const searchElement = (element: Element) => {
+      // Check if this element is a .browser-frame iframe
+      if (element instanceof HTMLIFrameElement && element.classList.contains('browser-frame')) {
+        iframes.push(element);
+      }
+
+      // Search children
+      for (const child of Array.from(element.children)) {
+        searchElement(child);
+      }
+
+      // Search shadow DOM if present
+      if (element.shadowRoot) {
+        for (const child of Array.from(element.shadowRoot.children)) {
+          searchElement(child);
+        }
+      }
+    };
+
+    searchElement(document.body);
+    return iframes;
+  }
+
+  /**
+   * Capture a single iframe via its JTAG shim
+   */
+  private async captureIframeViaShim(
+    iframe: HTMLIFrameElement,
+    _targetWidth: number,
+    _targetHeight: number
+  ): Promise<string | null> {
+    if (!iframe.contentWindow) {
+      return null;
+    }
+
+    const requestId = `composite-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', handler);
+        console.warn(`⚠️ BROWSER: Iframe shim timeout`);
+        resolve(null);
+      }, 10000); // 10s timeout
+
+      const handler = (event: MessageEvent) => {
+        if (event.data?.type === 'jtag-shim-response' && event.data?.requestId === requestId) {
+          clearTimeout(timeout);
+          window.removeEventListener('message', handler);
+
+          if (event.data.result?.success && event.data.result?.data?.dataUrl) {
+            resolve(event.data.result.data.dataUrl);
+          } else {
+            resolve(null);
+          }
+        }
+      };
+
+      window.addEventListener('message', handler);
+
+      // Request screenshot from shim - viewport only, scaled to fit target size
+      iframe.contentWindow!.postMessage({
+        type: 'jtag-shim-request',
+        command: 'screenshot',
+        requestId,
+        params: {
+          viewportOnly: true,
+          scale: 1,
+          format: 'png',
+          quality: 0.9
+        }
+      }, '*');
+    });
   }
 
   /**
