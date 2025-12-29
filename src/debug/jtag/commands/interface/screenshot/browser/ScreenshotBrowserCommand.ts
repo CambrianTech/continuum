@@ -164,8 +164,11 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         foreignObjectRendering: true,
         removeContainer: true,
         ignoreElements: (element) => {
-          // Skip problematic elements that cause shadow offset
-          return element.classList?.contains('html2canvas-ignore') || false;
+          // Skip problematic elements that cause shadow offset or hangs
+          if (element.classList?.contains('html2canvas-ignore')) return true;
+          // CRITICAL: Skip iframes to prevent html2canvas from hanging on cross-origin content
+          if (element.tagName === 'IFRAME') return true;
+          return false;
         },
         ...params.options?.html2canvasOptions
       };
@@ -357,12 +360,12 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
   }
 
   /**
-   * Capture content inside an iframe (same-origin only)
-   * Used for co-browsing widget proxy content
+   * Capture content inside an iframe using injected JTAG shim
+   * The shim runs html2canvas INSIDE the iframe (no CORS issues)
    */
   private async captureIframeContent(
     params: ScreenshotParams,
-    html2canvas: (element: Element, options?: Html2CanvasOptions) => Promise<Html2CanvasCanvas>,
+    _html2canvas: (element: Element, options?: Html2CanvasOptions) => Promise<Html2CanvasCanvas>,
     startTime: number
   ): Promise<ScreenshotResult> {
     try {
@@ -376,96 +379,73 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         throw new Error(`Element is not an iframe: ${params.iframeSelector}`);
       }
 
-      // Access iframe content (only works for same-origin iframes)
-      const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
-      if (!iframeDoc) {
-        throw new Error('Cannot access iframe content - may be cross-origin or not loaded');
+      console.log(`📷 BROWSER: Capturing iframe via JTAG shim from ${params.iframeSelector}`);
+
+      // Send screenshot command to injected JTAG shim via postMessage
+      const requestId = `screenshot-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+      const shimResult = await new Promise<{
+        success: boolean;
+        data?: {
+          dataUrl: string;
+          metadata: { width: number; height: number; format: string; quality: number };
+        };
+        error?: { message: string };
+      }>((resolve) => {
+        const timeout = setTimeout(() => {
+          window.removeEventListener('message', handler);
+          resolve({ success: false, error: { message: 'JTAG shim timeout - shim may not be loaded' } });
+        }, 30000); // 30s timeout for capture
+
+        const handler = (event: MessageEvent) => {
+          if (event.data?.type === 'jtag-shim-response' && event.data?.requestId === requestId) {
+            clearTimeout(timeout);
+            window.removeEventListener('message', handler);
+            resolve(event.data.result);
+          }
+        };
+
+        window.addEventListener('message', handler);
+
+        // Send request to iframe's JTAG shim
+        // Default to viewport-only for iframe screenshots (prevents huge images overwhelming AIs)
+        iframe.contentWindow?.postMessage({
+          type: 'jtag-shim-request',
+          command: 'screenshot',
+          requestId,
+          params: {
+            selector: params.querySelector,
+            scale: params.scale || params.options?.scale || 1,
+            format: params.format || params.options?.format || 'png',
+            quality: params.quality || params.options?.quality || 0.9,
+            backgroundColor: params.options?.backgroundColor || '#ffffff',
+            viewportOnly: params.viewportOnly !== false  // Default true for iframes
+          }
+        }, '*');
+      });
+
+      if (!shimResult.success || !shimResult.data?.dataUrl) {
+        throw new Error(shimResult.error?.message || 'Shim capture failed');
       }
 
-      const iframeBody = iframeDoc.body;
-      if (!iframeBody) {
-        throw new Error('Iframe has no body element');
-      }
-
-      console.log(`📷 BROWSER: Capturing iframe content from ${params.iframeSelector}`);
-
-      // Capture iframe content
-      const scale = params.scale || params.options?.scale || 1;
-      const devicePixelRatio = window.devicePixelRatio || 1;
-
-      // Use iframe element's dimensions (not body's scrollWidth which can be larger)
-      const iframeRect = iframe.getBoundingClientRect();
-      const captureWidth = iframeRect.width;
-      const captureHeight = iframeBody.scrollHeight; // Full scroll height for content
-      console.log(`📐 BROWSER: Iframe dimensions: ${captureWidth}x${captureHeight} (iframe element: ${iframeRect.width}x${iframeRect.height})`);
-
-      const captureOptions: Html2CanvasOptions = {
-        scale: scale / devicePixelRatio,
-        scrollX: 0,
-        scrollY: 0,
-        useCORS: true,
-        allowTaint: true,
-        logging: false,
-        backgroundColor: params.options?.backgroundColor || '#ffffff',
-        foreignObjectRendering: true,
-        removeContainer: true,
-        // Use iframe element's width to avoid capturing beyond viewport
-        width: captureWidth,
-        windowWidth: captureWidth,
-        windowHeight: captureHeight,
-        ...params.options?.html2canvasOptions
-      };
-
-      const canvas = await html2canvas(iframeBody, captureOptions) as HTMLCanvasElement;
-      console.log(`📐 BROWSER: Iframe canvas dimensions: ${canvas.width}x${canvas.height}`);
-
-      // Apply scaling if width/height specified
-      let finalCanvas = canvas;
-      if (params.width || params.height) {
-        const maxWidth = params.width || canvas.width;
-        const maxHeight = params.height || canvas.height;
-        const scaleX = maxWidth / canvas.width;
-        const scaleY = maxHeight / canvas.height;
-        const scaleFactor = Math.min(scaleX, scaleY, 1);
-
-        const targetWidth = Math.round(canvas.width * scaleFactor);
-        const targetHeight = Math.round(canvas.height * scaleFactor);
-
-        if (targetWidth !== canvas.width || targetHeight !== canvas.height) {
-          const scaledCanvas = document.createElement('canvas');
-          const scaledCtx = scaledCanvas.getContext('2d')!;
-          scaledCanvas.width = targetWidth;
-          scaledCanvas.height = targetHeight;
-          scaledCtx.drawImage(canvas, 0, 0, targetWidth, targetHeight);
-          finalCanvas = scaledCanvas;
-        }
-      }
-
-      // Convert to data URL
-      const format = params.format || params.options?.format || 'png';
-      const quality = params.quality || params.options?.quality || 0.9;
-      const dataUrl = format === 'png'
-        ? finalCanvas.toDataURL('image/png')
-        : finalCanvas.toDataURL(`image/${format}`, quality);
-
+      const { dataUrl, metadata } = shimResult.data;
       const captureTime = Date.now() - startTime;
-      console.log(`✅ BROWSER: Iframe captured (${finalCanvas.width}x${finalCanvas.height}) in ${captureTime}ms`);
+      console.log(`✅ BROWSER: Iframe captured via shim (${metadata?.width}x${metadata?.height}) in ${captureTime}ms`);
 
       // Set up params for server handoff
+      const format = params.format || params.options?.format || 'png';
       params.dataUrl = dataUrl;
       params.metadata = {
-        originalWidth: canvas.width,
-        originalHeight: canvas.height,
-        width: finalCanvas.width,
-        height: finalCanvas.height,
+        width: metadata?.width,
+        height: metadata?.height,
         fileSizeBytes: Math.floor((dataUrl.length * 3) / 4),
         size: dataUrl.length,
         selector: params.iframeSelector,
-        elementName: 'iframe-content',
+        elementName: 'iframe-content-via-shim',
         format: format,
         captureTime: captureTime,
-        scale: scale,
-        quality: quality
+        scale: params.scale || params.options?.scale || 1,
+        quality: metadata?.quality
       };
 
       if (params.resultType === 'file' || params.destination === 'file' || params.destination === 'both') {
@@ -491,7 +471,7 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       });
 
     } catch (error: any) {
-      console.error(`❌ BROWSER: Iframe capture failed:`, error.message);
+      console.error(`❌ BROWSER: Iframe shim capture failed:`, error.message);
       return createScreenshotResult(params.context, params.sessionId, {
         success: false,
         error: new EnhancementError('iframe-capture', error.message || 'Iframe screenshot capture failed')

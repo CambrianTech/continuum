@@ -57,6 +57,15 @@ class MinimalServer {
         this.serveFile(res, filePath, contentType);
       } else if (url === '/favicon.ico') {
         this.serve404(res);
+      } else if (url.startsWith('/proxy-html2canvas')) {
+        // html2canvas proxy - fetches images and returns as base64 data URL
+        this.handleHtml2CanvasProxy(req, res, url).catch(error => {
+          console.error('❌ html2canvas proxy failed:', error);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('');
+          }
+        });
       } else if (url.startsWith('/proxy/')) {
         // Web proxy for co-browsing widget
         this.handleProxy(req, res, url).catch(error => {
@@ -326,6 +335,29 @@ class MinimalServer {
       }
 
       const contentType = response.headers.get('content-type') || 'text/html';
+
+      // Handle binary content (images, fonts, etc.) separately
+      const isBinary = contentType.startsWith('image/') ||
+                       contentType.startsWith('audio/') ||
+                       contentType.startsWith('video/') ||
+                       contentType.startsWith('font/') ||
+                       contentType.includes('octet-stream') ||
+                       contentType.includes('application/pdf');
+
+      if (isBinary) {
+        const buffer = await response.arrayBuffer();
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': buffer.byteLength,
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=3600'
+        });
+        res.end(Buffer.from(buffer));
+        console.log(`✅ Proxy: Served binary ${targetUrl} (${buffer.byteLength} bytes)`);
+        return;
+      }
+
+      // Text content - can be rewritten
       let content = await response.text();
 
       // Rewrite URLs in HTML/CSS to go through our proxy
@@ -378,6 +410,75 @@ class MinimalServer {
         'Access-Control-Allow-Origin': '*',
       });
       res.end(errorContent);
+    }
+  }
+
+  /**
+   * Handle html2canvas proxy requests for screenshots
+   * html2canvas calls this with ?url=<encoded-url> and expects the actual image data back
+   * NOT a data URL - the actual binary image with proper Content-Type
+   */
+  private async handleHtml2CanvasProxy(req: http.IncomingMessage, res: http.ServerResponse, url: string): Promise<void> {
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Max-Age': '86400'
+      });
+      res.end();
+      return;
+    }
+
+    // Parse the URL to get the ?url= parameter
+    const parsedUrl = new URL(url, 'http://localhost');
+    const targetUrl = parsedUrl.searchParams.get('url');
+
+    if (!targetUrl) {
+      res.writeHead(400, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+      res.end('Missing url parameter');
+      return;
+    }
+
+    console.log(`📸 html2canvas proxy: Fetching ${targetUrl}`);
+
+    try {
+      const response = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          'Accept': 'image/*,*/*;q=0.8',
+          'Referer': new URL(targetUrl).origin + '/',
+        },
+      });
+
+      if (!response.ok) {
+        console.log(`❌ html2canvas proxy: ${response.status} for ${targetUrl}`);
+        res.writeHead(response.status, { 'Access-Control-Allow-Origin': '*' });
+        res.end();
+        return;
+      }
+
+      // Get the image data as a buffer
+      const buffer = await response.arrayBuffer();
+      const contentType = response.headers.get('content-type') || 'image/png';
+
+      // Return actual binary image data with proper Content-Type
+      // html2canvas needs the image to be same-origin, so we serve it from our domain
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Length': buffer.byteLength,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600',
+      });
+      res.end(Buffer.from(buffer));
+
+      console.log(`✅ html2canvas proxy: Served ${targetUrl} (${buffer.byteLength} bytes)`);
+
+    } catch (error: any) {
+      console.error('❌ html2canvas proxy failed:', error.message);
+      res.writeHead(500, { 'Access-Control-Allow-Origin': '*' });
+      res.end();
     }
   }
 
@@ -467,14 +568,339 @@ class MinimalServer {
 })();
 </script>`;
 
+    // JTAG Shim: full interface command support for proxied pages
+    const jtagShimScript = `
+<script>
+(function() {
+  var JTAG_SHIM_VERSION = '1.1.0';
+  var HTML2CANVAS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+  var html2canvasLoaded = false;
+  var html2canvasLoading = false;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // UTILITIES
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function loadHtml2Canvas() {
+    return new Promise(function(resolve, reject) {
+      if (html2canvasLoaded) { resolve(); return; }
+      if (html2canvasLoading) {
+        var check = setInterval(function() {
+          if (html2canvasLoaded) { clearInterval(check); resolve(); }
+        }, 100);
+        return;
+      }
+      html2canvasLoading = true;
+      var script = document.createElement('script');
+      script.src = HTML2CANVAS_CDN;
+      script.onload = function() {
+        html2canvasLoaded = true;
+        html2canvasLoading = false;
+        console.log('[JTAG Shim] html2canvas loaded');
+        resolve();
+      };
+      script.onerror = function() {
+        html2canvasLoading = false;
+        reject(new Error('Failed to load html2canvas'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  function getElement(selector) {
+    if (!selector) return null;
+    return document.querySelector(selector);
+  }
+
+  function success(data) {
+    return { success: true, data: data };
+  }
+
+  function fail(message) {
+    return { success: false, error: { message: message } };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // COMMANDS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  var commands = {
+    ping: function() {
+      return Promise.resolve(success({ version: JTAG_SHIM_VERSION, url: window.location.href }));
+    },
+
+    pageInfo: function() {
+      return Promise.resolve(success({
+        url: window.location.href,
+        title: document.title,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        scrollWidth: document.documentElement.scrollWidth,
+        scrollHeight: document.documentElement.scrollHeight,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight
+      }));
+    },
+
+    screenshot: function(params) {
+      params = params || {};
+
+      // Pre-convert images to data URLs to ensure they render in canvas
+      function convertImagesToDataUrls() {
+        return new Promise(function(resolve) {
+          var images = document.querySelectorAll('img');
+          var pending = 0;
+          var converted = 0;
+
+          if (images.length === 0) {
+            resolve();
+            return;
+          }
+
+          images.forEach(function(img) {
+            // Skip images that are already data URLs or not loaded
+            if (!img.src || img.src.startsWith('data:') || !img.complete || img.naturalWidth === 0) {
+              return;
+            }
+
+            pending++;
+
+            // Create canvas to convert image
+            var canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            var ctx = canvas.getContext('2d');
+
+            try {
+              ctx.drawImage(img, 0, 0);
+              var dataUrl = canvas.toDataURL('image/png');
+              img.src = dataUrl;
+              converted++;
+            } catch (e) {
+              // Cross-origin image, can't convert - leave as-is
+              console.log('[JTAG Shim] Could not convert image:', img.src.substring(0, 50));
+            }
+
+            pending--;
+            if (pending === 0) {
+              console.log('[JTAG Shim] Converted ' + converted + ' images to data URLs');
+              resolve();
+            }
+          });
+
+          // If no images needed processing, resolve immediately
+          if (pending === 0) {
+            resolve();
+          }
+        });
+      }
+
+      return convertImagesToDataUrls().then(function() {
+        return loadHtml2Canvas();
+      }).then(function() {
+        var h2c = window.html2canvas;
+        if (!h2c) throw new Error('html2canvas not available');
+        var target = params.selector ? getElement(params.selector) : document.body;
+        if (!target) throw new Error('Element not found: ' + params.selector);
+        var scale = params.scale || 1;
+        var dpr = window.devicePixelRatio || 1;
+
+        var opts = {
+          scale: scale / dpr,
+          useCORS: true,
+          allowTaint: false,
+          logging: false,
+          backgroundColor: params.backgroundColor || '#ffffff',
+          foreignObjectRendering: false,
+          imageTimeout: 15000,
+          removeContainer: true,
+          proxy: '/proxy-html2canvas'
+        };
+        // viewportOnly: capture only visible area
+        if (params.viewportOnly) {
+          opts.width = window.innerWidth;
+          opts.height = window.innerHeight;
+          opts.windowWidth = window.innerWidth;
+          opts.windowHeight = window.innerHeight;
+          opts.x = window.scrollX;
+          opts.y = window.scrollY;
+        }
+        return h2c(target, opts);
+      }).then(function(canvas) {
+        var format = params.format || 'png';
+        var quality = params.quality || 0.9;
+        var dataUrl = format === 'png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/' + format, quality);
+        return success({
+          dataUrl: dataUrl,
+          metadata: { width: canvas.width, height: canvas.height, format: format, quality: quality, selector: params.selector || 'body', viewportOnly: !!params.viewportOnly, captureTime: Date.now() }
+        });
+      }).catch(function(e) { return fail(e.message); });
+    },
+
+    click: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      var count = params.clickCount || 1;
+      for (var i = 0; i < count; i++) { el.click(); }
+      return Promise.resolve(success({ clicked: true, elementTag: el.tagName.toLowerCase() }));
+    },
+
+    type: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      if (params.clear) { el.value = ''; }
+      el.focus();
+      el.value = (el.value || '') + params.text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return Promise.resolve(success({ typed: true, finalValue: el.value }));
+    },
+
+    scroll: function(params) {
+      if (params.selector) {
+        var el = getElement(params.selector);
+        if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+        el.scrollIntoView({ behavior: params.behavior || 'auto', block: 'center' });
+      } else if (params.x !== undefined || params.y !== undefined) {
+        window.scrollTo({ left: params.x || 0, top: params.y || 0, behavior: params.behavior || 'auto' });
+      }
+      return Promise.resolve(success({ scrolled: true, scrollX: window.scrollX, scrollY: window.scrollY }));
+    },
+
+    query: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(success({ found: false }));
+      var result = { found: true, tag: el.tagName.toLowerCase(), id: el.id, className: el.className };
+      if (params.includeText) result.text = el.textContent ? el.textContent.substring(0, 1000) : '';
+      if (params.includeHtml) result.html = el.outerHTML ? el.outerHTML.substring(0, 2000) : '';
+      if (params.includeBounds) result.bounds = el.getBoundingClientRect();
+      if (params.attributes) {
+        result.attributes = {};
+        params.attributes.forEach(function(attr) { result.attributes[attr] = el.getAttribute(attr); });
+      }
+      return Promise.resolve(success(result));
+    },
+
+    queryAll: function(params) {
+      var els = document.querySelectorAll(params.selector);
+      var limit = params.limit || 100;
+      var results = [];
+      for (var i = 0; i < Math.min(els.length, limit); i++) {
+        var el = els[i];
+        var item = { tag: el.tagName.toLowerCase(), id: el.id, className: el.className };
+        if (params.includeText) item.text = el.textContent ? el.textContent.substring(0, 500) : '';
+        if (params.includeBounds) item.bounds = el.getBoundingClientRect();
+        results.push(item);
+      }
+      return Promise.resolve(success({ count: els.length, elements: results }));
+    },
+
+    getValue: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      return Promise.resolve(success({ value: el.value || el.textContent || '', type: el.type || el.tagName.toLowerCase() }));
+    },
+
+    setValue: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      var prev = el.value;
+      el.value = params.value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return Promise.resolve(success({ set: true, previousValue: prev }));
+    },
+
+    focus: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      el.focus();
+      return Promise.resolve(success({}));
+    },
+
+    blur: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      el.blur();
+      return Promise.resolve(success({}));
+    },
+
+    hover: function(params) {
+      var el = getElement(params.selector);
+      if (!el) return Promise.resolve(fail('Element not found: ' + params.selector));
+      el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      return Promise.resolve(success({}));
+    },
+
+    waitFor: function(params) {
+      var timeout = params.timeout || 10000;
+      var start = Date.now();
+      return new Promise(function(resolve) {
+        function check() {
+          var el = getElement(params.selector);
+          if (el && (!params.visible || el.offsetParent !== null)) {
+            resolve(success({ found: true, tag: el.tagName.toLowerCase() }));
+          } else if (Date.now() - start > timeout) {
+            resolve(fail('Timeout waiting for: ' + params.selector));
+          } else {
+            setTimeout(check, 100);
+          }
+        }
+        check();
+      });
+    },
+
+    evaluate: function(params) {
+      try {
+        var fn = new Function('args', params.script);
+        var result = fn(params.args || []);
+        return Promise.resolve(success({ returnValue: result }));
+      } catch (e) {
+        return Promise.resolve(fail('Evaluate error: ' + e.message));
+      }
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MESSAGE HANDLER
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function handleMessage(event) {
+    if (event.source !== window.parent) return;
+    var data = event.data || {};
+    if (data.type !== 'jtag-shim-request') return;
+
+    var command = data.command;
+    var params = data.params || {};
+    var requestId = data.requestId;
+
+    console.log('[JTAG Shim] Command:', command);
+
+    var handler = commands[command];
+    var resultPromise = handler ? handler(params) : Promise.resolve(fail('Unknown command: ' + command));
+
+    resultPromise.then(function(result) {
+      window.parent.postMessage({ type: 'jtag-shim-response', requestId: requestId, result: result }, '*');
+    });
+  }
+
+  window.addEventListener('message', handleMessage);
+  window.parent.postMessage({ type: 'jtag-shim-ready', version: JTAG_SHIM_VERSION, url: window.location.href }, '*');
+  console.log('[JTAG Shim] Initialized v' + JTAG_SHIM_VERSION + ' with ' + Object.keys(commands).length + ' commands');
+})();
+</script>`;
+
+    const allShims = shimScript + jtagShimScript;
+
     // Inject at start of <head> (after <head> tag)
     if (content.includes('<head>')) {
-      content = content.replace('<head>', '<head>' + shimScript);
+      content = content.replace('<head>', '<head>' + allShims);
     } else if (content.includes('<html>')) {
-      content = content.replace('<html>', '<html><head>' + shimScript + '</head>');
+      content = content.replace('<html>', '<html><head>' + allShims + '</head>');
     } else {
       // No head/html tag, prepend
-      content = shimScript + content;
+      content = allShims + content;
     }
 
     return content;
@@ -502,7 +928,7 @@ class MinimalServer {
 
       // Rewrite absolute URLs (http:// and https://)
       content = content.replace(
-        /(href|src|action)=(["'])(https?:\/\/[^"']+)(["'])/gi,
+        /(href|src|action|poster)=(["'])(https?:\/\/[^"']+)(["'])/gi,
         (match, attr, q1, url, q2) => {
           if (url.startsWith('/proxy/')) return match;
           return `${attr}=${q1}/proxy/${proxyEncodeUrl(url)}${q2}`;
@@ -511,11 +937,39 @@ class MinimalServer {
 
       // Rewrite protocol-relative URLs (//example.com)
       content = content.replace(
-        /(href|src|action)=(["'])(\/\/[^"']+)(["'])/gi,
+        /(href|src|action|poster)=(["'])(\/\/[^"']+)(["'])/gi,
         (match, attr, q1, url, q2) => {
           let fullUrl = 'https:' + this.decodeHtmlEntities(url);
           try { fullUrl = decodeURIComponent(fullUrl); } catch {}
           return `${attr}=${q1}/proxy/${encodeURIComponent(fullUrl)}${q2}`;
+        }
+      );
+
+      // Rewrite srcset attribute (contains multiple URLs with descriptors)
+      content = content.replace(
+        /srcset=(["'])([^"']+)(["'])/gi,
+        (match, q1, srcsetValue, q2) => {
+          const rewrittenSrcset = srcsetValue.split(',').map((entry: string) => {
+            const parts = entry.trim().split(/\s+/);
+            let url = parts[0];
+            const descriptor = parts.slice(1).join(' ');
+
+            if (url.startsWith('/proxy/') || url.startsWith('data:')) {
+              return entry;
+            }
+
+            // Handle different URL formats
+            if (url.startsWith('//')) {
+              url = 'https:' + url;
+            } else if (url.startsWith('/')) {
+              url = new URL(url, base).href;
+            } else if (!url.startsWith('http')) {
+              url = new URL(url, baseUrl).href;
+            }
+
+            return `/proxy/${encodeURIComponent(url)}${descriptor ? ' ' + descriptor : ''}`;
+          }).join(', ');
+          return `srcset=${q1}${rewrittenSrcset}${q2}`;
         }
       );
 
