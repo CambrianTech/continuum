@@ -33,6 +33,12 @@ export interface WebFetchParams extends CommandParams {
    * Prevents fetching huge pages
    */
   maxLength?: number;
+
+  /**
+   * Headers to forward (browser passes its headers to server)
+   * Server uses these to look like the user's actual browser
+   */
+  headers?: Record<string, string>;
 }
 
 /**

@@ -57,6 +57,15 @@ class MinimalServer {
         this.serveFile(res, filePath, contentType);
       } else if (url === '/favicon.ico') {
         this.serve404(res);
+      } else if (url.startsWith('/proxy/')) {
+        // Web proxy for co-browsing widget
+        this.handleProxy(req, res, url).catch(error => {
+          console.error('❌ Proxy request failed:', error);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Proxy error: ' + error.message);
+          }
+        });
       } else {
         // SPA fallback: serve the main HTML for client-side routing
         // This allows routes like /settings, /help, /chat/academy to work
@@ -185,6 +194,133 @@ class MinimalServer {
   private serve404(res: http.ServerResponse): void {
     res.writeHead(404, { 'Content-Type': 'text/html' });
     res.end('<h1>404 - Not Found</h1>');
+  }
+
+  /**
+   * Handle proxy requests for co-browsing widget
+   * Fetches external URLs and serves them from our origin (bypasses X-Frame-Options)
+   */
+  private async handleProxy(req: http.IncomingMessage, res: http.ServerResponse, url: string): Promise<void> {
+    // Extract encoded URL from /proxy/{encodedUrl}
+    const encodedUrl = url.substring(7); // Remove '/proxy/'
+    const targetUrl = decodeURIComponent(encodedUrl);
+
+    console.log(`🌐 Proxy: Fetching ${targetUrl}`);
+
+    try {
+      // Forward browser headers to look like the user's browser
+      const browserHeaders: Record<string, string> = {
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': req.headers['accept'] as string || 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': req.headers['accept-language'] as string || 'en-US,en;q=0.9',
+        'Accept-Encoding': 'identity', // Don't request compression, we need to rewrite content
+        'Cache-Control': 'no-cache',
+      };
+
+      const response = await fetch(targetUrl, {
+        headers: browserHeaders,
+        redirect: 'follow'
+      });
+
+      if (!response.ok) {
+        res.writeHead(response.status, { 'Content-Type': 'text/plain' });
+        res.end(`Failed to fetch: ${response.status} ${response.statusText}`);
+        return;
+      }
+
+      const contentType = response.headers.get('content-type') || 'text/html';
+      let content = await response.text();
+
+      // Rewrite URLs in HTML/CSS to go through our proxy
+      if (contentType.includes('text/html') || contentType.includes('text/css')) {
+        content = this.rewriteProxyUrls(content, targetUrl);
+      }
+
+      // Serve with CORS headers and WITHOUT blocking headers
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+        // Explicitly NOT setting X-Frame-Options or CSP
+        'Cache-Control': 'no-cache'
+      });
+
+      res.end(content);
+      console.log(`✅ Proxy: Served ${targetUrl} (${content.length} bytes)`);
+
+    } catch (error) {
+      console.error(`❌ Proxy: Failed to fetch ${targetUrl}:`, error);
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('Proxy error: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }
+
+  /**
+   * Rewrite URLs in content to go through proxy
+   */
+  private rewriteProxyUrls(content: string, baseUrl: string): string {
+    try {
+      const base = new URL(baseUrl);
+
+      // Rewrite absolute URLs (http:// and https://)
+      content = content.replace(
+        /(href|src|action)=(["'])(https?:\/\/[^"']+)(["'])/gi,
+        (match, attr, q1, url, q2) => {
+          if (url.startsWith('/proxy/')) return match;
+          return `${attr}=${q1}/proxy/${encodeURIComponent(url)}${q2}`;
+        }
+      );
+
+      // Rewrite protocol-relative URLs (//example.com)
+      content = content.replace(
+        /(href|src|action)=(["'])(\/\/[^"']+)(["'])/gi,
+        (match, attr, q1, url, q2) => {
+          const fullUrl = 'https:' + url;
+          return `${attr}=${q1}/proxy/${encodeURIComponent(fullUrl)}${q2}`;
+        }
+      );
+
+      // Rewrite root-relative URLs (/path)
+      content = content.replace(
+        /(href|src|action)=(["'])(\/[^/"'][^"']*)(["'])/gi,
+        (match, attr, q1, path, q2) => {
+          if (path.startsWith('/proxy/')) return match;
+          const fullUrl = new URL(path, base).href;
+          return `${attr}=${q1}/proxy/${encodeURIComponent(fullUrl)}${q2}`;
+        }
+      );
+
+      // Rewrite CSS url() references
+      content = content.replace(
+        /url\((["']?)([^)"']+)(["']?)\)/gi,
+        (match, q1, url, q2) => {
+          if (url.startsWith('data:') || url.startsWith('/proxy/')) return match;
+          let fullUrl: string;
+          if (url.startsWith('http')) {
+            fullUrl = url;
+          } else if (url.startsWith('//')) {
+            fullUrl = 'https:' + url;
+          } else if (url.startsWith('/')) {
+            fullUrl = new URL(url, base).href;
+          } else {
+            fullUrl = new URL(url, baseUrl).href;
+          }
+          return `url(${q1}/proxy/${encodeURIComponent(fullUrl)}${q2})`;
+        }
+      );
+
+      // Inject base tag for relative URLs that we might miss
+      if (content.includes('<head>')) {
+        const baseTag = `<base href="/proxy/${encodeURIComponent(base.origin + '/')}">`;
+        content = content.replace('<head>', `<head>\n${baseTag}`);
+      }
+
+      return content;
+    } catch (error) {
+      console.warn('⚠️ Proxy: URL rewriting failed:', error);
+      return content;
+    }
   }
 
   async start(): Promise<void> {

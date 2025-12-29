@@ -1,26 +1,17 @@
 /**
  * WebViewWidget - Co-browsing web content with AI context
  *
- * Displays web content and emits context to PositronWidgetState
- * so AI assistants can "see" what the user is viewing.
+ * Displays web content via iframe through our proxy server.
+ * The proxy:
+ * - Bypasses X-Frame-Options by serving from our origin
+ * - Rewrites URLs so navigation stays within proxy
+ * - Forwards browser headers to look authentic
  *
- * Now using ReactiveWidget for efficient rendering:
- * - No innerHTML replacement (preserves focus)
- * - Reactive state triggers minimal DOM updates
- * - Declarative event binding
+ * AI assistants can "see" what the user is viewing via Positron context.
  */
 
 import { ReactiveWidget, html, css } from '../shared/ReactiveWidget';
 import type { TemplateResult, CSSResultGroup } from '../shared/ReactiveWidget';
-import type { WebFetchParams, WebFetchResult } from '@commands/interface/web/fetch/shared/WebFetchTypes';
-
-interface FetchedPage {
-  url: string;
-  title?: string;
-  content: string;
-  contentLength: number;
-  renderedHtml?: string; // Cache rendered markdown
-}
 
 export class WebViewWidget extends ReactiveWidget {
   // ═══════════════════════════════════════════════════════════════════════════
@@ -31,14 +22,14 @@ export class WebViewWidget extends ReactiveWidget {
     ...ReactiveWidget.properties,
     urlInput: { type: String, state: true },
     currentUrl: { type: String, state: true },
-    pageData: { type: Object, state: true },
-    fetchError: { type: String, state: true }
+    proxyUrl: { type: String, state: true },
+    pageTitle: { type: String, state: true }
   };
 
   protected urlInput = '';
   protected currentUrl = '';
-  protected pageData: FetchedPage | null = null;
-  protected fetchError: string | null = null;
+  protected proxyUrl = '';
+  protected pageTitle = '';
 
   // ═══════════════════════════════════════════════════════════════════════════
   // STYLES
@@ -67,9 +58,10 @@ export class WebViewWidget extends ReactiveWidget {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 12px 16px;
+        padding: 8px 12px;
         background: var(--bg-darker, rgba(10, 14, 20, 0.95));
         border-bottom: 1px solid var(--border-color, rgba(0, 212, 255, 0.2));
+        flex-shrink: 0;
       }
 
       .url-input {
@@ -109,25 +101,15 @@ export class WebViewWidget extends ReactiveWidget {
         box-shadow: 0 0 12px rgba(0, 212, 255, 0.4);
       }
 
-      .go-button:active {
-        transform: scale(0.98);
-      }
-
       .go-button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
       }
 
-      .browser-content {
+      .browser-frame {
         flex: 1;
-        overflow-y: auto;
-        padding: 16px;
-        color: var(--color-text, #e0e0e0);
-        font-size: 14px;
-        line-height: 1.6;
-        user-select: text;
-        -webkit-user-select: text;
-        cursor: text;
+        border: none;
+        background: white;
       }
 
       .placeholder {
@@ -138,6 +120,7 @@ export class WebViewWidget extends ReactiveWidget {
         height: 100%;
         text-align: center;
         color: var(--color-text-muted, #666);
+        padding: 32px;
       }
 
       .placeholder h2 {
@@ -149,86 +132,18 @@ export class WebViewWidget extends ReactiveWidget {
 
       .placeholder p {
         margin: 4px 0;
+        max-width: 400px;
       }
 
-      .fetched-content {
-        max-width: 900px;
-        margin: 0 auto;
-        user-select: text;
-        -webkit-user-select: text;
-      }
-
-      .page-title {
-        color: var(--color-primary, #00d4ff);
-        font-size: 28px;
-        margin: 0 0 24px 0;
-        padding-bottom: 12px;
-        border-bottom: 1px solid var(--border-color, rgba(0, 212, 255, 0.2));
-        text-shadow: 0 0 4px rgba(0, 212, 255, 0.2);
-        user-select: text;
-        -webkit-user-select: text;
-      }
-
-      .markdown-content h1,
-      .markdown-content h2,
-      .markdown-content h3 {
-        color: var(--color-primary, #00d4ff);
-        margin-top: 24px;
-        margin-bottom: 12px;
-      }
-
-      .markdown-content h1 { font-size: 24px; }
-      .markdown-content h2 { font-size: 20px; }
-      .markdown-content h3 { font-size: 18px; }
-
-      .markdown-content p {
-        margin-bottom: 12px;
-      }
-
-      .markdown-content a {
-        color: var(--color-primary, #00d4ff);
-        text-decoration: none;
-      }
-
-      .markdown-content a:hover {
-        text-decoration: underline;
-      }
-
-      .markdown-content strong {
-        color: var(--color-text, #e0e0e0);
-        font-weight: 600;
-      }
-
-      .markdown-content li {
-        margin-left: 16px;
-        margin-bottom: 4px;
-      }
-
-      .error-display {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        text-align: center;
-        padding: 32px;
-      }
-
-      .error-display h2 {
-        color: var(--color-error, #ff5050);
-        margin: 0 0 16px 0;
-        font-size: 24px;
-      }
-
-      .error-display .error-url {
+      .current-url {
+        font-size: 11px;
         color: var(--color-text-muted, #666);
-        font-family: monospace;
-        word-break: break-all;
-        margin: 0 0 12px 0;
-      }
-
-      .error-display .error-message {
-        color: var(--color-error, #ff5050);
+        padding: 4px 12px;
+        background: rgba(0, 0, 0, 0.2);
+        border-bottom: 1px solid var(--border-color, rgba(0, 212, 255, 0.1));
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
     `
   ];
@@ -264,61 +179,45 @@ export class WebViewWidget extends ReactiveWidget {
           <input
             type="text"
             class="url-input"
-            placeholder="Enter URL..."
+            placeholder="Enter URL... (e.g., https://example.com)"
             .value=${this.urlInput}
             @input=${this.handleUrlInput}
             @keypress=${this.handleKeyPress}
           />
           <button
             class="go-button"
-            ?disabled=${this.loading || !this.urlInput.trim()}
+            ?disabled=${!this.urlInput.trim()}
             @click=${this.handleGo}
           >
-            ${this.loading ? 'Loading...' : 'Go'}
+            Go
           </button>
         </div>
-        <div class="browser-content">
-          ${this.renderBrowserContent()}
-        </div>
+        ${this.currentUrl ? html`
+          <div class="current-url">${this.currentUrl}</div>
+        ` : ''}
+        ${this.renderBrowserContent()}
       </div>
     `;
   }
 
   private renderBrowserContent(): TemplateResult {
-    // Loading state
-    if (this.loading) {
-      return this.renderLoading();
-    }
-
-    // Error state
-    if (this.fetchError) {
+    if (this.proxyUrl) {
       return html`
-        <div class="error-display">
-          <h2>Failed to load page</h2>
-          <p class="error-url">${this.currentUrl}</p>
-          <p class="error-message">${this.fetchError}</p>
-        </div>
+        <iframe
+          class="browser-frame"
+          src=${this.proxyUrl}
+          @load=${this.handleIframeLoad}
+          sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+        ></iframe>
       `;
     }
 
-    // Content loaded
-    if (this.pageData) {
-      // Use cached rendered HTML to avoid re-rendering markdown on every update
-      const renderedContent = this.pageData.renderedHtml || this.pageData.content;
-      return html`
-        <div class="fetched-content">
-          ${this.pageData.title ? html`<h1 class="page-title">${this.pageData.title}</h1>` : ''}
-          <div class="markdown-content" .innerHTML=${renderedContent}></div>
-        </div>
-      `;
-    }
-
-    // Empty state
     return html`
       <div class="placeholder">
         <h2>Co-Browsing Widget</h2>
-        <p>Enter a URL above to load web content.</p>
-        <p>AI assistants will be able to see what you're viewing.</p>
+        <p>Enter a URL above to browse web content.</p>
+        <p>All content is proxied through our server, so most sites will work.</p>
+        <p>AI assistants can see what you're viewing and provide contextual help.</p>
       </div>
     `;
   }
@@ -343,11 +242,15 @@ export class WebViewWidget extends ReactiveWidget {
     }
   }
 
+  private handleIframeLoad(): void {
+    console.log(`✅ WebViewWidget: iframe loaded for ${this.currentUrl}`);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // URL LOADING
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private async loadUrl(): Promise<void> {
+  private loadUrl(): void {
     let url = this.urlInput.trim();
     if (!url) return;
 
@@ -358,84 +261,24 @@ export class WebViewWidget extends ReactiveWidget {
 
     this.currentUrl = url;
     this.urlInput = url;
-    this.fetchError = null;
-    this.pageData = null;
 
-    console.log(`🌐 WebViewWidget: Loading ${url}`);
+    // Create proxy URL
+    this.proxyUrl = '/proxy/' + encodeURIComponent(url);
 
-    try {
-      await this.withLoading(async () => {
-        const result = await this.executeCommand<WebFetchParams, WebFetchResult>(
-          'interface/web/fetch',
-          {
-            url,
-            format: 'markdown',
-            maxLength: 100000
-          }
-        );
+    console.log(`🌐 WebViewWidget: Loading ${url} via proxy`);
 
-        if (!result.success) {
-          throw new Error(result.error || 'Failed to fetch URL');
-        }
-
-        // Guard against undefined content
-        const content = result.content || '';
-
-        // Render markdown once and cache it
-        const renderedHtml = this.renderMarkdown(content);
-
-        this.pageData = {
+    // Emit context for AI awareness
+    this.emitContext(
+      {
+        widgetType: 'browser',
+        title: 'Web Browser',
+        metadata: {
           url,
-          title: result.title,
-          content,
-          contentLength: content.length,
-          renderedHtml
-        };
-
-        // Emit context for AI awareness
-        this.emitContext(
-          {
-            widgetType: 'browser',
-            title: result.title || 'Web Browser',
-            metadata: {
-              url,
-              pageTitle: result.title,
-              contentLength: result.contentLength
-            }
-          },
-          { action: 'viewing', target: result.title || url }
-        );
-
-        console.log(`✅ WebViewWidget: Loaded ${url} (${content.length} chars)`);
-      });
-    } catch (e) {
-      this.fetchError = e instanceof Error ? e.message : 'Unknown error';
-      console.error(`❌ WebViewWidget: Failed to load ${url}:`, e);
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // UTILITIES
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  private renderMarkdown(markdown: string): string {
-    return markdown
-      // Escape HTML first
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      // Then apply markdown formatting
-      .replace(/^### (.*$)/gm, '<h3>$1</h3>')
-      .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-      .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/^- (.*$)/gm, '<li>$1</li>')
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br>')
-      .replace(/^/, '<p>')
-      .replace(/$/, '</p>');
+          proxyUrl: this.proxyUrl
+        }
+      },
+      { action: 'viewing', target: url }
+    );
   }
 }
 

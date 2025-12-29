@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-29T00:18:16.623Z",
+  "generated": "2025-12-29T00:29:22.239Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1271,6 +1271,11 @@
           "type": "number",
           "required": false,
           "description": "maxLength parameter"
+        },
+        "headers": {
+          "type": "object",
+          "required": false,
+          "description": "headers parameter"
         }
       }
     },
