@@ -393,6 +393,12 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
       const scale = params.scale || params.options?.scale || 1;
       const devicePixelRatio = window.devicePixelRatio || 1;
 
+      // Use iframe element's dimensions (not body's scrollWidth which can be larger)
+      const iframeRect = iframe.getBoundingClientRect();
+      const captureWidth = iframeRect.width;
+      const captureHeight = iframeBody.scrollHeight; // Full scroll height for content
+      console.log(`📐 BROWSER: Iframe dimensions: ${captureWidth}x${captureHeight} (iframe element: ${iframeRect.width}x${iframeRect.height})`);
+
       const captureOptions: Html2CanvasOptions = {
         scale: scale / devicePixelRatio,
         scrollX: 0,
@@ -403,9 +409,10 @@ export class ScreenshotBrowserCommand extends CommandBase<ScreenshotParams, Scre
         backgroundColor: params.options?.backgroundColor || '#ffffff',
         foreignObjectRendering: true,
         removeContainer: true,
-        // Use iframe's window dimensions
-        windowWidth: iframe.contentWindow?.innerWidth,
-        windowHeight: iframe.contentWindow?.innerHeight,
+        // Use iframe element's width to avoid capturing beyond viewport
+        width: captureWidth,
+        windowWidth: captureWidth,
+        windowHeight: captureHeight,
         ...params.options?.html2canvasOptions
       };
 
