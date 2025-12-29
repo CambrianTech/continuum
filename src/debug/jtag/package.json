@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6571",
+  "version": "1.0.6572",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -344,6 +344,7 @@
     "dotenv": "^17.2.3",
     "formdata-node": "^6.0.3",
     "highlight.js": "^11.11.1",
+    "lit": "^3.3.2",
     "marked": "^16.4.0",
     "minimatch": "^10.1.1",
     "node-llama-cpp": "^3.14.0",
