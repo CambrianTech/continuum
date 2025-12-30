@@ -21,6 +21,7 @@ import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
 import type { CommandParams, CommandResult } from '../../core/types/JTAGTypes';
+import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 
 /**
  * Type guard for command results that include a success field
@@ -80,6 +81,12 @@ export class ToolRegistry {
   private static instance: ToolRegistry;
   private tools: Map<string, ToolDefinition> = new Map();
   private initialized = false;
+
+  // Semantic search: tool embeddings cache
+  private toolEmbeddings: Map<string, number[]> = new Map();
+  private embeddingsGeneratedAt: number = 0;
+  private readonly EMBEDDINGS_TTL_MS = 5 * 60 * 1000; // 5 min (matches tool cache)
+  private embeddingsGenerating: Promise<void> | null = null; // Prevent concurrent generation
 
   private constructor() {}
 
@@ -255,6 +262,130 @@ export class ToolRegistry {
   }
 
   // ===========================================================================
+  // SEMANTIC SEARCH - Find tools by meaning, not just keywords
+  // ===========================================================================
+
+  /**
+   * Ensure tool embeddings are cached (lazy generation with TTL)
+   */
+  private async ensureToolEmbeddings(): Promise<void> {
+    const now = Date.now();
+    const isFresh = this.toolEmbeddings.size > 0 &&
+                    (now - this.embeddingsGeneratedAt) < this.EMBEDDINGS_TTL_MS;
+
+    if (isFresh) return;
+
+    // If already generating, wait for that to complete
+    if (this.embeddingsGenerating) {
+      await this.embeddingsGenerating;
+      return;
+    }
+
+    // Generate embeddings for all tools
+    this.embeddingsGenerating = this.generateToolEmbeddings();
+    try {
+      await this.embeddingsGenerating;
+    } finally {
+      this.embeddingsGenerating = null;
+    }
+  }
+
+  /**
+   * Generate embeddings for all tools
+   */
+  private async generateToolEmbeddings(): Promise<void> {
+    const tools = this.getAllTools();
+    const texts = tools.map(t => `${t.name}: ${t.description}`);
+
+    console.log(`🔍 ToolRegistry: Generating embeddings for ${tools.length} tools...`);
+    const startTime = Date.now();
+
+    try {
+      const response = await AIProviderDaemon.createEmbedding({
+        input: texts,
+        model: 'nomic-embed-text', // Local Ollama, fast
+      });
+
+      // Cache results
+      this.toolEmbeddings.clear();
+      tools.forEach((tool, i) => {
+        if (response.embeddings[i]) {
+          this.toolEmbeddings.set(tool.name, response.embeddings[i]);
+        }
+      });
+      this.embeddingsGeneratedAt = Date.now();
+
+      const elapsed = Date.now() - startTime;
+      console.log(`✅ ToolRegistry: Generated ${this.toolEmbeddings.size} embeddings in ${elapsed}ms`);
+    } catch (error) {
+      console.error('❌ ToolRegistry: Failed to generate embeddings:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Semantic search for tools by meaning
+   * Returns tools ranked by cosine similarity to query
+   */
+  async semanticSearchTools(
+    query: string,
+    limit: number = 10
+  ): Promise<Array<{ name: string; description: string; category: string; similarity: number }>> {
+    await this.ensureToolEmbeddings();
+
+    // Embed the query
+    const queryResponse = await AIProviderDaemon.createEmbedding({
+      input: [query],
+      model: 'nomic-embed-text',
+    });
+    const queryVector = queryResponse.embeddings[0];
+
+    if (!queryVector) {
+      throw new Error('Failed to generate query embedding');
+    }
+
+    // Compute similarities
+    const results: Array<{ name: string; description: string; category: string; similarity: number }> = [];
+
+    for (const tool of this.tools.values()) {
+      const toolVector = this.toolEmbeddings.get(tool.name);
+      if (!toolVector) continue;
+
+      const similarity = this.cosineSimilarity(queryVector, toolVector);
+      if (similarity > 0.3) { // Threshold for relevance
+        const category = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
+        results.push({
+          name: tool.name,
+          description: tool.description,
+          category,
+          similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimals
+        });
+      }
+    }
+
+    // Sort by similarity descending
+    return results
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit);
+  }
+
+  /**
+   * Cosine similarity between two vectors
+   */
+  private cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length) return 0;
+
+    let dot = 0, magA = 0, magB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+      magA += a[i] * a[i];
+      magB += b[i] * b[i];
+    }
+    const magnitude = Math.sqrt(magA) * Math.sqrt(magB);
+    return magnitude === 0 ? 0 : dot / magnitude;
+  }
+
+  // ===========================================================================
   // BUILT-IN META-TOOLS - Tools for discovering other tools
   // ===========================================================================
 
@@ -303,15 +434,47 @@ export class ToolRegistry {
   }
 
   /**
-   * Execute built-in meta-tool
+   * Execute built-in meta-tool (async for semantic search)
    */
-  private executeBuiltInTool(toolName: string, parameters: Record<string, string>): ToolExecutionResult {
+  private async executeBuiltInTool(toolName: string, parameters: Record<string, string>): Promise<ToolExecutionResult> {
     switch (toolName) {
       case 'search_tools': {
         const query = parameters.query || '';
         const category = parameters.category;
         const limit = parameters.limit ? parseInt(parameters.limit, 10) : 10;
-        const results = this.searchTools(query, category, limit);
+
+        // Try keyword search first (fast)
+        let results = this.searchTools(query, category, limit);
+        let searchType = 'keyword';
+
+        // If few results and query is meaningful, try semantic search
+        if (results.length < 3 && query.length > 2) {
+          try {
+            const semanticResults = await this.semanticSearchTools(query, limit);
+            searchType = 'hybrid';
+
+            // Merge results: keyword first, then semantic (dedupe)
+            const seen = new Set(results.map(r => r.name));
+            for (const sr of semanticResults) {
+              if (!seen.has(sr.name)) {
+                // Category filter for semantic results too
+                if (category) {
+                  const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+                  if (!sr.name.toLowerCase().startsWith(categoryPrefix) && sr.category !== category) {
+                    continue;
+                  }
+                }
+                results.push({ name: sr.name, description: sr.description, category: sr.category });
+                seen.add(sr.name);
+              }
+            }
+            results = results.slice(0, limit);
+          } catch (err) {
+            console.log('⚠️ Semantic search fallback failed:', err);
+            // Keep keyword results, searchType stays 'keyword'
+          }
+        }
+
         return {
           toolName,
           success: true,
@@ -320,6 +483,7 @@ export class ToolRegistry {
             category: category || 'all',
             count: results.length,
             tools: results,
+            searchType,
           }, null, 2),
         };
       }
@@ -371,7 +535,7 @@ export class ToolRegistry {
   ): Promise<ToolExecutionResult> {
     // Handle built-in meta-tools first (no command execution needed)
     if (this.isBuiltInTool(toolName)) {
-      return this.executeBuiltInTool(toolName, parameters);
+      return await this.executeBuiltInTool(toolName, parameters);
     }
 
     if (!this.hasTool(toolName)) {
