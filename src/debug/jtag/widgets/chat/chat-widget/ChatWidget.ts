@@ -367,21 +367,30 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Determine which room to load, in order of precedence:
     // 1. room attribute (for pinned widgets like right panel)
-    // 2. entity-id attribute (standard attribute set by MainWidget)
-    // 3. UserState.contentState (source of truth, updated by MainWidget before widget creation)
-    // 4. Default to General
+    // 2. pageState (set by MainWidget before creating widget - SINGLE SOURCE OF TRUTH)
+    // 3. entity-id attribute (legacy fallback)
+    // 4. UserState.contentState (legacy fallback)
+    // 5. Default to General
     const roomAttr = this.getAttribute('room');
-    const entityIdAttr = this.getAttribute('entity-id');
 
     if (roomAttr) {
+      // Pinned widget (e.g., right panel) - ignore page state
       console.log(`📨 ChatWidget: Pinned to room "${roomAttr}" via attribute`);
       await this.switchToRoom(roomAttr);
-    } else if (entityIdAttr) {
-      console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute`);
-      await this.switchToRoom(entityIdAttr);
+    } else if (this.pageState?.contentType === 'chat' && this.pageState.entityId) {
+      // PageState is the single source of truth (set by MainWidget before creating widget)
+      console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
+      await this.switchToRoom(this.pageState.entityId);
     } else {
-      // Load from UserState - MainWidget should have updated it before creating us
-      await this.loadCurrentRoomFromUserState();
+      // Legacy fallbacks
+      const entityIdAttr = this.getAttribute('entity-id') || this.getAttribute('data-entity-id');
+      if (entityIdAttr) {
+        console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
+        await this.switchToRoom(entityIdAttr);
+      } else {
+        // Load from UserState as last resort
+        await this.loadCurrentRoomFromUserState();
+      }
     }
 
     // Load initial room data

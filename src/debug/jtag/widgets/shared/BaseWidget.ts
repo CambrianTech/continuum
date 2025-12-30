@@ -31,6 +31,7 @@ import type { UserStateEntity } from '../../system/data/entities/UserStateEntity
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import { COLLECTIONS } from '../../system/shared/Constants';
+import { pageState, type PageState, type PageStateListener } from '../../system/state/PageStateService';
 
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
@@ -147,6 +148,29 @@ export abstract class BaseWidget extends HTMLElement {
    */
   set entityId(value: string | undefined) {
     this._entityId = value;
+  }
+
+  // Page state subscription cleanup function
+  private _pageStateUnsubscribe?: () => void;
+
+  /**
+   * Get current page state (content type, entity ID, resolved entity)
+   * Part of scoped state architecture - see docs/SCOPED-STATE-ARCHITECTURE.md
+   */
+  protected get pageState(): PageState | null {
+    return pageState.getContent();
+  }
+
+  /**
+   * Subscribe to page state changes
+   * Widgets can use this to react when user navigates to different content
+   * Automatically unsubscribes on widget disconnect
+   */
+  protected subscribeToPageState(callback: PageStateListener): () => void {
+    // Auto-cleanup previous subscription if any
+    this._pageStateUnsubscribe?.();
+    this._pageStateUnsubscribe = pageState.subscribe(callback);
+    return this._pageStateUnsubscribe;
   }
 
   constructor(config: Partial<WidgetConfig> = {}) {
@@ -306,7 +330,11 @@ export abstract class BaseWidget extends HTMLElement {
     this.eventEmitter.clear();
     this.operationCache.clear();
     this.throttledOperations.clear();
-    
+
+    // Clean up page state subscription
+    this._pageStateUnsubscribe?.();
+    this._pageStateUnsubscribe = undefined;
+
     this.state.isConnected = false;
     console.log(`✅ ${this.config.widgetName}: BaseWidget cleanup complete`);
   }
