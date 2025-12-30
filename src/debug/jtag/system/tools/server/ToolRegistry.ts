@@ -126,8 +126,11 @@ export class ToolRegistry {
         this.tools.set(cmd.name, toolDef);
       }
 
+      // Register built-in meta-tools for tool discovery
+      this.registerBuiltInTools();
+
       this.initialized = true;
-      console.log(`✅ ToolRegistry: Discovered ${this.tools.size} commands as tools`);
+      console.log(`✅ ToolRegistry: Discovered ${this.tools.size} commands as tools (including ${ToolRegistry.BUILT_IN_TOOLS.length} meta-tools)`);
     } catch (error) {
       console.error(`❌ ToolRegistry: Initialization failed:`, error);
       throw error;
@@ -158,6 +161,202 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  // ===========================================================================
+  // TOOL DISCOVERY - For personas to find tools without loading all into context
+  // ===========================================================================
+
+  /**
+   * Search tools by keyword (matches name and description)
+   * Same algorithm as MCP search_tools for consistency
+   */
+  searchTools(query: string, category?: string, limit: number = 10): Array<{ name: string; description: string; category: string }> {
+    const queryLower = query.toLowerCase();
+    const results: Array<{ name: string; description: string; category: string; score: number }> = [];
+
+    for (const tool of this.tools.values()) {
+      const nameLower = tool.name.toLowerCase();
+      const descLower = (tool.description || '').toLowerCase();
+
+      // Category filter
+      if (category) {
+        const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+        if (!nameLower.startsWith(categoryPrefix) && nameLower !== category) {
+          continue;
+        }
+      }
+
+      // Score matches
+      let score = 0;
+      if (nameLower.includes(queryLower)) score += 10;
+      if (nameLower.startsWith(queryLower)) score += 5;
+      if (descLower.includes(queryLower)) score += 3;
+
+      // Exact segment match (e.g., "css" matches "widget-css")
+      const segments = nameLower.split(/[\/\-_]/);
+      if (segments.includes(queryLower)) score += 8;
+
+      if (score > 0) {
+        const toolCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
+        results.push({
+          name: tool.name,
+          description: tool.description || tool.name,
+          category: toolCategory,
+          score,
+        });
+      }
+    }
+
+    // Sort by score descending, then name
+    results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    return results.slice(0, limit).map(({ name, description, category }) => ({ name, description, category }));
+  }
+
+  /**
+   * List tools by category (for browsing all available tools)
+   */
+  listToolsByCategory(category?: string, limit: number = 50): Array<{ name: string; description: string; category: string }> {
+    const results: Array<{ name: string; description: string; category: string }> = [];
+
+    for (const tool of this.tools.values()) {
+      const nameLower = tool.name.toLowerCase();
+      const toolCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
+
+      // Category filter
+      if (category) {
+        const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+        if (!nameLower.startsWith(categoryPrefix) && toolCategory !== category) {
+          continue;
+        }
+      }
+
+      results.push({
+        name: tool.name,
+        description: tool.description || tool.name,
+        category: toolCategory,
+      });
+    }
+
+    // Sort by category then name
+    results.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+    return results.slice(0, limit);
+  }
+
+  /**
+   * Get available categories
+   */
+  getCategories(): string[] {
+    const categories = new Set<string>();
+    for (const tool of this.tools.values()) {
+      const name = tool.name.toLowerCase();
+      const category = name.includes('/') ? name.split('/')[0] : 'root';
+      categories.add(category);
+    }
+    return Array.from(categories).sort();
+  }
+
+  // ===========================================================================
+  // BUILT-IN META-TOOLS - Tools for discovering other tools
+  // ===========================================================================
+
+  private static readonly BUILT_IN_TOOLS: ToolDefinition[] = [
+    {
+      name: 'search_tools',
+      description: 'Search for tools by keyword. Use this to find specialized tools without knowing exact names.',
+      category: 'meta',
+      parameters: {
+        query: { type: 'string', required: true, description: 'Search keyword (e.g., "screenshot", "css", "chat")' },
+        category: { type: 'string', required: false, description: 'Optional category filter (e.g., "interface", "ai", "data")' },
+        limit: { type: 'number', required: false, description: 'Max results (default: 10)' },
+      },
+    },
+    {
+      name: 'list_tools',
+      description: 'List available tools, optionally filtered by category. Use this to browse all capabilities.',
+      category: 'meta',
+      parameters: {
+        category: { type: 'string', required: false, description: 'Filter by category (e.g., "interface", "collaboration", "ai")' },
+        limit: { type: 'number', required: false, description: 'Max results (default: 50)' },
+      },
+    },
+    {
+      name: 'list_categories',
+      description: 'List all available tool categories.',
+      category: 'meta',
+      parameters: {},
+    },
+  ];
+
+  /**
+   * Register built-in meta-tools
+   */
+  private registerBuiltInTools(): void {
+    for (const tool of ToolRegistry.BUILT_IN_TOOLS) {
+      this.tools.set(tool.name, tool);
+    }
+  }
+
+  /**
+   * Check if tool is a built-in meta-tool
+   */
+  private isBuiltInTool(name: string): boolean {
+    return ToolRegistry.BUILT_IN_TOOLS.some(t => t.name === name);
+  }
+
+  /**
+   * Execute built-in meta-tool
+   */
+  private executeBuiltInTool(toolName: string, parameters: Record<string, string>): ToolExecutionResult {
+    switch (toolName) {
+      case 'search_tools': {
+        const query = parameters.query || '';
+        const category = parameters.category;
+        const limit = parameters.limit ? parseInt(parameters.limit, 10) : 10;
+        const results = this.searchTools(query, category, limit);
+        return {
+          toolName,
+          success: true,
+          content: JSON.stringify({
+            query,
+            category: category || 'all',
+            count: results.length,
+            tools: results,
+          }, null, 2),
+        };
+      }
+      case 'list_tools': {
+        const category = parameters.category;
+        const limit = parameters.limit ? parseInt(parameters.limit, 10) : 50;
+        const results = this.listToolsByCategory(category, limit);
+        return {
+          toolName,
+          success: true,
+          content: JSON.stringify({
+            category: category || 'all',
+            count: results.length,
+            tools: results,
+          }, null, 2),
+        };
+      }
+      case 'list_categories': {
+        const categories = this.getCategories();
+        return {
+          toolName,
+          success: true,
+          content: JSON.stringify({
+            count: categories.length,
+            categories,
+          }, null, 2),
+        };
+      }
+      default:
+        return {
+          toolName,
+          success: false,
+          error: `Unknown built-in tool: ${toolName}`,
+        };
+    }
+  }
+
   /**
    * Execute a tool (universal command wrapper)
    *
@@ -170,11 +369,16 @@ export class ToolRegistry {
     contextId: UUID,
     context?: import('../../core/types/JTAGTypes').JTAGContext  // Optional enriched context (with callerType for caller-adaptive output)
   ): Promise<ToolExecutionResult> {
+    // Handle built-in meta-tools first (no command execution needed)
+    if (this.isBuiltInTool(toolName)) {
+      return this.executeBuiltInTool(toolName, parameters);
+    }
+
     if (!this.hasTool(toolName)) {
       return {
         toolName,
         success: false,
-        error: `Unknown tool: ${toolName}`
+        error: `Unknown tool: ${toolName}. Use search_tools to find available tools.`
       };
     }
 

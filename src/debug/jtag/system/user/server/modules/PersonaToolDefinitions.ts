@@ -11,6 +11,7 @@
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { Commands } from '../../../core/shared/Commands';
 import type { CommandSignature, ListResult } from '../../../../commands/list/shared/ListTypes';
+import { ToolRegistry } from '../../../tools/server/ToolRegistry';
 
 /**
  * Result from tool execution
@@ -140,6 +141,49 @@ export async function refreshToolDefinitions(): Promise<void> {
     // Convert ALL commands from list result
     // TODO: Filter based on cmd.accessLevel or cmd.permissions when that metadata exists
     toolCache = result.commands.map((cmd: CommandSignature) => convertCommandToTool(cmd));
+
+    // Also include built-in meta-tools from ToolRegistry (search_tools, list_tools, etc.)
+    // These are essential for personas to discover tools without loading all into context
+    try {
+      const registry = ToolRegistry.getInstance();
+      // Only add if registry is initialized (has tools from list command)
+      const registryTools = registry.getAllTools();
+      const metaTools = registryTools.filter(t => t.category === 'meta');
+
+      for (const metaTool of metaTools) {
+        // Convert ToolRegistry format to our ToolDefinition format
+        const properties: Record<string, ParameterDefinition> = {};
+        const required: string[] = [];
+
+        for (const [paramName, paramInfo] of Object.entries(metaTool.parameters)) {
+          properties[paramName] = {
+            type: paramInfo.type as any,
+            description: paramInfo.description || `${paramName} parameter`,
+            required: paramInfo.required
+          };
+          if (paramInfo.required) {
+            required.push(paramName);
+          }
+        }
+
+        // Add if not already in cache (avoid duplicates)
+        if (!toolCache.find(t => t.name === metaTool.name)) {
+          toolCache.push({
+            name: metaTool.name,
+            description: metaTool.description,
+            category: 'system',  // Meta-tools are system tools
+            permissions: ['system:execute'],
+            parameters: { type: 'object', properties, required },
+            examples: []
+          });
+        }
+      }
+
+      log(`Added ${metaTools.length} meta-tools from ToolRegistry`);
+    } catch (registryError) {
+      // ToolRegistry not initialized yet - that's fine, meta-tools will be added on next refresh
+      log(`ToolRegistry not ready (will retry): ${registryError}`);
+    }
 
     lastRefreshTime = Date.now();
     log(`Refreshed ${toolCache.length} tools from Commands system`);
@@ -305,29 +349,64 @@ export function formatToolForAI(tool: ToolDefinition): string {
 
 /**
  * Format all tools for AI system prompt
+ * Uses a compact format with essential tools shown first, plus search capability
  */
 export function formatAllToolsForAI(): string {
-  let output = 'Available Tools:\n\n';
+  const tools = getAllToolDefinitions();
 
-  for (const tool of getAllToolDefinitions()) {
-    output += formatToolForAI(tool) + '\n---\n\n';
+  // Separate meta-tools (discovery) from regular tools
+  const metaTools = tools.filter(t => t.name.startsWith('search_') || t.name.startsWith('list_'));
+  const essentialTools = tools.filter(t =>
+    ['screenshot', 'read', 'grep', 'bash', 'collaboration/chat/send', 'collaboration/wall/write'].includes(t.name)
+  );
+  const otherTools = tools.filter(t => !metaTools.includes(t) && !essentialTools.includes(t));
+
+  let output = `TOOL DISCOVERY:
+You have access to ${tools.length} tools. Use these to find what you need:
+
+search_tools - Search for tools by keyword
+  <query>string (required)</query> Search term (e.g., "screenshot", "css", "chat")
+  <category>string</category> Filter by category (e.g., "interface", "ai", "data")
+
+list_tools - List all tools in a category
+  <category>string</category> Category to list
+
+list_categories - List all available tool categories
+
+ESSENTIAL TOOLS:
+`;
+
+  // Show essential tools in compact format
+  for (const tool of essentialTools) {
+    output += `\n${tool.name} - ${tool.description}\n`;
+    const params = Object.entries(tool.parameters.properties);
+    if (params.length > 0) {
+      for (const [name, def] of params) {
+        const req = tool.parameters.required.includes(name) ? ' (required)' : '';
+        output += `  <${name}>${def.description}${req}</${name}>\n`;
+      }
+    }
   }
 
   output += `
-Usage Format (Anthropic Claude XML style):
+---
+${otherTools.length} more tools available. Use search_tools to find them.
+
+Usage Format:
 <tool_use>
-  <tool_name>read</tool_name>
+  <tool_name>screenshot</tool_name>
   <parameters>
-    <filepath>/path/to/file.ts</filepath>
+    <querySelector>chat-widget</querySelector>
   </parameters>
 </tool_use>
 
-When you need information, use tools instead of making assumptions.
-Examples:
-- Unknown file content? Use 'read' tool
-- Need to find code? Use 'grep' tool
-- Want to verify UI? Use 'screenshot' tool
-- Need to check system state? Use 'bash' tool (read-only operations)
+When you need a capability, search for it:
+<tool_use>
+  <tool_name>search_tools</tool_name>
+  <parameters>
+    <query>css widget</query>
+  </parameters>
+</tool_use>
 `;
 
   return output;
