@@ -31,14 +31,97 @@ import type { JTAGClientConnectOptions } from './system/core/client/shared/JTAGC
 import { loadInstanceConfigForContext } from './system/shared/BrowserSafeConfig.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import sharp from 'sharp';
+
+// =============================================================================
+// TOOL CATEGORIES - Common tools listed first for discoverability
+// =============================================================================
+
+/**
+ * Tool category definitions with priority (lower = higher priority, shown first)
+ * Common/essential tools should be priority 0-1
+ */
+const TOOL_CATEGORIES: Record<string, { priority: number; description: string }> = {
+  // Essential - always needed
+  'ping': { priority: 0, description: 'System health check' },
+  'help': { priority: 0, description: 'Documentation' },
+  'list': { priority: 0, description: 'List commands' },
+
+  // Common interface tools
+  'interface/screenshot': { priority: 1, description: 'Screenshot capture' },
+  'interface/navigate': { priority: 1, description: 'Browser navigation' },
+  'interface/click': { priority: 1, description: 'UI interaction' },
+
+  // Common collaboration tools
+  'collaboration/chat/send': { priority: 1, description: 'Send chat message' },
+  'collaboration/chat/export': { priority: 1, description: 'Export chat' },
+  'collaboration/chat/poll': { priority: 1, description: 'Poll for messages' },
+
+  // AI tools
+  'ai/generate': { priority: 2, description: 'AI text generation' },
+  'ai/status': { priority: 2, description: 'AI persona status' },
+  'ai/thoughtstream': { priority: 2, description: 'AI thought inspection' },
+
+  // Data tools
+  'data/list': { priority: 3, description: 'Query data' },
+  'data/create': { priority: 3, description: 'Create records' },
+
+  // Category prefixes for bulk assignment
+  'interface/': { priority: 10, description: 'Interface commands' },
+  'collaboration/': { priority: 20, description: 'Collaboration commands' },
+  'ai/': { priority: 30, description: 'AI commands' },
+  'data/': { priority: 40, description: 'Data commands' },
+  'workspace/': { priority: 50, description: 'Workspace commands' },
+  'development/': { priority: 60, description: 'Development commands' },
+  'media/': { priority: 70, description: 'Media commands' },
+  'system/': { priority: 80, description: 'System commands' },
+};
+
+/**
+ * Get priority for a command (lower = shown first)
+ */
+function getCommandPriority(commandName: string): number {
+  // Check exact match first
+  if (TOOL_CATEGORIES[commandName]) {
+    return TOOL_CATEGORIES[commandName].priority;
+  }
+
+  // Check prefix matches
+  for (const [prefix, config] of Object.entries(TOOL_CATEGORIES)) {
+    if (prefix.endsWith('/') && commandName.startsWith(prefix)) {
+      return config.priority;
+    }
+  }
+
+  // Default priority for uncategorized
+  return 100;
+}
+
+// =============================================================================
+// IMAGE HANDLING - Resize for MCP transport
+// =============================================================================
+
+/** Maximum dimensions for MCP image transport (keeps base64 under ~200KB) */
+const MCP_IMAGE_MAX_WIDTH = 1200;
+const MCP_IMAGE_MAX_HEIGHT = 800;
+const MCP_IMAGE_QUALITY = 70;
 
 // Image extensions we can return inline
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
 
+const MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
 /**
- * Check if a filepath is an image and return base64-encoded content
+ * Resize image and return base64-encoded content for MCP transport
+ * Ensures images are under size limits for efficient transport
  */
-function tryReadImageAsBase64(filepath: string): { data: string; mimeType: string } | null {
+async function resizeAndEncodeImage(filepath: string): Promise<{ data: string; mimeType: string } | null> {
   if (!filepath || typeof filepath !== 'string') return null;
 
   const ext = path.extname(filepath).toLowerCase();
@@ -47,23 +130,32 @@ function tryReadImageAsBase64(filepath: string): { data: string; mimeType: strin
   try {
     if (!fs.existsSync(filepath)) return null;
 
-    const buffer = fs.readFileSync(filepath);
-    const base64 = buffer.toString('base64');
+    // Use sharp to resize and compress
+    const resizedBuffer = await sharp(filepath)
+      .resize(MCP_IMAGE_MAX_WIDTH, MCP_IMAGE_MAX_HEIGHT, {
+        fit: 'inside',  // Maintain aspect ratio, fit within bounds
+        withoutEnlargement: true,  // Don't upscale small images
+      })
+      .jpeg({ quality: MCP_IMAGE_QUALITY })  // Convert to JPEG for consistent compression
+      .toBuffer();
 
-    const mimeTypes: Record<string, string> = {
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp',
-    };
+    const base64 = resizedBuffer.toString('base64');
 
     return {
       data: base64,
-      mimeType: mimeTypes[ext] || 'image/png',
+      mimeType: 'image/jpeg',  // Always JPEG after resize
     };
-  } catch {
-    return null;
+  } catch (error) {
+    // Fallback to raw read if sharp fails
+    try {
+      const buffer = fs.readFileSync(filepath);
+      return {
+        data: buffer.toString('base64'),
+        mimeType: MIME_TYPES[ext] || 'image/png',
+      };
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -159,10 +251,10 @@ const server = new Server(
 
 // Build tool mapping: MCP tool name -> JTAG command name
 const toolToCommand: Record<string, string> = {};
-const tools: Tool[] = [];
+const commandPriorities: Map<string, number> = new Map();
 
-// Add special system control tool
-tools.push({
+// Add special system control tool (highest priority)
+const systemStartTool: Tool = {
   name: 'jtag_system_start',
   description: '[JTAG] Start the JTAG system if not running. Takes ~90 seconds to fully start.',
   inputSchema: {
@@ -174,13 +266,27 @@ tools.push({
       },
     },
   },
-});
+};
+
+// Build tools with priority tracking
+const unsortedTools: Tool[] = [systemStartTool];
+commandPriorities.set('jtag_system_start', -1);  // Always first
 
 for (const command of schemas.commands) {
   const tool = commandToTool(command);
-  tools.push(tool);
+  unsortedTools.push(tool);
   toolToCommand[tool.name] = command.name;
+  commandPriorities.set(tool.name, getCommandPriority(command.name));
 }
+
+// Sort tools by priority (lower priority number = shown first)
+const tools: Tool[] = unsortedTools.sort((a, b) => {
+  const priorityA = commandPriorities.get(a.name) ?? 100;
+  const priorityB = commandPriorities.get(b.name) ?? 100;
+  if (priorityA !== priorityB) return priorityA - priorityB;
+  // Secondary sort by name for consistency
+  return a.name.localeCompare(b.name);
+});
 
 // Track if we've started the system
 let systemStarted = false;
@@ -305,10 +411,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       cleanResult = actualResult;
     }
 
-    // Check if result contains an image - return it inline as base64
+    // Check if result contains an image - resize and return inline as base64
     const imagePath = extractImagePath(cleanResult);
     if (imagePath) {
-      const imageData = tryReadImageAsBase64(imagePath);
+      const imageData = await resizeAndEncodeImage(imagePath);
       if (imageData) {
         return {
           content: [
