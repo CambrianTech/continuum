@@ -597,14 +597,19 @@ LIMITS:
 
           // Merge, dedupe by id
           const seenIds = new Set(memories.map((m: any) => m.id));
+          let addedSemanticCount = 0;
           for (const mem of semanticMemories) {
             if (!seenIds.has(mem.id)) {
               memories.push(mem);
               seenIds.add(mem.id);
+              addedSemanticCount++;
             }
           }
 
-          this.log(`🔍 ChatRAGBuilder: Semantic recall "${semanticQuery.slice(0, 40)}..." → ${semanticMemories.length} memories`);
+          this.log(
+            `🔍 ChatRAGBuilder: Semantic recall "${semanticQuery.slice(0, 40)}..." → ` +
+            `${semanticMemories.length} retrieved, ${addedSemanticCount} added after deduplication`
+          );
         }
       }
 
