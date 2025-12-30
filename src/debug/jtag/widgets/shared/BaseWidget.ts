@@ -127,6 +127,28 @@ export abstract class BaseWidget extends HTMLElement {
   // User state cache
   protected _userState?: UserStateEntity;
 
+  // Entity ID for content-driven widgets (set via entity-id attribute or room for chat)
+  private _entityId?: string;
+
+  /**
+   * Get entity ID for this widget (room uniqueId for chat, user ID for persona, etc.)
+   * Reads from multiple attribute names for compatibility
+   */
+  get entityId(): string | undefined {
+    return this._entityId
+        || this.getAttribute('data-entity-id')  // Standard HTML data attribute
+        || this.getAttribute('entity-id')        // Clean attribute
+        || this.getAttribute('room')             // Chat widget backward compat
+        || undefined;
+  }
+
+  /**
+   * Set entity ID programmatically
+   */
+  set entityId(value: string | undefined) {
+    this._entityId = value;
+  }
+
   constructor(config: Partial<WidgetConfig> = {}) {
     super();
     this.attachShadow({ mode: WIDGET_DEFAULTS.SHADOW_MODE });

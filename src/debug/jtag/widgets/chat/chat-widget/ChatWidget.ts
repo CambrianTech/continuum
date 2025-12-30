@@ -365,15 +365,22 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     console.log(`📨 ChatWidget: Enabled ChatMessage event subscriptions for real-time updates`);
 
-    // Check if room was specified via attribute (e.g., <chat-widget room="help">)
-    // This takes precedence over UserState - used by RightPanelWidget to show specific rooms
+    // Determine which room to load, in order of precedence:
+    // 1. room attribute (for pinned widgets like right panel)
+    // 2. entity-id attribute (standard attribute set by MainWidget)
+    // 3. UserState.contentState (source of truth, updated by MainWidget before widget creation)
+    // 4. Default to General
     const roomAttr = this.getAttribute('room');
+    const entityIdAttr = this.getAttribute('entity-id');
+
     if (roomAttr) {
-      console.log(`📨 ChatWidget: Room attribute set to "${roomAttr}", using it instead of UserState`);
+      console.log(`📨 ChatWidget: Pinned to room "${roomAttr}" via attribute`);
       await this.switchToRoom(roomAttr);
+    } else if (entityIdAttr) {
+      console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute`);
+      await this.switchToRoom(entityIdAttr);
     } else {
-      // Load current room from UserState (not just default to General)
-      // This handles the case where user clicks a room tab and a new ChatWidget is created
+      // Load from UserState - MainWidget should have updated it before creating us
       await this.loadCurrentRoomFromUserState();
     }
 

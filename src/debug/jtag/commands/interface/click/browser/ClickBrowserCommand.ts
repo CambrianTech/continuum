@@ -25,7 +25,6 @@ import { type ClickParams, type ClickResult, createClickResult } from '../shared
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import { ClickCommand } from '../shared/ClickCommand';
 import { safeQuerySelector } from '@daemons/command-daemon/shared/GlobalUtils';
-import { WidgetDiscovery } from '@system/core/browser/utils/WidgetIntrospection';
 
 export class ClickBrowserCommand extends ClickCommand {
   
@@ -42,26 +41,28 @@ export class ClickBrowserCommand extends ClickCommand {
 
       // Check if selector looks like a widget (ends with -widget)
       if (params.selector.endsWith('-widget')) {
-        console.log(`🔍 BROWSER: Widget selector detected, using WidgetDiscovery`);
-        const widgetRef = WidgetDiscovery.findWidget(params.selector);
+        console.log(`🔍 BROWSER: Widget selector detected`);
 
-        if (!widgetRef) {
+        // Handle root and container widgets directly (not found by WidgetDiscovery)
+        const widgetElement = this.findWidgetElement(params.selector);
+        if (!widgetElement) {
           throw new Error(`Widget not found: ${params.selector}`);
         }
 
-        element = widgetRef.element;
+        element = widgetElement;
+        const shadowRoot = (widgetElement as HTMLElement).shadowRoot;
 
         // If text parameter provided, find element containing that text in shadow DOM
-        if (params.text && widgetRef.shadowRoot) {
-          clickTarget = this.findElementByText(widgetRef.shadowRoot, params.text);
+        if (params.text && shadowRoot) {
+          clickTarget = this.findElementByText(shadowRoot, params.text);
           if (!clickTarget) {
             throw new Error(`Element with text "${params.text}" not found inside ${params.selector}`);
           }
           console.log(`🎯 BROWSER: Found element with text "${params.text}" inside widget`);
         }
         // If shadowRoot and innerSelector provided, find element inside widget's shadow DOM
-        else if (params.shadowRoot && params.innerSelector && widgetRef.shadowRoot) {
-          clickTarget = widgetRef.shadowRoot.querySelector(params.innerSelector);
+        else if (params.shadowRoot && params.innerSelector && shadowRoot) {
+          clickTarget = shadowRoot.querySelector(params.innerSelector);
           if (!clickTarget) {
             throw new Error(`Inner element not found: ${params.innerSelector} inside ${params.selector}`);
           }
@@ -112,14 +113,79 @@ export class ClickBrowserCommand extends ClickCommand {
   }
 
   /**
+   * Find a widget element by selector, handling the DOM hierarchy:
+   * - continuum-widget: Root element, found directly in document
+   * - Container widgets (main-widget, sidebar-widget): Found in continuum-widget's shadow root
+   * - Nested widgets (chat-widget, etc.): Found inside container shadow roots
+   */
+  private findWidgetElement(selector: string): HTMLElement | null {
+    // 1. Root widget - continuum-widget
+    if (selector === 'continuum-widget') {
+      return document.querySelector('continuum-widget') as HTMLElement;
+    }
+
+    const continuum = document.querySelector('continuum-widget');
+    if (!continuum?.shadowRoot) return null;
+
+    // 2. Container widgets - direct children of continuum-widget
+    const containerWidgets = ['main-widget', 'sidebar-widget', 'theme-widget', 'right-panel-widget'];
+    if (containerWidgets.includes(selector)) {
+      return continuum.shadowRoot.querySelector(selector) as HTMLElement;
+    }
+
+    // 3. Nested widgets - search inside container widgets
+    for (const containerName of containerWidgets) {
+      const container = continuum.shadowRoot.querySelector(containerName) as HTMLElement;
+      if (container?.shadowRoot) {
+        const widget = container.shadowRoot.querySelector(selector) as HTMLElement;
+        if (widget) {
+          console.log(`🔍 BROWSER: Found ${selector} inside ${containerName}`);
+          return widget;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Find a clickable element containing the specified text
    * Returns the clickable parent (like .content-tab) rather than inner text spans
+   *
+   * CRITICAL: This recursively searches nested shadow DOMs to find elements in
+   * deeply nested widget structures like:
+   * main-widget (shadow) → content-tabs-widget (shadow) → .content-tab
    */
   private findElementByText(root: Element | ShadowRoot, text: string): Element | null {
+    // First, search direct children in this root
+    const result = this.searchInRoot(root, text);
+    if (result) return result;
+
+    // Then recursively search nested shadow DOMs
+    const allElements = root.querySelectorAll('*');
+    for (const el of Array.from(allElements)) {
+      const shadowRoot = (el as HTMLElement).shadowRoot;
+      if (shadowRoot) {
+        console.log(`🔍 BROWSER: Searching nested shadow DOM in ${el.tagName.toLowerCase()}`);
+        const nestedResult = this.findElementByText(shadowRoot, text);
+        if (nestedResult) return nestedResult;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Search within a single root (shadow root or element) for text match
+   */
+  private searchInRoot(root: Element | ShadowRoot, text: string): Element | null {
     // Get all elements that could be clickable
     const candidates = Array.from(root.querySelectorAll('*'));
 
     for (const el of candidates) {
+      // Skip elements that have shadow roots - we'll search those recursively
+      if ((el as HTMLElement).shadowRoot) continue;
+
       // Check if this element's direct text content matches
       const childNodes = Array.from(el.childNodes);
       const directText = childNodes
@@ -156,6 +222,8 @@ export class ClickBrowserCommand extends ClickCommand {
 
     // Second pass: find any element containing the text
     for (const el of candidates) {
+      if ((el as HTMLElement).shadowRoot) continue;  // Skip shadow hosts
+
       if (el.textContent?.trim() === text) {
         // Again, prefer parent if it's clickable
         const parent = el.parentElement;

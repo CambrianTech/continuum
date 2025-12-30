@@ -339,6 +339,19 @@
       transform: translateY(0);
     }
   }
+
+  &.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+
+    .stat-icon {
+      opacity: 0.5;
+    }
+
+    .stat-text {
+      color: $color-text-muted;
+    }
+  }
 }
 
 .stat-icon {
