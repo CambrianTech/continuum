@@ -563,34 +563,57 @@ LIMITS:
       }
 
       let memories: any[] = [];
+      const recallableUser = personaUser as { recallMemories: (params: any) => Promise<any[]> };
 
-      // Semantic recall: Find memories by meaning, not just filters
-      // This is the key capability for "thinking about what you know"
-      if (semanticQuery && semanticQuery.trim().length > 10) {
-        // Check if semantic recall is available (new capability)
+      // ALWAYS fetch top high-importance memories first (core knowledge)
+      // These are learnings the AI should never forget - tool usage, key insights, etc.
+      // This fixes the bug where semantic query (raw message) doesn't match tool-usage memories
+      const coreMemories = await recallableUser.recallMemories({
+        minImportance: 0.8,  // Only the most important learnings
+        limit: Math.min(3, maxMemories),  // Reserve slots for core memories
+        since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()  // Last 30 days
+      });
+
+      if (coreMemories.length > 0) {
+        this.log(`🧠 ChatRAGBuilder: Core memories → ${coreMemories.length} (importance >= 0.8)`);
+        memories = [...coreMemories];
+      }
+
+      // Semantic recall: Find contextually relevant memories
+      // This adds memories related to the current conversation topic
+      const remainingSlots = maxMemories - memories.length;
+      if (remainingSlots > 0 && semanticQuery && semanticQuery.trim().length > 10) {
         if ('semanticRecallMemories' in personaUser &&
             typeof (personaUser as any).semanticRecallMemories === 'function') {
           const semanticUser = personaUser as {
             semanticRecallMemories: (query: string, params: any) => Promise<any[]>
           };
 
-          memories = await semanticUser.semanticRecallMemories(semanticQuery, {
-            limit: maxMemories,
-            semanticThreshold: 0.5,  // Lower threshold for broader recall
-            minImportance: 0.4       // Include moderately important memories
+          const semanticMemories = await semanticUser.semanticRecallMemories(semanticQuery, {
+            limit: remainingSlots,
+            semanticThreshold: 0.5,
+            minImportance: 0.4
           });
 
-          this.log(`🔍 ChatRAGBuilder: Semantic recall "${semanticQuery.slice(0, 40)}..." → ${memories.length} memories`);
+          // Merge, dedupe by id
+          const seenIds = new Set(memories.map((m: any) => m.id));
+          for (const mem of semanticMemories) {
+            if (!seenIds.has(mem.id)) {
+              memories.push(mem);
+              seenIds.add(mem.id);
+            }
+          }
+
+          this.log(`🔍 ChatRAGBuilder: Semantic recall "${semanticQuery.slice(0, 40)}..." → ${semanticMemories.length} memories`);
         }
       }
 
-      // Fallback: Filter-based recall (always works, just less targeted)
+      // Fallback: Filter-based recall if still empty
       if (memories.length === 0) {
-        const recallableUser = personaUser as { recallMemories: (params: any) => Promise<any[]> };
         memories = await recallableUser.recallMemories({
-          minImportance: 0.6,  // Only recall important memories
+          minImportance: 0.6,
           limit: maxMemories,
-          since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()  // Last 7 days
+          since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         });
 
         if (memories.length > 0) {
