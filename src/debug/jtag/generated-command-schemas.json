@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-29T18:56:13.868Z",
+  "generated": "2025-12-30T01:36:37.588Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1584,12 +1584,22 @@
     },
     {
       "name": "help",
-      "description": "Help Command Types\n *\n * Auto-generates help documentation for any command by querying the list command.\n * Returns both structured data and human-readable help text.",
+      "description": "Help Command - Shared Types\n *\n * Discover and display help documentation from command READMEs, auto-generating templates for gaps",
       "params": {
-        "commandName": {
+        "path": {
           "type": "string",
           "required": false,
-          "description": "commandName parameter"
+          "description": "path parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "list": {
+          "type": "boolean",
+          "required": false,
+          "description": "list parameter"
         }
       }
     },

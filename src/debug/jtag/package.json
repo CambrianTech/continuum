@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6615",
+  "version": "1.0.6621",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -19,7 +19,8 @@
   "types": "dist/server-index.d.ts",
   "bin": {
     "continuum": "./dist/cli.js",
-    "jtag": "./dist/cli.js"
+    "jtag": "./dist/cli.js",
+    "mcp": "./mcp-server.ts"
   },
   "exports": {
     ".": {
@@ -142,6 +143,8 @@
     "prepack": "npx tsx scripts/create-import-map.ts",
     "pack": "npm run version:bump && npm pack --silent 2>&1 | grep -v '^npm notice'",
     "system:run": "npx tsx scripts/launch-active-example.ts",
+    "mcp": "npx tsx mcp-server.ts",
+    "mcp:setup": "bash scripts/setup-mcp.sh",
     "start-continuum-with-browser": "npx tsx scripts/launch-active-example.ts",
     "system:deploy": "npx tsx scripts/smart-deploy.ts",
     "system:start": "npm run clean:logs && npm run worker:start && sleep 2 && npm run system:stop && npm run build && tsx scripts/launch-and-capture.ts --verbose && npm run data:seed",
@@ -337,6 +340,7 @@
     "node": ">=16.0.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/sqlite3": "^3.1.11",
     "@types/uuid": "^10.0.0",
@@ -350,6 +354,7 @@
     "node-llama-cpp": "^3.14.0",
     "sharp": "^0.34.5",
     "sqlite3": "^5.1.7",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "zod": "^4.2.1"
   }
 }
