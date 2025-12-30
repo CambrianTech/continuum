@@ -87,6 +87,13 @@ textarea {
     background: transparent;  /* Ensure no background color creates white margin */
 }
 
+/* Text selection should work by default in content views */
+.content-view,
+.content-view * {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
 /* === CHAT WIDGET PANEL === */
 chat-widget {
     display: block;

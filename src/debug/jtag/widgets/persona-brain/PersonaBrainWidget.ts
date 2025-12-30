@@ -817,15 +817,15 @@ export class PersonaBrainWidget extends BasePanelWidget {
   private renderStats(): string {
     return `
       <div class="stats-bar">
-        <div class="stat-item">
+        <div class="stat-item clickable" data-action="open-log" data-log="hippocampus" title="View memory log">
           <span class="stat-icon">💾</span>
           <span class="stat-text">${this.moduleStats.hippocampus.ltmSize || '0 MB'}</span>
         </div>
-        <div class="stat-item">
+        <div class="stat-item clickable" data-action="open-log" data-log="tools" title="View tools log">
           <span class="stat-icon">⚡</span>
           <span class="stat-text">${this.moduleStats.motorCortex.toolsAvailable} tools</span>
         </div>
-        <div class="stat-item">
+        <div class="stat-item clickable" data-action="open-log" data-log="cns" title="View CNS log">
           <span class="stat-icon">🔗</span>
           <span class="stat-text">${this.moduleStats.cns.connections} conn</span>
         </div>
