@@ -117,6 +117,36 @@ const MIME_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
+/** Allowed base directories for image reading (security) */
+const ALLOWED_IMAGE_PATHS = [
+  '/tmp',
+  '.continuum',  // Relative paths within project
+  path.join(__dirname, '.continuum'),  // Absolute path to project .continuum
+  path.join(__dirname, 'examples'),    // Example outputs
+];
+
+/**
+ * Validate that filepath is within allowed directories (security check)
+ */
+function isPathAllowed(filepath: string): boolean {
+  const normalizedPath = path.resolve(filepath);
+
+  for (const allowed of ALLOWED_IMAGE_PATHS) {
+    const normalizedAllowed = path.resolve(allowed);
+    if (normalizedPath.startsWith(normalizedAllowed)) {
+      return true;
+    }
+  }
+
+  // Also allow /tmp regardless of how it's specified
+  if (normalizedPath.startsWith('/tmp') || normalizedPath.startsWith('/private/tmp')) {
+    return true;
+  }
+
+  console.error(`[MCP] Security: Blocked image read from disallowed path: ${filepath}`);
+  return false;
+}
+
 /**
  * Resize image and return base64-encoded content for MCP transport
  * Ensures images are under size limits for efficient transport
@@ -126,6 +156,9 @@ async function resizeAndEncodeImage(filepath: string): Promise<{ data: string; m
 
   const ext = path.extname(filepath).toLowerCase();
   if (!IMAGE_EXTENSIONS.includes(ext)) return null;
+
+  // Security: Only read from allowed directories
+  if (!isPathAllowed(filepath)) return null;
 
   try {
     if (!fs.existsSync(filepath)) return null;
@@ -147,13 +180,15 @@ async function resizeAndEncodeImage(filepath: string): Promise<{ data: string; m
     };
   } catch (error) {
     // Fallback to raw read if sharp fails
+    console.error(`[MCP] Sharp resize failed for "${filepath}":`, error instanceof Error ? error.message : error);
     try {
       const buffer = fs.readFileSync(filepath);
       return {
         data: buffer.toString('base64'),
         mimeType: MIME_TYPES[ext] || 'image/png',
       };
-    } catch {
+    } catch (readError) {
+      console.error(`[MCP] Failed to read image "${filepath}":`, readError instanceof Error ? readError.message : readError);
       return null;
     }
   }

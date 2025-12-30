@@ -158,7 +158,7 @@ export class HelpServerCommand extends CommandBase<HelpParams, HelpResult> {
    * Generate a help template for commands without READMEs
    */
   private generateTemplate(helpPath: string, fullPath: string): string {
-    const commandName = helpPath.replace(/\//g, '/');
+    const commandName = helpPath;
 
     // Try to find schema info
     let params = '';

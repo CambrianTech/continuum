@@ -147,3 +147,39 @@ Check that port 9001 is available and the WebSocket server is running:
 This is a [known Claude Code bug](https://github.com/anthropics/claude-code/issues/11385). If Claude Code freezes:
 - Press Ctrl+Z to suspend
 - Continue with `claude -c` to restore session
+
+## Features
+
+### Inline Image Results
+
+Screenshots and other image results are returned **inline** as base64-encoded content. No separate file read is needed:
+
+```
+mcp__jtag__interface_screenshot(resultType="file")
+→ Returns: { type: "image", data: "<base64>", mimeType: "image/jpeg" }
+```
+
+Images are automatically:
+- Resized to max 1200x800 pixels
+- Compressed to JPEG at 70% quality
+- Reduced from ~800KB to ~70KB for efficient transport
+
+### Tool Discovery
+
+With 157+ tools, use `jtag_search_tools` to find relevant commands:
+
+```
+mcp__jtag__jtag_search_tools(query="widget")
+→ Returns widget-css, widget-interact, widget-state, widget-events
+
+mcp__jtag__jtag_search_tools(query="css", category="development")
+→ Returns development/debug/widget-css
+```
+
+### Tool Categories
+
+Tools are sorted by priority, with common ones first:
+- **Priority 0**: ping, help, list
+- **Priority 1**: screenshot, navigate, chat/send, chat/export
+- **Priority 2**: ai/generate, ai/status
+- **Priority 3+**: Grouped by category (interface/, collaboration/, ai/, data/, etc.)
