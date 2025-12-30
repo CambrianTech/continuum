@@ -319,6 +319,26 @@
   display: flex;
   align-items: center;
   gap: $spacing-sm;
+
+  &.clickable {
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: $border-radius-sm;
+    transition: all 0.2s ease;
+
+    &:hover {
+      background: rgba($color-primary, 0.15);
+      transform: translateY(-1px);
+
+      .stat-text {
+        color: $color-primary;
+      }
+    }
+
+    &:active {
+      transform: translateY(0);
+    }
+  }
 }
 
 .stat-icon {
@@ -331,6 +351,7 @@
   color: $color-text-dim;
   font-family: $font-mono;
   letter-spacing: 0.5px;
+  transition: color 0.2s ease;
 }
 
 // === Module Overview (hidden) ===

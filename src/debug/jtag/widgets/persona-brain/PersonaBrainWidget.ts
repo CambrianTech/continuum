@@ -1017,6 +1017,16 @@ export class PersonaBrainWidget extends BasePanelWidget {
       issuesPanel?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 
+    // Stats bar quick-access log buttons (one-click to open logs)
+    this.shadowRoot.querySelectorAll('[data-action="open-log"]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const logType = (el as HTMLElement).dataset.log;
+        if (logType) {
+          await this.openLogViewer(logType);
+        }
+      });
+    });
+
     // Activity feed item click - show details
     this.shadowRoot.querySelectorAll('.feed-item').forEach(el => {
       el.addEventListener('click', () => {
