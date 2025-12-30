@@ -39,6 +39,48 @@ When you touch any code, improve it. Don't just add your feature and leave the m
 
 ---
 
+## 🔌 POLYMORPHISM PATTERN (OpenCV-style)
+
+**Why polymorphism over templates/generics for compute-heavy work:**
+
+1. **Reduced cognitive requirements** - One interface, many implementations. Simple mental model.
+2. **Natural compression** - Interface is the compressed representation of all possible implementations.
+3. **Ideal for AI sub-agents** - Each agent can work on a different implementation in parallel.
+4. **Runtime flexibility** - AIs can discover, select, and configure algorithms at runtime.
+5. **No recompilation** - Swap implementations without rebuilding.
+
+**Pattern (like OpenCV cv::Algorithm):**
+
+```rust
+// Trait defines the interface
+trait SearchAlgorithm: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn execute(&self, input: &SearchInput) -> SearchOutput;
+    fn get_param(&self, name: &str) -> Option<Value>;
+    fn set_param(&mut self, name: &str, value: Value) -> Result<(), String>;
+}
+
+// Factory registry for runtime creation
+struct AlgorithmRegistry {
+    factories: HashMap<&'static str, fn() -> Box<dyn SearchAlgorithm>>,
+}
+
+// Usage: create by name at runtime
+let algo = registry.create("bm25")?;
+algo.set_param("k1", json!(1.5))?;
+let results = algo.execute(&input);
+```
+
+**Apply this pattern for:**
+- Search algorithms (BoW, BM25, vector) → `workers/search/`
+- Vision algorithms (OpenCV filters, detection) → `workers/vision/`
+- Generation (Stable Diffusion, LoRA inference) → `workers/diffusion/`
+- Audio (TTS, STT, voice cloning) → `workers/audio/`
+
+**All compute-heavy work goes to Rust workers via Unix socket. Main thread stays clean.**
+
+---
+
 ## 🚨 CRITICAL WORKFLOW (READ FIRST!)
 
 ### EVERY TIME YOU EDIT CODE:

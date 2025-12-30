@@ -47,6 +47,7 @@ export const COMMANDS = {
   AI_REPORT_DECISIONS: 'ai/report/decisions',
   AI_SHOULD_RESPOND: 'ai/should-respond',
   AI_SHOULD_RESPOND_FAST: 'ai/should-respond-fast',
+  AI_SLEEP: 'ai/sleep',
   AI_STATUS: 'ai/status',
   AI_THOUGHTSTREAM: 'ai/thoughtstream',
   AI_VALIDATE_RESPONSE: 'ai/validate-response',

@@ -29,6 +29,7 @@ import { AIDecisionService } from '../../../ai/server/AIDecisionService';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
+import { personaSleepManager } from '@commands/ai/sleep/server/AiSleepServerCommand';
 import {
   AI_DECISION_EVENTS,
   type AIEvaluatingEventData,
@@ -284,6 +285,31 @@ export class PersonaMessageEvaluator {
         roomId: messageEntity.roomId
       });
       return;
+    }
+
+    // STEP 5: Check voluntary sleep mode (before expensive LLM call)
+    // AIs can put themselves to sleep to manage attention autonomously
+    const sleepMode = personaSleepManager.getMode(this.personaUser.id);
+    if (sleepMode !== 'active') {
+      const shouldRespondInSleepMode = personaSleepManager.shouldRespond(this.personaUser.id, {
+        isHuman: senderIsHuman,
+        isMention: isMentioned,
+        isNewTopic: false // TODO: Implement topic detection
+      });
+
+      if (!shouldRespondInSleepMode) {
+        this.log(`😴 ${this.personaUser.displayName}: In ${sleepMode} mode, skipping message from ${messageEntity.senderName}`);
+        this.personaUser.logAIDecision('SILENT', `Voluntary sleep mode: ${sleepMode} (isHuman=${senderIsHuman}, isMention=${isMentioned})`, {
+          message: messageText,
+          sender: messageEntity.senderName,
+          roomId: messageEntity.roomId,
+          humanSender: senderIsHuman,
+          mentioned: isMentioned
+        });
+        return;
+      }
+
+      this.log(`😴 ${this.personaUser.displayName}: In ${sleepMode} mode but responding (isHuman=${senderIsHuman}, isMention=${isMentioned})`);
     }
 
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===

@@ -224,15 +224,25 @@ export class PersonaToolExecutor {
       // This handles wall/*, chat/*, and any other room-scoped commands
       const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
 
-      this.log.info(`Calling ${toolCall.toolName} with params:`, resolvedParams);
-      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] ${toolCall.toolName} | params: ${JSON.stringify(resolvedParams)}`);
+      // Inject callerId so tools can identify the persona calling them
+      // This is how ai/sleep knows which persona to put to sleep when no explicit personaId is provided
+      const paramsWithCaller = {
+        ...resolvedParams,
+        callerId: context.personaId  // Always inject the calling persona's userId
+      };
+
+      // Log tool call with clean params formatting (not array-wrapped)
+      const paramsJson = JSON.stringify(paramsWithCaller, null, 2);
+      this.log.info(`┌─ CALL: ${toolCall.toolName}`);
+      this.log.info(`│  params: ${paramsJson.replace(/\n/g, '\n│  ')}`);
+      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL CALL] ${toolCall.toolName} | params: ${JSON.stringify(paramsWithCaller)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
       // NO try-catch - let exceptions bubble to PersonaResponseGenerator
       // ToolRegistry returns {success: false, error} for expected failures
       const registryResult = await this.toolRegistry.executeTool(
         toolCall.toolName,
-        resolvedParams,
+        paramsWithCaller,  // Pass params with callerId injected
         context.sessionId,  // Pass AI's sessionId for proper attribution
         context.contextId,
         context.context  // Pass PersonaUser's enriched context (with callerType='persona')
@@ -248,17 +258,35 @@ export class PersonaToolExecutor {
 
       const duration = Date.now() - startTime;
 
+      // Log result with clear visual structure
       if (result.success) {
-        this.log.info(`${toolCall.toolName} ✓ ${duration}ms → ${result.content?.slice(0, 200) || 'no content'}${result.content && result.content.length > 200 ? '...' : ''}`);
+        // Parse result for better display (show key fields if JSON)
+        let resultSummary = result.content?.slice(0, 500) || 'no content';
+        try {
+          const parsed = JSON.parse(result.content || '');
+          // Extract key fields for readable summary
+          const keyFields = ['success', 'message', 'newMode', 'previousMode', 'count', 'items', 'data'];
+          const summary: Record<string, unknown> = {};
+          for (const key of keyFields) {
+            if (parsed[key] !== undefined) {
+              summary[key] = Array.isArray(parsed[key]) ? `[${parsed[key].length} items]` : parsed[key];
+            }
+          }
+          if (Object.keys(summary).length > 0) {
+            resultSummary = JSON.stringify(summary);
+          }
+        } catch { /* not JSON, use raw */ }
+
+        this.log.info(`└─ RESULT: ✓ ${duration}ms`);
+        this.log.info(`   ${resultSummary}${result.content && result.content.length > 500 ? '...' : ''}`);
         if (result.media && result.media.length > 0) {
-          this.log.info(`  └─ Media: ${result.media.map(m => `${m.type} (${m.mimeType})`).join(', ')}`);
+          this.log.info(`   media: ${result.media.map(m => `${m.type} (${m.mimeType})`).join(', ')}`);
         }
       } else {
-        this.log.error(`${toolCall.toolName} ✗ ${duration}ms`);
-        this.log.error(`  └─ Error: ${result.error || 'unknown error'}`);
-        this.log.error(`  └─ Params:`, toolCall.parameters);
+        this.log.error(`└─ RESULT: ✗ ${duration}ms`);
+        this.log.error(`   error: ${result.error || 'unknown error'}`);
       }
-      PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.persona.displayName}: [TOOL] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
+      PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.persona.displayName}: [TOOL RESULT] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
       // Fire-and-forget pattern: storage is non-critical, don't block on it
