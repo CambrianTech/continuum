@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-30T04:02:41.477Z",
+  "generated": "2025-12-30T19:41:06.972Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3856,6 +3856,32 @@
           "type": "boolean",
           "required": false,
           "description": "verbose parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/sleep",
+      "description": "AI Sleep Command - Shared Types\n *\n * Voluntary attention management for AI personas.\n * Allows AIs to put themselves into different awareness states.\n *\n * Modes:\n * - active: Normal operation, respond to everything\n * - mentioned_only: Only respond when directly @mentioned\n * - human_only: Only respond when a human speaks\n * - sleeping: Completely silent until explicitly woken\n * - until_topic: Silent until a new topic is detected",
+      "params": {
+        "mode": {
+          "type": "string",
+          "required": true,
+          "description": "mode parameter"
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "description": "reason parameter"
+        },
+        "durationMinutes": {
+          "type": "number",
+          "required": false,
+          "description": "durationMinutes parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     },

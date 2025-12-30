@@ -22,6 +22,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
 import type { CommandParams, CommandResult } from '../../core/types/JTAGTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import { getSearchWorkerClient } from '../../../shared/ipc/SearchWorkerClient';
 
 /**
  * Type guard for command results that include a success field
@@ -216,6 +217,68 @@ export class ToolRegistry {
     // Sort by score descending, then name
     results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
     return results.slice(0, limit).map(({ name, description, category }) => ({ name, description, category }));
+  }
+
+  /**
+   * BM25 search for tools (better than keyword, runs on Rust worker off main thread)
+   * Returns tools ranked by BM25 score with TF-IDF weighting
+   */
+  async bm25SearchTools(
+    query: string,
+    category?: string,
+    limit: number = 10
+  ): Promise<Array<{ name: string; description: string; category: string; score: number }>> {
+    const client = getSearchWorkerClient();
+
+    // Check if worker is available
+    if (!client.isAvailable()) {
+      console.log('⚠️ ToolRegistry: Search worker not available, falling back to keyword search');
+      return this.searchTools(query, category, limit).map(t => ({ ...t, score: 1.0 }));
+    }
+
+    // Build corpus from tools
+    const tools = this.getAllTools();
+    let filteredTools = tools;
+
+    // Apply category filter before search
+    if (category) {
+      const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+      filteredTools = tools.filter(t => {
+        const nameLower = t.name.toLowerCase();
+        return nameLower.startsWith(categoryPrefix) || nameLower === category;
+      });
+    }
+
+    if (filteredTools.length === 0) {
+      return [];
+    }
+
+    // Create corpus: "name: description" for each tool
+    const corpus = filteredTools.map(t => `${t.name}: ${t.description}`);
+
+    try {
+      // BM25 search via Rust worker (off main thread!)
+      const results = await client.bm25(query, corpus);
+
+      // Map results back to tool definitions
+      return results
+        .filter(r => r.score > 0.01) // Filter out zero/near-zero scores
+        .slice(0, limit)
+        .map(r => {
+          const tool = filteredTools[r.index];
+          const toolCategory = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
+          return {
+            name: tool.name,
+            description: tool.description,
+            category: toolCategory,
+            score: Math.round(r.score * 1000) / 1000, // Round to 3 decimals
+          };
+        });
+    } catch (error) {
+      console.error('❌ ToolRegistry: BM25 search failed:', error);
+      // Fallback to keyword search
+      return this.searchTools(query, category, limit).map(t => ({ ...t, score: 1.0 }));
+    }
   }
 
   /**
@@ -443,9 +506,9 @@ export class ToolRegistry {
         const category = parameters.category;
         const limit = parameters.limit ? parseInt(parameters.limit, 10) : 10;
 
-        // Try keyword search first (fast)
-        let results = this.searchTools(query, category, limit);
-        let searchType = 'keyword';
+        // BM25 search (better than keyword, runs on Rust worker off main thread)
+        let results = await this.bm25SearchTools(query, category, limit);
+        let searchType = 'bm25';
 
         // If few results and query is meaningful, try semantic search
         if (results.length < 3 && query.length > 2) {
@@ -453,7 +516,7 @@ export class ToolRegistry {
             const semanticResults = await this.semanticSearchTools(query, limit);
             searchType = 'hybrid';
 
-            // Merge results: keyword first, then semantic (dedupe)
+            // Merge results: BM25 first, then semantic (dedupe)
             const seen = new Set(results.map(r => r.name));
             for (const sr of semanticResults) {
               if (!seen.has(sr.name)) {
@@ -464,14 +527,14 @@ export class ToolRegistry {
                     continue;
                   }
                 }
-                results.push({ name: sr.name, description: sr.description, category: sr.category });
+                results.push({ name: sr.name, description: sr.description, category: sr.category, score: sr.similarity });
                 seen.add(sr.name);
               }
             }
             results = results.slice(0, limit);
           } catch (err) {
             console.log('⚠️ Semantic search fallback failed:', err);
-            // Keep keyword results, searchType stays 'keyword'
+            // Keep BM25 results, searchType stays 'bm25'
           }
         }
 
@@ -648,7 +711,9 @@ export class ToolRegistry {
     }
 
     // Generic fallback - JSON stringify the result
-    return JSON.stringify(result, null, 2);
+    // But strip out 'context' field which is internal plumbing, not useful to AIs
+    const { context: _, sessionId: __, ...cleanResult } = result;
+    return JSON.stringify(cleanResult, null, 2);
   }
 
   /**

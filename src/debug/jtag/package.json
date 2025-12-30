@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6622",
+  "version": "1.0.6639",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -118,10 +118,12 @@
     }
   },
   "scripts": {
-    "worker:build": "cd workers/logger && cargo build --release && cd ../training && cargo build --release && cd ../..",
+    "worker:build": "jq -c '.workers[] | select(.enabled != false)' workers/workers-config.json | while read -r w; do dir=$(echo $w | jq -r '.binary' | sed 's|/target/.*||'); echo \"Building $(echo $w | jq -r '.name')...\"; (cd $dir && cargo build --release --quiet); done",
     "worker:start": "./workers/start-workers.sh",
-    "worker:kill": "pkill -f logger-worker || true && pkill -f training-worker || true && rm -f /tmp/jtag-logger-worker.sock /tmp/training-worker.sock",
-    "worker:status": "pgrep -fl 'logger-worker|training-worker' || echo 'Rust workers not running'",
+    "worker:stop": "./workers/stop-workers.sh",
+    "worker:kill": "jq -r '.workers[].name' workers/workers-config.json | while read n; do pkill -f \"$n-worker\" || true; done; jq -r '.workers[].socket' workers/workers-config.json | xargs rm -f",
+    "worker:status": "jq -r '.workers[] | select(.enabled != false) | .name' workers/workers-config.json | while read n; do pgrep -f \"$n-worker\" > /dev/null && echo \"✅ $n-worker running\" || echo \"❌ $n-worker NOT running\"; done",
+    "worker:restart": "npm run worker:stop && npm run worker:start",
     "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
     "start": "npm run system:start",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run restart:quick",

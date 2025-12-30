@@ -10,7 +10,7 @@
         ".continuum/jtag/data/archive/database-001.sqlite"
       ],
       "description": "Archive worker for moving old data to cold storage using Commands.execute()",
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "data-daemon",
@@ -27,6 +27,14 @@
       "binary": "workers/logger/target/release/logger-worker",
       "socket": "/tmp/jtag-logger-worker.sock",
       "description": "High-performance logging worker for file I/O",
+      "enabled": true
+    },
+    {
+      "name": "search",
+      "binary": "workers/search/target/release/search-worker",
+      "socket": "/tmp/jtag-search-worker.sock",
+      "args": [],
+      "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
       "enabled": true
     }
   ],

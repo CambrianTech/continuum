@@ -78,6 +78,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
   private activityFeed: ActivityEvent[] = [];
   private issues: Issue[] = [];
   private loggingConfig: LoggingConfigState = { enabled: false, categories: [] };
+  private availableLogs: Set<string> = new Set();  // Track which log files exist
 
   constructor() {
     super({
@@ -151,10 +152,11 @@ export class PersonaBrainWidget extends BasePanelWidget {
         this.panelConfig.panelTitle = user.displayName;
         this.panelConfig.panelSubtitle = `@${user.uniqueId} - Cognitive System View`;
 
-        // Load module stats and logging config
+        // Load module stats, logging config, and available logs
         await Promise.all([
           this.loadModuleStats(),
-          this.loadLoggingConfig()
+          this.loadLoggingConfig(),
+          this.loadAvailableLogs()
         ]);
       }
     } catch (error) {
@@ -182,6 +184,30 @@ export class PersonaBrainWidget extends BasePanelWidget {
       }
     } catch (error) {
       console.warn('PersonaBrainWidget: Error loading logging config:', error);
+    }
+  }
+
+  /**
+   * Load available log files for this persona
+   * This determines which log buttons should be enabled
+   */
+  private async loadAvailableLogs(): Promise<void> {
+    try {
+      const result = await Commands.execute('logs/list', {
+        personaUniqueId: this.personaId
+      } as any) as any;
+
+      this.availableLogs.clear();
+      if (result.success && result.logs) {
+        for (const log of result.logs) {
+          // logType is the log name without path (e.g., 'tools', 'cns', 'hippocampus')
+          if (log.logType) {
+            this.availableLogs.add(log.logType);
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('PersonaBrainWidget: Error loading available logs:', error);
     }
   }
 
@@ -815,20 +841,25 @@ export class PersonaBrainWidget extends BasePanelWidget {
   }
 
   private renderStats(): string {
+    // Helper to generate stat item - only clickable if log exists
+    const statItem = (logType: string, icon: string, text: string, title: string) => {
+      const hasLog = this.availableLogs.has(logType);
+      const classes = hasLog ? 'stat-item clickable' : 'stat-item disabled';
+      const attrs = hasLog ? `data-action="open-log" data-log="${logType}"` : '';
+      const tooltip = hasLog ? title : `${title} (no log yet)`;
+      return `
+        <div class="${classes}" ${attrs} title="${tooltip}">
+          <span class="stat-icon">${icon}</span>
+          <span class="stat-text">${text}</span>
+        </div>
+      `;
+    };
+
     return `
       <div class="stats-bar">
-        <div class="stat-item">
-          <span class="stat-icon">💾</span>
-          <span class="stat-text">${this.moduleStats.hippocampus.ltmSize || '0 MB'}</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-icon">⚡</span>
-          <span class="stat-text">${this.moduleStats.motorCortex.toolsAvailable} tools</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-icon">🔗</span>
-          <span class="stat-text">${this.moduleStats.cns.connections} conn</span>
-        </div>
+        ${statItem('hippocampus', '💾', this.moduleStats.hippocampus.ltmSize || '0 MB', 'View memory log')}
+        ${statItem('tools', '⚡', `${this.moduleStats.motorCortex.toolsAvailable} tools`, 'View tools log')}
+        ${statItem('cns', '🔗', `${this.moduleStats.cns.connections} conn`, 'View CNS log')}
         ${this.issues.length > 0 ? `
         <div class="stat-item issue-indicator" data-action="show-issues">
           <span class="stat-icon">⚠️</span>
@@ -1017,6 +1048,16 @@ export class PersonaBrainWidget extends BasePanelWidget {
       issuesPanel?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 
+    // Stats bar quick-access log buttons (one-click to open logs)
+    this.shadowRoot.querySelectorAll('[data-action="open-log"]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const logType = (el as HTMLElement).dataset.log;
+        if (logType) {
+          await this.openLogViewer(logType);
+        }
+      });
+    });
+
     // Activity feed item click - show details
     this.shadowRoot.querySelectorAll('.feed-item').forEach(el => {
       el.addEventListener('click', () => {
@@ -1051,6 +1092,12 @@ export class PersonaBrainWidget extends BasePanelWidget {
   }
 
   private async openLogViewer(logType: string): Promise<void> {
+    // Guard: Don't try to open logs that don't exist
+    if (!this.availableLogs.has(logType)) {
+      console.warn(`PersonaBrainWidget: Log '${logType}' not available for ${this.personaId}. Available: ${[...this.availableLogs].join(', ')}`);
+      return;
+    }
+
     // Log paths are in format: {uniqueId}/{logType} e.g., "helper/cns", "local/prefrontal"
     const logPath = `${this.personaId}/${logType}`;
 

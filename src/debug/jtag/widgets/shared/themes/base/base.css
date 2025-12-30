@@ -18,10 +18,7 @@ body {
     background: var(--background-primary, var(--bg-primary, #0a0f14));
     color: var(--content-primary, var(--text-primary, rgba(255, 255, 255, 0.9)));
     overflow: hidden;
-    user-select: none;
-    -webkit-user-select: none;
-    -moz-user-select: none;
-    -ms-user-select: none;
+    /* Text selection enabled by default - disable per-element where needed */
 }
 
 /* Additional fallback for any white background issues */
@@ -31,10 +28,13 @@ html, body {
     background-color: #0a0f14 !important;
 }
 
-/* Enable text selection for chat widget areas */
+/* Enable text selection for content widgets */
 chat-widget,
 .chat-container,
 .content-view chat-widget,
+log-viewer-widget,
+log-viewer-widget *,
+persona-brain-widget,
 input[type="text"],
 textarea {
     user-select: text !important;
@@ -85,6 +85,13 @@ textarea {
     flex-direction: column;
     overflow: hidden;
     background: transparent;  /* Ensure no background color creates white margin */
+}
+
+/* Text selection should work by default in content views */
+.content-view,
+.content-view * {
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 /* === CHAT WIDGET PANEL === */

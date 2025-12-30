@@ -44,29 +44,27 @@ export class NavigateBrowserCommand extends NavigateCommand {
 
     try {
       const startTime = Date.now();
+      const targetUrl = params.url || window.location.href;
 
-      if (isReload) {
-        // No URL provided - reload current page
-        window.location.reload();
-      } else {
-        // Navigate to specified URL
-        window.location.href = params.url;
-      }
-
-      // Wait for load if requested
-      if (params.waitForSelector) {
-        await this.waitForElement(params.waitForSelector, params.timeout || 5000);
-      }
-
-      const loadTime = Date.now() - startTime;
-      console.log(`✅ BROWSER: ${isReload ? 'Reloaded' : 'Navigated'} in ${loadTime}ms`);
-
-      return createNavigateResult(params.context, params.sessionId, {
+      // Return result FIRST, then navigate (navigation destroys JS context)
+      const result = createNavigateResult(params.context, params.sessionId, {
         success: true,
-        url: window.location.href,
-        title: document.title,
-        loadTime
+        url: targetUrl,
+        title: isReload ? document.title : `Navigating to ${targetUrl}`,
+        loadTime: Date.now() - startTime
       });
+
+      // Schedule navigation after a microtask to allow result to be sent
+      setTimeout(() => {
+        if (isReload) {
+          window.location.reload();
+        } else {
+          window.location.href = params.url!;
+        }
+      }, 50);
+
+      console.log(`✅ BROWSER: ${isReload ? 'Reload' : 'Navigation'} initiated to ${targetUrl}`);
+      return result;
 
     } catch (error: any) {
       console.error(`❌ BROWSER: ${isReload ? 'Reload' : 'Navigation'} failed:`, error.message);

@@ -11,16 +11,16 @@ export interface StatsBarData {
 
 export function renderStatsBar(data: StatsBarData): string {
   let html = '<div class="stats-bar">' +
-    '<div class="stat-item">' +
-      '<span class="stat-icon">M</span>' +
+    '<div class="stat-item clickable" data-action="open-log" data-log="hippocampus" title="View memory log">' +
+      '<span class="stat-icon">💾</span>' +
       '<span class="stat-text">' + data.ltmSize + '</span>' +
     '</div>' +
-    '<div class="stat-item">' +
-      '<span class="stat-icon">T</span>' +
+    '<div class="stat-item clickable" data-action="open-log" data-log="tools" title="View tools log">' +
+      '<span class="stat-icon">⚡</span>' +
       '<span class="stat-text">' + data.toolsAvailable + ' tools</span>' +
     '</div>' +
-    '<div class="stat-item">' +
-      '<span class="stat-icon">C</span>' +
+    '<div class="stat-item clickable" data-action="open-log" data-log="cns" title="View CNS log">' +
+      '<span class="stat-icon">🔗</span>' +
       '<span class="stat-text">' + data.connections + ' conn</span>' +
     '</div>';
 

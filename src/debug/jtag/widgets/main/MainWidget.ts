@@ -17,6 +17,7 @@ import type { ContentOpenParams, ContentOpenResult } from '../../commands/collab
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority, ContentItem } from '../../system/data/entities/UserStateEntity';
 import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
@@ -24,7 +25,7 @@ import { RoutingService } from '../../system/routing/RoutingService';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
-  private currentPath = '/chat/general'; // Current open room/path
+  private currentPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`; // Current open room/path
   private contentManager: ContentInfoManager;
   private currentContent: ContentInfo | null = null;
   private contentStateAdapter: PositronContentStateAdapter;
@@ -99,38 +100,43 @@ export class MainWidget extends BaseWidget {
     });
 
     // Initialize from current URL
-    const initialPath = window.location.pathname;
-    if (initialPath && initialPath !== '/') {
-      this.currentPath = initialPath;
-      // Parse and load the content
-      const { type, entityId } = parseContentPath(initialPath);
-      console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
+    let initialPath = window.location.pathname;
 
-      // Switch to the content view based on URL
-      // Delay slightly to let the DOM render first
-      setTimeout(async () => {
-        this.switchContentView(type, entityId);
-
-        // Ensure a tab exists for this URL (URL is source of truth for content)
-        await this.ensureTabForContent(type, entityId);
-
-        // For chat, resolve uniqueId → UUID and emit ROOM_SELECTED so ChatWidget loads the room
-        if (type === 'chat' && entityId) {
-          const resolved = await RoutingService.resolveRoom(entityId);
-          if (resolved) {
-            Events.emit(UI_EVENTS.ROOM_SELECTED, {
-              roomId: resolved.id,
-              roomName: resolved.displayName,
-              uniqueId: resolved.uniqueId  // For URL building
-            });
-          } else {
-            console.warn(`⚠️ MainPanel: Could not resolve room: ${entityId}`);
-            // Fallback to using the identifier as-is (might be a UUID already)
-            Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '', uniqueId: entityId });
-          }
-        }
-      }, 100);
+    // Default route: / or /chat without room → /chat/general
+    const defaultPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
+    if (!initialPath || initialPath === '/' || initialPath === '/chat' || initialPath === '/chat/') {
+      initialPath = defaultPath;
+      // Update URL without triggering navigation
+      window.history.replaceState({ path: initialPath }, '', initialPath);
+      console.log(`🔗 MainPanel: Redirected to default route: ${initialPath}`);
     }
+
+    this.currentPath = initialPath;
+    // Parse and load the content
+    const { type, entityId } = parseContentPath(initialPath);
+    console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
+
+    // URL → State → Widget (in that order)
+    // Delay slightly to let the DOM render first
+    setTimeout(async () => {
+      // 1. Update state FIRST (so widget can read from it)
+      await this.ensureTabForContent(type, entityId);
+
+      // 2. For chat, resolve and emit event (for other listeners)
+      if (type === 'chat' && entityId) {
+        const resolved = await RoutingService.resolveRoom(entityId);
+        if (resolved) {
+          Events.emit(UI_EVENTS.ROOM_SELECTED, {
+            roomId: resolved.id,
+            roomName: resolved.displayName,
+            uniqueId: resolved.uniqueId
+          });
+        }
+      }
+
+      // 3. THEN create widget (reads from state)
+      this.switchContentView(type, entityId);
+    }, 100);
   }
 
   /**
@@ -326,9 +332,9 @@ export class MainWidget extends BaseWidget {
 
     const widgetTag = getWidgetForType(contentType);
 
-    // Create widget element with entity context if needed
-    // Pass entityId as a data attribute so widgets can access it
-    let widgetHtml = entityId
+    // Create widget element with entity context
+    // Use data-entity-id for widgets to read (standard HTML data attribute)
+    const widgetHtml = entityId
       ? `<${widgetTag} data-entity-id="${entityId}"></${widgetTag}>`
       : `<${widgetTag}></${widgetTag}>`;
 
@@ -408,14 +414,25 @@ export class MainWidget extends BaseWidget {
             });
           }
         } else {
-          // No tabs left - clear content area (like IDE with no files open)
-          this.userState.contentState.currentItemId = undefined;
-          this.currentPath = '/';
-          this.updateUrl('/');
-          const contentView = this.shadowRoot?.querySelector('.content-view');
-          if (contentView) {
-            contentView.innerHTML = '';
-          }
+          // No tabs left - open default chat room instead of empty state
+          const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
+          const defaultPath = `/chat/${defaultRoom}`;
+          console.log(`📋 MainPanel: All tabs closed, opening default ${defaultPath}`);
+          this.openContentTab('chat', 'General');
+          // Navigate to default room
+          this.currentPath = defaultPath;
+          this.updateUrl(defaultPath);
+          this.switchContentView('chat', defaultRoom);
+          // Emit ROOM_SELECTED for chat widget
+          RoutingService.resolveRoom(defaultRoom).then(resolved => {
+            if (resolved) {
+              Events.emit(UI_EVENTS.ROOM_SELECTED, {
+                roomId: resolved.id,
+                roomName: resolved.displayName || 'General',
+                uniqueId: defaultRoom
+              });
+            }
+          });
         }
       }
     }
