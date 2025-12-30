@@ -1,54 +1,114 @@
 /**
- * Help Command Types
+ * Help Command - Shared Types
  *
- * Auto-generates help documentation for any command by querying the list command.
- * Returns both structured data and human-readable help text.
+ * Discover and display help documentation from command READMEs, auto-generating templates for gaps
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { CommandSignature } from '../../list/shared/ListTypes';
 
 /**
- * Help command parameters
+ * A discovered help topic (command group or individual command)
+ */
+export interface HelpTopic {
+  /** Command path (e.g., 'interface', 'interface/screenshot') */
+  path: string;
+  /** Human-readable title */
+  title: string;
+  /** Whether a README.md exists for this topic */
+  hasReadme: boolean;
+  /** List of subcommands under this path */
+  commands?: string[];
+}
+
+/**
+ * Help Command Parameters
  */
 export interface HelpParams extends CommandParams {
-  readonly context: JTAGContext;
-  readonly sessionId: UUID;
-
-  /**
-   * Command name to get help for (e.g., "tree", "data/read", "screenshot")
-   * Defaults to "help" (shows how to use help command)
-   */
-  readonly commandName?: string;
+  // Command path (e.g., 'interface', 'interface/screenshot')
+  path?: string;
+  // Output format for different consumers
+  format?: 'markdown' | 'json' | 'rag';
+  // List all available help topics
+  list?: boolean;
 }
 
 /**
- * Help command result
+ * Factory function for creating HelpParams
+ */
+export const createHelpParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    // Command path (e.g., 'interface', 'interface/screenshot')
+    path?: string;
+    // Output format for different consumers
+    format?: 'markdown' | 'json' | 'rag';
+    // List all available help topics
+    list?: boolean;
+  }
+): HelpParams => createPayload(context, sessionId, {
+  path: data.path ?? '',
+  format: data.format ?? undefined,
+  list: data.list ?? false,
+  ...data
+});
+
+/**
+ * Help Command Result
  */
 export interface HelpResult extends CommandResult {
-  readonly context: JTAGContext;
-  readonly sessionId: UUID;
-  readonly success: boolean;
-
-  /** Command signature with metadata */
-  readonly signature?: CommandSignature;
-
-  readonly error?: string;
+  success: boolean;
+  // The help path that was queried
+  path: string;
+  // The help content (markdown, json, or condensed for RAG)
+  content: string;
+  // List of available help topics (when list=true)
+  topics: HelpTopic[];
+  // Whether the content was auto-generated (no README found)
+  generated: boolean;
+  // The format used for output
+  format: string;
+  error?: JTAGError;
 }
 
 /**
- * Create HelpResult from HelpParams (type-safe factory)
+ * Factory function for creating HelpResult with defaults
  */
-export function createHelpResultFromParams(
+export const createHelpResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    // The help path that was queried
+    path?: string;
+    // The help content (markdown, json, or condensed for RAG)
+    content?: string;
+    // List of available help topics (when list=true)
+    topics?: HelpTopic[];
+    // Whether the content was auto-generated (no README found)
+    generated?: boolean;
+    // The format used for output
+    format?: string;
+    error?: JTAGError;
+  }
+): HelpResult => createPayload(context, sessionId, {
+  path: data.path ?? '',
+  content: data.content ?? '',
+  topics: data.topics ?? [],
+  generated: data.generated ?? false,
+  format: data.format ?? '',
+  ...data
+});
+
+/**
+ * Smart Help-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createHelpResultFromParams = (
   params: HelpParams,
-  data: Partial<Omit<HelpResult, 'context' | 'sessionId'>>
-): HelpResult {
-  return {
-    context: params.context,
-    sessionId: params.sessionId,
-    success: data.success ?? false,
-    signature: data.signature,
-    error: data.error
-  };
-}
+  differences: Omit<HelpResult, 'context' | 'sessionId'>
+): HelpResult => transformPayload(params, differences);
