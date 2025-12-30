@@ -253,7 +253,10 @@ const server = new Server(
 const toolToCommand: Record<string, string> = {};
 const commandPriorities: Map<string, number> = new Map();
 
-// Add special system control tool (highest priority)
+// =============================================================================
+// META-TOOLS - Tools for discovering and working with other tools
+// =============================================================================
+
 const systemStartTool: Tool = {
   name: 'jtag_system_start',
   description: '[JTAG] Start the JTAG system if not running. Takes ~90 seconds to fully start.',
@@ -268,9 +271,84 @@ const systemStartTool: Tool = {
   },
 };
 
-// Build tools with priority tracking
-const unsortedTools: Tool[] = [systemStartTool];
-commandPriorities.set('jtag_system_start', -1);  // Always first
+const searchToolsTool: Tool = {
+  name: 'jtag_search_tools',
+  description: '[JTAG] Search for tools by keyword. Returns matching tool names and descriptions. Use this to find relevant tools instead of scanning all 157.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'Search query - matches against tool names and descriptions (e.g., "screenshot", "css", "widget", "chat")',
+      },
+      category: {
+        type: 'string',
+        description: 'Optional category filter: interface, collaboration, ai, data, development, workspace, media, system',
+      },
+      limit: {
+        type: 'number',
+        description: 'Max results to return (default: 10)',
+      },
+    },
+    required: ['query'],
+  },
+};
+
+/**
+ * Search tools by keyword
+ */
+function searchTools(query: string, category?: string, limit: number = 10): Array<{ name: string; description: string; category: string }> {
+  const queryLower = query.toLowerCase();
+  const results: Array<{ name: string; description: string; category: string; score: number }> = [];
+
+  for (const command of schemas.commands) {
+    const nameLower = command.name.toLowerCase();
+    const descLower = (command.description || '').toLowerCase();
+
+    // Category filter
+    if (category) {
+      const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+      if (!nameLower.startsWith(categoryPrefix) && nameLower !== category) {
+        continue;
+      }
+    }
+
+    // Score matches
+    let score = 0;
+    if (nameLower.includes(queryLower)) score += 10;
+    if (nameLower.startsWith(queryLower)) score += 5;
+    if (descLower.includes(queryLower)) score += 3;
+
+    // Exact segment match (e.g., "css" matches "widget-css" but scores higher than "discussion")
+    const segments = nameLower.split(/[\/\-_]/);
+    if (segments.includes(queryLower)) score += 8;
+
+    if (score > 0) {
+      // Determine category from name
+      const cmdCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
+      results.push({
+        name: command.name,
+        description: command.description || command.name,
+        category: cmdCategory,
+        score,
+      });
+    }
+  }
+
+  // Sort by score descending, then name
+  results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+
+  return results.slice(0, limit).map(({ name, description, category }) => ({
+    name,
+    description,
+    category,
+  }));
+}
+
+// Build tools with priority tracking - meta-tools first
+const unsortedTools: Tool[] = [systemStartTool, searchToolsTool];
+commandPriorities.set('jtag_system_start', -2);  // Always first
+commandPriorities.set('jtag_search_tools', -1);  // Second (discovery tool)
 
 for (const command of schemas.commands) {
   const tool = commandToTool(command);
@@ -373,11 +451,28 @@ async function getClient() {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  // Handle special system control tool
+  // Handle meta-tools (no JTAG connection needed)
   if (name === 'jtag_system_start') {
     const message = await startJTAGSystem();
     return {
       content: [{ type: 'text', text: message }],
+    };
+  }
+
+  if (name === 'jtag_search_tools') {
+    const { query, category, limit } = (args || {}) as { query: string; category?: string; limit?: number };
+    const results = searchTools(query, category, limit || 10);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          query,
+          category: category || 'all',
+          count: results.length,
+          tools: results,
+          hint: 'Use the tool name with mcp__jtag__ prefix, replacing / with _',
+        }, null, 2),
+      }],
     };
   }
 
