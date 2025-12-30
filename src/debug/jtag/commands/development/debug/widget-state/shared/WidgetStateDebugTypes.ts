@@ -21,7 +21,13 @@ export interface WidgetStateDebugParams extends CommandParams {
   rowSelector?: string;
   countOnly?: boolean; // Return only entityCount, no heavy data
 
+  // IMPORTANT: Simple params must come BEFORE setContext (nested braces break schema generator regex)
+  contextSessionId?: string;  // Session ID for context storage (renamed to avoid conflict with CommandParams.sessionId)
+  setRAGString?: string;      // Pre-formatted RAG context string for AI prompts (from PositronicBridge)
+  getStoredContext?: boolean; // Return the current widget context from WidgetContextService
+
   // Context bridging: set widget context for RAG awareness
+  // NOTE: This nested object MUST be last - schema generator regex stops at first }
   setContext?: {
     widget: {
       widgetType: string;
@@ -38,10 +44,6 @@ export interface WidgetStateDebugParams extends CommandParams {
     breadcrumb?: string[];
     dwellTimeMs?: number;
   };
-  contextSessionId?: string;  // Renamed to avoid conflict with CommandParams.sessionId
-
-  // Query stored context: get current RAG context for debugging
-  getStoredContext?: boolean;  // Return the current widget context from WidgetContextService
 }
 
 export interface WidgetStateDebugResult extends CommandResult {

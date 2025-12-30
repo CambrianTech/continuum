@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-30T19:59:41.410Z",
+  "generated": "2025-12-30T23:42:07.696Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2169,30 +2169,20 @@
           "required": false,
           "description": "countOnly parameter"
         },
-        "setContext": {
-          "type": "object",
-          "required": false,
-          "description": "setContext parameter"
-        },
-        "section": {
+        "contextSessionId": {
           "type": "string",
           "required": false,
-          "description": "section parameter"
+          "description": "contextSessionId parameter"
         },
-        "title": {
+        "setRAGString": {
           "type": "string",
           "required": false,
-          "description": "title parameter"
+          "description": "setRAGString parameter"
         },
-        "metadata": {
-          "type": "object",
+        "getStoredContext": {
+          "type": "boolean",
           "required": false,
-          "description": "metadata parameter"
-        },
-        "timestamp": {
-          "type": "number",
-          "required": false,
-          "description": "timestamp parameter"
+          "description": "getStoredContext parameter"
         }
       }
     },

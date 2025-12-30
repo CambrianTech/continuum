@@ -20,14 +20,18 @@ export class WidgetStateServerCommand extends CommandBase<WidgetStateDebugParams
   }
 
   async execute(params: WidgetStateDebugParams): Promise<WidgetStateDebugResult> {
+    // Log ALL params to debug what's actually received
+    console.log('🧠 WidgetStateDebug: Received params keys:', Object.keys(params).filter(k => k !== 'context'));
     console.log('🧠 WidgetStateDebug: Received params:', JSON.stringify({
       hasSetContext: !!params.setContext,
+      hasSetRAGString: !!params.setRAGString,
       hasGetStoredContext: !!params.getStoredContext,
+      contextSessionId: params.contextSessionId,
       widgetSelector: params.widgetSelector
     }));
 
     try {
-      // Handle context bridging if setContext is provided
+      // Handle context bridging if setContext is provided (legacy format)
       if (params.setContext) {
         const sessionId = params.contextSessionId || this.context.uuid;
         console.log(`🧠 WidgetStateDebug: Storing widget context for session ${sessionId.slice(0, 8)}`);
@@ -65,9 +69,35 @@ export class WidgetStateServerCommand extends CommandBase<WidgetStateDebugParams
         });
       }
 
+      // Handle RAG string bridging (new unified state system from PositronicBridge)
+      if (params.setRAGString) {
+        const sessionId = params.contextSessionId || this.context.uuid;
+        console.log(`🧠 WidgetStateDebug: Storing RAG string for session ${sessionId} (${params.setRAGString.length} chars)`);
+        console.log(`🧠 WidgetStateDebug: RAG string content preview: ${params.setRAGString.slice(0, 100)}...`);
+
+        // Store pre-formatted RAG string in WidgetContextService
+        WidgetContextService.setRAGString(sessionId, params.setRAGString);
+
+        return createWidgetStateDebugResult(this.context, this.context.uuid, {
+          success: true,
+          widgetFound: true,
+          widgetPath: 'rag-string-bridge',
+          widgetType: 'positronic-context',
+          methods: [],
+          state: { properties: { ragStringStored: true, sessionId, ragStringLength: params.setRAGString.length } },
+          messages: [],
+          debugging: {
+            logs: [`Stored RAG string (${params.setRAGString.length} chars)`],
+            warnings: [],
+            errors: []
+          }
+        });
+      }
+
       // Handle getStoredContext query - return current server-side context
       if (params.getStoredContext) {
         console.log('🧠 WidgetStateDebug: Querying stored widget context');
+        console.log(`🧠 WidgetStateDebug: Query from session ${this.context.uuid}`);
 
         // Ensure service is initialized
         WidgetContextService.initialize();
@@ -78,9 +108,9 @@ export class WidgetStateServerCommand extends CommandBase<WidgetStateDebugParams
 
         return createWidgetStateDebugResult(this.context, this.context.uuid, {
           success: true,
-          widgetFound: !!rawContext,
+          widgetFound: !!ragString || !!rawContext,
           widgetPath: 'context-query',
-          widgetType: rawContext?.widget?.widgetType || 'none',
+          widgetType: rawContext?.widget?.widgetType || (ragString ? 'positronic-context' : 'none'),
           methods: [],
           state: { properties: {} },
           messages: [],
@@ -92,10 +122,12 @@ export class WidgetStateServerCommand extends CommandBase<WidgetStateDebugParams
           debugging: {
             logs: [
               `Active contexts: ${stats.activeContexts}`,
+              `Active RAG strings: ${stats.activeRagStrings}`,
               `Service initialized: ${stats.initialized}`,
-              rawContext ? `Current widget: ${rawContext.widget.widgetType}` : 'No context stored'
+              ragString ? `RAG string available (${ragString.length} chars)` : 'No RAG string stored',
+              rawContext ? `Current widget: ${rawContext.widget.widgetType}` : 'No legacy context stored'
             ],
-            warnings: rawContext ? [] : ['No widget context stored - widgets may not be emitting state'],
+            warnings: (!ragString && !rawContext) ? ['No widget context stored - widgets may not be emitting state'] : [],
             errors: []
           }
         });
