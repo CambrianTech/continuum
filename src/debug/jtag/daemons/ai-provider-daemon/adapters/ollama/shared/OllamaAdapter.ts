@@ -918,6 +918,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       const url = `${this.config.apiEndpoint}${endpoint}`;
 
       try {
+        // Diagnostic logging for embedding issues
+        if (endpoint.includes('embed')) {
+          this.log(null, 'debug', `🔬 DIAG: ${endpoint} request - model: ${(body as any)?.model}, prompt length: ${(body as any)?.prompt?.length || 0}`);
+        }
+
         const response = await fetch(url, {
           method: body ? 'POST' : 'GET',
           headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -926,6 +931,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         });
 
         if (!response.ok) {
+          // Log response body for HTTP 500 errors
+          if (response.status === 500) {
+            const errorText = await response.text().catch(() => 'Could not read error body');
+            this.log(null, 'error', `🔬 HTTP 500 body: ${errorText.substring(0, 500)}`);
+          }
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 

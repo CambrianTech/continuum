@@ -191,13 +191,19 @@ export class EmbeddingService {
     model: EmbeddingModel = DEFAULT_EMBEDDING_MODEL
   ): Promise<number[] | null> {
     if (!text || text.trim().length === 0) {
+      console.warn('⚠️ EmbeddingService.embedText: Empty text provided');
       return null;
     }
 
     try {
       const result = await DataDaemon.generateEmbedding({ text, model });
+      if (!result.success) {
+        console.warn(`⚠️ EmbeddingService.embedText: DataDaemon.generateEmbedding failed: ${result.error}`);
+      }
       return result.success && result.data ? result.data.embedding : null;
-    } catch {
+    } catch (error) {
+      // DON'T silently swallow errors - log them for debugging
+      console.error('❌ EmbeddingService.embedText: Exception:', error instanceof Error ? error.message : error);
       return null;
     }
   }
