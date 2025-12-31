@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-30T23:42:07.696Z",
+  "generated": "2025-12-31T00:26:20.796Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -190,7 +190,23 @@
     {
       "name": "workspace/git/workspace/init",
       "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
-      "params": {}
+      "params": {
+        "branch": {
+          "type": "string",
+          "required": false,
+          "description": "branch parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "paths": {
+          "type": "array",
+          "required": true,
+          "description": "paths parameter"
+        }
+      }
     },
     {
       "name": "workspace/git/workspace/clean",
@@ -820,6 +836,21 @@
           "type": "object",
           "required": true,
           "description": "participants parameter"
+        },
+        "trainingMode": {
+          "type": "string",
+          "required": false,
+          "description": "trainingMode parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        },
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
         }
       }
     },
@@ -1094,8 +1125,83 @@
           "type": "number",
           "required": true,
           "description": "height parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "trim": {
+          "type": "object",
+          "required": false,
+          "description": "trim parameter"
+        },
+        "end": {
+          "type": "string",
+          "required": true,
+          "description": "end parameter"
+        },
+        "trimTime": {
+          "type": "object",
+          "required": false,
+          "description": "trimTime parameter"
+        },
+        "rotate": {
+          "type": "string",
+          "required": false,
+          "description": "rotate parameter"
+        },
+        "flipHorizontal": {
+          "type": "boolean",
+          "required": false,
+          "description": "flipHorizontal parameter"
+        },
+        "flipVertical": {
+          "type": "boolean",
+          "required": false,
+          "description": "flipVertical parameter"
+        },
+        "gifFps": {
+          "type": "number",
+          "required": false,
+          "description": "gifFps parameter"
+        },
+        "gifMaxWidth": {
+          "type": "number",
+          "required": false,
+          "description": "gifMaxWidth parameter"
+        },
+        "customArgs": {
+          "type": "array",
+          "required": false,
+          "description": "customArgs parameter"
+        },
+        "checkDependency": {
+          "type": "boolean",
+          "required": false,
+          "description": "checkDependency parameter"
+        },
+        "installDependencies": {
+          "type": "boolean",
+          "required": false,
+          "description": "installDependencies parameter"
+        },
+        "minVersion": {
+          "type": "string",
+          "required": false,
+          "description": "minVersion parameter"
+        },
+        "emitProgress": {
+          "type": "boolean",
+          "required": false,
+          "description": "emitProgress parameter"
         }
       }
+    },
+    {
+      "name": "logs/stats",
+      "description": "logs/stats command",
+      "params": {}
     },
     {
       "name": "logs/search",
@@ -2055,7 +2161,7 @@
       }
     },
     {
-      "name": "development/exec/command",
+      "name": "development/exec",
       "description": "ExecCommand Types - Universal Script Execution System\n * \n * Defines types for JTAG's meta-command that enables AI agents to write\n * custom automation scripts with visual feedback and cross-context execution.",
       "params": {
         "code": {
@@ -2116,7 +2222,7 @@
       }
     },
     {
-      "name": "development/debug/widget-state/debug",
+      "name": "development/debug/widget-state",
       "description": "Widget State Debug Command Types\n *\n * Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development\n * Enables inspection of widget internal state, event listeners, and DOM structure",
       "params": {
         "widgetSelector": {
@@ -2258,7 +2364,7 @@
       }
     },
     {
-      "name": "development/debug/widget-events/debug",
+      "name": "development/debug/widget-events",
       "description": "Widget Events Debug Command Types\n * \n * Specialized command for debugging widget event listeners and event system connectivity\n * Replaces raw exec commands for widget event debugging",
       "params": {
         "widgetSelector": {
@@ -2289,7 +2395,7 @@
       }
     },
     {
-      "name": "development/debug/widget-css/debug",
+      "name": "development/debug/widget-css",
       "description": "Debug Command: widget-css\n * Hot-inject CSS into widgets for rapid iteration without full deployment",
       "params": {
         "widgetSelector": {
@@ -2463,7 +2569,7 @@
       }
     },
     {
-      "name": "development/debug/crud-sync/debug",
+      "name": "development/debug/crud-sync",
       "description": "CRUD Sync Debug Command Types\n *\n * Verifies database/UI synchronization across all three main widgets:\n * - room-list-widget: Rooms data\n * - chat-widget: Messages data\n * - user-list-widget: Users data",
       "params": {
         "collections": {
@@ -2484,7 +2590,7 @@
       }
     },
     {
-      "name": "development/debug/chat-send/debug",
+      "name": "development/debug/chat-send",
       "description": "Chat Send Debug Command Types\n *\n * Triggers chat widget to send a message for testing event flow",
       "params": {
         "message": {
@@ -2760,6 +2866,11 @@
           "type": "object",
           "required": false,
           "description": "orderBy parameter"
+        },
+        "pageSize": {
+          "type": "number",
+          "required": false,
+          "description": "pageSize parameter"
         }
       }
     },
@@ -3249,6 +3360,21 @@
           "type": "string",
           "required": false,
           "description": "proposedBy parameter"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "scope parameter"
+        },
+        "significanceLevel": {
+          "type": "string",
+          "required": false,
+          "description": "significanceLevel parameter"
+        },
+        "proposerId": {
+          "type": "string",
+          "required": false,
+          "description": "proposerId parameter"
         }
       }
     },
@@ -3733,6 +3859,16 @@
           "type": "object",
           "required": false,
           "description": "roleConfig parameter"
+        },
+        "config": {
+          "type": "string",
+          "required": false,
+          "description": "config parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
         }
       }
     },
@@ -3944,6 +4080,31 @@
           "type": "string",
           "required": true,
           "description": "timestamp parameter"
+        },
+        "strategy": {
+          "type": "string",
+          "required": false,
+          "description": "strategy parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
+        },
+        "domainKeywords": {
+          "type": "array",
+          "required": false,
+          "description": "domainKeywords parameter"
+        },
+        "responseThreshold": {
+          "type": "number",
+          "required": false,
+          "description": "responseThreshold parameter"
         }
       }
     },
@@ -4041,6 +4202,21 @@
           "type": "number",
           "required": false,
           "description": "limit parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": false,
+          "description": "output parameter"
+        },
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
+        },
+        "groupByActor": {
+          "type": "boolean",
+          "required": false,
+          "description": "groupByActor parameter"
         }
       }
     },
@@ -4473,6 +4649,61 @@
           "type": "string",
           "required": false,
           "description": "name parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "maxMessages": {
+          "type": "number",
+          "required": false,
+          "description": "maxMessages parameter"
+        },
+        "includeArtifacts": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeArtifacts parameter"
+        },
+        "includeMemories": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMemories parameter"
+        },
+        "preview": {
+          "type": "boolean",
+          "required": false,
+          "description": "preview parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "temperature parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "preferredProvider": {
+          "type": "string",
+          "required": false,
+          "description": "preferredProvider parameter"
         }
       }
     },
