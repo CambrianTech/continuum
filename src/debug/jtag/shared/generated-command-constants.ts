@@ -147,6 +147,7 @@ export const COMMANDS = {
   PERSONA_LEARNING_CAPTURE_INTERACTION: 'persona/learning/capture-interaction',
   PERSONA_LEARNING_MULTI_AGENT_LEARN: 'persona/learning/multi-agent-learn',
   PING: 'ping',
+  POSITRON_CURSOR: 'positron/cursor',
   PROCESS_REGISTRY: 'process-registry',
   RAG_BUDGET: 'rag/budget',
   RAG_LOAD: 'rag/load',

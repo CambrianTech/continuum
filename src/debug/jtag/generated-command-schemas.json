@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-31T02:39:24.954Z",
+  "generated": "2025-12-31T21:01:17.286Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -794,6 +794,62 @@
           "type": "array",
           "required": false,
           "description": "targetPorts parameter"
+        }
+      }
+    },
+    {
+      "name": "positron/cursor",
+      "description": "Positron Cursor Command Types\n *\n * Enables AIs to point, highlight, and draw attention to elements in the UI.\n * The cursor is the AI's \"hand\" - its spatial presence in the interface.",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "x": {
+          "type": "number",
+          "required": false,
+          "description": "x parameter"
+        },
+        "y": {
+          "type": "number",
+          "required": false,
+          "description": "y parameter"
+        },
+        "selector": {
+          "type": "string",
+          "required": false,
+          "description": "selector parameter"
+        },
+        "shape": {
+          "type": "string",
+          "required": false,
+          "description": "shape parameter"
+        },
+        "color": {
+          "type": "string",
+          "required": false,
+          "description": "color parameter"
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "description": "duration parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
         }
       }
     },
