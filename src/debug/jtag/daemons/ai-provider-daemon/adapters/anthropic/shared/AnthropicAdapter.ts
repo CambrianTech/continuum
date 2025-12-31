@@ -195,7 +195,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         supportsFunctions: true,  // Native tool_use support enabled
       },
       {
-        id: MODEL_IDS.ANTHROPIC.OPUS_3,
+        id: MODEL_IDS.ANTHROPIC.OPUS_4,
         name: 'Claude 3 Opus',
         provider: 'anthropic',
         capabilities: ['text-generation', 'chat', 'multimodal'],
@@ -206,7 +206,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         supportsFunctions: true,  // Native tool_use support enabled
       },
       {
-        id: MODEL_IDS.ANTHROPIC.HAIKU_3,
+        id: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
         name: 'Claude 3 Haiku',
         provider: 'anthropic',
         capabilities: ['text-generation', 'chat', 'multimodal'],
@@ -233,7 +233,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: MODEL_IDS.ANTHROPIC.HAIKU_3,
+          model: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 1,
         }),
@@ -282,8 +282,8 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
     const models = {
       [MODEL_IDS.ANTHROPIC.SONNET_4_5]: { input: 0.003, output: 0.015 },
-      [MODEL_IDS.ANTHROPIC.OPUS_3]: { input: 0.015, output: 0.075 },
-      [MODEL_IDS.ANTHROPIC.HAIKU_3]: { input: 0.00025, output: 0.00125 },
+      [MODEL_IDS.ANTHROPIC.OPUS_4]: { input: 0.015, output: 0.075 },
+      [MODEL_IDS.ANTHROPIC.HAIKU_3_5]: { input: 0.00025, output: 0.00125 },
     };
 
     const pricing = models[model as keyof typeof models];
@@ -403,11 +403,11 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
   async resolveModelTier(tier: ModelTier): Promise<ModelResolution> {
     // Anthropic tier mappings
     const tierMappings: Record<ModelTier, string> = {
-      [ModelTier.FAST]: MODEL_IDS.ANTHROPIC.HAIKU_3,
+      [ModelTier.FAST]: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
       [ModelTier.BALANCED]: MODEL_IDS.ANTHROPIC.SONNET_4_5, // Latest Sonnet
-      [ModelTier.PREMIUM]: MODEL_IDS.ANTHROPIC.OPUS_3,
+      [ModelTier.PREMIUM]: MODEL_IDS.ANTHROPIC.OPUS_4,
       [ModelTier.LATEST]: MODEL_IDS.ANTHROPIC.SONNET_4_5, // Always latest
-      [ModelTier.FREE]: MODEL_IDS.ANTHROPIC.HAIKU_3, // Cheapest, not truly free
+      [ModelTier.FREE]: MODEL_IDS.ANTHROPIC.HAIKU_3_5, // Cheapest, not truly free
     };
 
     const modelId = tierMappings[tier];

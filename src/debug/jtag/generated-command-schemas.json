@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-31T21:01:17.286Z",
+  "generated": "2025-12-31T22:33:44.194Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3936,6 +3936,52 @@
           "type": "array",
           "required": false,
           "description": "tags parameter"
+        }
+      }
+    },
+    {
+      "name": "canvas/vision",
+      "description": "Canvas Vision Command Types\n *\n * Enables AIs to \"see\" and interact with the drawing canvas:\n * - describe: Vision AI describes what's on the canvas\n * - transform: Use image generation to transform the sketch\n * - analyze: Structured analysis of the drawing",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "imageBase64": {
+          "type": "string",
+          "required": false,
+          "description": "imageBase64 parameter"
+        },
+        "prompt": {
+          "type": "string",
+          "required": false,
+          "description": "prompt parameter"
+        },
+        "transformPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "transformPrompt parameter"
+        },
+        "transformModel": {
+          "type": "string",
+          "required": false,
+          "description": "transformModel parameter"
+        },
+        "visionModel": {
+          "type": "string",
+          "required": false,
+          "description": "visionModel parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
         }
       }
     },
