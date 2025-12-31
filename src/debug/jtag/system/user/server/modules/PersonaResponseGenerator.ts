@@ -22,7 +22,7 @@ import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
@@ -39,11 +39,11 @@ import {
 } from '../../../events/shared/AIDecisionEvents';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
-import type { PersonaToolExecutor } from './PersonaToolExecutor';
+import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
-import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
@@ -488,15 +488,17 @@ export class PersonaResponseGenerator {
       // Use adapter-based formatting for harmony with parser
       // CRITICAL: Use async version to ensure tool cache is initialized before injection
       const availableTools = await this.toolRegistry.listToolsForPersonaAsync(this.personaId);
-      if (availableTools.length > 0) {
-        // Convert PersonaToolDefinitions to adapter format (use already-loaded tools from registry)
-        const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-          category: t.category
-        }));
 
+      // Convert PersonaToolDefinitions to adapter format (used for both XML injection and native tools)
+      // Hoisted to outer scope so it's available for native tool_use injection later
+      const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+        category: t.category
+      }));
+
+      if (availableTools.length > 0) {
         // Use primary adapter to format tools (harmonious with parser)
         const adapter = getPrimaryAdapter();
         const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
@@ -727,6 +729,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
       const provider = this.modelConfig.provider || 'ollama';
+
+      // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
+      // This enables tool_use blocks instead of XML parsing for more reliable tool execution
+      if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
+        request.tools = convertToNativeToolSpecs(toolDefinitions);
+        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
+      }
       const isMentioned = originalMessage.content.text.toLowerCase().includes(`@${this.personaName.toLowerCase()}`);
 
       const slotGranted = await InferenceCoordinator.requestSlot(
@@ -925,8 +934,24 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const MAX_TOOL_ITERATIONS = 3;
 
         while (toolIterations < MAX_TOOL_ITERATIONS) {
-          // Parse tool calls from response using adapter
-          const toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
+          // Check for native tool calls first (from Anthropic, OpenAI JSON tool_use format)
+          // Then fall back to XML parsing for other providers
+          let toolCalls: ExecutorToolCall[];
+
+          if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+            // Convert native format { id, name, input } to executor format { toolName, parameters }
+            // Unsanitize tool names: data__list -> data/list (API requires no slashes, we use double underscores)
+            toolCalls = aiResponse.toolCalls.map((tc: NativeToolCall) => ({
+              toolName: unsanitizeToolName(tc.name),
+              parameters: Object.fromEntries(
+                Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+              ) as Record<string, string>
+            }));
+            this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Using native tool_use format (${toolCalls.length} calls)`);
+          } else {
+            // Fall back to XML parsing for non-native providers
+            toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
+          }
 
           if (toolCalls.length === 0) {
             // No tools found, proceed to post response

@@ -18,6 +18,8 @@ import type {
   TextGenerationRequest,
   TextGenerationResponse,
   HealthStatus,
+  ToolCall,
+  NativeToolSpec,
 } from '../../../shared/AIProviderTypesV2';
 import { AIProviderError } from '../../../shared/AIProviderTypesV2';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
@@ -79,7 +81,8 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
     try {
       // Log incoming request messages
-      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal`);
+      const hasNativeTools = request.tools && request.tools.length > 0;
+      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal, ${hasNativeTools ? `${request.tools!.length} native tools` : 'no native tools'}`);
 
       // Convert messages to Anthropic format
       const messages = request.messages.map((msg, index) => {
@@ -94,7 +97,31 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         };
       });
 
-      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Sending API request with ${messages.length} messages to Anthropic`);
+      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Sending API request with ${messages.length} messages to Anthropic${hasNativeTools ? ' (with native tools)' : ''}`);
+
+      // Build request body
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages,
+        system: request.systemPrompt,
+        max_tokens: request.maxTokens || 1024,
+        temperature: request.temperature ?? 0.7,
+        top_p: request.topP,
+        stop_sequences: request.stopSequences,
+      };
+
+      // Add native tools if provided (Anthropic's JSON tool format)
+      if (hasNativeTools) {
+        requestBody.tools = request.tools;
+        if (request.tool_choice) {
+          // Anthropic tool_choice format: 'auto', 'any', 'none', or { type: 'tool', name: 'tool_name' }
+          if (typeof request.tool_choice === 'object' && 'name' in request.tool_choice) {
+            requestBody.tool_choice = { type: 'tool', name: request.tool_choice.name };
+          } else {
+            requestBody.tool_choice = { type: request.tool_choice };
+          }
+        }
+      }
 
       // Make API request
       const response = await this.makeRequest<any>('/v1/messages', {
@@ -104,21 +131,30 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           'x-api-key': this.apiKey,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          system: request.systemPrompt,
-          max_tokens: request.maxTokens || 1024,
-          temperature: request.temperature ?? 0.7,
-          top_p: request.topP,
-          stop_sequences: request.stopSequences,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const responseTime = Date.now() - startTime;
 
-      // Parse response
-      const text = response.content?.[0]?.text || '';
+      // Parse response - handle both text and tool_use content blocks
+      let text = '';
+      const toolCalls: ToolCall[] = [];
+
+      for (const block of response.content || []) {
+        if (block.type === 'text') {
+          text += block.text;
+        } else if (block.type === 'tool_use') {
+          // Native tool call from Claude
+          toolCalls.push({
+            id: block.id,
+            name: block.name,
+            input: block.input || {},
+          });
+          this.log(request, 'debug', `🔧 [ANTHROPIC-ADAPTER] Native tool call: ${block.name} (id: ${block.id})`);
+        }
+      }
+
+      const hasToolCalls = toolCalls.length > 0;
 
       return {
         text,
@@ -133,6 +169,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         },
         responseTime,
         requestId,
+        ...(hasToolCalls && { toolCalls }),
       };
     } catch (error) {
       throw new AIProviderError(
@@ -155,7 +192,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.003, output: 0.015 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsFunctions: true,  // Native tool_use support enabled
       },
       {
         id: MODEL_IDS.ANTHROPIC.OPUS_3,
@@ -166,7 +203,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.015, output: 0.075 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsFunctions: true,  // Native tool_use support enabled
       },
       {
         id: MODEL_IDS.ANTHROPIC.HAIKU_3,
@@ -177,7 +214,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.00025, output: 0.00125 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsFunctions: true,  // Native tool_use support enabled
       },
     ];
   }
@@ -320,9 +357,10 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
     return formatted;
   }
 
-  private mapFinishReason(reason: string): 'stop' | 'length' | 'error' {
+  private mapFinishReason(reason: string): 'stop' | 'length' | 'error' | 'tool_use' {
     if (reason === 'end_turn') return 'stop';
     if (reason === 'max_tokens') return 'length';
+    if (reason === 'tool_use') return 'tool_use';
     return 'error';
   }
 

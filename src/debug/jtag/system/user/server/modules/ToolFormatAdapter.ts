@@ -311,3 +311,73 @@ export function getToolFormatAdapters(): ToolFormatAdapter[] {
 export function getPrimaryAdapter(): ToolFormatAdapter {
   return getToolFormatAdapters()[0];  // AnthropicStyleToolAdapter
 }
+
+// ========================
+// Native Tool Support (JSON format for Anthropic API)
+// ========================
+
+import type { NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+
+/**
+ * Sanitize tool name for Anthropic API
+ * API requires: ^[a-zA-Z0-9_-]{1,128}$
+ * Our tools have slashes like 'data/list', 'collaboration/chat/send'
+ */
+export function sanitizeToolName(name: string): string {
+  // Replace slashes with double underscores (reversible)
+  return name.replace(/\//g, '__');
+}
+
+/**
+ * Restore original tool name from sanitized version
+ */
+export function unsanitizeToolName(sanitizedName: string): string {
+  // Restore slashes from double underscores
+  return sanitizedName.replace(/__/g, '/');
+}
+
+/**
+ * Convert ToolDefinition[] to NativeToolSpec[] for providers that support native JSON tools
+ * (Anthropic, OpenAI, etc.)
+ *
+ * This enables native tool_use instead of XML parsing, which is more reliable.
+ */
+export function convertToNativeToolSpecs(tools: ToolDefinition[]): NativeToolSpec[] {
+  return tools.map(tool => {
+    // Convert our ToolDefinition to Anthropic's input_schema format
+    const properties: Record<string, { type: string; description?: string; enum?: string[] }> = {};
+    const required: string[] = [];
+
+    for (const [paramName, paramDef] of Object.entries(tool.parameters.properties)) {
+      properties[paramName] = {
+        type: paramDef.type || 'string',
+        description: paramDef.description,
+      };
+
+      // Check if required
+      if (tool.parameters.required.includes(paramName) || paramDef.required) {
+        required.push(paramName);
+      }
+    }
+
+    return {
+      // Sanitize name for API (data/list -> data__list)
+      name: sanitizeToolName(tool.name),
+      description: tool.description,
+      input_schema: {
+        type: 'object',
+        properties,
+        required: required.length > 0 ? required : undefined,
+      },
+    };
+  });
+}
+
+/**
+ * Check if a provider supports native JSON tool calling
+ */
+export function supportsNativeTools(provider: string): boolean {
+  // Providers that support native tool_use JSON format
+  const nativeToolProviders = ['anthropic', 'openai', 'azure'];
+  return nativeToolProviders.includes(provider.toLowerCase());
+}
