@@ -51,6 +51,8 @@ export const COMMANDS = {
   AI_STATUS: 'ai/status',
   AI_THOUGHTSTREAM: 'ai/thoughtstream',
   AI_VALIDATE_RESPONSE: 'ai/validate-response',
+  CANVAS_STROKE_ADD: 'canvas/stroke/add',
+  CANVAS_STROKE_LIST: 'canvas/stroke/list',
   CANVAS_VISION: 'canvas/vision',
   COLLABORATION_ACTIVITY_CREATE: 'collaboration/activity/create',
   COLLABORATION_ACTIVITY_GET: 'collaboration/activity/get',

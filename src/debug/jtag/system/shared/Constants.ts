@@ -126,7 +126,10 @@ export const COLLECTIONS = {
   APPROVAL_REQUESTS: 'approval_requests',
   RELEASE_REQUESTS: 'release_requests',
   KICK_VOTES: 'kick_votes',
-  KICK_APPEALS: 'kick_appeals'
+  KICK_APPEALS: 'kick_appeals',
+
+  // Collaborative Canvas System
+  CANVAS_STROKES: 'canvas_strokes'
 } as const;
 
 

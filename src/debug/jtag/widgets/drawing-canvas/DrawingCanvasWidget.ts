@@ -9,10 +9,33 @@
  *
  * The canvas content can be captured and sent to vision models (GPT-4V, Claude 3)
  * for description, analysis, and conversation about what's being drawn.
+ *
+ * Collaborative features:
+ * - Strokes persist to database (canvas_strokes collection)
+ * - Real-time sync via Events (canvas:stroke:added)
+ * - Multiple canvas instances (activityId = canvas instance)
+ * - Full stroke replay for new participants
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
 import { Events } from '../../system/core/shared/Events';
+import { Commands } from '../../system/core/shared/Commands';
+import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
+import type { StrokePoint, CanvasTool } from '../../system/data/entities/CanvasStrokeEntity';
+import type { CanvasStrokeAddParams, CanvasStrokeAddResult } from '../../commands/canvas/stroke/add/shared/CanvasStrokeAddTypes';
+import type { CanvasStrokeListParams, CanvasStrokeListResult, StrokeData } from '../../commands/canvas/stroke/list/shared/CanvasStrokeListTypes';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+
+/**
+ * Result from user/get-me command
+ */
+interface UserGetMeResult extends CommandResult {
+  success: boolean;
+  user?: {
+    id: UUID;
+    displayName: string;
+  };
+}
 
 // Drawing modes
 export type DrawingTool = 'brush' | 'eraser' | 'line' | 'rectangle' | 'circle' | 'arrow' | 'text';
@@ -57,25 +80,195 @@ export class DrawingCanvasWidget extends BaseWidget {
   private shapeStartY = 0;
   private previewCanvas: HTMLCanvasElement | null = null;
 
+  // Collaborative canvas properties
+  private _activityId: UUID | null = null;
+  private currentStrokePoints: StrokePoint[] = [];
+  private _userId: UUID | null = null;
+  private _userName: string = 'Unknown';
+  private strokeEventUnsubscribe: (() => void) | null = null;
+  private loadedStrokeIds = new Set<string>(); // Prevent re-rendering same stroke
+
   constructor() {
     super({
       widgetName: 'DrawingCanvasWidget',
       enableAI: false,
-      enableDatabase: false,
+      enableDatabase: true, // Enable for stroke persistence
       enableRouterEvents: true,
       enableScreenshots: true
     });
   }
 
+  /**
+   * Default canvas ID for singleton canvas mode
+   * TODO: Remove when activity-based canvas routing is implemented
+   */
+  private static readonly DEFAULT_CANVAS_ID = 'global-canvas';
+
+  /**
+   * Get the canvas activity ID (canvas instance)
+   */
+  get activityId(): UUID | null {
+    // Check attribute first (set by recipe/content system)
+    const attrId = this.getAttribute('activity-id') || this.getAttribute('entity-id');
+    // Use default canvas if no specific ID provided (allows testing)
+    return attrId || this._activityId || DrawingCanvasWidget.DEFAULT_CANVAS_ID;
+  }
+
+  /**
+   * Set the canvas activity ID
+   */
+  set activityId(id: UUID | null) {
+    this._activityId = id;
+  }
+
   protected async onWidgetInitialize(): Promise<void> {
     console.log('🎨 DrawingCanvas: Initializing collaborative canvas...');
+
+    // Get current user info for stroke attribution
+    await this.loadUserInfo();
 
     // Subscribe to AI draw requests
     Events.subscribe(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data: any) => {
       this.handleAIDrawRequest(data);
     });
 
-    console.log('✅ DrawingCanvas: Ready for drawing');
+    // Subscribe to real-time stroke events from other users
+    this.subscribeToStrokeEvents();
+
+    // Note: loadStrokes is called from setupCanvas after ctx is ready
+    // This is because renderWidget runs AFTER onWidgetInitialize
+
+    console.log('✅ DrawingCanvas: Ready for collaborative drawing');
+  }
+
+  /**
+   * Load current user info for stroke attribution
+   */
+  private async loadUserInfo(): Promise<void> {
+    try {
+      const result = await Commands.execute<CommandParams, UserGetMeResult>('user/get-me', {});
+      if (result.success && result.user) {
+        this._userId = result.user.id;
+        this._userName = result.user.displayName || 'Unknown';
+        console.log(`🎨 DrawingCanvas: User identified as ${this._userName}`);
+      }
+    } catch (err) {
+      console.warn('🎨 DrawingCanvas: Could not get user info, using session ID');
+    }
+  }
+
+  /**
+   * Subscribe to stroke events for real-time collaboration
+   */
+  private subscribeToStrokeEvents(): void {
+    // Listen for strokes from other users
+    this.strokeEventUnsubscribe = Events.subscribe(
+      DRAWING_CANVAS_EVENTS.STROKE_ADDED,
+      (data: {
+        canvasId: UUID;
+        strokeId: UUID;
+        stroke: StrokeData;
+      }) => {
+        // Only process strokes for our canvas
+        if (data.canvasId !== this.activityId) return;
+
+        // Don't re-render strokes we already have
+        if (this.loadedStrokeIds.has(data.strokeId)) return;
+
+        // Don't render our own strokes (we drew them locally)
+        if (data.stroke.creatorId === this._userId) return;
+
+        console.log(`🎨 DrawingCanvas: Received stroke from ${data.stroke.creatorName}`);
+        this.renderRemoteStroke(data.stroke);
+        this.loadedStrokeIds.add(data.strokeId);
+      }
+    );
+  }
+
+  /**
+   * Load all strokes for this canvas from the database
+   */
+  private async loadStrokes(): Promise<void> {
+    if (!this.activityId) return;
+
+    try {
+      const result = await Commands.execute<CanvasStrokeListParams, CanvasStrokeListResult>(
+        'canvas/stroke/list',
+        {
+          canvasId: this.activityId,
+          limit: 1000 // Load up to 1000 strokes for replay
+        }
+      );
+
+      if (result.success && result.strokes) {
+        console.log(`🎨 DrawingCanvas: Loading ${result.strokes.length} strokes`);
+        for (const stroke of result.strokes) {
+          if (!this.loadedStrokeIds.has(stroke.id)) {
+            this.renderRemoteStroke(stroke);
+            this.loadedStrokeIds.add(stroke.id);
+          }
+        }
+        // Save final state to history
+        this.saveToHistory();
+      }
+    } catch (err) {
+      console.error('🎨 DrawingCanvas: Failed to load strokes:', err);
+    }
+  }
+
+  /**
+   * Render a stroke from another user (or from database load)
+   */
+  private renderRemoteStroke(stroke: StrokeData): void {
+    if (!this.ctx) return;
+
+    // Save current state
+    const savedColor = this.brushSettings.color;
+    const savedSize = this.brushSettings.size;
+    const savedOpacity = this.brushSettings.opacity;
+    const savedTool = this.currentTool;
+
+    // Apply stroke settings
+    this.brushSettings.color = stroke.color;
+    this.brushSettings.size = stroke.size;
+    this.brushSettings.opacity = stroke.opacity ?? 1;
+    this.currentTool = stroke.tool as DrawingTool;
+    this.applyBrushSettings();
+
+    if (stroke.compositeOp) {
+      this.ctx.globalCompositeOperation = stroke.compositeOp as GlobalCompositeOperation;
+    }
+
+    // Render based on tool type
+    if (stroke.tool === 'brush' || stroke.tool === 'eraser') {
+      // Draw path through all points
+      if (stroke.points.length > 0) {
+        this.ctx.beginPath();
+        const [startX, startY] = stroke.points[0];
+        this.ctx.moveTo(startX, startY);
+
+        for (let i = 1; i < stroke.points.length; i++) {
+          const [x, y] = stroke.points[i];
+          this.ctx.lineTo(x, y);
+        }
+        this.ctx.stroke();
+      }
+    } else if (stroke.points.length >= 2) {
+      // Shape tools: use first and last point
+      const [startX, startY] = stroke.points[0];
+      const [endX, endY] = stroke.points[stroke.points.length - 1];
+
+      this.ctx.beginPath();
+      this.drawShapePath(this.ctx, startX, startY, endX, endY);
+      this.ctx.stroke();
+    }
+
+    // Restore settings
+    this.brushSettings.color = savedColor;
+    this.brushSettings.size = savedSize;
+    this.brushSettings.opacity = savedOpacity;
+    this.currentTool = savedTool;
+    this.applyBrushSettings();
   }
 
   protected async renderWidget(): Promise<void> {
@@ -311,6 +504,14 @@ export class DrawingCanvasWidget extends BaseWidget {
       this.ctx.lineCap = 'round';
       this.ctx.lineJoin = 'round';
       this.applyBrushSettings();
+
+      // Load existing strokes now that ctx is ready
+      if (this.activityId) {
+        console.log(`🎨 DrawingCanvas: Loading strokes for canvas ${this.activityId}`);
+        this.loadStrokes();
+      } else {
+        console.log('🎨 DrawingCanvas: No activityId - strokes will not persist');
+      }
     }
   }
 
@@ -434,6 +635,9 @@ export class DrawingCanvasWidget extends BaseWidget {
     this.shapeStartX = coords.x;
     this.shapeStartY = coords.y;
 
+    // Start collecting points for this stroke
+    this.currentStrokePoints = [[coords.x, coords.y]];
+
     if (this.currentTool === 'brush' || this.currentTool === 'eraser') {
       this.ctx?.beginPath();
       this.ctx?.moveTo(coords.x, coords.y);
@@ -444,6 +648,9 @@ export class DrawingCanvasWidget extends BaseWidget {
     if (!this.isDrawing || !this.ctx) return;
 
     const coords = this.getCanvasCoords(e);
+
+    // Collect point for database persistence
+    this.currentStrokePoints.push([coords.x, coords.y]);
 
     if (this.currentTool === 'brush' || this.currentTool === 'eraser') {
       this.applyBrushSettings();
@@ -540,15 +747,58 @@ export class DrawingCanvasWidget extends BaseWidget {
       }
     }
 
-    // Save to history
+    // Save to local history
     this.saveToHistory();
 
-    // Emit stroke event for AI awareness
-    Events.emit(DRAWING_CANVAS_EVENTS.STROKE_ADDED, {
-      tool: this.currentTool,
-      color: this.brushSettings.color,
-      timestamp: Date.now()
-    });
+    // Save to database for persistence and real-time sync
+    this.saveStrokeToDatabase();
+  }
+
+  /**
+   * Save the current stroke to the database
+   */
+  private async saveStrokeToDatabase(): Promise<void> {
+    // Only save if we have an activity ID and at least one point
+    if (!this.activityId || this.currentStrokePoints.length === 0) {
+      // Still emit local event for AI awareness even without persistence
+      Events.emit(DRAWING_CANVAS_EVENTS.STROKE_ADDED, {
+        tool: this.currentTool,
+        color: this.brushSettings.color,
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    try {
+      // Map DrawingTool to CanvasTool (they should be compatible except 'text')
+      const tool = this.currentTool === 'text' ? 'brush' : this.currentTool;
+
+      const result = await Commands.execute<CanvasStrokeAddParams, CanvasStrokeAddResult>(
+        'canvas/stroke/add',
+        {
+          canvasId: this.activityId,
+          tool: tool as CanvasTool,
+          points: this.currentStrokePoints,
+          color: this.brushSettings.color,
+          size: this.brushSettings.size,
+          opacity: this.brushSettings.opacity,
+          compositeOp: this.currentTool === 'eraser' ? 'destination-out' : undefined
+        }
+      );
+
+      if (result.success && result.strokeId) {
+        // Mark as loaded so we don't re-render when event comes back
+        this.loadedStrokeIds.add(result.strokeId);
+        console.log(`🎨 DrawingCanvas: Saved stroke ${result.strokeId}`);
+      } else {
+        console.warn('🎨 DrawingCanvas: Failed to save stroke:', result.error);
+      }
+    } catch (err) {
+      console.error('🎨 DrawingCanvas: Error saving stroke:', err);
+    }
+
+    // Clear collected points
+    this.currentStrokePoints = [];
   }
 
   private saveToHistory(): void {
@@ -674,6 +924,15 @@ export class DrawingCanvasWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    // Cleanup
+    // Unsubscribe from stroke events
+    if (this.strokeEventUnsubscribe) {
+      this.strokeEventUnsubscribe();
+      this.strokeEventUnsubscribe = null;
+    }
+
+    // Clear loaded stroke IDs
+    this.loadedStrokeIds.clear();
+
+    console.log('🎨 DrawingCanvas: Cleaned up collaborative canvas');
   }
 }

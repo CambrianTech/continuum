@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-31T22:33:44.194Z",
+  "generated": "2025-12-31T23:23:05.605Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3982,6 +3982,83 @@
           "type": "string",
           "required": false,
           "description": "personaName parameter"
+        }
+      }
+    },
+    {
+      "name": "canvas/stroke/list",
+      "description": "Canvas Stroke List Command Types\n *\n * Retrieves strokes for a collaborative canvas.\n * Used to:\n * - Load all strokes when opening a canvas\n * - Replay drawing for new participants\n * - Export canvas as vector data",
+      "params": {
+        "canvasId": {
+          "type": "string",
+          "required": true,
+          "description": "canvasId parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "offset": {
+          "type": "number",
+          "required": false,
+          "description": "offset parameter"
+        },
+        "creatorId": {
+          "type": "string",
+          "required": false,
+          "description": "creatorId parameter"
+        },
+        "tool": {
+          "type": "string",
+          "required": false,
+          "description": "tool parameter"
+        },
+        "afterTimestamp": {
+          "type": "string",
+          "required": false,
+          "description": "afterTimestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "canvas/stroke/add",
+      "description": "Canvas Stroke Add Command Types\n *\n * Adds a stroke to a collaborative canvas.\n * Strokes are atomic drawing operations created by human or AI users.\n *\n * Real-time Collaboration:\n * - Server saves stroke to database\n * - Server emits 'canvas:stroke:added' event\n * - All clients receive and render the stroke",
+      "params": {
+        "canvasId": {
+          "type": "string",
+          "required": true,
+          "description": "canvasId parameter"
+        },
+        "tool": {
+          "type": "string",
+          "required": true,
+          "description": "tool parameter"
+        },
+        "points": {
+          "type": "array",
+          "required": true,
+          "description": "points parameter"
+        },
+        "color": {
+          "type": "string",
+          "required": true,
+          "description": "color parameter"
+        },
+        "size": {
+          "type": "number",
+          "required": true,
+          "description": "size parameter"
+        },
+        "opacity": {
+          "type": "number",
+          "required": false,
+          "description": "opacity parameter"
+        },
+        "compositeOp": {
+          "type": "string",
+          "required": false,
+          "description": "compositeOp parameter"
         }
       }
     },
