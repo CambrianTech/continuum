@@ -12,8 +12,8 @@
  * Use this as a template for your own command tests.
  */
 
-// import { ValidationError } from '../../../../system/core/types/ErrorTypes';  // Uncomment when adding validation tests
-import { generateUUID } from '../../../../system/core/types/CrossPlatformUUID';
+// import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation tests
+import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import type { {{CLASS_NAME}}Params, {{CLASS_NAME}}Result } from '../../shared/{{CLASS_NAME}}Types';
 
 console.log('🧪 {{CLASS_NAME}} Command Unit Tests');

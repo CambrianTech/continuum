@@ -4,16 +4,16 @@
  * {{DESCRIPTION}}
  */
 
-import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
-// import { ValidationError } from '../../../system/core/types/ErrorTypes';  // Uncomment when adding validation
+import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext } from '@system/core/types/JTAGTypes';
+// import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { {{CLASS_NAME}}Params, {{CLASS_NAME}}Result } from '../shared/{{CLASS_NAME}}Types';
 import { create{{CLASS_NAME}}ResultFromParams } from '../shared/{{CLASS_NAME}}Types';
 
 export class {{CLASS_NAME}}ServerCommand extends CommandBase<{{CLASS_NAME}}Params, {{CLASS_NAME}}Result> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super('{{COMMAND_NAME}}', context, subpath, commander);
+    super('{{COMMAND_PATH}}', context, subpath, commander);
   }
 
   async execute(params: {{CLASS_NAME}}Params): Promise<{{CLASS_NAME}}Result> {
