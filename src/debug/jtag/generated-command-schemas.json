@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-31T00:26:20.796Z",
+  "generated": "2025-12-31T02:39:24.954Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2721,6 +2721,17 @@
           "type": "array",
           "required": false,
           "description": "excludeDirs parameter"
+        }
+      }
+    },
+    {
+      "name": "development/build",
+      "description": "Development Build Command - Shared Types\n *\n * Zero-friction TypeScript build check. Returns success or structured errors.",
+      "params": {
+        "quiet": {
+          "type": "boolean",
+          "required": false,
+          "description": "quiet parameter"
         }
       }
     },
