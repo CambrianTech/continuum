@@ -405,6 +405,7 @@ export class AICapabilityRegistry {
 
     // ================================
     // Ollama (Local)
+    // Model names must match EXACTLY what `ollama list` shows
     // ================================
     this.registerProvider({
       providerId: 'ollama',
@@ -412,40 +413,47 @@ export class AICapabilityRegistry {
       defaultCapabilities: ['text-input', 'text-output', 'embeddings'],
       models: [
         {
-          modelId: 'llama3.2',
-          displayName: 'Llama 3.2',
+          modelId: 'llama3.2:3b',
+          displayName: 'Llama 3.2 3B',
           capabilities: ['coding', 'reasoning'],
           contextWindow: 128000,
           costTier: 'free',
           latencyTier: 'fast',
         },
         {
-          modelId: 'llava',
-          displayName: 'LLaVA',
+          modelId: 'llama3.2:1b',
+          displayName: 'Llama 3.2 1B',
+          capabilities: ['coding'],
+          contextWindow: 128000,
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'llava:7b',
+          displayName: 'LLaVA 7B',
           capabilities: ['image-input', 'multimodal'],
           contextWindow: 4096,
           costTier: 'free',
           latencyTier: 'medium',
         },
         {
-          modelId: 'llama3.2-vision',
-          displayName: 'Llama 3.2 Vision',
-          capabilities: ['image-input', 'multimodal', 'reasoning'],
-          contextWindow: 128000,
-          costTier: 'free',
-          latencyTier: 'medium',
-        },
-        {
-          modelId: 'phi3',
-          displayName: 'Phi-3',
+          modelId: 'phi3:mini',
+          displayName: 'Phi-3 Mini',
           capabilities: ['coding', 'reasoning'],
           contextWindow: 128000,
           costTier: 'free',
           latencyTier: 'fast',
         },
         {
-          modelId: 'nomic-embed-text',
+          modelId: 'nomic-embed-text:latest',
           displayName: 'Nomic Embed',
+          capabilities: ['embeddings'],
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+        {
+          modelId: 'all-minilm:latest',
+          displayName: 'All-MiniLM',
           capabilities: ['embeddings'],
           costTier: 'free',
           latencyTier: 'fast',
