@@ -31,8 +31,8 @@ export class CanvasStrokeListServerCommand extends CommandBase<CanvasStrokeListP
     }
 
     try {
-      // Build filter with proper types
-      const filter: UniversalFilter = { canvasId };
+      // Build filter - canvasId param maps to activityId field
+      const filter: UniversalFilter = { activityId: canvasId };
 
       if (creatorId) {
         filter.creatorId = creatorId;

@@ -60,9 +60,13 @@ export class WebViewWidget extends ReactiveWidget {
     ReactiveWidget.styles,
     css`
       :host {
-        display: block;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
         width: 100%;
         height: 100%;
+        min-height: 0;
+        min-width: 0;
         overflow: hidden;
         user-select: text;
         -webkit-user-select: text;
@@ -71,7 +75,9 @@ export class WebViewWidget extends ReactiveWidget {
       .browser-container {
         display: flex;
         flex-direction: column;
+        flex: 1;
         height: 100%;
+        min-height: 0;
         background: var(--bg-panel, rgba(20, 25, 35, 0.95));
       }
 

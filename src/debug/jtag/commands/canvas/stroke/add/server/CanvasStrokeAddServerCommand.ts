@@ -46,7 +46,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       // Create stroke entity
       const stroke = new CanvasStrokeEntity();
       stroke.id = generateUUID();
-      stroke.canvasId = canvasId;
+      stroke.activityId = canvasId; // canvasId param maps to activityId field
       stroke.tool = tool || 'brush';
       stroke.points = points;
       stroke.color = color || '#000000';
