@@ -32,6 +32,7 @@ import {
 } from '../../../shared/ModelTiers';
 import { MODEL_IDS } from '../../../../../system/shared/Constants';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
+import { MediaContentFormatter } from '../../../shared/MediaContentFormatter';
 
 export class AnthropicAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'anthropic';
@@ -84,7 +85,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
       const hasNativeTools = request.tools && request.tools.length > 0;
       this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal, ${hasNativeTools ? `${request.tools!.length} native tools` : 'no native tools'}`);
 
-      // Convert messages to Anthropic format
+      // Convert messages to Anthropic format using MediaContentFormatter
       const messages = request.messages.map((msg, index) => {
         const isMultimodal = typeof msg.content !== 'string';
         this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${msg.role}, ${isMultimodal ? 'MULTIMODAL' : 'text-only'}`);
@@ -93,7 +94,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           role: msg.role === 'assistant' ? 'assistant' : 'user',
           content: typeof msg.content === 'string'
             ? msg.content
-            : this.formatMultimodalContent(msg.content),
+            : MediaContentFormatter.formatForAnthropic(msg.content),
         };
       });
 
@@ -295,67 +296,8 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
     return inputCost + outputCost;
   }
 
-  private formatMultimodalContent(content: any[]): any {
-    this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() called with ${content.length} parts, ${content.some(p => p.type === 'image') ? 'has images' : 'no images'}`);
-
-    const formatted = content.map((part, index) => {
-      if (part.type === 'text') {
-        this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: text (${part.text.length} chars)`);
-        return { type: 'text', text: part.text };
-      } else if (part.type === 'image') {
-        this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: image detected (base64: ${!!part.base64}, url: ${!!part.url})`);
-
-        // Handle base64 images (from screenshots, tool results)
-        // Support both flat format (part.base64) and nested format (part.image.base64)
-        const base64Data = part.base64 || part.image?.base64;
-        const mimeType = part.mimeType || part.image?.mimeType || 'image/png';
-
-        if (base64Data) {
-          const formatted = {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType,
-              data: base64Data
-            }
-          };
-          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as base64 image (${formatted.source.data.length} chars, ${formatted.source.media_type})`);
-          return formatted;
-        }
-        // Handle URL images
-        if (part.url) {
-          const formatted = {
-            type: 'image',
-            source: {
-              type: 'url',
-              url: part.url
-            }
-          };
-          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as URL image (${formatted.source.url})`);
-          return formatted;
-        }
-        // Fallback: try legacy format (part.image.url)
-        if (part.image?.url) {
-          const formatted = {
-            type: 'image',
-            source: {
-              type: 'url',
-              url: part.image.url
-            }
-          };
-          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as legacy URL image (${formatted.source.url})`);
-          return formatted;
-        }
-
-        this.log(null, 'warn', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Image part has no valid source`);
-      }
-      return part;
-    });
-
-    this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() result: ${formatted.length} parts (${formatted.filter(p => p.type === 'image').length} images, ${formatted.filter(p => p.type === 'text').length} text)`);
-
-    return formatted;
-  }
+  // Multimodal content formatting now handled by MediaContentFormatter
+  // See: daemons/ai-provider-daemon/shared/MediaContentFormatter.ts
 
   private mapFinishReason(reason: string): 'stop' | 'length' | 'error' | 'tool_use' {
     if (reason === 'end_turn') return 'stop';
