@@ -14,11 +14,13 @@ import type {
   RecordData,
   StorageQuery,
   StorageResult,
-  QueryExplanation
+  QueryExplanation,
+  CollectionSchema
 } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
 import type { SqlExecutor } from '../SqlExecutor';
 import { SqliteQueryBuilder } from '../SqliteQueryBuilder';
+// LEGACY: Still needed for fallback path until fully migrated
 import {
   getFieldMetadata,
   hasFieldMetadata
@@ -29,18 +31,46 @@ import { Logger } from '../../../../system/core/logging/Logger';
 const log = Logger.create('SqliteQueryExecutor', 'sql');
 
 /**
+ * Schema getter function type - provided by SqliteStorageAdapter
+ */
+export type SchemaGetter = (collection: string) => CollectionSchema | undefined;
+
+/**
  * SqliteQueryExecutor - Manages read and query operations
+ *
+ * ARCHITECTURE: Uses schema from SchemaManager cache instead of ENTITY_REGISTRY.
+ * The schema getter is injected from SqliteStorageAdapter.
  */
 export class SqliteQueryExecutor {
+  private getSchema: SchemaGetter | null = null;
+
   constructor(
     private executor: SqlExecutor
   ) {}
 
   /**
+   * Set the schema getter function (injected from SqliteStorageAdapter)
+   */
+  setSchemaGetter(getter: SchemaGetter): void {
+    this.getSchema = getter;
+  }
+
+  /**
    * Read a single record by ID
+   *
+   * ARCHITECTURE:
+   * - If schema getter is available and returns schema, use schema-based path (NEW)
+   * - Fall back to ENTITY_REGISTRY path (LEGACY - will be removed)
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
+      // NEW ARCHITECTURE: Try schema-based path first
+      const schema = this.getSchema?.(collection);
+      if (schema) {
+        return await this.readFromSchema<T>(collection, id, schema);
+      }
+
+      // LEGACY FALLBACK: Use ENTITY_REGISTRY
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
@@ -160,12 +190,94 @@ export class SqliteQueryExecutor {
   }
 
   /**
+   * Read record using schema (NEW ARCHITECTURE)
+   *
+   * ARCHITECTURE: Uses CollectionSchema passed from daemon instead of
+   * looking up entity class from ENTITY_REGISTRY.
+   */
+  private async readFromSchema<T extends RecordData>(
+    collection: string,
+    id: UUID,
+    schema: CollectionSchema
+  ): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(collection);
+    const sql = `SELECT * FROM ${tableName} WHERE id = ? LIMIT 1`;
+    const rows = await this.executor.runSql(sql, [id]);
+
+    log.debug(`[SCHEMA-PATH] SELECT FROM ${tableName} WHERE id = ${id}`);
+
+    if (rows.length === 0) {
+      return {
+        success: false,
+        error: `Record not found: ${collection}/${id}`
+      };
+    }
+
+    const row = rows[0];
+    const entityData: any = {};
+
+    // Process fields from schema
+    for (const field of schema.fields) {
+      // Skip base entity fields (handled separately in metadata)
+      if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        continue;
+      }
+
+      const columnName = SqlNamingConverter.toSnakeCase(field.name);
+      let value = row[columnName];
+
+      if (value !== undefined && value !== null) {
+        // Convert SQL value based on schema type
+        switch (field.type) {
+          case 'boolean':
+            value = value === 1;
+            break;
+          case 'json':
+            value = typeof value === 'string' ? JSON.parse(value) : value;
+            break;
+          case 'date':
+            value = new Date(value);
+            break;
+        }
+        entityData[field.name] = value;
+      }
+    }
+
+    const record: DataRecord<T> = {
+      id: row.id,
+      collection,
+      data: entityData as T,
+      metadata: {
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        version: row.version
+      }
+    };
+
+    return {
+      success: true,
+      data: record
+    };
+  }
+
+  /**
    * Query records with complex filters - uses entity-specific tables
+   *
+   * ARCHITECTURE:
+   * - If schema getter is available and returns schema, use schema-based path (NEW)
+   * - Fall back to ENTITY_REGISTRY path (LEGACY - will be removed)
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
       log.debug(`Querying ${query.collection}`, query);
 
+      // NEW ARCHITECTURE: Try schema-based path first
+      const schema = this.getSchema?.(query.collection);
+      if (schema) {
+        return await this.queryFromSchema<T>(query, schema);
+      }
+
+      // LEGACY FALLBACK: Use ENTITY_REGISTRY
       const entityClass = ENTITY_REGISTRY.get(query.collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
@@ -277,6 +389,220 @@ export class SqliteQueryExecutor {
         queryTime: 0 // TODO: Add timing
       }
     };
+  }
+
+  /**
+   * Query records using schema (NEW ARCHITECTURE)
+   *
+   * ARCHITECTURE: Uses CollectionSchema passed from daemon instead of
+   * looking up entity class from ENTITY_REGISTRY.
+   */
+  private async queryFromSchema<T extends RecordData>(
+    query: StorageQuery,
+    schema: CollectionSchema
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    const { sql, params } = this.buildSchemaSelectQuery(query, schema);
+    const rows = await this.executor.runSql(sql, params);
+
+    log.debug(`[SCHEMA-PATH] Query ${query.collection} returned ${rows.length} rows`);
+
+    const records: DataRecord<T>[] = rows.map(row => {
+      const entityData: any = {};
+
+      // Process fields from schema
+      for (const field of schema.fields) {
+        // Skip base entity fields (handled separately in metadata)
+        if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+          continue;
+        }
+
+        const columnName = SqlNamingConverter.toSnakeCase(field.name);
+        let value = row[columnName];
+
+        if (value !== undefined && value !== null) {
+          // Convert SQL value based on schema type
+          switch (field.type) {
+            case 'boolean':
+              value = value === 1;
+              break;
+            case 'json':
+              value = typeof value === 'string' ? JSON.parse(value) : value;
+              break;
+            case 'date':
+              value = new Date(value);
+              break;
+          }
+          entityData[field.name] = value;
+        }
+      }
+
+      return {
+        id: row.id,
+        collection: query.collection,
+        data: entityData as T,
+        metadata: {
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          version: row.version
+        }
+      };
+    });
+
+    return {
+      success: true,
+      data: records,
+      metadata: {
+        totalCount: records.length,
+        queryTime: 0 // TODO: Add timing
+      }
+    };
+  }
+
+  /**
+   * Build SELECT SQL query using schema (NEW ARCHITECTURE)
+   *
+   * This method builds the same SQL as buildEntitySelectQuery but uses
+   * CollectionSchema instead of EntityConstructor/FieldMetadata.
+   */
+  private buildSchemaSelectQuery(query: StorageQuery, _schema: CollectionSchema): { sql: string; params: any[] } {
+    const params: any[] = [];
+    const tableName = SqlNamingConverter.toTableName(query.collection);
+    let sql = `SELECT * FROM ${tableName}`;
+
+    // Build WHERE clause from filters
+    const whereClauses: string[] = [];
+
+    // Universal filters with operators
+    if (query.filter) {
+      for (const [field, filter] of Object.entries(query.filter)) {
+        const columnName = SqlNamingConverter.toSnakeCase(field);
+
+        if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
+          // Handle operators like { $gt: value, $in: [...] }
+          for (const [operator, value] of Object.entries(filter)) {
+            switch (operator) {
+              case '$eq':
+                whereClauses.push(`${columnName} = ?`);
+                params.push(value);
+                break;
+              case '$ne':
+                whereClauses.push(`${columnName} != ?`);
+                params.push(value);
+                break;
+              case '$gt':
+                whereClauses.push(`${columnName} > ?`);
+                params.push(value);
+                break;
+              case '$gte':
+                whereClauses.push(`${columnName} >= ?`);
+                params.push(value);
+                break;
+              case '$lt':
+                whereClauses.push(`${columnName} < ?`);
+                params.push(value);
+                break;
+              case '$lte':
+                whereClauses.push(`${columnName} <= ?`);
+                params.push(value);
+                break;
+              case '$in':
+                if (Array.isArray(value) && value.length > 0) {
+                  const placeholders = value.map(() => '?').join(',');
+                  whereClauses.push(`${columnName} IN (${placeholders})`);
+                  params.push(...value);
+                }
+                break;
+              case '$nin':
+                if (Array.isArray(value) && value.length > 0) {
+                  const placeholders = value.map(() => '?').join(',');
+                  whereClauses.push(`${columnName} NOT IN (${placeholders})`);
+                  params.push(...value);
+                }
+                break;
+              case '$exists':
+                if (value) {
+                  whereClauses.push(`${columnName} IS NOT NULL`);
+                } else {
+                  whereClauses.push(`${columnName} IS NULL`);
+                }
+                break;
+              case '$regex':
+                whereClauses.push(`${columnName} REGEXP ?`);
+                params.push(value);
+                break;
+              case '$contains':
+                whereClauses.push(`${columnName} LIKE ?`);
+                params.push(`%${value}%`);
+                break;
+            }
+          }
+        } else {
+          // Direct value implies $eq
+          whereClauses.push(`${columnName} = ?`);
+          params.push(filter);
+        }
+      }
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    }
+
+    // Add time range filter
+    if (query.timeRange) {
+      const timeFilters: string[] = [];
+      if (query.timeRange.start) {
+        timeFilters.push('created_at >= ?');
+        params.push(query.timeRange.start);
+      }
+      if (query.timeRange.end) {
+        timeFilters.push('created_at <= ?');
+        params.push(query.timeRange.end);
+      }
+      if (timeFilters.length > 0) {
+        if (whereClauses.length > 0) {
+          sql += ` AND ${timeFilters.join(' AND ')}`;
+        } else {
+          sql += ` WHERE ${timeFilters.join(' AND ')}`;
+        }
+      }
+    }
+
+    // Add cursor-based pagination filter
+    if (query.cursor) {
+      const cursorColumn = SqlNamingConverter.toSnakeCase(query.cursor.field);
+      const operator = query.cursor.direction === 'after' ? '>' : '<';
+      const cursorCondition = `${cursorColumn} ${operator} ?`;
+
+      if (whereClauses.length > 0 || query.timeRange) {
+        sql += ` AND ${cursorCondition}`;
+      } else {
+        sql += ` WHERE ${cursorCondition}`;
+      }
+      params.push(query.cursor.value);
+    }
+
+    // Add sorting
+    if (query.sort && query.sort.length > 0) {
+      const sortClauses = query.sort.map(s => {
+        const columnName = SqlNamingConverter.toSnakeCase(s.field);
+        return `${columnName} ${s.direction.toUpperCase()}`;
+      });
+      sql += ` ORDER BY ${sortClauses.join(', ')}`;
+    }
+
+    // Add pagination
+    if (query.limit) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+
+      if (query.offset) {
+        sql += ' OFFSET ?';
+        params.push(query.offset);
+      }
+    }
+
+    return { sql, params };
   }
 
   /**

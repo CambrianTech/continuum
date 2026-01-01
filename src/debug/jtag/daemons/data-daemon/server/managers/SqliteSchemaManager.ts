@@ -50,6 +50,16 @@ export class SqliteSchemaManager {
   private schemaVerified: Set<string> = new Set(); // Cache: only check schema once per process
   private schemaCache = new Map<string, CollectionSchema>(); // Cache passed schemas
 
+  /**
+   * Get cached schema for a collection
+   *
+   * ARCHITECTURE: Provides schema to other managers (WriteManager, QueryExecutor)
+   * so they don't need to access ENTITY_REGISTRY directly.
+   */
+  getCachedSchema(collection: string): CollectionSchema | undefined {
+    return this.schemaCache.get(collection);
+  }
+
   constructor(
     private db: sqlite3.Database | null,
     private executor: SqlExecutor,

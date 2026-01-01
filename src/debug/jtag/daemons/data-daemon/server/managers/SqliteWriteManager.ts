@@ -13,10 +13,14 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
   DataRecord,
   RecordData,
-  StorageResult
+  StorageResult,
+  CollectionSchema,
+  SchemaField,
+  SchemaFieldType
 } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
 import type { SqlExecutor } from '../SqlExecutor';
+// LEGACY: Still needed for fallback path until fully migrated
 import {
   getFieldMetadata,
   hasFieldMetadata
@@ -27,15 +31,36 @@ import { Logger } from '../../../../system/core/logging/Logger';
 const log = Logger.create('SqliteWriteManager', 'sql');
 
 /**
+ * Schema getter function type - provided by SqliteStorageAdapter
+ */
+export type SchemaGetter = (collection: string) => CollectionSchema | undefined;
+
+/**
  * SqliteWriteManager - Manages create, update, and delete operations
+ *
+ * ARCHITECTURE: Uses schema from SchemaManager cache instead of ENTITY_REGISTRY.
+ * The schema getter is injected from SqliteStorageAdapter.
  */
 export class SqliteWriteManager {
+  private getSchema: SchemaGetter | null = null;
+
   constructor(
     private executor: SqlExecutor
   ) {}
 
   /**
+   * Set the schema getter function (injected from SqliteStorageAdapter)
+   */
+  setSchemaGetter(getter: SchemaGetter): void {
+    this.getSchema = getter;
+  }
+
+  /**
    * Create a record with proper relational schema
+   *
+   * ARCHITECTURE:
+   * - If schema getter is available and returns schema, use schema-based path (NEW)
+   * - Fall back to ENTITY_REGISTRY path (LEGACY - will be removed)
    */
   async create<T extends RecordData>(
     collection: string,
@@ -56,6 +81,13 @@ export class SqliteWriteManager {
         }
       };
 
+      // NEW ARCHITECTURE: Try schema-based path first
+      const schema = this.getSchema?.(collection);
+      if (schema) {
+        return await this.createFromSchema<T>(record, schema);
+      }
+
+      // LEGACY FALLBACK: Use ENTITY_REGISTRY
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
@@ -73,6 +105,78 @@ export class SqliteWriteManager {
         error: error.message
       };
     }
+  }
+
+  /**
+   * Create record using schema (NEW ARCHITECTURE)
+   *
+   * ARCHITECTURE: Uses CollectionSchema passed from daemon instead of
+   * looking up entity class from ENTITY_REGISTRY.
+   */
+  private async createFromSchema<T extends RecordData>(
+    record: DataRecord<T>,
+    schema: CollectionSchema
+  ): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(record.collection);
+
+    const columns: string[] = [];
+    const values: any[] = [];
+    const placeholders: string[] = [];
+
+    // Add base entity fields
+    columns.push('id');
+    values.push(record.id);
+    placeholders.push('?');
+
+    columns.push('created_at');
+    values.push(record.metadata.createdAt);
+    placeholders.push('?');
+
+    columns.push('updated_at');
+    values.push(record.metadata.updatedAt);
+    placeholders.push('?');
+
+    columns.push('version');
+    values.push(record.metadata.version);
+    placeholders.push('?');
+
+    // Process fields from schema
+    for (const field of schema.fields) {
+      // Skip base entity fields (already added above)
+      if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        continue;
+      }
+
+      const columnName = SqlNamingConverter.toSnakeCase(field.name);
+      const fieldValue = (record.data as any)[field.name];
+
+      if (fieldValue !== undefined) {
+        columns.push(columnName);
+        placeholders.push('?');
+
+        // Convert value based on schema type
+        if (field.type === 'json' && typeof fieldValue === 'object') {
+          values.push(JSON.stringify(fieldValue));
+        } else if (field.type === 'boolean') {
+          values.push(fieldValue ? 1 : 0);
+        } else if (field.type === 'date') {
+          // Convert Date objects to ISO strings for SQLite storage
+          values.push(typeof fieldValue === 'string' ? fieldValue : new Date(fieldValue).toISOString());
+        } else {
+          values.push(fieldValue);
+        }
+      }
+    }
+
+    const sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`;
+    log.debug(`[SCHEMA-PATH] INSERT INTO ${tableName}`);
+
+    await this.executor.runStatement(sql, values);
+
+    return {
+      success: true,
+      data: record
+    };
   }
 
   /**
@@ -177,6 +281,10 @@ export class SqliteWriteManager {
 
   /**
    * Update an existing record
+   *
+   * ARCHITECTURE:
+   * - If schema getter is available and returns schema, use schema-based path (NEW)
+   * - Fall back to ENTITY_REGISTRY path (LEGACY - will be removed)
    */
   async update<T extends RecordData>(
     collection: string,
@@ -187,6 +295,13 @@ export class SqliteWriteManager {
     try {
       log.debug(`Updating ${collection}/${id}`);
 
+      // NEW ARCHITECTURE: Try schema-based path first
+      const schema = this.getSchema?.(collection);
+      if (schema) {
+        return await this.updateFromSchema<T>(collection, id, data, version, schema);
+      }
+
+      // LEGACY FALLBACK: Use ENTITY_REGISTRY
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {
@@ -206,6 +321,87 @@ export class SqliteWriteManager {
         error: error.message
       };
     }
+  }
+
+  /**
+   * Update record using schema (NEW ARCHITECTURE)
+   *
+   * ARCHITECTURE: Uses CollectionSchema passed from daemon instead of
+   * looking up entity class from ENTITY_REGISTRY.
+   */
+  private async updateFromSchema<T extends RecordData>(
+    collection: string,
+    id: UUID,
+    data: Partial<T>,
+    version: number | undefined,
+    schema: CollectionSchema
+  ): Promise<StorageResult<DataRecord<T>>> {
+    const tableName = SqlNamingConverter.toTableName(collection);
+
+    const setColumns: string[] = [];
+    const params: any[] = [];
+
+    // Always update base entity fields
+    setColumns.push('updated_at = ?', 'version = ?');
+    const newVersion = version !== undefined ? version : 1;
+    params.push(new Date().toISOString(), newVersion);
+
+    // Update each field based on schema
+    for (const field of schema.fields) {
+      // Skip base entity fields (already handled above) and primary key
+      if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        continue;
+      }
+
+      const columnName = SqlNamingConverter.toSnakeCase(field.name);
+      const value = (data as any)[field.name];
+
+      if (value !== undefined) {
+        setColumns.push(`${columnName} = ?`);
+
+        // Convert value based on schema type
+        if (field.type === 'json' && typeof value === 'object') {
+          params.push(JSON.stringify(value));
+        } else if (field.type === 'boolean') {
+          params.push(value ? 1 : 0);
+        } else if (field.type === 'date') {
+          // Convert Date objects to ISO strings for SQLite storage
+          params.push(typeof value === 'string' ? value : new Date(value).toISOString());
+        } else {
+          params.push(value);
+        }
+      }
+    }
+
+    const sql = `UPDATE ${tableName} SET ${setColumns.join(', ')} WHERE id = ?`;
+    params.push(id);
+
+    log.debug(`[SCHEMA-PATH] UPDATE ${tableName} WHERE id = ${id}`);
+    const result = await this.executor.runStatement(sql, params);
+
+    if (result.changes === 0) {
+      return {
+        success: false,
+        error: `No rows updated in ${tableName} for id: ${id}`
+      };
+    }
+
+    // Build updated record with merged data
+    const updatedRecord: DataRecord<T> = {
+      id,
+      collection,
+      data: data as T,
+      metadata: {
+        createdAt: new Date().toISOString(), // Note: Ideally we'd preserve original createdAt
+        updatedAt: new Date().toISOString(),
+        version: newVersion
+      }
+    };
+
+    return {
+      success: true,
+      data: updatedRecord
+    };
   }
 
   /**
@@ -337,9 +533,28 @@ export class SqliteWriteManager {
 
   /**
    * Delete a record
+   *
+   * ARCHITECTURE: Delete doesn't need schema for field mapping - just the table name.
+   * We still check schema to use the new architecture path for consistency.
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
     try {
+      // NEW ARCHITECTURE: If we have schema, use schema-based table naming
+      const schema = this.getSchema?.(collection);
+      if (schema) {
+        const tableName = SqlNamingConverter.toTableName(collection);
+        const sql = `DELETE FROM ${tableName} WHERE id = ?`;
+        const result = await this.executor.runStatement(sql, [id]);
+
+        log.debug(`[SCHEMA-PATH] DELETE FROM ${tableName} WHERE id = ${id}`);
+
+        return {
+          success: true,
+          data: result.changes > 0
+        };
+      }
+
+      // LEGACY FALLBACK: Use ENTITY_REGISTRY
       const entityClass = ENTITY_REGISTRY.get(collection);
 
       if (entityClass && hasFieldMetadata(entityClass)) {

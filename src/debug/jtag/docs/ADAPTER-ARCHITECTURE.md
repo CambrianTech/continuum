@@ -195,30 +195,73 @@ This is piecemeal - each step can be done and tested independently.
 
 ### Completed: Schema-Based Path
 
-The new architecture is now implemented:
+The new architecture is now fully implemented across all managers:
 
-1. **DataDaemon.ts** - Extracts schema from entity decorators
+1. **DataDaemon.ts** - Extracts schema from entity decorators ✅
    ```typescript
    private extractCollectionSchema(collection: string): CollectionSchema | undefined
    private mapFieldTypeToSchemaType(fieldType: FieldType): SchemaFieldType
    ```
 
-2. **SqliteSchemaManager.ts** - Uses schema when provided
+2. **SqliteSchemaManager.ts** - Uses schema when provided ✅
    ```typescript
    private schemaCache = new Map<string, CollectionSchema>();
+   getCachedSchema(collection: string): CollectionSchema | undefined
    private generateCreateTableFromSchema(schema: CollectionSchema): string
    private generateCreateIndexFromSchema(schema: CollectionSchema): string[]
    ```
 
-3. **Log Output** - Shows which path is used
+3. **SqliteStorageAdapter.ts** - Wires up schema getters to managers ✅
+   ```typescript
+   // Wire up schema getters for managers (NEW ARCHITECTURE)
+   const schemaGetter = (collection: string) => this.schemaManager.getCachedSchema(collection);
+   this.writeManager.setSchemaGetter(schemaGetter);
+   this.queryExecutor.setSchemaGetter(schemaGetter);
+   ```
+
+4. **SqliteQueryExecutor.ts** - Uses schema for read/query operations ✅
+   ```typescript
+   private getSchema: SchemaGetter | null = null;
+   setSchemaGetter(getter: SchemaGetter): void
+   private readFromSchema<T>(collection, id, schema): Promise<...>
+   private queryFromSchema<T>(query, schema): Promise<...>
+   private buildSchemaSelectQuery(query, schema): { sql, params }
+   ```
+
+5. **SqliteWriteManager.ts** - Uses schema for create/update/delete ✅
+   ```typescript
+   private getSchema: SchemaGetter | null = null;
+   setSchemaGetter(getter: SchemaGetter): void
+   private createFromSchema<T>(record, schema): Promise<...>
+   private updateFromSchema<T>(collection, id, data, version, schema): Promise<...>
+   ```
+
+6. **Log Output** - Shows which path is used
    - `[SCHEMA-PATH]` - New architecture (daemon provides schema)
    - `[LEGACY-PATH]` - Old architecture (adapter looks up ENTITY_REGISTRY)
 
+### Critical Bugs Fixed (2026-01-01)
+
+1. **INSERT statements not persisting** (SqliteWriteManager.ts:171)
+   - Bug: Used `runSql()` which is for SELECT queries
+   - Fix: Changed to `runStatement()` which is for INSERT/UPDATE/DELETE
+   - Symptom: Messages appeared in UI (via events) but disappeared on refresh
+
+2. **Date fields stored as null** (SqliteWriteManager.ts:162-164, 367-369)
+   - Bug: `createFromSchema()` and `updateFromSchema()` had no handling for `date` field type
+   - Fix: Added date serialization like the legacy path:
+     ```typescript
+     } else if (field.type === 'date') {
+       values.push(typeof fieldValue === 'string' ? fieldValue : new Date(fieldValue).toISOString());
+     }
+     ```
+   - Symptom: Messages persisted but `timestamp` field was null, breaking ORDER BY queries
+
 ### Still TODO
 
-- Remove legacy ENTITY_REGISTRY path from SqliteSchemaManager once confirmed stable
+- Remove legacy ENTITY_REGISTRY path from all managers once confirmed stable
 - Implement schema-based column migration (currently skipped for existing tables)
-- Update SqliteQueryExecutor and SqliteWriteManager to use cached schema
+- Remove ENTITY_REGISTRY imports from adapter files (legacy code preserved for fallback)
 
 ---
 

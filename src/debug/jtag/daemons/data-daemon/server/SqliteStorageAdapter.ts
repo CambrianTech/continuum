@@ -239,6 +239,13 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     this.writeManager = new SqliteWriteManager(this.executor);
     log.debug('Write manager initialized');
 
+    // Wire up schema getters for managers (NEW ARCHITECTURE)
+    // This allows managers to use cached schema instead of ENTITY_REGISTRY
+    const schemaGetter = (collection: string) => this.schemaManager.getCachedSchema(collection);
+    this.writeManager.setSchemaGetter(schemaGetter);
+    this.queryExecutor.setSchemaGetter(schemaGetter);
+    log.debug('Schema getters wired to managers');
+
     log.debug('Configuring database settings');
     // Configure SQLite settings
     await this.schemaManager.configureSqlite(options);
