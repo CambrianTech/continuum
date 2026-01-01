@@ -11,10 +11,7 @@
  */
 
 import * as net from 'net';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { getDatabasePath } from '../../../system/config/ServerConfig';
 import {
   DataStorageAdapter,
   type DataRecord,
@@ -30,37 +27,26 @@ import {
 
 /**
  * Configuration for Rust worker connection
+ * ALL fields are required - no defaults, caller must provide everything
  */
 export interface RustWorkerConfig {
-  /** Path to Unix socket */
+  /** Path to Rust worker Unix socket (e.g., /tmp/jtag-data-daemon-worker.sock) */
   socketPath: string;
-  /** Optional database path (if not using default) */
-  dbPath?: string;
-  /** Database handle from registry */
-  dbHandle?: string;
-  /** Connection timeout in ms */
-  timeout?: number;
+  /** Absolute path to SQLite database file */
+  dbPath: string;
+  /** Connection/request timeout in ms */
+  timeout: number;
 }
 
 /**
- * JTAG protocol message format (matches Rust JTAGRequest/JTAGResponse)
+ * Rust worker request/response format (simpler than full JTAG protocol)
+ * Uses serde's tag-based enum serialization
  */
-interface JTAGRequest<T = any> {
-  id: string;
-  type: string;
-  timestamp: string;
-  payload: T;
-}
-
-interface JTAGResponse<T = any> {
-  id: string;
-  type: string;
-  timestamp: string;
-  payload: T;
-  requestId: string;
-  success: boolean;
-  error?: string;
-  errorType?: string;
+interface RustResponse {
+  status: 'ok' | 'error' | 'pong';
+  data?: any;
+  message?: string;
+  uptime_seconds?: number;
 }
 
 /**
@@ -69,11 +55,12 @@ interface JTAGResponse<T = any> {
 export class RustWorkerStorageAdapter extends DataStorageAdapter {
   private config!: RustWorkerConfig;
   private socket: net.Socket | null = null;
-  private pendingRequests: Map<string, {
+  private adapterHandle: string | null = null;  // Handle from adapter/open
+  private pendingResponse: {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
-  }> = new Map();
+  } | null = null;
 
   private reconnecting: boolean = false;
   private buffer: string = '';
@@ -87,17 +74,44 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
 
   /**
    * Initialize connection to Rust worker
+   *
+   * REQUIRED in config.options:
+   * - socketPath: Path to Rust worker Unix socket
+   * - dbPath: Absolute path to SQLite database file
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
-    // Merge initialization config with constructor config
+    const options = config.options as any;
+
+    // Require socket and database paths - no defaults
+    if (!options?.socketPath) {
+      throw new Error('RustWorkerStorageAdapter requires socketPath in options');
+    }
+    if (!options?.dbPath) {
+      throw new Error('RustWorkerStorageAdapter requires dbPath in options');
+    }
+
     this.config = {
-      socketPath: this.config?.socketPath || '/tmp/data-worker.sock',
-      dbPath: (config.options as any)?.dbPath || getDatabasePath(),
-      dbHandle: (config.options as any)?.dbHandle || 'default',
-      timeout: this.config?.timeout || 30000
+      socketPath: options.socketPath,
+      dbPath: options.dbPath,
+      timeout: options.timeout || 30000
     };
 
     await this.connect();
+
+    // Open SQLite adapter and store handle
+    const response = await this.sendCommand<{ handle: string }>('adapter/open', {
+      config: {
+        adapter_type: 'sqlite',
+        connection_string: this.config.dbPath
+      }
+    });
+
+    if (response.status === 'ok' && response.data?.handle) {
+      this.adapterHandle = response.data.handle;
+      console.log(`✅ Opened SQLite adapter: ${this.config.dbPath} → handle ${this.adapterHandle}`);
+    } else {
+      throw new Error(`Failed to open adapter: ${response.message || 'Unknown error'}`);
+    }
   }
 
   /**
@@ -153,18 +167,13 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       if (!line.trim()) continue;
 
       try {
-        const response: JTAGResponse = JSON.parse(line);
-        const pending = this.pendingRequests.get(response.requestId);
+        const response: RustResponse = JSON.parse(line);
 
-        if (pending) {
-          clearTimeout(pending.timeout);
-          this.pendingRequests.delete(response.requestId);
-
-          if (response.success) {
-            pending.resolve(response.payload);
-          } else {
-            pending.reject(new Error(response.error || 'Unknown error'));
-          }
+        if (this.pendingResponse) {
+          clearTimeout(this.pendingResponse.timeout);
+          const pending = this.pendingResponse;
+          this.pendingResponse = null;
+          pending.resolve(response);
         }
       } catch (error) {
         console.error('Failed to parse response from Rust worker:', error);
@@ -173,32 +182,26 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Send message to Rust worker and wait for response
+   * Send command to Rust worker and wait for response
+   * Uses Rust's serde tag format: {"command": "name", ...params}
    */
-  private async sendMessage<T>(type: string, payload: any): Promise<T> {
+  private async sendCommand<T = any>(command: string, params: Record<string, any> = {}): Promise<RustResponse & { data?: T }> {
     if (!this.socket) {
       throw new Error('Not connected to Rust worker');
     }
 
-    const requestId = uuidv4();
-    const request: JTAGRequest = {
-      id: requestId,
-      type,
-      timestamp: new Date().toISOString(),
-      payload: {
-        ...payload,
-        dbHandle: this.config.dbHandle,
-        dbPath: this.config.dbPath
-      }
+    const request = {
+      command,
+      ...params
     };
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
-        reject(new Error(`Request timeout: ${type}`));
+        this.pendingResponse = null;
+        reject(new Error(`Request timeout: ${command}`));
       }, this.config.timeout);
 
-      this.pendingRequests.set(requestId, { resolve, reject, timeout });
+      this.pendingResponse = { resolve, reject, timeout };
 
       // Send newline-delimited JSON
       this.socket!.write(JSON.stringify(request) + '\n');
@@ -209,68 +212,71 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    * Create record - delegates to Rust worker
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
+    if (!this.adapterHandle) {
+      return { success: false, error: 'Adapter not initialized' };
+    }
+
     try {
-      // Send raw entity data to Rust (it doesn't need full DataRecord structure)
-      const response = await this.sendMessage<{ data: T }>(DATA_COMMANDS.CREATE, {
+      const response = await this.sendCommand('data/create', {
+        handle: this.adapterHandle,
         collection: record.collection,
-        document: record.data
+        data: record.data
       });
 
-      // Rust returns raw entity, wrap back in DataRecord with metadata
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Create failed' };
+      }
+
       return {
         success: true,
         data: {
           id: record.id,
           collection: record.collection,
-          data: response.data,
+          data: record.data,
           metadata: record.metadata
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Read single record by ID
+   * Read single record by ID - uses query with filter
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+    if (!this.adapterHandle) {
+      return { success: false, error: 'Adapter not initialized' };
+    }
+
     try {
-      const response = await this.sendMessage<{ data: T | null }>(DATA_COMMANDS.READ, {
+      const response = await this.sendCommand<{ items: T[]; count: number }>('data/list', {
+        handle: this.adapterHandle,
         collection,
-        id
+        filter: { id },
+        limit: 1
       });
 
-      if (!response.data) {
-        return {
-          success: false,
-          error: 'Record not found'
-        };
+      if (response.status !== 'ok' || !response.data?.items?.length) {
+        return { success: false, error: 'Record not found' };
       }
 
-      // Wrap raw entity in DataRecord structure
-      // Note: Rust doesn't return metadata separately yet, so we create default metadata
+      const item = response.data.items[0];
       return {
         success: true,
         data: {
           id,
           collection,
-          data: response.data,
+          data: item,
           metadata: {
-            createdAt: new Date().toISOString(), // TODO: Get from Rust
+            createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             version: 1
           }
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -278,25 +284,30 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    * Query records with filters
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
+    if (!this.adapterHandle) {
+      return { success: false, error: 'Adapter not initialized' };
+    }
+
     try {
-      const response = await this.sendMessage<{
-        items: T[];
-        total: number;
-      }>(DATA_COMMANDS.LIST, {
+      const response = await this.sendCommand<{ items: T[]; count: number }>('data/list', {
+        handle: this.adapterHandle,
         collection: query.collection,
         filter: query.filter,
-        orderBy: query.sort,
+        order_by: query.sort?.map(s => ({ field: s.field, direction: s.direction })),
         limit: query.limit,
         offset: query.offset
       });
 
-      // Wrap raw entities in DataRecord structures
-      const records: DataRecord<T>[] = response.items.map((item: any) => ({
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Query failed' };
+      }
+
+      const records: DataRecord<T>[] = (response.data?.items || []).map((item: any) => ({
         id: item.id,
         collection: query.collection,
         data: item,
         metadata: {
-          createdAt: new Date().toISOString(), // TODO: Get from Rust
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           version: 1
         }
@@ -306,19 +317,16 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         success: true,
         data: records,
         metadata: {
-          totalCount: response.total
+          totalCount: response.data?.count || records.length
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Update record
+   * Update record - not yet implemented in Rust worker
    */
   async update<T extends RecordData>(
     collection: string,
@@ -326,39 +334,33 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     data: Partial<T>,
     incrementVersion?: boolean
   ): Promise<StorageResult<DataRecord<T>>> {
-    try {
-      const response = await this.sendMessage<{ data: T }>(DATA_COMMANDS.UPDATE, {
-        collection,
-        id,
-        updates: data
-      });
-
-      return {
-        success: true,
-        data: {
-          id,
-          collection,
-          data: response.data,
-          metadata: {
-            createdAt: new Date().toISOString(), // TODO: Get from Rust
-            updatedAt: new Date().toISOString(),
-            version: incrementVersion ? 2 : 1 // TODO: Track properly
-          }
-        }
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+    // TODO: Implement data/update in Rust worker
+    return { success: false, error: 'Update not yet implemented in Rust worker' };
   }
 
   /**
-   * Delete record - TODO: Implement in Rust worker first
+   * Delete record
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
-    throw new Error('Delete not yet implemented in Rust worker');
+    if (!this.adapterHandle) {
+      return { success: false, error: 'Adapter not initialized' };
+    }
+
+    try {
+      const response = await this.sendCommand('data/delete', {
+        handle: this.adapterHandle,
+        collection,
+        id
+      });
+
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Delete failed' };
+      }
+
+      return { success: true, data: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
   }
 
   /**
@@ -493,16 +495,28 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    * Close connection to Rust worker
    */
   async close(): Promise<void> {
+    // Close adapter in Rust first
+    if (this.adapterHandle && this.socket) {
+      try {
+        await this.sendCommand('adapter/close', { handle: this.adapterHandle });
+        console.log(`✅ Closed SQLite adapter: ${this.adapterHandle}`);
+      } catch (error) {
+        console.warn('⚠️  Failed to close adapter in Rust:', error);
+      }
+      this.adapterHandle = null;
+    }
+
+    // Close socket
     if (this.socket) {
       this.socket.destroy();
       this.socket = null;
     }
 
-    // Reject all pending requests
-    for (const [id, pending] of this.pendingRequests) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error('Connection closed'));
+    // Reject pending response
+    if (this.pendingResponse) {
+      clearTimeout(this.pendingResponse.timeout);
+      this.pendingResponse.reject(new Error('Connection closed'));
+      this.pendingResponse = null;
     }
-    this.pendingRequests.clear();
   }
 }

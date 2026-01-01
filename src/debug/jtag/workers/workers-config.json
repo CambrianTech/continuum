@@ -17,10 +17,10 @@
       "binary": "workers/data-daemon/target/release/data-daemon-worker",
       "socket": "/tmp/jtag-data-daemon-worker.sock",
       "args": [
-        ".continuum/jtag/data/database.sqlite"
+        "/tmp/jtag-data-daemon-worker.sock"
       ],
       "description": "Data daemon worker for WAL cleanup and fast SQLite operations",
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "logger",

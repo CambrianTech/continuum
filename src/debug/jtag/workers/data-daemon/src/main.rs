@@ -499,13 +499,20 @@ impl AdapterRegistry {
         handle
     }
 
-    fn get(&self, handle: AdapterHandle) -> Result<Arc<Mutex<Box<dyn ConcurrencyStrategy>>>, String> {
+    /// Execute a read operation on an adapter
+    fn execute_read(&self, handle: AdapterHandle, query: &str) -> Result<Value, String> {
         let adapters = self.adapters.lock().unwrap();
         let (_, strategy) = adapters.get(&handle)
             .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        strategy.execute_read(query)
+    }
 
-        // FIXME: This is a hack - we need to return a reference properly
-        Err("TODO: Fix adapter borrowing".to_string())
+    /// Execute a write operation on an adapter
+    fn execute_write(&self, handle: AdapterHandle, query: &str, params: &Value) -> Result<Value, String> {
+        let adapters = self.adapters.lock().unwrap();
+        let (_, strategy) = adapters.get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        strategy.execute_write(query, params)
     }
 
     fn close(&self, handle: AdapterHandle) -> Result<(), String> {
@@ -558,23 +565,23 @@ impl RustDataDaemon {
             }
 
             Request::DataList { handle, collection, limit, offset, filter, order_by } => {
-                // TODO: Build proper query and route to adapter
-                Response::Error {
-                    message: "DataList not yet implemented".to_string()
+                match self.data_list(handle, &collection, limit, offset, filter.as_ref(), order_by.as_ref()) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
                 }
             }
 
             Request::DataCreate { handle, collection, data } => {
-                // TODO: Route to adapter with write strategy
-                Response::Error {
-                    message: "DataCreate not yet implemented".to_string()
+                match self.data_create(handle, &collection, &data) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
                 }
             }
 
             Request::DataDelete { handle, collection, id } => {
-                // TODO: Route to adapter with write strategy
-                Response::Error {
-                    message: "DataDelete not yet implemented".to_string()
+                match self.data_delete(handle, &collection, &id) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
                 }
             }
         }
@@ -595,6 +602,113 @@ impl RustDataDaemon {
 
         let handle = self.registry.register(config.adapter_type, strategy);
         Ok(handle)
+    }
+
+    /// List entities from a collection with filtering and pagination
+    fn data_list(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        filter: Option<&Value>,
+        order_by: Option<&Vec<OrderBy>>,
+    ) -> Result<Value, String> {
+        // Build SELECT query
+        let mut query = format!("SELECT * FROM {}", collection);
+
+        // Add WHERE clause from filter
+        if let Some(filter_obj) = filter {
+            if let Some(obj) = filter_obj.as_object() {
+                let conditions: Vec<String> = obj.iter()
+                    .filter_map(|(key, value)| {
+                        match value {
+                            Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
+                            Value::Number(n) => Some(format!("{} = {}", key, n)),
+                            Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
+                            Value::Null => Some(format!("{} IS NULL", key)),
+                            _ => None, // Skip complex nested objects for now
+                        }
+                    })
+                    .collect();
+
+                if !conditions.is_empty() {
+                    query.push_str(" WHERE ");
+                    query.push_str(&conditions.join(" AND "));
+                }
+            }
+        }
+
+        // Add ORDER BY
+        if let Some(orders) = order_by {
+            if !orders.is_empty() {
+                let order_clauses: Vec<String> = orders.iter()
+                    .map(|o| format!("{} {}", o.field, o.direction.to_uppercase()))
+                    .collect();
+                query.push_str(" ORDER BY ");
+                query.push_str(&order_clauses.join(", "));
+            }
+        }
+
+        // Add LIMIT and OFFSET
+        if let Some(lim) = limit {
+            query.push_str(&format!(" LIMIT {}", lim));
+        }
+        if let Some(off) = offset {
+            query.push_str(&format!(" OFFSET {}", off));
+        }
+
+        println!("📋 DataList query: {}", query);
+        self.registry.execute_read(handle, &query)
+    }
+
+    /// Create a new entity in a collection
+    fn data_create(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        // Build INSERT query
+        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        let values: Vec<String> = obj.values()
+            .map(|v| match v {
+                Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                Value::Null => "NULL".to_string(),
+                Value::Array(_) | Value::Object(_) => {
+                    // Serialize complex types as JSON strings
+                    format!("'{}'", serde_json::to_string(v).unwrap_or_default().replace("'", "''"))
+                }
+            })
+            .collect();
+
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            collection,
+            columns.join(", "),
+            values.join(", ")
+        );
+
+        println!("➕ DataCreate query: {}", query);
+        self.registry.execute_write(handle, &query, data)
+    }
+
+    /// Delete an entity from a collection by ID
+    fn data_delete(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+    ) -> Result<Value, String> {
+        let query = format!("DELETE FROM {} WHERE id = '{}'", collection, id.replace("'", "''"));
+
+        println!("🗑️  DataDelete query: {}", query);
+        self.registry.execute_write(handle, &query, &json!({}))
     }
 }
 
