@@ -38,6 +38,8 @@ export type TaskDomain =
   | 'game'          // Game playing, strategy
   | 'academy'       // Training, learning
   | 'analysis'      // Data analysis, research
+  | 'canvas'        // Visual/drawing activities (collaborative canvas)
+  | 'browser'       // Web browsing co-pilot
   | 'self';         // Self-improvement tasks (memory, learning, audit)
 
 /**
@@ -60,6 +62,15 @@ export type TaskType =
   // Academy domain
   | 'complete-exercise'
   | 'review-material'
+
+  // Canvas domain (visual collaboration)
+  | 'observe-canvas'      // Watch and understand canvas activity
+  | 'draw-on-canvas'      // Contribute to collaborative drawing
+  | 'describe-canvas'     // Generate description of canvas content
+
+  // Browser domain (co-browsing)
+  | 'observe-page'        // Watch and understand page content
+  | 'assist-navigation'   // Help with web browsing
 
   // Self domain (autonomous tasks)
   | 'memory-consolidation'
