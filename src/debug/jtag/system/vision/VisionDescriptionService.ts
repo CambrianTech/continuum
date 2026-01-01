@@ -110,24 +110,47 @@ export class VisionDescriptionService {
       return null;
     }
 
+    // Filter to only configured providers (check environment for API keys)
+    const configuredProviders = new Set<string>();
+    if (process.env.ANTHROPIC_API_KEY) configuredProviders.add('anthropic');
+    if (process.env.OPENAI_API_KEY) configuredProviders.add('openai');
+    if (process.env.GROQ_API_KEY) configuredProviders.add('groq');
+    if (process.env.TOGETHER_API_KEY) configuredProviders.add('together');
+    // Check Ollama availability (local server)
+    if (process.env.OLLAMA_HOST || await this.checkOllamaAvailable()) {
+      configuredProviders.add('ollama');
+    }
+
+    // Filter vision models to only those with configured providers
+    const availableVisionModels = visionModels.filter(m => configuredProviders.has(m.providerId));
+
+    if (availableVisionModels.length === 0) {
+      console.warn('[VisionDescription] No vision-capable models with configured providers');
+      console.warn('[VisionDescription] Configured providers:', Array.from(configuredProviders));
+      console.warn('[VisionDescription] Vision models found:', visionModels.map(m => `${m.providerId}/${m.modelId}`));
+      return null;
+    }
+
     // Select model (prefer specified, then local, then any)
-    let selectedModel = visionModels[0];
+    let selectedModel = availableVisionModels[0];
 
     if (options.preferredModel) {
-      const preferred = visionModels.find(m => m.modelId === options.preferredModel);
+      const preferred = availableVisionModels.find(m => m.modelId === options.preferredModel);
       if (preferred) selectedModel = preferred;
     }
 
     if (options.preferredProvider) {
-      const preferred = visionModels.find(m => m.providerId === options.preferredProvider);
+      const preferred = availableVisionModels.find(m => m.providerId === options.preferredProvider);
       if (preferred) selectedModel = preferred;
     }
 
-    // Prefer local Ollama models (free, private)
-    const localModel = visionModels.find(m => m.providerId === 'ollama');
+    // Prefer local Ollama models (free, private) if available
+    const localModel = availableVisionModels.find(m => m.providerId === 'ollama');
     if (localModel && !options.preferredProvider) {
       selectedModel = localModel;
     }
+
+    console.log(`[VisionDescription] Selected model: ${selectedModel.providerId}/${selectedModel.modelId}`);
 
     // Build prompt
     const prompt = options.prompt || this.buildDescriptionPrompt(options);
@@ -261,6 +284,21 @@ export class VisionDescriptionService {
     }
 
     return parts.join(' ');
+  }
+
+  /**
+   * Check if Ollama is available locally (even without OLLAMA_HOST set)
+   */
+  private async checkOllamaAvailable(): Promise<boolean> {
+    try {
+      const response = await fetch('http://localhost:11434/api/tags', {
+        method: 'GET',
+        signal: AbortSignal.timeout(2000)  // 2 second timeout
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
 
   /**

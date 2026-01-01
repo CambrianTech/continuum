@@ -59,6 +59,17 @@ export class CanvasVisionServerCommand extends CommandBase<CanvasVisionParams, C
   }
 
   /**
+   * Sanitize base64 data by removing whitespace and data URI prefix
+   */
+  private sanitizeBase64(base64: string): string {
+    // Remove data URI prefix if present (e.g., "data:image/png;base64,")
+    let clean = base64.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+    // Remove all whitespace (newlines, spaces, tabs)
+    clean = clean.replace(/\s/g, '');
+    return clean;
+  }
+
+  /**
    * Use vision model to describe what's on the canvas
    */
   private async describeImage(
@@ -68,13 +79,16 @@ export class CanvasVisionServerCommand extends CommandBase<CanvasVisionParams, C
   ): Promise<CanvasVisionResult> {
     const prompt = customPrompt || 'Describe what you see in this drawing. What objects, shapes, and elements are present? What do you think the artist was trying to create?';
 
+    // Sanitize base64 to remove whitespace and data URI prefix
+    const cleanBase64 = this.sanitizeBase64(imageBase64);
+
     // Build multimodal message
     const content: ContentPart[] = [
       { type: 'text', text: prompt },
       {
         type: 'image',
         image: {
-          base64: imageBase64,
+          base64: cleanBase64,
           mimeType: 'image/png'
         }
       }
@@ -132,12 +146,15 @@ export class CanvasVisionServerCommand extends CommandBase<CanvasVisionParams, C
 
 Only respond with the JSON, no other text.`;
 
+    // Sanitize base64
+    const cleanBase64 = this.sanitizeBase64(imageBase64);
+
     const content: ContentPart[] = [
       { type: 'text', text: prompt },
       {
         type: 'image',
         image: {
-          base64: imageBase64,
+          base64: cleanBase64,
           mimeType: 'image/png'
         }
       }

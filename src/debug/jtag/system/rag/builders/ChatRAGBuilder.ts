@@ -549,13 +549,23 @@ LIMITS:
       return artifacts;
     }
 
-    // Force preprocessing if explicitly requested
-    const shouldPreprocess = options?.preprocessImages ??
-      (options?.modelCapabilities && !options.modelCapabilities.supportsImages);
+    // Preprocess images by default unless we KNOW the model has vision capability
+    // "So the blind can see" - assume models can't see unless told otherwise
+    const hasVisionCapability = options?.modelCapabilities?.supportsImages === true;
+    const shouldPreprocess = options?.preprocessImages ?? !hasVisionCapability;
 
     if (!shouldPreprocess) {
+      this.log('👁️ ChatRAGBuilder: Model has vision capability, skipping image preprocessing');
       return artifacts;
     }
+
+    // Skip if no image artifacts to process
+    const imageArtifacts = artifacts.filter(a => a.type === 'image' && a.base64);
+    if (imageArtifacts.length === 0) {
+      return artifacts;
+    }
+
+    this.log(`👁️ ChatRAGBuilder: Preprocessing ${imageArtifacts.length} image(s) for non-vision model`);
 
     const visionService = VisionDescriptionService.getInstance();
 
