@@ -129,7 +129,10 @@ export const COLLECTIONS = {
   KICK_APPEALS: 'kick_appeals',
 
   // Collaborative Canvas System
-  CANVAS_STROKES: 'canvas_strokes'
+  CANVAS_STROKES: 'canvas_strokes',
+
+  // Activity System - collaborative content instances (canvas, browser, games, etc.)
+  ACTIVITIES: 'activities'
 } as const;
 
 

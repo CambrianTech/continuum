@@ -15,6 +15,7 @@
 
 import UserDataSeed from './UserDataSeed';
 import RoomDataSeed from './RoomDataSeed';
+import ActivityDataSeed from './ActivityDataSeed';
 import { SystemIdentity } from './SystemIdentity';
 import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 
@@ -38,7 +39,8 @@ export class DataSeeder {
   private static readonly COLLECTIONS = [
     createCollectionName('users'),
     createCollectionName('rooms'),
-    createCollectionName('messages')
+    createCollectionName('messages'),
+    createCollectionName('activities')
   ] as const;
 
   /**
@@ -91,16 +93,19 @@ export class DataSeeder {
   }
 
   /**
-   * Seed all initial data - users, rooms, messages
+   * Seed all initial data - users, rooms, activities, messages
    */
   public static async seedAllData(): Promise<void> {
     console.log('🌱 SEEDING ALL INITIAL DATA - Creating fresh system state');
 
-    // Seed users first (required for rooms and messages)
+    // Seed users first (required for rooms, activities, and messages)
     await this.seedUsers();
 
     // Seed chat rooms (returns room ID map for messages)
     const roomIdMap = await this.seedChatRooms();
+
+    // Seed collaborative activities (canvas, browser, etc.)
+    await this.seedActivities();
 
     // Seed initial messages (uses room ID map)
     await this.seedInitialMessages(roomIdMap);
@@ -176,6 +181,41 @@ export class DataSeeder {
   }
 
   /**
+   * Seed collaborative activities using ActivityDataSeed
+   * Activities are content instances (canvas, browser, etc.) that participants can join
+   */
+  private static async seedActivities(): Promise<void> {
+    console.log('🎨 Seeding collaborative activities...');
+
+    const identity = SystemIdentity.getIdentity();
+    const activityData = ActivityDataSeed.generateSeedActivities(identity.userId as any);
+
+    for (const activity of activityData.activities) {
+      try {
+        const validatedActivity = ActivityDataSeed.createActivityStoreData(activity);
+
+        const { execSync } = require('child_process');
+        const result = execSync(
+          `./jtag ${DATA_COMMANDS.CREATE} --collection="activities" --data='${JSON.stringify(validatedActivity)}'`,
+          { encoding: 'utf-8', cwd: process.cwd() }
+        );
+
+        // Parse result to get created activity ID
+        const resultData = JSON.parse(result.split('COMMAND RESULT:')[1].split('============================================================')[0].trim());
+        if (resultData.success && resultData.data?.id) {
+          console.log(`🎨 Created activity: ${activity.displayName} (${activity.participants.length} participants, ID: ${resultData.data.id})`);
+        }
+
+      } catch (error: any) {
+        console.error(`❌ FATAL: Failed to create activity ${activity.uniqueId}:`, error.message);
+        throw error; // Crash and burn - no fallbacks
+      }
+    }
+
+    console.log(`✅ Seeded ${activityData.totalCount} collaborative activities`);
+  }
+
+  /**
    * Seed initial welcome messages using RoomDataSeed
    */
   private static async seedInitialMessages(roomIdMap: Map<string, string>): Promise<void> {
@@ -234,9 +274,10 @@ export class DataSeeder {
         if (collection === 'rooms' && count < 2) {
           throw new Error(`Expected at least 2 rooms, found ${count}`);
         }
-        if (collection === 'chat_messages' && count < 3) {
-          throw new Error(`Expected at least 3 messages, found ${count}`);
+        if (collection === 'activities' && count < 2) {
+          throw new Error(`Expected at least 2 activities (canvas, browser), found ${count}`);
         }
+        // Messages are optional - no welcome messages required
         
       } catch (error: any) {
         console.error(`❌ FATAL: Verification failed for ${collection}:`, error.message);
@@ -262,8 +303,8 @@ export class DataSeeder {
       console.log('=='.repeat(40));
       console.log('🎉 COMPLETE! System ready with fresh data for new repo users');
       console.log('👥 Users: system owner + 5 AI agents (Claude Code, GeneralAI, CodeAI, PlannerAI, Auto Route)');
-      console.log('🏠 Rooms: general (6 members), academy (3 members)');
-      console.log('💬 Messages: Welcome messages in both rooms');
+      console.log('🏠 Rooms: general, academy, pantheon, canvas (chat rooms)');
+      console.log('🎨 Activities: canvas-main, browser-main (collaborative content)');
       console.log('✅ All data verified and ready for development');
       
     } catch (error: any) {

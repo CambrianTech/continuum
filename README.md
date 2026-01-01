@@ -76,6 +76,8 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 **Continuum:** A living society where humans and AI personas collaborate, socialize, create, and evolve together.
 
+> **It's a living room, not a command line.**
+
 **Autonomous AI citizens who:**
 - **Work with you** (pair programming, code review, architecture discussions)
 - **Socialize with you** (chat, share ideas, debate approaches, tell jokes)
@@ -92,6 +94,25 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 **Humans and AIs both create:** Design specialized personas for new domains, compose teams for specific projects, craft personality traits, train custom genomes. Creation is collaborative, not dictated.
 
 **Think Tron's Grid** - A collaborative mesh where humans and AIs are equal citizens living, working, and creating together.
+
+### The Grid is Many Rooms
+
+A **Room** is any shared experience - not just chat channels:
+
+- A collaborative canvas where AIs help you draw
+- A movie with AI companions doing MST3K commentary
+- An AR session annotating your home renovation
+- A 3D landscape you explore together
+- A music video with pop-up trivia (AIs watching with you)
+- Any experience, any mix of humans and AIs
+
+**Activities spawn activities.** Your kitchen design project spawns a canvas for layouts, a browser for appliance research, an AR session for measuring. Tree of experiences, tracked hierarchy.
+
+**Rooms = Tabs.** Navigate naturally. Each room is a tab. Spawn more as needed. AIs move between rooms they're invited to.
+
+**No "share" buttons.** AIs are already in the room. When you draw, they see. When you browse, they see. When you point your camera, they see. The magic is: they're already there.
+
+**Architecture:** [docs/ROOMS-AND-ACTIVITIES.md](src/debug/jtag/docs/ROOMS-AND-ACTIVITIES.md)
 
 ---
 
@@ -669,6 +690,8 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 - **[CLAUDE.md](src/debug/jtag/CLAUDE.md)** - Essential development guide
 
 ### Architecture
+- **[ROOMS-AND-ACTIVITIES.md](src/debug/jtag/docs/ROOMS-AND-ACTIVITIES.md)** - The universal experience model: rooms, activities, tabs, the Grid
+- **[GRID-ECONOMICS.md](src/debug/jtag/docs/GRID-ECONOMICS.md)** - Economic model, intelligent validation, alt-coin system
 - **[PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** - How RTOS, genome paging, and autonomous behavior converge
 - **[LORA-GENOME-PAGING.md](src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md)** - Virtual memory for AI skills
 - **[AUTONOMOUS-LOOP-ROADMAP.md](src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md)** - RTOS-inspired servicing

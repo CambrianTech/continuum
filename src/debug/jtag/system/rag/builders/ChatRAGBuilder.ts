@@ -83,6 +83,8 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.loadPersonaIdentity(personaId, contextId, options),
 
       // 2. Load recent conversation history from database
+      // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
+      // Strokes emit system messages to the canvas room, so AIs see them naturally here
       this.loadConversationHistory(contextId, personaId, maxMessages),
 
       // 3. Extract image attachments from messages (for vision models)
@@ -118,6 +120,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
     }
+
+    // NOTE: Canvas context is now handled via the "inbox content" pattern
+    // When strokes are added, they emit system messages to the canvas room
+    // AIs see these in their conversation history naturally, no system prompt injection needed
 
     // 2.5. Append current message if provided (for messages not yet persisted)
     // Check for duplicates by comparing content + name of most recent message

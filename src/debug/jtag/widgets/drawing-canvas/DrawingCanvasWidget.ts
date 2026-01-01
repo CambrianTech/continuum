@@ -25,6 +25,8 @@ import type { StrokePoint, CanvasTool } from '../../system/data/entities/CanvasS
 import type { CanvasStrokeAddParams, CanvasStrokeAddResult } from '../../commands/canvas/stroke/add/shared/CanvasStrokeAddTypes';
 import type { CanvasStrokeListParams, CanvasStrokeListResult, StrokeData } from '../../commands/canvas/stroke/list/shared/CanvasStrokeListTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { ACTIVITY_UNIQUE_IDS } from '../../system/data/constants/ActivityConstants';
+import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 /**
  * Result from user/get-me command
@@ -99,19 +101,15 @@ export class DrawingCanvasWidget extends BaseWidget {
   }
 
   /**
-   * Default canvas ID for singleton canvas mode
-   * TODO: Remove when activity-based canvas routing is implemented
-   */
-  private static readonly DEFAULT_CANVAS_ID = 'global-canvas';
-
-  /**
    * Get the canvas activity ID (canvas instance)
+   * Uses the seeded CANVAS_MAIN activity by default
    */
   get activityId(): UUID | null {
     // Check attribute first (set by recipe/content system)
     const attrId = this.getAttribute('activity-id') || this.getAttribute('entity-id');
     // Use default canvas if no specific ID provided (allows testing)
-    return attrId || this._activityId || DrawingCanvasWidget.DEFAULT_CANVAS_ID;
+    // ACTIVITY_UNIQUE_IDS.CANVAS_MAIN matches the seeded activity's uniqueId
+    return attrId || this._activityId || ACTIVITY_UNIQUE_IDS.CANVAS_MAIN;
   }
 
   /**
@@ -135,10 +133,37 @@ export class DrawingCanvasWidget extends BaseWidget {
     // Subscribe to real-time stroke events from other users
     this.subscribeToStrokeEvents();
 
+    // Emit initial Positron context so AIs know canvas is active
+    this.emitPositronContext();
+
     // Note: loadStrokes is called from setupCanvas after ctx is ready
     // This is because renderWidget runs AFTER onWidgetInitialize
 
     console.log('✅ DrawingCanvas: Ready for collaborative drawing');
+  }
+
+  /**
+   * Emit Positron context for AI awareness
+   * Called on initialization and after significant canvas changes
+   */
+  private emitPositronContext(): void {
+    PositronWidgetState.emit({
+      widgetType: 'drawing-canvas',
+      title: 'Collaborative Canvas',
+      entityId: this.activityId || undefined,
+      metadata: {
+        activityId: this.activityId,
+        strokeCount: this.loadedStrokeIds.size,
+        currentTool: this.currentTool,
+        brushColor: this.brushSettings.color,
+        brushSize: this.brushSettings.size,
+        description: `Collaborative canvas with ${this.loadedStrokeIds.size} strokes. Users and AIs can draw together.`
+      }
+    }, {
+      action: 'viewing',
+      target: 'canvas',
+      details: `Viewing canvas ${this.activityId} with ${this.loadedStrokeIds.size} strokes`
+    });
   }
 
   /**
@@ -790,6 +815,9 @@ export class DrawingCanvasWidget extends BaseWidget {
         // Mark as loaded so we don't re-render when event comes back
         this.loadedStrokeIds.add(result.strokeId);
         console.log(`🎨 DrawingCanvas: Saved stroke ${result.strokeId}`);
+
+        // Update Positron context so AIs know canvas changed
+        this.emitPositronContext();
       } else {
         console.warn('🎨 DrawingCanvas: Failed to save stroke:', result.error);
       }
