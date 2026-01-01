@@ -321,7 +321,7 @@ export class PersonaToolExecutor {
       // Check if THIS persona wants media
       // IMPORTANT: If AI explicitly called screenshot tool, they want the image!
       // So we pass through media for screenshot regardless of autoLoadMedia config
-      const isScreenshotTool = toolCall.toolName === 'screenshot';
+      const isScreenshotTool = toolCall.toolName === 'screenshot' || toolCall.toolName === 'interface/screenshot';
       const shouldLoadMedia = context.personaConfig.autoLoadMedia || isScreenshotTool;
 
       if (result.media && shouldLoadMedia) {
