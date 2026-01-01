@@ -1,42 +1,35 @@
 /**
  * Canvas Stroke List Command Types
  *
- * Retrieves strokes for a collaborative canvas.
- * Used to:
- * - Load all strokes when opening a canvas
- * - Replay drawing for new participants
- * - Export canvas as vector data
+ * Query strokes from a canvas for replay/rendering.
+ * Supports pagination and viewport filtering.
  */
 
 import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { CanvasTool, StrokePoint } from '@system/data/entities/CanvasStrokeEntity';
+import type { CanvasTool, StrokePoint, StrokeBounds } from '@system/data/entities/CanvasStrokeEntity';
 
 export interface CanvasStrokeListParams extends CommandParams {
-  /** Activity ID (canvas instance) to get strokes for */
+  /** Activity ID (canvas instance) to get strokes from */
   canvasId: UUID;
 
-  /** Optional: limit number of strokes (for pagination) */
+  /** Filter to specific viewport (for efficient rendering) */
+  viewport?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+
+  /** Maximum strokes to return (default: 1000) */
   limit?: number;
 
-  /** Optional: offset for pagination */
-  offset?: number;
-
-  /** Optional: filter by creator */
-  creatorId?: UUID;
-
-  /** Optional: filter by tool type */
-  tool?: CanvasTool;
-
-  /** Optional: get strokes after this timestamp (for incremental sync) */
-  afterTimestamp?: string;
+  /** Pagination cursor (stroke timestamp) */
+  cursor?: string;
 }
 
-/**
- * Stroke data returned in list results
- */
-export interface StrokeData {
+export interface StrokeSummary {
   id: UUID;
   tool: CanvasTool;
   points: StrokePoint[];
@@ -47,30 +40,33 @@ export interface StrokeData {
   creatorId: UUID;
   creatorName: string;
   timestamp: string;
-  bounds?: {
-    minX: number;
-    minY: number;
-    maxX: number;
-    maxY: number;
-  };
+  bounds?: StrokeBounds;
 }
+
+/** Alias for widget compatibility */
+export type StrokeData = StrokeSummary;
 
 export interface CanvasStrokeListResult extends CommandResult {
   success: boolean;
+  
+  /** Canvas ID */
+  canvasId?: UUID;
+  
+  /** Strokes in draw order (oldest first) */
+  strokes?: StrokeSummary[];
+  
+  /** Total stroke count for canvas */
+  totalCount?: number;
+  
+  /** Next cursor for pagination */
+  nextCursor?: string;
+  
+  /** True if more strokes available */
+  hasMore?: boolean;
 
-  /** List of strokes (in timestamp order for proper replay) */
-  strokes?: StrokeData[];
-
-  /** Total stroke count (for pagination) */
-  total?: number;
-
-  /** Error message if failed */
   error?: string;
 }
 
-/**
- * Factory function for creating CanvasStrokeListResult
- */
 export const createCanvasStrokeListResult = (
   context: JTAGContext,
   sessionId: UUID,

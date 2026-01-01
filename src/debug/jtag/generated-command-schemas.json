@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-01T01:30:25.523Z",
+  "generated": "2026-01-01T02:20:25.156Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3987,37 +3987,42 @@
     },
     {
       "name": "canvas/stroke/list",
-      "description": "Canvas Stroke List Command Types\n *\n * Retrieves strokes for a collaborative canvas.\n * Used to:\n * - Load all strokes when opening a canvas\n * - Replay drawing for new participants\n * - Export canvas as vector data",
+      "description": "Canvas Stroke List Command Types\n *\n * Query strokes from a canvas for replay/rendering.\n * Supports pagination and viewport filtering.",
       "params": {
         "canvasId": {
           "type": "string",
           "required": true,
           "description": "canvasId parameter"
         },
+        "viewport": {
+          "type": "object",
+          "required": false,
+          "description": "viewport parameter"
+        },
+        "y": {
+          "type": "number",
+          "required": true,
+          "description": "y parameter"
+        },
+        "width": {
+          "type": "number",
+          "required": true,
+          "description": "width parameter"
+        },
+        "height": {
+          "type": "number",
+          "required": true,
+          "description": "height parameter"
+        },
         "limit": {
           "type": "number",
           "required": false,
           "description": "limit parameter"
         },
-        "offset": {
-          "type": "number",
-          "required": false,
-          "description": "offset parameter"
-        },
-        "creatorId": {
+        "cursor": {
           "type": "string",
           "required": false,
-          "description": "creatorId parameter"
-        },
-        "tool": {
-          "type": "string",
-          "required": false,
-          "description": "tool parameter"
-        },
-        "afterTimestamp": {
-          "type": "string",
-          "required": false,
-          "description": "afterTimestamp parameter"
+          "description": "cursor parameter"
         }
       }
     },
