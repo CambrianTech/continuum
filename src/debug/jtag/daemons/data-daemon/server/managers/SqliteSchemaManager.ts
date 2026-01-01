@@ -16,7 +16,7 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-import type { StorageResult } from '../../shared/DataStorageAdapter';
+import type { StorageResult, CollectionSchema, SchemaField, SchemaFieldType } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
 import type { SqlExecutor } from '../SqlExecutor';
 import {
@@ -48,6 +48,7 @@ interface SqliteOptions {
 export class SqliteSchemaManager {
   private log = Logger.create('SqliteSchemaManager', 'sql');
   private schemaVerified: Set<string> = new Set(); // Cache: only check schema once per process
+  private schemaCache = new Map<string, CollectionSchema>(); // Cache passed schemas
 
   constructor(
     private db: sqlite3.Database | null,
@@ -178,14 +179,112 @@ export class SqliteSchemaManager {
     }
   }
 
+  // ============================================================================
+  // SCHEMA-BASED TABLE/INDEX GENERATION (New architecture - adapter doesn't know entities)
+  // ============================================================================
+
+  /**
+   * Map SchemaFieldType to SQLite SQL type
+   *
+   * ARCHITECTURE: This is how the adapter translates generic schema types
+   * to its native storage format. No knowledge of entities or decorators.
+   */
+  private mapSchemaFieldTypeToSql(fieldType: SchemaFieldType, maxLength?: number): string {
+    switch (fieldType) {
+      case 'uuid':
+        return 'TEXT';  // SQLite doesn't have native UUID, use TEXT
+      case 'string':
+        return maxLength ? `TEXT` : 'TEXT';  // SQLite doesn't enforce VARCHAR length
+      case 'number':
+        return 'REAL';
+      case 'boolean':
+        return 'INTEGER';  // SQLite uses 0/1 for boolean
+      case 'date':
+        return 'TEXT';  // ISO8601 string format
+      case 'json':
+        return 'TEXT';  // JSON stored as text
+      default:
+        return 'TEXT';
+    }
+  }
+
+  /**
+   * Generate CREATE TABLE SQL from CollectionSchema
+   *
+   * ARCHITECTURE: Adapter generates native SQL from generic schema.
+   * Daemon passed the schema, adapter translates to native format.
+   */
+  private generateCreateTableFromSchema(schema: CollectionSchema): string {
+    const tableName = SqlNamingConverter.toTableName(schema.collection);
+
+    const columns: string[] = [
+      'id TEXT PRIMARY KEY',
+      'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
+      'updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
+      'version INTEGER DEFAULT 1'
+    ];
+
+    for (const field of schema.fields) {
+      // Skip base entity fields (already added above)
+      if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        continue;
+      }
+
+      const columnName = SqlNamingConverter.toSnakeCase(field.name);
+      const sqlType = this.mapSchemaFieldTypeToSql(field.type, field.maxLength);
+      const nullable = field.nullable !== false ? '' : ' NOT NULL';
+      const unique = field.unique ? ' UNIQUE' : '';
+
+      columns.push(`${columnName} ${sqlType}${nullable}${unique}`);
+    }
+
+    return `CREATE TABLE IF NOT EXISTS ${tableName} (${columns.join(', ')})`;
+  }
+
+  /**
+   * Generate CREATE INDEX SQL statements from CollectionSchema
+   *
+   * ARCHITECTURE: Creates indexes for indexed fields and composite indexes.
+   * Uses IF NOT EXISTS for idempotent operations.
+   */
+  private generateCreateIndexFromSchema(schema: CollectionSchema): string[] {
+    const tableName = SqlNamingConverter.toTableName(schema.collection);
+    const indexes: string[] = [];
+
+    // Single-field indexes from field.indexed
+    for (const field of schema.fields) {
+      if (field.indexed) {
+        const columnName = SqlNamingConverter.toSnakeCase(field.name);
+        const indexName = `idx_${tableName}_${columnName}`;
+        indexes.push(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName} (${columnName})`);
+      }
+    }
+
+    // Composite indexes
+    if (schema.indexes) {
+      for (const idx of schema.indexes) {
+        const indexColumns = idx.fields.map(f => SqlNamingConverter.toSnakeCase(f)).join(', ');
+        const uniqueStr = idx.unique ? 'UNIQUE ' : '';
+        indexes.push(`CREATE ${uniqueStr}INDEX IF NOT EXISTS ${idx.name} ON ${tableName} (${indexColumns})`);
+      }
+    }
+
+    return indexes;
+  }
+
   /**
    * Ensure schema exists for collection (orchestrated by DataDaemon)
    *
    * This is the ONLY place where tables are created.
-   * Handles both registered entities (with metadata) and unregistered entities (simple table).
-   * Adapter translates collection → table name and creates snake_case columns.
+   *
+   * ARCHITECTURE:
+   * - If schema is provided (from daemon), use schema-based path (NEW - correct architecture)
+   * - If schema is undefined, fall back to ENTITY_REGISTRY (LEGACY - will be removed)
+   *
+   * The daemon extracts schema from entity decorators and passes it here.
+   * The adapter doesn't need to know about entities or decorators.
    */
-  async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collectionName: string, schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     try {
       // Fast path: already verified this schema in this process
       if (this.schemaVerified.has(collectionName)) {
@@ -195,6 +294,46 @@ export class SqliteSchemaManager {
       const tableName = SqlNamingConverter.toTableName(collectionName);
       const tableExists = await this.tableExists(tableName);
 
+      // =========================================================================
+      // NEW ARCHITECTURE: Use schema from daemon if provided
+      // =========================================================================
+      if (schema) {
+        // Cache the schema for later use in queries/writes
+        this.schemaCache.set(collectionName, schema);
+
+        let stateChanged = false;
+
+        if (tableExists) {
+          // TODO: Implement schema-based migration (add missing columns)
+          // For now, skip migration - table already exists
+          this.log.debug(`Table ${tableName} exists, using existing schema`);
+        } else {
+          // Create new table from schema - STATE CHANGE
+          const createTableSql = this.generateCreateTableFromSchema(schema);
+          this.log.info(`[SCHEMA-PATH] CREATE TABLE ${tableName}`);
+          await this.executor.runSql(createTableSql);
+          stateChanged = true;
+        }
+
+        // Create indexes from schema
+        const indexSqls = this.generateCreateIndexFromSchema(schema);
+        for (const indexSql of indexSqls) {
+          this.log.debug(`Creating index: ${indexSql}`);
+          await this.executor.runSql(indexSql);
+        }
+
+        if (stateChanged) {
+          this.log.info(`[SCHEMA-PATH] Table ready: ${tableName} (created with ${indexSqls.length} indexes)`);
+        }
+
+        this.schemaVerified.add(collectionName);
+        return { success: true, data: true };
+      }
+
+      // =========================================================================
+      // LEGACY FALLBACK: Use ENTITY_REGISTRY if no schema provided
+      // This path will be removed once all callers pass schema
+      // =========================================================================
       const entityClass = ENTITY_REGISTRY.get(collectionName);
 
       if (!entityClass || !hasFieldMetadata(entityClass)) {
@@ -266,7 +405,7 @@ export class SqliteSchemaManager {
           SqlNamingConverter.toTableName,
           SqlNamingConverter.toSnakeCase
         );
-        this.log.info(`CREATE TABLE ${tableName}`);
+        this.log.info(`[LEGACY-PATH] CREATE TABLE ${tableName}`);
         await this.executor.runSql(createTableSql);
         stateChanged = true;
       }
@@ -285,7 +424,7 @@ export class SqliteSchemaManager {
 
       // Only log completion if STATE CHANGED
       if (stateChanged) {
-        this.log.info(`Table ready: ${tableName} (${tableExists ? 'migrated' : 'created'} with ${indexSqls.length} indexes)`);
+        this.log.info(`[LEGACY-PATH] Table ready: ${tableName} (${tableExists ? 'migrated' : 'created'} with ${indexSqls.length} indexes)`);
       }
 
       // Mark as verified - don't check again this process

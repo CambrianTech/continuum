@@ -21,9 +21,10 @@
 
 import { DataStorageAdapter } from '../shared/DataStorageAdapter';
 import { SqliteStorageAdapter } from './SqliteStorageAdapter';
+import { RustWorkerStorageAdapter } from './RustWorkerStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { getDatabasePath } from '../../../system/config/ServerConfig';
+import { getDatabasePath, getServerConfig } from '../../../system/config/ServerConfig';
 
 /**
  * Database handle - opaque identifier for ANY storage adapter
@@ -143,26 +144,58 @@ export class DatabaseHandleRegistry {
     this.handleMetadata = new Map();
     this.handleAliases = new Map();
 
-    // Initialize default handle (SQLite main database)
-    // This ensures backward compatibility - all existing code works without changes
-    const defaultAdapter = new SqliteStorageAdapter();
+    // Initialize default handle based on DATA_DAEMON_TYPE config
+    const config = getServerConfig();
+    const daemonType = config.getDataDaemonType();
+    const expandedDbPath = getDatabasePath();
 
-    // Must call initialize() before use
-    // SqliteStorageAdapter expects StorageAdapterConfig with type and namespace
-    const expandedDbPath = getDatabasePath();  // Expand $HOME in path
-    defaultAdapter.initialize({
-      type: 'sqlite',
-      namespace: 'default',
-      options: {}
-    }).then(() => {
-      console.log(`🔌 DatabaseHandleRegistry: Default handle initialized (${expandedDbPath})`);
-    }).catch((error) => {
-      console.error('❌ DatabaseHandleRegistry: Failed to initialize default handle:', error);
-    });
+    let defaultAdapter: DataStorageAdapter;
+    let adapterType: AdapterType;
+
+    if (daemonType === 'rust') {
+      // Use Rust worker for fast concurrent SQLite operations
+      const socketPath = config.getRustDataDaemonSocket();
+      console.log(`🦀 DatabaseHandleRegistry: Using Rust worker (socket: ${socketPath}, db: ${expandedDbPath})`);
+
+      defaultAdapter = new RustWorkerStorageAdapter();
+      adapterType = 'rust';
+
+      defaultAdapter.initialize({
+        type: 'rust',
+        namespace: 'default',
+        options: {
+          socketPath,
+          dbPath: expandedDbPath
+        }
+      }).then(() => {
+        console.log(`🦀 DatabaseHandleRegistry: Rust adapter initialized successfully`);
+      }).catch((error) => {
+        console.error('❌ DatabaseHandleRegistry: Failed to initialize Rust adapter:', error);
+        console.error('❌ Falling back to TypeScript SQLite adapter');
+        // NOTE: Cannot easily fall back here since constructor is sync
+        // System will fail if Rust worker is unavailable
+      });
+    } else {
+      // Use TypeScript SQLite adapter (default)
+      console.log(`📦 DatabaseHandleRegistry: Using TypeScript SQLite adapter (${expandedDbPath})`);
+
+      defaultAdapter = new SqliteStorageAdapter();
+      adapterType = 'sqlite';
+
+      defaultAdapter.initialize({
+        type: 'sqlite',
+        namespace: 'default',
+        options: {}
+      }).then(() => {
+        console.log(`📦 DatabaseHandleRegistry: SQLite adapter initialized (${expandedDbPath})`);
+      }).catch((error) => {
+        console.error('❌ DatabaseHandleRegistry: Failed to initialize SQLite adapter:', error);
+      });
+    }
 
     this.handles.set(DEFAULT_HANDLE, defaultAdapter);
     this.handleMetadata.set(DEFAULT_HANDLE, {
-      adapter: 'sqlite',
+      adapter: adapterType,
       config: { filename: expandedDbPath },
       openedAt: Date.now(),
       lastUsedAt: Date.now()
@@ -240,10 +273,30 @@ export class DatabaseHandleRegistry {
         break;
       }
 
+      case 'rust': {
+        const rustConfig = config as RustConfig;
+        const dbPath = rustConfig.filename;
+        if (!dbPath) {
+          throw new Error('Rust config requires "filename" property');
+        }
+        const socketPath = rustConfig.socketPath || getServerConfig().getRustDataDaemonSocket();
+        console.log(`🦀 DatabaseHandleRegistry: Opening Rust adapter at: ${dbPath} (socket: ${socketPath})`);
+        storageAdapter = new RustWorkerStorageAdapter();
+        await storageAdapter.initialize({
+          type: 'rust',
+          namespace: handle,
+          options: {
+            socketPath,
+            dbPath
+          }
+        });
+        break;
+      }
+
       case 'json':
       case 'vector':
       case 'graph':
-        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' is currently supported.`);
+        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' and 'rust' are currently supported.`);
 
       default:
         throw new Error(`Unknown adapter type: ${adapter}`);

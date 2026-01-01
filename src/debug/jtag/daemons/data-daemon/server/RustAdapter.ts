@@ -37,7 +37,8 @@ import {
   type StorageOperation,
   type RecordData,
   type QueryExplanation,
-  type StorageCapabilities
+  type StorageCapabilities,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Logger } from '../../../system/core/logging/Logger';
@@ -385,7 +386,7 @@ export class RustAdapter extends DataStorageAdapter {
   /**
    * Ensure schema exists - delegates to Rust worker
    */
-  async ensureSchema(collection: string, schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collection: string, schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     if (!this.isInitialized || !this.workerClient || !this.workerHandle) {
       return {
         success: false,

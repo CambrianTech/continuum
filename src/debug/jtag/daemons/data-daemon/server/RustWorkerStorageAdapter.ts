@@ -22,8 +22,10 @@ import {
   type RecordData,
   type CollectionStats,
   type StorageOperation,
-  type QueryExplanation
+  type QueryExplanation,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
+import { SqlNamingConverter } from '../shared/SqlNamingConverter';
 
 /**
  * Configuration for Rust worker connection
@@ -64,6 +66,30 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
 
   private reconnecting: boolean = false;
   private buffer: string = '';
+
+  /**
+   * Convert object keys from camelCase to snake_case (for sending to Rust/SQL)
+   */
+  private toSnakeCaseObject(obj: Record<string, any>): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const snakeKey = SqlNamingConverter.toSnakeCase(key);
+      result[snakeKey] = value;
+    }
+    return result;
+  }
+
+  /**
+   * Convert object keys from snake_case to camelCase (for returning to TypeScript)
+   */
+  private toCamelCaseObject(obj: Record<string, any>): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const camelKey = SqlNamingConverter.toCamelCase(key);
+      result[camelKey] = value;
+    }
+    return result;
+  }
 
   constructor(config?: RustWorkerConfig) {
     super();
@@ -217,10 +243,22 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     }
 
     try {
+      // Convert data keys to snake_case for SQL columns
+      const snakeCaseData = this.toSnakeCaseObject(record.data as Record<string, any>);
+
+      // Add id and metadata fields for storage
+      const fullData = {
+        id: record.id,
+        ...snakeCaseData,
+        created_at: record.metadata?.createdAt || new Date().toISOString(),
+        updated_at: record.metadata?.updatedAt || new Date().toISOString(),
+        version: record.metadata?.version || 1
+      };
+
       const response = await this.sendCommand('data/create', {
         handle: this.adapterHandle,
-        collection: record.collection,
-        data: record.data
+        collection: SqlNamingConverter.toTableName(record.collection),
+        data: fullData
       });
 
       if (response.status !== 'ok') {
@@ -289,11 +327,20 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     }
 
     try {
+      // Convert filter keys to snake_case for SQL
+      const snakeCaseFilter = query.filter ? this.toSnakeCaseObject(query.filter) : undefined;
+
+      // Convert sort field names to snake_case
+      const snakeCaseOrderBy = query.sort?.map(s => ({
+        field: SqlNamingConverter.toSnakeCase(s.field),
+        direction: s.direction
+      }));
+
       const response = await this.sendCommand<{ items: T[]; count: number }>('data/list', {
         handle: this.adapterHandle,
-        collection: query.collection,
-        filter: query.filter,
-        order_by: query.sort?.map(s => ({ field: s.field, direction: s.direction })),
+        collection: SqlNamingConverter.toTableName(query.collection),
+        filter: snakeCaseFilter,
+        order_by: snakeCaseOrderBy,
         limit: query.limit,
         offset: query.offset
       });
@@ -302,16 +349,38 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         return { success: false, error: response.message || 'Query failed' };
       }
 
-      const records: DataRecord<T>[] = (response.data?.items || []).map((item: any) => ({
-        id: item.id,
-        collection: query.collection,
-        data: item,
-        metadata: {
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          version: 1
+      const records: DataRecord<T>[] = (response.data?.items || []).map((item: any) => {
+        // Two table formats:
+        // 1. Simple entity: has 'data' column containing JSON string
+        // 2. Entity-specific: has individual columns for each field
+
+        let entityData: T;
+
+        if (typeof item.data === 'string') {
+          // Simple entity table - parse JSON from data column
+          // Data inside is already camelCase (stored as-is)
+          entityData = JSON.parse(item.data) as T;
+        } else if (item.data && typeof item.data === 'object') {
+          // Data is already an object (maybe pre-parsed by Rust)
+          entityData = item.data as T;
+        } else {
+          // Entity-specific table - extract non-BaseEntity fields
+          // Rust returns snake_case columns, convert to camelCase
+          const { id, created_at, updated_at, version, ...rest } = item;
+          entityData = this.toCamelCaseObject(rest) as T;
         }
-      }));
+
+        return {
+          id: item.id,
+          collection: query.collection,
+          data: entityData,
+          metadata: {
+            createdAt: item.created_at || new Date().toISOString(),
+            updatedAt: item.updated_at || new Date().toISOString(),
+            version: item.version || 1
+          }
+        };
+      });
 
       return {
         success: true,
@@ -433,7 +502,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   /**
    * Ensure collection schema exists (no-op for now, SQLite is schemaless for our use)
    */
-  async ensureSchema(collection: string, schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collection: string, schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     // Rust worker uses dynamic table creation on first insert
     // No need to explicitly create schema
     return {

@@ -24,7 +24,8 @@ import {
   type CollectionStats,
   type StorageOperation,
   type RecordData,
-  type QueryExplanation
+  type QueryExplanation,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
 import { getDatabasePath } from '../../../system/config/ServerConfig';
@@ -281,7 +282,7 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
    * Ensure schema exists for collection (orchestrated by DataDaemon)
    * Delegates to SqliteSchemaManager
    */
-  async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collectionName: string, _schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     return this.schemaManager.ensureSchema(collectionName, _schema);
   }
 

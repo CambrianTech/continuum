@@ -194,6 +194,28 @@ export class ServerConfig {
     if (!value) return defaultValue;
     return value.toLowerCase() === 'true' || value === '1';
   }
+
+  // ===================================
+  // Data Daemon Configuration
+  // ===================================
+
+  /**
+   * Get data daemon type: 'sqlite' (TypeScript) or 'rust' (Rust worker)
+   * Reads from DATA_DAEMON_TYPE in config.env
+   */
+  getDataDaemonType(): 'sqlite' | 'rust' {
+    // Check SecretManager first (loads from ~/.continuum/config.env)
+    const value = this.secrets.get('DATA_DAEMON_TYPE', 'ServerConfig')?.toLowerCase();
+    if (value === 'rust') return 'rust';
+    return 'sqlite';  // Default to TypeScript SQLite adapter
+  }
+
+  /**
+   * Get Rust data daemon socket path
+   */
+  getRustDataDaemonSocket(): string {
+    return this.secrets.get('RUST_DATA_DAEMON_SOCKET', 'ServerConfig') || '/tmp/jtag-data-daemon-worker.sock';
+  }
 }
 
 // ===================================

@@ -17,6 +17,61 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 export type RecordData = Record<string, unknown>;
 
 /**
+ * Field type for schema definition
+ * Adapter-agnostic - each adapter maps to its native types
+ */
+export type SchemaFieldType = 'string' | 'number' | 'boolean' | 'date' | 'json' | 'uuid';
+
+/**
+ * Schema field definition - passed from daemon to adapter
+ * Adapter uses this to create tables/collections and map data
+ */
+export interface SchemaField {
+  /** Field name in camelCase (adapter converts to native format) */
+  readonly name: string;
+  /** Field type (adapter maps to native type) */
+  readonly type: SchemaFieldType;
+  /** Create index on this field */
+  readonly indexed?: boolean;
+  /** Unique constraint */
+  readonly unique?: boolean;
+  /** Allow null values */
+  readonly nullable?: boolean;
+  /** Maximum length for string types */
+  readonly maxLength?: number;
+}
+
+/**
+ * Composite index definition
+ */
+export interface SchemaIndex {
+  /** Index name */
+  readonly name: string;
+  /** Field names (in camelCase) */
+  readonly fields: readonly string[];
+  /** Unique constraint */
+  readonly unique?: boolean;
+}
+
+/**
+ * Collection schema - daemon passes to adapter via ensureSchema()
+ *
+ * This is the contract between daemon (knows entities) and adapter (knows storage).
+ * Daemon extracts this from entity decorators, adapter uses it to:
+ * 1. Create tables/collections with proper structure
+ * 2. Convert field names (camelCase → native format)
+ * 3. Convert types (JS types → native types)
+ */
+export interface CollectionSchema {
+  /** Collection name */
+  readonly collection: string;
+  /** Field definitions */
+  readonly fields: readonly SchemaField[];
+  /** Composite indexes */
+  readonly indexes?: readonly SchemaIndex[];
+}
+
+/**
  * Universal Data Record
  */
 export interface DataRecord<T extends RecordData = RecordData> {
@@ -201,7 +256,7 @@ export abstract class DataStorageAdapter {
    * @param collection - Collection name (adapter translates to table/collection/etc)
    * @param schema - Optional schema metadata (adapter-specific interpretation)
    */
-  abstract ensureSchema(collection: string, schema?: unknown): Promise<StorageResult<boolean>>;
+  abstract ensureSchema(collection: string, schema?: CollectionSchema): Promise<StorageResult<boolean>>;
 
   /**
    * Clear all data from all collections with detailed reporting
