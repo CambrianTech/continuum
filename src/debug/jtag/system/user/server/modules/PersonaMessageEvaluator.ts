@@ -612,9 +612,14 @@ export class PersonaMessageEvaluator {
       this.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
 
       // Check if other AIs already posted adequate responses
-      // UserType is 'human' | 'persona' | 'agent' | 'system' - check for non-human
+      // CRITICAL: Exclude the original trigger message AND the sending persona
+      // Bug fix: Original message was slipping through due to timestamp precision,
+      // causing 100% self-similarity match and blocking all AI responses
       const otherAIResponses = newMessages.filter(m =>
-        m.data.senderType !== 'human' && m.data.senderId !== this.personaUser.id
+        m.id !== messageEntity.id &&  // Exclude the original trigger message
+        m.data.senderType !== 'human' &&
+        m.data.senderId !== this.personaUser.id &&
+        m.data.senderId !== messageEntity.senderId  // Exclude original sender's other messages
       );
 
       if (otherAIResponses.length > 0) {

@@ -48,6 +48,7 @@ import {
   toNumberArray,
   SimilarityMetrics
 } from '../shared/VectorSearchTypes';
+import { RustEmbeddingClient } from '../../../system/core/services/RustEmbeddingClient';
 
 /**
  * Vector record stored in backend
@@ -234,9 +235,10 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
   }
 
   /**
-   * Generate embedding for text using AIProviderDaemon
+   * Generate embedding for text using Rust worker (fastembed ONNX)
    *
-   * Generic implementation - uses Ollama via AIProviderDaemon
+   * ~5ms per embedding, ~1ms in batch mode. No HTTP overhead.
+   * Fails loudly if Rust worker unavailable - no silent fallbacks.
    */
   async generateEmbedding(
     request: GenerateEmbeddingRequest
@@ -245,31 +247,24 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
 
     try {
       const model = request.model || DEFAULT_EMBEDDING_MODELS['all-minilm'];
+      const rustClient = RustEmbeddingClient.instance;
 
-      // Use AIProviderDaemon to generate embedding via Ollama
-      const { AIProviderDaemon } = await import('../../../daemons/ai-provider-daemon/shared/AIProviderDaemon');
-
-      const response = await AIProviderDaemon.createEmbedding({
-        model: model.name,
-        input: request.text,
-        preferredProvider: model.provider as any
-      });
-
-      // EmbeddingResponse.embeddings is number[][] (array of embeddings)
-      // For single text input, take the first embedding
-      if (!response.embeddings || response.embeddings.length === 0) {
+      // Check availability - fail fast if worker not running
+      if (!await rustClient.isAvailable()) {
         return {
           success: false,
-          error: 'No embeddings returned from provider'
+          error: 'Rust embedding worker not available. Start with: ./workers/start-workers.sh'
         };
       }
+
+      const embedding = await rustClient.embed(request.text);
 
       return {
         success: true,
         data: {
-          embedding: response.embeddings[0],
+          embedding,
           model,
-          tokenCount: response.usage.inputTokens,
+          tokenCount: undefined, // Rust worker doesn't report token count
           generationTime: Date.now() - startTime
         }
       };
