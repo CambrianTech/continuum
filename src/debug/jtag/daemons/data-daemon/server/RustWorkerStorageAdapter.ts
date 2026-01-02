@@ -344,6 +344,11 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       }
 
       const item = response.data.items[0];
+      // Ensure id is always present in the data object
+      // Some callers expect data.data.id to be set
+      if (!item.id) {
+        item.id = id;
+      }
       return {
         success: true,
         data: {

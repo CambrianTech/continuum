@@ -345,7 +345,12 @@ export class SessionDaemonServer extends SessionDaemon {
         throw new Error(`User ${userId} not found in database`);
       }
 
-      const userEntity: UserEntity = userResult.data.data;
+      // DataRecord has { id, collection, data, metadata }
+      // Ensure id is present in the data (Rust adapter may not include it in data.data)
+      const userEntity = userResult.data.data as UserEntity;
+      if (!userEntity.id) {
+        (userEntity as any).id = userResult.data.id;
+      }
 
       // Load UserStateEntity from database
       const stateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
@@ -353,7 +358,11 @@ export class SessionDaemonServer extends SessionDaemon {
         throw new Error(`UserState for ${userId} not found in database`);
       }
 
-      const userState: UserStateEntity = stateResult.data.data;
+      // Ensure id is present in the state data
+      const userState = stateResult.data.data as UserStateEntity;
+      if (!userState.id) {
+        (userState as any).id = stateResult.data.id;
+      }
 
       // Create appropriate User subclass based on type
       let user: BaseUser;
